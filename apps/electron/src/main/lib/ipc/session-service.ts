@@ -65,7 +65,9 @@ export class SessionService {
     })
 
     ipcMain.handle(AGENT_IPC_CHANNELS.LIST_SESSIONS, async () => {
-      return listSessions()
+      const sessions = listSessions()
+      console.log(`[会话] listSessions 返回 ${sessions.length} 个会话，isArray=${Array.isArray(sessions)}`)
+      return sessions
     })
 
     ipcMain.handle(AGENT_IPC_CHANNELS.GET_SDK_MESSAGES, async (_e, sessionId: string) => {

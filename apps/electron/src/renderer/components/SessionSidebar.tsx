@@ -26,8 +26,9 @@ export function SessionSidebar({
   const [sessions, setSessions] = useState<SessionMeta[]>([])
 
   const refresh = async (): Promise<void> => {
-    const list = (await window.electronAPI.listSessions()) as SessionMeta[]
-    setSessions(list.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)))
+    const list = (await window.electronAPI.listSessions()) as SessionMeta[] | undefined
+    const arr = Array.isArray(list) ? list : []
+    setSessions(arr.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)))
   }
 
   useEffect(() => {
