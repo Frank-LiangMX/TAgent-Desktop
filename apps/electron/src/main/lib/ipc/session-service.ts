@@ -24,6 +24,7 @@ import { getAdapter } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
 import { sdkMessageToIR } from '../adapters/claude/kscc-message-adapter'
 import type { KsccQueryOptions } from '../adapters/claude/claude-agent-adapter'
+import { getSessionMeta, updateSessionMeta, appendMessages, createSession, listSessions, readMessages, deleteSession as deleteSessionMeta } from '../agent/session-store'
 
 interface SendMessageInput {
   sessionId: string
@@ -63,12 +64,21 @@ export class SessionService {
       return { ok: true }
     })
 
+    ipcMain.handle(AGENT_IPC_CHANNELS.LIST_SESSIONS, async () => {
+      return listSessions()
+    })
+
+    ipcMain.handle(AGENT_IPC_CHANNELS.GET_SDK_MESSAGES, async (_e, sessionId: string) => {
+      return readMessages(sessionId)
+    })
+
     ipcMain.handle(AGENT_IPC_CHANNELS.DELETE_SESSION, async (_e, sessionId: string) => {
       const rt = this.runtimes.get(sessionId)
       if (rt) {
         rt.destroy()
         this.runtimes.delete(sessionId)
       }
+      deleteSessionMeta(sessionId)
       return { ok: true }
     })
   }
@@ -83,6 +93,15 @@ export class SessionService {
     console.log(`[会话 ${input.sessionId}] ${isFirst ? '首次：spawn kscc + 起循环' : '后续：复用长驻进程 enqueue'}（渠道=${channelKind}）`)
 
     if (isFirst) {
+      // 首次：确保会话元数据存在（前端 sessionId 若无 meta 则建）
+      if (!getSessionMeta(input.sessionId)) {
+        createSession({
+          id: input.sessionId,
+          title: input.prompt.slice(0, 20) || '新会话',
+          modelId: input.model,
+        })
+        console.log(`[会话 ${input.sessionId}] 已创建会话元数据`)
+      }
       // 首次：建 SessionRuntime + 起循环
       rt = new SessionRuntime(input.sessionId, adapter)
       this.runtimes.set(input.sessionId, rt)
@@ -114,11 +133,13 @@ export class SessionService {
       if (!ksccPath) {
         throw new Error('未检测到 kscc 命令，请先安装 kscc（内网渠道）')
       }
+      // 读会话元数据取 sdkSessionId（长驻首次 spawn 时 resume 续历史）
+      const meta = getSessionMeta(input.sessionId)
       // KsccQueryOptions：最小集，后续从 TAgent 搬 MCP/canUseTool/记忆等
       const opts: KsccQueryOptions = {
         sessionId: input.sessionId,
         prompt: input.prompt,
-        model: input.model || 'glm-5.2',
+        model: input.model || meta?.modelId || 'glm-5.2',
         cwd: process.cwd(),
         sdkCliPath: ksccPath,
         env: { ...process.env } as Record<string, string | undefined>,
@@ -127,6 +148,15 @@ export class SessionService {
         allowDangerouslySkipPermissions: true,
         systemPrompt: { type: 'preset', preset: 'claude_code' },
         persistSession: true,
+        // 长驻首次 spawn 带 resume 续历史（SDK 读 JSONL 一次），之后靠内存
+        resumeSessionId: meta?.sdkSessionId,
+        onSessionId: (sdkSessionId: string) => {
+          // SDK 给的 session_id 存起来，下次 spawn（崩溃 fallback / 重开）用它 resume
+          if (sdkSessionId && sdkSessionId !== meta?.sdkSessionId) {
+            updateSessionMeta(input.sessionId, { sdkSessionId })
+            console.log(`[会话 ${input.sessionId}] 已保存 sdkSessionId: ${sdkSessionId}`)
+          }
+        },
         onStderr: (data: string) => console.error(`[kscc stderr] ${data}`),
       }
       return opts as unknown as Parameters<AgentProviderAdapter['query']>[0]
@@ -135,10 +165,12 @@ export class SessionService {
     throw new Error('外部渠道（Pi 核）尚未实现')
   }
 
-  /** 转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer */
+  /** 转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer，并持久化 */
   private handleStreamMessage(sessionId: string, msg: SDKMessage): void {
     const { message, event } = sdkMessageToIR(msg)
     if (message) {
+      // 持久化完整消息到 JSONL（流式 delta 不持久化，完整 assistant/user 才存）
+      appendMessages(sessionId, [msg])
       this.sendPayload(sessionId, { kind: 'sdk_message', message })
     }
     if (event) {
