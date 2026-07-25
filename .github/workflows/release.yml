@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing release tag to publish assets to
+        required: true
+        default: v2.0.0
+
+permissions:
+  actions: read
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+
+jobs:
+  build-desktop:
+    name: Build Desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            package_args: --mac
+            workdir: apps/electron
+            artifact: desktop-macos
+            paths: |
+              apps/electron/out/*.dmg
+              apps/electron/out/*.zip
+              apps/electron/out/*.blockmap
+              apps/electron/out/*.yml
+          - os: windows-2022
+            package_args: --win
+            workdir: apps/electron
+            artifact: desktop-windows
+            paths: |
+              apps/electron/out/*.exe
+              apps/electron/out/*.blockmap
+              apps/electron/out/*.yml
+          - os: ubuntu-latest
+            package_args: --linux --x64
+            workdir: apps/electron
+            artifact: desktop-linux
+            paths: |
+              apps/electron/out/*.AppImage
+              apps/electron/out/*.deb
+              apps/electron/out/*.tar.gz
+              apps/electron/out/*.blockmap
+              apps/electron/out/*.yml
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        env:
+          npm_config_registry: https://registry.npmjs.org
+          npm_config_electron_mirror: https://github.com/electron/electron/releases/download/
+          ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          node node_modules/electron/install.js
+
+      - name: Rebuild native modules for Electron
+        working-directory: ${{ matrix.workdir }}
+        run: bun run rebuild:native
+
+      - name: Build
+        working-directory: ${{ matrix.workdir }}
+        run: bun run build
+
+      - name: Package (electron-builder)
+        working-directory: ${{ matrix.workdir }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder ${{ matrix.package_args }} --publish always
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.paths }}
+          if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: Sync Release Body
+    needs: [build-desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify RELEASE_NOTES.md
+        run: |
+          test -f RELEASE_NOTES.md
+          head -n 5 RELEASE_NOTES.md
+
+      - name: Update Release Body
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
