@@ -1,69 +1,122 @@
 /**
  * 最小会话页（骨架验证用）
  *
- * 发消息 → 主进程 spawn kscc（长驻）→ 流式回复显示。
- * 不搬 TAgent 的 AgentView/SDKMessageRenderer（那套复杂，后续接）。
- * 先跑通"发消息→看回复"闭环，验证长驻骨架。
+ * 吃 AgentStreamPayload（TAgent IPC 格式）+ TAgentMessage IR 渲染。
+ * 消息渲染区用 MessageView（IR，重写不搬 TAgent）。
+ * 外壳最小自写，后续逐个搬 TAgent 外壳组件替换。
  */
 import { useState, useEffect, useRef } from 'react'
+import type { TAgentDesktopStreamPayload, TAgentMessage } from '@tagent/shared'
+import { MessageView, ToolResultView } from './components/MessageView'
 
-interface StreamEventPayload {
+interface StreamEventEnvelope {
   sessionId: string
-  kind: 'message' | 'turn_end' | 'error'
-  message?: unknown
-  error?: string
+  payload: TAgentDesktopStreamPayload
 }
 
-interface Msg {
-  role: 'user' | 'assistant'
-  text: string
+/** 一轮显示项：完整消息或流式增量 */
+interface DisplayItem {
+  /** 稳定 key */
+  key: string
+  /** 完整消息（IR） */
+  message?: TAgentMessage
+  /** 流式追加中的文本（stream_text_delta 累积） */
+  streamingText?: string
+  /** 流式 thinking 累积 */
+  streamingThinking?: string
+  /** 是否流式中 */
+  streaming?: boolean
 }
 
 export function Chat(): JSX.Element {
-  const [messages, setMessages] = useState<Msg[]>([])
+  const [items, setItems] = useState<DisplayItem[]>([])
   const [input, setInput] = useState('')
   const [running, setRunning] = useState(false)
   const sessionIdRef = useRef('session-' + Date.now())
-  const assistantBufRef = useRef('')
+  const itemIdxRef = useRef(0)
+  const streamingRef = useRef<DisplayItem | null>(null)
 
   useEffect(() => {
     const off = window.electronAPI.onStreamEvent((payload: unknown) => {
-      const p = payload as StreamEventPayload
-      if (p.sessionId !== sessionIdRef.current) return
-      if (p.kind === 'message') {
-        // 从 SDKMessage 提取文本（最小提取，完整渲染后续搬 SDKMessageRenderer）
-        const text = extractText(p.message)
-        if (text) {
-          assistantBufRef.current += text
-          setMessages((prev) => {
-            const next = [...prev]
-            const last = next[next.length - 1]
-            if (last && last.role === 'assistant') {
-              next[next.length - 1] = { role: 'assistant', text: assistantBufRef.current }
-            } else {
-              next.push({ role: 'assistant', text: assistantBufRef.current })
-            }
-            return next
-          })
-        }
-      } else if (p.kind === 'turn_end') {
-        setRunning(false)
-        assistantBufRef.current = ''
-      } else if (p.kind === 'error') {
-        setMessages((prev) => [...prev, { role: 'assistant', text: `[错误] ${p.error}` }])
-        setRunning(false)
-      }
+      const env = payload as StreamEventEnvelope
+      if (env.sessionId !== sessionIdRef.current) return
+      handlePayload(env.payload)
     })
     return off
   }, [])
+
+  const handlePayload = (p: TAgentDesktopStreamPayload): void => {
+    if (p.kind === 'sdk_message') {
+      // 完整消息（IR）：结束流式占位，加完整消息
+      const msg = p.message
+      if (streamingRef.current) {
+        streamingRef.current = null
+      }
+      setItems((prev) => [...prev, { key: `m${itemIdxRef.current++}`, message: msg }])
+    } else if (p.kind === 'stream_text_delta') {
+      // 流式文本增量：累积到流式占位
+      setItems((prev) => {
+        let stream = streamingRef.current
+        if (!stream) {
+          stream = { key: `s${itemIdxRef.current++}`, streaming: true, streamingText: '' }
+          streamingRef.current = stream
+          return [...prev, stream]
+        }
+        stream.streamingText = (stream.streamingText ?? '') + p.text
+        return [...prev]
+      })
+    } else if (p.kind === 'stream_thinking_delta') {
+      setItems((prev) => {
+        let stream = streamingRef.current
+        if (!stream) {
+          stream = { key: `s${itemIdxRef.current++}`, streaming: true, streamingThinking: '' }
+          streamingRef.current = stream
+          return [...prev, stream]
+        }
+        stream.streamingThinking = (stream.streamingThinking ?? '') + p.text
+        return [...prev]
+      })
+    } else if (p.kind === 'result') {
+      // 一轮结束
+      streamingRef.current = null
+      setRunning(false)
+    } else if (p.kind === 'tagent_event') {
+      const evt = p.event as { type: string; message?: string }
+      if (evt.type === 'turn_end') {
+        streamingRef.current = null
+        setRunning(false)
+      } else if (evt.type === 'session_error') {
+        setItems((prev) => [
+          ...prev,
+          {
+            key: `e${itemIdxRef.current++}`,
+            message: {
+              type: 'assistant',
+              content: [{ type: 'text', text: `[错误] ${evt.message ?? ''}` }],
+            } as TAgentMessage,
+          },
+        ])
+        setRunning(false)
+      }
+    }
+  }
 
   const send = async (): Promise<void> => {
     if (!input.trim() || running) return
     const text = input.trim()
     setInput('')
     setRunning(true)
-    assistantBufRef.current = ''
-    setMessages((prev) => [...prev, { role: 'user', text }])
+    // 乐观显示用户消息
+    setItems((prev) => [
+      ...prev,
+      {
+        key: `u${itemIdxRef.current++}`,
+        message: {
+          type: 'user',
+          content: [{ type: 'text', text }],
+        } as TAgentMessage,
+      },
+    ])
     await window.electronAPI.sendMessage({
       sessionId: sessionIdRef.current,
       prompt: text,
@@ -74,29 +127,8 @@ export function Chat(): JSX.Element {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-        {messages.map((m, i) => (
-          <div
-            key={i}
-            style={{
-              margin: '8px 0',
-              textAlign: m.role === 'user' ? 'right' : 'left',
-            }}
-          >
-            <span
-              style={{
-                display: 'inline-block',
-                padding: '8px 12px',
-                borderRadius: 8,
-                background: m.role === 'user' ? '#007aff' : '#e8e8e8',
-                color: m.role === 'user' ? '#fff' : '#000',
-                maxWidth: '80%',
-                whiteSpace: 'pre-wrap',
-                textAlign: 'left',
-              }}
-            >
-              {m.text || '…'}
-            </span>
-          </div>
+        {items.map((item) => (
+          <ItemView key={item.key} item={item} />
         ))}
         {running && <div style={{ color: '#888', fontSize: 12 }}>运行中…</div>}
       </div>
@@ -114,11 +146,7 @@ export function Chat(): JSX.Element {
           placeholder="发消息（Enter 发送）"
           disabled={running}
         />
-        <button
-          style={{ marginLeft: 8, padding: '8px 16px' }}
-          onClick={() => void send()}
-          disabled={running}
-        >
+        <button style={{ marginLeft: 8, padding: '8px 16px' }} onClick={() => void send()} disabled={running}>
           发送
         </button>
         {running && (
@@ -134,26 +162,46 @@ export function Chat(): JSX.Element {
   )
 }
 
-/** 从 SDKMessage 最小提取文本（流式 text_delta + 完整 text block） */
-function extractText(message: unknown): string {
-  if (!message || typeof message !== 'object') return ''
-  const msg = message as Record<string, unknown>
-  // stream_event: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } }
-  if (msg.type === 'stream_event') {
-    const event = msg.event as Record<string, unknown> | undefined
-    const delta = event?.delta as Record<string, unknown> | undefined
-    if (delta?.type === 'text_delta' && typeof delta.text === 'string') return delta.text
-    return ''
+function ItemView({ item }: { item: DisplayItem }): JSX.Element {
+  if (item.message) {
+    // tool_result 单独渲染（user 消息内含 tool_result 块时）
+    if (item.message.type === 'user') {
+      const toolResults = item.message.content.filter((b) => b.type === 'tool_result') as Array<
+        Extract<TAgentMessage, { type: 'user' }>['content'][number] & { type: 'tool_result' }
+      >
+      if (toolResults.length > 0 && item.message.content.every((b) => b.type !== 'text')) {
+        return (
+          <div>
+            {toolResults.map((tr, i) => (
+              <ToolResultView key={i} block={tr as never} />
+            ))}
+          </div>
+        )
+      }
+    }
+    return <MessageView message={item.message} />
   }
-  // assistant: { type: 'assistant', message: { content: [{ type: 'text', text }] } }
-  if (msg.type === 'assistant') {
-    const message = msg.message as Record<string, unknown> | undefined
-    const content = message?.content as Array<Record<string, unknown>> | undefined
-    if (!Array.isArray(content)) return ''
-    return content
-      .filter((b) => b.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text as string)
-      .join('')
-  }
-  return ''
+  // 流式占位
+  return (
+    <div style={{ margin: '8px 0' }}>
+      {item.streamingThinking && (
+        <details style={{ color: '#888', fontSize: 12 }} open>
+          <summary>思考…</summary>
+          <div style={{ whiteSpace: 'pre-wrap', paddingLeft: 12 }}>{item.streamingThinking}</div>
+        </details>
+      )}
+      <span
+        style={{
+          display: 'inline-block',
+          padding: '8px 12px',
+          borderRadius: 8,
+          background: '#e8e8e8',
+          maxWidth: '80%',
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {item.streamingText || '…'}
+      </span>
+    </div>
+  )
 }

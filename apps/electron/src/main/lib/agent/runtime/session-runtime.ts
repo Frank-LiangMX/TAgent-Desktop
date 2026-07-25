@@ -96,6 +96,14 @@ export class SessionRuntime {
     try {
       const iterable = this.adapter.query(queryOptions)
       for await (const msg of iterable) {
+        // 工具循环打点：assistant 含 tool_use 时记一下（验证工具循环跑通）
+        if (msg.type === 'assistant') {
+          const content = (msg as { message?: { content?: Array<{ type: string; name?: string }> } }).message?.content
+          const toolUses = Array.isArray(content) ? content.filter((b) => b.type === 'tool_use') : []
+          if (toolUses.length > 0) {
+            console.log(`[会话 ${this.sessionId}] 工具调用: ${toolUses.map((t) => t.name).join(', ')}`)
+          }
+        }
         // 推给 orchestrator（→ IPC → UI）
         this.onMessage?.(msg)
 

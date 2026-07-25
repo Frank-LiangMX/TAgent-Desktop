@@ -11,11 +11,18 @@
  * 后续：渠道选择、MCP/Skill 注入、记忆、权限回调等从 TAgent 搬。
  */
 import { ipcMain, type BrowserWindow } from 'electron'
-import type { AgentProviderAdapter, SDKMessage, SDKUserMessageInput } from '@tagent/shared'
+import type {
+  AgentProviderAdapter,
+  SDKMessage,
+  SDKUserMessageInput,
+  TAgentDesktopStreamPayload,
+  TAgentMessage,
+} from '@tagent/shared'
 import { AGENT_IPC_CHANNELS } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
 import { getAdapter } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
+import { sdkMessageToIR } from '../adapters/claude/kscc-message-adapter'
 import type { KsccQueryOptions } from '../adapters/claude/claude-agent-adapter'
 
 interface SendMessageInput {
@@ -45,7 +52,7 @@ export class SessionService {
         return { ok: true }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        this.sendError(input.sessionId, msg)
+        this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'session_error', message: msg } })
         return { ok: false, error: msg }
       }
     })
@@ -80,9 +87,9 @@ export class SessionService {
       rt = new SessionRuntime(input.sessionId, adapter)
       this.runtimes.set(input.sessionId, rt)
       rt.setCallbacks({
-        onMessage: (msg: SDKMessage) => this.sendMessage(input.sessionId, msg),
-        onTurnEnd: () => this.sendTurnEnd(input.sessionId),
-        onError: (err: Error) => this.sendError(input.sessionId, err.message),
+        onMessage: (msg: SDKMessage) => this.handleStreamMessage(input.sessionId, msg),
+        onTurnEnd: () => this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } }),
+        onError: (err: Error) => this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'session_error', message: err.message } }),
       })
 
       await rt.sendMessage(this.buildQueryOptions(input, channelKind))
@@ -128,19 +135,21 @@ export class SessionService {
     throw new Error('外部渠道（Pi 核）尚未实现')
   }
 
-  private sendMessage(sessionId: string, msg: SDKMessage): void {
-    const win = this.getWindow()
-    win?.webContents.send(AGENT_IPC_CHANNELS.STREAM_EVENT, { sessionId, kind: 'message', message: msg })
+  /** 转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer */
+  private handleStreamMessage(sessionId: string, msg: SDKMessage): void {
+    const { message, event } = sdkMessageToIR(msg)
+    if (message) {
+      this.sendPayload(sessionId, { kind: 'sdk_message', message })
+    }
+    if (event) {
+      this.sendPayload(sessionId, event)
+    }
   }
 
-  private sendTurnEnd(sessionId: string): void {
+  /** 发流式事件给 renderer */
+  private sendPayload(sessionId: string, payload: TAgentDesktopStreamPayload): void {
     const win = this.getWindow()
-    win?.webContents.send(AGENT_IPC_CHANNELS.STREAM_EVENT, { sessionId, kind: 'turn_end' })
-  }
-
-  private sendError(sessionId: string, error: string): void {
-    const win = this.getWindow()
-    win?.webContents.send(AGENT_IPC_CHANNELS.STREAM_EVENT, { sessionId, kind: 'error', error })
+    win?.webContents.send(AGENT_IPC_CHANNELS.STREAM_EVENT, { sessionId, payload })
   }
 
   /** 销毁所有会话（应用退出） */
