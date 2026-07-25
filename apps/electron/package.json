@@ -1,0 +1,55 @@
+{
+  "name": "@tagent/electron",
+  "version": "0.0.0-dev",
+  "description": "TAgent-Desktop - 2.0 骨架重构版（会话=进程常驻 + 双核可拔插）",
+  "main": "dist/main.cjs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run build:main && bun run build:preload && bun run build:resources && concurrently -k -n main,preload,vite,electron -c yellow,magenta,blue,green \"bun run watch:main\" \"bun run watch:preload\" \"bun run dev:vite\" \"bun run scripts/run-electronmon.ts\"",
+    "dev:vite": "vite dev",
+    "build:main": "esbuild src/main/index.ts --bundle --platform=node --format=cjs --outfile=dist/main.cjs --external:electron --external:@anthropic-ai/claude-agent-sdk --external:better-sqlite3 --external:node-pty",
+    "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron",
+    "watch:main": "esbuild src/main/index.ts --bundle --platform=node --format=cjs --outfile=dist/main.cjs --external:electron --external:@anthropic-ai/claude-agent-sdk --external:better-sqlite3 --external:node-pty --watch=forever",
+    "watch:preload": "esbuild src/preload/index.ts --bundle --platform=node --format=cjs --outfile=dist/preload.cjs --external:electron --watch=forever",
+    "build:renderer": "vite build",
+    "build:resources": "node -e \"require('fs').rmSync('dist/resources',{recursive:true,force:true});require('fs').cpSync('resources','dist/resources',{recursive:true})\"",
+    "prebuild": "bun run --filter='@tagent/ui' tokens:generate",
+    "build": "bun run build:main && bun run build:preload && bun run build:renderer && bun run build:resources",
+    "start": "bun run build && bunx electron .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.185",
+    "@anthropic-ai/sdk": "^0.93.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.10.0",
+    "iconv-lite": "^0.6.3",
+    "jotai": "^2.17.1",
+    "zod": "^4.0.0"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/claude-agent-sdk-win32-x64": "0.3.185"
+  },
+  "devDependencies": {
+    "@tagent/core": "workspace:*",
+    "@tagent/shared": "workspace:*",
+    "@tagent/ui": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.2.1",
+    "electron": "^39.5.1",
+    "electronmon": "^2.0.4",
+    "esbuild": "^0.24.0",
+    "postcss": "^8.4.49",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.0.0",
+    "vite": "^6.0.3"
+  }
+}

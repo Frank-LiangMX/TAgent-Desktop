@@ -1,0 +1,322 @@
+/**
+ * Surface Role 语义桥接层
+ *
+ * 这里只把稳定的空间职责映射到现有 --surface-* 光学 Token。
+ * Material 表仍由 glass.css 维护；业务组件只消费 --surface-role-*。
+ */
+
+:root {
+  /*
+   * scene 弥散场 — 三光斑 A/B/C + 对角底洗
+   * 全部混 scene-base（禁止混白）：混白会在左上/左下叠出亮斑，
+   * 透过玻璃侧栏后，主区左三分之一会被洗亮。
+   */
+  --surface-role-scene-fill:
+    /* A：偏上 — 淡雾，倍率低于 B/C，避免蓝压场 */
+    radial-gradient(
+      ellipse var(--scene-a-size, 42% 48%) at var(--scene-a-pos, 36% 10%),
+      color-mix(
+        in srgb,
+        rgb(var(--scene-a-rgb)) calc(var(--scene-a-strength, 0.22) * 110%),
+        rgb(var(--scene-base-rgb))
+      )
+        0%,
+      color-mix(
+        in srgb,
+        rgb(var(--scene-a-rgb)) calc(var(--scene-a-strength, 0.22) * 40%),
+        rgb(var(--scene-base-rgb))
+      )
+        52%,
+      transparent 88%
+    ),
+    /* C：偏下中 — 离开左缘，避免与 A 叠亮左三分之一 */
+    radial-gradient(
+      ellipse var(--scene-c-size, 40% 46%) at var(--scene-c-pos, 48% 88%),
+      color-mix(
+        in srgb,
+        rgb(var(--scene-c-rgb)) calc(var(--scene-c-strength, 0.22) * 130%),
+        rgb(var(--scene-base-rgb))
+      )
+        0%,
+      color-mix(
+        in srgb,
+        rgb(var(--scene-c-rgb)) calc(var(--scene-c-strength, 0.22) * 50%),
+        rgb(var(--scene-base-rgb))
+      )
+        50%,
+      transparent 88%
+    ),
+    /* B：右下 */
+    radial-gradient(
+      ellipse var(--scene-b-size, 52% 58%) at var(--scene-b-pos, 82% 78%),
+      color-mix(
+        in srgb,
+        rgb(var(--scene-b-rgb)) calc(var(--scene-b-strength, 0.22) * 140%),
+        rgb(var(--scene-base-rgb))
+      )
+        0%,
+      color-mix(
+        in srgb,
+        rgb(var(--scene-b-rgb)) calc(var(--scene-b-strength, 0.22) * 55%),
+        rgb(var(--scene-base-rgb))
+      )
+        50%,
+      transparent 90%
+    ),
+    /* 全屏对角底洗：端点倍率压低，避免左侧起手就亮 */
+    linear-gradient(
+      135deg,
+      color-mix(
+        in srgb,
+        rgb(var(--scene-a-rgb)) calc(var(--scene-a-strength, 0.22) * 18%),
+        rgb(var(--scene-base-rgb))
+      ),
+      rgb(var(--scene-base-rgb)) 42%,
+      rgb(var(--scene-base-rgb)) 58%,
+      color-mix(
+        in srgb,
+        rgb(var(--scene-b-rgb)) calc(var(--scene-b-strength, 0.22) * 32%),
+        rgb(var(--scene-base-rgb))
+      )
+    );
+  --surface-role-scene-rim: transparent;
+  --surface-role-scene-shadow: none;
+  --surface-role-scene-blur: 0px;
+  --surface-role-scene-z: 0;
+
+  --surface-role-workspace-fill: transparent;
+  --surface-role-workspace-rim: transparent;
+  --surface-role-workspace-shadow: none;
+  --surface-role-workspace-blur: 0px;
+  --surface-role-workspace-z: 10;
+
+  /*
+   * navigation / rail：对齐 spatial-theme-study --role-rail-*
+   * 主题身份来自 scene-a 顶光 + scene-base 底，而不是写死冷蓝
+   */
+  --surface-role-navigation-fill:
+    radial-gradient(120% 86% at 12% 0%, rgb(var(--scene-a-rgb) / 0.05), transparent 66%),
+    linear-gradient(
+      155deg,
+      rgb(var(--glass-rgb) / calc(var(--surface-opacity-chip, 0.62) * 0.68)),
+      rgb(var(--scene-base-rgb) / calc(var(--surface-opacity-chip, 0.62) * 0.48))
+    );
+  --surface-role-navigation-rim: var(--surface-rim);
+  /* 对齐原型 .rail-island：顶缘主光 + 左弱辅光 + 底微暗，非四边均亮 */
+  --surface-role-navigation-shadow:
+    inset 0 1.5px 0 rgb(255 255 255 / 0.72),
+    inset 1px 0 0 rgb(255 255 255 / 0.22),
+    inset 0 -1px 0 rgb(48 59 76 / 0.05),
+    0 12px 28px rgb(48 59 76 / 0.12);
+  --surface-role-navigation-blur: var(--surface-blur-chip, 15px);
+  --surface-role-navigation-z: 10;
+
+  /* sidebar / panel：对齐 --role-sidebar-*，拾取 A/B 矿物光 */
+  --surface-role-panel-fill:
+    radial-gradient(120% 92% at 8% 0%, rgb(var(--scene-a-rgb) / 0.055), transparent 64%),
+    radial-gradient(110% 90% at 100% 100%, rgb(var(--scene-b-rgb) / 0.045), transparent 68%),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / calc(var(--surface-opacity, 0.56) * 0.68)),
+      rgb(var(--scene-base-rgb) / calc(var(--surface-opacity, 0.56) * 0.46))
+    );
+  --surface-role-panel-rim: var(--surface-rim);
+  --surface-role-panel-shadow: var(--surface-shadow);
+  --surface-role-panel-blur: var(--surface-blur);
+  --surface-role-panel-z: 10;
+
+  --surface-role-panel-elevated-fill: var(--surface-bg-elevated);
+  --surface-role-panel-elevated-rim: var(--surface-rim);
+  --surface-role-panel-elevated-shadow: var(--surface-shadow-elevated);
+  --surface-role-panel-elevated-blur: var(--surface-blur-elevated);
+  --surface-role-panel-elevated-z: 10;
+
+  --surface-role-well-fill: var(--surface-bg-well);
+  --surface-role-well-rim: var(--surface-rim);
+  --surface-role-well-shadow: var(--surface-shadow-well);
+  --surface-role-well-blur: 0px;
+  --surface-role-well-z: 0;
+
+  --surface-role-control-fill: var(--surface-bg-chip);
+  --surface-role-control-rim: var(--surface-rim);
+  --surface-role-control-shadow: var(--surface-shadow-chip);
+  --surface-role-control-blur: var(--surface-blur-chip);
+  --surface-role-control-z: 0;
+
+  /*
+   * composer：抬升浮岛（对齐 --role-composer-*）
+   * 主题身份来自 scene-a 顶光 + glass/scene-base 混合，非写死 background
+   */
+  --surface-role-composer-fill:
+    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.04), transparent 66%),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / calc(var(--surface-opacity, 0.56) * 0.8)),
+      rgb(var(--scene-base-rgb) / calc(var(--surface-opacity, 0.56) * 0.58))
+    );
+  --surface-role-composer-rim: var(--surface-rim);
+  --surface-role-composer-shadow: var(--surface-shadow-elevated);
+  --surface-role-composer-blur: var(--surface-blur);
+
+  /*
+   * composer-underlay：对齐 spatial-theme-study --role-composer-underlay-*
+   * - chip 玻璃（低于 composer 抬升浮岛），窄一圈垫在主卡下
+   * - 轻 blur + 顶高光 / 弱外影；不是实色板、不是 inset 深井
+   * 滚字溶化交给 conversation 底区 fade，不靠 underlay 刷不透明
+   */
+  --surface-role-composer-underlay-fill:
+    radial-gradient(circle at 18% 0%, rgb(var(--scene-a-rgb) / 0.1), transparent 44%),
+    linear-gradient(
+      180deg,
+      rgb(var(--glass-rgb) / calc(var(--surface-opacity-chip, 0.62) * 0.88)),
+      rgb(var(--glass-rgb) / calc(var(--surface-opacity-chip, 0.62) * 0.58))
+    );
+  --surface-role-composer-underlay-rim: rgb(255 255 255 / 0.5);
+  --surface-role-composer-underlay-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.56),
+    inset 1px 0 0 rgb(255 255 255 / 0.18),
+    inset 0 -1px 0 rgb(54 64 80 / 0.04),
+    0 10px 26px rgb(54 64 80 / 0.1);
+  --surface-role-composer-underlay-blur: blur(var(--surface-blur-chip, 15px))
+    saturate(var(--surface-saturate, 1.06));
+
+  /* 兼容旧名：交互抬升面 = composer */
+  --surface-role-interactive-elevated-fill: var(--surface-role-composer-fill);
+  --surface-role-interactive-elevated-rim: var(--surface-role-composer-rim);
+  --surface-role-interactive-elevated-shadow: var(--surface-role-composer-shadow);
+  --surface-role-interactive-elevated-blur: var(--surface-role-composer-blur);
+  --surface-role-interactive-elevated-z: 20;
+
+  --surface-role-overlay-fill: var(--surface-bg-popover);
+  --surface-role-overlay-rim: var(--surface-rim);
+  --surface-role-overlay-shadow: var(--surface-shadow-elevated);
+  --surface-role-overlay-blur: var(--surface-blur-overlay);
+  --surface-role-overlay-z: 100;
+
+  --surface-role-modal-fill: var(--surface-bg-dialog);
+  --surface-role-modal-rim: var(--surface-rim);
+  --surface-role-modal-shadow: var(--surface-shadow-elevated);
+  --surface-role-modal-blur: var(--surface-blur-overlay);
+  --surface-role-modal-z: 1000;
+
+  /*
+   * tab：control 级中性玻璃板（对齐 --role-tab-*）
+   * active 不染 accent；图标可走 primary
+   */
+  --surface-role-tab-fill: rgb(var(--glass-rgb) / calc(var(--surface-opacity-chip, 0.62) * 0.78));
+  --surface-role-tab-rim: var(--surface-rim);
+  --surface-role-tab-shadow: var(--surface-shadow-chip);
+  --surface-role-tab-blur: 0px;
+
+  /* turn locator：比 composer 更轻，拾取 scene-a（对齐 --role-turn-locator-*） */
+  --surface-role-turn-locator-fill:
+    radial-gradient(120% 160% at 0% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 62%),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / calc(var(--surface-opacity-chip, 0.62) * 0.7)),
+      rgb(var(--scene-base-rgb) / calc(var(--surface-opacity-chip, 0.62) * 0.48))
+    );
+  --surface-role-turn-locator-rim: var(--surface-rim);
+  --surface-role-turn-locator-shadow: var(--surface-shadow-chip);
+  --surface-role-turn-locator-blur: blur(var(--surface-blur-chip)) saturate(var(--surface-saturate));
+
+  /*
+   * message-user：中性玻璃板（对齐 spatial-theme-study --role-message-user-*）
+   * chip 满密度 + 光学描边；禁止染 primary / accent
+   *
+   * 阴影：只用「向下柔和环境影 + 顶高光」，禁止左右 offset 色散层。
+   * 负 spread 把影拉离圆角，避免半透明底板透出阴影时在四角糊成实心黑块。
+   * 复用 --surface-shadow-chip 时 glass 的 ±x 色散同样会糊角，故不复用。
+   */
+  --surface-role-message-user-fill: rgb(var(--glass-rgb) / min(0.72, calc(var(--surface-opacity-chip, 0.62) * 0.95)));
+  --surface-role-message-user-rim: var(--surface-rim);
+  --surface-role-message-user-shadow:
+    0 6px 14px -8px rgb(23 30 40 / 0.1),
+    0 1px 2px -1px rgb(23 30 40 / 0.04),
+    inset 0 1px 0 rgb(255 255 255 / 0.6),
+    inset 1px 0 0 rgb(255 255 255 / 0.14);
+
+  /*
+   * message minimap / peep：对齐折叠右轨（navigation / spatial-rail），非展开 panel
+   */
+  --surface-role-message-minimap-fill: var(--surface-role-navigation-fill);
+  --surface-role-message-minimap-rim: var(--surface-role-navigation-rim);
+  --surface-role-message-minimap-shadow: var(--surface-role-navigation-shadow);
+  --surface-role-message-minimap-blur: blur(var(--surface-role-navigation-blur, 15px))
+    saturate(var(--surface-saturate, 1.06));
+
+  /*
+   * tooltip：对齐折叠右轨胶囊（navigation），非旧 elevated / popover 反相气泡
+   * 不进 SurfaceRole 枚举（浮层职责仍走 overlay/modal）；仅光学别名
+   */
+  --surface-role-tooltip-fill: var(--surface-role-navigation-fill);
+  --surface-role-tooltip-rim: var(--surface-role-navigation-rim);
+  --surface-role-tooltip-shadow: var(--surface-role-navigation-shadow);
+  --surface-role-tooltip-blur: var(--surface-role-navigation-blur, 15px);
+
+  /* session status：轻量连续读数容器（对齐 --role-session-status-*） */
+  --surface-role-session-status-fill:
+    linear-gradient(112deg, rgb(var(--glass-rgb) / 0.38), rgb(var(--scene-base-rgb) / 0.22)),
+    rgb(var(--glass-rgb) / calc(var(--surface-opacity-chip, 0.62) * 0.44));
+  --surface-role-session-status-rim: var(--surface-rim);
+  --surface-role-session-status-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.12),
+    0 5px 16px rgb(23 30 40 / 0.06);
+  --surface-role-session-status-blur: blur(var(--surface-blur-chip))
+    saturate(var(--surface-saturate));
+}
+
+/*
+ * 深色 scene：三光斑均混半透明主题色（不混白），位姿与浅色同构。
+ */
+.dark {
+  /* 深色 navigation：去掉浅色顶/左 inset 白边，只留环境 drop + 极弱 rim */
+  --surface-role-navigation-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.04),
+    0 12px 28px rgb(0 0 0 / 0.36);
+  --surface-role-panel-shadow:
+    0 12px 32px rgb(0 0 0 / 0.36);
+  --surface-role-composer-underlay-rim: rgb(255 255 255 / 0.08);
+  --surface-role-composer-underlay-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    0 10px 26px rgb(0 0 0 / 0.3);
+  --surface-role-message-user-shadow:
+    0 6px 16px -10px rgb(0 0 0 / 0.22),
+    0 1px 2px -1px rgb(0 0 0 / 0.1),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
+
+  --surface-role-scene-fill:
+    radial-gradient(
+      ellipse var(--scene-a-size, 42% 48%) at var(--scene-a-pos, 36% 10%),
+      rgb(var(--scene-a-rgb) / calc(var(--scene-a-strength, 0.34) * 0.7)) 0%,
+      rgb(var(--scene-a-rgb) / calc(var(--scene-a-strength, 0.34) * 0.28)) 50%,
+      transparent 88%
+    ),
+    radial-gradient(
+      ellipse var(--scene-c-size, 40% 46%) at var(--scene-c-pos, 48% 88%),
+      rgb(var(--scene-c-rgb) / calc(var(--scene-c-strength, 0.22) * 0.75)) 0%,
+      rgb(var(--scene-c-rgb) / calc(var(--scene-c-strength, 0.22) * 0.3)) 50%,
+      transparent 88%
+    ),
+    radial-gradient(
+      ellipse var(--scene-b-size, 52% 58%) at var(--scene-b-pos, 82% 78%),
+      rgb(var(--scene-b-rgb) / calc(var(--scene-b-strength, 0.22) * 0.75)) 0%,
+      rgb(var(--scene-b-rgb) / calc(var(--scene-b-strength, 0.22) * 0.3)) 50%,
+      transparent 90%
+    ),
+    linear-gradient(
+      135deg,
+      color-mix(
+        in srgb,
+        rgb(var(--scene-a-rgb)) calc(var(--scene-a-strength, 0.34) * 35%),
+        rgb(var(--scene-base-rgb))
+      ),
+      rgb(var(--scene-base-rgb)) 42%,
+      rgb(var(--scene-base-rgb)) 58%,
+      color-mix(
+        in srgb,
+        rgb(var(--scene-b-rgb)) calc(var(--scene-b-strength, 0.22) * 35%),
+        rgb(var(--scene-base-rgb))
+      )
+    );
+}

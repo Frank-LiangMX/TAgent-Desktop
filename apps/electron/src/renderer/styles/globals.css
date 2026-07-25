@@ -1,0 +1,18 @@
+/* TAgent-Desktop renderer 全局样式（最小骨架） */
+@import '@tagent/ui/src/tokens/__generated__/tokens.css';
+@import '@tagent/ui/styles/glass.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: system-ui, -apple-system, sans-serif;
+    margin: 0;
+  }
+}

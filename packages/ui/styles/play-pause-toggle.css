@@ -1,0 +1,84 @@
+/**
+ * PlayPauseToggle — Play / Pause 切换图标动画
+ *
+ * 来源：Uiverse.io / catraco / wet-rabbit-81（MIT）
+ * 适配 TAgent token：颜色走 currentColor，尺寸走 --ppt-size。
+ */
+
+.ui-play-pause-toggle {
+  --ppt-size: 30px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  width: var(--ppt-size);
+  height: var(--ppt-size);
+  cursor: pointer;
+  font-size: var(--ppt-size);
+  user-select: none;
+  color: inherit;
+  fill: currentColor;
+}
+
+.ui-play-pause-toggle:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ui-play-pause-toggle__input {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  height: 0;
+  width: 0;
+  margin: 0;
+}
+
+.ui-play-pause-toggle__icon {
+  position: absolute;
+  inset: 0;
+  width: 1em;
+  height: 1em;
+  margin: auto;
+  display: block;
+  pointer-events: none;
+  animation: ui-play-pause-fill 0.5s;
+}
+
+/* 未播放默认显示 play；播放中切换到 pause */
+.ui-play-pause-toggle__icon--pause {
+  display: none;
+}
+
+/* 播放中（checked）：隐藏 play，显示 pause */
+.ui-play-pause-toggle__input:checked ~ .ui-play-pause-toggle__icon--play {
+  display: none;
+}
+
+.ui-play-pause-toggle__input:checked ~ .ui-play-pause-toggle__icon--pause {
+  display: block;
+}
+
+.ui-play-pause-toggle__input:focus-visible + .ui-play-pause-toggle__icon,
+.ui-play-pause-toggle__input:focus-visible ~ .ui-play-pause-toggle__icon {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@keyframes ui-play-pause-fill {
+  0% {
+    transform: rotate(-180deg) scale(0);
+    opacity: 0;
+  }
+
+  50% {
+    transform: rotate(-10deg) scale(1.2);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-play-pause-toggle__icon {
+    animation: none;
+  }
+}

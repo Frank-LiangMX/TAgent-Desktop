@@ -1,0 +1,184 @@
+/**
+ * Material Design 3 柔和表面角色（普通材质 frosted）
+ *
+ * 重要：以下 --md-* 变量一律存「完整颜色值」（hsl(...) 或 color-mix(...)），
+ * 业务侧直接 background: var(--md-xxx)，禁止再包一层 hsl(var(--md-xxx))。
+ *
+ * 全部从主题 semantic token 派生，切换 ocean/forest 等会跟着变 hue。
+ */
+
+:root {
+  /* —— 表面阶梯（浅色） —— */
+  --md-surface-dim: hsl(var(--background));
+  --md-surface: hsl(var(--background));
+  --md-surface-bright: hsl(var(--card));
+
+  /*
+   * well：略沉于背景，避免「近白卡」过曝抢戏
+   * muted 为主 + background，色相仍跟主题，整体更灰一层
+   */
+  --md-surface-container-lowest: color-mix(
+    in srgb,
+    hsl(var(--muted)) 62%,
+    hsl(var(--background)) 38%
+  );
+  /* 侧栏岛 / panel */
+  --md-surface-container-low: hsl(var(--card));
+  /* chip / 搜索槽 */
+  --md-surface-container: hsl(var(--secondary));
+  --md-surface-container-high: hsl(var(--muted));
+  --md-surface-container-highest: hsl(var(--border));
+
+  --md-on-surface: hsl(var(--foreground));
+  --md-on-surface-variant: hsl(var(--muted-foreground));
+  /* 第三档：辅助/时间戳/弱标签（比 muted-foreground 更淡，避免乱用 opacity） */
+  --md-on-surface-faint: color-mix(
+    in srgb,
+    hsl(var(--muted-foreground)) 62%,
+    hsl(var(--background))
+  );
+
+  --md-outline: hsl(var(--border));
+  --md-outline-variant: color-mix(
+    in srgb,
+    hsl(var(--border)) 70%,
+    hsl(var(--background))
+  );
+
+  /*
+   * 选中 = 中性玻璃板（对齐 spatial-theme-study）
+   * accent/primary 只给 CTA / focus / 进度，不染 active 面
+   */
+  --md-primary-container: rgb(var(--glass-rgb) / 0.72);
+  --md-on-primary-container: hsl(var(--foreground));
+  --md-primary-outline: rgb(255 255 255 / 0.5);
+
+  --md-secondary-container: hsl(var(--secondary));
+  --md-on-secondary-container: hsl(var(--secondary-foreground));
+
+  /* hover / press：中性墨色轻抬，不跟 primary 染色 */
+  --md-state-hover: color-mix(in srgb, hsl(var(--foreground)) 4.5%, hsl(var(--card)));
+  --md-state-pressed: color-mix(in srgb, hsl(var(--foreground)) 8%, hsl(var(--card)));
+  --md-state-focus-ring: hsl(var(--ring));
+
+  --md-elevation-1: 0 1px 2px color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
+  --md-elevation-2:
+    0 2px 8px color-mix(in srgb, hsl(var(--foreground)) 8%, transparent),
+    0 1px 2px color-mix(in srgb, hsl(var(--foreground)) 5%, transparent);
+  --md-elevation-3:
+    0 8px 28px color-mix(in srgb, hsl(var(--foreground)) 12%, transparent),
+    0 2px 8px color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
+
+  --md-shape-xs: 4px;
+  --md-shape-sm: 8px;
+  --md-shape-md: 12px;
+  --md-shape-lg: 16px;
+  --md-shape-xl: 24px;
+
+  --md-type-label-sm: 11px;
+  --md-type-label-md: 12px;
+  --md-type-body-sm: 13px;
+  --md-type-body-md: 14px;
+  --md-type-title-sm: 14px;
+  --md-type-title-md: 16px;
+  --md-type-leading-body: 1.45;
+  --md-type-leading-tight: 1.25;
+}
+
+.dark {
+  --md-surface-dim: hsl(var(--content-area));
+  --md-surface: hsl(var(--background));
+  --md-surface-bright: hsl(var(--card));
+
+  /* well：略沉，不要用最亮 card */
+  --md-surface-container-lowest: color-mix(
+    in srgb,
+    hsl(var(--muted)) 48%,
+    hsl(var(--card)) 52%
+  );
+  --md-surface-container-low: hsl(var(--card));
+  --md-surface-container: hsl(var(--secondary));
+  --md-surface-container-high: hsl(var(--muted));
+  --md-surface-container-highest: hsl(var(--border));
+
+  --md-on-surface: hsl(var(--foreground));
+  --md-on-surface-variant: hsl(var(--muted-foreground));
+  --md-on-surface-faint: color-mix(
+    in srgb,
+    hsl(var(--muted-foreground)) 55%,
+    hsl(var(--background))
+  );
+  --md-outline: hsl(var(--border));
+  --md-outline-variant: color-mix(
+    in srgb,
+    hsl(var(--border)) 80%,
+    hsl(var(--background))
+  );
+
+  /* 深色选中同样中性玻璃，rim 收敛（对齐原型 v4 dark） */
+  --md-primary-container: rgb(var(--glass-rgb) / 0.84);
+  --md-on-primary-container: hsl(var(--foreground));
+  --md-primary-outline: rgb(255 255 255 / 0.055);
+
+  --md-secondary-container: hsl(var(--secondary));
+  --md-on-secondary-container: hsl(var(--secondary-foreground));
+
+  --md-state-hover: color-mix(in srgb, hsl(var(--foreground)) 7%, hsl(var(--card)));
+  --md-state-pressed: color-mix(in srgb, hsl(var(--foreground)) 12%, hsl(var(--card)));
+  --md-state-focus-ring: hsl(var(--ring));
+
+  --md-elevation-1: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --md-elevation-2: 0 4px 16px rgba(0, 0, 0, 0.32);
+  --md-elevation-3: 0 12px 36px rgba(0, 0, 0, 0.4);
+}
+
+/* utility：直接用完整色值 */
+.md-surface {
+  background: var(--md-surface);
+  color: var(--md-on-surface);
+}
+
+.md-surface-container-lowest {
+  background: var(--md-surface-container-lowest);
+  color: var(--md-on-surface);
+}
+
+.md-surface-container-low {
+  background: var(--md-surface-container-low);
+  color: var(--md-on-surface);
+}
+
+.md-surface-container {
+  background: var(--md-surface-container);
+  color: var(--md-on-surface);
+}
+
+.md-primary-container {
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+}
+
+.md-outline {
+  border-color: var(--md-outline);
+}
+
+/* 三级字色（全材质共用语义；光学不跟材质变） */
+.md-text {
+  color: var(--md-on-surface);
+}
+
+.md-text-variant {
+  color: var(--md-on-surface-variant);
+}
+
+.md-text-faint {
+  color: var(--md-on-surface-faint);
+}
+
+.md-elevation-1 {
+  box-shadow: var(--md-elevation-1);
+}
+
+.md-elevation-2 {
+  box-shadow: var(--md-elevation-2);
+}

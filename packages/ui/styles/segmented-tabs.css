@@ -1,0 +1,160 @@
+/**
+ * 横向分段 Tab — 对齐全局 spatial tab / chip 语言
+ *
+ * 与工作区标签选中板（app-workspace-tab-active-plate）同族：
+ *   fill / rim / shadow → --surface-role-tab-*
+ * 轨本身透明，不铺独立「设置风」实心条。
+ */
+
+.ui-segmented-tabs {
+  position: relative;
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-material='glass'] .ui-segmented-tabs,
+[data-material='soft'] .ui-segmented-tabs,
+.dark[data-material='soft'] .ui-segmented-tabs,
+[data-material='soft'].dark .ui-segmented-tabs {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.ui-segmented-tabs-indicator {
+  display: none !important;
+}
+
+.ui-segmented-tabs-item {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border: 1px solid transparent;
+  border-radius: var(--app-shell-tab-radius, var(--radius-glass-popover, 12px));
+  background: transparent;
+  padding: 6px 12px;
+  color: var(--md-on-surface-faint, hsl(var(--foreground) / 0.45));
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 160ms var(--motion-ease-spatial, cubic-bezier(0.16, 1, 0.3, 1)),
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 200ms var(--motion-ease-spatial, cubic-bezier(0.16, 1, 0.3, 1));
+}
+
+.ui-segmented-tabs-item:hover:not(:disabled):not(.ui-segmented-tabs-item--active) {
+  color: var(--md-on-surface-variant, hsl(var(--foreground) / 0.72));
+  background: color-mix(in srgb, hsl(var(--foreground)) 4%, transparent);
+}
+
+.ui-segmented-tabs-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.18);
+}
+
+.ui-segmented-tabs-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* 选中 = 工作区 tab 玻璃板（中性，不染 accent） */
+.ui-segmented-tabs-item--active {
+  color: var(--md-on-surface, hsl(var(--foreground)));
+  font-weight: 600;
+  border-color: var(--surface-role-tab-rim, var(--surface-rim));
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
+    var(--surface-role-tab-fill, var(--surface-bg-chip));
+  box-shadow: var(--surface-role-tab-shadow, var(--surface-shadow-chip, none));
+  -webkit-backdrop-filter: blur(var(--surface-blur-chip, 12px))
+    saturate(var(--surface-saturate, 1.06));
+  backdrop-filter: blur(var(--surface-blur-chip, 12px)) saturate(var(--surface-saturate, 1.06));
+}
+
+.dark .ui-segmented-tabs-item--active,
+[data-material='glass'] .ui-segmented-tabs-item--active,
+[data-material='soft'] .ui-segmented-tabs-item--active {
+  /* 光学全走 surface-role-tab，材质分支不另造色 */
+  border-color: var(--surface-role-tab-rim, var(--surface-rim));
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
+    var(--surface-role-tab-fill, var(--surface-bg-chip));
+  box-shadow: var(--surface-role-tab-shadow, var(--surface-shadow-chip, none));
+}
+
+/* ===== Radix TabsList：同一套 tab 角色 ===== */
+.ui-tabs-list {
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-material='glass'] .ui-tabs-list,
+[data-material='soft'] .ui-tabs-list {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.ui-tabs-trigger {
+  border: 1px solid transparent;
+  border-radius: var(--app-shell-tab-radius, var(--radius-glass-popover, 12px));
+  min-height: 32px;
+}
+
+.ui-tabs-trigger::after {
+  display: none;
+}
+
+.ui-tabs-trigger[data-state='active'] {
+  color: var(--md-on-surface, hsl(var(--foreground)));
+  font-weight: 600;
+  border-color: var(--surface-role-tab-rim, var(--surface-rim));
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
+    var(--surface-role-tab-fill, var(--surface-bg-chip));
+  box-shadow: var(--surface-role-tab-shadow, var(--surface-shadow-chip, none));
+  -webkit-backdrop-filter: blur(var(--surface-blur-chip, 12px))
+    saturate(var(--surface-saturate, 1.06));
+  backdrop-filter: blur(var(--surface-blur-chip, 12px)) saturate(var(--surface-saturate, 1.06));
+}
+
+.dark .ui-tabs-trigger[data-state='active'],
+[data-material='glass'] .ui-tabs-trigger[data-state='active'],
+[data-material='soft'] .ui-tabs-trigger[data-state='active'] {
+  border-color: var(--surface-role-tab-rim, var(--surface-rim));
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
+    var(--surface-role-tab-fill, var(--surface-bg-chip));
+  box-shadow: var(--surface-role-tab-shadow, var(--surface-shadow-chip, none));
+}
+
+.ui-tabs-trigger:hover:not(:disabled):not([data-state='active']) {
+  color: var(--md-on-surface-variant, hsl(var(--foreground) / 0.72));
+  background: color-mix(in srgb, hsl(var(--foreground)) 4%, transparent);
+}

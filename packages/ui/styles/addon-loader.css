@@ -1,0 +1,118 @@
+/**
+ * AddonLoader — 附加加载动画（非默认 Spinner）
+ *
+ * 来源：Uiverse.io / dexter-st / bright-lizard-8（MIT）
+ * https://uiverse.io/dexter-st/bright-lizard-8
+ *
+ * 分类：附加动画 — 用于全屏占位、生成中、重操作等待等强视觉场景。
+ * 默认轻量加载仍用 Spinner / LoadingIndicator / ThreePetalSpiral。
+ *
+ * 颜色：inset 光环绑定 --primary，文字继承 currentColor。
+ */
+
+.ui-addon-loader {
+  --ui-addon-loader-size: 180px;
+  --ui-addon-loader-font: 1.2em;
+  /* 光环三色：亮高光 / primary / 深 primary */
+  --ui-addon-loader-glow-hi: color-mix(in srgb, hsl(var(--primary-foreground)) 88%, white 12%);
+  --ui-addon-loader-glow-mid: hsl(var(--primary) / 0.92);
+  --ui-addon-loader-glow-deep: color-mix(in srgb, hsl(var(--primary)) 52%, black 48%);
+  --ui-addon-loader-glow-alt: color-mix(in srgb, hsl(var(--primary)) 45%, hsl(var(--destructive, 0 72% 51%)) 55%);
+  --ui-addon-loader-glow-alt-deep: color-mix(in srgb, hsl(var(--primary)) 40%, black 60%);
+
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--ui-addon-loader-size);
+  height: var(--ui-addon-loader-size);
+  font-family: inherit;
+  font-size: var(--ui-addon-loader-font);
+  font-weight: 300;
+  color: inherit;
+  border-radius: 50%;
+  background-color: transparent;
+  user-select: none;
+}
+
+.ui-addon-loader__ring {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  background-color: transparent;
+  animation: ui-addon-loader-rotate 2s linear infinite;
+  z-index: 0;
+  pointer-events: none;
+}
+
+@keyframes ui-addon-loader-rotate {
+  0% {
+    transform: rotate(90deg);
+    box-shadow:
+      0 10px 20px 0 var(--ui-addon-loader-glow-hi) inset,
+      0 20px 30px 0 var(--ui-addon-loader-glow-mid) inset,
+      0 60px 60px 0 var(--ui-addon-loader-glow-deep) inset;
+  }
+
+  50% {
+    transform: rotate(270deg);
+    box-shadow:
+      0 10px 20px 0 var(--ui-addon-loader-glow-hi) inset,
+      0 20px 10px 0 var(--ui-addon-loader-glow-alt) inset,
+      0 40px 60px 0 var(--ui-addon-loader-glow-alt-deep) inset;
+  }
+
+  100% {
+    transform: rotate(450deg);
+    box-shadow:
+      0 10px 20px 0 var(--ui-addon-loader-glow-hi) inset,
+      0 20px 30px 0 var(--ui-addon-loader-glow-mid) inset,
+      0 60px 60px 0 var(--ui-addon-loader-glow-deep) inset;
+  }
+}
+
+.ui-addon-loader__letter {
+  display: inline-block;
+  opacity: 0.4;
+  transform: translateY(0);
+  animation: ui-addon-loader-letter 2s infinite;
+  z-index: 1;
+  border-radius: 50ch;
+  border: none;
+}
+
+@keyframes ui-addon-loader-letter {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: translateY(0);
+  }
+
+  20% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+
+  40% {
+    opacity: 0.7;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-addon-loader__ring {
+    animation: none;
+    box-shadow:
+      0 10px 20px 0 var(--ui-addon-loader-glow-hi) inset,
+      0 20px 30px 0 var(--ui-addon-loader-glow-mid) inset,
+      0 40px 50px 0 var(--ui-addon-loader-glow-deep) inset;
+  }
+
+  .ui-addon-loader__letter {
+    animation: none;
+    opacity: 0.85;
+  }
+}

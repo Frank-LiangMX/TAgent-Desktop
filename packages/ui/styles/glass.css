@@ -1,0 +1,1259 @@
+/**
+ * session-glass-* 系列表面样式 + Surface Token
+ *
+ * 架构（ADR-0005 / 2026-07-12-material-surface-token-architecture）：
+ *   - 基线 = frosted（扁平 MD · 实色不透明，无透底）
+ *   - glass / soft = 高级材质，只改 --surface-* 表
+ *   - 表面类只消费 token，禁止写死 blur(28px) 等高透数值
+ *
+ * 圆角：--radius-glass-*（packages/ui/src/tokens/radius.ts）
+ * 主题色：--background / --card / --primary …（正交，本文件不改 hue）
+ */
+
+/* ============================================================================
+ * 1. Surface Token 表
+ *    :root 与 frosted 同值 → data-material 未注入前也不闪高透
+ *    frosted：blur=0 + opacity=1，实色板，不透出背后内容
+ * ========================================================================== */
+
+:root,
+[data-material='frosted'] {
+  /*
+   * 普通材质 · 绑定 md-surface.css 角色（M3 阶梯）
+   * 见 packages/ui/styles/md-surface.css
+   */
+  --surface-blur: 22px;
+  --surface-blur-elevated: 26px;
+  --surface-blur-chip: 15px;
+  --surface-blur-overlay: 30px;
+  --surface-saturate: 1.06;
+  --surface-brightness: 1;
+
+  --surface-opacity: 0.56;
+  --surface-opacity-elevated: 0.62;
+  --surface-opacity-chip: 0.62;
+  /* 浮层（Popover/Dropdown）再透一档，靠 blur 保可读 */
+  --surface-opacity-popover: 0.42;
+  --surface-blur-popover: 34px;
+
+  /*
+   * MD 角色已是完整色值 → 直接 var()，禁止 hsl(var(--md-xxx))
+   */
+  --surface-bg: rgb(var(--glass-rgb) / var(--surface-opacity));
+  --surface-bg-elevated: rgb(var(--glass-rgb) / var(--surface-opacity-elevated));
+  --surface-bg-chip: rgb(var(--glass-rgb) / var(--surface-opacity-chip));
+  --surface-bg-well: rgb(var(--glass-rgb) / 0.38);
+  --surface-bg-tooltip: hsl(var(--tooltip));
+  /* 与 elevated 同族半透：Dropdown/Context/Popover 不再走实心 --popover 白卡 */
+  --surface-bg-popover: rgb(var(--glass-rgb) / var(--surface-opacity-popover));
+  --surface-bg-dialog: var(--md-surface-container-lowest);
+
+  /*
+   * 边缘光对齐 layout-direction-study（有方向，非四边均亮）：
+   *   - rim：四周淡白描边（原型 ~66%，是框不是主光）
+   *   - 主光：仅顶缘 inset 高光（原型 inset 0 1px ~78–84%）
+   *   - 辅光：左侧弱一档；底缘微暗厚度（上亮下沉）
+   */
+  --surface-rim: rgb(255 255 255 / 0.5);
+  --surface-rim-width: 1px;
+  --surface-shadow:
+    inset 0 1.5px 0 rgb(255 255 255 / 0.68),
+    inset 1px 0 0 rgb(255 255 255 / 0.22),
+    inset 0 -1px 0 rgb(48 59 76 / 0.05),
+    0 12px 30px rgb(48 59 76 / 0.1);
+  --surface-shadow-elevated:
+    inset 0 1.5px 0 rgb(255 255 255 / 0.74),
+    inset 1px 0 0 rgb(255 255 255 / 0.26),
+    inset 0 -1px 0 rgb(48 59 76 / 0.06),
+    0 18px 42px rgb(45 56 75 / 0.12);
+  --surface-shadow-chip:
+    inset 0 1px 0 rgb(255 255 255 / 0.62),
+    inset 1px 0 0 rgb(255 255 255 / 0.18),
+    inset 0 -1px 0 rgb(48 59 76 / 0.04),
+    0 8px 20px rgb(48 59 76 / 0.09);
+  --surface-shadow-well: inset 0 1px 4px rgb(23 30 40 / 0.06);
+  --surface-inset-hi: rgb(255 255 255 / 0.68);
+  --surface-shine-opacity: 0.42;
+  --surface-shine-opacity-soft: 0.26;
+
+  --session-glass-strong: var(--md-primary-container);
+  --session-rim: rgb(255 255 255 / 0.5);
+  --session-inset-hi: rgb(255 255 255 / 0.68);
+
+  --hover-fill: var(--md-state-hover);
+
+  /* pressable：普通材质 — 轻 scale，无粘土双阴影 */
+  --press-scale: 0.985;
+  --press-shadow: none;
+  --press-duration: var(--motion-duration-fast, 160ms);
+  --press-ease: var(--motion-ease-island, cubic-bezier(0.16, 1, 0.3, 1));
+
+  --surface-overlay-bg: color-mix(in srgb, hsl(var(--foreground)) 28%, transparent);
+  --surface-overlay-blur: 2px;
+}
+
+.dark,
+.dark[data-material='frosted'],
+[data-material='frosted'].dark {
+  --surface-blur: 16px;
+  --surface-blur-elevated: 20px;
+  --surface-blur-chip: 12px;
+  --surface-saturate: 1;
+  --surface-opacity: 0.84;
+  --surface-opacity-elevated: 0.86;
+  --surface-opacity-chip: 0.82;
+  --surface-opacity-popover: 0.64;
+  --surface-blur-popover: 28px;
+
+  --surface-bg: rgb(var(--glass-rgb) / var(--surface-opacity));
+  --surface-bg-elevated: rgb(var(--glass-rgb) / var(--surface-opacity-elevated));
+  --surface-bg-chip: rgb(var(--glass-rgb) / var(--surface-opacity-chip));
+  --surface-bg-well: rgb(var(--glass-rgb) / 0.68);
+  --surface-bg-tooltip: hsl(var(--tooltip));
+  --surface-bg-popover: rgb(var(--glass-rgb) / var(--surface-opacity-popover));
+  --surface-bg-dialog: var(--md-surface-container-lowest);
+
+  --surface-rim: rgb(255 255 255 / 0.1);
+  --surface-shadow:
+    inset 0 1.5px 0 rgb(255 255 255 / 0.14),
+    inset 1px 0 0 rgb(255 255 255 / 0.05),
+    inset 0 -1px 0 rgb(0 0 0 / 0.18),
+    0 16px 38px rgb(0 0 0 / 0.32);
+  --surface-shadow-elevated:
+    inset 0 1.5px 0 rgb(255 255 255 / 0.16),
+    inset 1px 0 0 rgb(255 255 255 / 0.06),
+    inset 0 -1px 0 rgb(0 0 0 / 0.2),
+    0 20px 46px rgb(0 0 0 / 0.38);
+  --surface-shadow-chip:
+    inset 0 1px 0 rgb(255 255 255 / 0.12),
+    inset 1px 0 0 rgb(255 255 255 / 0.04),
+    inset 0 -1px 0 rgb(0 0 0 / 0.16),
+    0 8px 22px rgb(0 0 0 / 0.24);
+  --surface-shadow-well: inset 0 1px 4px rgb(0 0 0 / 0.18);
+  --surface-shine-opacity: 0.2;
+  --surface-shine-opacity-soft: 0.12;
+
+  --session-glass-strong: var(--md-primary-container);
+  --session-rim: rgb(255 255 255 / 0.1);
+  --session-inset-hi: rgb(255 255 255 / 0.14);
+
+  --hover-fill: var(--md-state-hover);
+
+  --press-scale: 0.985;
+  --press-shadow: none;
+  --press-duration: var(--motion-duration-fast, 160ms);
+  --press-ease: var(--motion-ease-island, cubic-bezier(0.16, 1, 0.3, 1));
+
+  --surface-overlay-bg: rgba(0, 0, 0, 0.48);
+  --surface-overlay-blur: 2px;
+}
+
+/* ----- glass：液态高级材质 ----- */
+[data-material='glass'] {
+  /* 轻blur - 液态玻璃特性 */
+  --surface-blur: 48px;
+  --surface-blur-elevated: 52px;
+  --surface-blur-chip: 30px;
+  --surface-blur-overlay: 44px;
+  --surface-saturate: 1.18;
+  --surface-brightness: 1.02;
+  /* 极轻填充 - 几乎全透 */
+  --surface-opacity: 0.08;
+  --surface-opacity-elevated: 0.11;
+  --surface-opacity-chip: 0.14;
+  --surface-opacity-popover: 0.09;
+  --surface-blur-popover: 56px;
+  /* 极轻渐变背景 - 液态玻璃 */
+  --surface-bg:
+    linear-gradient(
+      138deg,
+      rgb(var(--scene-a-rgb) / 0.055),
+      transparent 42%,
+      rgb(var(--scene-b-rgb) / 0.04)
+    ),
+    rgb(var(--glass-rgb) / var(--surface-opacity));
+  --surface-bg-elevated:
+    linear-gradient(
+      138deg,
+      rgb(var(--scene-a-rgb) / 0.07),
+      transparent 44%,
+      rgb(var(--scene-b-rgb) / 0.05)
+    ),
+    rgb(var(--glass-rgb) / var(--surface-opacity-elevated));
+  --surface-bg-chip: rgb(var(--glass-rgb) / var(--surface-opacity-chip));
+  /* Well：内凹区域(最透) */
+  --surface-bg-well: linear-gradient(
+    145deg,
+    hsl(var(--background) / 0.012) 0%,
+    hsl(var(--background) / 0.028) 52%,
+    hsl(var(--background) / 0.018) 100%
+  );
+  --surface-bg-tooltip: linear-gradient(
+    145deg,
+    hsl(var(--tooltip) / 0.082) 0%,
+    hsl(var(--tooltip) / 0.045) 52%,
+    hsl(var(--tooltip) / 0.036) 100%
+  );
+  --surface-bg-popover: linear-gradient(
+    145deg,
+    hsl(var(--popover) / 0.024) 0%,
+    hsl(var(--popover) / 0.038) 52%,
+    hsl(var(--popover) / 0.028) 100%
+  );
+  --surface-bg-dialog: linear-gradient(
+    145deg,
+    hsl(var(--glass-shine) / 0.022) 0%,
+    hsl(var(--dialog) / 0.052) 46%,
+    hsl(var(--dialog) / 0.048) 100%
+  );
+  --surface-rim: rgb(255 255 255 / 0.2);
+  --surface-rim-width: 1px;
+  /* 色散阴影 + 边缘厚度 - 液态玻璃特征 */
+  --surface-shadow:
+    /* 色散层 */
+    -4px 8px 18px -8px hsl(var(--primary) / 0.12),
+    4px 8px 18px -8px hsl(var(--scene-ambient-a) / 0.12),
+    /* 主阴影 */ 0 16px 36px -18px rgba(0, 0, 0, 0.28), 0 4px 12px -6px rgba(0, 0, 0, 0.16),
+    /* 边缘厚度 - 上下强,左右弱 */ inset 0 1.5px 0 0 hsl(var(--glass-shine) / 0.72),
+    inset 1px 0 0 0 hsl(var(--glass-shine) / 0.24), inset 0 -1px 0 0 rgba(90, 105, 130, 0.1);
+  --surface-shadow-elevated:
+    /* 色散层加强 */
+    -5px 10px 22px -9px hsl(var(--primary) / 0.16),
+    5px 10px 22px -9px hsl(var(--scene-ambient-a) / 0.16),
+    /* 主阴影 */ 0 20px 44px -18px rgba(0, 0, 0, 0.32), 0 6px 16px -7px rgba(0, 0, 0, 0.2),
+    /* 边缘厚度 */ inset 0 1.5px 0 0 hsl(var(--glass-shine) / 0.82),
+    inset 1px 0 0 0 hsl(var(--glass-shine) / 0.3), inset 0 -1px 0 0 rgba(90, 105, 130, 0.12);
+  --surface-shadow-chip:
+    /* 色散层 */
+    -2px 4px 10px -4px hsl(var(--primary) / 0.09),
+    2px 4px 10px -4px hsl(var(--scene-ambient-a) / 0.09),
+    /* 主阴影 */ 0 6px 18px -8px rgba(0, 0, 0, 0.12),
+    /* 边缘厚度 */ inset 0 1px 0 0 hsl(var(--glass-shine) / 0.45);
+  /* Well：极轻的内凹阴影（高透玻璃几乎不需要）*/
+  --surface-shadow-well:
+    inset 1px 1px 3px rgba(0, 0, 0, 0.05), inset -1px -1px 2px rgba(255, 255, 255, 0.03);
+  /* Final optical edge: one restrained highlight and a broad environmental drop. */
+  --surface-shadow:
+    -5px 10px 24px -14px rgb(var(--scene-a-rgb) / 0.12),
+    5px 10px 24px -14px rgb(var(--scene-b-rgb) / 0.09), 0 16px 36px -20px rgb(0 0 0 / 0.2),
+    inset 0 1px 0 rgb(255 255 255 / 0.2);
+  --surface-shadow-elevated:
+    -6px 12px 28px -16px rgb(var(--scene-a-rgb) / 0.14),
+    6px 12px 28px -16px rgb(var(--scene-b-rgb) / 0.1), 0 20px 44px -20px rgb(0 0 0 / 0.24),
+    inset 0 1px 0 rgb(255 255 255 / 0.24);
+  --surface-shadow-chip: 0 8px 20px -12px rgb(0 0 0 / 0.14), inset 0 1px 0 rgb(255 255 255 / 0.18);
+  --surface-inset-hi: hsl(var(--glass-shine) / 0.4);
+  --surface-shine-opacity: 1;
+  --surface-shine-opacity-soft: 0.55;
+  --session-glass-strong: hsl(var(--card) / 0.72);
+  --session-rim: hsl(var(--glass-rim) / 0.45);
+  --session-inset-hi: hsl(var(--glass-shine) / 0.4);
+  --surface-overlay-bg: rgba(0, 0, 0, 0.16);
+  --surface-overlay-blur: 8px;
+
+  /* pressable：玻璃 — 更轻 scale，无粘土 inset */
+  --press-scale: 0.99;
+  --press-shadow: none;
+  --press-duration: var(--motion-duration-fast, 160ms);
+  --press-ease: var(--motion-ease-island, cubic-bezier(0.16, 1, 0.3, 1));
+}
+
+.dark[data-material='glass'],
+[data-material='glass'].dark {
+  --surface-saturate: 1.14;
+  --surface-brightness: 0.96;
+  --surface-opacity: 0.14;
+  --surface-opacity-elevated: 0.18;
+  --surface-opacity-chip: 0.2;
+  --surface-opacity-popover: 0.14;
+  --surface-blur-popover: 48px;
+  --surface-bg:
+    linear-gradient(
+      138deg,
+      rgb(var(--scene-a-rgb) / 0.05),
+      transparent 42%,
+      rgb(var(--scene-b-rgb) / 0.035)
+    ),
+    rgb(var(--glass-rgb) / var(--surface-opacity));
+  --surface-bg-elevated:
+    linear-gradient(
+      138deg,
+      rgb(var(--scene-a-rgb) / 0.06),
+      transparent 44%,
+      rgb(var(--scene-b-rgb) / 0.04)
+    ),
+    rgb(var(--glass-rgb) / var(--surface-opacity-elevated));
+  --surface-bg-chip: rgb(var(--glass-rgb) / var(--surface-opacity-chip));
+  --surface-bg: linear-gradient(
+    145deg,
+    hsl(var(--background) / 0.025) 0%,
+    hsl(var(--background) / 0.012) 55%,
+    hsl(var(--background) / 0.004) 100%
+  );
+  --surface-bg-elevated: linear-gradient(
+    145deg,
+    hsl(var(--glass-bg, var(--background)) / 0.032) 0%,
+    hsl(var(--glass-bg, var(--background)) / 0.018) 52%,
+    hsl(var(--glass-bg, var(--background)) / 0.006) 100%
+  );
+  --surface-bg-chip: linear-gradient(
+    145deg,
+    hsl(var(--primary) / 0.048) 0%,
+    hsl(var(--background) / 0.032) 48%,
+    hsl(var(--background) / 0.024) 100%
+  );
+  /* Well：深色内凹区域 */
+  --surface-bg-well: linear-gradient(
+    145deg,
+    color-mix(in srgb, hsl(var(--primary)) 6%, hsl(var(--background)) / 0.012) 0%,
+    hsl(var(--background) / 0.028) 52%,
+    hsl(var(--background) / 0.018) 100%
+  );
+  --surface-bg-popover: linear-gradient(
+    145deg,
+    hsl(var(--popover) / 0.02) 0%,
+    hsl(var(--popover) / 0.032) 52%,
+    hsl(var(--popover) / 0.024) 100%
+  );
+  --surface-bg-dialog: linear-gradient(
+    145deg,
+    hsl(var(--primary) / 0.042) 0%,
+    hsl(var(--dialog) / 0.052) 46%,
+    hsl(var(--dialog) / 0.048) 100%
+  );
+  --surface-rim: rgb(255 255 255 / 0.055);
+  /* 深色液态色散阴影 */
+  --surface-shadow:
+    /* 色散层 */
+    -4px 8px 18px -8px hsl(var(--primary) / 0.09),
+    4px 8px 18px -8px hsl(var(--scene-ambient-a) / 0.1),
+    /* 主阴影 */ 0 18px 40px -16px rgba(0, 0, 0, 0.55), 0 5px 14px -6px rgba(0, 0, 0, 0.42),
+    /* 边缘厚度 */ inset 0 1.5px 0 0 hsl(var(--foreground) / 0.2),
+    inset 1px 0 0 0 hsl(var(--foreground) / 0.07), inset 0 -1px 0 0 rgba(0, 0, 0, 0.2);
+  --surface-shadow-elevated:
+    /* 色散层加强 */
+    -5px 10px 22px -9px hsl(var(--primary) / 0.12),
+    5px 10px 22px -9px hsl(var(--scene-ambient-a) / 0.12),
+    /* 主阴影 */ 0 22px 48px -18px rgba(0, 0, 0, 0.62), 0 8px 18px -7px rgba(0, 0, 0, 0.48),
+    /* 边缘厚度 */ inset 0 2px 0 0 hsl(var(--foreground) / 0.14),
+    inset 1px 0 0 0 hsl(var(--foreground) / 0.08), inset 0 -1px 0 0 hsl(var(--foreground) / 0.05),
+    inset -1px -1px 0 0 rgba(255, 255, 255, 0.03);
+  --surface-shadow-chip:
+    /* 色散层 */
+    -2px 4px 10px -4px hsl(var(--primary) / 0.07),
+    2px 4px 10px -4px hsl(var(--scene-ambient-a) / 0.08),
+    /* 主阴影 */ 0 8px 20px -8px rgba(0, 0, 0, 0.48),
+    /* 边缘厚度 */ inset 0 1px 0 0 hsl(var(--foreground) / 0.09);
+  /* Well：深色内凹阴影 */
+  --surface-shadow-well:
+    inset 1px 1px 4px rgba(0, 0, 0, 0.18), inset -1px -1px 3px rgba(255, 255, 255, 0.04);
+  /* Dark glass keeps separation through depth, not a bright luminous rim. */
+  --surface-shadow: 0 18px 40px -18px rgb(0 0 0 / 0.42), inset 0 1px 0 rgb(255 255 255 / 0.04);
+  --surface-shadow-elevated:
+    0 22px 48px -18px rgb(0 0 0 / 0.48), inset 0 1px 0 rgb(255 255 255 / 0.05);
+  --surface-shadow-chip: 0 8px 22px -10px rgb(0 0 0 / 0.34), inset 0 1px 0 rgb(255 255 255 / 0.04);
+  --surface-bg:
+    linear-gradient(
+      138deg,
+      rgb(var(--scene-a-rgb) / 0.05),
+      transparent 42%,
+      rgb(var(--scene-b-rgb) / 0.035)
+    ),
+    rgb(var(--glass-rgb) / var(--surface-opacity));
+  --surface-bg-elevated:
+    linear-gradient(
+      138deg,
+      rgb(var(--scene-a-rgb) / 0.06),
+      transparent 44%,
+      rgb(var(--scene-b-rgb) / 0.04)
+    ),
+    rgb(var(--glass-rgb) / var(--surface-opacity-elevated));
+  --surface-bg-chip: rgb(var(--glass-rgb) / var(--surface-opacity-chip));
+  --session-glass-strong: hsl(var(--muted) / 0.55);
+  --session-rim: hsl(var(--glass-rim) / 0.32);
+  --session-inset-hi: hsl(var(--glass-shine) / 0.16);
+  --surface-overlay-bg: rgba(0, 0, 0, 0.36);
+}
+
+/* ----- soft：轻拟态高级材质 ----- */
+[data-material='soft'] {
+  --surface-blur: 3px;
+  --surface-blur-elevated: 4px;
+  --surface-blur-chip: 2px;
+  --surface-blur-overlay: 6px;
+  --surface-saturate: 1.02;
+  --surface-brightness: 1;
+  --surface-opacity: 0.9;
+  --surface-opacity-elevated: 0.92;
+  --surface-opacity-chip: 0.86;
+  --surface-opacity-popover: 0.72;
+  --surface-blur-popover: 12px;
+  --surface-bg: rgb(var(--glass-rgb) / var(--surface-opacity));
+  --surface-bg-elevated: rgb(var(--glass-rgb) / var(--surface-opacity-elevated));
+  --surface-bg-chip: rgb(var(--glass-rgb) / var(--surface-opacity-chip));
+  --surface-bg-tooltip: hsl(var(--tooltip) / 0.98);
+  --surface-bg-popover: rgb(var(--glass-rgb) / var(--surface-opacity-popover));
+  --surface-bg-dialog: hsl(var(--dialog) / 0.98);
+  --surface-rim: rgb(255 255 255 / 0.5);
+  --surface-rim-width: 1px;
+  --surface-shadow:
+    inset 0 1.5px 0 rgb(255 255 255 / 0.68),
+    inset 1px 0 0 rgb(255 255 255 / 0.22),
+    inset 0 -1px 0 rgb(145 158 175 / 0.08),
+    0 2px 8px rgba(0, 0, 0, 0.08);
+  --surface-shadow-elevated:
+    inset 0 1.5px 0 rgb(255 255 255 / 0.74),
+    inset 1px 0 0 rgb(255 255 255 / 0.26),
+    inset 0 -1px 0 rgb(145 158 175 / 0.08),
+    0 4px 14px rgba(145, 158, 175, 0.18);
+  --surface-shadow-chip:
+    inset 0 1px 0 rgb(255 255 255 / 0.62),
+    inset 1px 0 0 rgb(255 255 255 / 0.18),
+    inset 0 -1px 0 rgb(145 158 175 / 0.06),
+    0 2px 6px rgba(145, 158, 175, 0.14);
+  --surface-inset-hi: rgb(255 255 255 / 0.68);
+  --surface-shine-opacity: 0.36;
+  --surface-shine-opacity-soft: 0.22;
+  --session-glass-strong: rgba(242, 245, 249, 0.82);
+  --session-rim: rgb(255 255 255 / 0.5);
+  --session-inset-hi: rgb(255 255 255 / 0.68);
+  --surface-overlay-bg: rgba(0, 0, 0, 0.18);
+  --surface-overlay-blur: 6px;
+
+  /* pressable：粘土 — 略强 scale + 双阴影 inset */
+  --press-scale: 0.97;
+  --press-shadow:
+    inset 2px 2px 6px rgba(145, 158, 175, 0.22), inset -2px -2px 6px rgba(255, 255, 255, 0.45);
+  --press-duration: var(--motion-duration-fast, 160ms);
+  --press-ease: var(--motion-ease-island, cubic-bezier(0.16, 1, 0.3, 1));
+}
+
+.dark[data-material='soft'],
+[data-material='soft'].dark {
+  --surface-bg: rgb(var(--glass-rgb) / 0.9);
+  --surface-bg-elevated: rgb(var(--glass-rgb) / 0.92);
+  --surface-bg-chip: rgb(var(--glass-rgb) / 0.86);
+  --surface-opacity-popover: 0.78;
+  --surface-bg-popover: rgb(var(--glass-rgb) / var(--surface-opacity-popover));
+  --surface-blur-popover: 16px;
+  --surface-rim: rgb(255 255 255 / 0.055);
+  --press-scale: 0.97;
+  --press-shadow:
+    inset 2px 2px 6px rgba(0, 0, 0, 0.28), inset -2px -2px 4px rgba(255, 255, 255, 0.06);
+  --surface-shadow: inset 0 1px 0 hsl(var(--glass-shine) / 0.16), 0 2px 8px rgba(0, 0, 0, 0.15);
+  --surface-shadow-elevated:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 6px 18px rgba(0, 0, 0, 0.35);
+  --surface-shadow-chip: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 2px 8px rgba(0, 0, 0, 0.22);
+  --surface-inset-hi: rgba(255, 255, 255, 0.14);
+  --session-glass-strong: rgba(62, 72, 90, 0.75);
+  --session-rim: rgba(255, 255, 255, 0.18);
+  --session-inset-hi: rgba(255, 255, 255, 0.18);
+  --surface-overlay-bg: rgba(0, 0, 0, 0.4);
+}
+
+/* ============================================================================
+ * 2. 主表面：session-glass / chat-input-glass
+ * ========================================================================== */
+
+.session-glass,
+.chat-input-glass {
+  position: relative;
+  isolation: isolate;
+  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  background: var(--surface-bg);
+  border: var(--surface-rim-width) solid var(--surface-rim);
+  box-shadow: var(--surface-shadow);
+}
+
+.session-glass::before,
+.chat-input-glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  opacity: var(--surface-shine-opacity);
+  background:
+    radial-gradient(ellipse 85% 65% at 16% 0%, hsl(var(--glass-shine) / 0.5) 0%, transparent 58%),
+    radial-gradient(
+      ellipse 55% 45% at 100% 100%,
+      hsl(var(--glass-ambient) / 0.65) 0%,
+      transparent 62%
+    ),
+    linear-gradient(to bottom, hsl(var(--glass-shine) / 0.22) 0%, transparent 42%);
+}
+
+.session-glass::after,
+.chat-input-glass::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  opacity: var(--surface-shine-opacity);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1px;
+  background: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.42) 28%,
+    rgba(255, 255, 255, 0.68) 50%,
+    rgba(255, 255, 255, 0.38) 72%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+
+.session-glass > *,
+.chat-input-glass > * {
+  position: relative;
+  z-index: 1;
+}
+
+.chat-input-glass {
+  border-radius: var(--radius-glass-input);
+}
+
+/* ============================================================================
+ * 3. 侧栏浮岛 / rail / chip
+ * ========================================================================== */
+
+.session-glass-sidebar,
+.session-glass-rail,
+.session-glass-chip {
+  position: relative;
+  isolation: isolate;
+  -webkit-backdrop-filter: blur(var(--surface-blur-chip)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  backdrop-filter: blur(var(--surface-blur-chip)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  background: var(--surface-bg-chip);
+  border-color: var(--surface-rim);
+  box-shadow: var(--surface-shadow-chip);
+}
+
+.session-glass-sidebar {
+  border-radius: var(--radius-glass-sidebar);
+}
+
+.session-glass-rail {
+  border-radius: var(--radius-glass-rail);
+}
+
+.session-glass-chip {
+  border-radius: var(--radius-glass-chip);
+}
+
+.session-glass-sidebar::before,
+.session-glass-rail::before,
+.session-glass-chip::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  opacity: calc(var(--surface-shine-opacity) * var(--surface-shine-opacity-soft));
+  background:
+    radial-gradient(ellipse 85% 65% at 16% 0%, hsl(var(--glass-shine) / 0.5) 0%, transparent 58%),
+    linear-gradient(to bottom, hsl(var(--glass-shine) / 0.18) 0%, transparent 42%);
+}
+
+.session-glass-sidebar::after,
+.session-glass-rail::after,
+.session-glass-chip::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  opacity: calc(var(--surface-shine-opacity) * 0.45);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1px;
+  background: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.42) 28%,
+    rgba(255, 255, 255, 0.68) 50%,
+    rgba(255, 255, 255, 0.38) 72%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+
+.session-glass-chip-dashed {
+  border-style: dashed !important;
+  border-color: hsl(var(--muted-foreground) / 0.28) !important;
+}
+
+.dark .session-glass-chip-dashed:not(:hover) {
+  border-color: hsl(var(--foreground) / 0.26) !important;
+}
+
+.session-glass-chip-dashed:hover {
+  border-color: hsl(var(--border) / 0.6) !important;
+  background: hsl(var(--accent) / 0.1) !important;
+  box-shadow: none !important;
+}
+
+[data-material='glass'] .session-glass-chip-dashed:hover {
+  border-color: hsl(var(--glass-rim) / 0.95) !important;
+  background: linear-gradient(
+    168deg,
+    hsl(var(--glass-shine) / 0.65) 0%,
+    hsl(var(--background) / 0.64) 48%,
+    hsl(var(--background) / 0.58) 100%
+  ) !important;
+}
+
+.dark[data-material='glass'] .session-glass-chip-dashed:hover,
+[data-material='glass'].dark .session-glass-chip-dashed:hover {
+  background: linear-gradient(
+    168deg,
+    hsl(var(--primary) / 0.1) 0%,
+    hsl(var(--background) / 0.56) 48%,
+    hsl(var(--background) / 0.5) 100%
+  ) !important;
+}
+
+/* ============================================================================
+ * 4. 列表行 + 选中态
+ * ========================================================================== */
+
+.session-list-row {
+  /* 不再 margin-right 单侧预留：侧栏选中态需左右对称 */
+  margin-right: 0;
+  /* 只过渡 background-color 等可插值属性；禁止 backdrop-filter */
+  transition:
+    background-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (hover: hover) {
+  .session-list-row:not(.session-list-item-active):hover {
+    background-color: color-mix(in srgb, hsl(var(--primary)) 7%, hsl(var(--background)));
+    color: hsl(var(--foreground));
+    transform: none;
+  }
+}
+
+.session-list-row--batch:hover {
+  transform: none !important;
+}
+
+.session-list-row:not(.session-list-item-active):active {
+  transform: scale(0.995);
+  box-shadow: inset 0 1px 3px hsl(var(--foreground) / 0.08);
+}
+
+.session-list-row .session-sidebar-accent--inline,
+.session-list-row .session-status-line {
+  transition:
+    opacity 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/**
+ * session-list-item-active — 基线 frosted 扁平 tint；
+ * soft / glass 通过 --session-* token 与可选伪元素增强
+ */
+.session-list-item-active {
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--radius-glass-sidebar, var(--md-shape-md));
+  /* MD primary-container */
+  background: var(--session-glass-strong, var(--md-primary-container));
+  border: 1px solid var(--session-rim, var(--md-primary-outline));
+  box-shadow: 0 1px 0 var(--session-inset-hi) inset;
+  color: var(--md-on-primary-container, hsl(var(--primary)));
+}
+
+.session-list-item-active > * {
+  position: relative;
+  z-index: 1;
+  color: inherit;
+}
+
+/* glass：选中态浮岛玻璃 */
+[data-material='glass'] .session-list-item-active {
+  -webkit-backdrop-filter: blur(var(--surface-blur-chip)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  backdrop-filter: blur(var(--surface-blur-chip)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  background: var(--surface-bg-chip);
+  border: 0.5px solid var(--surface-rim);
+  box-shadow: var(--surface-shadow-chip);
+}
+
+[data-material='glass'] .session-list-item-active::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.55;
+  background:
+    radial-gradient(ellipse 85% 65% at 16% 0%, hsl(var(--glass-shine) / 0.5) 0%, transparent 58%),
+    radial-gradient(
+      ellipse 55% 45% at 100% 100%,
+      hsl(var(--glass-ambient) / 0.65) 0%,
+      transparent 62%
+    ),
+    linear-gradient(to bottom, hsl(var(--glass-shine) / 0.22) 0%, transparent 42%);
+}
+
+[data-material='glass'] .session-list-item-active::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.45;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1px;
+  background: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.42) 28%,
+    rgba(255, 255, 255, 0.68) 50%,
+    rgba(255, 255, 255, 0.38) 72%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+
+/* soft：拟态浮岛（近不透明 + 高光边） */
+[data-material='soft'] .session-list-item-active {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--session-glass-strong);
+  border: 1px solid var(--session-rim);
+  box-shadow:
+    inset 0 1px 0 0 var(--session-inset-hi),
+    0 2px 10px -4px rgba(0, 0, 0, 0.1),
+    0 6px 18px -8px rgba(0, 0, 0, 0.08);
+}
+
+/* ============================================================================
+ * 5. Tooltip — 对齐折叠右轨胶囊（navigation / spatial-rail）
+ * ========================================================================== */
+
+.session-glass-tooltip {
+  position: relative;
+  isolation: isolate;
+  /* 独立 token：菜单/tooltip 比 composer 胶囊更紧，不复用 --app-shell-composer-radius */
+  border-radius: var(--radius-glass-tooltip, 10px);
+  color: hsl(var(--tooltip-foreground, var(--foreground)));
+  border: 1px solid var(--surface-role-tooltip-rim, var(--surface-role-navigation-rim, var(--surface-rim)));
+  background: var(--surface-role-tooltip-fill, var(--surface-role-navigation-fill));
+  box-shadow: var(
+    --surface-role-tooltip-shadow,
+    var(--surface-role-navigation-shadow, var(--surface-shadow-chip))
+  );
+  -webkit-backdrop-filter: blur(var(--surface-role-tooltip-blur, var(--surface-role-navigation-blur, 15px)))
+    saturate(var(--surface-saturate, 1.06));
+  backdrop-filter: blur(var(--surface-role-tooltip-blur, var(--surface-role-navigation-blur, 15px)))
+    saturate(var(--surface-saturate, 1.06));
+  /* 尺寸对齐轨旁浮层：紧凑内边距 + 11px 字重 */
+  padding: 6px 9px;
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 500;
+}
+
+/* 轻折射：与 .app-rail-island 同款，不用旧 elevated 高光 xor 边 */
+.session-glass-tooltip::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(120% 80% at 22% 12%, rgb(255 255 255 / 0.1), transparent 60%),
+    linear-gradient(180deg, rgb(255 255 255 / 0.06), transparent 42%);
+}
+
+.session-glass-tooltip::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid transparent;
+  border-top-color: var(--surface-highlight, hsl(var(--glass-shine, 0 0% 100%) / 0.22));
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  opacity: var(--surface-shine-opacity, 0);
+}
+
+.session-glass-tooltip > * {
+  position: relative;
+  z-index: 1;
+}
+
+[data-material='soft'] .session-glass-tooltip {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: hsl(var(--tooltip, var(--background)) / 0.98);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .session-glass-tooltip {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--md-surface-container-low, hsl(var(--background)));
+  }
+}
+
+/* ============================================================================
+ * 6. Overlay / Surface / Modal / Popover
+ * ========================================================================== */
+
+.session-glass-overlay {
+  background: var(--surface-overlay-bg) !important;
+  -webkit-backdrop-filter: blur(var(--surface-overlay-blur)) saturate(1.1);
+  backdrop-filter: blur(var(--surface-overlay-blur)) saturate(1.1);
+}
+
+.session-glass-surface {
+  /* 不可设 position:relative，否则覆盖 Dialog/Popover 的 fixed/absolute */
+  isolation: isolate;
+  color: hsl(var(--glass-fg, var(--foreground)));
+  -webkit-backdrop-filter: blur(var(--surface-blur-elevated)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  backdrop-filter: blur(var(--surface-blur-elevated)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  background: var(--surface-bg-elevated);
+  border: var(--surface-rim-width) solid var(--surface-rim);
+  box-shadow: var(--surface-shadow-elevated);
+}
+
+.session-glass-surface::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: -1;
+  opacity: calc(var(--surface-shine-opacity) * 0.62);
+  background:
+    radial-gradient(ellipse 85% 65% at 16% 0%, hsl(var(--glass-shine) / 0.52) 0%, transparent 58%),
+    radial-gradient(
+      ellipse 55% 45% at 100% 100%,
+      hsl(var(--glass-ambient) / 0.6) 0%,
+      transparent 62%
+    ),
+    linear-gradient(to bottom, hsl(var(--glass-shine) / 0.2) 0%, transparent 42%);
+}
+
+.session-glass-surface::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: -1;
+  opacity: calc(var(--surface-shine-opacity) * 0.58);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1.5px;
+  background: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.46) 24%,
+    rgba(255, 255, 255, 0.72) 50%,
+    rgba(255, 255, 255, 0.4) 76%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+
+.session-glass-modal,
+.session-glass-modal-lg {
+  --glass-bg: var(--background);
+  --glass-fg: var(--foreground);
+  border-radius: var(--radius-glass-modal);
+  -webkit-backdrop-filter: blur(var(--surface-blur-elevated)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  backdrop-filter: blur(var(--surface-blur-elevated)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  background: var(--surface-bg-elevated);
+  border-color: var(--surface-rim);
+  box-shadow: var(--surface-shadow-elevated);
+}
+
+.session-glass-modal-lg {
+  --glass-bg: var(--dialog);
+  --glass-fg: var(--dialog-foreground);
+  border-radius: var(--radius-glass-modal-lg);
+  background: var(--surface-bg-dialog);
+}
+
+.session-glass-popover {
+  --glass-bg: var(--popover);
+  --glass-fg: var(--popover-foreground);
+  border-radius: var(--radius-glass-popover);
+  -webkit-backdrop-filter: blur(var(--surface-blur-popover, var(--surface-blur-elevated)))
+    saturate(var(--surface-saturate)) brightness(var(--surface-brightness));
+  backdrop-filter: blur(var(--surface-blur-popover, var(--surface-blur-elevated)))
+    saturate(var(--surface-saturate)) brightness(var(--surface-brightness));
+  background: var(--surface-bg-popover);
+  border-color: var(--surface-rim);
+  box-shadow: var(--surface-shadow-elevated);
+}
+
+/* 浮层减弱表面高光层，避免 ::before/::after 把半透填成实板 */
+.session-glass-popover.session-glass-surface::before {
+  opacity: calc(var(--surface-shine-opacity) * 0.28);
+}
+
+.session-glass-popover.session-glass-surface::after {
+  opacity: calc(var(--surface-shine-opacity) * 0.22);
+}
+
+/* glass 材质下 modal 使用统一的色散阴影 */
+[data-material='glass'] .session-glass-modal,
+[data-material='glass'] .session-glass-modal-lg {
+  background: var(--surface-bg-dialog);
+  box-shadow: var(--surface-shadow-elevated);
+}
+
+.dark[data-material='glass'] .session-glass-modal,
+.dark[data-material='glass'] .session-glass-modal-lg,
+[data-material='glass'].dark .session-glass-modal,
+[data-material='glass'].dark .session-glass-modal-lg {
+  box-shadow: var(--surface-shadow-elevated);
+}
+
+/* ============================================================================
+ * 7. Sticky（会话顶栏「上一轮用户消息」快速跳转条）
+ * 基线 frosted：扁平 MD，hover 用轻量 foreground 填充，禁止主题色叠磨砂
+ * ========================================================================== */
+
+.session-glass-sticky {
+  border-radius: var(--radius-glass-sticky);
+  -webkit-backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturate));
+  backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturate));
+  background: var(--surface-bg);
+  border: var(--surface-rim-width) solid var(--surface-rim);
+  box-shadow: var(--surface-shadow);
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+/*
+ * sticky hover：用不透明 color-mix / muted，禁止 foreground/0.05
+ * （半透明会整块替换 surface-bg 实底 → 看起来「全透」）
+ */
+.session-glass.session-glass-sticky:hover,
+.session-glass-sticky:hover {
+  background: var(--hover-fill, color-mix(in srgb, hsl(var(--foreground)) 7%, hsl(var(--card))));
+  border-color: hsl(var(--border) / 0.65);
+  box-shadow: none;
+  /* 普通材质 hover 也不要再透 */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.dark .session-glass.session-glass-sticky:hover,
+.dark .session-glass-sticky:hover {
+  background: var(--hover-fill, color-mix(in srgb, hsl(var(--foreground)) 10%, hsl(var(--card))));
+  border-color: hsl(var(--border) / 0.55);
+}
+
+/* soft：实色 muted hover */
+[data-material='soft'] .session-glass.session-glass-sticky:hover,
+[data-material='soft'] .session-glass-sticky:hover {
+  background: hsl(var(--muted));
+  border-color: var(--surface-rim);
+  box-shadow: var(--surface-shadow-chip, 0 1px 2px rgba(0, 0, 0, 0.06));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.dark[data-material='soft'] .session-glass.session-glass-sticky:hover,
+[data-material='soft'].dark .session-glass.session-glass-sticky:hover,
+.dark[data-material='soft'] .session-glass-sticky:hover,
+[data-material='soft'].dark .session-glass-sticky:hover {
+  background: hsl(var(--muted));
+}
+
+/* glass sticky hover：由 7.1 neonav 规则完全接管，此处不再覆盖 */
+
+/* ============================================================================
+ * 7.1 Sticky + Input — Neonav风格悬浮效果（仅glass材质）
+ * 严格复刻: https://freefrontend.com/css-backdrop-filter-examples/ neoNav
+ * .navbar: blur(20px), rgba(255,255,255,0.1), hover translateY(-2px)
+ * ============================================================================ */
+
+/* glass材质下启用neonav效果 — sticky + input 共用基础 */
+[data-material='glass'] .session-glass-sticky,
+[data-material='glass'] .chat-input-glass {
+  position: relative;
+  overflow: hidden;
+  /* neoNav .navbar 原始参数 */
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.1) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow:
+    0 20px 40px rgba(0, 0, 0, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  transform: translateY(0);
+  transition: all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* neoNav hover — 覆盖通用hover的 backdrop-filter:none */
+[data-material='glass'] .session-glass.session-glass-sticky:hover,
+[data-material='glass'] .session-glass-sticky:hover {
+  transform: translateY(-2px);
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.1) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.2);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  box-shadow:
+    0 25px 50px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+/* neoNav 扫光 — 仅 sticky，输入框不加扫光 */
+[data-material='glass'] .session-glass.session-glass-sticky::before,
+[data-material='glass'] .session-glass-sticky::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 1;
+  transition: left 0.8s ease;
+}
+
+[data-material='glass'] .session-glass.session-glass-sticky:hover::before,
+[data-material='glass'] .session-glass-sticky:hover::before {
+  left: 100%;
+}
+
+/* 输入框 focus — 主题色自发光描边 + 光晕 */
+[data-material='glass'] .chat-input-glass:focus-within {
+  border-color: hsl(var(--primary) / 0.7);
+  box-shadow:
+    0 0 0 2px hsl(var(--primary) / 0.2),
+    0 0 16px -4px hsl(var(--primary) / 0.35),
+    0 0 32px -8px hsl(var(--primary) / 0.2),
+    0 20px 40px rgba(0, 0, 0, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.dark[data-material='glass'] .chat-input-glass:focus-within,
+[data-material='glass'].dark .chat-input-glass:focus-within {
+  border-color: hsl(var(--primary) / 0.6);
+  box-shadow:
+    0 0 0 2px hsl(var(--primary) / 0.25),
+    0 0 20px -4px hsl(var(--primary) / 0.4),
+    0 0 40px -8px hsl(var(--primary) / 0.25),
+    0 20px 40px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* 深色glass — rgba反色 */
+.dark[data-material='glass'] .session-glass-sticky,
+[data-material='glass'].dark .session-glass-sticky,
+.dark[data-material='glass'] .chat-input-glass,
+[data-material='glass'].dark .chat-input-glass {
+  background: linear-gradient(
+    135deg,
+    rgba(0, 0, 0, 0.1) 0%,
+    rgba(0, 0, 0, 0.08) 50%,
+    rgba(0, 0, 0, 0.1) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 20px 40px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.dark[data-material='glass'] .session-glass-sticky:hover,
+[data-material='glass'].dark .session-glass-sticky:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 25px 50px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.dark[data-material='glass'] .session-glass.session-glass-sticky::before,
+[data-material='glass'].dark .session-glass.session-glass-sticky::before,
+.dark[data-material='glass'] .session-glass-sticky::before,
+[data-material='glass'].dark .session-glass-sticky::before {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+}
+
+/* ============================================================================
+ * 8. settings-card — 走 surface token（默认 frosted，非永远高透）
+ * ========================================================================== */
+
+.settings-card,
+.settings-card-surface {
+  position: relative;
+  isolation: isolate;
+  /* frosted 默认扁平；soft/glass 由 --surface-shadow-elevated 带一点抬起 */
+  background: var(--surface-bg, var(--surface-bg-elevated));
+  border: var(--surface-rim-width) solid
+    color-mix(in srgb, var(--surface-rim, hsl(var(--border))) 70%, transparent);
+  -webkit-backdrop-filter: blur(var(--surface-blur-elevated)) saturate(var(--surface-saturate));
+  backdrop-filter: blur(var(--surface-blur-elevated)) saturate(var(--surface-saturate));
+  border-radius: var(--radius-glass-modal);
+  box-shadow: var(--surface-shadow-chip, none);
+}
+
+[data-material='soft'] .settings-card,
+[data-material='soft'] .settings-card-surface,
+[data-material='glass'] .settings-card,
+[data-material='glass'] .settings-card-surface {
+  background: var(--surface-bg-elevated);
+  border: var(--surface-rim-width) solid var(--surface-rim);
+  box-shadow: var(--surface-shadow-elevated);
+}
+
+.settings-card::after,
+.settings-card-surface::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 8%;
+  right: 8%;
+  height: 1px;
+  opacity: var(--surface-shine-opacity);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.4) 50%,
+    transparent 100%
+  );
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* frosted：主题色微光渐变（与 panel-glass 同款），替代纯高光线 */
+[data-material='frosted'] .settings-card::after,
+[data-material='frosted'] .settings-card-surface::after,
+:root:not([data-material]) .settings-card::after,
+:root:not([data-material]) .settings-card-surface::after,
+.dark[data-material='frosted'] .settings-card::after,
+.dark[data-material='frosted'] .settings-card-surface::after,
+.dark:not([data-material]) .settings-card::after,
+.dark:not([data-material]) .settings-card-surface::after,
+[data-material='frosted'].dark .settings-card::after,
+[data-material='frosted'].dark .settings-card-surface::after {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: auto;
+  bottom: 0;
+  opacity: 1;
+  background: linear-gradient(
+    135deg,
+    hsl(var(--primary) / 0.05) 0%,
+    transparent 28%,
+    transparent 72%,
+    hsl(var(--primary) / 0.03) 100%
+  );
+}
+
+/* ============================================================================
+ * 9. Toast — 走 surface token
+ * ========================================================================== */
+
+/*
+ * sonner 用 [data-sonner-toast][data-styled='true']（0-2-0）设 background，
+ * 需 0-3-0 才能覆盖。
+ */
+[data-sonner-toast][data-styled='true'].session-glass-toast {
+  --glass-bg: var(--popover);
+  --glass-fg: var(--popover-foreground);
+  --border-radius: var(--radius-glass-modal-lg);
+  border-radius: var(--radius-glass-modal-lg);
+  -webkit-backdrop-filter: blur(var(--surface-blur-elevated)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  backdrop-filter: blur(var(--surface-blur-elevated)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+  background: var(--surface-bg-popover);
+  border: var(--surface-rim-width) solid var(--surface-rim);
+  box-shadow: var(--surface-shadow-elevated);
+}
+
+.session-glass-toast [data-button],
+.session-glass-toast [data-cancel] {
+  border-radius: var(--radius-glass-chip);
+}
+
+/* glass toast 保持更强悬浮（token 已覆盖；此处仅补 rim 可读性） */
+[data-material='glass'] [data-sonner-toast][data-styled='true'].session-glass-toast {
+  border-color: hsl(var(--glass-rim) / 0.88);
+}
+
+/* ============================================================================
+ * 10. Switch — 主题色笑脸胶囊（Uiverse average-monkey-56）
+ * 结构与尺寸权威在 styles/switch.css；此处只做材质光学微调，禁止再覆盖尺寸。
+ * ============================================================================ */
+
+/* glass：开态渐变略提亮 + 拇指玻璃高光 */
+[data-material='glass'] .ui-switch {
+  --ui-switch-on-to: color-mix(in srgb, hsl(var(--primary)) 55%, white 45%);
+  --ui-switch-thumb-shadow:
+    0 4px 10px -3px hsl(var(--foreground) / 0.22),
+    inset 0 1px 0 hsl(0 0% 100% / 0.55);
+}
+
+/* soft：拇指更拟态 */
+[data-material='soft'] .ui-switch {
+  --ui-switch-thumb-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.05),
+    0 3px 6px rgba(145, 158, 175, 0.22);
+}
+
+[data-material='soft'].dark .ui-switch,
+.dark[data-material='soft'] .ui-switch {
+  --ui-switch-thumb-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.15),
+    0 3px 8px rgba(0, 0, 0, 0.28);
+}

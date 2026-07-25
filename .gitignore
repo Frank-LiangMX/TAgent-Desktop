@@ -1,0 +1,34 @@
+# 依赖
+node_modules/
+.bun/
+
+# 构建产物
+dist/
+build/
+*.cjs
+*.exe
+*.dmg
+*.AppImage
+!apps/electron/scripts/*.cjs
+
+# 调试/临时
+*.log
+.dev/
+.env
+.env.local
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# Electron
+out/
+release-notes/__generated/
+
+# 临时实验（docs/dev/ 可定期清，但先保留）
+# docs/dev/ 可手动清

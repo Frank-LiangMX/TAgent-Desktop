@@ -1,0 +1,44 @@
+/**
+ * pressable — 可点击控件按压语义
+ *
+ * 设计原则（TAgent 双轴，非纯 Soft Glass 原型照搬）：
+ * - 语义全材质共用：.ui-pressable / 业务别名选择器
+ * - 光学走材质表 --press-scale / --press-shadow（glass.css）
+ *   · frosted：轻 scale，无粘土双阴影
+ *   · soft：更强 scale + neu-in 式 inset
+ *   · glass：最轻 scale，无粘土 inset
+ *
+ * 选中态（.session-list-item-active 等）不施加 press 阴影，避免压坏 primary tint。
+ */
+
+.ui-pressable,
+.session-list-row,
+.rail-island-btn,
+.settings-nav-item,
+.tool-cluster button,
+.agent-toolbar-icon-btn,
+.agent-toolbar-pill-btn {
+  transition:
+    color var(--press-duration, 160ms) var(--press-ease, cubic-bezier(0.16, 1, 0.3, 1)),
+    background var(--press-duration, 160ms) var(--press-ease, cubic-bezier(0.16, 1, 0.3, 1)),
+    border-color var(--press-duration, 160ms) var(--press-ease, cubic-bezier(0.16, 1, 0.3, 1)),
+    box-shadow var(--press-duration, 160ms) var(--press-ease, cubic-bezier(0.16, 1, 0.3, 1)),
+    transform var(--press-duration, 160ms) var(--press-ease, cubic-bezier(0.16, 1, 0.3, 1));
+}
+
+.ui-pressable:active:not(:disabled):not([data-disabled='true']):not(.session-list-item-active):not(
+    .rail-island-btn--active
+  ):not(.settings-nav-item--active),
+.session-list-row:active:not(.session-list-item-active):not(:disabled),
+.rail-island-btn:active:not(.rail-island-btn--active):not(:disabled),
+.settings-nav-item:active:not(.session-list-item-active):not(.settings-nav-item--active):not(
+    :disabled
+  ),
+.tool-cluster button:active:not(:disabled),
+.agent-toolbar-icon-btn:active:not(:disabled),
+.agent-toolbar-pill-btn:active:not(:disabled) {
+  transform: scale(var(--press-scale, 0.985));
+  box-shadow: var(--press-shadow, none);
+}
+
+/* soft：列表行 active 时额外允许轻微 inset（未选中）—— 已由 --press-shadow 覆盖 */

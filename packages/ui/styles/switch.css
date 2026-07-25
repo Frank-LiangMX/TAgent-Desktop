@@ -1,0 +1,221 @@
+/**
+ * Switch — 全局胶囊开关（Uiverse average-monkey-56 主题色适配）
+ *
+ * 权威组件：`packages/ui/src/components/switch.tsx`
+ * 来源：https://uiverse.io/Shoh2008/average-monkey-56 （MIT）
+ *
+ * 结构：
+ *   .ui-switch          外层（主题色渐变底 + perspective）
+ *   .ui-switch-track    轨道（off 灰 / on 透明露出渐变；::before/::after 笑脸）
+ *   .ui-switch-thumb    滑块
+ *
+ * size:
+ *   default — --size: 24px（设置页）
+ *   sm      — --size: 20px（工具栏）
+ */
+
+.ui-switch {
+  /*
+   * 尺寸体系（原 Uiverse 宽高比 2.2 偏长，压到 ~1.7 更接近常规胶囊）
+   * 高度 = --ui-switch-size
+   * 宽度 = --ui-switch-size * --ui-switch-ratio
+   */
+  --ui-switch-size: 1.5rem; /* 24px */
+  --ui-switch-ratio: 1.7;
+  --ui-switch-track-w: calc(var(--ui-switch-size) * var(--ui-switch-ratio));
+  --ui-switch-pad: calc(0.1 * var(--ui-switch-size));
+  --ui-switch-thumb-d: calc(0.8 * var(--ui-switch-size));
+  /* 开态拇指 left = 轨道宽 - 拇指 - 边距 */
+  --ui-switch-thumb-on: calc(
+    var(--ui-switch-track-w) - var(--ui-switch-thumb-d) - var(--ui-switch-pad)
+  );
+  /* 笑脸相对拇指的内边偏移（眼睛 / 嘴） */
+  --ui-switch-face-x: calc(0.05 * var(--ui-switch-size));
+  --ui-switch-mouth-x: calc(0.1 * var(--ui-switch-size));
+
+  /* 主题色：开态渐变（替代原 #f19af3 → #f099b5） */
+  --ui-switch-on-from: hsl(var(--primary));
+  --ui-switch-on-to: color-mix(in srgb, hsl(var(--primary)) 62%, white 38%);
+  --ui-switch-on-gradient: linear-gradient(
+    90deg,
+    var(--ui-switch-on-from),
+    var(--ui-switch-on-to)
+  );
+
+  /* 关态轨道 */
+  --ui-switch-off-track: color-mix(in srgb, hsl(var(--muted)) 88%, hsl(var(--foreground)) 12%);
+
+  /* 拇指 */
+  --ui-switch-thumb-from: color-mix(in srgb, hsl(var(--muted)) 55%, white 45%);
+  --ui-switch-thumb-to: hsl(var(--background));
+  --ui-switch-thumb-gradient: linear-gradient(
+    45deg,
+    var(--ui-switch-thumb-from),
+    var(--ui-switch-thumb-to)
+  );
+  --ui-switch-thumb-shadow: 0 4px 8px -2px hsl(var(--foreground) / 0.28);
+
+  /* 笑脸 */
+  --ui-switch-face: color-mix(in srgb, hsl(var(--muted-foreground)) 70%, hsl(var(--foreground)) 30%);
+
+  --ui-switch-duration: 0.35s;
+  --ui-switch-ease: ease-in-out;
+
+  position: relative;
+  width: var(--ui-switch-track-w);
+  min-width: var(--ui-switch-track-w);
+  height: var(--ui-switch-size);
+  line-height: 0;
+  font-size: var(--ui-switch-size);
+  border-radius: var(--ui-switch-size);
+  background: var(--ui-switch-on-gradient);
+  perspective: 400px;
+  box-sizing: border-box;
+  appearance: none;
+  display: inline-block;
+  vertical-align: middle;
+  transition:
+    opacity var(--ui-switch-duration) var(--ui-switch-ease),
+    filter var(--ui-switch-duration) var(--ui-switch-ease);
+}
+
+.ui-switch.ui-switch--sm {
+  --ui-switch-size: 1.25rem; /* 20px */
+}
+
+/* 兼容旧 class */
+.ui-switch.agent-toolbar-switch:not(.ui-switch--sm) {
+  --ui-switch-size: 1.25rem;
+}
+
+.dark .ui-switch {
+  --ui-switch-on-to: color-mix(in srgb, hsl(var(--primary)) 72%, white 28%);
+  --ui-switch-off-track: color-mix(in srgb, hsl(var(--input)) 80%, hsl(var(--foreground)) 20%);
+  --ui-switch-thumb-from: color-mix(in srgb, hsl(var(--muted)) 40%, hsl(var(--card)) 60%);
+  --ui-switch-thumb-to: hsl(var(--card));
+  --ui-switch-thumb-shadow: 0 4px 10px -2px hsl(0 0% 0% / 0.45);
+  --ui-switch-face: color-mix(in srgb, hsl(var(--muted-foreground)) 80%, white 20%);
+}
+
+/* 轨道（原 label） */
+.ui-switch-track {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--ui-switch-size);
+  background: var(--ui-switch-off-track);
+  overflow: hidden;
+  box-sizing: border-box;
+  transition:
+    background var(--ui-switch-duration) var(--ui-switch-ease),
+    opacity var(--ui-switch-duration) var(--ui-switch-ease);
+  pointer-events: none;
+}
+
+.ui-switch[data-state='checked'] .ui-switch-track {
+  background: transparent;
+}
+
+/* 笑脸：眼睛 + 嘴（原 ::before / ::after） */
+.ui-switch-track::before,
+.ui-switch-track::after {
+  position: absolute;
+  overflow: hidden;
+  color: var(--ui-switch-face);
+  font-family: 'Times New Roman', Times, serif;
+  z-index: 2;
+  border-radius: 0;
+  backface-visibility: hidden;
+  transition:
+    left var(--ui-switch-duration) var(--ui-switch-ease),
+    top var(--ui-switch-duration) var(--ui-switch-ease),
+    transform var(--ui-switch-duration) var(--ui-switch-ease),
+    height var(--ui-switch-duration) var(--ui-switch-ease),
+    width var(--ui-switch-duration) var(--ui-switch-ease),
+    font-size var(--ui-switch-duration) var(--ui-switch-ease),
+    line-height var(--ui-switch-duration) var(--ui-switch-ease);
+  pointer-events: none;
+}
+
+/* 眼睛：· ·（贴在拇指上） */
+.ui-switch-track::before {
+  content: '\00b7\00a0\00b7';
+  left: calc(var(--ui-switch-pad) + var(--ui-switch-face-x));
+  top: calc(0.5 * var(--ui-switch-size));
+  height: var(--ui-switch-size);
+  letter-spacing: calc(-0.04 * var(--ui-switch-size));
+  font-size: calc(0.6 * var(--ui-switch-size));
+  line-height: 1;
+  transform-origin: 0 0 calc(-0.5 * var(--ui-switch-size));
+}
+
+/* 嘴：● 裁切成弧 */
+.ui-switch-track::after {
+  content: '\25cf';
+  top: calc(0.65 * var(--ui-switch-size));
+  left: calc(var(--ui-switch-pad) + var(--ui-switch-mouth-x));
+  height: calc(0.1 * var(--ui-switch-size));
+  width: calc(0.35 * var(--ui-switch-size));
+  font-size: calc(0.2 * var(--ui-switch-size));
+  line-height: 1;
+  transform-origin: 0 0 calc(-0.4 * var(--ui-switch-size));
+}
+
+/* 开态：笑脸跟随拇指到右侧 */
+.ui-switch[data-state='checked'] .ui-switch-track::before {
+  left: calc(var(--ui-switch-thumb-on) + var(--ui-switch-face-x));
+  top: calc(0.4 * var(--ui-switch-size));
+  line-height: calc(0.1 * var(--ui-switch-size));
+  transform: rotateY(360deg);
+}
+
+.ui-switch[data-state='checked'] .ui-switch-track::after {
+  left: calc(var(--ui-switch-thumb-on) + var(--ui-switch-mouth-x));
+  top: calc(0.55 * var(--ui-switch-size));
+  height: calc(0.16 * var(--ui-switch-size));
+  font-size: calc(0.6 * var(--ui-switch-size));
+  line-height: 0;
+  transform: rotateY(360deg);
+}
+
+/* 拇指（原 input） */
+.ui-switch-thumb {
+  position: absolute;
+  z-index: 1;
+  display: block;
+  box-sizing: border-box;
+  width: var(--ui-switch-thumb-d);
+  height: var(--ui-switch-thumb-d);
+  top: var(--ui-switch-pad);
+  left: var(--ui-switch-pad);
+  border-radius: 9999px;
+  border: 0;
+  background: var(--ui-switch-thumb-gradient);
+  box-shadow: var(--ui-switch-thumb-shadow);
+  transition:
+    left var(--ui-switch-duration) var(--ui-switch-ease),
+    box-shadow var(--ui-switch-duration) var(--ui-switch-ease),
+    background var(--ui-switch-duration) var(--ui-switch-ease);
+  pointer-events: none;
+}
+
+.ui-switch[data-state='checked'] .ui-switch-thumb {
+  left: var(--ui-switch-thumb-on);
+}
+
+/* 减少动效 */
+@media (prefers-reduced-motion: reduce) {
+  .ui-switch,
+  .ui-switch-track,
+  .ui-switch-track::before,
+  .ui-switch-track::after,
+  .ui-switch-thumb {
+    transition-duration: 0.01ms !important;
+  }
+
+  .ui-switch[data-state='checked'] .ui-switch-track::before,
+  .ui-switch[data-state='checked'] .ui-switch-track::after {
+    transform: none;
+  }
+}
