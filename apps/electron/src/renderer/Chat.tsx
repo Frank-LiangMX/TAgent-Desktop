@@ -7,6 +7,7 @@
  */
 import { useState, useEffect, useRef } from 'react'
 import type { TAgentDesktopStreamPayload, TAgentMessage } from '@tagent/shared'
+import { sdkMessageToIR } from '@tagent/shared'
 import { MessageView, ToolResultView } from './components/MessageView'
 
 interface StreamEventEnvelope {
@@ -28,13 +29,34 @@ interface DisplayItem {
   streaming?: boolean
 }
 
-export function Chat(): JSX.Element {
+export function Chat({ sessionId }: { sessionId: string }): JSX.Element {
   const [items, setItems] = useState<DisplayItem[]>([])
   const [input, setInput] = useState('')
   const [running, setRunning] = useState(false)
-  const sessionIdRef = useRef('session-' + Date.now())
+  const sessionIdRef = useRef(sessionId)
+  sessionIdRef.current = sessionId
   const itemIdxRef = useRef(0)
   const streamingRef = useRef<DisplayItem | null>(null)
+
+  // 切换会话时加载历史（SDKMessage → IR 显示）
+  useEffect(() => {
+    sessionIdRef.current = sessionId
+    setItems([])
+    setRunning(false)
+    streamingRef.current = null
+    itemIdxRef.current = 0
+    void (async () => {
+      const history = (await window.electronAPI.getMessages(sessionId)) as unknown[]
+      const irItems: DisplayItem[] = []
+      for (const raw of history) {
+        const { message } = sdkMessageToIR(raw as never)
+        if (message) {
+          irItems.push({ key: `h${itemIdxRef.current++}`, message })
+        }
+      }
+      setItems(irItems)
+    })()
+  }, [sessionId])
 
   useEffect(() => {
     const off = window.electronAPI.onStreamEvent((payload: unknown) => {

@@ -52,3 +52,6 @@ export {
   formatThinkingSignatureError,
   normalizeThinkingSignatureError,
 } from './thinking-signature-error'
+
+// kscc 核消息转译（SDKMessage → TAgentMessage IR，主进程 + renderer 共用）
+export { sdkMessageToIR } from './kscc-message-adapter'
