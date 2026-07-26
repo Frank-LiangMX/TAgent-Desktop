@@ -6,8 +6,9 @@
  * 不搬 TAgent_General 的 ThemePreview 装饰 SVG。Popover 弹出。
  */
 import { useAtomValue, useSetAtom } from 'jotai'
-import { Popover, PopoverTrigger, PopoverContent, Button, Badge } from '@tagent/ui'
-import { Palette, Check } from 'lucide-react'
+import { Popover, PopoverTrigger, PopoverContent, Badge } from '@tagent/ui'
+import { Palette } from '@phosphor-icons/react'
+import { Check } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
   themeModeAtom,
@@ -60,10 +61,15 @@ export function ThemeSettings(): JSX.Element {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="sm" className="text-xs gap-1.5 px-2 h-7">
-          <Palette className="size-3.5" />
-          主题
-        </Button>
+        <button
+          type="button"
+          className={cn(
+            'rail-island-btn titlebar-no-drag flex size-9 items-center justify-center rounded-xl transition-colors',
+            'text-muted-foreground hover:bg-accent hover:text-foreground',
+          )}
+        >
+          <Palette size={18} weight="regular" />
+        </button>
       </PopoverTrigger>
 
       <PopoverContent align="end" className="w-64 p-3">

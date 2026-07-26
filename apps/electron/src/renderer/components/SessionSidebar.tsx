@@ -33,6 +33,8 @@ interface SessionMeta {
   workspaceId?: string
   createdAt?: number
   updatedAt?: number
+  /** 会话轮数（user 消息数） */
+  turnCount?: number
 }
 
 /** workspace 分组结构 */
@@ -170,8 +172,11 @@ export function SessionSidebar({
                         <div className="truncate text-xs">{s.title}</div>
                         <div className="mt-0.5 flex items-center gap-2 text-[9px] text-muted-foreground">
                           {s.modelId && <span className="truncate">{s.modelId}</span>}
+                          {s.turnCount != null && s.turnCount > 0 && (
+                            <span className="shrink-0 tabular-nums">{s.turnCount} 轮</span>
+                          )}
                           {s.updatedAt && (
-                            <span className="shrink-0 tabular-nums">{formatTime(s.updatedAt)}</span>
+                            <span className="ml-auto shrink-0 tabular-nums">{formatTime(s.updatedAt)}</span>
                           )}
                         </div>
                       </div>

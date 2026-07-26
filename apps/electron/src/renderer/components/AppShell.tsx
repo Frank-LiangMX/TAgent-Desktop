@@ -6,6 +6,7 @@
  * 顶栏内容（渠道/主题等）、rail、sidebar、main 由 App 通过 props 传入。
  */
 import type { ReactNode } from 'react'
+import { WindowControls } from './WindowControls'
 
 interface AppShellProps {
   /** 顶栏内容（渠道管理/工作区/主题等），放在浮顶右侧 */
@@ -21,12 +22,16 @@ interface AppShellProps {
 export function AppShell({ topbar, rail, sidebar, children }: AppShellProps): JSX.Element {
   return (
     <div className="app-shell-scene">
-      {/* 顶栏：absolute 浮顶 */}
+      {/* 顶栏：单独一行浮顶（窗口栏），含窗口控制 + 可选额外内容。对齐 TAgent_General SpatialTopBar */}
       <header className="app-spatial-topbar titlebar-drag-region">
-        <div className="ml-auto flex items-center gap-2 titlebar-no-drag">{topbar}</div>
+        {topbar && <div className="flex items-center gap-2 titlebar-no-drag">{topbar}</div>}
+        {/* 窗口控制放顶栏右侧（对齐旧版 WindowControls 在 SpatialTopBar） */}
+        <div className="ml-auto titlebar-no-drag">
+          <WindowControls />
+        </div>
       </header>
 
-      {/* nav：rail + sidebar 玻璃浮岛 */}
+      {/* nav：rail + sidebar 玻璃浮岛，顶栏下 16px 间隙（band-inset-top） */}
       <nav className="app-shell-nav">
         <div className="app-nav-stack">
           {rail}

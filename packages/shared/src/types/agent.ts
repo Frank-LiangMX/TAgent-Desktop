@@ -889,6 +889,8 @@ export interface AgentSessionMeta {
   pinned?: boolean
   /** 是否已归档 */
   archived?: boolean
+  /** 会话轮数（user 消息数，一轮 = user + assistant 回复）。发消息时增量更新，旧会话无则空 */
+  turnCount?: number
   /** 附加的外部目录路径列表（绝对路径，作为 SDK additionalDirectories 传递） */
   attachedDirectories?: string[]
   /** 附加的外部文件路径列表（绝对路径，发送时以父目录作为 SDK additionalDirectories） */

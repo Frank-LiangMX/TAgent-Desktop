@@ -5,7 +5,7 @@
  * rail-island-btn（size-9 rounded-xl）样式。上胶囊：logo/会话/主题；下胶囊：设置。
  * 功能后续接（目前点击占位），先放视觉。
  */
-import { Sparkle, ChatsCircle, Palette, GearSix } from '@phosphor-icons/react'
+import { Sparkle, ChatsCircle, PlugsConnected, Palette, GearSix } from '@phosphor-icons/react'
 import { cn } from '../lib/utils'
 
 /** phosphor 图标统一参数（对齐旧版 RAIL_ICON） */
@@ -13,15 +13,26 @@ const RAIL_ICON = { size: 18, weight: 'regular' as const }
 
 interface RailProps {
   active?: 'chat' | 'theme' | 'settings'
+  /** 点击会话 */
   onChat?: () => void
-  onTheme?: () => void
+  /** 点击渠道管理 */
+  onChannels?: () => void
+  /** 主题入口（渲染 ThemeSettings 等自带触发的组件，替代 onTheme） */
+  themeSlot?: React.ReactNode
+  /** 点击设置（占位） */
   onSettings?: () => void
 }
 
-export function Rail({ active = 'chat', onChat, onTheme, onSettings }: RailProps): JSX.Element {
+export function Rail({
+  active = 'chat',
+  onChat,
+  onChannels,
+  themeSlot,
+  onSettings,
+}: RailProps): JSX.Element {
   return (
     <div className="app-nav-rail">
-      {/* 上胶囊：logo / 会话 / 主题 */}
+      {/* 上胶囊：logo / 会话 / 渠道 / 主题 */}
       <div className="app-rail-island">
         <RailIcon icon={<Sparkle {...RAIL_ICON} />} />
         <RailIcon
@@ -29,11 +40,11 @@ export function Rail({ active = 'chat', onChat, onTheme, onSettings }: RailProps
           active={active === 'chat'}
           onClick={onChat}
         />
-        <RailIcon
-          icon={<Palette {...RAIL_ICON} />}
-          active={active === 'theme'}
-          onClick={onTheme}
-        />
+        <RailIcon icon={<PlugsConnected {...RAIL_ICON} />} onClick={onChannels} />
+        {/* 主题：渲染 ThemeSettings（自带 Palette Popover 触发） */}
+        {themeSlot ?? (
+          <RailIcon icon={<Palette {...RAIL_ICON} />} active={active === 'theme'} />
+        )}
       </div>
       {/* 下胶囊：设置（最底，独立） */}
       <div className="app-rail-island">

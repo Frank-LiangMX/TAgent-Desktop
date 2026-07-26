@@ -67,12 +67,19 @@ declare global {
       createProjectWorkspace: () => Promise<AgentWorkspace | null>
       getCurrentWorkspace: () => Promise<AgentWorkspace | undefined>
       switchWorkspace: (id: string) => Promise<{ ok: boolean; error?: string }>
+      // 窗口控制（自定义 WindowControls 用）
+      windowIsMaximized: () => Promise<boolean>
+      windowMinimize: () => void
+      windowMaximize: () => void
+      windowClose: () => void
+      onWindowResize: (cb: () => void) => () => void
     }
   }
 }
 
 export function App(): JSX.Element {
   const [showChannels, setShowChannels] = useState(false)
+  const [showTheme, setShowTheme] = useState(false)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
   const selected = useAtomValue(selectedChannelAtom)
@@ -114,22 +121,15 @@ export function App(): JSX.Element {
   return (
     <TooltipProvider delayDuration={200}>
       <AppShell
-        topbar={
-          <>
-            <WorkspaceSelector />
-            <div className="w-px h-4 bg-border/40" />
-            <Button variant="outline" size="sm" onClick={() => setShowChannels(true)}>
-              渠道管理
-            </Button>
-            <div className="text-xs text-muted-foreground">
-              {selected ? `${selected.name} / ${selected.defaultModelId ?? '无默认模型'}` : '未选择'}
-              {channels.length === 0 && '（加载中…）'}
-            </div>
-            <div className="w-px h-4 bg-border/40" />
-            <ThemeSettings />
-          </>
+        topbar={null}
+        rail={
+          <Rail
+            active="chat"
+            onChat={newSession}
+            onChannels={() => setShowChannels(true)}
+            themeSlot={<ThemeSettings />}
+          />
         }
-        rail={<Rail active="chat" onChat={newSession} />}
         sidebar={
           <SessionSidebar
             activeSessionId={activeTabId}

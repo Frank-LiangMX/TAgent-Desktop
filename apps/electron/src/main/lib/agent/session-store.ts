@@ -78,6 +78,8 @@ export function createSession(input: {
   /** 工作区 ID（= sanitizePath(projectPath)，如 'F--TAgent-General'） */
   workspaceId?: string
   mode?: 'general' | 'ta'
+  /** 初始轮数（首条消息时传 1） */
+  turnCount?: number
 }): AgentSessionMeta {
   const meta: AgentSessionMeta = {
     id: input.id ?? randomUUID(),
@@ -86,6 +88,7 @@ export function createSession(input: {
     channelId: input.channelId,
     modelId: input.modelId,
     workspaceId: input.workspaceId,
+    turnCount: input.turnCount,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   }

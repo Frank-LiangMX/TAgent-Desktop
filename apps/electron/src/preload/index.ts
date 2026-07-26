@@ -87,6 +87,16 @@ const electronAPI = {
   /** 切换当前工作区 */
   switchWorkspace: (id: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_WORKSPACE + ':switch', id) as Promise<{ ok: boolean; error?: string }>,
+  // 窗口控制（自定义 WindowControls 用，对齐 TAgent_General）
+  windowIsMaximized: () => ipcRenderer.invoke('window:is-maximized') as Promise<boolean>,
+  windowMinimize: () => ipcRenderer.send('window:minimize'),
+  windowMaximize: () => ipcRenderer.send('window:maximize'),
+  windowClose: () => ipcRenderer.send('window:close'),
+  onWindowResize: (cb: () => void) => {
+    const handler = (): void => cb()
+    ipcRenderer.on('window:resize', handler)
+    return () => ipcRenderer.removeListener('window:resize', handler)
+  },
 } as const
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

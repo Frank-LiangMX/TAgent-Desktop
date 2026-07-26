@@ -5,7 +5,7 @@
  * 当前阶段：最小骨架，起一个 Electron 窗口加载 renderer。
  * 后续接入：双核适配层 + 长驻会话运行时 + agent 功能。
  */
-import { app, BrowserWindow, Menu } from 'electron'
+import { app, BrowserWindow, Menu, ipcMain } from 'electron'
 import path from 'node:path'
 import { SessionService } from './lib/ipc/session-service'
 import { ChannelService } from './lib/ipc/channel-service'
@@ -23,6 +23,9 @@ function createWindow(): void {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
+    // Windows 隐藏系统标题栏，用自定义 WindowControls（对齐 TAgent_General）。
+    // mac 用 hiddenInset 保留红绿灯；此处 Windows 走 hidden。
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -31,6 +34,17 @@ function createWindow(): void {
   })
 
   mainWindow = win
+
+  // 窗口控制 IPC（自定义 WindowControls 用）
+  ipcMain.handle('window:is-maximized', () => win.isMaximized())
+  ipcMain.on('window:minimize', () => win.minimize())
+  ipcMain.on('window:maximize', () => {
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+  })
+  ipcMain.on('window:close', () => win.close())
+  // 最大化状态变化时广播给渲染层（WindowControls 更新图标）
+  win.on('resize', () => win.webContents.send('window:resize'))
 
   // 转发 renderer console 到主进程 stdout（诊断输入框焦点 bug：renderer 的 [诊断] 日志会出现在 dev 日志里）
   win.webContents.on('console-message', (_e, _level, message, _line, _source) => {

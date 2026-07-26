@@ -64,6 +64,9 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   const [running, setRunning] = useState(false)
   /** 历史加载完成的标志：false 时 Conversation resize=instant（无动画）+ ScrollPositionManager 恢复位置 */
   const [scrollReady, setScrollReady] = useState(false)
+  /** 虚拟化：当前挂载的消息条数（从尾部切）。20 首 batch，idle 帧递增 40/批，全挂完置 Infinity。
+   * 保近期：底部对话区永远全量渲染，旧的渐进补齐，超长会话不卡。 */
+  const [visibleCount, setVisibleCount] = useState<number>(20)
   const [sentChannelId, setSentChannelId] = useState<string | null>(null)
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
@@ -111,6 +114,17 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
     return result
   }, [items])
 
+  /** 虚拟化：是否已全挂（visibleCount 追上 items.length 或 Infinity） */
+  const fullyMounted = visibleCount >= items.length
+  /** 实际挂载数（Infinity 当 items.length） */
+  const effectiveVisible = visibleCount >= items.length ? items.length : visibleCount
+  /** 挂载窗口起点（旧消息条数，未挂载） */
+  const visibleStartOffset = Math.max(0, items.length - effectiveVisible)
+  /** 虚拟化切片：尾部 effectiveVisible 条（最新在底） */
+  const visibleItems = items.slice(visibleStartOffset)
+  /** scrollReady 门控：历史加载完 && 全挂完才恢复滚动位置（对齐旧版 scrollReady = ready && fullyMounted） */
+  const effectiveScrollReady = scrollReady && fullyMounted
+
   // 绑核优先级：本会话已发送 > meta 已绑定 > 全局选中（新会话）
   const effectiveChannelId = sentChannelId ?? session.channelId ?? selectedChannelId
   const locked = sentChannelId !== null || !!session.channelId
@@ -123,6 +137,7 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
     setItems([])
     setRunning(false)
     setScrollReady(false)
+    setVisibleCount(20) // 虚拟化：切会话重置首批 20
     streamingRef.current = null
     itemIdxRef.current = 0
     void (async () => {
@@ -138,6 +153,29 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
       setScrollReady(true)
     })()
   }, [sessionId])
+
+  // 虚拟化分批递增：未全挂时，idle 帧每批 +40 补齐旧消息（保近期，底部对话不受影响）
+  useEffect(() => {
+    if (fullyMounted) return
+    if (items.length === 0) return
+    // requestIdleCallback 兼容（Electron Chromium 原生支持，fallback setTimeout）
+    const scheduleIdle: (cb: () => void) => number =
+      typeof window !== 'undefined' && 'requestIdleCallback' in window
+        ? window.requestIdleCallback
+        : (cb) => window.setTimeout(cb, 16) as unknown as number
+    const cancelIdle: (h: number) => void =
+      typeof window !== 'undefined' && 'cancelIdleCallback' in window
+        ? window.cancelIdleCallback
+        : (h) => window.clearTimeout(h)
+    const handle = scheduleIdle(() => {
+      setVisibleCount((prev) => {
+        if (prev >= items.length) return prev // 已全挂，不动
+        const next = Math.min(prev + 40, items.length)
+        return next >= items.length ? Number.POSITIVE_INFINITY : next // 全挂完置 Infinity，流式追加走全量分支
+      })
+    })
+    return () => cancelIdle(handle)
+  }, [visibleCount, items.length, fullyMounted])
 
   // 监听流式事件
   useEffect(() => {
@@ -239,7 +277,7 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
     <div className="relative h-full min-h-0">
       {/* 消息区：占满全高，自动钉底，680px 居中线程。
        * 底部 padding 给浮岛 composer 留位，最后一条不被盖死 */}
-      <Conversation className="absolute inset-0 min-h-0" resize={scrollReady ? 'smooth' : 'instant'}>
+      <Conversation className="absolute inset-0 min-h-0" resize={effectiveScrollReady ? 'smooth' : 'instant'}>
         <ConversationContent className="px-4 pt-2 pb-44">
           {items.length === 0 && !running ? (
             <div className="flex h-full items-center justify-center">
@@ -247,7 +285,17 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
             </div>
           ) : (
             <div className="tagent-thread">
-              {items.map((item) => (
+              {/* 虚拟化加载提示：未全挂时常驻显示（说清楚在加载、剩多少条），不闪烁 */}
+              {!fullyMounted && items.length > 0 && (
+                <div
+                  className="flex items-center justify-center gap-2 py-2 text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
+                  <span className="size-3.5 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground/60" />
+                  <span>正在加载更早的 {items.length - effectiveVisible} 条…</span>
+                </div>
+              )}
+              {visibleItems.map((item) => (
                 <ItemView key={item.key} item={item} />
               ))}
               {running && <MessageLoading />}
@@ -255,7 +303,7 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
           )}
         </ConversationContent>
         {/* 切会话恢复滚动位置（无动画、不打断查历史），对齐 TAgent_General ScrollPositionManager */}
-        <ScrollPositionManager id={sessionId} ready={scrollReady} />
+        <ScrollPositionManager id={sessionId} ready={effectiveScrollReady} />
         <ScrollMinimap items={minimapItems} />
         <ConversationScrollButton />
       </Conversation>

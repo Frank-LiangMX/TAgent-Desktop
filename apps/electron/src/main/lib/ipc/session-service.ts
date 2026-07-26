@@ -153,11 +153,15 @@ export class SessionService {
           channelId,
           modelId,
           workspaceId,
+          turnCount: 1,
         })
         console.log(`[会话 ${input.sessionId}] 已创建会话元数据，绑定渠道 ${channel.name}，workspaceId=${workspaceId ?? '(无)'}`)
       } else if (!meta.channelId) {
-        updateSessionMeta(input.sessionId, { channelId, workspaceId })
+        updateSessionMeta(input.sessionId, { channelId, workspaceId, turnCount: (meta.turnCount ?? 0) + 1 })
         console.log(`[会话 ${input.sessionId}] 绑定渠道 ${channel.name}，workspaceId=${workspaceId ?? '(无)'}`)
+      } else {
+        // 已绑定渠道：轮数 +1
+        updateSessionMeta(input.sessionId, { turnCount: (meta.turnCount ?? 0) + 1 })
       }
       // 建 SessionRuntime + 起循环
       rt = new SessionRuntime(input.sessionId, adapter)

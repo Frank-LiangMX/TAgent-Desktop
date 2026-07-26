@@ -3,6 +3,27 @@
 本项目变更记录，遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.0-dev.5] - 2026-07-26
+
+超长会话虚拟化 + 顶栏清理 + 自定义窗口栏 + 会话轮数标注。
+
+### 新增
+- **超长会话虚拟化** — 只渲染最近 20 条，旧消息 idle 帧递增补齐（40/批），防超长会话卡顿。底部对话区永远全量 + 流式实时追加 + 自动钉底（对话丝滑零损耗）；顶部"正在加载更早的 X 条"提示常驻；`scrollReady` 门控（分批期间不恢复滚动，全挂完才恢复）。见 `Chat.tsx`。待超长会话实测。
+- **自定义窗口栏** — `titleBarStyle: hidden`（Windows 隐藏系统栏）+ `WindowControls`（最小化/最大化/关闭 SVG，close hover 红色）+ 主进程 IPC（is-maximized/minimize/maximize/close/resize）+ preload。对齐 TAgent_General。见 `components/WindowControls.tsx`、`main/index.ts`、`preload/index.ts`。
+- **会话轮数标注** — `AgentSessionMeta.turnCount`，发 user 消息增量 +1，SessionSidebar 副行显"X 轮"。见 `session-service.ts`、`SessionSidebar.tsx`。旧会话无 turnCount 显空。
+
+### 变更
+- **顶栏清理** — 顶栏保留为单独一行（窗口栏，40px 浮顶 + 下方 16px 间隙 + nav），内容清空（渠道/主题移 rail），对齐旧版顶栏"安静"。
+- **渠道/主题移 rail** — rail 加渠道图标（PlugsConnected 开 ChannelManager）+ 主题入口（ThemeSettings 改 rail 图标样式）。
+- **AppShell** — 始终渲染顶栏条（含 WindowControls），scene padding-top:40px，nav margin-top:band-inset-top 间隙。
+
+### 已知缺口（后续补）
+- 虚拟化细化（向上滚补齐 / minimap 未挂载标记 / 补齐淡入）待超长会话实测后做
+- 虚拟化超长会话实测（当前无 20+ 轮会话）
+- 旧会话 turnCount 补算 / WorkspaceSelector 移 sidebar
+- 工具循环（canUseTool/MCP/Skill）未接
+- 材质系统 / 记忆系统 / 错误恢复 未接
+
 ## [2.0.0-dev.4] - 2026-07-26
 
 全局浮岛布局（AppShell）+ 多会话标签栏，对齐 TAgent_General 桌面版视觉与交互。
