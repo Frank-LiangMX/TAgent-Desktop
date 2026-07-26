@@ -1,0 +1,317 @@
+/*
+ * agent-thread.css — 会话线程样式（精简版，对齐 TAgent_General 视觉，不搬其 877 行屎山）
+ *
+ * 只含核心高频区需要的 4 类规则：线程容器 / 用户气泡 / 模型名胶囊 / 过程卡。
+ * 视觉参数取自 TAgent_General，fill/rim/shadow 复用已有 --surface-role-*（packages/ui/styles/surface-roles.css）。
+ * 禁染 primary/accent、禁 backdrop-filter（气泡），避免圆角糊黑。
+ */
+
+/* 线程：680px 居中 */
+.tagent-thread {
+  width: min(var(--conversation-max, 680px), calc(100% - 24px));
+  margin: 0 auto;
+  padding-top: 22px;
+}
+
+/*
+ * 用户气泡：中性玻璃板 + 右下尖角 + 顶高光 + 向下柔影
+ * 对齐 TAgent_General agent-thread.css:420-438（.tagent-agent-thread .agent-user-bubble）。
+ * 用 .tagent-thread 父前缀提优先级，压过库组件 UserMessageContent 的 px-3.5 py-2.5。
+ * fill 调实（0.88）：TAgent_General 气泡叠在 content-area 实色面板上才明显（fill 0.59），
+ * 我无面板、scene 半透明直透，需更实 fill 才有边界。
+ * 禁 backdrop-filter（圆角糊黑）。
+ */
+.tagent-thread .agent-user-bubble {
+  background: rgb(var(--glass-rgb) / 0.88);
+  border: 1px solid var(--surface-role-message-user-rim);
+  border-radius: var(--bubble-radius, 16px);
+  border-bottom-right-radius: var(--bubble-tail, 6px);
+  box-shadow: var(--surface-role-message-user-shadow);
+  color: hsl(var(--foreground) / 0.92);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.72;
+  padding: 12px 14px;
+  filter: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/*
+ * 助手模型名胶囊：turn 第一行标题，圆角矩形描边
+ * 对齐 TAgent_General agent-thread.css:123-141（.tagent-agent-thread .agent-turn-title）。
+ * 极轻玻璃（color-mix card 55%）+ blur 8px，描边跟过程卡同款，不染 accent。
+ * 文字色 muted（0.88），不是 0.6；align-self 让胶囊贴左不撑满。
+ */
+.agent-turn-title {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 5.5%, transparent);
+  background: color-mix(in srgb, hsl(var(--card)) 55%, transparent);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  color: hsl(var(--muted-foreground) / 0.88);
+  user-select: none;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.dark .agent-turn-title {
+  background: color-mix(in srgb, rgb(var(--glass-rgb, 50 52 56)) 55%, transparent);
+  border-color: rgb(255 255 255 / 0.1);
+}
+
+/*
+ * 过程卡：tool_use / thinking 容器的极轻 well 底
+ * color-mix foreground 3.2%（极轻），圆角比气泡大一档
+ */
+.agent-process {
+  border-radius: 16px;
+  background: color-mix(in srgb, hsl(var(--foreground)) 3.2%, transparent);
+  padding: 4px 6px 6px;
+}
+
+/*
+ * 会话项选中态：12px 圆角 + 4% foreground 叠色 + 内高光 + 无 blur
+ * 对齐 TAgent_General session-list-item-active，不染 accent、不用 backdrop-filter
+ */
+.session-list-item-active {
+  background: color-mix(in srgb, hsl(var(--foreground)) 4%, hsl(var(--background)));
+  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 7%, transparent);
+  border-radius: var(--session-radius, 12px);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.35),
+    0 4px 12px hsl(var(--foreground) / 0.05);
+}
+
+/*
+ * 滚动到底部按钮：浮岛玻璃按钮，定位在 composer 输入框上方（不被浮岛盖住）。
+ * 对齐 TAgent_General agent-thread.css:612 的玻璃浮岛按钮样式。
+ * 库组件默认 bottom-[26px] 会被输入浮岛盖住，这里上移到输入框上方（~140px）。
+ */
+.conversation-scroll-btn,
+[data-conversation-scroll-btn] {
+  bottom: 140px !important;
+  color: hsl(var(--muted-foreground) / 0.85);
+  background: rgb(var(--glass-rgb) / 0.6) !important;
+  border: 1px solid rgb(var(--glass-rgb) / 0.5) !important;
+  box-shadow:
+    0 8px 20px -6px rgb(23 30 40 / 0.16),
+    inset 0 1px 0 rgb(255 255 255 / 0.5) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(1.06);
+  backdrop-filter: blur(18px) saturate(1.06);
+  transition: color 160ms ease, box-shadow 180ms ease, transform 160ms ease;
+}
+.conversation-scroll-btn:hover,
+[data-conversation-scroll-btn]:hover {
+  color: hsl(var(--foreground)) !important;
+  border-color: var(--spatial-accent-line) !important;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    0 0 0 2px var(--spatial-accent-soft),
+    0 8px 20px -6px rgb(23 30 40 / 0.16) !important;
+  transform: translateY(-1px);
+}
+
+/* ===== ScrollMinimap 样式（对齐 TAgent_General globals.css:2755-3000 + 3383-3410） =====
+ * 刻度 rail / bar / peek chip / popover 面板 / bubble。
+ * navigation-fill 用 glass-rgb 简化（避免 --surface-role-navigation-fill 的 calc 嵌套在 Electron 解析失败）。
+ */
+
+.message-nav-rail {
+  left: 10px;
+  right: auto;
+}
+
+.message-nav-bar {
+  background: hsl(var(--primary) / 0.38);
+  transform-origin: left center;
+  will-change: width, height;
+}
+.message-nav-bar:hover,
+.message-nav-bar-focused {
+  background: hsl(var(--primary) / 0.72);
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.18);
+}
+.message-nav-bar-user {
+  background: hsl(var(--primary) / 0.32);
+}
+.message-nav-bar-assistant {
+  background: hsl(var(--primary) / 0.42);
+}
+.message-nav-bar-status {
+  background: hsl(var(--destructive) / 0.55);
+}
+.message-nav-bar-visible {
+  background: hsl(var(--primary) / 0.78);
+}
+.dark .message-nav-bar {
+  background: hsl(var(--primary) / 0.42);
+}
+.dark .message-nav-bar:hover,
+.dark .message-nav-bar-focused {
+  background: hsl(var(--primary) / 0.78);
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.28);
+}
+.dark .message-nav-bar-user {
+  background: hsl(var(--primary) / 0.34);
+}
+.dark .message-nav-bar-assistant {
+  background: hsl(var(--primary) / 0.48);
+}
+.dark .message-nav-bar-visible {
+  background: hsl(var(--primary) / 0.82);
+}
+
+/* peep / 完整 minimap 浮岛面板 */
+.message-nav-float {
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  border-radius: var(--app-shell-composer-radius, 16px);
+  background: rgb(var(--glass-rgb) / 0.72);
+  box-shadow: 0 10px 30px -10px rgb(23 30 40 / 0.18), inset 0 1px 0 rgb(255 255 255 / 0.5);
+  -webkit-backdrop-filter: blur(15px) saturate(1.06);
+  backdrop-filter: blur(15px) saturate(1.06);
+  color: hsl(var(--foreground));
+}
+.message-nav-peek-chip {
+  background: rgb(var(--glass-rgb) / 0.42);
+  border: 1px solid hsl(var(--border) / 0.55);
+  color: hsl(var(--muted-foreground));
+}
+.message-nav-open-btn {
+  background: transparent;
+}
+.message-nav-open-btn--active {
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.22);
+}
+.message-nav-peek-enter {
+  animation: message-nav-peek-in 140ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes message-nav-peek-in {
+  from { opacity: 0; transform: translate3d(-4px, 0, 0) scale(0.98); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+.message-nav-popover {
+  min-height: 168px;
+  transform-origin: top left;
+  will-change: transform, opacity;
+}
+.message-nav-popover-enter {
+  animation: message-nav-popover-in 170ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.message-nav-popover-exit {
+  animation: message-nav-popover-out 90ms ease-in both;
+}
+@keyframes message-nav-popover-in {
+  from { opacity: 0; transform: translate3d(-6px, -4px, 0) scale(0.97); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+}
+@keyframes message-nav-popover-out {
+  from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  to { opacity: 0; transform: translate3d(-4px, -2px, 0) scale(0.985); }
+}
+.message-nav-popover-header {
+  border-bottom: 1px solid hsl(var(--border) / 0.55);
+  background: rgb(var(--glass-rgb) / 0.28);
+}
+.dark .message-nav-popover-header {
+  background: rgb(255 255 255 / 0.04);
+}
+
+/* minimap 面板内聊天气泡 */
+.message-nav-bubble {
+  display: block;
+}
+.message-nav-bubble-user {
+  background: rgb(var(--glass-rgb) / 0.88);
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  box-shadow: 0 6px 14px -8px rgb(23 30 40 / 0.1), inset 0 1px 0 rgb(255 255 255 / 0.6);
+  color: hsl(var(--foreground));
+  border-radius: 12px 12px 4px 12px;
+}
+.message-nav-bubble-assistant {
+  background: color-mix(in srgb, hsl(var(--foreground)) 5.5%, hsl(var(--background)));
+  color: hsl(var(--foreground));
+  border-radius: 12px 12px 12px 4px;
+  /* 撑满宽度：右边贴面板右缘，和用户气泡右对齐（覆盖库 max-w-[88%] 的错位） */
+  max-width: 100% !important;
+}
+.message-nav-bubble-status {
+  background: color-mix(in srgb, hsl(var(--destructive)) 9%, hsl(var(--background)));
+  border-radius: 10px;
+  max-width: 100%;
+}
+.dark .message-nav-bubble-user {
+  background: rgb(var(--glass-rgb) / 0.88);
+}
+.dark .message-nav-bubble-assistant {
+  background: color-mix(in srgb, hsl(var(--foreground)) 8%, hsl(var(--background)));
+}
+.dark .message-nav-bubble-status {
+  background: color-mix(in srgb, hsl(var(--destructive)) 14%, hsl(var(--background)));
+}
+.message-nav-bubble-user:hover,
+.message-nav-bubble-assistant:hover,
+.message-nav-bubble-status:hover {
+  filter: brightness(1.03);
+}
+.message-nav-bubble-inview:not(.message-nav-bubble-anchor) {
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.18);
+}
+.dark .message-nav-bubble-inview:not(.message-nav-bubble-anchor) {
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.26);
+}
+
+/* 当前会话（anchor）：只气泡变色，不要描边、不要底色条 */
+.message-nav-bubble-anchor {
+  box-shadow: none;
+}
+.message-nav-bubble-user.message-nav-bubble-anchor {
+  background: color-mix(in srgb, hsl(var(--primary)) 14%, rgb(var(--glass-rgb) / 0.88));
+  box-shadow: 0 6px 14px -8px rgb(23 30 40 / 0.1), inset 0 1px 0 rgb(255 255 255 / 0.6);
+}
+.message-nav-bubble-assistant.message-nav-bubble-anchor {
+  background: color-mix(in srgb, hsl(var(--primary)) 16%, hsl(var(--background)));
+}
+.dark .message-nav-bubble-anchor {
+  box-shadow: none;
+}
+.dark .message-nav-bubble-user.message-nav-bubble-anchor {
+  background: color-mix(in srgb, hsl(var(--primary)) 20%, rgb(var(--glass-rgb) / 0.88));
+  box-shadow: 0 6px 14px -8px rgb(23 30 40 / 0.1), inset 0 1px 0 rgb(255 255 255 / 0.6);
+}
+.dark .message-nav-bubble-assistant.message-nav-bubble-anchor {
+  background: color-mix(in srgb, hsl(var(--primary)) 22%, hsl(var(--background)));
+}
+
+/* 右侧自绘滚动 thumb */
+.scroll-progress-thumb {
+  background-color: transparent;
+  transition: background-color 0.2s ease;
+}
+.scroll-progress-thumb:hover {
+  background-color: hsl(var(--primary) / 0.24);
+}
+.scroll-progress-thumb-visible {
+  background-color: hsl(var(--primary) / 0.18);
+}
+.scroll-progress-thumb-active {
+  background-color: hsl(var(--primary) / 0.36) !important;
+}
+.dark .scroll-progress-thumb:hover {
+  background-color: hsl(var(--primary) / 0.28);
+}
+.dark .scroll-progress-thumb-visible {
+  background-color: hsl(var(--primary) / 0.22);
+}
+.dark .scroll-progress-thumb-active {
+  background-color: hsl(var(--primary) / 0.4) !important;
+}

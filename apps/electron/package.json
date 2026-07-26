@@ -1,6 +1,6 @@
 {
   "name": "@tagent/electron",
-  "version": "2.0.0-dev.2",
+  "version": "2.0.0-dev.3",
   "description": "TAgent-Desktop - 2.0 骨架重构版（会话=进程常驻 + 双核可拔插）",
   "main": "dist/main.cjs",
   "private": true,
@@ -39,6 +39,7 @@
     "@tagent/pi-core": "workspace:*",
     "@tagent/shared": "workspace:*",
     "@tagent/ui": "workspace:*",
+    "use-stick-to-bottom": "^1.0.1",
     "@tiptap/core": "3.19.0",
     "@tiptap/extension-mention": "3.19.0",
     "@tiptap/extension-placeholder": "3.19.0",

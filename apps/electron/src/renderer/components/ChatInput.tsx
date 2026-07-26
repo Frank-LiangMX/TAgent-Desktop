@@ -1,8 +1,10 @@
 /**
- * 聊天输入组件（textarea 版，简单可靠）
+ * 聊天输入组件（textarea 版，套 composer 玻璃浮岛壳）
  *
- * Enter 提交 / Shift+Enter 换行。
- * 父组件通过 ref 调用 getText() / clear()。
+ * 严格对照 TAgent_General 的 .chat-input-glass（styles/app-shell.css 逐行对齐）：
+ * 外层 app-shell-content-stage 让选择器命中，内层 chat-input-glass 用真实规则
+ * （抬升浮岛 + 光学折射层 + 三层聚焦 shadow + blur/saturate）。
+ * Enter 提交 / Shift+Enter 换行。父组件通过 ref 调用 getText() / clear()。
  * 后续加 @mention 时再换 TipTap。
  */
 import { forwardRef, useImperativeHandle, useRef, useCallback } from 'react'
@@ -22,10 +24,12 @@ interface ChatInputProps {
   onSubmit: () => void
   disabled?: boolean
   placeholder?: string
+  /** composer 壳内底部工具栏（模型选择 + 发送/停止按钮） */
+  footer?: React.ReactNode
 }
 
 export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
-  function ChatInput({ onSubmit, disabled, placeholder }, ref) {
+  function ChatInput({ onSubmit, disabled, placeholder, footer }, ref) {
     const textareaRef = useRef<HTMLTextAreaElement>(null)
 
     const getText = useCallback(() => textareaRef.current?.value ?? '', [])
@@ -55,19 +59,26 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     }, [onSubmit])
 
     return (
-      <textarea
-        ref={textareaRef}
-        className={cn(
-          'w-full resize-none border-0 bg-transparent text-sm outline-none',
-          'placeholder:text-muted-foreground',
-          disabled && 'opacity-50 cursor-not-allowed',
-        )}
-        style={{ minHeight: 44, maxHeight: 200 }}
-        placeholder={placeholder}
-        disabled={disabled}
-        onKeyDown={handleKeyDown}
-        onInput={autoResize}
-      />
+      // 外层让 .app-shell-content-stage .chat-input-glass 选择器命中
+      <div className="app-shell-content-stage">
+        {/* composer 玻璃浮岛：真实规则在 styles/app-shell.css，此处只挂类 + 内 padding */}
+        <div className={cn('chat-input-glass', disabled && 'opacity-60')}>
+          <textarea
+            ref={textareaRef}
+            className={cn(
+              'w-full resize-none border-0 bg-transparent outline-none',
+              'placeholder:text-muted-foreground/60',
+              'disabled:cursor-not-allowed',
+            )}
+            style={{ minHeight: 52, maxHeight: 200, padding: '9px 15px 15px' }}
+            placeholder={placeholder}
+            disabled={disabled}
+            onKeyDown={handleKeyDown}
+            onInput={autoResize}
+          />
+          {footer}
+        </div>
+      </div>
     )
   },
 )

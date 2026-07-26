@@ -3,6 +3,35 @@
 本项目变更记录，遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.0-dev.3] - 2026-07-26
+
+会话页面 UI 细化 + 主题系统，对齐 TAgent_General 桌面版视觉（干净重写，不搬其屎山 CSS）。
+
+### 新增
+- **主题系统** — 6 色系（default/ocean/forest/slate/orange/purple）× 浅/深/跟随系统；localStorage 持久化 + matchMedia 系统明暗。token 复用同库 tokens.css（12 套 `.theme-*` class 已预生成），纯 CSS class 切换。见 `renderer/atoms/theme.ts`、`ThemeInitializer`、`ThemeSettings`。
+- **scene 主题背景** — 会话页背景换主题 scene 弥散场（三光斑径向渐变），换主题自动换色。用 `--scene-*-rgb` 直接拼不嵌套 color-mix（绕开 Electron 多层 color-mix+calc 解析失败）。
+- **composer 玻璃浮岛** — 输入框浮岛布局（消息从下方滚过透出）+ 玻璃质感（透明底 + scene-a 顶光 + blur + 顶高光 + 向下柔影 + 聚焦 ring），对齐 TAgent_General `chat-input-glass`。见 `styles/app-shell.css`。
+- **用户气泡 / 模型名胶囊** — 中性玻璃板气泡（右下尖角 + 顶高光 + 向下柔影）；assistant 9px 玻璃胶囊铭牌。见 `styles/agent-thread.css`、`MessageView`。
+- **自绘滚动条 + 消息导航** — 接入 `ScrollMinimap`（右侧自绘 thumb + 左侧鱼眼刻度 + minimap 面板），原生 webkit 滚动条整条隐藏（避开 Chromium 箭头按钮顽疾）。搬全 `message-nav-*` + `scroll-progress-thumb` CSS。
+- **滚动位置记忆** — `ScrollPositionManager`（对齐旧版 `useScrollPositionMemory`）：useLayoutEffect + stopScroll + 直接设 scrollTop，无动画无可见滚动过程；记忆每会话距底距离，切回恢复不打断查历史。
+- **ModelSelector** — 输入框尾部 Popover pill 选渠道，会话绑核后锁定。
+
+### 修复
+- **会话页布局** — 滚不到底/输入框盖内容：改浮岛布局（消息区 `absolute inset-0` + 输入区 `absolute` 底部）+ 补 `min-h-0` 链。
+- **TooltipProvider** — App 根补 TooltipProvider（ScrollMinimap 内 Tooltip 缺 Provider 炸白屏）。
+- **minimap 面板** — agent 气泡撑满宽度右贴面板右缘与用户气泡右对齐；anchor 标示改气泡变色（去描边去底色条）；minimap items 按 user 分组带 replyPreview（之前只填 preview 致助手气泡不渲染、全右对齐）。
+
+### 变更
+- **工程** — electron 加 `use-stick-to-bottom` devDep（ScrollPositionManager 用其 context）；`globals.css` 加几何 token + scene 背景 + `scrollbar-none`/`scrollbar-thin`；新建 `styles/agent-thread.css`（精简）+ `styles/app-shell.css`（composer）。
+
+### 已知缺口（后续版本补）
+- 工具循环（canUseTool/MCP/Skill 注入）未接
+- Xfast/MoA/MCP 已封装未接入 agent 循环
+- 记忆系统（Nudge/L0-L5）未接
+- 错误恢复（进程崩溃 fallback / prompt_too_long compaction）未接
+- 材质系统（frosted/glass/soft 切换）未接（先固定 frosted）
+- settings.json 持久化 + 主进程 nativeTheme 监听未接（localStorage 够用）
+
 ## [2.0.0-dev.2] - 2026-07-26
 
 从 dev.1 的"能对话骨架"推进到"可配置多渠道、按项目组织工作区、kscc 核与 Pi 核均可跑"。本版含 dev.1 之后已提交的渲染层/持久化工作 + 本次渠道管理/工作区/Pi 核接入。

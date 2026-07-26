@@ -5,14 +5,16 @@
  * 消息区用 Conversation 容器（自动钉底），输入区用 TipTap ChatInput。
  * 渠道：首条消息按 effectiveChannelId 绑核（kscc↔external 互斥），发送后锁定。
  */
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import type { TAgentDesktopStreamPayload, TAgentMessage, Channel } from '@tagent/shared'
+import type { TAgentDesktopStreamPayload, TAgentMessage } from '@tagent/shared'
 import { sdkMessageToIR } from '@tagent/shared'
 import {
   Conversation,
   ConversationContent,
   ConversationScrollButton,
+  ScrollMinimap,
+  type MinimapItem,
   Message,
   MessageContent,
   MessageResponse,
@@ -22,8 +24,11 @@ import {
   ReasoningContent,
   Button,
 } from '@tagent/ui'
+import { ArrowUp, Square } from 'lucide-react'
 import { MessageView } from './components/MessageView'
 import { ChatInput, type ChatInputHandle } from './components/ChatInput'
+import { ModelSelector } from './components/ModelSelector'
+import { ScrollPositionManager } from './components/ScrollPositionManager'
 import { channelsAtom, selectedChannelIdAtom, bumpSessionsRefreshAtom } from './atoms/channel-atoms'
 import { currentWorkspaceIdAtom } from './atoms/workspace-atoms'
 
@@ -57,6 +62,8 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   const sessionId = session.id
   const [items, setItems] = useState<DisplayItem[]>([])
   const [running, setRunning] = useState(false)
+  /** 历史加载完成的标志：false 时 Conversation resize=instant（无动画）+ ScrollPositionManager 恢复位置 */
+  const [scrollReady, setScrollReady] = useState(false)
   const [sentChannelId, setSentChannelId] = useState<string | null>(null)
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
@@ -70,18 +77,52 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   const currentWorkspaceId = useAtomValue(currentWorkspaceIdAtom)
   const bumpRefresh = useSetAtom(bumpSessionsRefreshAtom)
 
+  // 构造 ScrollMinimap 的 items：按 user 分组，每项 = 用户消息 + 紧随的助手回复（对齐 TAgent_General）
+  // 面板里用户气泡右对齐、助手 replyPreview 气泡左对齐。
+  const minimapItems = useMemo<MinimapItem[]>(() => {
+    const msgs = items.filter((it) => it.message).map((it) => it.message!)
+    const result: MinimapItem[] = []
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i]
+      if (!m || m.type !== 'user') continue
+      const userText = firstText(m) ?? ''
+      // 找紧随的下一条 assistant 作 replyPreview
+      let replyPreview: string | undefined
+      let replyModel: string | undefined
+      for (let j = i + 1; j < msgs.length; j++) {
+        const next = msgs[j]
+        if (!next) continue
+        if (next.type === 'user') break
+        if (next.type === 'assistant') {
+          const t = firstText(next)
+          if (t) replyPreview = t.replace(/\s+/g, ' ').trim().slice(0, 120)
+          replyModel = next.modelId
+          break
+        }
+      }
+      result.push({
+        id: items[i]!.key,
+        role: 'user',
+        preview: userText.slice(0, 160) || '用户消息',
+        replyPreview,
+        model: replyModel,
+      })
+    }
+    return result
+  }, [items])
+
   // 绑核优先级：本会话已发送 > meta 已绑定 > 全局选中（新会话）
   const effectiveChannelId = sentChannelId ?? session.channelId ?? selectedChannelId
   const locked = sentChannelId !== null || !!session.channelId
-  const enabledChannels = channels.filter((c) => c.enabled)
-  const activeChannel: Channel | undefined = channels.find((c) => c.id === effectiveChannelId)
   const ksccChannelId = channels.find((c) => c.provider === 'kscc-internal')?.id
 
-  // 切换会话时加载历史
+  // 切换会话时加载历史。滚动位置恢复交给 ScrollPositionManager（Conversation 内部），
+  // 它用 useLayoutEffect + stopScroll + 直接设 scrollTop（无动画、无可见滚动过程）。
   useEffect(() => {
     sessionIdRef.current = sessionId
     setItems([])
     setRunning(false)
+    setScrollReady(false)
     streamingRef.current = null
     itemIdxRef.current = 0
     void (async () => {
@@ -94,6 +135,7 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
         }
       }
       setItems(irItems)
+      setScrollReady(true)
     })()
   }, [sessionId])
 
@@ -194,62 +236,69 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* 会话头：渠道选择 + 模型 */}
-      <div className="h-10 shrink-0 border-b flex items-center px-3 gap-2 text-xs">
-        <span className="text-muted-foreground">渠道:</span>
-        <select
-          className="px-1.5 py-0.5 text-xs rounded border border-input bg-background"
-          value={effectiveChannelId ?? ''}
-          disabled={locked}
-          onChange={(e) => setSelectedChannelId(e.target.value)}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          {enabledChannels.length === 0 && <option value="">（无可用渠道）</option>}
-          {enabledChannels.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}（{c.provider}）
-            </option>
-          ))}
-        </select>
-        {activeChannel?.defaultModelId && (
-          <span className="text-muted-foreground">模型: {activeChannel.defaultModelId}</span>
-        )}
-        {locked && <span className="text-muted-foreground/50 text-[11px]">已绑定（不可切换）</span>}
-      </div>
-
-      {/* 消息区：Conversation 自动钉底 */}
-      <Conversation className="flex-1">
-        <ConversationContent className="px-4 py-2">
-          {items.map((item) => (
-            <ItemView key={item.key} item={item} />
-          ))}
-          {running && <MessageLoading />}
+    <div className="relative h-full min-h-0">
+      {/* 消息区：占满全高，自动钉底，680px 居中线程。
+       * 底部 padding 给浮岛 composer 留位，最后一条不被盖死 */}
+      <Conversation className="absolute inset-0 min-h-0" resize={scrollReady ? 'smooth' : 'instant'}>
+        <ConversationContent className="px-4 pt-2 pb-44">
+          {items.length === 0 && !running ? (
+            <div className="flex h-full items-center justify-center">
+              <p className="text-sm text-muted-foreground/60">输入消息开始对话</p>
+            </div>
+          ) : (
+            <div className="tagent-thread">
+              {items.map((item) => (
+                <ItemView key={item.key} item={item} />
+              ))}
+              {running && <MessageLoading />}
+            </div>
+          )}
         </ConversationContent>
+        {/* 切会话恢复滚动位置（无动画、不打断查历史），对齐 TAgent_General ScrollPositionManager */}
+        <ScrollPositionManager id={sessionId} ready={scrollReady} />
+        <ScrollMinimap items={minimapItems} />
         <ConversationScrollButton />
       </Conversation>
 
-      {/* 输入区 */}
-      <div className="shrink-0 border-t px-4 py-3">
-        <ChatInput
-          ref={chatInputRef}
-          onSubmit={() => void send()}
-          disabled={running}
-          placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
-        />
-        <div className="flex gap-2 mt-2">
-          <Button size="sm" disabled={running} onClick={() => void send()}>
-            发送
-          </Button>
-          {running && (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => window.electronAPI.stopAgent(sessionIdRef.current)}
-            >
-              停止
-            </Button>
-          )}
+      {/* 输入区：composer 玻璃浮岛 absolute 浮在底部，680px 居中。
+       * 消息从下方滚过透出（透明玻璃 + blur），对齐 TAgent_General 浮岛布局 */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 px-4 pb-4 pt-2">
+        <div className="pointer-events-auto mx-auto max-w-[680px]">
+          <ChatInput
+            ref={chatInputRef}
+            onSubmit={() => void send()}
+            disabled={running}
+            placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
+            footer={
+              <div className="flex items-center justify-between px-2 pb-2 pt-1">
+                <ModelSelector
+                  effectiveChannelId={effectiveChannelId}
+                  locked={locked}
+                  onSelectChannel={setSelectedChannelId}
+                />
+                <div className="flex items-center gap-1.5">
+                  {running && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-9 rounded-full text-destructive hover:bg-destructive/10"
+                      onClick={() => window.electronAPI.stopAgent(sessionIdRef.current)}
+                    >
+                      <Square className="size-4 fill-current" />
+                    </Button>
+                  )}
+                  <Button
+                    size="icon"
+                    className="size-9 rounded-full"
+                    disabled={running}
+                    onClick={() => void send()}
+                  >
+                    <ArrowUp className="size-5" />
+                  </Button>
+                </div>
+              </div>
+            }
+          />
         </div>
       </div>
     </div>
@@ -258,28 +307,34 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
 
 /** 显示项渲染 */
 function ItemView({ item }: { item: DisplayItem }): JSX.Element {
-  // 完整消息（IR）→ MessageView
+  // 完整消息（IR）→ MessageView（挂 data-message-id 供 ScrollMinimap 定位）
   if (item.message) {
-    return <MessageView message={item.message} />
+    return (
+      <div data-message-id={item.key}>
+        <MessageView message={item.message} />
+      </div>
+    )
   }
 
   // 流式占位
   return (
-    <Message from="assistant">
-      <MessageContent>
-        {/* thinking 流式 */}
-        {item.streamingThinking && (
-          <Reasoning isStreaming defaultOpen>
-            <ReasoningTrigger />
-            <ReasoningContent>{item.streamingThinking}</ReasoningContent>
-          </Reasoning>
-        )}
-        {/* text 流式：typewriter 逐字挤出，平滑端点粗粒度分块（~500ms/块）的顿挫感 */}
-        {item.streamingText && <TypewriterText text={item.streamingText} />}
-        {/* 无内容时显示加载 */}
-        {!item.streamingText && !item.streamingThinking && <MessageLoading />}
-      </MessageContent>
+    <div data-message-id={item.key}>
+      <Message from="assistant">
+        <MessageContent>
+          {/* thinking 流式 */}
+          {item.streamingThinking && (
+            <Reasoning isStreaming defaultOpen>
+              <ReasoningTrigger />
+              <ReasoningContent>{item.streamingThinking}</ReasoningContent>
+            </Reasoning>
+          )}
+          {/* text 流式：typewriter 逐字挤出，平滑端点粗粒度分块（~500ms/块）的顿挫感 */}
+          {item.streamingText && <TypewriterText text={item.streamingText} />}
+          {/* 无内容时显示加载 */}
+          {!item.streamingText && !item.streamingThinking && <MessageLoading />}
+        </MessageContent>
     </Message>
+    </div>
   )
 }
 
@@ -326,4 +381,10 @@ function TypewriterText({ text }: { text: string }): JSX.Element {
   }, [text])
 
   return <MessageResponse>{displayed}</MessageResponse>
+}
+
+/** 取消息首个 text 块的文本（供 minimap preview） */
+function firstText(m: TAgentMessage): string | undefined {
+  const block = m.content.find((b) => b.type === 'text') as { type: 'text'; text: string } | undefined
+  return block?.text
 }

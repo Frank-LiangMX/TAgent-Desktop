@@ -19,7 +19,6 @@ import {
   Badge,
   Message,
   MessageContent,
-  MessageHeader,
   UserMessageContent,
 } from '@tagent/ui'
 
@@ -78,8 +77,10 @@ function AssistantView({
 }): React.ReactElement {
   return (
     <Message from="assistant">
-      {/* 头部：模型名 */}
-      {message.modelId && <MessageHeader model={message.modelId} />}
+      {/* 模型名胶囊（9px 玻璃胶囊，对齐 TAgent_General，无头像） */}
+      {message.modelId && (
+        <div className="agent-turn-title mb-2.5">{message.modelId}</div>
+      )}
       <MessageContent>
         {/* 错误状态 */}
         {message.error && (

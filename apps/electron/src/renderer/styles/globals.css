@@ -1,18 +1,146 @@
-/* TAgent-Desktop renderer 全局样式（最小骨架） */
+/* TAgent-Desktop renderer 全局样式 */
 @import '@tagent/ui/src/tokens/__generated__/tokens.css';
 @import '@tagent/ui/styles/glass.css';
+@import './agent-thread.css';
+@import './app-shell.css';
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * 会话页几何 token（对齐 TAgent_General 视觉参数，但不搬它的 --spatial-* 与 --app-shell-* 全套变量）
+ * 只留真正用到的少数几个，其余直接用 Tailwind arbitrary value 或已有 --surface-role-* / --scene-* token
+ */
 @layer base {
   :root {
     color-scheme: light;
+    /* 线程最大宽度（680px 居中） */
+    --conversation-max: 680px;
+    /* composer 玻璃浮岛圆角（对齐 TAgent_General --app-shell-composer-radius） */
+    --app-shell-composer-radius: 16px;
+    /* 用户气泡圆角 + 右下尖角 */
+    --bubble-radius: 16px;
+    --bubble-tail: 6px;
+    /* 会话项选中态圆角 */
+    --session-radius: 12px;
+    /* 助手模型名胶囊字号 */
+    --turn-title-size: 9px;
+    /* composer 聚焦态 accent（对齐 TAgent_General --spatial-accent-*，浅色） */
+    --spatial-accent-soft: hsl(var(--primary) / 0.1);
+    --spatial-accent-line: hsl(var(--primary) / 0.26);
+    --app-shell-motion: cubic-bezier(0.16, 1, 0.3, 1);
   }
-  body {
-    @apply bg-background text-foreground;
-    font-family: system-ui, -apple-system, sans-serif;
-    margin: 0;
+  .dark {
+    color-scheme: dark;
+    --spatial-accent-soft: hsl(var(--primary) / 0.16);
+    --spatial-accent-line: hsl(var(--primary) / 0.28);
   }
+}
+
+/*
+ * scene 弥散场挂在 html（不是 body），body/#root 必须 transparent 才透得出。
+ * 对齐 TAgent_General globals.css:414-437 的挂法。写在 @layer 之外（顶层规则，
+ * 优先级正常），避免被 Tailwind preflight / Electron UA 白底盖住。换主题 = --scene-* 变 = 背景自动换。
+ */
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+}
+html {
+  /*
+   * scene 弥散场：直接用 --scene-*-rgb 拼径向渐变，不依赖 --surface-role-scene-fill
+   * 的 color-mix 嵌套（Electron Chromium 解析多层 color-mix+var+calc 会整体丢成 none）。
+   * 底色 scene-base + 三光斑 a/b/c，纯 radial-gradient 不嵌套，切主题即变。
+   * 透明度取 TAgent_General scene strength 的量级（~0.2）。
+   */
+  background:
+    radial-gradient(42% 48% at 36% 10%, rgb(var(--scene-a-rgb) / 0.22), transparent 60%),
+    radial-gradient(40% 46% at 48% 88%, rgb(var(--scene-c-rgb) / 0.22), transparent 60%),
+    radial-gradient(52% 58% at 82% 78%, rgb(var(--scene-b-rgb) / 0.22), transparent 62%),
+    rgb(var(--scene-base-rgb)) !important;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+}
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  margin: 0;
+  color: hsl(var(--foreground));
+  background: transparent;
+}
+#root {
+  background: transparent;
+}
+
+/*
+ * 滚动条：完全隐藏原生滚动条（webkit 箭头按钮 display:none 压不掉，只能整条隐藏）。
+ * 对齐 TAgent_General scrollbar-none：靠浮岛下箭头按钮（ConversationScrollButton）滚动，
+ * 不用原生滚动条。webkit 滚动条箭头是 Chromium 顽疾，唯有整条 display:none 才能去掉。
+ */
+.scrollbar-none,
+.scrollbar-none > * {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar,
+.scrollbar-none > *::-webkit-scrollbar {
+  display: none;
+}
+
+/* 纤细滚动条（对齐 TAgent_General scrollbar-thin）：6px 圆角 thumb + 透明 track + 无箭头。
+ * 用于 minimap 面板列表等需要可见滚动条处（避免 Chromium 默认大白边粗滚动条）。
+ */
+.scrollbar-thin,
+.scrollbar-thin > * {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+}
+.scrollbar-thin::-webkit-scrollbar,
+.scrollbar-thin > *::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track,
+.scrollbar-thin > *::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb,
+.scrollbar-thin > *::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--muted-foreground) / 0.3);
+  border-radius: 3px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover,
+.scrollbar-thin > *::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground) / 0.5);
+}
+.scrollbar-thin::-webkit-scrollbar-button,
+.scrollbar-thin > *::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+/* 隐藏 webkit 滚动条上下箭头按钮（只要 thumb）——对齐 TAgent_General globals.css:2469-2495 全套选择器 */
+::-webkit-scrollbar-button,
+*::-webkit-scrollbar-button,
+*:focus::-webkit-scrollbar-button,
+*:hover::-webkit-scrollbar-button,
+::-webkit-scrollbar-button:start:decrement,
+::-webkit-scrollbar-button:end:increment,
+::-webkit-scrollbar-button:vertical:start:decrement,
+::-webkit-scrollbar-button:vertical:end:increment,
+::-webkit-scrollbar-button:horizontal:start:decrement,
+::-webkit-scrollbar-button:horizontal:end:increment,
+::-webkit-scrollbar-button:single-button,
+::-webkit-scrollbar-button:double-button,
+::-webkit-scrollbar-button:corner-present,
+.scrollbar-none::-webkit-scrollbar-button,
+.scrollbar-none > *::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  -webkit-appearance: none !important;
+  appearance: none !important;
 }

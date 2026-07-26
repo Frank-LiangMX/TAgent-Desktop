@@ -17,11 +17,12 @@ import type {
   FetchModelsInput,
   FetchModelsResult,
 } from '@tagent/shared'
-import { Button, ConversationEmptyState } from '@tagent/ui'
+import { Button, ConversationEmptyState, TooltipProvider } from '@tagent/ui'
 import { Chat } from './Chat'
 import { SessionSidebar } from './components/SessionSidebar'
 import { ChannelManager } from './components/ChannelManager'
 import { WorkspaceSelector } from './components/WorkspaceSelector'
+import { ThemeSettings } from './components/ThemeSettings'
 import {
   channelsAtom,
   loadChannelsAtom,
@@ -102,8 +103,9 @@ export function App(): JSX.Element {
   }
 
   return (
-    <div className="flex flex-col h-screen">
-      {/* 顶栏 */}
+    <TooltipProvider delayDuration={200}>
+      <div className="flex flex-col h-screen">
+        {/* 顶栏 */}
       <div className="h-11 shrink-0 border-b flex items-center px-3 gap-3">
         {/* 工作区选择器 */}
         <WorkspaceSelector />
@@ -118,6 +120,11 @@ export function App(): JSX.Element {
           当前渠道：{selected ? `${selected.name} / ${selected.defaultModelId ?? '无默认模型'}` : '未选择'}
           {channels.length === 0 && '（加载中…）'}
         </div>
+
+        {/* 主题：靠右 */}
+        <div className="ml-auto">
+          <ThemeSettings />
+        </div>
       </div>
 
       {/* 主区：侧栏 + Chat */}
@@ -127,7 +134,7 @@ export function App(): JSX.Element {
           onSelect={(s) => setActiveSession(s)}
           onNew={newSession}
         />
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 min-h-0">
           {/* 无 workspace 时显示引导 */}
           {workspaces.length === 0 ? (
             <ConversationEmptyState
@@ -158,6 +165,7 @@ export function App(): JSX.Element {
       </div>
 
       {showChannels && <ChannelManager onClose={() => setShowChannels(false)} />}
-    </div>
+      </div>
+    </TooltipProvider>
   )
 }

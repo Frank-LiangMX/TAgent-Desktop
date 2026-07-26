@@ -161,17 +161,19 @@ export function SessionSidebar({
                       key={s.id}
                       onClick={() => onSelect(s)}
                       className={cn(
-                        'px-2 py-1.5 cursor-pointer hover:bg-accent rounded-lg text-sm flex justify-between items-center',
-                        s.id === activeSessionId && 'bg-accent'
+                        'px-2.5 py-1.5 cursor-pointer rounded-[12px] text-sm flex justify-between items-center transition-colors',
+                        'hover:bg-accent/50',
+                        s.id === activeSessionId && 'session-list-item-active',
                       )}
                     >
                       <div className="flex-1 overflow-hidden">
                         <div className="truncate text-xs">{s.title}</div>
-                        {s.modelId && (
-                          <Badge variant="outline" className="text-[10px] h-3.5 mt-0.5">
-                            {s.modelId}
-                          </Badge>
-                        )}
+                        <div className="mt-0.5 flex items-center gap-2 text-[9px] text-muted-foreground">
+                          {s.modelId && <span className="truncate">{s.modelId}</span>}
+                          {s.updatedAt && (
+                            <span className="shrink-0 tabular-nums">{formatTime(s.updatedAt)}</span>
+                          )}
+                        </div>
                       </div>
                       <Button
                         variant="ghost"
@@ -241,4 +243,18 @@ function buildGroups(
   }
 
   return result
+}
+
+/** 简短时间：今天显示 HH:MM，更早显示 MM/DD */
+function formatTime(ts: number): string {
+  const d = new Date(ts)
+  const now = new Date()
+  const isToday =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  if (isToday) {
+    return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  }
+  return `${d.getMonth() + 1}/${d.getDate()}`
 }
