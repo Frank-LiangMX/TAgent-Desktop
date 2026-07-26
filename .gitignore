@@ -19,10 +19,6 @@ build/
 *.bak
 *.tsbuildinfo
 
-# 待清理：packages/pi-core/pi-core/ 是误嵌套的重复副本（真实包在 packages/pi-core/），
-# 已 gitignore 防止混入提交；待手动删除磁盘上的副本。
-packages/pi-core/pi-core/
-
 # 编辑器
 .vscode/
 .idea/
