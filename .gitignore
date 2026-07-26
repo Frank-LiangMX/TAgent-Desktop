@@ -34,3 +34,6 @@ release-notes/__generated/
 
 # 临时实验（docs/dev/ 可定期清，但先保留）
 # docs/dev/ 可手动清
+
+# kscc plan 文件目录（.claude 产物，不进库）
+.context/
