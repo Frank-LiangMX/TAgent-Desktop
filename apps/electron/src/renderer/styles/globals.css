@@ -30,11 +30,22 @@
     --spatial-accent-soft: hsl(var(--primary) / 0.1);
     --spatial-accent-line: hsl(var(--primary) / 0.26);
     --app-shell-motion: cubic-bezier(0.16, 1, 0.3, 1);
+    /* 浮岛布局几何（对齐 TAgent_General AppShell） */
+    --nav-rail-width: 58px;
+    --nav-sidebar-width: 254px;
+    --nav-cluster-gap: 10px;
+    --rail-edge-left: 5px;
+    --shell-chrome-h: 40px;
+    --shell-band-inset-top: 16px;
+    --shell-band-inset-bottom: 24px;
+    --shell-band-height: calc(100% - var(--shell-band-inset-top) - var(--shell-band-inset-bottom));
+    --spatial-line: rgb(68 78 94 / 12%);
   }
   .dark {
     color-scheme: dark;
     --spatial-accent-soft: hsl(var(--primary) / 0.16);
     --spatial-accent-line: hsl(var(--primary) / 0.28);
+    --spatial-line: rgb(202 213 230 / 10%);
   }
 }
 

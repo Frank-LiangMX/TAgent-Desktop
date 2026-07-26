@@ -101,9 +101,9 @@ export function SessionSidebar({
   }
 
   return (
-    <div className="w-56 border-r flex flex-col h-full">
+    <div className="app-nav-sidebar flex flex-col h-full">
       {/* 新建按钮区 */}
-      <div className="p-3 border-b">
+      <div className="p-3 border-b border-border/40">
         <Button variant="outline" size="sm" className="w-full" onClick={onNew}>
           + 新建会话
         </Button>

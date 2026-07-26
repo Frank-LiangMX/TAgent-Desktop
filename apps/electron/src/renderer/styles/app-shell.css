@@ -76,3 +76,316 @@
     0 10px 30px -10px rgb(0 0 0 / 0.4);
   transform: none;
 }
+
+/* ===== 浮岛布局（对齐 TAgent_General AppShell 视觉，flex 行布局 + 玻璃浮岛） =====
+ * 不搬其 3167 行 app-shell.css。navigation/panel fill 用 glass-rgb 直接拼（避开
+ * --surface-role-navigation-fill/panel-fill 的 calc 嵌套在 Electron 解析失败）。
+ * 顶栏 absolute 浮顶，nav(rail+sidebar) flex 列玻璃浮在 scene 上，main flex:1 透 scene。
+ */
+
+/* 根：flex 行布局，scene 透出（html 已画 scene-fill） */
+.app-shell-scene {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding-top: var(--shell-chrome-h, 40px);
+  background: transparent;
+}
+
+/* 顶栏：absolute 浮顶，玻璃 + blur */
+.app-spatial-topbar {
+  position: absolute;
+  z-index: 100;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  height: var(--shell-chrome-h, 40px);
+  align-items: center;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--spatial-line);
+  background: linear-gradient(180deg, rgb(247 250 254 / 0.16), rgb(226 234 245 / 0.08));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.24);
+  -webkit-backdrop-filter: blur(24px) saturate(1.18);
+  backdrop-filter: blur(24px) saturate(1.18);
+  user-select: none;
+}
+.dark .app-spatial-topbar {
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.04), transparent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+/* nav 容器：band inset 上下留白透 scene + rail 离左窗边 */
+.app-shell-nav {
+  position: relative;
+  z-index: 10;
+  flex: 0 0 auto;
+  margin-top: var(--shell-band-inset-top, 16px);
+  height: var(--shell-band-height);
+  padding-left: var(--rail-edge-left, 5px);
+}
+
+/* rail + sidebar 并列 */
+.app-nav-stack {
+  position: relative;
+  display: flex;
+  height: 100%;
+  align-items: stretch;
+  gap: var(--nav-cluster-gap, 10px);
+  background: transparent;
+}
+
+/* rail 列（58px）：无 padding，上下两胶囊拆分（上靠顶、下靠底，中间透 scene） */
+.app-nav-rail {
+  z-index: 2;
+  display: flex;
+  flex: 0 0 var(--nav-rail-width, 58px);
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* rail 玻璃胶囊（上下拆分，各自内容自高，不 flex:1 撑满） */
+.app-rail-island {
+  position: relative;
+  display: flex;
+  width: 46px;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 5px;
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  border-radius: var(--app-shell-composer-radius, 16px);
+  /* 玻璃底：glass-rgb 半透明 + scene-a 顶光（避开 calc 嵌套） */
+  background:
+    radial-gradient(120% 86% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 66%),
+    linear-gradient(155deg, rgb(var(--glass-rgb) / 0.6), rgb(var(--glass-rgb) / 0.42)) !important;
+  box-shadow:
+    inset 0 1.5px 0 rgb(255 255 255 / 0.5),
+    inset 1px 0 0 rgb(255 255 255 / 0.16),
+    0 12px 28px rgb(48 59 76 / 0.12);
+  -webkit-backdrop-filter: blur(15px) saturate(1.06);
+  backdrop-filter: blur(15px) saturate(1.06);
+}
+.dark .app-rail-island {
+  border-color: rgb(255 255 255 / 0.06);
+  box-shadow:
+    inset 0 1.5px 0 rgb(255 255 255 / 0.08),
+    0 12px 28px rgb(0 0 0 / 0.36);
+}
+
+/* sidebar 玻璃面板（254px） */
+.app-nav-sidebar {
+  z-index: 1;
+  flex: 0 0 auto;
+  width: var(--nav-sidebar-width, 254px);
+  overflow: hidden;
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  border-radius: 22px;
+  /* 玻璃底：glass-rgb + scene-a/b 顶光（避开 calc 嵌套） */
+  background:
+    radial-gradient(120% 92% at 8% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
+    radial-gradient(110% 90% at 100% 100%, rgb(var(--scene-b-rgb) / 0.05), transparent 68%),
+    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.62), rgb(var(--glass-rgb) / 0.44)) !important;
+  box-shadow: 0 12px 32px rgb(48 59 76 / 0.12);
+  -webkit-backdrop-filter: blur(var(--surface-blur, 22px)) saturate(1.06);
+  backdrop-filter: blur(var(--surface-blur, 22px)) saturate(1.06);
+}
+.dark .app-nav-sidebar {
+  border-color: rgb(255 255 255 / 0.06);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.36);
+}
+
+/* main：flex:1 透 scene，会话页/composer 浮岛在内 */
+.app-shell-main {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+}
+
+
+/* ===== 会话标签栏 TabBar（逐项对齐 TAgent_General app-shell.css:1863-2317） =====
+ * strip 顶对齐 rail/sidebar（margin-top: band-inset-top + 6px 顶垫对齐 sidebar head）。
+ * 选中态：data-active 标记，玻璃填充挂 tab 本身（旧版用 active-plate 滑动底板，简化为 tab 本身填充）。
+ */
+
+.app-workspace-tab-strip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 0;
+  margin-top: var(--shell-band-inset-top, 16px);
+  /* 6px 顶垫，对齐 sidebar head padding-top，标签芯片顶与「会话」标题带同高 */
+  padding: 6px var(--app-shell-session-gutter, 16px);
+  border-bottom: 1px solid var(--spatial-line);
+  background: transparent;
+}
+
+.app-workspace-tab-list {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.app-workspace-tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+/* 滑动底板：绝对定位在 tab 列后，width/transform 由 JS 驱动，transition 平滑滑动 */
+.app-workspace-tab-active-plate {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  height: 32px;
+  border-radius: 11px;
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  /* 玻璃填充（对齐旧版 --surface-role-tab-fill 0.62*0.78≈0.48，避开 calc 嵌套）+ scene-a 顶光 */
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
+    rgb(var(--glass-rgb) / 0.48);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    0 8px 18px -10px rgb(23 30 40 / 0.12);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 260ms var(--app-shell-motion),
+    width 260ms var(--app-shell-motion),
+    opacity 140ms ease-out;
+}
+.dark .app-workspace-tab-active-plate {
+  border-color: rgb(255 255 255 / 0.06);
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 64%),
+    rgb(var(--glass-rgb) / 0.4);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+.app-workspace-tab-shell {
+  position: relative;
+  z-index: 1;
+  min-width: 72px;
+  max-width: 128px;
+  flex: 0 1 128px;
+}
+
+.app-workspace-tab {
+  display: flex;
+  height: 32px;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  padding-left: 10px;
+  padding-right: 22px;
+  border: 1px solid transparent;
+  border-radius: 11px !important;
+  color: hsl(var(--muted-foreground) / 0.88);
+  background: transparent;
+  box-shadow: none;
+  font-size: 10px;
+  font-weight: 520;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition:
+    color 160ms var(--app-shell-motion),
+    border-color 180ms var(--app-shell-motion),
+    background-color 180ms var(--app-shell-motion),
+    box-shadow 180ms var(--app-shell-motion),
+    transform 160ms var(--app-shell-motion);
+}
+.app-workspace-tab:hover {
+  color: hsl(var(--foreground));
+  background: color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
+}
+.app-workspace-tab:active {
+  transform: scale(0.985);
+}
+
+/* 选中态：tab 本身透明（玻璃填充由滑动底板 active-plate 负责），只 primary 文字/icon */
+.app-workspace-tab-shell[data-active] .app-workspace-tab {
+  color: hsl(var(--primary)) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+.dark .app-workspace-tab-shell[data-active] .app-workspace-tab {
+  background: transparent !important;
+}
+
+.app-workspace-tab__icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: hsl(var(--muted-foreground) / 0.62);
+  stroke-width: 1.75;
+  transition: color 160ms var(--app-shell-motion);
+}
+.app-workspace-tab-shell[data-active] .app-workspace-tab__icon {
+  color: hsl(var(--primary)) !important;
+}
+
+.app-workspace-tab__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 关闭按钮：默认隐藏，active 0.38，hover 1 */
+.app-workspace-tab-close {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  z-index: 2;
+  display: grid;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  color: hsl(var(--muted-foreground) / 0.62);
+  opacity: 0;
+  background: transparent;
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition: color 150ms var(--app-shell-motion), opacity 150ms var(--app-shell-motion), background-color 150ms var(--app-shell-motion);
+}
+.app-workspace-tab-shell[data-active] .app-workspace-tab-close {
+  opacity: 0.38;
+}
+.app-workspace-tab-shell:hover .app-workspace-tab-close,
+.app-workspace-tab-close:focus-visible {
+  opacity: 1;
+}
+.app-workspace-tab-close:hover {
+  color: hsl(var(--foreground));
+  background: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
+}
+
+/* 流式状态点：左上 4px primary 脉冲 */
+.app-workspace-tab-status {
+  position: absolute;
+  top: 5px;
+  left: 7px;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  box-shadow: 0 0 0 2px rgb(var(--glass-rgb) / 0.8);
+  animation: tab-status-pulse 1.2s ease-in-out infinite;
+}
+@keyframes tab-status-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}

@@ -3,6 +3,32 @@
 本项目变更记录，遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.0-dev.4] - 2026-07-26
+
+全局浮岛布局（AppShell）+ 多会话标签栏，对齐 TAgent_General 桌面版视觉与交互。
+
+### 新增
+- **全局浮岛布局（AppShell）** — main 透 scene，rail + sidebar 玻璃浮岛浮在上面，顶栏 absolute 浮顶。flex 行布局 + 玻璃材质（fill 用 glass-rgb 直接拼避开 Electron calc 嵌套）。见 `components/AppShell.tsx`、`styles/app-shell.css`。
+- **Rail 左导航轨** — 玻璃胶囊浮岛，上下两胶囊拆分（上 logo/会话/主题，下 设置），中间透 scene。phosphor 图标（Sparkle/ChatsCircle/Palette/GearSix，size:18 weight:regular）。见 `components/Rail.tsx`。
+- **多会话标签栏（TabBar）** — 浏览器式多会话 tab，点切 ×关，顶对齐 rail/sidebar。见 `components/TabBar.tsx`、`atoms/tabs.ts`（tabsAtom + activeTabIdAtom + openTab/closeTab）。
+- **切换滑动动画** — 滑动底板 active-plate：JS 测 active tab 位置驱动 transform/width 平滑滑动（对齐旧版 updateActivePlate）；tab 选中时透明，只 primary 文字/icon。
+- **SessionSidebar 玻璃面板** — `.app-nav-sidebar` 玻璃浮岛（圆角 22 + panel-blur + scene 透出）。
+- **顶栏浮顶** — absolute + blur 24 + 玻璃底，渠道管理/WorkspaceSelector/ThemeSettings 重排。
+
+### 修复
+- **输入框出画** — main 改 flex flex-col + TabBar shrink-0 + Chat flex-1，composer 不再出画。
+- **rail/sidebar/输入框底对齐** — 去 rail padding 顶底齐 sidebar；composer bottom 对齐 nav 底。
+
+### 变更
+- **图标** — 加 `@phosphor-icons/react@2.1.10`（electron devDep），rail/tab 图标换 phosphor 对齐旧版。
+- **工程** — globals 加浮岛几何 token；app-shell.css 加 tab 栏样式（strip/tab/选中态/plate/close/状态点）。
+
+### 已知缺口（后续补）
+- 超长会话虚拟占位/分批挂载（防卡顿）未接（下个做）
+- 工具循环（canUseTool/MCP/Skill）未接
+- tab 持久化 / preview / draft / LRU / 拖拽 未做
+- 材质系统 / 记忆系统 / 错误恢复 未接
+
 ## [2.0.0-dev.3] - 2026-07-26
 
 会话页面 UI 细化 + 主题系统，对齐 TAgent_General 桌面版视觉（干净重写，不搬其屎山 CSS）。

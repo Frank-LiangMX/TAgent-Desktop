@@ -262,7 +262,10 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
 
       {/* 输入区：composer 玻璃浮岛 absolute 浮在底部，680px 居中。
        * 消息从下方滚过透出（透明玻璃 + blur），对齐 TAgent_General 浮岛布局 */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 px-4 pb-4 pt-2">
+      <div
+        className="pointer-events-none absolute inset-x-0 px-4 pt-2"
+        style={{ bottom: 'var(--shell-band-inset-bottom, 24px)' }}
+      >
         <div className="pointer-events-auto mx-auto max-w-[680px]">
           <ChatInput
             ref={chatInputRef}

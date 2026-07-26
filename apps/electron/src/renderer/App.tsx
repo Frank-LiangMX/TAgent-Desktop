@@ -18,11 +18,15 @@ import type {
   FetchModelsResult,
 } from '@tagent/shared'
 import { Button, ConversationEmptyState, TooltipProvider } from '@tagent/ui'
-import { Chat } from './Chat'
 import { SessionSidebar } from './components/SessionSidebar'
 import { ChannelManager } from './components/ChannelManager'
 import { WorkspaceSelector } from './components/WorkspaceSelector'
 import { ThemeSettings } from './components/ThemeSettings'
+import { AppShell } from './components/AppShell'
+import { Rail } from './components/Rail'
+import { TabBar } from './components/TabBar'
+import { TabContent } from './components/TabContent'
+import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
 import {
   channelsAtom,
   loadChannelsAtom,
@@ -67,15 +71,7 @@ declare global {
   }
 }
 
-interface SessionMeta {
-  id: string
-  title: string
-  modelId?: string
-  channelId?: string
-}
-
 export function App(): JSX.Element {
-  const [activeSession, setActiveSession] = useState<SessionMeta | null>(null)
   const [showChannels, setShowChannels] = useState(false)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
@@ -83,15 +79,28 @@ export function App(): JSX.Element {
   const channels = useAtomValue(channelsAtom)
   const workspaces = useAtomValue(workspacesAtom)
   const currentWorkspaceId = useAtomValue(currentWorkspaceIdAtom)
+  // 多会话 tab
+  const tabs = useAtomValue(tabsAtom)
+  const activeTabId = useAtomValue(activeTabIdAtom)
+  const activeTab = useAtomValue(activeTabAtom)
+  const setTabs = useSetAtom(tabsAtom)
+  const setActiveTabId = useSetAtom(activeTabIdAtom)
 
   // 启动时同时加载渠道列表 + 工作区列表
   useEffect(() => {
     void Promise.all([loadChannels(), loadWorkspaces()])
   }, [loadChannels, loadWorkspaces])
 
+  /** 开会话进 tab：已开激活，未开加 tab + 激活 */
+  const openSession = (sessionId: string, title: string): void => {
+    const { tabs: next, activeTabId: nextActive } = openTab(tabs, sessionId, title)
+    setTabs(next)
+    setActiveTabId(nextActive)
+  }
+
   const newSession = (): void => {
-    // 新会话用临时 meta（发首条消息时主进程建持久 meta + 绑定渠道 + 绑定 workspace）
-    setActiveSession({ id: 'session-' + Date.now(), title: '新会话' })
+    // 新会话用临时 id（发首条消息时主进程建持久 meta + 绑定渠道 + 绑定 workspace）
+    openSession('session-' + Date.now(), '新会话')
   }
 
   /** 打开项目目录 → 创建 workspace */
@@ -104,68 +113,62 @@ export function App(): JSX.Element {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="flex flex-col h-screen">
-        {/* 顶栏 */}
-      <div className="h-11 shrink-0 border-b flex items-center px-3 gap-3">
-        {/* 工作区选择器 */}
-        <WorkspaceSelector />
-
-        {/* 分隔 */}
-        <div className="w-px h-4 bg-border" />
-
-        <Button variant="outline" size="sm" onClick={() => setShowChannels(true)}>
-          渠道管理
-        </Button>
-        <div className="text-xs text-muted-foreground">
-          当前渠道：{selected ? `${selected.name} / ${selected.defaultModelId ?? '无默认模型'}` : '未选择'}
-          {channels.length === 0 && '（加载中…）'}
-        </div>
-
-        {/* 主题：靠右 */}
-        <div className="ml-auto">
-          <ThemeSettings />
-        </div>
-      </div>
-
-      {/* 主区：侧栏 + Chat */}
-      <div className="flex flex-1 min-h-0">
-        <SessionSidebar
-          activeSessionId={activeSession?.id ?? null}
-          onSelect={(s) => setActiveSession(s)}
-          onNew={newSession}
-        />
-        <div className="flex-1 min-w-0 min-h-0">
-          {/* 无 workspace 时显示引导 */}
-          {workspaces.length === 0 ? (
-            <ConversationEmptyState
-              title="打开项目目录开始"
-              description="选择一个本地代码目录作为工作区，Agent 将在该目录下工作"
-            >
-              <div className="flex flex-col items-center gap-3">
-                <Button
-                  size="lg"
-                  onClick={() => void handleOpenProject()}
-                >
-                  打开项目目录
-                </Button>
-                <p className="text-muted-foreground text-xs">
-                  选择包含代码的本地文件夹即可开始
-                </p>
-              </div>
-            </ConversationEmptyState>
-          ) : activeSession ? (
-            <Chat key={activeSession.id} session={activeSession} />
-          ) : (
-            <ConversationEmptyState
-              title="选择左侧会话，或点「新建会话」开始"
-              description="创建新会话即可开始对话"
-            />
-          )}
-        </div>
-      </div>
+      <AppShell
+        topbar={
+          <>
+            <WorkspaceSelector />
+            <div className="w-px h-4 bg-border/40" />
+            <Button variant="outline" size="sm" onClick={() => setShowChannels(true)}>
+              渠道管理
+            </Button>
+            <div className="text-xs text-muted-foreground">
+              {selected ? `${selected.name} / ${selected.defaultModelId ?? '无默认模型'}` : '未选择'}
+              {channels.length === 0 && '（加载中…）'}
+            </div>
+            <div className="w-px h-4 bg-border/40" />
+            <ThemeSettings />
+          </>
+        }
+        rail={<Rail active="chat" onChat={newSession} />}
+        sidebar={
+          <SessionSidebar
+            activeSessionId={activeTabId}
+            onSelect={(s) => openSession(s.id, s.title)}
+            onNew={newSession}
+          />
+        }
+      >
+        {/* main：会话页或空状态 */}
+        {workspaces.length === 0 ? (
+          <ConversationEmptyState
+            title="打开项目目录开始"
+            description="选择一个本地代码目录作为工作区，Agent 将在该目录下工作"
+          >
+            <div className="flex flex-col items-center gap-3">
+              <Button size="lg" onClick={() => void handleOpenProject()}>
+                打开项目目录
+              </Button>
+              <p className="text-muted-foreground text-xs">
+                选择包含代码的本地文件夹即可开始
+              </p>
+            </div>
+          </ConversationEmptyState>
+        ) : activeTab ? (
+          <div className="flex h-full flex-col">
+            <TabBar />
+            <div className="min-h-0 flex-1">
+              <TabContent />
+            </div>
+          </div>
+        ) : (
+          <ConversationEmptyState
+            title="选择左侧会话，或点「新建会话」开始"
+            description="创建新会话即可开始对话"
+          />
+        )}
+      </AppShell>
 
       {showChannels && <ChannelManager onClose={() => setShowChannels(false)} />}
-      </div>
     </TooltipProvider>
   )
 }
