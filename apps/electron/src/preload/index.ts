@@ -87,6 +87,11 @@ const electronAPI = {
   /** 切换当前工作区 */
   switchWorkspace: (id: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_WORKSPACE + ':switch', id) as Promise<{ ok: boolean; error?: string }>,
+  /** 更新会话元数据（重命名 title / 置顶 pinned） */
+  updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_META, { id, patch }) as Promise<unknown>,
+  /** 切换会话置顶 */
+  togglePin: (id: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.TOGGLE_PIN, id) as Promise<unknown>,
   // 窗口控制（自定义 WindowControls 用，对齐 TAgent_General）
   windowIsMaximized: () => ipcRenderer.invoke('window:is-maximized') as Promise<boolean>,
   windowMinimize: () => ipcRenderer.send('window:minimize'),

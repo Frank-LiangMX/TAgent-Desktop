@@ -1,6 +1,6 @@
 {
   "name": "@tagent/electron",
-  "version": "2.0.0-dev.5",
+  "version": "2.0.0-dev.6",
   "description": "TAgent-Desktop - 2.0 骨架重构版（会话=进程常驻 + 双核可拔插）",
   "main": "dist/main.cjs",
   "private": true,

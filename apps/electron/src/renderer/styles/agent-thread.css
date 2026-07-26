@@ -78,16 +78,44 @@
 }
 
 /*
- * 会话项选中态：12px 圆角 + 4% foreground 叠色 + 内高光 + 无 blur
- * 对齐 TAgent_General session-list-item-active，不染 accent、不用 backdrop-filter
+ * 会话项样式（对齐 TAgent_General sidebar 会话行 + 加丰富过渡）
+ * 玻璃属 sidebar 容器一层，会话项实色印在玻璃上（无 backdrop-filter 防掉帧）。
+ * 只过渡 color/bg/border/shadow（无 transform hover），缓动 cubic-bezier(0.16,1,0.3,1)。
  */
+/* 会话项基础（SessionSidebar 的会话行 div） */
+.session-row {
+  position: relative;
+  min-height: 49px;
+  margin: 2px 0;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background-color: transparent;
+  cursor: pointer;
+  transition:
+    color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* hover：primary 7% tint + 边框（对齐旧版 hover） */
+.session-row:hover {
+  background-color: color-mix(in srgb, hsl(var(--primary)) 7%, hsl(var(--background)));
+  border-color: color-mix(in srgb, hsl(var(--primary)) 16%, transparent);
+}
+/* 选中：primary 14% tint + 边框 32%（指示条由 motion layoutId 滑动，不在此） */
 .session-list-item-active {
-  background: color-mix(in srgb, hsl(var(--foreground)) 4%, hsl(var(--background)));
-  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 7%, transparent);
-  border-radius: var(--session-radius, 12px);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.35),
-    0 4px 12px hsl(var(--foreground) / 0.05);
+  background-color: color-mix(in srgb, hsl(var(--primary)) 14%, hsl(var(--background))) !important;
+  border-color: color-mix(in srgb, hsl(var(--primary)) 32%, transparent) !important;
+  box-shadow: none !important;
+}
+.dark .session-row:hover {
+  background-color: color-mix(in srgb, hsl(var(--primary)) 12%, hsl(var(--background)));
+  border-color: color-mix(in srgb, hsl(var(--primary)) 22%, transparent);
+}
+.dark .session-list-item-active {
+  background-color: color-mix(in srgb, hsl(var(--primary)) 22%, hsl(var(--background))) !important;
+  border-color: color-mix(in srgb, hsl(var(--primary)) 40%, transparent) !important;
 }
 
 /*

@@ -98,6 +98,20 @@ export class SessionService {
       deleteSessionMeta(sessionId)
       return { ok: true }
     })
+
+    // 更新会话元数据（重命名 title / 置顶 pinned 等）
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.UPDATE_SESSION_META,
+      async (_e, args: { id: string; patch: { title?: string; pinned?: boolean } }) => {
+        return updateSessionMeta(args.id, args.patch)
+      }
+    )
+
+    // 置顶切换
+    ipcMain.handle(AGENT_IPC_CHANNELS.TOGGLE_PIN, async (_e, id: string) => {
+      const meta = getSessionMeta(id)
+      return updateSessionMeta(id, { pinned: !meta?.pinned })
+    })
   }
 
   /** 处理发消息：解析渠道→绑核→首次 spawn + 起循环 / 后续 enqueue */

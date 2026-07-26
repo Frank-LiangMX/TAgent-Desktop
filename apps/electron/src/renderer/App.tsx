@@ -67,6 +67,9 @@ declare global {
       createProjectWorkspace: () => Promise<AgentWorkspace | null>
       getCurrentWorkspace: () => Promise<AgentWorkspace | undefined>
       switchWorkspace: (id: string) => Promise<{ ok: boolean; error?: string }>
+      // 会话元数据（重命名/置顶）
+      updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean }) => Promise<unknown>
+      togglePin: (id: string) => Promise<unknown>
       // 窗口控制（自定义 WindowControls 用）
       windowIsMaximized: () => Promise<boolean>
       windowMinimize: () => void
@@ -135,6 +138,7 @@ export function App(): JSX.Element {
             activeSessionId={activeTabId}
             onSelect={(s) => openSession(s.id, s.title)}
             onNew={newSession}
+            onOpenProject={() => void handleOpenProject()}
           />
         }
       >

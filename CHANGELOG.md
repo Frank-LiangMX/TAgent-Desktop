@@ -3,6 +3,25 @@
 本项目变更记录，遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.0-dev.6] - 2026-07-26
+
+会话 sidebar 重构（motion 丝滑动效）+ 三点菜单 + 打开项目按钮。
+
+### 新增
+- **会话 sidebar 丝滑动效（motion）** — `layout` spring 平滑重排、`layoutId` 选中指示条平滑滑动、`AnimatePresence` 新建/删除弹性进出 + 让位、组折叠 height spring、组头箭头 rotate spring。替代生硬 CSS keyframes。见 `SessionSidebar.tsx`。
+- **三点菜单（重命名/置顶/删除）** — hover 显竖向三点：重命名（inline input）、置顶（togglePin + 图标）、删除（confirm + 乐观移除 + exit）。主进程 `UPDATE_SESSION_META` + `TOGGLE_PIN` IPC + preload。见 `session-service.ts`、`preload/index.ts`。
+- **打开项目按钮** — sidebar 顶部 FolderOpen 图标（创建工作区）；WorkspaceSelector 移除。
+- **会话项样式重构** — hover/选中 primary tint + 过渡、字号层次、ChatsCircle 图标、组头 CaretRight + count badge。
+
+### 修复
+- 副行规律（模型左 + 时间右，轮数移标题旁）；指示条歪斜（top/bottom inset 撑高，避 layout transform 冲突）；三点让位（absolute + pr-7 预留）。
+
+### 变更
+- 加 `motion@12.42.2`（Framer Motion）；agent-thread.css 撤生硬 keyframes（motion 接管）。
+
+### 已知缺口
+- 虚拟化细化待超长会话实测；layoutId 跨组可能跳；工具循环/MCP 未接；材质/记忆/错误恢复 未接。
+
 ## [2.0.0-dev.5] - 2026-07-26
 
 超长会话虚拟化 + 顶栏清理 + 自定义窗口栏 + 会话轮数标注。
