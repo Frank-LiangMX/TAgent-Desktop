@@ -1,0 +1,25 @@
+{
+  "name": "@tagent/pi-core",
+  "version": "0.1.0",
+  "description": "TAgent 可复用 Pi 内核库 — 将来桌面版与 CLI 版共用",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.82.0",
+    "@earendil-works/pi-ai": "^0.82.0",
+    "@modelcontextprotocol/sdk": "1.29.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

@@ -47,3 +47,34 @@ export function getAgentSessionsDir(): string {
 export function getAgentSessionMessagesPath(id: string): string {
   return join(getAgentSessionsDir(), `${id}.jsonl`)
 }
+
+/** 渠道配置文件：~/.tagent[-dev]/channels.json（apiKey 加密存储） */
+export function getChannelsPath(): string {
+  return join(getConfigDir(), 'channels.json')
+}
+
+/** 项目数据根目录：~/.tagent[-dev]/projects/ */
+export function getProjectsDir(): string {
+  const dir = join(getConfigDir(), 'projects')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** 单个项目目录：~/.tagent[-dev]/projects/{sanitizedPath}/ */
+export function getProjectDir(sanitizedPath: string): string {
+  const dir = join(getProjectsDir(), sanitizedPath)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** 项目内会话 JSONL：~/.tagent[-dev]/projects/{sanitizedPath}/{sessionId}.jsonl */
+export function getProjectSessionPath(sanitizedPath: string, sessionId: string): string {
+  return join(getProjectDir(sanitizedPath), `${sessionId}.jsonl`)
+}
+
+/** 项目记忆目录：~/.tagent[-dev]/projects/{sanitizedPath}/memory/ */
+export function getProjectMemoryDir(sanitizedPath: string): string {
+  const dir = join(getProjectDir(sanitizedPath), 'memory')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
