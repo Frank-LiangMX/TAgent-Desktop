@@ -11,7 +11,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useAtomValue } from 'jotai'
 import { motion, AnimatePresence } from 'motion/react'
 import { FolderOpen, CaretRight, ChatsCircle, PencilSimple, PushPin, Trash, DotsThreeVertical } from '@phosphor-icons/react'
-import { cn } from '../lib/utils'
+import { cn } from '../../lib/utils'
 import {
   Button,
   ScrollArea,
@@ -20,11 +20,11 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from '@tagent/ui'
-import { sessionsRefreshAtom } from '../atoms/channel-atoms'
+import { sessionsRefreshAtom } from '../../atoms/channel-atoms'
 import {
   workspacesAtom,
   currentWorkspaceIdAtom,
-} from '../atoms/workspace-atoms'
+} from '../../atoms/workspace-atoms'
 
 interface SessionMeta {
   id: string

@@ -1,5 +1,5 @@
 /*
- * agent-thread.css — 会话线程样式（精简版，对齐 TAgent_General 视觉，不搬其 877 行屎山）
+ * chat.css — 会话页样式（会话项/气泡/胶囊/滚动按钮/minimap，对齐 TAgent_General 视觉，精简不搬屎山）
  *
  * 只含核心高频区需要的 4 类规则：线程容器 / 用户气泡 / 模型名胶囊 / 过程卡。
  * 视觉参数取自 TAgent_General，fill/rim/shadow 复用已有 --surface-role-*（packages/ui/styles/surface-roles.css）。

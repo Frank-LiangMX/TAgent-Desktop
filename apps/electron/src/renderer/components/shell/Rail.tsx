@@ -6,7 +6,7 @@
  * 功能后续接（目前点击占位），先放视觉。
  */
 import { Sparkle, ChatsCircle, PlugsConnected, Palette, GearSix } from '@phosphor-icons/react'
-import { cn } from '../lib/utils'
+import { cn } from '../../lib/utils'
 
 /** phosphor 图标统一参数（对齐旧版 RAIL_ICON） */
 const RAIL_ICON = { size: 18, weight: 'regular' as const }

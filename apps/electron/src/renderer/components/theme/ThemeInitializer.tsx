@@ -15,7 +15,7 @@ import {
   systemIsDarkAtom,
   applyThemeToDOM,
   matchMediaDark,
-} from '../atoms/theme'
+} from '../../atoms/theme'
 
 export function ThemeInitializer({ children }: { children: React.ReactNode }): React.ReactElement {
   const mode = useAtomValue(themeModeAtom)

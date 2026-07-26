@@ -9,7 +9,7 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { Popover, PopoverTrigger, PopoverContent, Badge } from '@tagent/ui'
 import { Palette } from '@phosphor-icons/react'
 import { Check } from 'lucide-react'
-import { cn } from '../lib/utils'
+import { cn } from '../../lib/utils'
 import {
   themeModeAtom,
   themeStyleAtom,
@@ -19,7 +19,7 @@ import {
   setThemeStyle,
   type ThemeMode,
   type ThemeStyle,
-} from '../atoms/theme'
+} from '../../atoms/theme'
 
 /** 各色系色卡预览（scene-base + scene-a 静态 RGB，取自 tokens.css） */
 const STYLE_CARDS: { style: ThemeStyle; label: string; light: string; dark: string }[] = [

@@ -5,7 +5,7 @@
 import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
-import { ThemeInitializer } from './components/ThemeInitializer'
+import { ThemeInitializer } from './components/theme/ThemeInitializer'
 import './styles/globals.css'
 
 // ===== 焦点诊断：捕获全局错误 + 监控所有输入框焦点变化（排查间歇性输入失败 bug）=====

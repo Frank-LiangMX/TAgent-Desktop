@@ -25,12 +25,12 @@ import {
   Button,
 } from '@tagent/ui'
 import { ArrowUp, Square } from 'lucide-react'
-import { MessageView } from './components/MessageView'
-import { ChatInput, type ChatInputHandle } from './components/ChatInput'
-import { ModelSelector } from './components/ModelSelector'
-import { ScrollPositionManager } from './components/ScrollPositionManager'
-import { channelsAtom, selectedChannelIdAtom, bumpSessionsRefreshAtom } from './atoms/channel-atoms'
-import { currentWorkspaceIdAtom } from './atoms/workspace-atoms'
+import { MessageView } from './MessageView'
+import { ChatInput, type ChatInputHandle } from './ChatInput'
+import { ModelSelector } from './ModelSelector'
+import { ScrollPositionManager } from '../shell/ScrollPositionManager'
+import { channelsAtom, selectedChannelIdAtom, bumpSessionsRefreshAtom } from '../../atoms/channel-atoms'
+import { currentWorkspaceIdAtom } from '../../atoms/workspace-atoms'
 
 interface SessionMeta {
   id: string

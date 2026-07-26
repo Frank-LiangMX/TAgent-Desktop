@@ -19,7 +19,7 @@ import {
   ksccChannelAtom,
   externalChannelsAtom,
   loadChannelsAtom,
-} from '../atoms/channel-atoms'
+} from '../../atoms/channel-atoms'
 
 /** kscc 内置渠道 ID */
 const KSCC_BUILTIN_ID = 'kscc-internal'

@@ -18,14 +18,13 @@ import type {
   FetchModelsResult,
 } from '@tagent/shared'
 import { Button, ConversationEmptyState, TooltipProvider } from '@tagent/ui'
-import { SessionSidebar } from './components/SessionSidebar'
-import { ChannelManager } from './components/ChannelManager'
-import { WorkspaceSelector } from './components/WorkspaceSelector'
-import { ThemeSettings } from './components/ThemeSettings'
-import { AppShell } from './components/AppShell'
-import { Rail } from './components/Rail'
-import { TabBar } from './components/TabBar'
-import { TabContent } from './components/TabContent'
+import { SessionSidebar } from './components/workspace/SessionSidebar'
+import { ChannelManager } from './components/channel/ChannelManager'
+import { ThemeSettings } from './components/theme/ThemeSettings'
+import { AppShell } from './components/shell/AppShell'
+import { Rail } from './components/shell/Rail'
+import { TabBar } from './components/shell/TabBar'
+import { TabContent } from './components/shell/TabContent'
 import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
 import {
   channelsAtom,

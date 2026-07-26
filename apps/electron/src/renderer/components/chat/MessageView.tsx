@@ -22,7 +22,7 @@ import {
   UserMessageContent,
 } from '@tagent/ui'
 
-import { cn } from '../lib/utils'
+import { cn } from '../../lib/utils'
 import { ContentBlockView } from './ContentBlockView'
 import { ToolResultView } from './ToolResultView'
 

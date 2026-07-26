@@ -1,7 +1,7 @@
 /* TAgent-Desktop renderer 全局样式 */
 @import '@tagent/ui/src/tokens/__generated__/tokens.css';
 @import '@tagent/ui/styles/glass.css';
-@import './agent-thread.css';
+@import './chat.css';
 @import './app-shell.css';
 
 @tailwind base;

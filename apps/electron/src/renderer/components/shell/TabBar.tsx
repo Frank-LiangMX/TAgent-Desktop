@@ -13,7 +13,7 @@ import {
   activeTabIdAtom,
   closeTab,
   type TabItem,
-} from '../atoms/tabs'
+} from '../../atoms/tabs'
 
 interface TabBarProps {
   runningSessionIds?: Set<string>

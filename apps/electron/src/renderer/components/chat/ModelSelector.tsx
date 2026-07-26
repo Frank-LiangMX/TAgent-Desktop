@@ -10,8 +10,8 @@
 import { useAtomValue } from 'jotai'
 import { Popover, PopoverTrigger, PopoverContent } from '@tagent/ui'
 import { Cpu, ChevronDown, Check } from 'lucide-react'
-import { cn } from '../lib/utils'
-import { channelsAtom } from '../atoms/channel-atoms'
+import { cn } from '../../lib/utils'
+import { channelsAtom } from '../../atoms/channel-atoms'
 
 interface ModelSelectorProps {
   /** 当前生效渠道 ID（sentChannelId ?? session.channelId ?? selectedChannelId） */

@@ -5,8 +5,8 @@
  * 无激活 tab 时返回 null（外层显示空状态）。
  */
 import { useAtomValue } from 'jotai'
-import { Chat } from '../Chat'
-import { activeTabAtom } from '../atoms/tabs'
+import { Chat } from '../chat/Chat'
+import { activeTabAtom } from '../../atoms/tabs'
 
 export function TabContent(): JSX.Element | null {
   const activeTab = useAtomValue(activeTabAtom)

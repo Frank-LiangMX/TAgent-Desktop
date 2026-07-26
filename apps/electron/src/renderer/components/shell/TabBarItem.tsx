@@ -6,7 +6,7 @@
  */
 import { ChatsCircle } from '@phosphor-icons/react'
 import { X } from 'lucide-react'
-import type { TabItem } from '../atoms/tabs'
+import type { TabItem } from '../../atoms/tabs'
 
 interface TabBarItemProps {
   tab: TabItem
