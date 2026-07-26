@@ -7,8 +7,8 @@
  */
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import type { TAgentDesktopStreamPayload, TAgentMessage } from '@tagent/shared'
-import { sdkMessageToIR } from '@tagent/shared'
+import type { TAgentDesktopStreamPayload, TAgentMessage, TAgentPermissionMode } from '@tagent/shared'
+import { sdkMessageToIR, TAGENT_DEFAULT_PERMISSION_MODE } from '@tagent/shared'
 import {
   Conversation,
   ConversationContent,
@@ -28,6 +28,7 @@ import { ArrowUp, Square } from 'lucide-react'
 import { MessageView } from './MessageView'
 import { ChatInput, type ChatInputHandle } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
+import { PermissionModeSelector } from './PermissionModeSelector'
 import { PermissionBanner } from '../permission/PermissionBanner'
 import { ScrollPositionManager } from '../shell/ScrollPositionManager'
 import { channelsAtom, selectedChannelIdAtom, bumpSessionsRefreshAtom } from '../../atoms/channel-atoms'
@@ -69,6 +70,8 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
    * 保近期：底部对话区永远全量渲染，旧的渐进补齐，超长会话不卡。 */
   const [visibleCount, setVisibleCount] = useState<number>(20)
   const [sentChannelId, setSentChannelId] = useState<string | null>(null)
+  /** 会话当前权限模式（默认 auto；切会话 key 重建后重置。运行中切换即时生效） */
+  const [permissionMode, setPermissionMode] = useState<TAgentPermissionMode>(TAGENT_DEFAULT_PERMISSION_MODE)
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
   const itemIdxRef = useRef(0)
@@ -221,7 +224,7 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
       setRunning(false)
       bumpRefresh()
     } else if (p.kind === 'tagent_event') {
-      const evt = p.event as { type: string; message?: string }
+      const evt = p.event as { type: string; message?: string; taskId?: string; description?: string; status?: string; summary?: string; lastToolName?: string }
       if (evt.type === 'turn_end') {
         streamingRef.current = null
         setRunning(false)
@@ -238,6 +241,31 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
           },
         ])
         setRunning(false)
+      } else if (evt.type === 'task_started') {
+        // 子代理启动：显示状态提示
+        setItems((prev) => [
+          ...prev,
+          {
+            key: `task${itemIdxRef.current++}`,
+            message: {
+              type: 'assistant',
+              content: [{ type: 'text', text: `🔄 子代理启动: ${evt.description ?? ''}` }],
+            } as TAgentMessage,
+          },
+        ])
+      } else if (evt.type === 'task_notification') {
+        // 子代理完成：显示结果摘要
+        const status = evt.status === 'completed' ? '✅' : evt.status === 'failed' ? '❌' : '⏹️'
+        setItems((prev) => [
+          ...prev,
+          {
+            key: `task${itemIdxRef.current++}`,
+            message: {
+              type: 'assistant',
+              content: [{ type: 'text', text: `${status} 子代理完成: ${evt.summary ?? ''}` }],
+            } as TAgentMessage,
+          },
+        ])
       }
     }
   }
@@ -326,11 +354,20 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
             placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
             footer={
               <div className="flex items-center justify-between px-2 pb-2 pt-1">
-                <ModelSelector
-                  effectiveChannelId={effectiveChannelId}
-                  locked={locked}
-                  onSelectChannel={setSelectedChannelId}
-                />
+                <div className="flex items-center gap-1">
+                  <ModelSelector
+                    effectiveChannelId={effectiveChannelId}
+                    locked={locked}
+                    onSelectChannel={setSelectedChannelId}
+                  />
+                  <PermissionModeSelector
+                    mode={permissionMode}
+                    onChange={async (m) => {
+                      setPermissionMode(m)
+                      await window.electronAPI.setSessionPermissionMode(sessionId, m)
+                    }}
+                  />
+                </div>
                 <div className="flex items-center gap-1.5">
                   {running && (
                     <Button

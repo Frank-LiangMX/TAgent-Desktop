@@ -36,6 +36,11 @@ import {
 import { getChannel, getDecryptedApiKey, getKsccChannelId } from '../channel/channel-store'
 import { KSCC_DEFAULT_MODEL_ID } from '../channel/default-models'
 import { resolveWorkspaceForSession } from '../workspace/workspace-manager'
+import { getEnabledMcpServers } from '../mcp/mcp-store'
+import { PermissionService } from '../permission/permission-service'
+import { buildBuiltinSubagentDefinitions, buildSubagentDelegationPrompt } from '../agent/subagent-definitions'
+import type { TAgentPermissionMode } from '@tagent/shared'
+import { TAGENT_DEFAULT_PERMISSION_MODE, migratePermissionMode } from '@tagent/shared'
 
 interface SendMessageInput {
   sessionId: string
@@ -50,10 +55,16 @@ interface SendMessageInput {
 
 export class SessionService {
   private runtimes = new Map<string, SessionRuntime>()
-  private constructor(private readonly getWindow: () => BrowserWindow | null) {}
+  private constructor(
+    private readonly getWindow: () => BrowserWindow | null,
+    private readonly permissionService: PermissionService | null,
+  ) {}
 
-  static create(getWindow: () => BrowserWindow | null): SessionService {
-    const svc = new SessionService(getWindow)
+  static create(
+    getWindow: () => BrowserWindow | null,
+    permissionService: PermissionService | null = null,
+  ): SessionService {
+    const svc = new SessionService(getWindow, permissionService)
     svc.registerIpc()
     return svc
   }
@@ -76,6 +87,26 @@ export class SessionService {
       if (rt) await rt.interrupt()
       return { ok: true }
     })
+
+    // 热切换会话权限模式：持久化 meta → 通知 runtime（kscc 走 SDK setPermissionMode；Pi 靠闭包读 meta）
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.UPDATE_SESSION_PERMISSION_MODE,
+      async (_e, args: { sessionId: string; mode: TAgentPermissionMode }): Promise<{ ok: boolean; error?: string }> => {
+        const normalized = migratePermissionMode(args.mode)
+        updateSessionMeta(args.sessionId, { permissionMode: normalized })
+        const rt = this.runtimes.get(args.sessionId)
+        if (rt) {
+          try {
+            await rt.setPermissionMode(normalized)
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            console.error(`[会话 ${args.sessionId}] setPermissionMode 失败:`, msg)
+            return { ok: false, error: msg }
+          }
+        }
+        return { ok: true }
+      }
+    )
 
     ipcMain.handle(AGENT_IPC_CHANNELS.LIST_SESSIONS, async () => {
       const sessions = listSessions()
@@ -215,11 +246,20 @@ export class SessionService {
   ): Parameters<AgentProviderAdapter['query']>[0] {
     const model = this.resolveModel(channel, input.model)
 
-    // 解析 cwd：有 workspaceId 时优先用项目目录，否则 fallback 到 process.cwd()
-    const workspace = workspaceId
-      ? resolveWorkspaceForSession(input.sessionId)
-      : undefined
+    // 解析 workspace：cwd + sanitizedPath（mcp 配置文件 slug）
+    const workspace = workspaceId ? resolveWorkspaceForSession(input.sessionId) : undefined
     const cwd = workspace?.projectDirectory ?? process.cwd()
+    const sanitizedPath = workspace?.slug ?? ''
+
+    // 权限模式：会话 meta 持久化（默认 auto）
+    const metaForMode = getSessionMeta(input.sessionId)
+    const permissionMode: TAgentPermissionMode = metaForMode?.permissionMode
+      ? migratePermissionMode(metaForMode.permissionMode)
+      : TAGENT_DEFAULT_PERMISSION_MODE
+
+    // 工作区 MCP 配置（无 workspace → 空，pi-core buildMcpTools 自动跳过）
+    const enabledMcpServers = sanitizedPath ? getEnabledMcpServers(sanitizedPath) : {}
+    const mcpConfig = { servers: enabledMcpServers }
 
     if (channel.provider === 'kscc-internal') {
       const ksccPath = resolveKsccPath()
@@ -227,7 +267,11 @@ export class SessionService {
         throw new Error('未检测到 kscc 命令，请先安装 kscc（内网渠道）')
       }
       const meta = getSessionMeta(input.sessionId)
-      // KsccQueryOptions：最小集，后续从 TAgent 搬 MCP/canUseTool/记忆等
+      // KsccQueryOptions：canUseTool/mcpServers/permissionMode/allowDangerouslySkipPermissions
+      // canUseTool 透传 PermissionService.createCanUseTool（permissionMode 非硬编码）
+      const canUseTool = this.permissionService
+        ? this.permissionService.createCanUseTool(input.sessionId, () => this.getPermissionMode(input.sessionId), cwd)
+        : undefined
       const opts: KsccQueryOptions = {
         sessionId: input.sessionId,
         prompt: input.prompt,
@@ -237,9 +281,21 @@ export class SessionService {
         env: { ...process.env } as Record<string, string | undefined>,
         maxTurns: 50,
         sdkPermissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        systemPrompt: { type: 'preset', preset: 'claude_code' },
+        // 非 hardcoded：有 canUseTool 时跳过内置检查，全交给我们的服务
+        allowDangerouslySkipPermissions: !canUseTool,
+        systemPrompt: {
+          type: 'preset',
+          preset: 'claude_code',
+          append: buildSubagentDelegationPrompt('conservative'),
+        },
         persistSession: true,
+        // 工作区 MCP 配置
+        mcpServers: Object.keys(enabledMcpServers).length > 0 ? (enabledMcpServers as Record<string, unknown>) : undefined,
+        // 子代理定义（主 Agent 可调用 Agent/Task 工具派发子任务）
+        // kscc 核始终是 Claude 渠道，子代理用 haiku
+        agents: buildBuiltinSubagentDefinitions(true),
+        // 权限钩子（bypass 模式不挂）
+        ...(canUseTool ? { canUseTool } : {}),
         // 长驻首次 spawn 带 resume 续历史（SDK 读 JSONL 一次），之后靠内存
         resumeSessionId: meta?.sdkSessionId,
         onSessionId: (sdkSessionId: string) => {
@@ -250,6 +306,8 @@ export class SessionService {
         },
         onStderr: (data: string) => console.error(`[kscc stderr] ${data}`),
       }
+      // 当前会话的权限模式（透传到 caller 决策；不影响 SDK 内部）
+      void permissionMode
       return opts as unknown as Parameters<AgentProviderAdapter['query']>[0]
     }
 
@@ -263,11 +321,19 @@ export class SessionService {
         `渠道「${channel.name}」的 apiKey 未设置或解密失败，请在「渠道管理」中重新输入 apiKey`,
       )
     }
+    // beforeToolCall：pi-agent-core 签名，包 PermissionService.createBeforeToolCall
+    const beforeToolCall = this.permissionService
+      ? this.permissionService.createBeforeToolCall(input.sessionId, () => this.getPermissionMode(input.sessionId), cwd)
+      : undefined
     const opts = {
       sessionId: input.sessionId,
       prompt: input.prompt,
       model,
       cwd,
+      // MCP 配置（无 server 时 pi-core 跳过）
+      mcpConfig,
+      // 权限钩子（bypass 模式不挂）
+      ...(beforeToolCall ? { beforeToolCall } : {}),
       // Pi 核专属：渠道凭证 + provider，pi-ai streamFn 用
       channelConfig: {
         type: 'external' as const,
@@ -280,7 +346,16 @@ export class SessionService {
         thinkingLevel: 'medium' as const,
       },
     }
+    void permissionMode
     return opts as unknown as Parameters<AgentProviderAdapter['query']>[0]
+  }
+
+  /** 读会话当前权限模式（permissionMode getter，供 PermissionService 闭包调用，实现运行中切换） */
+  private getPermissionMode(sessionId: string): TAgentPermissionMode {
+    const meta = getSessionMeta(sessionId)
+    return meta?.permissionMode
+      ? migratePermissionMode(meta.permissionMode)
+      : TAGENT_DEFAULT_PERMISSION_MODE
   }
 
   /** 转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer，并持久化 */

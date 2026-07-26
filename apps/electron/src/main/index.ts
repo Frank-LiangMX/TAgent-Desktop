@@ -84,8 +84,8 @@ app.whenReady().then(() => {
   McpService.create()
   // 起权限审批服务（注册 PERMISSION_RESPOND IPC handler）
   permissionService = PermissionService.create(() => mainWindow)
-  // 起会话服务（注册 IPC handler）
-  sessionService = SessionService.create(() => mainWindow)
+  // 起会话服务（注册 IPC handler；注入 PermissionService 供 canUseTool/beforeToolCall 闭包用）
+  sessionService = SessionService.create(() => mainWindow, permissionService)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

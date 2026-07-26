@@ -130,6 +130,12 @@ export class SessionRuntime {
     this.turnInFlight = false
   }
 
+  /** 热切换活跃会话的权限模式（kscc 走 SDK setPermissionMode；Pi 靠 beforeToolCall 闭包读 meta，无需重建） */
+  async setPermissionMode(mode: string): Promise<void> {
+    if (!this.adapter.setPermissionMode) return
+    await this.adapter.setPermissionMode(this.sessionId, mode)
+  }
+
   /** 销毁会话：杀进程（标签页关/被顶、关 TAgent） */
   destroy(): void {
     this.adapter.abort(this.sessionId)

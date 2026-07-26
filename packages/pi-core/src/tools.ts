@@ -116,7 +116,7 @@ export const bashTool: AgentTool<typeof bashSchema, BashToolDetails> = {
   parameters: bashSchema,
   execute: async (_id, params): Promise<AgentToolResult<BashToolDetails>> => {
     const timeoutMs = params.timeout ?? 30000;
-    const result = await runShell(params.command, timeoutMs);
+    const result = await runShell(params.command, timeoutMs, process.cwd());
     // 输出过长截断
     const MAX = 8000;
     let out = result.stdout;
@@ -135,12 +135,42 @@ export const bashTool: AgentTool<typeof bashSchema, BashToolDetails> = {
   },
 };
 
-function runShell(command: string, timeoutMs: number): Promise<BashToolDetails> {
+/**
+ * 创建带指定 cwd 的 Bash 工具实例（会话级，闭包注入工作目录，不读 process.cwd）。
+ * 用于多会话/多工作区场景：每个会话一个 bashTool，cwd 不串。
+ */
+export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashToolDetails> {
+  return {
+    name: "Bash",
+    label: "Bash",
+    description: "执行 shell 命令并返回 stdout/stderr/exitCode。用于跑脚本、查目录、git 操作等。",
+    parameters: bashSchema,
+    execute: async (_id, params): Promise<AgentToolResult<BashToolDetails>> => {
+      const timeoutMs = params.timeout ?? 30000;
+      const result = await runShell(params.command, timeoutMs, cwd);
+      const MAX = 8000;
+      let out = result.stdout;
+      let err = result.stderr;
+      if (out.length > MAX) out = out.slice(0, MAX) + `\n... (截断，共 ${out.length} 字符)`;
+      if (err.length > MAX) err = err.slice(0, MAX) + `\n... (截断，共 ${err.length} 字符)`;
+      const text = `[exit ${result.exitCode}]\nstdout:\n${out}\nstderr:\n${err}`;
+      if (result.exitCode === -1) {
+        throw new Error(`命令执行失败：${err}`);
+      }
+      return {
+        content: [{ type: "text", text }],
+        details: result,
+      };
+    },
+  };
+}
+
+function runShell(command: string, timeoutMs: number, cwd: string): Promise<BashToolDetails> {
   return new Promise((resolve) => {
     const child = spawn(command, {
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
-      cwd: process.cwd(),
+      cwd,
     });
     let stdout = "";
     let stderr = "";

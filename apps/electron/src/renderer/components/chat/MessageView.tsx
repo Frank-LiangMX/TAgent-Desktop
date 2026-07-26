@@ -75,13 +75,21 @@ function AssistantView({
 }: {
   message: Extract<TAgentMessage, { type: 'assistant' }>
 }): React.ReactElement {
+  const isSubagent = !!message.parentToolUseId
   return (
     <Message from="assistant">
+      {/* 子代理输出标识：左边框 + 缩进，区分主 Agent 和 SubAgent */}
+      {isSubagent && (
+        <div className="mb-1 flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
+          <span className="inline-block size-1.5 rounded-full bg-primary/40" />
+          <span>子代理输出</span>
+        </div>
+      )}
       {/* 模型名胶囊（9px 玻璃胶囊，对齐 TAgent_General，无头像） */}
       {message.modelId && (
         <div className="agent-turn-title mb-2.5">{message.modelId}</div>
       )}
-      <MessageContent>
+      <MessageContent className={isSubagent ? 'border-l-2 border-primary/20 pl-3' : ''}>
         {/* 错误状态 */}
         {message.error && (
           <Badge variant="destructive" className="mb-2 text-xs">

@@ -70,6 +70,8 @@ async function loadPiAgentCore(): Promise<PiAgentCoreModule> {
   return _piAgentCore
 }
 
+import { createTaskTool } from './subagent-task-tool'
+
 // ===== 配置类型 =====
 
 /** Pi 核适配器配置（外部渠道模式） */
@@ -107,8 +109,14 @@ export interface PiQueryOptions extends AgentQueryInput {
   channelConfig: PiAgentAdapterConfig
   /** 系统提示词 */
   systemPrompt?: string
-  /** 自定义工具列表（默认用 pi-core 的 defaultTools） */
+  /** 自定义工具列表（默认用 pi-core 的 defaultTools + mcpTools） */
   tools?: AgentTool[]
+  /** 工作区 MCP 配置（合并 mcpTools） */
+  mcpConfig?: { servers: Record<string, unknown> }
+  /** 工作目录（bashTool/相对路径用，不传 process.cwd） */
+  cwd?: string
+  /** 权限模式回调（beforeToolCall 用） */
+  beforeToolCall?: (ctx: { toolCall: { name: string; arguments: Record<string, unknown> } }) => Promise<{ block: true; reason: string } | undefined>
 }
 
 // ===== 会话状态 =====
@@ -141,12 +149,12 @@ export class PiAgentAdapter implements AgentProviderAdapter {
    * 4. AgentEvent 回调转译成 SDKMessage，推给 generator
    */
   async *query(input: PiQueryOptions): AsyncIterable<SDKMessage> {
-    const { sessionId, prompt, channelConfig, systemPrompt, tools, abortSignal } = input
+    const { sessionId, prompt, channelConfig, systemPrompt, tools, mcpConfig, cwd, beforeToolCall, abortSignal } = input
 
     // 创建或复用 Agent 实例
     let entry = this.sessions.get(sessionId)
     if (!entry) {
-      entry = await this.createSession(sessionId, channelConfig, systemPrompt, tools)
+      entry = await this.createSession(sessionId, channelConfig, systemPrompt, tools, mcpConfig, cwd, beforeToolCall)
       this.sessions.set(sessionId, entry)
     }
 
@@ -355,13 +363,32 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     channelConfig: PiAgentAdapterConfig,
     systemPrompt?: string,
     tools?: AgentTool[],
+    mcpConfig?: { servers: Record<string, unknown> },
+    cwd?: string,
+    beforeToolCall?: (ctx: { toolCall: { name: string; arguments: Record<string, unknown> } }) => Promise<{ block: true; reason: string } | undefined>,
   ): Promise<SessionEntry> {
     const controller = new AbortController()
 
     // 动态加载 ESM-only 包
     const [piCore, piAgentCore] = await Promise.all([loadPiCore(), loadPiAgentCore()])
 
-    // 根据渠道配置创建 streamFn
+    // 合并 MCP 工具（buildMcpTools 真执行）+ descriptors（kscc bare 用）
+    let mcpTools: AgentTool[] = []
+    let mcpDescriptors: unknown[] = []
+    if (mcpConfig && Object.keys(mcpConfig.servers).length > 0) {
+      try {
+        const mcpResult = await piCore.buildMcpTools(mcpConfig as never)
+        mcpTools = mcpResult.tools
+        mcpDescriptors = mcpResult.descriptors
+      } catch (err) {
+        console.error(`[Pi 适配器 ${sessionId}] MCP 工具加载失败:`, err)
+      }
+    }
+
+    // 工具描述符（kscc bare 模式注入 system prompt，让模型知有工具）
+    const descriptors = [...piCore.defaultToolDescriptors, ...(mcpDescriptors as typeof piCore.defaultToolDescriptors)]
+
+    // 根据渠道配置创建 streamFn（kscc bare 传 descriptors 让模型知道工具）
     const streamFn = channelConfig.type === 'external'
       ? piCore.createHttpDirectStreamFn({
           provider: channelConfig.provider,
@@ -374,15 +401,25 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       : piCore.createKsccBareStreamFn({
           ksccPath: channelConfig.ksccPath,
           defaultModelId: channelConfig.defaultModelId,
-        })
+          tools: descriptors,
+        } as never)
 
-    // 构造初始 model（streamFn 内部会用工厂预构造的 model，这里仅占位）
+    // 构造初始 model
     const model = buildPlaceholderModel(channelConfig)
 
-    // 默认工具（Read/Write/Edit/Bash）
-    const agentTools = tools ?? piCore.defaultTools
+    // 工具：传入用传入的，否则 defaultTools + mcpTools；cwd 用闭包注入 bashTool
+    const baseTools = tools ?? piCore.defaultTools
+    // 如果传了 cwd 且没自定义 tools，把默认 bashTool 替换成 createBashTool(cwd)（避免 process.cwd 串）
+    const finalBaseTools =
+      cwd && tools == null
+        ? baseTools.map((t) => (t.name === 'Bash' ? piCore.createBashTool(cwd) : t))
+        : baseTools
 
-    // 创建 Agent
+    // 注册 task 工具（子代理：主 Agent 可派发子任务给独立子 Agent 执行）
+    const taskTool = createTaskTool(sessionId, channelConfig, cwd ?? process.cwd(), piCore, piAgentCore)
+    const agentTools = [...finalBaseTools, ...mcpTools, taskTool]
+
+    // 创建 Agent（挂 beforeToolCall 权限钩子）
     const agent = new piAgentCore.Agent({
       initialState: {
         systemPrompt: systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
@@ -395,7 +432,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       },
       streamFn,
       toolExecution: 'sequential',
-    })
+      ...(beforeToolCall ? { beforeToolCall } : {}),
+    } as never)
 
     return { agent, controller, isStreaming: false }
   }

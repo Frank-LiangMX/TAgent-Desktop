@@ -31,6 +31,9 @@ export interface PermissionRequest {
 interface Pending {
   resolve: (behavior: 'allow' | 'deny') => void
   sessionId: string
+  /** 工具名 + 输入（白名单精确 key 用） */
+  toolName: string
+  input: Record<string, unknown>
 }
 
 /** 会话级白名单：sessionId → Set<toolKey>（始终允许） */
@@ -57,7 +60,7 @@ function askRenderer(
   req: PermissionRequest
 ): Promise<'allow' | 'deny'> {
   return new Promise((resolve) => {
-    pending.set(req.id, { resolve, sessionId: req.sessionId })
+    pending.set(req.id, { resolve, sessionId: req.sessionId, toolName: req.toolName, input: req.input })
     win?.webContents.send(AGENT_IPC_CHANNELS.PERMISSION_REQUEST, req)
     // 超时自动 deny（30s）
     setTimeout(() => {
@@ -127,15 +130,18 @@ export class PermissionService {
       const p = pending.get(args.reqId)
       if (!p) return
       pending.delete(args.reqId)
-      // 始终允许 → 加白名单
+      // 始终允许 → 加精确白名单（toolKey 含工具名 + 关键参数 hash，避免 Bash/Write/Edit 整类白名单）
       if (args.behavior === 'allow' && args.remember) {
-        let whitelist = sessionWhitelist.get(p.sessionId)
-        if (!whitelist) {
-          whitelist = new Set()
-          sessionWhitelist.set(p.sessionId, whitelist)
+        const key = toolKey(p.toolName, p.input)
+        // 危险命令永不入白名单（每次都问，避免误授权 rm -rf /）
+        if (!isDangerousCommand(typeof p.input.command === 'string' ? p.input.command : '')) {
+          let whitelist = sessionWhitelist.get(p.sessionId)
+          if (!whitelist) {
+            whitelist = new Set()
+            sessionWhitelist.set(p.sessionId, whitelist)
+          }
+          whitelist.add(key)
         }
-        // toolKey 重新算（checkPermission 里算的 key 没传过来，这里简化：用 toolName 作 key）
-        // 精确白名单需要把 input 也传回，先简化用 toolName
       }
       p.resolve(args.behavior)
     })

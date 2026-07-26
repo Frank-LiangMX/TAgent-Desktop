@@ -115,6 +115,9 @@ const electronAPI = {
   },
   respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) =>
     ipcRenderer.send(AGENT_IPC_CHANNELS.PERMISSION_RESPOND, { reqId, behavior, remember }),
+  // 热切换指定会话的权限模式（持久化 meta + 通知运行时）
+  setSessionPermissionMode: (sessionId: string, mode: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_PERMISSION_MODE, { sessionId, mode }) as Promise<{ ok: boolean; error?: string }>,
 } as const
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

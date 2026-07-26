@@ -81,6 +81,8 @@ declare global {
       // 权限审批
       onPermissionRequest: (cb: (req: unknown) => void) => () => void
       respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) => void
+      // 热切换会话权限模式
+      setSessionPermissionMode: (sessionId: string, mode: string) => Promise<{ ok: boolean; error?: string }>
     }
   }
 }

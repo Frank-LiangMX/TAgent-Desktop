@@ -3,6 +3,32 @@
 本项目变更记录，遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.0-dev.8] - 2026-07-26
+
+两核工具循环完整接通 + 子代理（SubAgent）功能。
+
+### 新增
+- **Kscc 核接通** — session-service 传 mcpServers/canUseTool/permissionMode（非硬编码 bypass）+ allowDangerouslySkipPermissions:!canUseTool。
+- **Pi 核接通** — session-service 传 mcpConfig/beforeToolCall/cwd/permissionMode；pi-agent-adapter 合并 mcpTools + 挂 beforeToolCall + kscc bare 传 descriptors + bashTool 用 createBashTool(cwd) 闭包注入工作目录。
+- **权限模式运行中切换** — UPDATE_SESSION_PERMISSION_MODE IPC + SessionRuntime.setPermissionMode（kscc 调 SDK setPermissionMode；Pi 靠闭包读 meta）。
+- **PermissionService 白名单精确 key** — toolKey 含工具名 + 关键参数 hash，危险命令永不入白名单。
+- **PermissionModeSelector** — 输入框 footer 三模式 Popover pill（auto/bypass/plan）。
+- **子代理（SubAgent）** — Kscc 核 SDK 原生（agents 选项 + forwardSubagentText + agentProgressSummaries）+ Pi 核自实现 task 工具（executionMode: 'parallel' 支持并发）。内置 3 个子代理（code-reviewer/explorer/researcher），模型路由（Claude→haiku），System Prompt 委派策略，subagentEagerness 4 档（hardcoded conservative）。渲染嵌套简化版（左边框 + 标识）。task_* 事件转译 + 显示。
+- **pi-core createBashTool(cwd)** — 工厂函数，创建带指定 cwd 的 Bash 工具实例。
+
+### 变更
+- session-service 构造函数加 permissionService 参数；main/index.ts 注入。
+- kscc 适配器 buildSdkOptions 加 agents/forwardSubagentText/agentProgressSummaries。
+- Pi 适配器 createSession 合并 mcpTools/beforeToolCall/kscc bare descriptors/createBashTool(cwd)。
+- sdkMessageToIR 新增 task_started/task_progress/task_notification 转译。
+
+### 已知缺口（后续版本补）
+- subagentEagerness 接 UI 设置
+- 完整渲染嵌套（parentToolUseId 映射到父 tool_use，可展开/折叠）
+- 子代理进度条（task_progress 实时更新）
+- MCP 配置 UI
+- 端到端验证
+
 ## [2.0.0-dev.7] - 2026-07-26
 
 工具循环基础设施：工作区 MCP store + 权限审批 service + PermissionBanner。两核接通留下轮。

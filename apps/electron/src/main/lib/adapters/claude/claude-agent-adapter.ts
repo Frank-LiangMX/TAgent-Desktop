@@ -15,6 +15,7 @@ import { spawn as spawnChild, execFileSync } from 'node:child_process'
 import type {
   AgentProviderAdapter,
   AgentQueryInput,
+  AgentDefinition,
   SDKUserMessageInput,
   SDKMessage,
 } from '@tagent/shared'
@@ -59,6 +60,8 @@ export interface KsccQueryOptions extends AgentQueryInput {
   includePartialMessages?: boolean
   /** persistSession */
   persistSession?: boolean
+  /** 子代理定义（SDK agents 选项，主 Agent 可调用 Agent/Task 工具派发） */
+  agents?: Record<string, AgentDefinition>
 }
 
 /** 活跃会话状态（长驻：一个会话一个进程） */
@@ -158,6 +161,12 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
         Object.keys(options.mcpServers).length > 0 && {
           mcpServers: options.mcpServers as SdkOptions['mcpServers'],
         }),
+      // 子代理：传 agents 定义 + 开启嵌套对话转发 + 进度摘要
+      ...(options.agents && Object.keys(options.agents).length > 0 && {
+        agents: options.agents as SdkOptions['agents'],
+        forwardSubagentText: true,
+        agentProgressSummaries: true,
+      }),
       ...(options.onStderr && { stderr: options.onStderr }),
       ...(options.persistSession != null && { persistSession: options.persistSession }),
       toolUseConcurrency: 1,
@@ -203,6 +212,19 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
         /* 忽略 */
       }
     }
+  }
+
+  /** 热切换 SDK 权限模式（运行中会话，下次工具调用生效） */
+  async setPermissionMode(sessionId: string, mode: string): Promise<void> {
+    const sess = activeSessions.get(sessionId)
+    if (!sess) {
+      throw new Error(`[kscc adapter] 无活跃会话可切权限模式: ${sessionId}`)
+    }
+    const query = sess.query as unknown as { setPermissionMode?: (mode: string) => Promise<void> }
+    if (!query.setPermissionMode) {
+      throw new Error('[kscc adapter] SDK Query 不支持 setPermissionMode')
+    }
+    await query.setPermissionMode(mode)
   }
 
   /** 中止会话：杀进程（destroySession / abort 用） */

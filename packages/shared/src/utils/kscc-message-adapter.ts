@@ -140,6 +140,59 @@ export function sdkMessageToIR(
     return {}
   }
 
-  // 其他（system/tool_progress/prompt_suggestion/tool_use_summary）暂不转译，后续按需
+  // 子代理生命周期事件（task_started / task_progress / task_notification）
+  if (type === 'system') {
+    const subtype = m.subtype as string | undefined
+    if (subtype === 'task_started') {
+      return {
+        event: {
+          kind: 'tagent_event',
+          event: {
+            type: 'task_started',
+            taskId: m.task_id as string,
+            toolUseId: m.tool_use_id as string | undefined,
+            description: m.description as string,
+            taskType: (m.task_type ?? m.subagent_type) as string | undefined,
+          },
+        },
+      }
+    }
+    if (subtype === 'task_progress') {
+      return {
+        event: {
+          kind: 'tagent_event',
+          event: {
+            type: 'task_progress',
+            taskId: m.task_id as string,
+            toolUseId: m.tool_use_id as string | undefined,
+            description: m.description as string,
+            lastToolName: m.last_tool_name as string | undefined,
+            usage: m.usage as { total_tokens: number; tool_uses: number; duration_ms: number } | undefined,
+            summary: m.summary as string | undefined,
+          },
+        },
+      }
+    }
+    if (subtype === 'task_notification') {
+      return {
+        event: {
+          kind: 'tagent_event',
+          event: {
+            type: 'task_notification',
+            taskId: m.task_id as string,
+            toolUseId: m.tool_use_id as string | undefined,
+            status: m.status as 'completed' | 'failed' | 'stopped',
+            summary: m.summary as string,
+            outputFile: m.output_file as string | undefined,
+            usage: m.usage as { total_tokens: number; tool_uses: number; duration_ms: number } | undefined,
+          },
+        },
+      }
+    }
+    // 其他 system 消息（init / compact_boundary 等）不转译
+    return {}
+  }
+
+  // 其他（tool_progress/prompt_suggestion/tool_use_summary）暂不转译，后续按需
   return {}
 }
