@@ -3,6 +3,24 @@
 本项目变更记录，遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.0-dev.7] - 2026-07-26
+
+工具循环基础设施：工作区 MCP store + 权限审批 service + PermissionBanner。两核接通留下轮。
+
+### 新增
+- **工作区 MCP store** — `mcp-store.ts` 读写 `projects/{slug}/mcp.json`（CRUD + getEnabledMcpServers）；`mcp-service.ts` IPC（GET/SAVE/TEST_MCP）+ preload。复用 shared McpServerEntry/WorkspaceMcpConfig。
+- **权限审批 service** — `permission-service.ts`：createCanUseTool（kscc）+ createBeforeToolCall（Pi）。bypass 全放行 / auto 只读静默放行（isAutoModeAutoAllowTool）+ 写操作弹框 / plan 写拒绝；危险命令标记；会话白名单。IPC PERMISSION_REQUEST/RESPOND + preload。
+- **PermissionBanner** — `permission/PermissionBanner.tsx`：motion 弹确认横幅（工具名+参数+危险标记+允许/拒绝/始终），挂 Chat composer 上方，30s 超时拒绝。
+
+### 变更
+- shared 加 PERMISSION_REQUEST 通道；复用已有 MCP/PERMISSION 通道名。
+- main 起 McpService + PermissionService；preload/App 类型声明同步。
+
+### 已知缺口（下轮接两核）
+- Pi 核接通（tools/mcp/systemPrompt/cwd + beforeToolCall + kscc bare descriptors + bashTool cwd）
+- kscc 核接通（mcpServers + canUseTool + permissionMode 非硬编码 + allowDangerouslySkipPermissions:!canUseTool）
+- 权限模式切换 UI + 运行中切换；MCP 配置 UI；白名单精确 key
+
 ## [2.0.0-dev.6] - 2026-07-26
 
 会话 sidebar 重构（motion 丝滑动效）+ 三点菜单 + 打开项目按钮。

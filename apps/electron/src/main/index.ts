@@ -10,6 +10,8 @@ import path from 'node:path'
 import { SessionService } from './lib/ipc/session-service'
 import { ChannelService } from './lib/ipc/channel-service'
 import { WorkspaceService } from './lib/ipc/workspace-service'
+import { McpService } from './lib/ipc/mcp-service'
+import { PermissionService } from './lib/permission/permission-service'
 import { seedBuiltinChannels } from './lib/channel/channel-store'
 
 // cjs 打包格式下 __dirname 是全局可用，无需 fileURLToPath
@@ -17,6 +19,7 @@ import { seedBuiltinChannels } from './lib/channel/channel-store'
 /** 主窗口引用（SessionService 推 IPC 用） */
 let mainWindow: BrowserWindow | null = null
 let sessionService: SessionService | null = null
+let permissionService: PermissionService | null = null
 
 /** 主窗口：开发态加载 Vite dev server，生产态加载打包产物 */
 function createWindow(): void {
@@ -77,6 +80,10 @@ app.whenReady().then(() => {
   ChannelService.create()
   // 起工作区服务（注册工作区 IPC handler）
   WorkspaceService.create(() => mainWindow)
+  // 起 MCP 服务（注册工作区 MCP 配置 IPC handler）
+  McpService.create()
+  // 起权限审批服务（注册 PERMISSION_RESPOND IPC handler）
+  permissionService = PermissionService.create(() => mainWindow)
   // 起会话服务（注册 IPC handler）
   sessionService = SessionService.create(() => mainWindow)
 

@@ -28,6 +28,7 @@ import { ArrowUp, Square } from 'lucide-react'
 import { MessageView } from './MessageView'
 import { ChatInput, type ChatInputHandle } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
+import { PermissionBanner } from '../permission/PermissionBanner'
 import { ScrollPositionManager } from '../shell/ScrollPositionManager'
 import { channelsAtom, selectedChannelIdAtom, bumpSessionsRefreshAtom } from '../../atoms/channel-atoms'
 import { currentWorkspaceIdAtom } from '../../atoms/workspace-atoms'
@@ -307,6 +308,9 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
         <ScrollMinimap items={minimapItems} />
         <ConversationScrollButton />
       </Conversation>
+
+      {/* 权限确认横幅（工具写操作/危险命令时弹） */}
+      <PermissionBanner sessionId={sessionId} />
 
       {/* 输入区：composer 玻璃浮岛 absolute 浮在底部，680px 居中。
        * 消息从下方滚过透出（透明玻璃 + blur），对齐 TAgent_General 浮岛布局 */}

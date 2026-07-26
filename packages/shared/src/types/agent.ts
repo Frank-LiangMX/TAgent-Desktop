@@ -1890,6 +1890,8 @@ export const AGENT_IPC_CHANNELS = {
   WORKSPACE_FILES_CHANGED: 'agent:workspace-files-changed',
 
   // 权限系统
+  /** 权限请求（主进程 → 渲染进程，弹确认框） */
+  PERMISSION_REQUEST: 'agent:permission:request',
   /** 权限响应（渲染进程 → 主进程） */
   PERMISSION_RESPOND: 'agent:permission:respond',
   /** 热切换指定会话的权限模式（运行中生效，不广播到其他会话） */

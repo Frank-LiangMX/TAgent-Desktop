@@ -75,6 +75,12 @@ declare global {
       windowMaximize: () => void
       windowClose: () => void
       onWindowResize: (cb: () => void) => () => void
+      // MCP 配置
+      getMcpConfig: (slug: string) => Promise<unknown>
+      saveMcpConfig: (slug: string, config: unknown) => Promise<{ ok: boolean }>
+      // 权限审批
+      onPermissionRequest: (cb: (req: unknown) => void) => () => void
+      respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) => void
     }
   }
 }

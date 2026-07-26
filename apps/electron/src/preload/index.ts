@@ -102,6 +102,19 @@ const electronAPI = {
     ipcRenderer.on('window:resize', handler)
     return () => ipcRenderer.removeListener('window:resize', handler)
   },
+  // MCP 配置（工作区 mcp.json）
+  getMcpConfig: (slug: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_MCP_CONFIG, slug) as Promise<unknown>,
+  saveMcpConfig: (slug: string, config: unknown) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.SAVE_MCP_CONFIG, { slug, config }) as Promise<{ ok: boolean }>,
+  // 权限审批（主进程推请求 / renderer 回响应）
+  onPermissionRequest: (cb: (req: unknown) => void) => {
+    const handler = (_e: unknown, req: unknown): void => cb(req)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.PERMISSION_REQUEST, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.PERMISSION_REQUEST, handler)
+  },
+  respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) =>
+    ipcRenderer.send(AGENT_IPC_CHANNELS.PERMISSION_RESPOND, { reqId, behavior, remember }),
 } as const
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)
