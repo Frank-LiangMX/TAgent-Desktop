@@ -87,11 +87,19 @@ const electronAPI = {
   /** 切换当前工作区 */
   switchWorkspace: (id: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_WORKSPACE + ':switch', id) as Promise<{ ok: boolean; error?: string }>,
-  /** 更新会话元数据（重命名 title / 置顶 pinned） */
-  updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean }) =>
+  /** 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived；status 由主进程内部写，渲染层不直接写） */
+  updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_META, { id, patch }) as Promise<unknown>,
   /** 切换会话置顶 */
   togglePin: (id: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.TOGGLE_PIN, id) as Promise<unknown>,
+  /** 切换会话归档 */
+  toggleArchive: (id: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.TOGGLE_ARCHIVE, id) as Promise<unknown>,
+  /** 查会话生命状态（runtimes 内存 + meta 组合；running 不落盘） */
+  getSessionStatus: (id: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_SESSION_STATUS, id) as Promise<{
+      status: 'idle' | 'running' | 'error'
+      archived: boolean
+    }>,
   // 窗口控制（自定义 WindowControls 用，对齐 TAgent_General）
   windowIsMaximized: () => ipcRenderer.invoke('window:is-maximized') as Promise<boolean>,
   windowMinimize: () => ipcRenderer.send('window:minimize'),

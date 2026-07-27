@@ -67,9 +67,12 @@ declare global {
       createProjectWorkspace: () => Promise<AgentWorkspace | null>
       getCurrentWorkspace: () => Promise<AgentWorkspace | undefined>
       switchWorkspace: (id: string) => Promise<{ ok: boolean; error?: string }>
-      // 会话元数据（重命名/置顶）
-      updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean }) => Promise<unknown>
+      // 会话元数据（重命名/置顶/归档；status 由主进程内部写，渲染层不直接写）
+      updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }) => Promise<unknown>
       togglePin: (id: string) => Promise<unknown>
+      toggleArchive: (id: string) => Promise<unknown>
+      /** 查会话生命状态（runtimes 内存 + meta 组合；running 不落盘） */
+      getSessionStatus: (id: string) => Promise<{ status: 'idle' | 'running' | 'error'; archived: boolean }>
       // 窗口控制（自定义 WindowControls 用）
       windowIsMaximized: () => Promise<boolean>
       windowMinimize: () => void

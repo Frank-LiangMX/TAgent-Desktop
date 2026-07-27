@@ -130,10 +130,13 @@ export class SessionService {
       return { ok: true }
     })
 
-    // 更新会话元数据（重命名 title / 置顶 pinned 等）
+    // 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived 等；status 仅主进程内部写 error/idle）
     ipcMain.handle(
       AGENT_IPC_CHANNELS.UPDATE_SESSION_META,
-      async (_e, args: { id: string; patch: { title?: string; pinned?: boolean } }) => {
+      async (
+        _e,
+        args: { id: string; patch: { title?: string; pinned?: boolean; archived?: boolean } }
+      ) => {
         return updateSessionMeta(args.id, args.patch)
       }
     )
@@ -143,6 +146,32 @@ export class SessionService {
       const meta = getSessionMeta(id)
       return updateSessionMeta(id, { pinned: !meta?.pinned })
     })
+
+    // 归档切换
+    ipcMain.handle(AGENT_IPC_CHANNELS.TOGGLE_ARCHIVE, async (_e, id: string) => {
+      const meta = getSessionMeta(id)
+      return updateSessionMeta(id, { archived: !meta?.archived })
+    })
+
+    // 查会话生命状态（runtimes 内存 turnInFlight 优先 → meta.error → idle；archived 一并返回）
+    ipcMain.handle(AGENT_IPC_CHANNELS.GET_SESSION_STATUS, async (_e, id: string) => {
+      return this.getStatus(id)
+    })
+  }
+
+  /**
+   * 组合会话生命状态（侧栏状态色点用）。
+   * - runtimes 内存 turnInFlight → 'running'（不落盘，重启即失）
+   * - meta.status === 'error' → 'error'（落盘，重启保留）
+   * - 其余 → 'idle'
+   * 用 isTurnInFlight() 而非 isRunning()：长驻进程 isRunning 恒 true，不表达"当前轮在跑"。
+   */
+  private getStatus(id: string): { status: 'idle' | 'running' | 'error'; archived: boolean } {
+    const meta = getSessionMeta(id)
+    const rt = this.runtimes.get(id)
+    if (rt && rt.isTurnInFlight()) return { status: 'running', archived: !!meta?.archived }
+    if (meta?.status === 'error') return { status: 'error', archived: !!meta?.archived }
+    return { status: 'idle', archived: !!meta?.archived }
   }
 
   /** 处理发消息：解析渠道→绑核→首次 spawn + 起循环 / 后续 enqueue */
@@ -213,8 +242,16 @@ export class SessionService {
       this.runtimes.set(input.sessionId, rt)
       rt.setCallbacks({
         onMessage: (msg: SDKMessage) => this.handleStreamMessage(input.sessionId, workspaceId, msg),
-        onTurnEnd: () => this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } }),
-        onError: (err: Error) => this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'session_error', message: err.message } }),
+        onTurnEnd: () => {
+          // 轮成功结束 → 清除可能的 error，落盘 idle（重启后仍为干净态）
+          updateSessionMeta(input.sessionId, { status: 'idle' })
+          this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
+        },
+        onError: (err: Error) => {
+          // 出错 → 落盘 error（重启保留，下轮成功回 idle）
+          updateSessionMeta(input.sessionId, { status: 'error' })
+          this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'session_error', message: err.message } })
+        },
       })
 
       await rt.sendMessage(this.buildQueryOptions(input, channel, workspaceId))

@@ -1,0 +1,1234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TAgent Desktop · 会话 Sidebar 视觉方向对比</title>
+<!--
+  ============================================================================
+  SYSTEM (lifted from TAgent-Desktop real tokens — packages/ui tokens.css,
+  globals.css, app-shell.css, chat.css, SessionSidebar.tsx)
+
+  Type   : system-ui, -apple-system, sans-serif  (the app's actual stack)
+  Scale  : group head 13 / 520 · session title 12.5 / 18 · meta 10.5 (was 9 — bumped)
+  Color  : real token values (HSL components + scene/glass RGB triplets)
+  Glass  : 254px · r22 · border glass/0.4 · radial(scene-a/b)+linear(glass .32→.15)
+           · shadow 0 12px 32px · backdrop blur(22) saturate(1.08)  [app-shell.css:180]
+  Scene  : 3 radial blobs over scene-base  [globals.css:73] + slow subtle drift
+  Motion : cubic-bezier(0.16,1,0.3,1) · sliding active indicator (replicates layoutId)
+  Baseline upgrade shared by all 3 directions: primary 新建 button · 打开项目目录
+           (创建工作区) glass icon button · ⌘K search · count-badge contrast. The
+           sliding indicator (replicates layoutId) + per-row fill together express
+           selected state. Directions differ ONLY in row visual language.
+
+  This page renders each direction in BOTH dark and light, side by side stacked,
+  so you can judge a direction in both modes at once.
+
+  Directions:
+   A · Glass Highlight — glass-on-glass active fill + inset top light + gradient
+                          glow bar (bar + fill work together, not bar alone)
+   B · Status + Time    — status dot (pulse/done/error) + 今天/昨天/本周/更早
+                          time buckets + relative time · two clean lines
+   C · Monogram         — title-initial monogram (harmonized hue by model) swaps to
+                          primary when active · Arc/Notion identity feel
+  ============================================================================
+-->
+<style>
+  /* ---- tokens: dark on :root, .light overrides (scoped to a subtree) ---- */
+  :root{
+    --primary: 218 19% 62%;
+    --primary-foreground: 216 17% 11%;
+    --foreground: 220 14% 91%;
+    --muted-foreground: 220 8% 58%;
+    --background: 220 10% 15%;
+    --destructive: 0 50% 58%;
+    --scene-base-rgb: 36 38 42;
+    --scene-a-rgb: 68 94 122;
+    --scene-b-rgb: 88 64 62;
+    --scene-c-rgb: 48 68 58;
+    --glass-rgb: 50 52 56;
+    --spatial-line: rgb(202 213 230 / 10%);
+    --status-done: 152 30% 56%;
+    --hairline: rgb(202 213 230 / 9%);
+  }
+  .light{
+    --primary: 217 20% 35%;
+    --primary-foreground: 0 0% 100%;
+    --foreground: 216 11% 18%;
+    --muted-foreground: 218 8% 42%;
+    --background: 218 8% 93%;
+    --destructive: 0 50% 52%;
+    --scene-base-rgb: 217 222 231;
+    --scene-a-rgb: 168 196 224;
+    --scene-b-rgb: 216 184 180;
+    --scene-c-rgb: 168 200 186;
+    --glass-rgb: 248 250 253;
+    --spatial-line: rgb(68 78 94 / 12%);
+    --status-done: 152 26% 38%;
+    --hairline: rgb(68 78 94 / 10%);
+  }
+
+  *{ box-sizing: border-box; }
+  html,body{ margin:0; height:100%; }
+  body{
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: hsl(var(--foreground));
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    background: #14161a;
+    overflow-x: auto;
+  }
+
+  @keyframes drift{
+    0%   { transform: translate3d(-2%, -1%, 0) scale(1); }
+    100% { transform: translate3d(3%, 2%, 0) scale(1.08); }
+  }
+
+  /* ---- page chrome ---- */
+  .page{ position: relative; z-index: 1; min-height: 100%; padding: 28px 36px 64px; }
+  .topbar{ display:flex; align-items:center; gap:14px; margin-bottom: 18px; }
+  .brand{ font-size: 15px; font-weight: 650; letter-spacing: -0.01em; color: #e7e9ee; }
+  .brand span{ color: #8b93a3; font-weight: 500; }
+
+  .system-note{
+    font-size: 11.5px; line-height: 1.6; color: #aab2c0;
+    max-width: 920px; margin: 0 0 26px; padding: 10px 14px; border-radius: 12px;
+    border: 1px solid rgb(255 255 255 / 0.08); background: rgb(255 255 255 / 0.03);
+  }
+  .system-note b{ color: #e7e9ee; font-weight: 600; }
+  .system-note code{ font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: #c8d0dd; }
+
+  /* ---- each mode block paints its OWN scene (uses its scoped tokens) ---- */
+  .canvases{ display:flex; flex-direction:column; gap: 30px; }
+  .mode-block{
+    position: relative; isolation: isolate;
+    padding: 18px 22px 26px; border-radius: 22px; overflow: hidden;
+    background: rgb(var(--scene-base-rgb));
+  }
+  .mode-block::before{
+    content:""; position:absolute; inset:0; z-index:0; pointer-events:none;
+    background:
+      radial-gradient(42% 48% at 36% 10%, rgb(var(--scene-a-rgb) / 0.30), transparent 60%),
+      radial-gradient(40% 46% at 48% 88%, rgb(var(--scene-c-rgb) / 0.26), transparent 60%),
+      radial-gradient(52% 58% at 82% 78%, rgb(var(--scene-b-rgb) / 0.24), transparent 62%);
+  }
+  .mode-block::after{
+    content:""; position:absolute; inset:-20%; z-index:0; pointer-events:none; filter: blur(8px);
+    background:
+      radial-gradient(28% 34% at 70% 24%, rgb(var(--scene-a-rgb) / 0.18), transparent 60%),
+      radial-gradient(30% 30% at 20% 72%, rgb(var(--scene-b-rgb) / 0.16), transparent 62%);
+    animation: drift 46s linear infinite alternate;
+  }
+  .mode-label{
+    position: relative; z-index: 1; margin: 0 0 12px 2px;
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+  }
+  .mode-label .dot{ display:inline-block; width:7px; height:7px; border-radius:999px; background: hsl(var(--primary)); margin-right:7px; vertical-align: 1px; }
+
+  .canvas{ position: relative; z-index: 1; display:flex; gap: 44px; align-items: flex-start; }
+  .col{ display:flex; flex-direction: column; gap: 12px; flex: 0 0 auto; }
+  .col-label{ display:flex; align-items: baseline; gap: 8px; margin-left: 2px; flex-wrap: wrap; }
+  .col-tag{
+    font-size: 11px; font-weight: 700; letter-spacing: .04em;
+    padding: 2px 8px; border-radius: 999px; color: hsl(var(--primary-foreground));
+    background: hsl(var(--primary));
+  }
+  .col-name{ font-size: 13.5px; font-weight: 600; color: hsl(var(--foreground)); }
+  .col-sub{ flex-basis: 100%; margin: 0 0 0 2px; max-width: 254px; font-size: 11px; color: hsl(var(--muted-foreground)); line-height: 1.45; }
+
+  /* ---- the glass sidebar (verbatim glass recipe from app-shell.css:180) ---- */
+  .glass{
+    position: relative; z-index: 1;
+    width: 254px; height: 642px; overflow: hidden;
+    border: 1px solid rgb(var(--glass-rgb) / 0.4);
+    border-radius: 22px;
+    background:
+      radial-gradient(120% 92% at 8% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 64%),
+      radial-gradient(110% 90% at 100% 100%, rgb(var(--scene-b-rgb) / 0.06), transparent 68%),
+      linear-gradient(145deg, rgb(var(--glass-rgb) / 0.32), rgb(var(--glass-rgb) / 0.15));
+    box-shadow: 0 12px 32px rgb(0 0 0 / 0.3), inset 0 1px 0 rgb(255 255 255 / .05);
+    -webkit-backdrop-filter: blur(22px) saturate(1.08);
+    backdrop-filter: blur(22px) saturate(1.08);
+    /* 稳定 backdrop-filter 合成层,避免滚动时 backdrop 快照重算不同步 → 拖影(浅色下尤其可见) */
+    transform: translateZ(0);
+    backface-visibility: hidden;
+    display: flex; flex-direction: column;
+  }
+  .light .glass{
+    box-shadow: 0 8px 24px -8px rgb(48 59 76 / 0.14), 0 1px 3px rgb(48 59 76 / 0.06), inset 0 1px 0 rgb(255 255 255 / .7);
+    border-color: rgb(255 255 255 / 0.6);
+    background:
+      radial-gradient(120% 92% at 8% 0%, rgb(var(--scene-a-rgb) / 0.10), transparent 64%),
+      radial-gradient(110% 90% at 100% 100%, rgb(var(--scene-b-rgb) / 0.08), transparent 68%),
+      linear-gradient(145deg, rgb(255 255 255 / 0.55), rgb(255 255 255 / 0.32));
+  }
+
+  /* ---- 顶行:左标题两行 + 右两胶囊,整体垂直居中对齐 ---- */
+  .side-title{
+    display:flex; align-items:center; gap:8px; padding: 13px 12px 12px;
+  }
+  .side-title .label{
+    position: relative; padding-left: 11px; line-height: 1;
+    display:flex; flex-direction:column; gap:3px;
+  }
+  .side-title .label .zh{
+    font-size: 14px; font-weight: 700; letter-spacing: .01em;
+    color: hsl(var(--foreground) / 0.85);
+  }
+  .side-title .label .en{
+    font-size: 9px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+    color: hsl(var(--muted-foreground) / 0.6);
+  }
+  /* 竖线:覆盖两行标题高度,整体垂直居中后自然和右侧中线对齐 */
+  .side-title .label::before{
+    content:""; position:absolute; left:0; top:0; bottom:0;
+    width:2.5px; border-radius:999px; background: hsl(var(--primary));
+  }
+  /* 右侧胶囊组:外层胶囊容器把两个操作包成一个整体,顶部对齐标题两行 */
+  .title-actions{ margin-left:auto; display:flex; align-items:center; gap:5px;
+    padding: 4px; border-radius:999px;
+    border:1px solid rgb(var(--glass-rgb) / 0.28);
+    background: rgb(var(--glass-rgb) / 0.22);
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / .08);
+  }
+  /* 大胶囊:新建会话,带 ChatsCircle 图标 + 文字,primary 描边克制态 */
+  .pill-new{
+    display:flex; align-items:center; gap:5px; height:26px; padding: 0 11px 0 8px;
+    border:1px solid hsl(var(--primary) / 0.32); border-radius:999px; cursor:pointer;
+    font: inherit; font-size: 11.5px; font-weight: 600; letter-spacing: -0.01em;
+    color: hsl(var(--primary));
+    background: hsl(var(--primary) / 0.1);
+    transition: background .16s, border-color .16s, transform .1s;
+  }
+  .pill-new:hover{ background: hsl(var(--primary) / 0.18); border-color: hsl(var(--primary) / 0.5); }
+  .pill-new:active{ transform: translateY(1px); }
+  .pill-new .btn-ico{ flex:none; display:grid; place-items:center; width:15px; height:15px; }
+  /* 小胶囊:新建工作区,纯图标玻璃态 */
+  .pill-icon{
+    display:grid; place-items:center; width:26px; height:26px; flex:none;
+    border:1px solid rgb(var(--glass-rgb) / 0.3); border-radius:999px; cursor:pointer;
+    color: hsl(var(--foreground) / 0.6);
+    background: rgb(var(--glass-rgb) / 0.3);
+    transition: background .16s, color .16s, border-color .16s, transform .1s;
+  }
+  .pill-icon:hover{ background: rgb(var(--glass-rgb) / 0.5); color: hsl(var(--foreground)); border-color: rgb(var(--glass-rgb) / 0.5); }
+  .pill-icon:active{ transform: translateY(1px); }
+
+  /* ---- 搜索行:独占,顶行下方,不再和新建条重复 ---- */
+  .side-head{ padding: 0 10px 12px; border-bottom: 1px solid var(--hairline); }
+  .search{
+    position: relative; display:flex; align-items:center; height: 32px; padding: 0 6px 0 10px; border-radius: 10px;
+    border: 1px solid rgb(var(--glass-rgb) / 0.3);
+    background: rgb(var(--glass-rgb) / 0.4);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    transition: border-color .16s, background .16s, box-shadow .16s;
+  }
+  .search:focus-within{
+    border-color: hsl(var(--primary) / 0.4);
+    background: rgb(var(--glass-rgb) / 0.55);
+    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.1);
+  }
+  .search svg{ color: hsl(var(--muted-foreground)); flex:none; }
+  .search input{
+    flex:1; min-width:0; border:0; background:transparent; outline:none;
+    font: inherit; font-size: 12px; color: hsl(var(--foreground)); padding: 0 6px;
+  }
+  .search input::placeholder{ color: hsl(var(--muted-foreground) / 0.75); }
+  .search .kbd{
+    font-size: 10px; font-weight: 600; color: hsl(var(--muted-foreground) / 0.8);
+    padding: 2px 5px; border-radius: 5px;
+    border: 1px solid var(--hairline); background: rgb(var(--glass-rgb) / 0.4);
+  }
+
+  /* ---- scroll list ---- */
+  /* 滚动容器提升独立合成层 + paint 隔离:滚动在本层发生,不波及祖先 backdrop-filter 层 → 根治拖影 */
+  .scroll{ flex:1; overflow-y: auto; padding: 6px 4px 10px; transform: translateZ(0); contain: paint; }
+  .scroll::-webkit-scrollbar{ width: 0; }
+  .group{ padding: 0 2px; }
+  .group-head{
+    display:flex; align-items:center; gap: 7px; width:100%; padding: 7px 8px;
+    border:0; background:transparent; cursor:pointer; text-align:left;
+    border-radius: 9px; transition: background .16s;
+  }
+  .group-head:hover{ background: rgb(var(--glass-rgb) / 0.28); }
+  .group-head:hover .caret{ color: hsl(var(--foreground) / 0.7); }
+  .caret{ width:12px; flex:none; color: hsl(var(--muted-foreground)); transition: transform .18s cubic-bezier(0.16,1,0.3,1), color .16s; display:grid; place-items:center; }
+  .group.open .caret{ transform: rotate(90deg); }
+  .gname{ font-size: 13px; font-weight: 520; color: hsl(var(--foreground)); }
+  .gname.muted{ color: hsl(var(--foreground) / 0.62); }
+  .gcount{
+    margin-left:auto; min-width:18px; height:18px; padding: 0 6px; display:grid; place-items:center;
+    font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: hsl(var(--muted-foreground));
+    background: hsl(var(--foreground) / 0.07);
+    border-radius: 6px;
+  }
+
+  /* ---- rows wrapper holds the sliding active bar ---- */
+  .rows{ position: relative; padding: 2px 0; }
+  /* 选中态不再用独立竖条(贴标签感),改由各行 .is-active 自带左侧 primary 边框表达,连贯 */
+  .row.is-active{ border-left-color: hsl(var(--primary)); }
+
+  /* ---- session row base (chat.css:86, refined) ---- */
+  .row{
+    position: relative; display:flex; align-items:center; gap: 9px;
+    min-height: 50px; margin: 3px 4px; padding: 8px 10px 9px;
+    border: 1px solid transparent; border-radius: 12px; cursor:pointer;
+    transition: background .2s cubic-bezier(0.16,1,0.3,1), border-color .2s cubic-bezier(0.16,1,0.3,1), box-shadow .22s cubic-bezier(0.16,1,0.3,1);
+  }
+  .row:hover{ background: rgb(var(--glass-rgb) / 0.42); border-color: rgb(var(--glass-rgb) / 0.4); }
+  .row .body{ flex:1; min-width:0; }
+  .title{ display:flex; align-items:center; gap:6px; min-width:0; }
+  .title .t{
+    flex:1; min-width:0;
+    font-size: 12.5px; line-height: 18px; font-weight: 500; color: hsl(var(--foreground) / 0.86);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .meta{ margin-top: 2px; display:flex; align-items:center; gap:8px; min-width:0; }
+  .meta .m{ font-size: 10.5px; color: hsl(var(--muted-foreground)); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .meta .m.time{ margin-left:auto; flex:none; font-variant-numeric: tabular-nums; }
+  .turn-pill{
+    flex:none; font-size: 9.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: hsl(var(--muted-foreground));
+    padding: 1px 6px; border-radius: 999px;
+    background: hsl(var(--foreground) / 0.06);
+  }
+  .dots{
+    flex:none; width:0; height:22px; overflow:hidden;
+    display:grid; place-items:center; border-radius:6px;
+    color: hsl(var(--foreground) / 0.4); opacity:0; border:0; background:transparent; cursor:pointer;
+    transform: scale(.7); transform-origin: center;
+    /* margin-left 抵消 row gap:空载(宽0)不吃间距,右侧无死区 */
+    margin-left:-9px;
+    transition: width .26s cubic-bezier(0.16,1,0.3,1), margin-left .26s cubic-bezier(0.16,1,0.3,1),
+                opacity .18s ease, transform .26s cubic-bezier(0.16,1,0.3,1), background .16s, color .16s;
+  }
+  /* hover 行:三点展开让位(标题区 flex:1 min-width:0 自然向左收)+ scale 入场 */
+  .row:hover .dots{ width:24px; margin-left:4px; opacity:1; transform: scale(1); }
+  .dots:hover{ background: rgb(var(--glass-rgb) / 0.6); color: hsl(var(--foreground) / 0.7); }
+
+  .pin{ flex:none; color: hsl(var(--primary) / 0.85); }
+  /* pin 放行首(状态点后),流内排列,不绝对定位成角标;标题起点有无 pin 一致由行首槽位保证 */
+
+  /* ============================ DIRECTION A · Glass Highlight ============================ */
+  .dir-A .row.is-active{
+    background:
+      radial-gradient(120% 140% at 8% 0%, rgb(var(--scene-a-rgb) / 0.10), transparent 64%),
+      linear-gradient(150deg, rgb(var(--glass-rgb) / 0.50), rgb(var(--glass-rgb) / 0.30));
+    border-color: rgb(var(--glass-rgb) / 0.55);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / .16), inset 0 0 0 1px rgb(255 255 255 / .04), 0 6px 16px -10px rgb(0 0 0 / .5);
+  }
+  .light .dir-A .row.is-active{
+    background:
+      radial-gradient(120% 140% at 8% 0%, rgb(var(--scene-a-rgb) / 0.14), transparent 64%),
+      linear-gradient(150deg, rgb(255 255 255 / 0.72), rgb(255 255 255 / 0.45));
+    border-color: rgb(255 255 255 / 0.8);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / .8), 0 4px 12px -8px rgb(48 59 76 / .12);
+  }
+  .dir-A .row.is-active .t{ font-weight: 620; color: hsl(var(--foreground)); }
+  .dir-A .ico{ flex:none; color: hsl(var(--muted-foreground) / 0.6); }
+  .dir-A .row.is-active .ico{ color: hsl(var(--primary) / 0.9); }
+  .dir-A .row.is-active .meta .m{ color: hsl(var(--muted-foreground) / 0.92); }
+
+  /* ============================ DIRECTION B · Status + Time ============================ */
+  .dir-B .row.is-active{
+    background: rgb(var(--glass-rgb) / 0.40);
+    border-color: rgb(var(--glass-rgb) / 0.4);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / .06);
+  }
+  .light .dir-B .row.is-active{ background: rgb(255 255 255 / 0.62); border-color: rgb(255 255 255 / 0.7); box-shadow: inset 0 1px 0 rgb(255 255 255 / .8); }
+  .dir-B .row.is-active .t{ font-weight: 620; color: hsl(var(--foreground)); }
+
+  .stat-dot{ flex:none; width:7px; height:7px; border-radius:999px; margin-left:2px; }
+  .stat-dot.stream{ background: hsl(var(--primary)); animation: pulse 1.3s ease-in-out infinite; }
+  .stat-dot.done{ background: hsl(var(--status-done) / 0.85); }
+  .stat-dot.error{ background: hsl(var(--destructive)); }
+  .stat-dot.idle{ background: transparent; box-shadow: inset 0 0 0 1.5px hsl(var(--muted-foreground) / 0.5); }
+  @keyframes pulse{
+    0%,100%{ box-shadow: 0 0 0 0 hsl(var(--primary) / .45); opacity: .85; }
+    50%   { box-shadow: 0 0 0 4px hsl(var(--primary) / 0); opacity: 1; }
+  }
+  .dir-B .ico{ display:none; }
+
+  /* 时间桶头:去掉生硬横线,改 caret + 纯文字标签 + 右侧数量,上下留白分隔 */
+  .bucket{ margin: 10px 4px 3px; padding: 4px 8px; display:flex; align-items:center; gap:7px;
+    border-radius: 7px; cursor: pointer; transition: background .16s; }
+  .bucket:hover{ background: rgb(var(--glass-rgb) / 0.3); }
+  .bucket .b-caret{ width:10px; flex:none; font-size:9px; color: hsl(var(--muted-foreground) / 0.55);
+    transition: transform .18s cubic-bezier(0.16,1,0.3,1), color .16s; display:grid; place-items:center; }
+  .bucket:hover .b-caret{ color: hsl(var(--muted-foreground)); }
+  .dir-D .bucket-group.open .bucket .b-caret{ transform: rotate(90deg); color: hsl(var(--primary) / 0.8); }
+  .bucket .b-name{ font-size: 10px; font-weight: 600; letter-spacing: .02em; color: hsl(var(--muted-foreground) / 0.7); }
+  .bucket .folded-count{ margin-left:auto; font-size: 10px; font-variant-numeric: tabular-nums; color: hsl(var(--muted-foreground) / 0.5); }
+  .bucket:first-child{ margin-top: 2px; }
+
+  /* ============================ DIRECTION C · Monogram ============================ */
+  .dir-C .row.is-active{
+    background:
+      radial-gradient(120% 140% at 10% 0%, rgb(var(--scene-a-rgb) / 0.10), transparent 64%),
+      rgb(var(--glass-rgb) / 0.42);
+    border-color: rgb(var(--glass-rgb) / 0.5);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / .14);
+  }
+  .light .dir-C .row.is-active{ background: rgb(255 255 255 / 0.66); border-color: rgb(255 255 255 / 0.75); box-shadow: inset 0 1px 0 rgb(255 255 255 / .8); }
+  .dir-C .row.is-active .t{ font-weight: 620; color: hsl(var(--foreground)); }
+
+  .mono{
+    position: relative;
+    flex:none; width:30px; height:30px; border-radius:9px; display:grid; place-items:center;
+    font-size: 12.5px; font-weight: 650; letter-spacing: -0.02em;
+    transition: background .22s, color .22s, box-shadow .22s;
+  }
+  .mono-0{ background: hsl(218 26% 60% / 0.18); color: hsl(218 30% 72%); }
+  .mono-1{ background: hsl(186 28% 52% / 0.18); color: hsl(186 32% 64%); }
+  .mono-2{ background: hsl(140 24% 52% / 0.18); color: hsl(140 28% 64%); }
+  .mono-3{ background: hsl(34 44% 58% / 0.18); color: hsl(34 48% 66%); }
+  .mono-4{ background: hsl(255 30% 66% / 0.20); color: hsl(255 34% 76%); }
+  .mono-5{ background: hsl(350 38% 64% / 0.18); color: hsl(350 42% 72%); }
+  .light .mono-0{ background: hsl(218 36% 58% / 0.14); color: hsl(218 40% 42%); }
+  .light .mono-1{ background: hsl(186 36% 50% / 0.14); color: hsl(186 40% 34%); }
+  .light .mono-2{ background: hsl(140 32% 46% / 0.14); color: hsl(140 36% 32%); }
+  .light .mono-3{ background: hsl(34 58% 56% / 0.14); color: hsl(34 62% 40%); }
+  .light .mono-4{ background: hsl(255 38% 56% / 0.14); color: hsl(255 42% 42%); }
+  .light .mono-5{ background: hsl(350 46% 60% / 0.14); color: hsl(350 50% 44%); }
+  .row.is-active .mono{
+    background: hsl(var(--primary)) !important; color: hsl(var(--primary-foreground)) !important;
+    box-shadow: 0 4px 12px -4px hsl(var(--primary) / .6), inset 0 1px 0 rgb(255 255 255 / .25);
+  }
+  .mono .pip{ position:absolute; top:-3px; right:-3px; width:8px; height:8px; border-radius:999px; border: 2px solid rgb(var(--scene-base-rgb)); box-shadow: 0 0 0 1px rgb(var(--glass-rgb) / 0.5); }
+  .mono .pip.stream{ background: hsl(var(--primary)); animation: pulse 1.3s ease-in-out infinite; }
+  .mono .pip.error{ background: hsl(var(--destructive)); }
+  .mono-wrap{ position: relative; }
+
+  /* ============================ DIRECTION D · Compact Pin-bar ============================
+     形态重构:不是"一排排长条",而是 工作区控制台。
+     - 顶部置顶栏:横向胶囊,只显首字,常用会话一键可见,不占列表高度
+     - 双密度行:34px 单行(标题 + 右侧时间角标),hover 展开副信息
+     - workspace 头带"进行中"进度(脉冲点计数),非干数字徽章
+     - 选中:整行玻璃高光 + 左侧 2px 实色细条(无光晕,克制)
+  */
+  .dir-D .pin-rail{
+    display:flex; gap:6px; padding: 4px 4px 8px; border-bottom: 1px solid var(--hairline);
+    overflow-x:auto; scrollbar-width:none;
+  }
+  .dir-D .pin-rail::-webkit-scrollbar{ display:none; }
+  .pin-chip{
+    flex:none; display:flex; align-items:center; gap:6px; height:30px; padding: 0 10px 0 8px;
+    border-radius: 9px; cursor:pointer;
+    border: 1px solid rgb(var(--glass-rgb) / 0.3);
+    background: rgb(var(--glass-rgb) / 0.34);
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+    transition: background .16s, border-color .16s;
+  }
+  .pin-chip:hover{ background: rgb(var(--glass-rgb) / 0.52); border-color: rgb(var(--glass-rgb) / 0.5); }
+  .pin-chip .pm{ width:18px; height:18px; border-radius:6px; display:grid; place-items:center; font-size:10px; font-weight:650; }
+  .pin-chip .pm.c0{ background: hsl(34 44% 58% / 0.2); color: hsl(34 48% 66%); }
+  .pin-chip .pm.c1{ background: hsl(186 28% 52% / 0.2); color: hsl(186 32% 64%); }
+  .pin-chip .pm.c2{ background: hsl(255 30% 66% / 0.22); color: hsl(255 34% 76%); }
+  .light .pin-chip .pm.c0{ background: hsl(34 58% 56% / 0.16); color: hsl(34 62% 40%); }
+  .light .pin-chip .pm.c1{ background: hsl(186 36% 50% / 0.16); color: hsl(186 40% 34%); }
+  .light .pin-chip .pm.c2{ background: hsl(255 38% 56% / 0.16); color: hsl(255 42% 42%); }
+  .pin-chip .pt{ font-size:11.5px; font-weight:550; color: hsl(var(--foreground) / 0.82); white-space:nowrap; }
+  .light .pin-chip{ background: rgb(255 255 255 / 0.5); border-color: rgb(255 255 255 / 0.6); }
+
+  /* workspace head:标题独占一行不抢位;进度降到下方副行(仅展开时显),克制 */
+  .dir-D .group-head{ flex-wrap: wrap; padding: 8px 8px 6px; }
+  .dir-D .group-head .gname{ flex:1; min-width:0; }
+  /* 标题行右侧只留一个安静的数量徽章 */
+  .dir-D .ws-badge{
+    flex:none; min-width:18px; height:18px; padding: 0 6px; display:grid; place-items:center;
+    font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums;
+    color: hsl(var(--muted-foreground) / 0.8); background: hsl(var(--foreground) / 0.06); border-radius: 6px;
+  }
+  .dir-D .group.has-stream .ws-badge{ color: hsl(var(--primary)); background: hsl(var(--primary) / 0.1); }
+  /* 进度副行:整宽,展开且有活时显示 */
+  .dir-D .ws-sub{
+    flex-basis:100%; margin: 3px 0 0 19px; display:flex; align-items:center; gap:6px;
+    font-size: 10px; color: hsl(var(--muted-foreground) / 0.75);
+  }
+  .dir-D .ws-sub .live{ display:inline-flex; gap:3px; }
+  .dir-D .ws-sub .live i{ width:5px; height:5px; border-radius:999px; background: hsl(var(--primary)); opacity:.85; }
+  .dir-D .ws-sub .live i:first-child{ animation: pulse 1.3s ease-in-out infinite; }
+  .dir-D .ws-sub .err{ color: hsl(var(--destructive) / 0.9); }
+  /* 展开 + 无活 → 不显副行;折叠 → 不显副行(标题行徽章已够) */
+  .dir-D .group:not(.open) .ws-sub,
+  .dir-D .group.open:not(.has-stream):not(.has-error) .ws-sub{ display:none; }
+
+  /* D 的行回到舒展两行(base 结构),只保留 D 的形态特征:置顶栏 + workspace 进度 + 无光晕选中 */
+  .dir-D .ico{ flex:none; color: hsl(var(--muted-foreground) / 0.55); }
+  /* D 行首用 B 的状态色点(生命感),配 D 形态骨架 */
+  .dir-D .stat-dot{ width:8px; height:8px; margin-left:1px; flex:none; }
+  /* D 折叠/展开:只做高度过渡,会话卡片直接铺开,不套容器、不内缩、无玻璃底 */
+  .dir-D .group > .rows{
+    overflow: hidden; max-height: 2400px;
+    transition: max-height .28s cubic-bezier(0.16,1,0.3,1), opacity .2s ease;
+  }
+  .dir-D .group:not(.open) > .rows{ max-height: 0; padding-top:0; padding-bottom:0; opacity: 0; }
+  .dir-D .group:not(.open) .caret{ transform: rotate(0deg); }
+  .dir-D .group .caret{ transition: transform .18s cubic-bezier(0.16,1,0.3,1); }
+
+  /* ===== 已归档组/行:沉到底、灰化、紧凑 ===== */
+  /* 归档底部固定区:scroll 之外,置底常驻,顶部淡分隔 */
+  .dir-D .arch-foot{ flex:none; border-top: 1px solid var(--hairline); padding: 4px 4px 8px; }
+  .dir-D .group-archived .group-head{ padding-top: 6px; padding-bottom: 6px; }
+  /* 归档行:更矮、无 hover 高光强、文字灰化 */
+  .dir-D .row-archived{ min-height: 40px; }
+  .dir-D .row-archived .t{ color: hsl(var(--foreground) / 0.42); font-weight: 500; }
+  .dir-D .row-archived .meta .m{ color: hsl(var(--muted-foreground) / 0.5); }
+  .dir-D .row-archived .turn-pill{ background: hsl(var(--foreground) / 0.04); color: hsl(var(--muted-foreground) / 0.5); }
+  .dir-D .row-archived:hover{ background: rgb(var(--glass-rgb) / 0.28); }
+  /* 归档标记:行首小方块图标(收起感),替代状态点 */
+  .dir-D .row-archived .arch-mark{
+    flex:none; width:8px; height:8px; margin-left:1px; border-radius:2px;
+    border:1.5px solid hsl(var(--muted-foreground) / 0.4);
+  }
+
+  .dir-D .row.is-active{
+    background:
+      radial-gradient(120% 140% at 8% 0%, rgb(var(--scene-a-rgb) / 0.10), transparent 64%),
+      linear-gradient(150deg, rgb(var(--glass-rgb) / 0.48), rgb(var(--glass-rgb) / 0.28));
+    border-color: rgb(var(--glass-rgb) / 0.5);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / .14);
+  }
+  .light .dir-D .row.is-active{
+    background: linear-gradient(150deg, rgb(255 255 255 / 0.7), rgb(255 255 255 / 0.42));
+    border-color: rgb(255 255 255 / 0.75);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / .8);
+  }
+  .dir-D .row.is-active .t{ font-weight: 620; color: hsl(var(--foreground)); }
+  .dir-D .row.is-active .ico{ color: hsl(var(--primary) / 0.9); }
+
+  /* ---- legend under each column ---- */
+  .legend{
+    width: 254px; font-size: 10.5px; line-height: 1.6; color: hsl(var(--muted-foreground));
+    padding: 10px 12px; border-radius: 10px; border: 1px solid var(--hairline);
+    background: rgb(var(--glass-rgb) / 0.12);
+  }
+  .legend b{ color: hsl(var(--foreground) / 0.85); font-weight: 600; }
+  .legend ul{ margin: 4px 0 0; padding-left: 14px; }
+  .legend li{ margin: 1px 0; }
+
+  .hint{ margin-top: 18px; font-size: 11px; color: #8b93a3; }
+  .hint b{ color: #e7e9ee; }
+
+  /* ===================== 灵动动效(react-bits 思路,纯 CSS 复刻) =====================
+     - 进场:元素 fade+slide+blur,stagger 依次进入(由 --i 控制延迟)
+     - hover:行轻微上浮+阴影,按钮弹性回弹
+     - 选中:高光底板 spring 过渡
+  */
+  @keyframes enter-up{
+    from { opacity:0; transform: translateY(8px); filter: blur(4px); }
+    to   { opacity:1; transform: translateY(0);    filter: blur(0); }
+  }
+  .enter{ opacity:0; animation: enter-up .5s cubic-bezier(0.16,1,0.3,1) forwards; animation-delay: calc(var(--i,0) * 50ms); }
+  @media (prefers-reduced-motion: reduce){ .enter{ animation:none; opacity:1; } }
+
+  /* 顶部功能区进场 */
+  .side-title.enter, .side-head.enter, .pin-rail.enter{ animation-duration: .55s; }
+
+  /* 会话行 hover:用阴影+边框表达浮起(不用 transform,避免和进场动画 transform 冲突);active 轻按 */
+  .row{ transition: background .2s cubic-bezier(0.16,1,0.3,1), border-color .2s cubic-bezier(0.16,1,0.3,1), box-shadow .22s cubic-bezier(0.16,1,0.3,1); }
+  .row:hover{ box-shadow: 0 4px 12px -4px rgb(0 0 0 / 0.18), inset 0 1px 0 rgb(255 255 255 / .06); }
+  .light .row:hover{ box-shadow: 0 4px 12px -6px rgb(48 59 76 / 0.16), inset 0 1px 0 rgb(255 255 255 / .4); }
+
+  /* 胶囊按钮:弹性 hover 缩放 + active 回弹(Magnetic 感) */
+  .pill-new, .pill-icon, .btn-icon, .pin-chip{
+    transition: background .16s, border-color .16s, color .16s, transform .22s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  .pill-new:hover, .pill-icon:hover, .pin-chip:hover{ transform: scale(1.04); }
+  .pill-new:active, .pill-icon:active, .pin-chip:active{ transform: scale(0.94); }
+
+  /* 选中态:高光底板 spring 过渡(已激活行背景平滑) */
+  .dir-D .row.is-active{ transition: background .3s cubic-bezier(0.34,1.56,0.64,1), border-color .3s cubic-bezier(0.34,1.56,0.64,1), box-shadow .3s cubic-bezier(0.34,1.56,0.64,1); }
+
+  /* caret 弹性转动 */
+  .caret, .b-caret{ transition: transform .26s cubic-bezier(0.34,1.56,0.64,1); }
+
+  /* 三点菜单进场时带轻微弹出(配合 hover 让位) */
+  .dots{ transition: width .26s cubic-bezier(0.34,1.56,0.64,1), margin-left .26s cubic-bezier(0.34,1.56,0.64,1), opacity .18s ease, transform .26s cubic-bezier(0.34,1.56,0.64,1), background .16s, color .16s; }
+
+  /* 搜索框 focus:ring spring 弹入 */
+  .search{ transition: border-color .16s, background .16s, box-shadow .3s cubic-bezier(0.34,1.56,0.64,1); }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div class="topbar">
+      <div class="brand">TAgent Desktop <span>· 会话 Sidebar 视觉方向对比(深 / 浅并排)</span></div>
+    </div>
+
+    <div class="system-note">
+      A/B/C 为<b>装饰手法</b>差异(选中态/状态点/monogram),D 为<b>形态重构</b>(置顶栏 + 双密度行 + workspace 进度)。<br>
+      已按反馈修:选中指示条<b>去掉光晕</b>(改实色细条);<b>浅色玻璃提亮</b>(白底 + 柔投影,不再叠深色 scene)。<br>
+      共享基线:primary 新建会话 + 创建工作区图标按钮 + ⌘K 搜索。点击任一会话看选中态滑动。深色与浅色各铺一套。
+    </div>
+
+    <div class="canvases">
+      <!-- ===== DARK ===== -->
+      <section class="mode-block">
+        <div class="mode-label"><span class="dot"></span>深色模式</div>
+        <div class="canvas" id="canvasDark"></div>
+      </section>
+      <!-- ===== LIGHT ===== -->
+      <section class="mode-block light">
+        <div class="mode-label"><span class="dot"></span>浅色模式</div>
+        <div class="canvas" id="canvasLight"></div>
+      </section>
+    </div>
+
+    <div class="hint">提示:点击任一会话行可看到 <b>选中指示条在行间平滑滑动</b>(复刻现有 <code>layoutId</code> 丝滑感)。深色与浅色两套各自独立,可分别点选。</div>
+  </div>
+
+  <!-- ===== 3 columns defined once; JS clones into both canvases ===== -->
+  <template id="cols">
+
+    <!-- =================== DIRECTION D · Compact Pin-bar =================== -->
+    <div class="col">
+      <div class="col-label">
+        <span class="col-tag">D</span>
+        <span class="col-name">Compact Pin-bar</span>
+        <span class="col-sub">形态重构 · 置顶栏 + workspace 进度 + 状态色点 + 无光晕选中</span>
+      </div>
+      <aside class="glass dir-D">
+        <div class="side-title">
+          <span class="label">
+            <span class="zh">会话</span>
+            <span class="en">Threads</span>
+          </span>
+          <span class="title-actions">
+            <button class="pill-new" title="新建会话"><span class="btn-ico"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M232.07,186.76a80,80,0,0,0-62.5-114.17A80,80,0,1,0,23.93,138.76l-7.27,24.71a16,16,0,0,0,19.87,19.87l24.71-7.27a80.39,80.39,0,0,0,25.18,7.35,80,80,0,0,0,108.34,40.65l24.71,7.27a16,16,0,0,0,19.87-19.86ZM62,159.5a8.28,8.28,0,0,0-2.26.32L32,168l8.17-27.76a8,8,0,0,0-.63-6,64,64,0,1,1,26.26,26.26A8,8,0,0,0,62,159.5Zm153.79,28.73L224,216l-27.76-8.17a8,8,0,0,0-6,.63,64.05,64.05,0,0,1-85.87-24.88A79.93,79.93,0,0,0,174.7,89.71a64,64,0,0,1,41.75,92.48A8,8,0,0,0,215.82,188.23Z"/></svg></span>新建</button>
+            <button class="pill-icon" title="打开项目目录 · 创建工作区" aria-label="打开项目目录">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.5A2 2 0 0 1 9.2 10.5H20a2 2 0 0 1 1.94 1.5l1.4 5a2 2 0 0 1-1.94 2.5H6.7a2 2 0 0 1-1.94-1.5L3.1 13.5a2 2 0 0 1 .5-2.2"/><path d="M5 18V5a1 1 0 0 1 1-1h4.5a1 1 0 0 1 .7.3l1.6 1.4a1 1 0 0 0 .7.3H19a1 1 0 0 1 1 1v2"/></svg>
+            </button>
+          </span>
+        </div>
+        <div class="side-head">
+          <div class="search">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <input placeholder="搜索会话…" />
+            <span class="kbd">⌘K</span>
+          </div>
+        </div>
+        <!-- 置顶栏:横向胶囊,常用会话一键可见 -->
+        <div class="pin-rail">
+          <div class="pin-chip"><div class="pm c0">E</div><div class="pt">Electron 窗口</div></div>
+          <div class="pin-chip"><div class="pm c1">主</div><div class="pt">主题联调</div></div>
+          <div class="pin-chip"><div class="pm c2">M</div><div class="pt">MCP 联调</div></div>
+        </div>
+        <div class="scroll" data-d-list></div>
+        <div class="arch-foot" data-d-arch></div>
+      </aside>
+      <div class="legend">
+        <b>签名手法</b>
+        <ul>
+          <li>顶部<b>置顶胶囊栏</b>:常用会话横向陈列,不占列表高度</li>
+          <li>行首<b>状态色点</b>:进行中脉冲 / 已完成 / 出错 / 空闲</li>
+          <li>workspace 头带<b>进行中进度</b>(脉冲点),非干数字</li>
+          <li>选中 = 整行玻璃高光 + 2px 实色细条,<b>无光晕</b></li>
+        </ul>
+        <b style="display:block;margin-top:6px">量大治乱(本栏塞了 ~29 条 / 3 workspace)</b>
+        <ul>
+          <li>组内排序:进行中 → 出错 → 其余按时间(有活永远在组顶)</li>
+          <li>默认只展开<b>当前 workspace</b>;其余折叠,头显"含 N 条"</li>
+          <li>当前组内再分<b>今天/昨天/本周/更早</b>,更早桶默认折,点开才铺</li>
+          <li>最底 <b>已归档</b> 折叠组:全局归档池,灰化紧凑,点开才铺</li>
+        </ul>
+        <span style="display:block;margin-top:4px;color:hsl(var(--muted-foreground)/.8)">点组头 / 时间桶头 / 已归档 切换展开。</span>
+      </div>
+    </div>
+    <!-- =================== DIRECTION A =================== -->
+    <div class="col">
+      <div class="col-label">
+        <span class="col-tag">A</span>
+        <span class="col-name">Glass Highlight</span>
+        <span class="col-sub">最克制 · 玻璃叠玻璃高光层 + 渐变柔光指示条,贴合现有玻璃美学</span>
+      </div>
+      <aside class="glass dir-A">
+        <div class="side-title">
+          <span class="label">
+            <span class="zh">会话</span>
+            <span class="en">Threads</span>
+          </span>
+          <span class="title-actions">
+            <button class="pill-new" title="新建会话"><span class="btn-ico"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M232.07,186.76a80,80,0,0,0-62.5-114.17A80,80,0,1,0,23.93,138.76l-7.27,24.71a16,16,0,0,0,19.87,19.87l24.71-7.27a80.39,80.39,0,0,0,25.18,7.35,80,80,0,0,0,108.34,40.65l24.71,7.27a16,16,0,0,0,19.87-19.86ZM62,159.5a8.28,8.28,0,0,0-2.26.32L32,168l8.17-27.76a8,8,0,0,0-.63-6,64,64,0,1,1,26.26,26.26A8,8,0,0,0,62,159.5Zm153.79,28.73L224,216l-27.76-8.17a8,8,0,0,0-6,.63,64.05,64.05,0,0,1-85.87-24.88A79.93,79.93,0,0,0,174.7,89.71a64,64,0,0,1,41.75,92.48A8,8,0,0,0,215.82,188.23Z"/></svg></span>新建</button>
+            <button class="pill-icon" title="打开项目目录 · 创建工作区" aria-label="打开项目目录">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.5A2 2 0 0 1 9.2 10.5H20a2 2 0 0 1 1.94 1.5l1.4 5a2 2 0 0 1-1.94 2.5H6.7a2 2 0 0 1-1.94-1.5L3.1 13.5a2 2 0 0 1 .5-2.2"/><path d="M5 18V5a1 1 0 0 1 1-1h4.5a1 1 0 0 1 .7.3l1.6 1.4a1 1 0 0 0 .7.3H19a1 1 0 0 1 1 1v2"/></svg>
+            </button>
+          </span>
+        </div>
+        <div class="side-head">
+          <div class="search">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <input placeholder="搜索会话…" />
+            <span class="kbd">⌘K</span>
+          </div>
+        </div>
+        <div class="scroll">
+          <div class="group open">
+            <button class="group-head"><span class="caret">▸</span><span class="gname">TAgent Desktop</span><span class="gcount">5</span></button>
+            <div class="rows" data-active-id="s1">
+              <div class="row is-active" data-id="s1">
+                <svg class="ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 8h10M7 12h7M7 16h10" stroke-linecap="round"/><circle cx="4" cy="8" r="1" fill="currentColor" stroke="none"/></svg>
+                <div class="body">
+                  <div class="title"><span class="t">重构会话 sidebar 视觉</span><span class="turn-pill">12</span></div>
+                  <div class="meta"><span class="m">gpt-5 · 刚刚</span><span class="m time">14:02</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+
+              <div class="row" data-id="s2">
+                <svg class="ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 8h10M7 12h7M7 16h10" stroke-linecap="round"/></svg>
+                <div class="body">
+                  <div class="title"><span class="t">MCP 工具循环联调</span><span class="turn-pill">8</span></div>
+                  <div class="meta"><span class="m">claude-sonnet</span><span class="m time">3分钟前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+
+              <div class="row" data-id="s3">
+                <svg class="ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 8h10M7 12h7M7 16h10" stroke-linecap="round"/></svg>
+                <div class="body">
+                  <div class="title"><span class="t">工作区权限审批流</span><span class="turn-pill">5</span></div>
+                  <div class="meta"><span class="m">glm-5</span><span class="m time">12分钟前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+
+              <div class="row has-pin" data-id="s4">
+                <svg class="ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 8h10M7 12h7M7 16h10" stroke-linecap="round"/></svg>
+                <div class="body">
+                  <div class="title"><svg class="pin" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg><span class="t">Electron 窗口控制重写</span><span class="turn-pill">20</span></div>
+                  <div class="meta"><span class="m">claude-sonnet</span><span class="m time">昨天</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+
+              <div class="row" data-id="s5">
+                <svg class="ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 8h10M7 12h7M7 16h10" stroke-linecap="round"/></svg>
+                <div class="body">
+                  <div class="title"><span class="t">动态背景 token 联动</span><span class="turn-pill">2</span></div>
+                  <div class="meta"><span class="m time">2天前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="group open">
+            <button class="group-head"><span class="caret">▸</span><span class="gname muted">个人实验</span><span class="gcount">2</span></button>
+            <div class="rows">
+              <div class="row" data-id="s6">
+                <svg class="ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 8h10M7 12h7M7 16h10" stroke-linecap="round"/></svg>
+                <div class="body">
+                  <div class="title"><span class="t">主题 6 色系联调</span><span class="turn-pill">15</span></div>
+                  <div class="meta"><span class="m">gpt-5</span><span class="m time">5天前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+              <div class="row" data-id="s7">
+                <svg class="ico" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M7 8h10M7 12h7M7 16h10" stroke-linecap="round"/></svg>
+                <div class="body">
+                  <div class="title"><span class="t">虚拟列表性能压测</span><span class="turn-pill">30</span></div>
+                  <div class="meta"><span class="m">claude-opus</span><span class="m time">上周</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+      <div class="legend">
+        <b>签名手法</b>
+        <ul>
+          <li>选中 = 半透<b>玻璃叠玻璃</b>高光层 + inset 顶高光</li>
+          <li>左侧<b>渐变柔光指示条</b>(primary→透明 + glow),与填充<b>配合</b>非单独</li>
+          <li>hover 用极淡 glass tint,三层语言统一</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- =================== DIRECTION B =================== -->
+    <div class="col">
+      <div class="col-label">
+        <span class="col-tag">B</span>
+        <span class="col-name">Status + Time</span>
+        <span class="col-sub">最有生命感 · 状态色点 + 今天/昨天/本周时间桶 + 相对时间</span>
+      </div>
+      <aside class="glass dir-B">
+        <div class="side-title">
+          <span class="label">
+            <span class="zh">会话</span>
+            <span class="en">Threads</span>
+          </span>
+          <span class="title-actions">
+            <button class="pill-new" title="新建会话"><span class="btn-ico"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M232.07,186.76a80,80,0,0,0-62.5-114.17A80,80,0,1,0,23.93,138.76l-7.27,24.71a16,16,0,0,0,19.87,19.87l24.71-7.27a80.39,80.39,0,0,0,25.18,7.35,80,80,0,0,0,108.34,40.65l24.71,7.27a16,16,0,0,0,19.87-19.86ZM62,159.5a8.28,8.28,0,0,0-2.26.32L32,168l8.17-27.76a8,8,0,0,0-.63-6,64,64,0,1,1,26.26,26.26A8,8,0,0,0,62,159.5Zm153.79,28.73L224,216l-27.76-8.17a8,8,0,0,0-6,.63,64.05,64.05,0,0,1-85.87-24.88A79.93,79.93,0,0,0,174.7,89.71a64,64,0,0,1,41.75,92.48A8,8,0,0,0,215.82,188.23Z"/></svg></span>新建</button>
+            <button class="pill-icon" title="打开项目目录 · 创建工作区" aria-label="打开项目目录">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.5A2 2 0 0 1 9.2 10.5H20a2 2 0 0 1 1.94 1.5l1.4 5a2 2 0 0 1-1.94 2.5H6.7a2 2 0 0 1-1.94-1.5L3.1 13.5a2 2 0 0 1 .5-2.2"/><path d="M5 18V5a1 1 0 0 1 1-1h4.5a1 1 0 0 1 .7.3l1.6 1.4a1 1 0 0 0 .7.3H19a1 1 0 0 1 1 1v2"/></svg>
+            </button>
+          </span>
+        </div>
+        <div class="side-head">
+          <div class="search">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <input placeholder="搜索会话…" />
+            <span class="kbd">⌘K</span>
+          </div>
+        </div>
+        <div class="scroll">
+          <div class="group open">
+            <button class="group-head"><span class="caret">▸</span><span class="gname">TAgent Desktop</span><span class="gcount">5</span></button>
+
+            <div class="bucket"><span class="b-name">今天</span></div>
+            <div class="rows" data-active-id="s1">
+              <div class="row is-active" data-id="s1">
+                <span class="stat-dot stream"></span>
+                <div class="body">
+                  <div class="title"><span class="t">重构会话 sidebar 视觉</span><span class="turn-pill">12 轮</span></div>
+                  <div class="meta"><span class="m">gpt-5</span><span class="m time">刚刚</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+              <div class="row" data-id="s2">
+                <span class="stat-dot done"></span>
+                <div class="body">
+                  <div class="title"><span class="t">MCP 工具循环联调</span><span class="turn-pill">8 轮</span></div>
+                  <div class="meta"><span class="m">claude-sonnet</span><span class="m time">3分钟前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+              <div class="row" data-id="s3">
+                <span class="stat-dot error"></span>
+                <div class="body">
+                  <div class="title"><span class="t">工作区权限审批流</span><span class="turn-pill">5 轮</span></div>
+                  <div class="meta"><span class="m">glm-5 · 出错</span><span class="m time">12分钟前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+            </div>
+
+            <div class="bucket"><span class="b-name">昨天</span></div>
+            <div class="rows">
+              <div class="row has-pin" data-id="s4">
+                <span class="stat-dot done"></span>
+                <div class="body">
+                  <div class="title"><svg class="pin" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg><span class="t">Electron 窗口控制重写</span><span class="turn-pill">20 轮</span></div>
+                  <div class="meta"><span class="m">claude-sonnet</span><span class="m time">昨天 18:40</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+            </div>
+
+            <div class="bucket"><span class="b-name">本周</span></div>
+            <div class="rows">
+              <div class="row" data-id="s5">
+                <span class="stat-dot idle"></span>
+                <div class="body">
+                  <div class="title"><span class="t">动态背景 token 联动</span><span class="turn-pill">2 轮</span></div>
+                  <div class="meta"><span class="m time">2天前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="group open">
+            <button class="group-head"><span class="caret">▸</span><span class="gname muted">个人实验</span><span class="gcount">2</span></button>
+            <div class="bucket"><span class="b-name">更早</span></div>
+            <div class="rows">
+              <div class="row" data-id="s6">
+                <span class="stat-dot done"></span>
+                <div class="body">
+                  <div class="title"><span class="t">主题 6 色系联调</span><span class="turn-pill">15 轮</span></div>
+                  <div class="meta"><span class="m">gpt-5</span><span class="m time">5天前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+              <div class="row" data-id="s7">
+                <span class="stat-dot done"></span>
+                <div class="body">
+                  <div class="title"><span class="t">虚拟列表性能压测</span><span class="turn-pill">30 轮</span></div>
+                  <div class="meta"><span class="m">claude-opus</span><span class="m time">上周</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+      <div class="legend">
+        <b>签名手法</b>
+        <ul>
+          <li>左侧<b>状态色点</b>:进行中脉冲 / 已完成静默 / 出错红 / 空闲空圈</li>
+          <li>组内按 <b>今天/昨天/本周/更早</b> 分时间桶(贴用户心智)</li>
+          <li>相对时间 + 干净两行;无模型时<b>不显示占位</b></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- =================== DIRECTION C =================== -->
+    <div class="col">
+      <div class="col-label">
+        <span class="col-tag">C</span>
+        <span class="col-name">Monogram</span>
+        <span class="col-sub">最有区分度 · 标题首字柔和 monogram,选中变 primary,身份感</span>
+      </div>
+      <aside class="glass dir-C">
+        <div class="side-title">
+          <span class="label">
+            <span class="zh">会话</span>
+            <span class="en">Threads</span>
+          </span>
+          <span class="title-actions">
+            <button class="pill-new" title="新建会话"><span class="btn-ico"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M232.07,186.76a80,80,0,0,0-62.5-114.17A80,80,0,1,0,23.93,138.76l-7.27,24.71a16,16,0,0,0,19.87,19.87l24.71-7.27a80.39,80.39,0,0,0,25.18,7.35,80,80,0,0,0,108.34,40.65l24.71,7.27a16,16,0,0,0,19.87-19.86ZM62,159.5a8.28,8.28,0,0,0-2.26.32L32,168l8.17-27.76a8,8,0,0,0-.63-6,64,64,0,1,1,26.26,26.26A8,8,0,0,0,62,159.5Zm153.79,28.73L224,216l-27.76-8.17a8,8,0,0,0-6,.63,64.05,64.05,0,0,1-85.87-24.88A79.93,79.93,0,0,0,174.7,89.71a64,64,0,0,1,41.75,92.48A8,8,0,0,0,215.82,188.23Z"/></svg></span>新建</button>
+            <button class="pill-icon" title="打开项目目录 · 创建工作区" aria-label="打开项目目录">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.5A2 2 0 0 1 9.2 10.5H20a2 2 0 0 1 1.94 1.5l1.4 5a2 2 0 0 1-1.94 2.5H6.7a2 2 0 0 1-1.94-1.5L3.1 13.5a2 2 0 0 1 .5-2.2"/><path d="M5 18V5a1 1 0 0 1 1-1h4.5a1 1 0 0 1 .7.3l1.6 1.4a1 1 0 0 0 .7.3H19a1 1 0 0 1 1 1v2"/></svg>
+            </button>
+          </span>
+        </div>
+        <div class="side-head">
+          <div class="search">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <input placeholder="搜索会话…" />
+            <span class="kbd">⌘K</span>
+          </div>
+        </div>
+        <div class="scroll">
+          <div class="group open">
+            <button class="group-head"><span class="caret">▸</span><span class="gname">TAgent Desktop</span><span class="gcount">5</span></button>
+            <div class="rows" data-active-id="s1">
+              <div class="row is-active" data-id="s1">
+                <div class="mono-wrap"><div class="mono mono-0">重</div></div>
+                <div class="body">
+                  <div class="title"><span class="t">重构会话 sidebar 视觉</span><span class="turn-pill">12</span></div>
+                  <div class="meta"><span class="m">gpt-5</span><span class="m time">刚刚</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+
+              <div class="row" data-id="s2">
+                <div class="mono-wrap"><div class="mono mono-4">M</div></div>
+                <div class="body">
+                  <div class="title"><span class="t">MCP 工具循环联调</span><span class="turn-pill">8</span></div>
+                  <div class="meta"><span class="m">claude-sonnet</span><span class="m time">3分钟前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+
+              <div class="row" data-id="s3">
+                <div class="mono-wrap"><div class="mono mono-5"><span class="pip error"></span>工</div></div>
+                <div class="body">
+                  <div class="title"><span class="t">工作区权限审批流</span><span class="turn-pill">5</span></div>
+                  <div class="meta"><span class="m">glm-5</span><span class="m time">12分钟前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+
+              <div class="row has-pin" data-id="s4">
+                <div class="mono-wrap"><div class="mono mono-3">E</div></div>
+                <div class="body">
+                  <div class="title"><svg class="pin" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg><span class="t">Electron 窗口控制重写</span><span class="turn-pill">20</span></div>
+                  <div class="meta"><span class="m">claude-sonnet</span><span class="m time">昨天</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+
+              <div class="row" data-id="s5">
+                <div class="mono-wrap"><div class="mono mono-2">动</div></div>
+                <div class="body">
+                  <div class="title"><span class="t">动态背景 token 联动</span><span class="turn-pill">2</span></div>
+                  <div class="meta"><span class="m time">2天前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="group open">
+            <button class="group-head"><span class="caret">▸</span><span class="gname muted">个人实验</span><span class="gcount">2</span></button>
+            <div class="rows">
+              <div class="row" data-id="s6">
+                <div class="mono-wrap"><div class="mono mono-1">主</div></div>
+                <div class="body">
+                  <div class="title"><span class="t">主题 6 色系联调</span><span class="turn-pill">15</span></div>
+                  <div class="meta"><span class="m">gpt-5</span><span class="m time">5天前</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+              <div class="row" data-id="s7">
+                <div class="mono-wrap"><div class="mono mono-0">虚</div></div>
+                <div class="body">
+                  <div class="title"><span class="t">虚拟列表性能压测</span><span class="turn-pill">30</span></div>
+                  <div class="meta"><span class="m">claude-opus</span><span class="m time">上周</span></div>
+                </div>
+                <button class="dots" aria-label="更多">⋮</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+      <div class="legend">
+        <b>签名手法</b>
+        <ul>
+          <li>标题首字 <b>monogram 圆</b>,背景色按 model 取调和色</li>
+          <li>选中时 monogram <b>翻为 primary 填充</b> + primary-foreground 字</li>
+          <li>状态以 monogram 角标小 pip 承载,保持身份为主</li>
+        </ul>
+      </div>
+    </div>
+
+
+  </template>
+
+<script>
+  // ---- clone the 3 columns into both dark + light canvases ----
+  const tpl = document.getElementById('cols').content;
+  document.getElementById('canvasDark').appendChild(tpl.cloneNode(true));
+  document.getElementById('canvasLight').appendChild(tpl.cloneNode(true));
+
+  // ---- 选中态:切换 .is-active(左边框 + 行高光表达,无独立竖条) ----
+  function activate(rows, row){
+    rows.querySelectorAll('.row.is-active').forEach(r => r.classList.remove('is-active'));
+    row.classList.add('is-active');
+  }
+  function initRows(){
+    document.querySelectorAll('.rows').forEach(rows => {
+      if(rows.dataset.init) return;
+      rows.dataset.init = '1';
+      rows.addEventListener('click', e => {
+        const row = e.target.closest('.row');
+        if(row) activate(rows, row);
+      });
+    });
+  }
+  initRows();
+
+  /* ===================== D 方向:量大治乱演示 =====================
+     数据驱动渲染 3 个 workspace ~45 条会话。
+     治乱策略:
+       1. 排序:组内 进行中 → 出错 → 其余按 updatedAt 倒序(有活的永远在组顶)
+       2. 默认折叠:只展开"当前 workspace"(TAgent Desktop);其余默认收起,头显"含 N 条"
+       3. 当前 workspace 内再按时间桶(今天/昨天/本周/更早),更早桶也默认折叠,点开才铺
+     点组头 / 时间桶头切换展开;点行选中(指示条滑动)。
+  */
+  // status 优先级:进行中最高,出错次之(需关注),其余按时间
+  const STATUS_RANK = { stream: 0, error: 1, done: 2, idle: 3 };
+  // 相对时间桶
+  function bucketOf(ageMin){
+    if (ageMin < 24*60) return '今天';
+    if (ageMin < 48*60) return '昨天';
+    if (ageMin < 7*24*60) return '本周';
+    return '更早';
+  }
+  function relTime(ageMin){
+    if (ageMin < 1) return '刚刚';
+    if (ageMin < 60) return ageMin + '分钟前';
+    if (ageMin < 24*60) return Math.floor(ageMin/60) + '小时前';
+    if (ageMin < 48*60) return '昨天';
+    if (ageMin < 7*24*60) return Math.floor(ageMin/(24*60)) + '天前';
+    return '上周';
+  }
+  // 会话数据:ws = workspace id,status = stream|error|done|idle,pin = 置顶,age = 分钟前
+  const D_WORKSPACES = [
+    { id: 'ws1', name: 'TAgent Desktop', current: true },
+    { id: 'ws2', name: 'OpenPI 适配', current: false },
+    { id: 'ws3', name: '个人实验', current: false },
+  ];
+  const D_SESSIONS = [
+    // --- TAgent Desktop(当前,有活) ---
+    { id:'d1', ws:'ws1', title:'重构会话 sidebar 视觉', model:'gpt-5', turn:12, status:'stream', age:0 },
+    { id:'d2', ws:'ws1', title:'MCP 工具循环联调', model:'sonnet', turn:8, status:'done', age:3 },
+    { id:'d3', ws:'ws1', title:'工作区权限审批流', model:'glm-5', turn:5, status:'error', age:12 },
+    { id:'d4', ws:'ws1', title:'Electron 窗口控制重写', model:'sonnet', turn:20, status:'done', age:1500, pin:true },
+    { id:'d5', ws:'ws1', title:'动态背景 token 联动', model:'', turn:2, status:'idle', age:2880 },
+    { id:'d6', ws:'ws1', title:'会话虚拟列表压测', model:'opus', turn:30, status:'done', age:4000 },
+    { id:'d7', ws:'ws1', title:'玻璃浮岛阴影对齐', model:'sonnet', turn:6, status:'done', age:5200 },
+    { id:'d8', ws:'ws1', title:'主题 6 色系 token 生成', model:'gpt-5', turn:15, status:'done', age:7200 },
+    { id:'d9', ws:'ws1', title:'scrollbar 箭头顽疾修', model:'sonnet', turn:4, status:'done', age:9000 },
+    { id:'d10', ws:'ws1', title:'IPC channel-service 重构', model:'opus', turn:11, status:'done', age:11000 },
+    { id:'d11', ws:'ws1', title:'权限 banner 动效', model:'gpt-5', turn:3, status:'done', age:13000 },
+    { id:'d12', ws:'ws1', title:'三点菜单让位 layout', model:'sonnet', turn:7, status:'done', age:15000 },
+    { id:'d13', ws:'ws1', title:'会话轮数遮盖省略号', model:'glm-5', turn:2, status:'done', age:20000 },
+    { id:'d14', ws:'ws1', title:'浅色 backdrop 拖影', model:'sonnet', turn:9, status:'done', age:23000 },
+    // --- OpenPI 适配(非当前,默认折叠) ---
+    { id:'d15', ws:'ws2', title:'pi-ai SDK 集成联调', model:'opus', turn:18, status:'stream', age:30 },
+    { id:'d16', ws:'ws2', title:'流式响应 chunk 解析', model:'sonnet', turn:6, status:'done', age:90 },
+    { id:'d17', ws:'ws2', title:'工具调用协议适配', model:'gpt-5', turn:14, status:'done', age:200 },
+    { id:'d18', ws:'ws2', title:'凭证注入与刷新', model:'sonnet', turn:5, status:'error', age:400 },
+    { id:'d19', ws:'ws2', title:'多模型路由策略', model:'opus', turn:9, status:'done', age:3000 },
+    { id:'d20', ws:'ws2', title:'超时与重试退避', model:'glm-5', turn:7, status:'done', age:6000 },
+    { id:'d21', ws:'ws2', title:'成本计量埋点', model:'sonnet', turn:3, status:'idle', age:10000 },
+    { id:'d22', ws:'ws2', title:'错误码映射表', model:'gpt-5', turn:4, status:'done', age:14000 },
+    { id:'d23', ws:'ws2', title:'长上下文压缩接', model:'opus', turn:12, status:'done', age:21000 },
+    // --- 个人实验(非当前,默认折叠) ---
+    { id:'d24', ws:'ws3', title:'主题 6 色系联调', model:'gpt-5', turn:15, status:'done', age:7200 },
+    { id:'d25', ws:'ws3', title:'虚拟列表性能压测', model:'opus', turn:30, status:'done', age:9000 },
+    { id:'d26', ws:'ws3', title:'motion spring 调参', model:'sonnet', turn:8, status:'done', age:12000 },
+    { id:'d27', ws:'ws3', title:'CSS 容器查询试水', model:'gpt-5', turn:2, status:'idle', age:16000 },
+    { id:'d28', ws:'ws3', title:'oklch 配色实验', model:'sonnet', turn:5, status:'done', age:19000 },
+    { id:'d29', ws:'ws3', title:'锚点滚动恢复', model:'opus', turn:4, status:'done', age:24000 },
+  ];
+  // 已归档会话(全局归档池,不属任一 workspace):沉到底、默认折叠、灰化样式
+  const D_ARCHIVED = [
+    { id:'a1', title:'旧版 IPC 协议迁移', model:'sonnet', turn:22, age:60000 },
+    { id:'a2', title:'v1 主题系统废弃清理', model:'gpt-5', turn:9, age:72000 },
+    { id:'a3', title:'会话存储格式升级', model:'opus', turn:14, age:90000 },
+    { id:'a4', title:'旧权限模型移除', model:'glm-5', turn:6, age:120000 },
+    { id:'a5', title:'打包流程 v1 归档', model:'sonnet', turn:3, age:150000 },
+  ];
+  // 当前选中会话(演示默认指示条在当前 workspace 的进行中项)
+  const D_ACTIVE = 'd1';
+  // 默认展开:当前 workspace + 它的"今天"桶;其余 workspace 全折;更早桶也折
+  const D_DEFAULT_OPEN_WS = 'ws1';
+  const D_DEFAULT_OPEN_BUCKET = '今天';
+
+  function pinSvg(){
+    return '<svg class="pin" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>';
+  }
+  function rowHtml(s){
+    const cls = ['row', s.id===D_ACTIVE ? 'is-active' : '', s.pin ? 'has-pin' : ''].filter(Boolean).join(' ');
+    const pin = s.pin ? pinSvg() : '';
+    const model = s.model ? `<span class="m">${s.model}</span>` : '';
+    return `<div class="${cls}" data-id="${s.id}">
+      <span class="stat-dot ${s.status}"></span>${pin}
+      <div class="body">
+        <div class="title"><span class="t">${s.title}</span><span class="turn-pill">${s.turn}</span></div>
+        <div class="meta">${model}<span class="m time">${relTime(s.age)}</span></div>
+      </div>
+      <button class="dots" aria-label="更多">⋮</button>
+    </div>`;
+  }
+  // 归档行:更沉(灰化标题、无状态点、单行紧凑、无时间紧迫感)
+  function archivedRowHtml(s){
+    const cls = ['row', 'row-archived', s.id===D_ACTIVE ? 'is-active' : ''].filter(Boolean).join(' ');
+    return `<div class="${cls}" data-id="${s.id}">
+      <span class="arch-mark"></span>
+      <div class="body">
+        <div class="title"><span class="t">${s.title}</span><span class="turn-pill">${s.turn}</span></div>
+        <div class="meta">${s.model ? `<span class="m">${s.model}</span>` : ''}<span class="m time">已归档</span></div>
+      </div>
+      <button class="dots" aria-label="更多">⋮</button>
+    </div>`;
+  }
+  function renderDList(){
+    document.querySelectorAll('[data-d-list]').forEach(scroll => {
+      scroll.innerHTML = '';
+      D_WORKSPACES.forEach(ws => {
+        const sess = D_SESSIONS.filter(s => s.ws === ws.id)
+          // 组内排序:进行中 → 出错 → 其余按 age 升序(新在前)
+          .sort((a,b) => (STATUS_RANK[a.status]-STATUS_RANK[b.status]) || (a.age-b.age));
+        const streaming = sess.filter(s => s.status==='stream').length;
+        const erroring = sess.filter(s => s.status==='error').length;
+        const isOpen = ws.id === D_DEFAULT_OPEN_WS;
+
+        const group = document.createElement('div');
+        const classes = ['group', 'dir-D-group', isOpen ? 'open' : ''];
+        if (streaming > 0) classes.push('has-stream');
+        if (erroring > 0) classes.push('has-error');
+        group.className = classes.filter(Boolean).join(' ');
+        group.dataset.ws = ws.id;
+
+        // 标题行:caret + 标题 + 安静数量徽章(标题独占,不抢位)
+        // 进度副行:仅展开 + 有活时显示(进行中脉冲点 / 出错数)
+        let subInner = '';
+        if (streaming > 0) {
+          const dots = Array.from({length: Math.min(streaming,3)}, () => '<i></i>').join('');
+          subInner = `<div class="ws-sub"><span class="live">${dots}</span><span>${streaming} 进行中${erroring? ` · <span class="err">${erroring} 出错</span>`:''}</span></div>`;
+        } else if (erroring > 0) {
+          subInner = `<div class="ws-sub"><span class="err">${erroring} 个出错需关注</span></div>`;
+        }
+        group.innerHTML = `<button class="group-head">
+          <span class="caret">▸</span><span class="gname${ws.current?'':' muted'}">${ws.name}</span>
+          <span class="ws-badge">${sess.length}</span>
+          ${subInner}
+        </button>`;
+
+        // 组体:当前 workspace 分时间桶,其余平铺(反正默认折着)
+        const rowsWrap = document.createElement('div');
+        rowsWrap.className = 'rows';
+        rowsWrap.dataset.activeId = isOpen ? D_ACTIVE : '';
+
+        if (ws.id === D_DEFAULT_OPEN_WS) {
+          // 分桶
+          const buckets = {};
+          sess.forEach(s => { (buckets[bucketOf(s.age)] ||= []).push(s); });
+          const order = ['今天','昨天','本周','更早'];
+          order.forEach(bName => {
+            const arr = buckets[bName];
+            if (!arr || !arr.length) return;
+            const bucketOpen = bName === D_DEFAULT_OPEN_BUCKET;
+            const bucketEl = document.createElement('div');
+            bucketEl.className = 'bucket-group' + (bucketOpen ? ' open' : '');
+            bucketEl.dataset.bucket = bName;
+            bucketEl.innerHTML = `<div class="bucket"><span class="b-caret">▸</span><span class="b-name">${bName}</span><span class="folded-count">${arr.length}</span></div><div class="bucket-rows">${arr.map(rowHtml).join('')}</div>`;
+            rowsWrap.appendChild(bucketEl);
+          });
+        } else {
+          // 非当前:直接平铺(默认折叠看不见)
+          rowsWrap.innerHTML += sess.map(rowHtml).join('');
+        }
+        group.appendChild(rowsWrap);
+        scroll.appendChild(group);
+      });
+    });
+
+    // ===== 已归档:渲染到侧栏底部固定区(置底常驻,不随列表滚) =====
+    document.querySelectorAll('[data-d-arch]').forEach(foot => {
+      const arch = document.createElement('div');
+      arch.className = 'group group-archived'; // 默认无 .open → 折叠
+      arch.innerHTML = `<button class="group-head">
+        <span class="caret">▸</span><span class="gname muted">已归档</span>
+        <span class="ws-badge">${D_ARCHIVED.length}</span>
+      </button><div class="rows">${D_ARCHIVED.map(archivedRowHtml).join('')}</div>`;
+      foot.appendChild(arch);
+    });
+  }
+  // 时间桶折叠样式:未 .open 隐藏 .bucket-rows
+  const bst = document.createElement('style');
+  bst.textContent = `
+    .dir-D .bucket-group .bucket-rows{ overflow:hidden; max-height:1600px; transition: max-height .28s cubic-bezier(0.16,1,0.3,1), opacity .2s ease; }
+    .dir-D .bucket-group:not(.open) .bucket-rows{ max-height:0; opacity:0; }
+    .dir-D .bucket-group.open .bucket .folded-count{ display:none; }
+    .dir-D .bucket .folded-count{ font-size:10px; color:hsl(var(--muted-foreground)/.7); }
+  `;
+  document.head.appendChild(bst);
+
+  renderDList();
+  initRows(); // 给新生成的 .rows 绑定
+
+  // 组头 / 桶头点击:切换展开
+  document.addEventListener('click', e => {
+    const gh = e.target.closest('.dir-D .group-head');
+    if (gh) { gh.parentElement.classList.toggle('open'); return; }
+    const bh = e.target.closest('.dir-D .bucket-group .bucket');
+    if (bh) { bh.parentElement.classList.toggle('open'); return; }
+  });
+
+  /* ---- 进场 stagger(react-bits FadeIn/BlurText 思路):每侧栏内元素依次淡入位移 ----
+     只给首屏可见的标题/搜索/置顶/组头/桶头/可见行加,折叠组内的不加(避免展开闪) */
+  function staggerEnter(){
+    document.querySelectorAll('.glass').forEach(glass => {
+      let i = 0;
+      const sel = '.side-title, .side-head, .pin-rail, .group-head, .bucket, .arch-foot';
+      // 可见行(在展开组/桶内的)
+      glass.querySelectorAll(sel).forEach(el => {
+        el.classList.add('enter'); el.style.setProperty('--i', i++);
+      });
+      // 可见行(展开组内直接子行 + 展开桶内行)
+      glass.querySelectorAll('.group.open > .rows > .row, .bucket-group.open .bucket-rows .row').forEach(el => {
+        el.classList.add('enter'); el.style.setProperty('--i', i++);
+      });
+    });
+  }
+  staggerEnter();
+
+  /* pin 统一放行首(行首元素后、.body 前),不浮在标题角标位 */
+  document.querySelectorAll('.row.has-pin .title > .pin').forEach(pin => {
+    const row = pin.closest('.row');
+    const body = row.querySelector('.body');
+    if (body) row.insertBefore(pin, body);
+  });
+</script>
+</body>
+</html>

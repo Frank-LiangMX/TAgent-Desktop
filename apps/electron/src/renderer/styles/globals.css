@@ -5,6 +5,7 @@
 @import '@tagent/ui/styles/segmented-tabs.css';
 @import './chat.css';
 @import './app-shell.css';
+@import './sidebar.css';
 @import './settings-shell.css';
 
 @tailwind base;

@@ -889,6 +889,14 @@ export interface AgentSessionMeta {
   pinned?: boolean
   /** 是否已归档 */
   archived?: boolean
+  /**
+   * 会话生命状态（侧栏状态色点用）。
+   * - 'idle'    无活、无错（默认）
+   * - 'running' 进行中：只来自主进程 runtimes 内存，**不落盘**（重启即失）
+   * - 'error'   上次执行出错：持久化，重启保留；下一轮成功结束回 'idle'
+   * 未设置时按 'idle' 处理。不复用 manualWorking/stoppedByUser（语义不同源）。
+   */
+  status?: 'idle' | 'running' | 'error'
   /** 会话轮数（user 消息数，一轮 = user + assistant 回复）。发消息时增量更新，旧会话无则空 */
   turnCount?: number
   /** 附加的外部目录路径列表（绝对路径，作为 SDK additionalDirectories 传递） */
@@ -1718,6 +1726,8 @@ export const AGENT_IPC_CHANNELS = {
   CONFIRM_WORKING_DONE: 'agent:confirm-working-done',
   /** 切换会话归档状态 */
   TOGGLE_ARCHIVE: 'agent:toggle-archive',
+  /** 查会话生命状态（组合 runtimes 内存 turnInFlight + meta.error + meta.archived） */
+  GET_SESSION_STATUS: 'agent:get-session-status',
   /** 搜索会话消息内容 */
   SEARCH_MESSAGES: 'agent:search-messages',
   /** 搜索当前工作区可引用的 Agent 会话 */
