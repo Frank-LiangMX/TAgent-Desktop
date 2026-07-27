@@ -156,24 +156,24 @@
   flex-direction: column;
   align-items: center;
   padding: 6px 5px;
-  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  border: 1px solid rgb(var(--glass-rgb) / 0.45);
   border-radius: var(--app-shell-composer-radius, 16px);
-  /* 玻璃底：glass-rgb 半透明 + scene-a 顶光（避开 calc 嵌套） */
+  /* 玻璃底：scene 透出，高透 + blur 保持质感 */
   background:
-    radial-gradient(120% 86% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 66%),
-    linear-gradient(155deg, rgb(var(--glass-rgb) / 0.6), rgb(var(--glass-rgb) / 0.42)) !important;
+    radial-gradient(120% 86% at 12% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 66%),
+    linear-gradient(155deg, rgb(var(--glass-rgb) / 0.28), rgb(var(--glass-rgb) / 0.12)) !important;
   box-shadow:
-    inset 0 1.5px 0 rgb(255 255 255 / 0.5),
-    inset 1px 0 0 rgb(255 255 255 / 0.16),
-    0 12px 28px rgb(48 59 76 / 0.12);
-  -webkit-backdrop-filter: blur(15px) saturate(1.06);
-  backdrop-filter: blur(15px) saturate(1.06);
+    inset 0 1.5px 0 rgb(255 255 255 / 0.44),
+    inset 1px 0 0 rgb(255 255 255 / 0.12),
+    0 12px 28px rgb(48 59 76 / 0.1);
+  -webkit-backdrop-filter: blur(18px) saturate(1.08);
+  backdrop-filter: blur(18px) saturate(1.08);
 }
 .dark .app-rail-island {
   border-color: rgb(255 255 255 / 0.06);
   box-shadow:
-    inset 0 1.5px 0 rgb(255 255 255 / 0.08),
-    0 12px 28px rgb(0 0 0 / 0.36);
+    inset 0 1.5px 0 rgb(255 255 255 / 0.06),
+    0 12px 28px rgb(0 0 0 / 0.3);
 }
 
 /* sidebar 玻璃面板（254px） */
@@ -182,20 +182,20 @@
   flex: 0 0 auto;
   width: var(--nav-sidebar-width, 254px);
   overflow: hidden;
-  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  border: 1px solid rgb(var(--glass-rgb) / 0.4);
   border-radius: 22px;
-  /* 玻璃底：glass-rgb + scene-a/b 顶光（避开 calc 嵌套） */
+  /* 玻璃底：高透让 scene 透出，scene-a/b 光晕浮在玻璃面上 */
   background:
-    radial-gradient(120% 92% at 8% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
-    radial-gradient(110% 90% at 100% 100%, rgb(var(--scene-b-rgb) / 0.05), transparent 68%),
-    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.62), rgb(var(--glass-rgb) / 0.44)) !important;
-  box-shadow: 0 12px 32px rgb(48 59 76 / 0.12);
-  -webkit-backdrop-filter: blur(var(--surface-blur, 22px)) saturate(1.06);
-  backdrop-filter: blur(var(--surface-blur, 22px)) saturate(1.06);
+    radial-gradient(120% 92% at 8% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 64%),
+    radial-gradient(110% 90% at 100% 100%, rgb(var(--scene-b-rgb) / 0.06), transparent 68%),
+    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.32), rgb(var(--glass-rgb) / 0.15)) !important;
+  box-shadow: 0 12px 32px rgb(48 59 76 / 0.08);
+  -webkit-backdrop-filter: blur(var(--surface-blur, 22px)) saturate(1.08);
+  backdrop-filter: blur(var(--surface-blur, 22px)) saturate(1.08);
 }
 .dark .app-nav-sidebar {
   border-color: rgb(255 255 255 / 0.06);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.36);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.3);
 }
 
 /* main：flex:1 透 scene，会话页/composer 浮岛在内 */
@@ -389,3 +389,5 @@
   0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }
 }
+
+

@@ -16,8 +16,10 @@ import {
   applyThemeToDOM,
   matchMediaDark,
 } from '../../atoms/theme'
+import { useDynamicBackground } from '../../hooks/useDynamicBackground'
 
 export function ThemeInitializer({ children }: { children: React.ReactNode }): React.ReactElement {
+  useDynamicBackground()
   const mode = useAtomValue(themeModeAtom)
   const style = useAtomValue(themeStyleAtom)
   const systemIsDark = useAtomValue(systemIsDarkAtom)

@@ -1,8 +1,11 @@
 /* TAgent-Desktop renderer 全局样式 */
 @import '@tagent/ui/src/tokens/__generated__/tokens.css';
 @import '@tagent/ui/styles/glass.css';
+@import '@tagent/ui/styles/switch.css';
+@import '@tagent/ui/styles/segmented-tabs.css';
 @import './chat.css';
 @import './app-shell.css';
+@import './settings-shell.css';
 
 @tailwind base;
 @tailwind components;
@@ -192,4 +195,15 @@ body {
 .window-control-close:active {
   background-color: #a01d11;
   color: #fff;
+}
+
+/* 窗口拖拽区域 */
+.titlebar-drag-region {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+.titlebar-no-drag,
+.titlebar-no-drag * {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }

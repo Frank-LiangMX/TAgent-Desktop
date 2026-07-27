@@ -20,6 +20,7 @@ import type {
 import { Button, ConversationEmptyState, TooltipProvider } from '@tagent/ui'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
 import { ChannelManager } from './components/channel/ChannelManager'
+import { SettingsDialog } from './components/settings/SettingsPage'
 import { ThemeSettings } from './components/theme/ThemeSettings'
 import { AppShell } from './components/shell/AppShell'
 import { Rail } from './components/shell/Rail'
@@ -89,7 +90,7 @@ declare global {
 
 export function App(): JSX.Element {
   const [showChannels, setShowChannels] = useState(false)
-  const [showTheme, setShowTheme] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
   const selected = useAtomValue(selectedChannelAtom)
@@ -135,8 +136,9 @@ export function App(): JSX.Element {
         rail={
           <Rail
             active="chat"
-            onChat={newSession}
+            onChat={() => { if (!activeTab) newSession() }}
             onChannels={() => setShowChannels(true)}
+            onSettings={() => setShowSettings((s) => !s)}
             themeSlot={<ThemeSettings />}
           />
         }
@@ -180,6 +182,7 @@ export function App(): JSX.Element {
       </AppShell>
 
       {showChannels && <ChannelManager onClose={() => setShowChannels(false)} />}
+      <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
     </TooltipProvider>
   )
 }

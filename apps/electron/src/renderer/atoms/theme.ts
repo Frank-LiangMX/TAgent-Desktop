@@ -12,7 +12,7 @@
  * - default 色系走 light/dark mode（:root + .dark），其余色系拼 theme-${style}-${dark?dark:light}。
  * - 持久化用 localStorage（TAgent-Desktop 无 settings IPC 基建），系统主题用 matchMedia。
  */
-import { atom } from 'jotai'
+import { atom, getDefaultStore } from 'jotai'
 
 /** 深浅模式 */
 export type ThemeMode = 'light' | 'dark' | 'system'
@@ -115,12 +115,14 @@ export function applyThemeToDOM(
 export function setThemeMode(mode: ThemeMode, style: ThemeStyle): void {
   cacheThemeMode(mode)
   applyThemeToDOM(mode, style, matchMediaDark())
+  getDefaultStore().set(themeModeAtom, mode)
 }
 
 /** 切色系（写 atom + localStorage + 立即应用 DOM） */
 export function setThemeStyle(style: ThemeStyle, mode: ThemeMode): void {
   cacheThemeStyle(style)
   applyThemeToDOM(mode, style, matchMediaDark())
+  getDefaultStore().set(themeStyleAtom, style)
 }
 
 /** 当前系统是否深色（matchMedia） */
