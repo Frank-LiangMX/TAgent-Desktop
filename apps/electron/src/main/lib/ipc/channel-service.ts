@@ -1,7 +1,7 @@
 /**
  * 渠道服务：注册 CHANNEL_IPC_CHANNELS handler
  *
- * 渠道 CRUD + apiKey 解密 + 连接测试/拉模型（占位）。
+ * 渠道 CRUD + apiKey 解密 + 连接测试（HTTP）/ 拉模型（HTTP）。
  * kscc-internal 内置渠道：不可删，TEST 走 resolveKsccPath 检测。
  *
  * 见 shared/types/channel.ts 的 CHANNEL_IPC_CHANNELS。
@@ -26,7 +26,7 @@ import {
   getChannel,
 } from '../channel/channel-store'
 import { getDefaultModelsForProvider } from '../channel/default-models'
-import { resolveKsccPath } from '../adapters/claude/kscc-path'
+import { testChannelConnection, fetchModelsFromProvider } from '../channel/channel-tester'
 
 export class ChannelService {
   private constructor() {}
@@ -75,41 +75,35 @@ export class ChannelService {
       }
     )
 
-    // 测试连接（占位：kscc 走 resolveKsccPath，外部等 Pi 核接入后实装）
+    // 测试连接（kscc 走 resolveKsccPath，外部走真实 HTTP 请求）
     ipcMain.handle(
       CHANNEL_IPC_CHANNELS.TEST,
       async (_e, id: string): Promise<ChannelTestResult> => {
-        return this.testChannel(id)
+        const ch = getChannel(id)
+        if (!ch) return { success: false, message: '渠道不存在' }
+        const apiKey = getDecryptedApiKey(id)
+        return testChannelConnection(ch, apiKey)
       }
     )
 
-    // 拉取模型（占位：返回内置默认模型列表，真实 HTTP 拉取待 Pi 核接入）
+    // 拉取模型（尝试从 provider API 拉取，失败回退到内置默认列表）
     ipcMain.handle(
       CHANNEL_IPC_CHANNELS.FETCH_MODELS,
       async (_e, input: FetchModelsInput): Promise<FetchModelsResult> => {
-        const models = getDefaultModelsForProvider(input.provider)
+        const result = await fetchModelsFromProvider(input)
+        if (result.success && result.models.length > 0) return result
+        const fallback = getDefaultModelsForProvider(input.provider)
         return {
-          success: true,
-          message: models.length > 0 ? '内置默认模型' : '该 Provider 无预填模型，请手动添加',
-          models,
+          success: result.success,
+          message: result.models.length === 0
+            ? (fallback.length > 0 ? `API 未返回模型，使用内置默认列表（${fallback.length} 个）` : '未获取到模型列表')
+            : result.message,
+          models: fallback.length > 0 ? fallback : result.models,
         }
       }
     )
   }
 
-  /** 测试渠道连接 */
-  private async testChannel(id: string): Promise<ChannelTestResult> {
-    const ch = getChannel(id)
-    if (ch?.provider === 'kscc-internal') {
-      const ksccPath = resolveKsccPath()
-      if (!ksccPath) {
-        return { success: false, message: '未检测到 kscc 命令，请先安装 kscc（内网渠道）' }
-      }
-      return { success: true, message: `kscc 就绪：${ksccPath}` }
-    }
-    // 外部渠道：真实连接测试待 Pi 核接入后实装
-    return { success: true, message: '占位（Pi 核接入后实装真实连接测试）' }
-  }
 }
 
 /** 重新导出 ProviderType 供外部用 */

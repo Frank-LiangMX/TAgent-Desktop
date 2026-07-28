@@ -34,10 +34,7 @@ import {
   ksccChannelAtom,
   loadChannelsAtom,
 } from '../../atoms/channel-atoms'
-import {
-  currentWorkspaceAtom,
-  workspacesAtom,
-} from '../../atoms/workspace-atoms'
+import { workspacesAtom } from '../../atoms/workspace-atoms'
 
 const APP_VERSION = '2.0.0-dev.8'
 
@@ -390,7 +387,6 @@ function ChannelsSettings(): JSX.Element {
 }
 
 function WorkspaceSettings(): JSX.Element {
-  const workspace = useAtomValue(currentWorkspaceAtom)
   const workspaces = useAtomValue(workspacesAtom)
 
   return (
@@ -400,14 +396,18 @@ function WorkspaceSettings(): JSX.Element {
         description={workspaces.length > 0 ? `${workspaces.length} 个工作区` : '尚未创建工作区'}
       />
 
-      <SettingsSection title="当前工作区">
+      <SettingsSection title="项目目录">
         <SettingsCard>
-          {workspace ? (
-            <SettingsRow label={workspace.name ?? workspace.id}>
-              <span className="text-xs text-muted-foreground">{workspace.id}</span>
-            </SettingsRow>
+          {workspaces.length > 0 ? (
+            workspaces.map((workspace) => (
+              <SettingsRow key={workspace.id} label={workspace.name ?? workspace.id}>
+                <span className="max-w-[280px] truncate text-xs text-muted-foreground">
+                  {workspace.projectDirectory ?? workspace.id}
+                </span>
+              </SettingsRow>
+            ))
           ) : (
-            <SettingsRow label="无选中工作区" />
+            <SettingsRow label="尚未添加项目目录" />
           )}
         </SettingsCard>
       </SettingsSection>

@@ -1015,7 +1015,7 @@ export interface AgentMessageSearchResult {
  * Agent 会话引用搜索输入
  */
 export interface AgentSessionReferenceSearchInput {
-  /** 当前工作区 ID，仅搜索该工作区下的会话 */
+  /** 目标工作区 ID，仅搜索该工作区下的会话 */
   workspaceId: string
   /** 搜索关键词，匹配标题或消息内容 */
   query?: string
@@ -1730,7 +1730,7 @@ export const AGENT_IPC_CHANNELS = {
   GET_SESSION_STATUS: 'agent:get-session-status',
   /** 搜索会话消息内容 */
   SEARCH_MESSAGES: 'agent:search-messages',
-  /** 搜索当前工作区可引用的 Agent 会话 */
+  /** 搜索指定工作区可引用的 Agent 会话 */
   SEARCH_SESSION_REFERENCES: 'agent:search-session-references',
   /** 分叉会话（从指定消息处创建新会话） */
   FORK_SESSION: 'agent:fork-session',

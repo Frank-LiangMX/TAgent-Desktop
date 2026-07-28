@@ -21,6 +21,7 @@ import {
   DotsThreeVertical,
   Archive,
   MagnifyingGlass,
+  CalendarBlank,
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import {
@@ -30,7 +31,7 @@ import {
   DropdownMenuItem,
 } from '@tagent/ui'
 import { sessionsRefreshAtom } from '../../atoms/channel-atoms'
-import { workspacesAtom, currentWorkspaceIdAtom } from '../../atoms/workspace-atoms'
+import { workspacesAtom } from '../../atoms/workspace-atoms'
 import {
   sessionStatusMapAtom,
   initSessionStatusAtom,
@@ -73,6 +74,29 @@ const STATUS_RANK: Record<SessionStatus, number> = { running: 0, error: 1, idle:
 const SPRING = { type: 'spring', stiffness: 380, damping: 32, mass: 0.8 } as const
 
 const BUCKET_ORDER: TimeBucket['name'][] = ['今天', '昨天', '本周', '更早']
+const EXPANDED_GROUPS_KEY = 'tagent.sidebar.expanded-groups.v1'
+const EXPANDED_BUCKETS_KEY = 'tagent.sidebar.expanded-buckets.v2'
+const bucketStateKey = (workspaceId: string, bucket: string): string =>
+  `${workspaceId}:${bucket}`
+
+function readStoredSet(key: string): Set<string> | null {
+  try {
+    const value = localStorage.getItem(key)
+    if (value === null) return null
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? new Set(parsed.filter((item): item is string => typeof item === 'string')) : null
+  } catch {
+    return null
+  }
+}
+
+function storeSet(key: string, value: Set<string>): void {
+  try {
+    localStorage.setItem(key, JSON.stringify([...value]))
+  } catch {
+    // localStorage 不可用时保留当前会话内状态即可
+  }
+}
 
 export function SessionSidebar({
   activeSessionId,
@@ -86,15 +110,18 @@ export function SessionSidebar({
   onOpenProject?: () => void
 }): JSX.Element {
   const [sessions, setSessions] = useState<SessionMeta[]>([])
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
-  const [expandedBuckets, setExpandedBuckets] = useState<Set<string>>(new Set(['今天']))
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
+    () => readStoredSet(EXPANDED_GROUPS_KEY) ?? new Set(),
+  )
+  const [expandedBuckets, setExpandedBuckets] = useState<Set<string>>(
+    () => readStoredSet(EXPANDED_BUCKETS_KEY) ?? new Set(),
+  )
   const [archivedExpanded, setArchivedExpanded] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
-  const [query, setQuery] = useState('') // 搜索框(先只 UI 占位,下轮接过滤)
+  const [query, setQuery] = useState('')
   const refreshCounter = useAtomValue(sessionsRefreshAtom)
   const workspaces = useAtomValue(workspacesAtom)
-  const currentWorkspaceId = useAtomValue(currentWorkspaceIdAtom)
   const statusMap = useAtomValue(sessionStatusMapAtom)
   const initStatus = useSetAtom(initSessionStatusAtom)
   const setStatus = useSetAtom(setSessionStatusAtom)
@@ -112,13 +139,28 @@ export function SessionSidebar({
     void refresh()
   }, [activeSessionId, refreshCounter, refresh])
 
-  // 默认只展开当前 workspace:切换 ws 时重置为单元素 Set
+  // 侧栏默认展开最近有活动的工作区；今天固定展开；昨天较少时展开。
   useEffect(() => {
-    if (currentWorkspaceId) {
-      setExpandedGroups(new Set([currentWorkspaceId]))
-      setExpandedBuckets(new Set(['今天']))
+    if (readStoredSet(EXPANDED_GROUPS_KEY) === null) {
+      const newestSession = sessions.find((session) => !session.archived && session.workspaceId)
+      const firstGroupId = newestSession?.workspaceId ?? workspaces[0]?.id
+      if (firstGroupId) setExpandedGroups(new Set([firstGroupId]))
     }
-  }, [currentWorkspaceId])
+
+    if (readStoredSet(EXPANDED_BUCKETS_KEY) === null) {
+      const defaults = new Set<string>()
+      for (const workspace of workspaces) {
+        const workspaceSessions = sessions.filter(
+          (session) => !session.archived && session.workspaceId === workspace.id,
+        )
+        const buckets = bucketize(workspaceSessions)
+        if (buckets.昨天.length > 0 && buckets.昨天.length <= 3) {
+          defaults.add(bucketStateKey(workspace.id, '昨天'))
+        }
+      }
+      setExpandedBuckets(defaults)
+    }
+  }, [sessions, workspaces])
 
   // 订阅 onStreamEvent:turn_end → idle、session_error → error(只处理这两类,按 sessionId 更新)
   useEffect(() => {
@@ -175,15 +217,18 @@ export function SessionSidebar({
       const next = new Set(prev)
       if (next.has(groupId)) next.delete(groupId)
       else next.add(groupId)
+      storeSet(EXPANDED_GROUPS_KEY, next)
       return next
     })
   }
 
-  const toggleBucket = (name: string): void => {
+  const toggleBucket = (workspaceId: string, name: string): void => {
     setExpandedBuckets((prev) => {
       const next = new Set(prev)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
+      const key = bucketStateKey(workspaceId, name)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      storeSet(EXPANDED_BUCKETS_KEY, next)
       return next
     })
   }
@@ -194,10 +239,27 @@ export function SessionSidebar({
     return statusMap[s.id]?.status ?? 'idle'
   }
 
-  const pinned = sessions.filter((s) => s.pinned && !s.archived)
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const matchesQuery = (session: SessionMeta): boolean =>
+    !normalizedQuery ||
+    [session.title, session.modelId, session.channelId].some((value) =>
+      value?.toLocaleLowerCase().includes(normalizedQuery),
+    )
+
+  const pinned = sessions.filter((s) => s.pinned && !s.archived && matchesQuery(s))
   const activeSessions = sessions.filter((s) => !s.archived)
   const archivedSessions = sessions.filter((s) => s.archived)
-  const groups = buildGroups(activeSessions, workspaces, statusOf)
+  const visibleActiveSessions = activeSessions.filter(matchesQuery)
+  const visibleArchivedSessions = archivedSessions.filter(matchesQuery)
+  const groups = buildGroups(visibleActiveSessions, workspaces, statusOf)
+  const activeSession = activeSessions.find((session) => session.id === activeSessionId)
+  const activeGroupId = activeSession?.workspaceId ?? (activeSession ? '__unclassified__' : null)
+  const effectiveExpandedGroups = normalizedQuery
+    ? new Set(groups.map((group) => group.id))
+    : new Set(expandedGroups)
+  if (activeGroupId) effectiveExpandedGroups.add(activeGroupId)
+
+  const archivedOpen = archivedExpanded || Boolean(normalizedQuery && visibleArchivedSessions.length)
 
   return (
     <div className="app-nav-sidebar flex flex-col h-full">
@@ -264,66 +326,64 @@ export function SessionSidebar({
       <div className="side-scroll">
         {groups.length === 0 && <div className="px-3 py-2 text-xs text-muted-foreground">暂无会话</div>}
         {groups.map((group) => {
-          const isExpanded = expandedGroups.has(group.id)
+          const isExpanded = effectiveExpandedGroups.has(group.id)
+          const groupExpandedBuckets = normalizedQuery
+            ? new Set<string>(BUCKET_ORDER)
+            : new Set(
+                BUCKET_ORDER.filter((name) =>
+                  expandedBuckets.has(bucketStateKey(group.id, name)),
+                ),
+              )
+          if (activeSession && activeGroupId === group.id) {
+            const activeBucket = BUCKET_ORDER.find(
+              (name) => bucketize([activeSession])[name].length > 0,
+            )
+            if (activeBucket) groupExpandedBuckets.add(activeBucket)
+          }
+          const groupHeaderContent = (
+            <>
+              <CaretRight size={12} weight="regular" className="caret" />
+              <span className="gname">{group.name}</span>
+              <span className="ws-badge">{group.sessions.length}</span>
+              {(group.streamingCount > 0 || group.errorCount > 0) && (
+                <div className="ws-sub">
+                  {group.streamingCount > 0 && (
+                    <>
+                      <span className="live">
+                        {Array.from({ length: Math.min(group.streamingCount, 3) }).map((_, i) => (
+                          <i key={i} />
+                        ))}
+                      </span>
+                      <span>
+                        {group.streamingCount} 进行中
+                        {group.errorCount > 0 && (
+                          <>
+                            {' · '}<span className="err">{group.errorCount} 出错</span>
+                          </>
+                        )}
+                      </span>
+                    </>
+                  )}
+                  {group.streamingCount === 0 && group.errorCount > 0 && (
+                    <span className="err">{group.errorCount} 个出错需关注</span>
+                  )}
+                </div>
+              )}
+            </>
+          )
           return (
             <div key={group.id} className={cn('group', isExpanded && 'open', group.streamingCount > 0 && 'has-stream', group.errorCount > 0 && 'has-error')}>
               <button
                 type="button"
                 className="group-head"
                 onClick={() => toggleGroup(group.id)}
+                aria-expanded={isExpanded}
               >
-                <CaretRight size={12} weight="regular" className="caret" />
-                <span className={cn('gname', group.id !== currentWorkspaceId && 'muted')}>
-                  {group.name}
-                </span>
-                <span className="ws-badge">{group.sessions.length}</span>
-                {(group.streamingCount > 0 || group.errorCount > 0) && (
-                  <div className="ws-sub">
-                    {group.streamingCount > 0 && (
-                      <>
-                        <span className="live">
-                          {Array.from({ length: Math.min(group.streamingCount, 3) }).map((_, i) => (
-                            <i key={i} />
-                          ))}
-                        </span>
-                        <span>
-                          {group.streamingCount} 进行中
-                          {group.errorCount > 0 && (
-                            <>
-                              {' · '}<span className="err">{group.errorCount} 出错</span>
-                            </>
-                          )}
-                        </span>
-                      </>
-                    )}
-                    {group.streamingCount === 0 && group.errorCount > 0 && (
-                      <span className="err">{group.errorCount} 个出错需关注</span>
-                    )}
-                  </div>
-                )}
+                {groupHeaderContent}
               </button>
 
               <div className="rows">
-                {group.id === currentWorkspaceId
-                  ? renderBuckets(group.sessions, expandedBuckets, toggleBucket, statusOf, activeSessionId, editingId, editingTitle, onSelect, onDelete, startRename, commitRename, togglePin, onArchiveToggle, setEditingTitle, () => setEditingId(null))
-                  : group.sessions.map((s) => (
-                      <SessionRow
-                        key={s.id}
-                        session={s}
-                        status={statusOf(s)}
-                        active={s.id === activeSessionId}
-                        editing={editingId === s.id}
-                        editingTitle={editingTitle}
-                        onSelect={onSelect}
-                        onDelete={onDelete}
-                        onRename={startRename}
-                        onCommitRename={commitRename}
-                        onTogglePin={togglePin}
-                        onArchiveToggle={onArchiveToggle}
-                        onEditingTitleChange={setEditingTitle}
-                        onCancelRename={() => setEditingId(null)}
-                      />
-                    ))}
+                {renderBuckets(group.sessions, groupExpandedBuckets, (name) => toggleBucket(group.id, name), statusOf, activeSessionId, editingId, editingTitle, onSelect, onDelete, startRename, commitRename, togglePin, onArchiveToggle, setEditingTitle, () => setEditingId(null))}
               </div>
             </div>
           )
@@ -331,9 +391,9 @@ export function SessionSidebar({
       </div>
 
       {/* 已归档:底部固定区。普通 .group 结构(头在上、rows 在下),折叠展开同 workspace 组(CSS max-height) */}
-      {archivedSessions.length > 0 && (
+      {visibleArchivedSessions.length > 0 && (
         <div className="arch-foot">
-          <div className={cn('group group-archived', archivedExpanded && 'open')}>
+          <div className={cn('group group-archived', archivedOpen && 'open')}>
             <button
               type="button"
               className="group-head"
@@ -341,10 +401,10 @@ export function SessionSidebar({
             >
               <CaretRight size={12} weight="regular" className="caret" />
               <span className="gname muted">已归档</span>
-              <span className="ws-badge">{archivedSessions.length}</span>
+              <span className="ws-badge">{visibleArchivedSessions.length}</span>
             </button>
             <div className="rows">
-              {archivedSessions.map((s) => (
+              {visibleArchivedSessions.map((s) => (
                 <SessionRow
                   key={s.id}
                   session={s}
@@ -395,14 +455,34 @@ function renderBuckets(
       {BUCKET_ORDER.map((name) => {
         const arr = buckets[name]
         if (!arr || arr.length === 0) return null
-        const isOpen = expandedBuckets.has(name)
+        const isToday = name === '今天'
+        const isOpen = isToday || expandedBuckets.has(name)
+        const preview = arr.slice(0, 2).map((session) => session.title).join('、')
+        const bucketContent = (
+          <>
+            <CalendarBlank size={13} weight="regular" className="bucket-icon" />
+            <span className="bucket-copy">
+              <span className="b-name">{name}</span>
+              {!isOpen && <span className="b-preview">最近：{preview}</span>}
+            </span>
+            <span className="bucket-count">{arr.length} 个</span>
+            {!isToday && <CaretRight size={12} weight="regular" className="b-caret" />}
+          </>
+        )
         return (
           <div key={name} className={cn('bucket-group', isOpen && 'open')}>
-            <button type="button" className="bucket" onClick={() => toggleBucket(name)}>
-              <span className="b-caret">▸</span>
-              <span className="b-name">{name}</span>
-              <span className="folded-count">{arr.length}</span>
-            </button>
+            {isToday ? (
+              <div className="bucket bucket-static">{bucketContent}</div>
+            ) : (
+              <button
+                type="button"
+                className="bucket"
+                onClick={() => toggleBucket(name)}
+                aria-expanded={isOpen}
+              >
+                {bucketContent}
+              </button>
+            )}
             <div className="bucket-rows">
               {arr.map((s) => (
                 <SessionRow

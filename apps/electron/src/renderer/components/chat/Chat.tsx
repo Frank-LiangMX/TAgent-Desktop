@@ -32,11 +32,11 @@ import { PermissionModeSelector } from './PermissionModeSelector'
 import { PermissionBanner } from '../permission/PermissionBanner'
 import { ScrollPositionManager } from '../shell/ScrollPositionManager'
 import { channelsAtom, selectedChannelIdAtom, bumpSessionsRefreshAtom } from '../../atoms/channel-atoms'
-import { currentWorkspaceIdAtom } from '../../atoms/workspace-atoms'
 
 interface SessionMeta {
   id: string
   title: string
+  workspaceId?: string
   modelId?: string
   channelId?: string
 }
@@ -81,7 +81,6 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   const channels = useAtomValue(channelsAtom)
   const selectedChannelId = useAtomValue(selectedChannelIdAtom)
   const setSelectedChannelId = useSetAtom(selectedChannelIdAtom)
-  const currentWorkspaceId = useAtomValue(currentWorkspaceIdAtom)
   const bumpRefresh = useSetAtom(bumpSessionsRefreshAtom)
 
   // 构造 ScrollMinimap 的 items：按 user 分组，每项 = 用户消息 + 紧随的助手回复（对齐 TAgent_General）
@@ -286,7 +285,7 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
         sessionId: sessionIdRef.current,
         prompt: text,
         channelId,
-        workspaceId: currentWorkspaceId ?? undefined,
+        workspaceId: session.workspaceId,
       })
       // IPC 返回失败：没有 result 事件会来，必须在这里解除 running，否则输入框永久 disabled
       if (res && !res.ok) {

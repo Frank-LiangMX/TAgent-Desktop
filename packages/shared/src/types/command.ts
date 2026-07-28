@@ -19,7 +19,7 @@ export type CommandCategory = 'desktop' | 'agent' | 'model'
 export interface CommandContext {
   /** 当前会话 ID（如有） */
   sessionId?: string
-  /** 当前工作区 slug（如有） */
+  /** 当前会话所属工作区 slug（如有） */
   workspaceSlug?: string
   /** 当前模式 */
   mode?: 'general' | 'ta'

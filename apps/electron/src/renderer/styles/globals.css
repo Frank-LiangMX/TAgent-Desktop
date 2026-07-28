@@ -6,6 +6,7 @@
 @import './chat.css';
 @import './app-shell.css';
 @import './sidebar.css';
+@import './welcome.css';
 @import './settings-shell.css';
 
 @tailwind base;

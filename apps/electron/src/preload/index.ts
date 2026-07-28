@@ -78,15 +78,9 @@ const electronAPI = {
   /** 列出所有工作区 */
   listWorkspaces: () =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_WORKSPACES) as Promise<AgentWorkspace[]>,
-  /** 创建项目工作区（弹出文件夹选择对话框 → 创建 workspace + 自动切换） */
+  /** 创建项目工作区（弹出文件夹选择对话框） */
   createProjectWorkspace: () =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.CREATE_PROJECT_WORKSPACE) as Promise<AgentWorkspace | null>,
-  /** 获取当前工作区 */
-  getCurrentWorkspace: () =>
-    ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_WORKSPACES + ':current') as Promise<AgentWorkspace | undefined>,
-  /** 切换当前工作区 */
-  switchWorkspace: (id: string) =>
-    ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_WORKSPACE + ':switch', id) as Promise<{ ok: boolean; error?: string }>,
   /** 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived；status 由主进程内部写，渲染层不直接写） */
   updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_META, { id, patch }) as Promise<unknown>,

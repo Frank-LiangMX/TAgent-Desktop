@@ -253,15 +253,21 @@
 /* ===== 滚动列表 ===== */
 .side-scroll {
   position: relative;
-  z-index: 1; /* 低于 arch-foot,展开归档时被脚下盖住 */
+  z-index: 1; /* 低于 arch-foot;列表延伸到脚下,才能被磨砂透出 */
   flex: 1;
   overflow-y: auto;
   padding: 6px 4px 10px;
-  transform: translateZ(0);
-  contain: paint;
+  /* 不用 contain:paint / translateZ:会把列表裁在自己盒内,脚下叠层透不出会话 */
 }
 .side-scroll::-webkit-scrollbar {
   width: 0;
+}
+/* 有归档底栏时:底部留白,末条可滚出脚下;列表仍画到脚底下供透出 */
+.app-nav-sidebar:has(.arch-foot) .side-scroll {
+  padding-bottom: 52px;
+}
+.app-nav-sidebar:has(.arch-foot .group-archived.open) .side-scroll {
+  padding-bottom: min(42vh, 280px);
 }
 
 /* ===== 工作区分组:只折叠,不套任何圆角/玻璃背景容器 =====
@@ -410,15 +416,15 @@
   max-height: 0;
   opacity: 0;
 }
-/* 整行控件:width 100% 铺满,左 caret+名称、右数量,整行可点收纳 */
+/* 时间段标题：图标表明时间语义；折叠时保留数量和最近内容预览。 */
 .bucket {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   width: 100%;
   box-sizing: border-box;
   margin: 6px 0 2px;
-  padding: 7px 10px;
+  padding: 7px 10px 7px 12px;
   border: 0;
   border-radius: 9px;
   background: transparent;
@@ -430,13 +436,29 @@
 .bucket-group:first-child .bucket {
   margin-top: 2px;
 }
-.bucket:hover {
+.bucket:not(.bucket-static):hover {
   background: rgb(var(--glass-rgb) / 0.3);
+}
+.bucket-static {
+  cursor: default;
+}
+.bucket-icon {
+  flex: none;
+  color: hsl(var(--muted-foreground) / 0.62);
+}
+.bucket-group.open .bucket-icon {
+  color: hsl(var(--primary) / 0.72);
+}
+.bucket-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
 }
 .bucket .b-caret {
   width: 12px;
   flex: none;
-  font-size: 9px;
   color: hsl(var(--muted-foreground) / 0.55);
   transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.16s;
   display: grid;
@@ -450,31 +472,29 @@
   color: hsl(var(--primary) / 0.8);
 }
 .bucket .b-name {
-  flex: 1;
-  min-width: 0;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: hsl(var(--muted-foreground) / 0.75);
 }
-.bucket .folded-count {
+.bucket .b-preview {
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground) / 0.5);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bucket .bucket-count {
   flex: none;
   margin-left: auto;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 6px;
-  display: grid;
-  place-items: center;
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
-  color: hsl(var(--muted-foreground) / 0.7);
-  background: hsl(var(--foreground) / 0.06);
-  border-radius: 6px;
-}
-/* 展开后数量已由列表表达,头上隐藏徽章 */
-.bucket-group.open .bucket .folded-count {
-  display: none;
+  color: hsl(var(--muted-foreground) / 0.58);
+  white-space: nowrap;
 }
 
 /* ===== 会话行 ===== */
@@ -506,9 +526,8 @@
 .light .row:hover {
   box-shadow: 0 4px 12px -6px rgb(48 59 76 / 0.16), inset 0 1px 0 rgb(255 255 255 / 0.4);
 }
-/* 选中态:左边框 primary + 行玻璃高光(无独立竖条) */
+/* 选中态：行玻璃高光 + 稳定悬浮阴影，不增加额外方向标记。 */
 .row.is-active {
-  border-left-color: hsl(var(--primary));
   background: radial-gradient(
       120% 140% at 10% 0%,
       rgb(var(--scene-a-rgb) / 0.1),
@@ -516,12 +535,30 @@
     ),
     rgb(var(--glass-rgb) / 0.42);
   border-color: rgb(var(--glass-rgb) / 0.5);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.14);
+  box-shadow:
+    0 6px 18px -7px rgb(0 0 0 / 0.28),
+    0 2px 6px -3px rgb(0 0 0 / 0.16),
+    inset 0 1px 0 rgb(255 255 255 / 0.14);
 }
 .light .row.is-active {
   background: rgb(255 255 255 / 0.66);
   border-color: rgb(255 255 255 / 0.75);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.8);
+  box-shadow:
+    0 6px 18px -8px rgb(48 59 76 / 0.2),
+    0 2px 6px -4px rgb(48 59 76 / 0.12),
+    inset 0 1px 0 rgb(255 255 255 / 0.8);
+}
+.row.is-active:hover {
+  box-shadow:
+    0 8px 20px -7px rgb(0 0 0 / 0.32),
+    0 3px 8px -4px rgb(0 0 0 / 0.18),
+    inset 0 1px 0 rgb(255 255 255 / 0.18);
+}
+.light .row.is-active:hover {
+  box-shadow:
+    0 8px 20px -8px rgb(48 59 76 / 0.24),
+    0 3px 8px -5px rgb(48 59 76 / 0.14),
+    inset 0 1px 0 rgb(255 255 255 / 0.86);
 }
 .row.is-active .t {
   font-weight: 620;
@@ -654,46 +691,106 @@
   color: hsl(var(--foreground) / 0.7);
 }
 
-/* ===== 已归档:底部条盖住 scroll；列表仍直接铺在侧栏画布上 =====
- * 层叠只在 arch-foot 与 side-scroll 之间(向上投影),绝不给 group/rows 加圆角盒。
- * 与工作区 .group 背景无关。
+/* ===== 已归档:叠在列表底的磨砂抽屉 =====
+ * 玻璃配方对齐 .chat-input-glass。
+ * backdrop-filter 单独放在 ::before 上，避免抽屉本体的背景与滚动列表形成
+ * 两个独立合成层后，只混合透明底色却采样不到后方文字。
  */
 .arch-foot {
-  position: relative;
-  z-index: 3; /* 压过列表滚动区 */
-  flex: none;
-  border-top: 1px solid var(--hairline);
-  padding: 4px 4px 8px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
   min-width: 0;
-  /* 与侧栏同色系的轻雾,不是白卡片;圆角 0 贴抽屉底 */
-  border-radius: 0;
-  background: linear-gradient(
-    180deg,
-    rgb(var(--glass-rgb) / 0.28) 0%,
-    rgb(var(--glass-rgb) / 0.1) 100%
-  );
-  -webkit-backdrop-filter: blur(12px) saturate(1.06);
-  backdrop-filter: blur(12px) saturate(1.06);
-  box-shadow: none;
-  transition: box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  margin: 0;
+  padding: 4px 4px 8px;
+  /* 滚动裁切放在内层，外层保持 visible，供伪元素采样完整 backdrop。 */
+  overflow: visible;
+  border-radius: 16px 16px 0 0;
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  border-bottom: 0;
+  background: transparent !important;
+  box-shadow:
+    0 -10px 30px -10px rgb(23 30 40 / 0.18),
+    0 -2px 6px -2px rgb(23 30 40 / 0.08),
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    inset 1px 0 0 rgb(255 255 255 / 0.14);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
-/* 展开归档:向上投阴影,盖住上方会话列表(层叠),不是换页 */
+/* 独立磨砂采样层：透明度对齐会话输入框，密集文字使用更大的模糊半径。 */
+.arch-foot::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  -webkit-backdrop-filter: blur(26px) saturate(1.06);
+  backdrop-filter: blur(26px) saturate(1.06);
+  background:
+    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 66%),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / 0.42),
+      rgb(var(--glass-rgb) / 0.28)
+    );
+  transition: opacity 0.2s ease;
+}
+/* 内容压在折射层上 */
+.arch-foot > * {
+  position: relative;
+  z-index: 1;
+}
 .arch-foot:has(.group-archived.open) {
   box-shadow:
-    0 -18px 36px -14px rgb(0 0 0 / 0.4),
-    0 -6px 16px -8px rgb(0 0 0 / 0.18);
+    0 -14px 34px -10px rgb(23 30 40 / 0.22),
+    0 -4px 10px -4px rgb(23 30 40 / 0.1),
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    inset 1px 0 0 rgb(255 255 255 / 0.14);
 }
-.light .arch-foot {
-  background: linear-gradient(
-    180deg,
-    rgb(255 255 255 / 0.38) 0%,
-    rgb(255 255 255 / 0.12) 100%
-  );
-}
-.light .arch-foot:has(.group-archived.open) {
+.dark .arch-foot {
+  border-color: rgb(255 255 255 / 0.08);
   box-shadow:
-    0 -18px 32px -16px rgb(48 59 76 / 0.2),
-    0 -6px 14px -8px rgb(48 59 76 / 0.1);
+    0 -10px 30px -10px rgb(0 0 0 / 0.4),
+    0 -2px 6px -2px rgb(0 0 0 / 0.2),
+    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    inset 1px 0 0 rgb(255 255 255 / 0.04);
+}
+.dark .arch-foot:has(.group-archived.open) {
+  box-shadow:
+    0 -14px 34px -10px rgb(0 0 0 / 0.48),
+    0 -4px 10px -4px rgb(0 0 0 / 0.24),
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    inset 1px 0 0 rgb(255 255 255 / 0.04);
+}
+/* 折叠态融入 sidebar；hover 时才显出抽屉的玻璃边界和层级。 */
+.arch-foot:not(:has(.group-archived.open)) {
+  border-color: transparent;
+  box-shadow: none;
+}
+.arch-foot:not(:has(.group-archived.open))::before {
+  opacity: 0.1;
+}
+.arch-foot:not(:has(.group-archived.open)):hover {
+  border-color: rgb(var(--glass-rgb) / 0.42);
+  box-shadow:
+    0 -8px 24px -12px rgb(23 30 40 / 0.16),
+    inset 0 1px 0 rgb(255 255 255 / 0.34);
+}
+.arch-foot:not(:has(.group-archived.open)):hover::before {
+  opacity: 0.72;
+}
+.arch-foot:not(:has(.group-archived.open)) .group-head:hover {
+  background: transparent;
+}
+.dark .arch-foot:not(:has(.group-archived.open)):hover {
+  border-color: rgb(255 255 255 / 0.07);
+  box-shadow:
+    0 -8px 24px -12px rgb(0 0 0 / 0.34),
+    inset 0 1px 0 rgb(255 255 255 / 0.05);
 }
 /* 折叠头:整行,仅收紧 padding */
 .group-archived > .group-head {
@@ -701,17 +798,24 @@
   box-sizing: border-box;
   padding: 6px 10px;
 }
-/* 禁止内层再套容器 */
-.arch-foot .group-archived,
-.arch-foot .group-archived.open {
+/* 内层滚动(玻璃层保持 overflow:visible,blur 才生效) */
+.arch-foot .group-archived {
   margin: 0;
   padding: 0 2px;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  max-height: min(48vh, 360px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.arch-foot .group-archived::-webkit-scrollbar {
+  width: 0;
+}
+.arch-foot .group-archived.open {
+  background: transparent;
 }
 .arch-foot .group-archived > .rows {
   margin: 0;

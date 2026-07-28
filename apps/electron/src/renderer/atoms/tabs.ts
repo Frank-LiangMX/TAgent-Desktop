@@ -14,6 +14,8 @@ export interface TabItem {
   sessionId: string
   /** tab 标题（会话标题） */
   title: string
+  /** 会话所属工作区；会话创建时确定，不依赖全局选择 */
+  workspaceId?: string
 }
 
 /** 打开的会话 tab 列表 */
@@ -35,16 +37,19 @@ export const activeTabAtom = atom<TabItem | null>((get) => {
 export function openTab(
   tabs: TabItem[],
   sessionId: string,
-  title: string
+  title: string,
+  workspaceId?: string,
 ): { tabs: TabItem[]; activeTabId: string } {
   const existing = tabs.find((t) => t.sessionId === sessionId)
   if (existing) {
     // 已开：更新标题 + 激活
-    const next = tabs.map((t) => (t.id === existing.id ? { ...t, title } : t))
+    const next = tabs.map((t) =>
+      t.id === existing.id ? { ...t, title, workspaceId: workspaceId ?? t.workspaceId } : t,
+    )
     return { tabs: next, activeTabId: existing.id }
   }
   // 未开：追加 + 激活
-  const newTab: TabItem = { id: sessionId, sessionId, title }
+  const newTab: TabItem = { id: sessionId, sessionId, title, workspaceId }
   return { tabs: [...tabs, newTab], activeTabId: newTab.id }
 }
 

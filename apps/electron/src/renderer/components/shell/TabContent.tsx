@@ -14,7 +14,11 @@ export function TabContent(): JSX.Element | null {
   return (
     <Chat
       key={activeTab.sessionId}
-      session={{ id: activeTab.sessionId, title: activeTab.title }}
+      session={{
+        id: activeTab.sessionId,
+        title: activeTab.title,
+        workspaceId: activeTab.workspaceId,
+      }}
     />
   )
 }

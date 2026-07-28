@@ -26,6 +26,8 @@ import { AppShell } from './components/shell/AppShell'
 import { Rail } from './components/shell/Rail'
 import { TabBar } from './components/shell/TabBar'
 import { TabContent } from './components/shell/TabContent'
+import { WelcomePage } from './components/shell/WelcomePage'
+import { WorkspacePickerDialog } from './components/shell/WorkspacePickerDialog'
 import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
 import {
   channelsAtom,
@@ -34,8 +36,6 @@ import {
 } from './atoms/channel-atoms'
 import {
   workspacesAtom,
-  currentWorkspaceIdAtom,
-  currentWorkspaceAtom,
   loadWorkspacesAtom,
 } from './atoms/workspace-atoms'
 
@@ -65,8 +65,6 @@ declare global {
       // 工作区
       listWorkspaces: () => Promise<AgentWorkspace[]>
       createProjectWorkspace: () => Promise<AgentWorkspace | null>
-      getCurrentWorkspace: () => Promise<AgentWorkspace | undefined>
-      switchWorkspace: (id: string) => Promise<{ ok: boolean; error?: string }>
       // 会话元数据（重命名/置顶/归档；status 由主进程内部写，渲染层不直接写）
       updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }) => Promise<unknown>
       togglePin: (id: string) => Promise<unknown>
@@ -94,12 +92,12 @@ declare global {
 export function App(): JSX.Element {
   const [showChannels, setShowChannels] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showWorkspacePicker, setShowWorkspacePicker] = useState(false)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
   const selected = useAtomValue(selectedChannelAtom)
   const channels = useAtomValue(channelsAtom)
   const workspaces = useAtomValue(workspacesAtom)
-  const currentWorkspaceId = useAtomValue(currentWorkspaceIdAtom)
   // 多会话 tab
   const tabs = useAtomValue(tabsAtom)
   const activeTabId = useAtomValue(activeTabIdAtom)
@@ -113,23 +111,46 @@ export function App(): JSX.Element {
   }, [loadChannels, loadWorkspaces])
 
   /** 开会话进 tab：已开激活，未开加 tab + 激活 */
-  const openSession = (sessionId: string, title: string): void => {
-    const { tabs: next, activeTabId: nextActive } = openTab(tabs, sessionId, title)
+  const openSession = (sessionId: string, title: string, workspaceId?: string): void => {
+    const { tabs: next, activeTabId: nextActive } = openTab(
+      tabs,
+      sessionId,
+      title,
+      workspaceId,
+    )
     setTabs(next)
     setActiveTabId(nextActive)
   }
 
-  const newSession = (): void => {
-    // 新会话用临时 id（发首条消息时主进程建持久 meta + 绑定渠道 + 绑定 workspace）
-    openSession('session-' + Date.now(), '新会话')
+  /** 打开项目目录并注册为工作区；从新建会话入口调用时直接绑定新会话 */
+  const handleOpenProject = async (startSession = false): Promise<void> => {
+    const workspace = await window.electronAPI.createProjectWorkspace()
+    if (!workspace) return
+
+    await loadWorkspaces()
+    if (startSession) {
+      openSession('session-' + Date.now(), '新会话', workspace.id)
+    }
   }
 
-  /** 打开项目目录 → 创建 workspace */
-  const handleOpenProject = async (): Promise<void> => {
-    const ws = await window.electronAPI.createProjectWorkspace()
-    if (ws) {
-      await loadWorkspaces()
+  const newSession = (workspaceId?: string): void => {
+    const workspace = workspaceId
+      ? workspaces.find((item) => item.id === workspaceId)
+      : workspaces.length === 1
+        ? workspaces[0]
+        : undefined
+
+    if (!workspace) {
+      if (workspaces.length === 0) {
+        void handleOpenProject(true)
+        return
+      }
+      setShowWorkspacePicker(true)
+      return
     }
+
+    // 新会话用临时 id（发首条消息时主进程建持久 meta + 绑定渠道 + 绑定 workspace）
+    openSession('session-' + Date.now(), '新会话', workspace.id)
   }
 
   return (
@@ -148,8 +169,8 @@ export function App(): JSX.Element {
         sidebar={
           <SessionSidebar
             activeSessionId={activeTabId}
-            onSelect={(s) => openSession(s.id, s.title)}
-            onNew={newSession}
+            onSelect={(s) => openSession(s.id, s.title, s.workspaceId)}
+            onNew={() => newSession()}
             onOpenProject={() => void handleOpenProject()}
           />
         }
@@ -177,14 +198,27 @@ export function App(): JSX.Element {
             </div>
           </div>
         ) : (
-          <ConversationEmptyState
-            title="选择左侧会话，或点「新建会话」开始"
-            description="创建新会话即可开始对话"
+          <WelcomePage
+            onNewSession={() => newSession()}
+            onOpenProject={() => void handleOpenProject()}
           />
         )}
       </AppShell>
 
       {showChannels && <ChannelManager onClose={() => setShowChannels(false)} />}
+      <WorkspacePickerDialog
+        open={showWorkspacePicker}
+        workspaces={workspaces}
+        onOpenChange={setShowWorkspacePicker}
+        onSelect={(workspace) => {
+          setShowWorkspacePicker(false)
+          newSession(workspace.id)
+        }}
+        onOpenProject={() => {
+          setShowWorkspacePicker(false)
+          void handleOpenProject(true)
+        }}
+      />
       <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
     </TooltipProvider>
   )

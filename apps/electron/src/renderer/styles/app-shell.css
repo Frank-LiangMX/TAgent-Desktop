@@ -187,11 +187,13 @@
   overflow: hidden;
   border: 1px solid rgb(var(--glass-rgb) / 0.48);
   border-radius: 22px;
-  /* 比原先略实一档，才能读出「浮在 scene / 主区上」而不是融进背景 */
-  background:
-    radial-gradient(120% 92% at 8% 0%, rgb(var(--scene-a-rgb) / 0.12), transparent 64%),
-    radial-gradient(110% 90% at 100% 100%, rgb(var(--scene-b-rgb) / 0.08), transparent 68%),
-    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.42), rgb(var(--glass-rgb) / 0.22)) !important;
+  /*
+   * 外层本体不能持有 backdrop-filter：它会成为 Backdrop Root，导致内部的
+   * 归档抽屉无法采样同层滚动列表。玻璃底移到 ::before，视觉保持不变。
+   */
+  background: transparent !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   /* 外投阴影：压住右侧主内容 + 顶沿高光 = 抽屉厚度 */
   box-shadow:
     12px 0 36px -12px rgb(48 59 76 / 0.22),
@@ -199,21 +201,40 @@
     0 4px 14px -6px rgb(48 59 76 / 0.1),
     inset 0 1px 0 rgb(255 255 255 / 0.55),
     inset 1px 0 0 rgb(255 255 255 / 0.18);
-  -webkit-backdrop-filter: blur(var(--surface-blur, 22px)) saturate(1.1);
-  backdrop-filter: blur(var(--surface-blur, 22px)) saturate(1.1);
 }
-.dark .app-nav-sidebar {
-  border-color: rgb(255 255 255 / 0.08);
+.app-nav-sidebar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
   background:
     radial-gradient(120% 92% at 8% 0%, rgb(var(--scene-a-rgb) / 0.12), transparent 64%),
     radial-gradient(110% 90% at 100% 100%, rgb(var(--scene-b-rgb) / 0.08), transparent 68%),
-    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.4), rgb(var(--glass-rgb) / 0.2)) !important;
+    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.42), rgb(var(--glass-rgb) / 0.22)) !important;
+  -webkit-backdrop-filter: blur(var(--surface-blur, 22px)) saturate(1.1);
+  backdrop-filter: blur(var(--surface-blur, 22px)) saturate(1.1);
+}
+.app-nav-sidebar > * {
+  position: relative;
+  z-index: 1;
+}
+.dark .app-nav-sidebar {
+  border-color: rgb(255 255 255 / 0.08);
+  background: transparent !important;
   box-shadow:
     14px 0 40px -10px rgb(0 0 0 / 0.55),
     0 18px 44px -14px rgb(0 0 0 / 0.45),
     0 6px 16px -6px rgb(0 0 0 / 0.35),
     inset 0 1px 0 rgb(255 255 255 / 0.1),
     inset 1px 0 0 rgb(255 255 255 / 0.05);
+}
+.dark .app-nav-sidebar::before {
+  background:
+    radial-gradient(120% 92% at 8% 0%, rgb(var(--scene-a-rgb) / 0.12), transparent 64%),
+    radial-gradient(110% 90% at 100% 100%, rgb(var(--scene-b-rgb) / 0.08), transparent 68%),
+    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.4), rgb(var(--glass-rgb) / 0.2)) !important;
 }
 
 /* main：flex:1 透 scene，会话页/composer 浮岛在内 */
@@ -407,5 +428,4 @@
   0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }
 }
-
 
