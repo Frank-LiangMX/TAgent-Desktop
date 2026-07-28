@@ -31,7 +31,7 @@ bun run scripts/prepare-release.ts <版本号>
 # 3. 提交 + 打 tag
 git add -A && git commit -m "release: vX.Y.Z"
 git tag vX.Y.Z
-git push origin main --tags
+git push origin <当前分支> --tags
 
 # 4. push tag 自动触发 .github/workflows/release.yml，三端构建 + 上传 GitHub Release
 ```
@@ -40,9 +40,9 @@ git push origin main --tags
 
 - 触发：push `v*` tag
 - 三端 matrix：macos-latest(--mac) / windows-2022(--win) / ubuntu-latest(--linux --x64)
-- electron-builder `--publish always` 直传 GitHub Release
+- 各平台由 electron-builder 生成产物并上传 workflow artifact，最后统一创建 GitHub Release
 - 预发布版本（tag 含 `-`）自动标记 prerelease
-- Release Body 从 `RELEASE_NOTES.md`（脚本从 release-notes/vX.Y.Z.md 拷贝生成）同步
+- Release Body 直接读取 `release-notes/vX.Y.Z.md`，不再维护根目录临时副本
 
 ## 5. 产物（三端）
 

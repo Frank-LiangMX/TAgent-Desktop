@@ -1,7 +1,5 @@
 import { describe, expect, test } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import '@testing-library/jest-dom'
-
 import { AddonLoader } from '../index'
 
 describe('AddonLoader（附加动画）', () => {

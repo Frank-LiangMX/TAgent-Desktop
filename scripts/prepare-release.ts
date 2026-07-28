@@ -10,8 +10,7 @@
  * 3. 检查工作区干净
  * 4. 更新 apps/electron/package.json version
  * 5. 生成 release-notes/vX.Y.Z.md 模板（如不存在）
- * 6. 拷贝该版本 release note 到根 RELEASE_NOTES.md（CI 用）
- * 7. 提示后续手动步骤（写 CHANGELOG / commit / tag / push）
+ * 6. 提示后续手动步骤（写 CHANGELOG / commit / tag / push）
  *
  * 见 docs/RELEASE_PROCESS.md
  */
@@ -89,16 +88,14 @@ if (!existsSync(rnPath)) {
   console.log(`release-notes/${tag}.md 已存在，保留`)
 }
 
-// 6. 同步 RELEASE_NOTES.md（CI 用）
-const rnContent = readFileSync(rnPath, 'utf8')
-writeFileSync(path.join(root, 'RELEASE_NOTES.md'), rnContent, 'utf8')
-console.log('已同步根 RELEASE_NOTES.md（CI 发版用）')
+// CI 直接读取版本化 release note，不生成容易过期的根目录副本。
+const branch = execSync('git branch --show-current', { cwd: root, encoding: 'utf8' }).trim() || 'main'
 
-// 7. 提示后续
+// 6. 提示后续
 console.log(`\n=== 接下来手动做 ===`)
 console.log(`1. 填充 release-notes/${tag}.md 的内容`)
 console.log(`2. 在 CHANGELOG.md 顶部追加 [${ver}] 段`)
 console.log(`3. git add -A && git commit -m "release: ${tag}"`)
 console.log(`4. git tag ${tag}`)
-console.log(`5. git push origin main --tags  → 触发 CI 三端构建发版`)
+console.log(`5. git push origin ${branch} --tags  → 触发 CI 三端构建发版`)
 console.log(`\n预发布版本（含 -）会自动标 GitHub prerelease。`)

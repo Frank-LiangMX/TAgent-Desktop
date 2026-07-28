@@ -1,7 +1,5 @@
 import { describe, expect, test } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import '@testing-library/jest-dom'
-
 import { MaterialProvider, useMaterial, useMaterialMode } from '../MaterialProvider.tsx'
 import type { MaterialMode } from '../material-types.ts'
 

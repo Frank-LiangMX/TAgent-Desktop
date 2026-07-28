@@ -13,7 +13,14 @@
  * 索引格式与 TAgent_General 1.x 一致：{ version: 1, sessions: AgentSessionMeta[] }
  * —— dev 模式共享 ~/.tagent-dev/，必须对齐格式，否则 1.x 写的对象 2.0 读成数组会崩。
  */
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
+import {
+  readFileSync,
+  writeFileSync,
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+} from 'node:fs'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { AgentSessionMeta, SDKMessage } from '@tagent/shared'
@@ -131,7 +138,6 @@ export function deleteSession(id: string): void {
   for (const msgPath of pathsToDelete) {
     if (existsSync(msgPath)) {
       try {
-        const { rmSync } = require('node:fs')
         rmSync(msgPath, { force: true })
       } catch {
         /* 忽略 */

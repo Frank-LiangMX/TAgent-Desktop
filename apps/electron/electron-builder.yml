@@ -1,0 +1,41 @@
+appId: com.tagent.desktop
+productName: TAgent
+
+directories:
+  output: out
+
+files:
+  - dist/**/*
+  - package.json
+
+asar: true
+asarUnpack:
+  - node_modules/**/*.node
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: TAgent-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+  artifactName: TAgent-${version}-${arch}.${ext}
+
+linux:
+  category: Development
+  target:
+    - AppImage
+    - deb
+    - tar.gz
+  artifactName: TAgent-${version}-${arch}.${ext}

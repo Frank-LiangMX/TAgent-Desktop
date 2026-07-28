@@ -5,7 +5,7 @@
  * 见 CLAUDE.md "本地文件存储"。
  */
 import { app } from 'electron'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { existsSync, mkdirSync } from 'node:fs'
 
@@ -28,6 +28,8 @@ export function getConfigDirName(): string {
 
 /** 配置目录绝对路径：~/.tagent[-dev]/ */
 export function getConfigDir(): string {
+  const override = process.env.TAGENT_CONFIG_DIR?.trim()
+  if (override) return resolve(override)
   return join(homedir(), getConfigDirName())
 }
 

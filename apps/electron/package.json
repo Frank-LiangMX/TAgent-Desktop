@@ -1,6 +1,7 @@
 {
   "name": "@tagent/electron",
-  "version": "2.0.0-dev.8",
+  "version": "2.0.0-dev.9",
+  "author": "TAgent Contributors",
   "description": "TAgent-Desktop - 2.0 骨架重构版（会话=进程常驻 + 双核可拔插）",
   "main": "dist/main.cjs",
   "private": true,
@@ -17,6 +18,10 @@
     "build:resources": "node -e \"require('fs').rmSync('dist/resources',{recursive:true,force:true});require('fs').cpSync('resources','dist/resources',{recursive:true})\"",
     "prebuild": "bun run --filter='@tagent/ui' tokens:generate",
     "build": "bun run build:pi-core && bun run build:main && bun run build:preload && bun run build:renderer && bun run build:resources",
+    "rebuild:native": "electron-builder install-app-deps",
+    "package": "bun run build && electron-builder --publish never",
+    "package:win": "bun run build && electron-builder --win --x64 --publish never",
+    "package:ci": "electron-builder --publish never",
     "start": "bun run build && bunx electron .",
     "typecheck": "tsc --noEmit"
   },
@@ -26,6 +31,7 @@
     "@earendil-works/pi-agent-core": "^0.82.0",
     "@earendil-works/pi-ai": "^0.82.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@tagent/pi-core": "workspace:*",
     "better-sqlite3": "^12.10.0",
     "iconv-lite": "^0.6.3",
     "jotai": "^2.17.1",
@@ -37,7 +43,6 @@
   "devDependencies": {
     "@phosphor-icons/react": "2.1.10",
     "@tagent/core": "workspace:*",
-    "@tagent/pi-core": "workspace:*",
     "@tagent/shared": "workspace:*",
     "@tagent/ui": "workspace:*",
     "use-stick-to-bottom": "^1.0.1",
@@ -57,6 +62,7 @@
     "clsx": "^2.1.1",
     "concurrently": "^9.2.1",
     "electron": "^39.5.1",
+    "electron-builder": "^26.15.3",
     "electronmon": "^2.0.4",
     "esbuild": "^0.24.0",
     "lucide-react": "^0.460.0",

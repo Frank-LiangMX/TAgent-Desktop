@@ -36,7 +36,7 @@ import {
 } from '../../atoms/channel-atoms'
 import { workspacesAtom } from '../../atoms/workspace-atoms'
 
-const APP_VERSION = '2.0.0-dev.8'
+const APP_VERSION = '2.0.0-dev.9'
 
 type SettingsTab = 'general' | 'appearance' | 'channels' | 'workspace' | 'about'
 

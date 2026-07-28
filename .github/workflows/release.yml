@@ -17,6 +17,7 @@ permissions:
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+  RELEASE_NOTES_PATH: release-notes/${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}.md
 
 jobs:
   build-desktop:
@@ -26,7 +27,7 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            package_args: --mac
+            package_args: --mac --x64 --arm64
             workdir: apps/electron
             artifact: desktop-macos
             paths: |
@@ -35,7 +36,7 @@ jobs:
               apps/electron/out/*.blockmap
               apps/electron/out/*.yml
           - os: windows-2022
-            package_args: --win
+            package_args: --win --x64
             workdir: apps/electron
             artifact: desktop-windows
             paths: |
@@ -58,6 +59,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - uses: oven-sh/setup-bun@v1
         with:
@@ -87,8 +90,8 @@ jobs:
       - name: Package (electron-builder)
         working-directory: ${{ matrix.workdir }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder ${{ matrix.package_args }} --publish always
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: bun run package:ci -- ${{ matrix.package_args }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -104,17 +107,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
-      - name: Verify RELEASE_NOTES.md
+      - name: Verify versioned release notes
         run: |
-          test -f RELEASE_NOTES.md
-          head -n 5 RELEASE_NOTES.md
+          test -f "${RELEASE_NOTES_PATH}"
+          head -n 5 "${RELEASE_NOTES_PATH}"
 
-      - name: Update Release Body
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TAG }}
-          body_path: RELEASE_NOTES.md
+          body_path: ${{ env.RELEASE_NOTES_PATH }}
+          files: release-assets/*
+          fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
