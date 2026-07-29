@@ -57,11 +57,25 @@ describe('isProjectLocalReadOnlyBash', () => {
     expect(isProjectLocalReadOnlyBash('find ~ -name ".ssh"', cwd)).toBe(false)
   })
 
-  test('危险结构 → 拒绝（即使路径在 cwd 内）', () => {
+  test('写结构 → 拒绝（即使路径在 cwd 内）', () => {
     expect(isProjectLocalReadOnlyBash('cat README.md > /tmp/out', cwd)).toBe(false)
     expect(isProjectLocalReadOnlyBash('find . -exec rm {} \\;', cwd)).toBe(false)
     expect(isProjectLocalReadOnlyBash('find . -delete', cwd)).toBe(false)
     expect(isProjectLocalReadOnlyBash('cat file | tee /tmp/x', cwd)).toBe(false)
+  })
+
+  test('只读管道 / 串联 → 放行（| 与 && 本身不写盘）', () => {
+    expect(isProjectLocalReadOnlyBash('ls | head', cwd)).toBe(true)
+    expect(isProjectLocalReadOnlyBash('cat README.md | head -20', cwd)).toBe(true)
+    expect(isProjectLocalReadOnlyBash('cd src && ls', cwd)).toBe(true)
+    expect(isProjectLocalReadOnlyBash('find . -type f | head', cwd)).toBe(true)
+  })
+
+  test('Windows 项目内只读 → 放行', () => {
+    expect(isProjectLocalReadOnlyBash('dir /s', cwd)).toBe(true)
+    expect(isProjectLocalReadOnlyBash('type package.json', cwd)).toBe(true)
+    expect(isProjectLocalReadOnlyBash('Get-ChildItem -Recurse', cwd)).toBe(true)
+    expect(isProjectLocalReadOnlyBash('Get-Content README.md', cwd)).toBe(true)
   })
 
   test('echo 无重定向 → 放行', () => {
@@ -97,6 +111,13 @@ describe('isProjectLocalReadOnlyBash', () => {
 describe('isAutoModeAutoAllowTool（带 cwd）', () => {
   const cwd = 'F:/TAgent_General'
 
+  test('Read / Glob / Grep → 永远静默放行（读操作默认授权）', () => {
+    expect(isAutoModeAutoAllowTool('Read', { path: 'any' }, cwd)).toBe(true)
+    expect(isAutoModeAutoAllowTool('Glob', { pattern: '**/*' }, cwd)).toBe(true)
+    expect(isAutoModeAutoAllowTool('Grep', { pattern: 'foo' }, cwd)).toBe(true)
+    expect(isAutoModeAutoAllowTool('Read', { path: '/etc/passwd' })).toBe(true)
+  })
+
   test('Bash cat cwd 内文件 → 静默放行', () => {
     expect(isAutoModeAutoAllowTool('Bash', { command: 'cat README.md' }, cwd)).toBe(true)
     expect(isAutoModeAutoAllowTool('Bash', { command: 'cat F:/TAgent_General/x.ts' }, cwd)).toBe(
@@ -104,13 +125,19 @@ describe('isAutoModeAutoAllowTool（带 cwd）', () => {
     )
   })
 
+  test('Bash 只读管道 → 静默放行', () => {
+    expect(isAutoModeAutoAllowTool('Bash', { command: 'ls | head' }, cwd)).toBe(true)
+    expect(isAutoModeAutoAllowTool('Bash', { command: 'find . -type f | head' }, cwd)).toBe(true)
+  })
+
   test('Bash cat cwd 外文件 → 需确认', () => {
     expect(isAutoModeAutoAllowTool('Bash', { command: 'cat /etc/passwd' }, cwd)).toBe(false)
     expect(isAutoModeAutoAllowTool('Bash', { command: 'cat ~/.ssh/id_rsa' }, cwd)).toBe(false)
   })
 
-  test('不传 cwd 时保持原有行为（cat 需确认）', () => {
+  test('不传 cwd 时保持原有行为（cat 需确认；ls 全局安全仍放行）', () => {
     expect(isAutoModeAutoAllowTool('Bash', { command: 'cat README.md' })).toBe(false)
+    expect(isAutoModeAutoAllowTool('Bash', { command: 'ls' })).toBe(true)
   })
 
   test('Write 即使在 cwd 内也需确认（设计如此，避免误改代码）', () => {

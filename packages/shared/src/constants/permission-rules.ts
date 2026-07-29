@@ -7,9 +7,9 @@ import type { TAgentPermissionMode } from '../types/agent'
  * 用于智能模式下的自动允许/询问判断。
  */
 
-/** 始终安全的工具（免询问） */
+/** 始终安全的工具（免询问）— 读文件/搜索/信息查询，不写盘 */
 export const SAFE_TOOLS: readonly string[] = [
-  'Read', // 文件读取
+  'Read', // 文件读取（项目内读操作默认放行）
   'Glob', // 文件名搜索
   'Grep', // 内容搜索
   'WebSearch', // 网络搜索
@@ -20,33 +20,34 @@ export const SAFE_TOOLS: readonly string[] = [
   // 注意：AskUserQuestion 不在此列表 — 由 canUseTool 拦截并展示交互式 UI
 ]
 
-/** 安全的 Bash 命令模式（只读操作） */
+/** 安全的 Bash 命令模式（全局只读，不依赖 cwd） */
 export const SAFE_BASH_PATTERNS: readonly RegExp[] = [
-  /^git\s+(status|log|diff|show|branch|remote|tag)\b/,
-  /^ls\b/,
-  /^head\b/,
-  /^tail\b/,
-  /^grep\b/,
-  /^rg\b/,
-  /^which\b/,
-  /^pwd$/,
-  /^env$/,
-  /^whoami$/,
-  /^uname\b/,
-  /^tree\b/,
-  /^wc\b/,
-  /^file\b/,
-  /^stat\b/,
-  /^du\b/,
-  /^df\b/,
-  /^node\s+--version$/,
-  /^bun\s+--version$/,
-  /^npm\s+(list|ls|view|info|outdated)\b/,
-  /^bun\s+(pm\s+ls)\b/,
-  // 注意：cat/echo/find 不在此列表中
-  // - cat 可读取敏感文件（~/.ssh/id_rsa 等）
-  // - echo 可通过重定向写入文件
-  // - find 的 -exec/-delete 可执行任意命令/删除文件
+  /^git\s+(status|log|diff|show|branch|remote|tag)\b/i,
+  /^ls\b/i,
+  /^head\b/i,
+  /^tail\b/i,
+  /^grep\b/i,
+  /^rg\b/i,
+  /^which\b/i,
+  /^where\b/i, // Windows where.exe / PowerShell where 别名（只读定位）
+  /^pwd$/i,
+  /^env$/i,
+  /^whoami$/i,
+  /^uname\b/i,
+  /^tree\b/i,
+  /^wc\b/i,
+  /^file\b/i,
+  /^stat\b/i,
+  /^du\b/i,
+  /^df\b/i,
+  /^node\s+--version$/i,
+  /^bun\s+--version$/i,
+  /^npm\s+(list|ls|view|info|outdated)\b/i,
+  /^bun\s+(pm\s+ls)\b/i,
+  // Windows 只读列举
+  /^dir\b/i,
+  // 注意：cat/echo/find/type/Get-Content 不在此列表（可触达 cwd 外）
+  // 这些走 isProjectLocalReadOnlyBash（必须带 cwd 且路径在项目内）
 ]
 
 /**
@@ -207,13 +208,29 @@ export function hasWriteStructure(command: string): boolean {
   return false
 }
 
+/** 按 | / && / ; 拆分复合命令段（引号内不拆——MVP 足够覆盖分析目录常见写法） */
+function splitShellSegments(command: string): string[] {
+  return command
+    .split(/(?:\||&&|;)/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
 /**
- * 判断 Bash 命令是否匹配安全模式
+ * 判断 Bash 命令是否匹配安全模式（全局只读）。
+ * 允许纯只读段的管道/串联（如 `ls | head`），禁止写结构。
  */
 export function isSafeBashCommand(command: string): boolean {
   const trimmed = command.trim()
-  if (hasDangerousStructure(trimmed)) return false
-  return SAFE_BASH_PATTERNS.some((pattern) => pattern.test(trimmed))
+  if (!trimmed) return false
+  if (hasWriteStructure(trimmed)) return false
+  if (isDangerousCommand(trimmed)) return false
+  const segments = splitShellSegments(trimmed)
+  if (segments.length === 0) return false
+  return segments.every(
+    (seg) =>
+      !isDangerousCommand(seg) && SAFE_BASH_PATTERNS.some((pattern) => pattern.test(seg)),
+  )
 }
 
 /**
@@ -304,30 +321,47 @@ export const AUTO_MODE_READ_ONLY_TOOLS: readonly string[] = [
   'ReadMcpResourceTool',
 ]
 
-/** 项目内只读 Bash 命令模式（auto 模式下，cwd 内 + 只读 → 免询问） */
+/**
+ * 项目内只读 Bash 命令模式（auto 模式下，cwd 内 + 只读 → 免询问）。
+ * 含 Unix 与 Windows 常见读操作（分析目录时 Pi 常走 Bash 而非 Read）。
+ */
 const PROJECT_LOCAL_READ_ONLY_BASH_PATTERNS: readonly RegExp[] = [
-  /^cat\b/,
-  /^find\b/,
-  /^echo\b/,
-  /^sed\s+-n\b/, // sed -n 静默打印（无 -i 原地编辑）
-  /^awk\b/,
-  /^sort\b/,
-  /^uniq\b/,
-  /^cut\b/,
-  /^tr\b/,
-  /^diff\b/,
-  /^grep\b/,
-  /^rg\b/,
-  /^head\b/,
-  /^tail\b/,
-  /^wc\b/,
-  /^file\b/,
-  /^stat\b/,
-  /^tree\b/,
-  /^du\b/,
-  /^df\b/,
-  /^ls\b/,
-  /^pwd$/,
+  // Unix / Git Bash
+  /^cat\b/i,
+  /^find\b/i,
+  /^echo\b/i,
+  /^sed\s+-n\b/i, // sed -n 静默打印（无 -i 原地编辑）
+  /^awk\b/i,
+  /^sort\b/i,
+  /^uniq\b/i,
+  /^cut\b/i,
+  /^tr\b/i,
+  /^diff\b/i,
+  /^grep\b/i,
+  /^rg\b/i,
+  /^head\b/i,
+  /^tail\b/i,
+  /^wc\b/i,
+  /^file\b/i,
+  /^stat\b/i,
+  /^tree\b/i,
+  /^du\b/i,
+  /^df\b/i,
+  /^ls\b/i,
+  /^pwd$/i,
+  /^cd\b/i, // 仅切换目录；与后续只读段串联时常见（`cd src && ls`）
+  // Windows cmd / PowerShell 只读
+  /^dir\b/i,
+  /^type\b/i,
+  /^Get-ChildItem\b/i,
+  /^gci\b/i,
+  /^Get-Content\b/i,
+  /^gc\b/i,
+  /^Get-Item\b/i,
+  /^gi\b/i,
+  /^Select-String\b/i,
+  /^Get-Location\b/i,
+  /^gl\b/i,
 ]
 
 /**
@@ -338,10 +372,14 @@ const PROJECT_LOCAL_READ_ONLY_BASH_PATTERNS: readonly RegExp[] = [
  * - 相对路径（`./foo`、`foo.txt`）→ 视为 cwd 内
  */
 function isPathOutsideCwd(token: string, cwd: string): boolean {
-  const isAbsolute = token.startsWith('/') || token.startsWith('~') || /^[a-zA-Z]:[\\/]/.test(token)
-  if (!isAbsolute && !token.startsWith('..')) return false
+  // 去掉常见引号包裹
+  const raw = token.replace(/^['"]|['"]$/g, '')
+  if (!raw) return false
+  const isAbsolute =
+    raw.startsWith('/') || raw.startsWith('~') || /^[a-zA-Z]:[\\/]/.test(raw)
+  if (!isAbsolute && !raw.startsWith('..')) return false
   const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/$/, '')
-  const normalizedToken = token.replace(/\\/g, '/')
+  const normalizedToken = raw.replace(/\\/g, '/')
   // 以 cwd 为前缀（含等价）视为 cwd 内
   if (
     normalizedToken === normalizedCwd ||
@@ -355,45 +393,80 @@ function isPathOutsideCwd(token: string, cwd: string): boolean {
   return true
 }
 
-/**
- * 判断 Bash 命令是否为「项目内只读」（cwd 内 + 只读命令 + 无危险结构）
- *
- * 用于 auto 模式下免询问放行。检查三道关：
- * 1. 必须提供 cwd（否则无法判断路径边界，保守拒绝）
- * 2. hasDangerousStructure 必须为 false（无重定向、无管道危险命令、无 -exec/-delete）
- * 3. 命令必须匹配只读模式（cat/find/echo 等）
- * 4. 命令参数没有访问 cwd 外路径（绝对路径必须以 cwd 为前缀；父目录 `..` 视为越界）
- */
-export function isProjectLocalReadOnlyBash(command: string, cwd?: string): boolean {
-  const trimmed = command.trim()
-  if (!cwd) return false // 未提供 cwd 无法判断路径边界，保守拒绝
-  if (hasDangerousStructure(trimmed)) return false
-  if (!PROJECT_LOCAL_READ_ONLY_BASH_PATTERNS.some((p) => p.test(trimmed))) return false
+/** 单段命令：是否匹配项目内只读模式 + 路径均在 cwd 内 */
+function isProjectLocalReadOnlySegment(segment: string, cwd: string): boolean {
+  const trimmed = segment.trim()
+  if (!trimmed) return false
+  if (isDangerousCommand(trimmed)) return false
+  const matchesPattern =
+    PROJECT_LOCAL_READ_ONLY_BASH_PATTERNS.some((p) => p.test(trimmed)) ||
+    SAFE_BASH_PATTERNS.some((p) => p.test(trimmed))
+  if (!matchesPattern) return false
   const tokens = trimmed.split(/\s+/).slice(1) // 跳过命令本身
   for (const token of tokens) {
     if (!token) continue
-    if (token.startsWith('-')) continue // 跳过选项
+    // Unix 选项：-la / --help（//UNC 不跳过）
+    if (token.startsWith('-') && !token.startsWith('//')) continue
+    // Windows 开关：/s /b /ah（单段字母数字，不是 /etc/passwd 这类绝对路径）
+    if (/^\/[a-zA-Z0-9]+$/i.test(token)) continue
     if (isPathOutsideCwd(token, cwd)) return false
   }
   return true
 }
 
 /**
- * 自动审批模式下是否可静默放行（只读查询 + 安全 Bash + 项目内只读 Bash）
+ * 判断 Bash 命令是否为「项目内只读」（cwd 内 + 只读命令）
  *
- * 其余工具（写文件、MCP 变更、子任务、定时唤醒等）一律走 PermissionBanner。
+ * 用于 auto 模式下免询问放行。规则：
+ * 1. 必须提供 cwd（否则无法判断路径边界，保守拒绝）
+ * 2. 无写结构（重定向 / $() / -exec / -delete）
+ * 3. 每一段（| / && / ; 拆分）均为只读模式
+ * 4. 参数路径不越出 cwd（绝对路径必须以 cwd 为前缀；`..` 视为越界）
  *
- * @param cwd 可选，传入会话 cwd 后会扩展放行「项目内只读 Bash」（如 cat/find/echo cwd 内文件）
+ * 注意：管道与 && 本身不视为危险（`ls | head`、`cd src && ls` 可放行）。
+ */
+export function isProjectLocalReadOnlyBash(command: string, cwd?: string): boolean {
+  const trimmed = command.trim()
+  if (!cwd) return false // 未提供 cwd 无法判断路径边界，保守拒绝
+  if (!trimmed) return false
+  if (hasWriteStructure(trimmed)) return false
+  if (isDangerousCommand(trimmed)) return false
+  const segments = splitShellSegments(trimmed)
+  if (segments.length === 0) return false
+  return segments.every((seg) => isProjectLocalReadOnlySegment(seg, cwd))
+}
+
+/**
+ * 自动审批模式下是否可静默放行
+ *
+ * - Read / Glob / Grep 等 SAFE_TOOLS：永远静默放行（读操作默认授权）
+ * - 安全 Bash（ls/git status 等）
+ * - 项目内只读 Bash（cat/find/type/dir… 且路径在 cwd 内）
+ *
+ * 其余工具（写文件、危险命令、MCP 变更等）走 PermissionBanner。
+ *
+ * @param cwd 可选，传入会话 cwd 后会扩展放行「项目内只读 Bash」
  */
 export function isAutoModeAutoAllowTool(
   toolName: string,
   input: Record<string, unknown>,
-  cwd?: string
+  cwd?: string,
 ): boolean {
-  if (SAFE_TOOLS.includes(toolName)) return true
-  if (AUTO_MODE_READ_ONLY_TOOLS.includes(toolName)) return true
-  if (isAutomationReadTool(toolName)) return true
-  if (toolName === 'Bash') {
+  // 工具名大小写不敏感（防止模型/适配层变体）
+  const name =
+    toolName === 'bash' || toolName === 'BASH'
+      ? 'Bash'
+      : toolName.length > 0
+        ? toolName[0]!.toUpperCase() + toolName.slice(1)
+        : toolName
+
+  if (SAFE_TOOLS.includes(name) || SAFE_TOOLS.includes(toolName)) return true
+  if (AUTO_MODE_READ_ONLY_TOOLS.includes(name) || AUTO_MODE_READ_ONLY_TOOLS.includes(toolName)) {
+    return true
+  }
+  if (isAutomationReadTool(toolName) || isAutomationReadTool(name)) return true
+
+  if (name === 'Bash' || toolName === 'Bash') {
     const command = typeof input.command === 'string' ? input.command : ''
     if (isSafeBashCommand(command)) return true
     if (cwd && isProjectLocalReadOnlyBash(command, cwd)) return true
