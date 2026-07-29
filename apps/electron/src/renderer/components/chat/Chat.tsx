@@ -353,42 +353,75 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   ): DisplayItem =>
     existing ? { ...existing, taskCard: card } : { key: `task${itemIdxRef.current++}`, taskCard: card }
 
+  /**
+   * 清掉纯流式占位（无 message / 任务卡 / 压缩行）。
+   * 落盘 sdk_message 后必须 purge，否则会与最终正文叠成双份。
+   */
+  const purgeStreamingItems = (prev: DisplayItem[]): DisplayItem[] =>
+    prev.filter((it) => Boolean(it.message || it.taskCard || it.compactStatus))
+
+  const upsertStreamItem = (
+    prev: DisplayItem[],
+    patch: Partial<Pick<DisplayItem, 'streamingText' | 'streamingThinking'>>,
+  ): DisplayItem[] => {
+    const base = purgeStreamingItems(prev)
+    const existing = streamingRef.current
+    const inList = existing ? prev.some((it) => it.key === existing.key && it.streaming) : false
+    if (!inList || !existing) {
+      const created: DisplayItem = {
+        key: `s${itemIdxRef.current++}`,
+        streaming: true,
+        streamingText: patch.streamingText ?? '',
+        streamingThinking: patch.streamingThinking ?? '',
+      }
+      streamingRef.current = created
+      return [...base, created]
+    }
+    const next: DisplayItem = {
+      ...existing,
+      streaming: true,
+      streamingText:
+        patch.streamingText !== undefined ? patch.streamingText : existing.streamingText,
+      streamingThinking:
+        patch.streamingThinking !== undefined
+          ? patch.streamingThinking
+          : existing.streamingThinking,
+    }
+    streamingRef.current = next
+    return prev.map((it) => (it.key === existing.key ? next : it))
+  }
+
   const handlePayload = (p: TAgentDesktopStreamPayload): void => {
     if (p.kind === 'sdk_message') {
-      if (streamingRef.current) {
-        streamingRef.current = null
-      }
+      streamingRef.current = null
       // assistant.usage 更新底栏（Pi）；kscc 圆环不展示，但状态可写无害
       if (p.message.type === 'assistant' && p.message.usage) {
         applyUsage(p.message.usage)
       }
-      setItems((prev) => [...prev, { key: `m${itemIdxRef.current++}`, message: p.message }])
+      // 有落盘消息就换掉流式占位，只保留一条时间线
+      setItems((prev) => [
+        ...purgeStreamingItems(prev),
+        { key: `m${itemIdxRef.current++}`, message: p.message },
+      ])
     } else if (p.kind === 'result') {
       if (p.usage) applyUsage(p.usage)
       streamingRef.current = null
+      setItems((prev) => purgeStreamingItems(prev))
       setRunning(false)
       bumpRefresh()
     } else if (p.kind === 'stream_text_delta') {
       setItems((prev) => {
-        let stream = streamingRef.current
-        if (!stream) {
-          stream = { key: `s${itemIdxRef.current++}`, streaming: true, streamingText: '' }
-          streamingRef.current = stream
-          return [...prev, stream]
-        }
-        stream.streamingText = (stream.streamingText ?? '') + p.text
-        return [...prev]
+        const cur = streamingRef.current
+        const prevText =
+          cur && prev.some((it) => it.key === cur.key) ? (cur.streamingText ?? '') : ''
+        return upsertStreamItem(prev, { streamingText: prevText + p.text })
       })
     } else if (p.kind === 'stream_thinking_delta') {
       setItems((prev) => {
-        let stream = streamingRef.current
-        if (!stream) {
-          stream = { key: `s${itemIdxRef.current++}`, streaming: true, streamingThinking: '' }
-          streamingRef.current = stream
-          return [...prev, stream]
-        }
-        stream.streamingThinking = (stream.streamingThinking ?? '') + p.text
-        return [...prev]
+        const cur = streamingRef.current
+        const prevThink =
+          cur && prev.some((it) => it.key === cur.key) ? (cur.streamingThinking ?? '') : ''
+        return upsertStreamItem(prev, { streamingThinking: prevThink + p.text })
       })
     } else if (p.kind === 'tagent_event') {
       const evt = p.event as {
@@ -403,6 +436,7 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
       }
       if (evt.type === 'turn_end') {
         streamingRef.current = null
+        setItems((prev) => purgeStreamingItems(prev))
         setRunning(false)
         bumpRefresh()
       } else if (evt.type === 'session_error') {

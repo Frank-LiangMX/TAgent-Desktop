@@ -170,7 +170,7 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
   let isStreaming = turn.isStreaming
   let modelId = turn.modelId
 
-  // 先收集 tool_result
+  // 先收集 tool_result；流式文本只取「仍在 streaming 的占位项」的最新一份（勿拼接多份）
   for (const item of turn.items) {
     if (item.message?.type === 'user') {
       for (const b of item.message.content) {
@@ -180,10 +180,12 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
         }
       }
     }
-    if (item.streamingText) streamingText = (streamingText ?? '') + item.streamingText
-    // streaming 项可能覆盖式累积，取最后非空
-    if (item.streamingThinking) streamingThinking = item.streamingThinking
-    if (item.streaming) isStreaming = true
+    if (item.streaming) {
+      isStreaming = true
+      // 覆盖式取最新，禁止 += 把同一占位或残留占位拼成双份
+      if (item.streamingText != null) streamingText = item.streamingText
+      if (item.streamingThinking != null) streamingThinking = item.streamingThinking
+    }
     if (!modelId && item.message?.type === 'assistant') {
       modelId = item.message.modelId
     }
@@ -253,14 +255,64 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
     process.length = 0
   }
 
+  // 合并/去重交付文本：多段 assistant 可能带前缀重复，只保留非前缀的最长序列
+  const dedupedAnswers = dedupeAnswerTexts(answerTexts)
+  const answerJoined = dedupedAnswers.join('\n\n').trim()
+
+  // 流式 thinking 并入过程区（不在回答区再开一块「思考了几秒」）
+  if (isStreaming && streamingThinking?.trim()) {
+    const already = process.some(
+      (p) => p.type === 'thinking' && p.thinking.trim() === streamingThinking.trim(),
+    )
+    if (!already) {
+      process.push({
+        type: 'thinking',
+        key: 'stream-thinking',
+        thinking: streamingThinking,
+      })
+    }
+  }
+
+  // 回答区与流式正文互斥：有落盘回答就只显示落盘；否则只显示流式
+  // 若流式正文已被某段落盘回答包含（或相等），丢弃流式，防双份
+  const streamText = streamingText?.trim() ?? ''
+  const streamDupesAnswer =
+    streamText.length > 0 &&
+    (answerJoined === streamText ||
+      answerJoined.includes(streamText) ||
+      streamText.includes(answerJoined))
+  const showStreamAnswer = isStreaming && streamText.length > 0 && !streamDupesAnswer && !answerJoined
+  const finalAnswers = answerJoined ? [answerJoined] : []
+
   return {
     modelId,
     process,
-    answerTexts,
-    isStreaming,
-    streamingText,
-    streamingThinking,
+    answerTexts: finalAnswers,
+    isStreaming: isStreaming && !answerJoined,
+    streamingText: showStreamAnswer ? streamText : undefined,
+    // 思考已进 process，回答区不再单独带 streamingThinking
+    streamingThinking: undefined,
   }
+}
+
+/** 去掉完全相同或被更长段包含的前缀重复（流式分段落盘常见） */
+export function dedupeAnswerTexts(texts: string[]): string[] {
+  const cleaned = texts.map((t) => t.trim()).filter(Boolean)
+  if (cleaned.length <= 1) return cleaned
+
+  const result: string[] = []
+  for (const t of cleaned) {
+    // 若已被已有更长文本包含，跳过
+    if (result.some((r) => r === t || r.includes(t))) continue
+    // 若当前更长且包含某条旧的，替换掉旧的
+    for (let i = result.length - 1; i >= 0; i--) {
+      if (t.includes(result[i]!) && t !== result[i]) {
+        result.splice(i, 1)
+      }
+    }
+    result.push(t)
+  }
+  return result
 }
 
 function getTrailingTextStart(blocks: TAgentContentBlock[]): number | null {

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { TAgentMessage } from '@tagent/shared'
 import {
   buildTurnPresentation,
+  dedupeAnswerTexts,
   groupItemsIntoTurns,
   isRealUserInput,
   isToolResultOnlyUser,
@@ -164,5 +165,53 @@ describe('buildTurnPresentation', () => {
     expect(s.toolCount).toBe(3)
     expect(s.toolNames).toEqual(['Read', 'Bash'])
     expect(s.label).toContain('3 次工具调用')
+  })
+
+  test('does not stack streamingText on top of finalized answer', () => {
+    const items: TurnSourceItem[] = [
+      {
+        key: 's1',
+        streaming: true,
+        streamingText: '完整回答内容',
+      },
+      {
+        key: 'a1',
+        message: assistantText('m', '完整回答内容'),
+      },
+    ]
+    const turns = groupItemsIntoTurns(items)
+    const turn = turns[0]
+    expect(turn?.kind).toBe('assistant-turn')
+    if (turn?.kind !== 'assistant-turn') return
+    const pres = buildTurnPresentation(turn)
+    expect(pres.answerTexts).toEqual(['完整回答内容'])
+    expect(pres.streamingText).toBeUndefined()
+    expect(pres.isStreaming).toBe(false)
+  })
+
+  test('merges multi answer segments into one string', () => {
+    const items: TurnSourceItem[] = [
+      {
+        key: 'a1',
+        message: assistantMixed('m', [
+          { type: 'text', text: '第一段' },
+          { type: 'text', text: '第二段' },
+        ]),
+      },
+    ]
+    const turns = groupItemsIntoTurns(items)
+    const turn = turns[0]
+    if (turn?.kind !== 'assistant-turn') throw new Error('expected turn')
+    const pres = buildTurnPresentation(turn)
+    expect(pres.answerTexts).toHaveLength(1)
+    expect(pres.answerTexts[0]).toContain('第一段')
+    expect(pres.answerTexts[0]).toContain('第二段')
+  })
+})
+
+describe('dedupeAnswerTexts', () => {
+  test('drops exact duplicates and prefixes', () => {
+    expect(dedupeAnswerTexts(['你好', '你好', '你好世界'])).toEqual(['你好世界'])
+    expect(dedupeAnswerTexts(['完整', '完整'])).toEqual(['完整'])
   })
 })

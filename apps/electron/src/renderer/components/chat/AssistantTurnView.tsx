@@ -1,18 +1,16 @@
 /**
- * AssistantTurnView — 一轮助手 turn 的干净主线
+ * AssistantTurnView — 一轮助手主线
  *
- * - 模型铭牌只在顶部出现一次
- * - 工具 / 思考收进 ProcessGroupView
- * - 最终回答 + 流式输出在过程组外
+ * 布局（尽量简单）：
+ * 1. 模型铭牌 ×1
+ * 2. 过程一行（工具 + 思考，默认折叠）
+ * 3. 一段回答：要么落盘正文，要么流式正文（互斥，绝不两份叠）
  */
 import {
   Message,
   MessageContent,
   MessageLoading,
   MessageResponse,
-  Reasoning,
-  ReasoningContent,
-  ReasoningTrigger,
 } from '@tagent/ui'
 import { ProcessGroupView } from './ProcessGroupView'
 import {
@@ -26,7 +24,6 @@ interface AssistantTurnViewProps {
 }
 
 export function AssistantTurnView({ turn }: AssistantTurnViewProps): JSX.Element {
-  // 子代理消息仍走 MessageView 折叠（独立 item）
   const subagentItems = turn.items.filter(
     (it) => it.message?.type === 'assistant' && it.message.parentToolUseId,
   )
@@ -34,6 +31,16 @@ export function AssistantTurnView({ turn }: AssistantTurnViewProps): JSX.Element
     (it) => !(it.message?.type === 'assistant' && it.message.parentToolUseId),
   )
   const presentation = buildTurnPresentation({ ...turn, items: mainItems })
+
+  const answerText =
+    presentation.answerTexts[0] ??
+    (presentation.isStreaming ? presentation.streamingText : undefined)
+
+  const showAnswerShell =
+    Boolean(answerText?.trim()) ||
+    (presentation.isStreaming &&
+      presentation.process.length === 0 &&
+      !answerText)
 
   return (
     <div className="agent-turn flex flex-col gap-3">
@@ -50,7 +57,6 @@ export function AssistantTurnView({ turn }: AssistantTurnViewProps): JSX.Element
         </div>
       )}
 
-      {/* 子代理卡片（如有） */}
       {subagentItems.map((it) =>
         it.message ? (
           <div key={it.key}>
@@ -59,32 +65,14 @@ export function AssistantTurnView({ turn }: AssistantTurnViewProps): JSX.Element
         ) : null,
       )}
 
-      {(presentation.answerTexts.length > 0 ||
-        presentation.isStreaming ||
-        presentation.streamingText ||
-        presentation.streamingThinking) && (
+      {showAnswerShell && (
         <Message from="assistant">
           <MessageContent>
-            {presentation.answerTexts.map((text, i) => (
-              <MessageResponse key={`ans-${i}`}>{text}</MessageResponse>
-            ))}
-
-            {presentation.isStreaming && presentation.streamingThinking && (
-              <Reasoning isStreaming defaultOpen>
-                <ReasoningTrigger />
-                <ReasoningContent>{presentation.streamingThinking}</ReasoningContent>
-              </Reasoning>
+            {answerText?.trim() ? (
+              <MessageResponse>{answerText}</MessageResponse>
+            ) : (
+              <MessageLoading />
             )}
-
-            {presentation.isStreaming && presentation.streamingText && (
-              <MessageResponse>{presentation.streamingText}</MessageResponse>
-            )}
-
-            {presentation.isStreaming &&
-              !presentation.streamingText &&
-              !presentation.streamingThinking &&
-              presentation.process.length === 0 &&
-              presentation.answerTexts.length === 0 && <MessageLoading />}
           </MessageContent>
         </Message>
       )}
