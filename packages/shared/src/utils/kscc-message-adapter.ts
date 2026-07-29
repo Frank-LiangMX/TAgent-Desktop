@@ -189,7 +189,31 @@ export function sdkMessageToIR(
         },
       }
     }
-    // 其他 system 消息（init / compact_boundary 等）不转译
+    // 压缩进行中 / 完成（TAgent 自研 Pi 压缩事件，形态对齐 SDK compact 文案）
+    if (subtype === 'compacting') {
+      return {
+        event: {
+          kind: 'tagent_event',
+          event: { type: 'compacting' },
+        },
+      }
+    }
+    if (subtype === 'compact_boundary') {
+      const meta = m.compact_metadata as
+        | { trigger?: 'manual' | 'auto'; pre_tokens?: number; post_tokens?: number }
+        | undefined
+      return {
+        event: {
+          kind: 'tagent_event',
+          event: {
+            type: 'compact_complete',
+            trigger: meta?.trigger,
+            tokensBefore: meta?.pre_tokens,
+          },
+        },
+      }
+    }
+    // 其他 system 消息（init 等）不转译
     return {}
   }
 

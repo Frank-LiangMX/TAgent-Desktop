@@ -159,6 +159,14 @@ const electronAPI = {
   // 热切换指定会话的权限模式（持久化 meta + 通知运行时）
   setSessionPermissionMode: (sessionId: string, mode: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_PERMISSION_MODE, { sessionId, mode }) as Promise<{ ok: boolean; error?: string }>,
+  /** 手动压缩会话上下文（Pi 核；需会话已在本机启动） */
+  compactSession: (sessionId: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.COMPACT_SESSION, { sessionId }) as Promise<{
+      ok: boolean
+      compacted: boolean
+      reason?: string
+      tokensBefore?: number
+    }>,
   /**
    * 系统是否深色（主进程 nativeTheme.shouldUseDarkColors）。
    * 渲染层「跟随系统」应信这个，不要只靠 matchMedia。

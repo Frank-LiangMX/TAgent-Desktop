@@ -68,6 +68,20 @@ export interface AgentProviderAdapter {
   /** 获取当前会话 Context 分项占用（可选，仅 Claude Agent SDK 支持） */
   getContextUsage?(sessionId: string): Promise<import('@tagent/shared').ContextUsageSnapshot>
   /**
+   * 压缩会话上下文（可选，Pi 核实现）。
+   * force=true 时忽略自动阈值（手动压缩 / prompt_too_long 重试）。
+   */
+  compactSession?(
+    sessionId: string,
+    options?: { force?: boolean; trigger?: 'auto' | 'manual' },
+  ): Promise<{
+    ok: boolean
+    compacted: boolean
+    reason?: string
+    tokensBefore?: number
+    summary?: string
+  }>
+  /**
    * 后台刷新 Context 分项缓存（stale-while-revalidate 的 revalidate 部分）。
    * 由 orchestrator 在 getContextUsage 返回缓存后 fire-and-forget 调用，
    * 刷新完成后 orchestrator 通过 IPC 通知渲染进程重新获取（命中刚更新的缓存）。

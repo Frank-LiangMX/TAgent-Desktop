@@ -111,6 +111,13 @@ declare global {
       respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) => void
       // 热切换会话权限模式
       setSessionPermissionMode: (sessionId: string, mode: string) => Promise<{ ok: boolean; error?: string }>
+      /** 手动压缩会话上下文（Pi） */
+      compactSession: (sessionId: string) => Promise<{
+        ok: boolean
+        compacted: boolean
+        reason?: string
+        tokensBefore?: number
+      }>
       /** 系统是否深色（nativeTheme） */
       getSystemDark: () => Promise<boolean>
       /** 系统明暗变化 */

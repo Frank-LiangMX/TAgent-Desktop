@@ -97,9 +97,9 @@ UI / IPC（后续 phase）
 
 ### Phase 2 — 产品完整
 
-- [ ] 手动压缩 IPC  
-- [ ] UI 分隔条 / 状态  
-- [ ] 过长自动 compact 再试  
+- [x] 手动压缩 IPC（`COMPACT_SESSION` + 输入区「压缩」按钮，仅 external）  
+- [x] UI 分隔条 / 状态（compacting + compact_complete 事件）  
+- [x] 过长自动 compact 再试（Pi `prompt` 抛错命中 prompt_too_long → force compact ×1）  
 
 ### Phase 3 — 可选增强
 

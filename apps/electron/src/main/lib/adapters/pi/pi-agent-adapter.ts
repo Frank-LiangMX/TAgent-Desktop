@@ -27,6 +27,7 @@ import type {
   SDKUserMessage,
   SDKResultMessage,
 } from '@tagent/shared'
+import { isPromptTooLongMessage } from '@tagent/shared'
 
 import type {
   AgentEvent,
@@ -121,6 +122,15 @@ export interface PiQueryOptions extends AgentQueryInput {
 
 // ===== 会话状态 =====
 
+/** 压缩资源（外部渠道创建 Agent 时缓存，供 transformContext / compactSession 复用） */
+interface SessionCompactionBundle {
+  contextWindow: number
+  settings: import('@tagent/pi-core').TagentCompactionSettings
+  piSettings: import('@earendil-works/pi-agent-core').CompactionSettings
+  models: import('@earendil-works/pi-ai').Models
+  model: Model<Api>
+}
+
 /** 单个会话的运行时状态 */
 interface SessionEntry {
   /** Pi Agent 实例 */
@@ -131,6 +141,10 @@ interface SessionEntry {
   isStreaming: boolean
   /** 当前 Agent 使用的渠道 / 模型配置 */
   channelConfig: PiAgentAdapterConfig
+  /** 外部渠道压缩资源；kscc bare 为 undefined */
+  compaction?: SessionCompactionBundle
+  /** transformContext 自动压缩时暂存的 system 事件，下一轮 query 流开头排出 */
+  pendingSystemMessages: SDKMessage[]
 }
 
 // ===== 主类 =====
@@ -262,26 +276,59 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       }
     })
 
-    // 启动对话（fire-and-forget，不 await：让 generator 并发消费 queue，
-    // 这样 prompt 期间推入的流式 delta 能被实时 yield，而不是攒到 turn 结束一次性吐出）
+    // 排出上一次 compactSession / transformContext 暂存的 system 事件（UI 压缩条）
+    if (entry.pendingSystemMessages.length > 0) {
+      const pending = entry.pendingSystemMessages.splice(0, entry.pendingSystemMessages.length)
+      for (const msg of pending) pushMessage(msg)
+    }
+
+    // 启动对话（fire-and-forget，与 generator 并发）；过长时 force compact 再试一次
     entry.isStreaming = true
-    void agent.prompt(prompt)
-      .catch((err: unknown) => {
+    void (async () => {
+      const runPrompt = async (): Promise<void> => {
+        await agent.prompt(prompt)
+      }
+      try {
+        await runPrompt()
+      } catch (err: unknown) {
         console.error(`[Pi 适配器 ${sessionId}] agent.prompt 抛错:`, err)
-        // prompt 本身失败（如 abort），转成 error result 推给 renderer
         const errorMsg = err instanceof Error ? err.message : String(err)
+        if (isPromptTooLongMessage(errorMsg) && entry.compaction) {
+          console.log(`[pi-compaction] ${sessionId} 过长错误 → force compact 后重试一次`)
+          entry.isStreaming = false
+          const cr = await this.compactSession(sessionId, { force: true, trigger: 'auto' })
+          // compactSession 写入 pending；立即排出到当前流
+          while (entry.pendingSystemMessages.length > 0) {
+            pushMessage(entry.pendingSystemMessages.shift()!)
+          }
+          if (cr.compacted) {
+            try {
+              await runPrompt()
+              return
+            } catch (err2: unknown) {
+              const msg2 = err2 instanceof Error ? err2.message : String(err2)
+              pushMessage({
+                type: 'result',
+                subtype: 'error_during_execution',
+                usage: { input_tokens: 0, output_tokens: 0 },
+                errors: [msg2],
+              } as SDKResultMessage)
+              return
+            }
+          }
+        }
         pushMessage({
           type: 'result',
           subtype: 'error_during_execution',
           usage: { input_tokens: 0, output_tokens: 0 },
           errors: [errorMsg],
         } as SDKResultMessage)
-      })
-      .finally(() => {
+      } finally {
         entry.isStreaming = false
         generatorDone = true
         wakeGenerator()
-      })
+      }
+    })()
 
     // generator: 从队列消费 SDKMessage（与 prompt 并发跑，流式 delta 实时吐）
     try {
@@ -292,29 +339,108 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           throw generatorError
         }
 
-        // 取出所有已入队消息
         const batch = queue.splice(0)
         for (const msg of batch) {
           yield msg
-
-          // result 消息表示本轮结束，但 Pi Agent 天然常驻，不释放
-          // 调用方可继续发消息（通过 sendQueuedMessage → agent.steer）
         }
 
-        // generator 已结束且队列空，退出
         if (generatorDone && queue.length === 0) {
           break
         }
       }
     } finally {
       unsubscribe()
-      // 不释放 Agent，保持常驻
     }
   }
 
   /** 查询某会话是否有活跃的 Agent 实例 */
   hasActiveChannel(sessionId: string): boolean {
     return this.sessions.has(sessionId)
+  }
+
+  /** 取出并清空 pending system 消息（手动压缩后立即推 UI） */
+  drainPendingSystemMessages(sessionId: string): SDKMessage[] {
+    const entry = this.sessions.get(sessionId)
+    if (!entry || entry.pendingSystemMessages.length === 0) return []
+    return entry.pendingSystemMessages.splice(0, entry.pendingSystemMessages.length)
+  }
+
+  /**
+   * 压缩会话上下文（手动 IPC / 过长重试）。
+   * 仅外部渠道且已有 Agent 时可用；算法走 Pi generateSummary，编排自研。
+   */
+  async compactSession(
+    sessionId: string,
+    options?: { force?: boolean; trigger?: 'auto' | 'manual' },
+  ): Promise<{
+    ok: boolean
+    compacted: boolean
+    reason?: string
+    tokensBefore?: number
+    summary?: string
+  }> {
+    const entry = this.sessions.get(sessionId)
+    if (!entry) {
+      return { ok: false, compacted: false, reason: 'no active session' }
+    }
+    // 过长重试时 force=true 且可能仍标记 isStreaming：允许强制压缩
+    if (entry.isStreaming && !options?.force) {
+      return { ok: false, compacted: false, reason: 'session is streaming' }
+    }
+    if (!entry.compaction) {
+      return { ok: false, compacted: false, reason: 'compaction not available (kscc bare or missing)' }
+    }
+    const trigger = options?.trigger ?? 'manual'
+    const force = options?.force ?? trigger === 'manual'
+    entry.pendingSystemMessages.push(makeCompactingSystemMessage(sessionId))
+    try {
+      const piCore = await loadPiCore()
+      const result = await piCore.maybeCompactMessages({
+        messages: [...entry.agent.state.messages],
+        contextWindow: entry.compaction.contextWindow,
+        settings: entry.compaction.piSettings,
+        models: entry.compaction.models,
+        model: entry.compaction.model,
+        force,
+      })
+      if (!result.compacted) {
+        entry.pendingSystemMessages.push(
+          makeCompactBoundarySystemMessage(sessionId, {
+            trigger,
+            noop: true,
+            reason: result.reason,
+            tokensBefore: result.tokensBefore,
+          }),
+        )
+        return {
+          ok: true,
+          compacted: false,
+          reason: result.reason,
+          tokensBefore: result.tokensBefore,
+        }
+      }
+      entry.agent.state.messages = result.messages
+      entry.pendingSystemMessages.push(
+        makeCompactBoundarySystemMessage(sessionId, {
+          trigger,
+          tokensBefore: result.tokensBefore,
+          summary: result.summary,
+        }),
+      )
+      console.log(
+        `[pi-compaction] ${sessionId} compactSession(${trigger}) ok tokensBefore=${result.tokensBefore}`,
+      )
+      return {
+        ok: true,
+        compacted: true,
+        tokensBefore: result.tokensBefore,
+        summary: result.summary,
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      console.error(`[pi-compaction] ${sessionId} compactSession 失败:`, err)
+      return { ok: false, compacted: false, reason }
+    }
   }
 
   /** 向活跃 Agent 注入消息（steer 模式，软中断后注入） */
@@ -446,11 +572,20 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     // transformContext 仅影响本轮请求视图，故压缩后需显式写回 state.messages（plan §4.3），
     // 并原地替换本轮视图避免同一 run 内重复压缩。
     let agentRef: AgentType | null = null
+    let entryRef: SessionEntry | null = null
     let transformContext: ((messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>) | undefined
+    let compactionBundle: SessionCompactionBundle | undefined
     if (channelConfig.type === 'external') {
       const compactionSettings = piCore.buildTagentCompactionSettings(model.contextWindow)
       const piCompactionSettings = piCore.toPiCompactionSettings(compactionSettings)
       const compactionModels = piCore.createCompactionModelsShim(streamFn, model)
+      compactionBundle = {
+        contextWindow: compactionSettings.contextWindow,
+        settings: compactionSettings,
+        piSettings: piCompactionSettings,
+        models: compactionModels,
+        model,
+      }
       transformContext = async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
         try {
           const result = await piCore.maybeCompactMessages({
@@ -462,7 +597,6 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             signal,
           })
           if (!result.compacted) {
-            // 仅对非常规跳过原因打日志（below threshold/disabled/empty 是正常不压）
             if (
               result.reason &&
               result.reason !== 'below threshold' &&
@@ -477,14 +611,19 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             `[pi-compaction] ${sessionId} 已压缩 tokensBefore=${result.tokensBefore} ` +
               `summaryLen=${result.summary?.length ?? 0} 压后消息数=${result.messages.length}`,
           )
-          // 显式写回 state（transformContext 仅影响本轮请求视图，需持久化避免下一轮再膨胀）
           if (agentRef) agentRef.state.messages = result.messages
-          // 原地替换本轮视图，避免同一 run 内重复触发压缩
+          entryRef?.pendingSystemMessages.push(
+            makeCompactingSystemMessage(sessionId),
+            makeCompactBoundarySystemMessage(sessionId, {
+              trigger: 'auto',
+              tokensBefore: result.tokensBefore,
+              summary: result.summary,
+            }),
+          )
           messages.length = 0
           messages.push(...result.messages)
           return messages
         } catch (err) {
-          // transformContext 契约：不得抛错，回退原消息
           console.error(`[pi-compaction] ${sessionId} 压缩异常，回退原消息:`, err)
           return messages
         }
@@ -508,9 +647,50 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       ...(transformContext ? { transformContext } : {}),
     } as never)
     agentRef = agent
-
-    return { agent, controller, isStreaming: false, channelConfig }
+    const entry: SessionEntry = {
+      agent,
+      controller,
+      isStreaming: false,
+      channelConfig,
+      compaction: compactionBundle,
+      pendingSystemMessages: [],
+    }
+    entryRef = entry
+    return entry
   }
+}
+
+// ===== 压缩 system 消息工厂（TAgent 自研，形态对齐 SDK compact 事件） =====
+
+function makeCompactingSystemMessage(sessionId: string): SDKMessage {
+  return {
+    type: 'system',
+    subtype: 'compacting',
+    session_id: sessionId,
+  } as unknown as SDKMessage
+}
+
+function makeCompactBoundarySystemMessage(
+  sessionId: string,
+  opts: {
+    trigger: 'auto' | 'manual'
+    tokensBefore?: number
+    summary?: string
+    noop?: boolean
+    reason?: string
+  },
+): SDKMessage {
+  return {
+    type: 'system',
+    subtype: 'compact_boundary',
+    session_id: sessionId,
+    compact_metadata: {
+      trigger: opts.trigger,
+      pre_tokens: opts.tokensBefore,
+    },
+    ...(opts.noop ? { compact_result: 'noop', message: opts.reason } : { compact_result: 'success' }),
+    ...(opts.summary ? { summary: opts.summary } : {}),
+  } as unknown as SDKMessage
 }
 
 // ===== AgentEvent → SDKMessage 转译 =====

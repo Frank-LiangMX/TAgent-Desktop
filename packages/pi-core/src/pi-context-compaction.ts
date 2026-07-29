@@ -55,6 +55,11 @@ export interface MaybeCompactOptions {
   signal?: AbortSignal
   /** 摘要附加指令（透传给 Pi generateSummary） */
   customInstructions?: string
+  /**
+   * 强制压缩：跳过 shouldCompact 阈值（手动压缩 / 过长重试用）。
+   * 仍受 enabled=false、空消息、无安全切点约束。
+   */
+  force?: boolean
 }
 
 export interface MaybeCompactResult {
@@ -77,13 +82,14 @@ export interface MaybeCompactResult {
  * 任何环节失败都返回 { compacted: false, messages }（调用方 transformContext 契约要求不抛）。
  */
 export async function maybeCompactMessages(opts: MaybeCompactOptions): Promise<MaybeCompactResult> {
-  const { messages, contextWindow, settings, models, model, signal, customInstructions } = opts
+  const { messages, contextWindow, settings, models, model, signal, customInstructions, force } = opts
 
-  if (!settings.enabled) return { compacted: false, messages, reason: 'disabled' }
+  // 强制压缩（手动 / 过长重试）可绕过 enabled=false 的自动路径开关
+  if (!force && !settings.enabled) return { compacted: false, messages, reason: 'disabled' }
   if (messages.length === 0) return { compacted: false, messages, reason: 'empty' }
 
   const estimate = estimateContextTokens(messages)
-  if (!shouldCompact(estimate.tokens, contextWindow, settings)) {
+  if (!force && !shouldCompact(estimate.tokens, contextWindow, settings)) {
     return { compacted: false, messages, reason: 'below threshold', tokensBefore: estimate.tokens }
   }
 

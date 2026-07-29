@@ -29,7 +29,11 @@ import {
   ReasoningContent,
   Button,
 } from '@tagent/ui'
-import { ArrowUp, Square } from 'lucide-react'
+import { ArrowUp, Square, Shrink } from 'lucide-react'
+import {
+  COMPACTION_IN_PROGRESS_LABEL,
+  getCompactBoundaryLabel,
+} from '@tagent/shared'
 import { MessageView } from './MessageView'
 import { ChatInput, type ChatInputHandle } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
@@ -82,6 +86,9 @@ interface DisplayItem {
   streaming?: boolean
   /** 子代理任务卡片（task_started/progress/notification 状态机，独立小卡片） */
   taskCard?: TaskCardState
+  /** 上下文压缩状态行 */
+  compactStatus?: 'compacting' | 'complete'
+  compactTrigger?: 'auto' | 'manual'
 }
 
 export function Chat({ session }: { session: SessionMeta }): JSX.Element {
@@ -328,6 +335,28 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
           },
         ])
         setRunning(false)
+      } else if (evt.type === 'compacting') {
+        setItems((prev) => [
+          ...prev,
+          {
+            key: `c${itemIdxRef.current++}`,
+            compactStatus: 'compacting' as const,
+          },
+        ])
+      } else if (evt.type === 'compact_complete') {
+        const trigger = (evt as { trigger?: 'auto' | 'manual' }).trigger
+        setItems((prev) => {
+          // 去掉进行中的占位，换成完成分隔
+          const filtered = prev.filter((it) => it.compactStatus !== 'compacting')
+          return [
+            ...filtered,
+            {
+              key: `c${itemIdxRef.current++}`,
+              compactStatus: 'complete' as const,
+              compactTrigger: trigger,
+            },
+          ]
+        })
       } else if (evt.type === 'task_started') {
         // 子代理启动：upsert 任务卡片（running），不再塞 assistant 文本气泡
         const event: TaskCardEvent = {
@@ -362,6 +391,22 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
         }
         setItems((prev) => reduceTaskEvent(prev, event, taskCardApply))
       }
+    }
+  }
+
+  const compactContext = async (): Promise<void> => {
+    try {
+      const res = await window.electronAPI.compactSession(sessionIdRef.current)
+      if (!res.ok) {
+        alert(res.reason ?? '压缩失败')
+        return
+      }
+      if (!res.compacted) {
+        alert(res.reason ?? '当前无需压缩')
+      }
+      // 成功时 compact_complete 事件由主进程流推入 items
+    } catch (err) {
+      alert(err instanceof Error ? err.message : '压缩失败')
     }
   }
 
@@ -496,6 +541,20 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
                       await window.electronAPI.updateSessionMeta(sessionId, { subagentEagerness: level })
                     }}
                   />
+                  {/* 手动压缩（Pi 核；无活跃 Agent 时主进程返回 reason） */}
+                  {!running && lockedKind === 'external' && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 gap-1 rounded-full px-2 text-[11px] text-muted-foreground"
+                      title="压缩上下文"
+                      onClick={() => void compactContext()}
+                    >
+                      <Shrink className="size-3.5" />
+                      压缩
+                    </Button>
+                  )}
                 </div>
                 <div className="flex items-center gap-1.5">
                   {running && (
@@ -533,6 +592,29 @@ function ItemView({ item }: { item: DisplayItem }): JSX.Element {
     return (
       <div data-message-id={item.key}>
         <TaskCardView card={item.taskCard} />
+      </div>
+    )
+  }
+
+  // 上下文压缩状态行
+  if (item.compactStatus === 'compacting') {
+    return (
+      <div data-message-id={item.key} className="flex items-center justify-center gap-2 py-2 text-xs text-muted-foreground">
+        <span className="size-1.5 animate-pulse rounded-full bg-primary/60" />
+        {COMPACTION_IN_PROGRESS_LABEL}
+      </div>
+    )
+  }
+  if (item.compactStatus === 'complete') {
+    return (
+      <div data-message-id={item.key} className="relative flex items-center justify-center py-2">
+        <div className="flex-1 border-t border-dashed border-muted-foreground/30" />
+        <span className="mx-3 text-xs text-muted-foreground select-none">
+          {getCompactBoundaryLabel(
+            item.compactTrigger ? { trigger: item.compactTrigger } : undefined,
+          )}
+        </span>
+        <div className="flex-1 border-t border-dashed border-muted-foreground/30" />
       </div>
     )
   }

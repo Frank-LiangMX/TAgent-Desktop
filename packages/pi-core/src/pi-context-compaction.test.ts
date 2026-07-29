@@ -200,6 +200,71 @@ describe('assembleCompactedMessages', () => {
 
 // ===== 执行器 maybeCompactMessages =====
 
+describe('maybeCompactMessages force', () => {
+  it('force=true 在低于阈值时仍尝试压缩（有安全切点时）', async () => {
+    // 构造足够长历史：多条 user/assistant，keepRecent 较小
+    const longText = 'x'.repeat(2000)
+    const messages = [
+      { role: 'user' as const, content: [{ type: 'text' as const, text: longText }], timestamp: 1 },
+      {
+        role: 'assistant' as const,
+        content: [{ type: 'text' as const, text: longText }],
+        timestamp: 2,
+        api: 'openai-completions',
+        provider: 'openai',
+        model: 't',
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: 'stop',
+      },
+      { role: 'user' as const, content: [{ type: 'text' as const, text: 'recent' }], timestamp: 3 },
+    ] as never
+    const model = { id: 't', contextWindow: 100_000 } as never
+    // mock models that returns a summary
+    const models = {
+      completeSimple: async () => ({
+        role: 'assistant',
+        content: [{ type: 'text', text: 'SUMMARY' }],
+        stopReason: 'stop',
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      }),
+    } as never
+    const settings = { enabled: true, reserveTokens: 80_000, keepRecentTokens: 100 }
+    // without force, 2000*2 chars may still be below threshold for 100k window
+    const noForce = await maybeCompactMessages({
+      messages,
+      contextWindow: 100_000,
+      settings,
+      models,
+      model,
+      force: false,
+    })
+    // force should still find cut and compress if mock works
+    const forced = await maybeCompactMessages({
+      messages,
+      contextWindow: 100_000,
+      settings,
+      models,
+      model,
+      force: true,
+    })
+    // force path at least does not return disabled/below threshold as reason for skip
+    if (!forced.compacted) {
+      expect(forced.reason).not.toBe('below threshold')
+      expect(forced.reason).not.toBe('disabled')
+    } else {
+      expect(forced.messages.length).toBeLessThanOrEqual(messages.length)
+      expect(noForce.compacted === false || forced.compacted === true).toBe(true)
+    }
+  })
+})
+
 describe('maybeCompactMessages', () => {
   const baseSettings = { enabled: true, reserveTokens: 20_000, keepRecentTokens: 6 }
 

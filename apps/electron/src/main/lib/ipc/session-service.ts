@@ -21,7 +21,7 @@ import type {
 } from '@tagent/shared'
 import { AGENT_IPC_CHANNELS } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
-import { getAdapter, type ChannelKind } from '../adapters'
+import { getAdapter, PiAgentAdapter, type ChannelKind } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
 import { sdkMessageToIR } from '@tagent/shared'
 import type { KsccQueryOptions } from '../adapters/claude/claude-agent-adapter'
@@ -173,6 +173,53 @@ export class SessionService {
     ipcMain.handle(AGENT_IPC_CHANNELS.GET_SESSION_STATUS, async (_e, id: string) => {
       return this.getStatus(id)
     })
+
+    // 手动压缩会话上下文（Pi 核；kscc 暂不支持返回 reason）
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.COMPACT_SESSION,
+      async (
+        _e,
+        args: { sessionId: string },
+      ): Promise<{ ok: boolean; compacted: boolean; reason?: string; tokensBefore?: number }> => {
+        const sessionId = args?.sessionId
+        if (!sessionId) return { ok: false, compacted: false, reason: 'missing sessionId' }
+        const meta = getSessionMeta(sessionId)
+        const channelId = meta?.channelId
+        const channel = channelId ? getChannel(channelId) : undefined
+        const kind: ChannelKind = channel?.provider === 'kscc-internal' ? 'kscc' : 'external'
+        const adapter = getAdapter(kind)
+        if (typeof adapter.compactSession !== 'function') {
+          return { ok: false, compacted: false, reason: '当前运行核不支持手动压缩' }
+        }
+        // 确保 Agent 已创建：无 runtime 时用户仅打开历史也可能未 spawn
+        if (!adapter.hasActiveChannel?.(sessionId)) {
+          return { ok: false, compacted: false, reason: '会话尚未在本机启动，请先发送一条消息' }
+        }
+        const result = await adapter.compactSession(sessionId, { force: true, trigger: 'manual' })
+        // 立即把 pending system 事件推给 UI（不等下一轮 query）
+        this.flushPiPendingSystemMessages(sessionId, adapter, meta?.workspaceId)
+        return {
+          ok: result.ok,
+          compacted: result.compacted,
+          reason: result.reason,
+          tokensBefore: result.tokensBefore,
+        }
+      },
+    )
+  }
+
+  /** 排出 Pi compactSession 暂存的 system 消息到渲染层 */
+  private flushPiPendingSystemMessages(
+    sessionId: string,
+    adapter: AgentProviderAdapter,
+    workspaceId?: string,
+  ): void {
+    const pi = adapter as PiAgentAdapter
+    if (typeof pi.drainPendingSystemMessages !== 'function') return
+    const msgs = pi.drainPendingSystemMessages(sessionId)
+    for (const msg of msgs) {
+      this.handleStreamMessage(sessionId, workspaceId, msg)
+    }
   }
 
   /**
