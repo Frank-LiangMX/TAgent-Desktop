@@ -13,7 +13,9 @@ import {
   resolveChannelDefaultModelId,
   sdkMessageToIR,
   TAGENT_DEFAULT_PERMISSION_MODE,
+  type TAgentUsage,
 } from '@tagent/shared'
+import { ContextUsageBadge, type ContextUsageSnapshotView } from './ContextUsageBadge'
 import {
   Conversation,
   ConversationContent,
@@ -106,8 +108,29 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   const [permissionMode, setPermissionMode] = useState<TAgentPermissionMode>(TAGENT_DEFAULT_PERMISSION_MODE)
   /** 子代理委派积极性（默认 conservative；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 kscc 生效） */
   const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('conservative')
+  /** 最近一轮 usage（仅外部/Pi 展示；kscc 不采信） */
+  const [contextUsage, setContextUsage] = useState<ContextUsageSnapshotView | null>(null)
+  const [isCompactingUi, setIsCompactingUi] = useState(false)
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
+
+  const applyUsage = (usage: TAgentUsage | undefined, contextWindow = 128_000): void => {
+    if (!usage || usage.inputTokens <= 0) return
+    setContextUsage((prev) => ({
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheReadTokens: usage.cacheReadTokens,
+      cacheCreationTokens: usage.cacheCreationTokens,
+      // 保留上一轮窗口，避免闪烁；首轮用默认（与 Pi 占位 Model 一致）
+      contextWindow: prev?.contextWindow && prev.contextWindow > 0 ? prev.contextWindow : contextWindow,
+    }))
+  }
+
+  // 切会话时清空占用环（Chat 若被 key 重建则多余无害）
+  useEffect(() => {
+    setContextUsage(null)
+    setIsCompactingUi(false)
+  }, [sessionId])
   const scrollContextRef = useRef<StickToBottomContext | null>(null)
   const itemIdxRef = useRef(0)
   const streamingRef = useRef<DisplayItem | null>(null)
@@ -281,7 +304,16 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
       if (streamingRef.current) {
         streamingRef.current = null
       }
+      // assistant.usage 更新底栏（Pi）；kscc 圆环不展示，但状态可写无害
+      if (p.message.type === 'assistant' && p.message.usage) {
+        applyUsage(p.message.usage)
+      }
       setItems((prev) => [...prev, { key: `m${itemIdxRef.current++}`, message: p.message }])
+    } else if (p.kind === 'result') {
+      if (p.usage) applyUsage(p.usage)
+      streamingRef.current = null
+      setRunning(false)
+      bumpRefresh()
     } else if (p.kind === 'stream_text_delta') {
       setItems((prev) => {
         let stream = streamingRef.current
@@ -304,10 +336,6 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
         stream.streamingThinking = (stream.streamingThinking ?? '') + p.text
         return [...prev]
       })
-    } else if (p.kind === 'result') {
-      streamingRef.current = null
-      setRunning(false)
-      bumpRefresh()
     } else if (p.kind === 'tagent_event') {
       const evt = p.event as {
         type: string
@@ -336,6 +364,7 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
         ])
         setRunning(false)
       } else if (evt.type === 'compacting') {
+        setIsCompactingUi(true)
         setItems((prev) => [
           ...prev,
           {
@@ -344,6 +373,7 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
           },
         ])
       } else if (evt.type === 'compact_complete') {
+        setIsCompactingUi(false)
         const trigger = (evt as { trigger?: 'auto' | 'manual' }).trigger
         setItems((prev) => {
           // 去掉进行中的占位，换成完成分隔
@@ -554,6 +584,14 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
                       <Shrink className="size-3.5" />
                       压缩
                     </Button>
+                  )}
+                  {/* Context 占用环：仅外部/Pi；kscc 占用率不可信，不展示 */}
+                  {lockedKind === 'external' && (
+                    <ContextUsageBadge
+                      usage={contextUsage}
+                      isCompacting={isCompactingUi}
+                      onCompact={() => void compactContext()}
+                    />
                   )}
                 </div>
                 <div className="flex items-center gap-1.5">

@@ -710,14 +710,24 @@ function piEventToSdkMessages(event: AgentEvent, sessionId: string): SDKMessage[
       // Agent 启动，无转录消息
       break
 
-    case 'agent_end':
-      // Agent 结束，产出 result
+    case 'agent_end': {
+      // Agent 结束：从最后一条带 usage 的 assistant 消息汇总 result.usage（供底栏 token 环）
+      const endMsgs = event.messages ?? []
+      let usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+      for (let i = endMsgs.length - 1; i >= 0; i--) {
+        const m = endMsgs[i]
+        if (m && m.role === 'assistant' && 'usage' in m && m.usage) {
+          usage = piUsageToSdk(m.usage as Usage) as typeof usage
+          break
+        }
+      }
       results.push({
         type: 'result',
         subtype: 'success',
-        usage: { input_tokens: 0, output_tokens: 0 },
+        usage,
       } as SDKResultMessage)
       break
+    }
 
     // ===== turn_start / turn_end =====
     case 'turn_start':
