@@ -26,7 +26,6 @@ import type {
 import { Button, ConversationEmptyState, TooltipProvider } from '@tagent/ui'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
 import { SettingsDialog, type SettingsTab } from './components/settings/SettingsPage'
-import { ThemeSettings } from './components/theme/ThemeSettings'
 import { AppShell } from './components/shell/AppShell'
 import { Rail } from './components/shell/Rail'
 import { TabBar } from './components/shell/TabBar'
@@ -232,9 +231,7 @@ export function App(): JSX.Element {
           <Rail
             active="chat"
             onChat={() => { if (!activeTab) newSession() }}
-            onChannels={() => openSettings('channels')}
             onSettings={() => openSettings('general')}
-            themeSlot={<ThemeSettings />}
           />
         }
         sidebar={
