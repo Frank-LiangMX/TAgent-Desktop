@@ -87,6 +87,106 @@
   padding: 4px 6px 6px;
 }
 
+/* 助手 turn：模型铭牌只在顶部一次；过程组收拢工具刷屏 */
+.agent-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.agent-turn-process {
+  border-radius: 14px;
+  background: color-mix(in srgb, hsl(var(--foreground)) 2.8%, transparent);
+  padding: 6px 8px 8px;
+}
+
+.agent-process-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-process-group__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  padding: 4px 2px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+
+.agent-process-group__toggle:hover {
+  color: hsl(var(--foreground) / 0.88);
+}
+
+.agent-process-group__live {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted-foreground) / 0.55) 0%,
+    hsl(var(--foreground) / 0.75) 45%,
+    hsl(var(--muted-foreground) / 0.55) 90%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: agent-process-shine 1.6s ease-in-out infinite;
+}
+
+@keyframes agent-process-shine {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+.agent-process-group__chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
+  background: color-mix(in srgb, hsl(var(--card)) 50%, transparent);
+  font-size: 9px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground) / 0.8);
+}
+
+.agent-process-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 2px 2px 18px;
+}
+
+.agent-process-group__row {
+  min-width: 0;
+}
+
+.agent-process-group__collapse {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--muted-foreground) / 0.55);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-process-group__collapse:hover {
+  color: hsl(var(--muted-foreground));
+}
+
 /*
  * 会话项样式（对齐 TAgent_General sidebar 会话行 + 加丰富过渡）
  * 玻璃属 sidebar 容器一层，会话项实色印在玻璃上（无 backdrop-filter 防掉帧）。

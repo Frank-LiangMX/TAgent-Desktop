@@ -38,6 +38,8 @@ import {
   getCompactBoundaryLabel,
 } from '@tagent/shared'
 import { MessageView } from './MessageView'
+import { AssistantTurnView } from './AssistantTurnView'
+import { groupItemsIntoTurns } from './session-turn-model'
 import { ChatInput, type ChatInputHandle } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
 import { PermissionModeSelector } from './PermissionModeSelector'
@@ -213,6 +215,11 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   const visibleStartOffset = Math.max(0, items.length - effectiveVisible)
   /** 虚拟化切片：尾部 effectiveVisible 条（最新在底） */
   const visibleItems = items.slice(visibleStartOffset)
+  /**
+   * 将扁平消息合成 turn：工具循环 + 中间 tool_result 合并，模型铭牌只出一次。
+   * 在虚拟化切片上分组（底栏近期完整，超长会话旧段渐进加载）。
+   */
+  const visibleTurns = useMemo(() => groupItemsIntoTurns(visibleItems), [visibleItems])
   /** scrollReady 门控：历史加载完 && 全挂完才恢复滚动位置（对齐旧版 scrollReady = ready && fullyMounted） */
   const effectiveScrollReady = scrollReady && fullyMounted
 
@@ -576,10 +583,10 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
                   <span>正在加载更早的 {items.length - effectiveVisible} 条…</span>
                 </div>
               )}
-              {visibleItems.map((item) => (
-                <ItemView key={item.key} item={item} />
+              {visibleTurns.map((turn) => (
+                <TurnView key={turn.key} turn={turn} />
               ))}
-              {running && <MessageLoading />}
+              {running && !items.some((it) => it.streaming) && <MessageLoading />}
             </div>
           )}
         </ConversationContent>
@@ -674,7 +681,26 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   )
 }
 
-/** 显示项渲染 */
+/** turn 渲染：user / assistant-turn / 独立状态行 */
+function TurnView({ turn }: { turn: ReturnType<typeof groupItemsIntoTurns>[number] }): JSX.Element {
+  if (turn.kind === 'user') {
+    return (
+      <div data-message-id={turn.key}>
+        <MessageView message={turn.message} />
+      </div>
+    )
+  }
+  if (turn.kind === 'assistant-turn') {
+    return (
+      <div data-message-id={turn.key}>
+        <AssistantTurnView turn={turn} />
+      </div>
+    )
+  }
+  return <ItemView item={turn.item as DisplayItem} />
+}
+
+/** 显示项渲染（standalone：压缩行 / 任务卡 / 兜底） */
 function ItemView({ item }: { item: DisplayItem }): JSX.Element {
   // 子代理任务卡片（task_started/progress/notification 状态机，独立小卡片）
   if (item.taskCard) {
