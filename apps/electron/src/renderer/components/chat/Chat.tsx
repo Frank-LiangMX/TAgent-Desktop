@@ -39,7 +39,11 @@ import {
 } from '@tagent/shared'
 import { MessageView } from './MessageView'
 import { AssistantTurnView } from './AssistantTurnView'
-import { groupItemsIntoTurns } from './session-turn-model'
+import {
+  buildTurnPresentation,
+  groupItemsIntoTurns,
+  isRealUserInput,
+} from './session-turn-model'
 import { ChatInput, type ChatInputHandle } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
 import { PermissionModeSelector } from './PermissionModeSelector'
@@ -173,31 +177,37 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   const bumpRefresh = useSetAtom(bumpSessionsRefreshAtom)
   const setTabs = useSetAtom(tabsAtom)
 
-  // 构造 ScrollMinimap 的 items：按 user 分组，每项 = 用户消息 + 紧随的助手回复（对齐 TAgent_General）
-  // 面板里用户气泡右对齐、助手 replyPreview 气泡左对齐。
+  /**
+   * ScrollMinimap 刻度：一轮对话一刻度。
+   * 必须用 turn 分组，且只认「真实用户输入」——
+   * tool_result 也是 type=user，若不过滤会把每个工具结果都画成刻度（过程块污染 minimap）。
+   */
   const minimapItems = useMemo<MinimapItem[]>(() => {
-    const msgs = items.filter((it) => it.message).map((it) => it.message!)
+    const turns = groupItemsIntoTurns(items)
     const result: MinimapItem[] = []
-    for (let i = 0; i < msgs.length; i++) {
-      const m = msgs[i]
-      if (!m || m.type !== 'user') continue
-      const userText = firstText(m) ?? ''
-      // 找紧随的下一条 assistant 作 replyPreview
+    for (let i = 0; i < turns.length; i++) {
+      const t = turns[i]
+      if (!t || t.kind !== 'user') continue
+      if (!isRealUserInput(t.message)) continue
+
+      const userText = firstText(t.message) ?? ''
       let replyPreview: string | undefined
       let replyModel: string | undefined
-      for (let j = i + 1; j < msgs.length; j++) {
-        const next = msgs[j]
+      for (let j = i + 1; j < turns.length; j++) {
+        const next = turns[j]
         if (!next) continue
-        if (next.type === 'user') break
-        if (next.type === 'assistant') {
-          const t = firstText(next)
-          if (t) replyPreview = t.replace(/\s+/g, ' ').trim().slice(0, 120)
-          replyModel = next.modelId
+        if (next.kind === 'user') break
+        if (next.kind === 'assistant-turn') {
+          const pres = buildTurnPresentation(next)
+          const ans = pres.answerTexts[0]?.replace(/\s+/g, ' ').trim()
+          if (ans) replyPreview = ans.slice(0, 120)
+          replyModel = next.modelId ?? pres.modelId
           break
         }
       }
       result.push({
-        id: items[i]!.key,
+        // 与 TurnView 上 data-message-id 一致，便于刻度跳转定位
+        id: t.key,
         role: 'user',
         preview: userText.slice(0, 160) || '用户消息',
         replyPreview,
