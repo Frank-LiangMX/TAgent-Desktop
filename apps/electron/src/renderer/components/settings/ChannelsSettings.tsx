@@ -14,6 +14,7 @@ import {
   Wifi,
 } from 'lucide-react'
 import {
+  AppTooltip,
   Button,
   DestructiveConfirmDialog,
   Select,
@@ -625,16 +626,20 @@ function ChannelEditor({
             <div className="channel-model-empty">同步供应商模型，或手动添加模型 ID</div>
           ) : draft.models.map((model) => (
             <div key={model.id} className="channel-model-row">
-              <button
-                type="button"
-                className={`channel-default-radio ${draft.defaultModelId === model.id ? 'channel-default-radio--active' : ''}`}
-                disabled={!model.enabled}
-                aria-label={`将 ${model.name} 设为默认模型`}
-                title={model.enabled ? '设为默认模型' : '启用后可设为默认'}
-                onClick={() => update({ defaultModelId: model.id })}
+              <AppTooltip
+                label={model.enabled ? '设为默认模型' : '启用后可设为默认'}
+                side="top"
               >
-                <span />
-              </button>
+                <button
+                  type="button"
+                  className={`channel-default-radio ${draft.defaultModelId === model.id ? 'channel-default-radio--active' : ''}`}
+                  disabled={!model.enabled}
+                  aria-label={`将 ${model.name} 设为默认模型`}
+                  onClick={() => update({ defaultModelId: model.id })}
+                >
+                  <span />
+                </button>
+              </AppTooltip>
               <div className="channel-model-copy">
                 <strong>{model.name}</strong>
                 <span>{model.id}</span>

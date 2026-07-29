@@ -5,7 +5,7 @@
  * 会话级持久化（meta.subagentEagerness），下次发送时主进程注入 kscc systemPrompt append 生效。
  * 形态对齐 PermissionModeSelector（图标 + 当前档位名 + ChevronDown + 下拉单选）。
  */
-import { Popover, PopoverTrigger, PopoverContent } from '@tagent/ui'
+import { AppTooltip, Popover, PopoverTrigger, PopoverContent } from '@tagent/ui'
 import {
   Prohibit,
   ShieldCheck,
@@ -44,22 +44,23 @@ export function SubagentEagernessSelector({
 
   return (
     <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            'flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors',
-            'text-muted-foreground hover:bg-accent hover:text-foreground',
-          )}
-          title={`子代理委派：${current.description}`}
-        >
-          <Icon className="size-3.5" weight="regular" />
-          <span className="max-w-[100px] truncate font-medium text-foreground/80">
-            子代理·{current.label}
-          </span>
-          <CaretDown className="size-3 opacity-70" weight="regular" />
-        </button>
-      </PopoverTrigger>
+      <AppTooltip label={`子代理委派：${current.description}`} side="top" multiline>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              'flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors',
+              'text-muted-foreground hover:bg-accent hover:text-foreground',
+            )}
+          >
+            <Icon className="size-3.5" weight="regular" />
+            <span className="max-w-[100px] truncate font-medium text-foreground/80">
+              子代理·{current.label}
+            </span>
+            <CaretDown className="size-3 opacity-70" weight="regular" />
+          </button>
+        </PopoverTrigger>
+      </AppTooltip>
 
       <PopoverContent align="end" className="w-64 p-2">
         <div className="space-y-0.5">

@@ -226,7 +226,7 @@ export function App(): JSX.Element {
   }
 
   return (
-    <TooltipProvider delayDuration={200}>
+    <TooltipProvider delayDuration={280} skipDelayDuration={120}>
       <AppShell
         topbar={null}
         rail={

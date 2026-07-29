@@ -7,6 +7,7 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
 import { ShieldWarning, Check, X } from '@phosphor-icons/react'
+import { AppTooltip } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 
 interface PermissionReq {
@@ -85,13 +86,14 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
               >
                 <X size={16} weight="regular" />
               </button>
-              <button
-                onClick={() => respond('allow', true)}
-                className="rounded-lg px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-                title="始终允许此工具"
-              >
-                始终
-              </button>
+              <AppTooltip label="始终允许此工具" side="top">
+                <button
+                  onClick={() => respond('allow', true)}
+                  className="rounded-lg px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                >
+                  始终
+                </button>
+              </AppTooltip>
               <button
                 onClick={() => respond('allow')}
                 className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90"

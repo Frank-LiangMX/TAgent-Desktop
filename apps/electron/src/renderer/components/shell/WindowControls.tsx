@@ -5,6 +5,7 @@
  * fixed 叠在窗口右上角浮岛顶缘。mac 用系统红绿灯不渲染。
  */
 import { useEffect, useState } from 'react'
+import { AppTooltip } from '@tagent/ui'
 
 export function WindowControls(): JSX.Element | null {
   const [isWindows, setIsWindows] = useState(false)
@@ -29,46 +30,49 @@ export function WindowControls(): JSX.Element | null {
 
   return (
     <div className="window-controls app-window-controls flex select-none titlebar-no-drag">
-      {/* 最小化 */}
-      <button
-        type="button"
-        className="window-control-btn"
-        aria-label="最小化"
-        onClick={() => window.electronAPI.windowMinimize()}
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12">
-          <rect x="1" y="5.5" width="10" height="1" fill="currentColor" />
-        </svg>
-      </button>
-      {/* 最大化/还原 */}
-      <button
-        type="button"
-        className="window-control-btn"
-        aria-label={isMaximized ? '还原' : '最大化'}
-        onClick={() => window.electronAPI.windowMaximize()}
-      >
-        {isMaximized ? (
+      <AppTooltip label="最小化" side="bottom" sideOffset={8}>
+        <button
+          type="button"
+          className="window-control-btn"
+          aria-label="最小化"
+          onClick={() => window.electronAPI.windowMinimize()}
+        >
           <svg width="12" height="12" viewBox="0 0 12 12">
-            <rect x="3" y="0.5" width="8" height="8" rx="0.5" fill="none" stroke="currentColor" />
-            <rect x="0.5" y="3" width="8" height="8" rx="0.5" fill="none" stroke="currentColor" />
+            <rect x="1" y="5.5" width="10" height="1" fill="currentColor" />
           </svg>
-        ) : (
+        </button>
+      </AppTooltip>
+      <AppTooltip label={isMaximized ? '还原' : '最大化'} side="bottom" sideOffset={8}>
+        <button
+          type="button"
+          className="window-control-btn"
+          aria-label={isMaximized ? '还原' : '最大化'}
+          onClick={() => window.electronAPI.windowMaximize()}
+        >
+          {isMaximized ? (
+            <svg width="12" height="12" viewBox="0 0 12 12">
+              <rect x="3" y="0.5" width="8" height="8" rx="0.5" fill="none" stroke="currentColor" />
+              <rect x="0.5" y="3" width="8" height="8" rx="0.5" fill="none" stroke="currentColor" />
+            </svg>
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 12 12">
+              <rect x="1" y="1" width="10" height="10" rx="0.5" fill="none" stroke="currentColor" />
+            </svg>
+          )}
+        </button>
+      </AppTooltip>
+      <AppTooltip label="关闭" side="bottom" sideOffset={8}>
+        <button
+          type="button"
+          className="window-control-btn window-control-close"
+          aria-label="关闭"
+          onClick={() => window.electronAPI.windowClose()}
+        >
           <svg width="12" height="12" viewBox="0 0 12 12">
-            <rect x="1" y="1" width="10" height="10" rx="0.5" fill="none" stroke="currentColor" />
+            <path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" strokeWidth="1" />
           </svg>
-        )}
-      </button>
-      {/* 关闭 */}
-      <button
-        type="button"
-        className="window-control-btn window-control-close"
-        aria-label="关闭"
-        onClick={() => window.electronAPI.windowClose()}
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12">
-          <path d="M1 1 L11 11 M11 1 L1 11" stroke="currentColor" strokeWidth="1" />
-        </svg>
-      </button>
+        </button>
+      </AppTooltip>
     </div>
   )
 }

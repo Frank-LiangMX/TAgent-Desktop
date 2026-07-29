@@ -26,6 +26,7 @@ import {
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import {
+  AppTooltip,
   DestructiveConfirmDialog,
   DropdownMenu,
   DropdownMenuTrigger,
@@ -362,22 +363,25 @@ export function SessionSidebar({
           <span className="en">Threads</span>
         </span>
         <span className="title-actions">
-          <button type="button" className="pill-new" onClick={onNew} title="新建会话">
-            <span className="btn-ico">
-              <ChatsCircle size={15} weight="regular" />
-            </span>
-            新建
-          </button>
-          {onOpenProject && (
-            <button
-              type="button"
-              className="pill-icon"
-              onClick={onOpenProject}
-              title="打开项目目录 · 创建工作区"
-              aria-label="打开项目目录"
-            >
-              <FolderOpen size={14} weight="regular" />
+          <AppTooltip label="新建会话" side="bottom">
+            <button type="button" className="pill-new" onClick={onNew}>
+              <span className="btn-ico">
+                <ChatsCircle size={15} weight="regular" />
+              </span>
+              新建
             </button>
+          </AppTooltip>
+          {onOpenProject && (
+            <AppTooltip label="打开项目目录 · 创建工作区" side="bottom">
+              <button
+                type="button"
+                className="pill-icon"
+                onClick={onOpenProject}
+                aria-label="打开项目目录"
+              >
+                <FolderOpen size={14} weight="regular" />
+              </button>
+            </AppTooltip>
           )}
         </span>
       </div>
@@ -400,16 +404,16 @@ export function SessionSidebar({
       {pinned.length > 0 && (
         <div className="pin-rail">
           {pinned.map((s, i) => (
-            <button
-              key={s.id}
-              type="button"
-              className="pin-chip"
-              onClick={() => onSelect(s)}
-              title={s.title}
-            >
-              <span className={cn('pm', `c${i % 3}`)}>{s.title.slice(0, 1) || '·'}</span>
-              <span className="pt">{s.title.slice(0, 8)}</span>
-            </button>
+            <AppTooltip key={s.id} label={s.title} side="bottom" multiline>
+              <button
+                type="button"
+                className="pin-chip"
+                onClick={() => onSelect(s)}
+              >
+                <span className={cn('pm', `c${i % 3}`)}>{s.title.slice(0, 1) || '·'}</span>
+                <span className="pt">{s.title.slice(0, 8)}</span>
+              </button>
+            </AppTooltip>
           ))}
         </div>
       )}
@@ -491,18 +495,19 @@ export function SessionSidebar({
                   />
                 )}
                 {group.workspace && (
-                  <button
-                    type="button"
-                    className="workspace-drag-handle"
-                    draggable
-                    onDragStart={(event) => startWorkspaceDrag(event, group.id)}
-                    onDragEnd={finishWorkspaceDrag}
-                    onClick={(event) => event.stopPropagation()}
-                    aria-label={`拖拽调整工作区顺序：${group.name}`}
-                    title="拖拽调整工作区顺序"
-                  >
-                    <DotsSixVertical size={14} weight="bold" />
-                  </button>
+                  <AppTooltip label="拖拽调整工作区顺序" side="right">
+                    <button
+                      type="button"
+                      className="workspace-drag-handle"
+                      draggable
+                      onDragStart={(event) => startWorkspaceDrag(event, group.id)}
+                      onDragEnd={finishWorkspaceDrag}
+                      onClick={(event) => event.stopPropagation()}
+                      aria-label={`拖拽调整工作区顺序：${group.name}`}
+                    >
+                      <DotsSixVertical size={14} weight="bold" />
+                    </button>
+                  </AppTooltip>
                 )}
                 <button
                   type="button"

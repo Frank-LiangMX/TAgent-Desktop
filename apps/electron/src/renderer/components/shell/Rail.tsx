@@ -9,6 +9,7 @@
  * 品牌露出改在关于页（带底板 appicon）与窗口/安装包图标。
  */
 import { ChatsCircle, GearSix, PuzzlePiece } from '@phosphor-icons/react'
+import { AppTooltip } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 
 /** phosphor 图标统一参数（对齐旧版 RAIL_ICON） */
@@ -74,19 +75,20 @@ function RailIcon({
   onClick?: () => void
 }): JSX.Element {
   return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      onClick={onClick}
-      className={cn(
-        'rail-island-btn titlebar-no-drag flex size-9 items-center justify-center rounded-xl transition-colors',
-        active
-          ? 'bg-primary/15 text-primary'
-          : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-      )}
-    >
-      {icon}
-    </button>
+    <AppTooltip label={label} side="right" sideOffset={10}>
+      <button
+        type="button"
+        aria-label={label}
+        onClick={onClick}
+        className={cn(
+          'rail-island-btn titlebar-no-drag flex size-9 items-center justify-center rounded-xl transition-colors',
+          active
+            ? 'bg-primary/15 text-primary'
+            : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+        )}
+      >
+        {icon}
+      </button>
+    </AppTooltip>
   )
 }

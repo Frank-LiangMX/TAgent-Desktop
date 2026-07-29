@@ -15,7 +15,7 @@ import {
 
 /** 与 packages/pi-core 自动压缩阈值一致（展示用，不跨包引用 pi-core） */
 const AUTO_COMPACT_THRESHOLD_RATIO = 0.8
-import { Popover, PopoverContent, PopoverTrigger, Button } from '@tagent/ui'
+import { AppTooltip, Popover, PopoverContent, PopoverTrigger, Button } from '@tagent/ui'
 import { Shrink } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -83,43 +83,44 @@ export function ContextUsageBadge({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            'token-stats-ring inline-flex items-center gap-1.5 rounded-sm',
-            'text-[9px] leading-none text-muted-foreground/80',
-            'hover:text-foreground/80 transition-colors',
-            stats.ratio >= 0.9 && 'text-destructive',
-            stats.ratio >= 0.8 && stats.ratio < 0.9 && 'text-amber-600 dark:text-amber-400',
-            className,
-          )}
-          title="Context 占用（外部渠道 / Pi）"
-          aria-label={`上下文占用 ${stats.percent}%`}
-        >
-          <svg width={size} height={size} className="-rotate-90 shrink-0" aria-hidden>
-            <circle
-              cx={size / 2}
-              cy={size / 2}
-              r={r}
-              fill="none"
-              className="stroke-muted-foreground/20"
-              strokeWidth={stroke}
-            />
-            <circle
-              cx={size / 2}
-              cy={size / 2}
-              r={r}
-              fill="none"
-              className={cn(ringColor(stats.ratio), isCompacting && 'animate-pulse')}
-              strokeWidth={stroke}
-              strokeDasharray={`${dash} ${c - dash}`}
-              strokeLinecap="round"
-            />
-          </svg>
-          <span className="tabular-nums font-medium">{stats.percent}%</span>
-        </button>
-      </PopoverTrigger>
+      <AppTooltip label="Context 占用（外部渠道 / Pi）" side="top" disabled={open}>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              'token-stats-ring inline-flex items-center gap-1.5 rounded-sm',
+              'text-[9px] leading-none text-muted-foreground/80',
+              'hover:text-foreground/80 transition-colors',
+              stats.ratio >= 0.9 && 'text-destructive',
+              stats.ratio >= 0.8 && stats.ratio < 0.9 && 'text-amber-600 dark:text-amber-400',
+              className,
+            )}
+            aria-label={`上下文占用 ${stats.percent}%`}
+          >
+            <svg width={size} height={size} className="-rotate-90 shrink-0" aria-hidden>
+              <circle
+                cx={size / 2}
+                cy={size / 2}
+                r={r}
+                fill="none"
+                className="stroke-muted-foreground/20"
+                strokeWidth={stroke}
+              />
+              <circle
+                cx={size / 2}
+                cy={size / 2}
+                r={r}
+                fill="none"
+                className={cn(ringColor(stats.ratio), isCompacting && 'animate-pulse')}
+                strokeWidth={stroke}
+                strokeDasharray={`${dash} ${c - dash}`}
+                strokeLinecap="round"
+              />
+            </svg>
+            <span className="tabular-nums font-medium">{stats.percent}%</span>
+          </button>
+        </PopoverTrigger>
+      </AppTooltip>
       <PopoverContent
         side="top"
         align="end"

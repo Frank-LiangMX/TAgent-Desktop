@@ -5,7 +5,7 @@
  * 会话级持久化（meta.permissionMode），运行中切换即时生效（Pi 闭包读 meta；kscc 调 SDK setPermissionMode）。
  * 对齐 TAgent_General 输入框底部形态（图标 + 当前模式名 + ChevronDown）。
  */
-import { Popover, PopoverTrigger, PopoverContent } from '@tagent/ui'
+import { AppTooltip, Popover, PopoverTrigger, PopoverContent } from '@tagent/ui'
 import {
   ShieldCheck,
   ShieldWarning,
@@ -39,22 +39,23 @@ export function PermissionModeSelector({
 
   return (
     <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            'flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors',
-            'text-muted-foreground hover:bg-accent hover:text-foreground',
-          )}
-          title={current.description}
-        >
-          <Icon className="size-3.5" weight="regular" />
-          <span className="max-w-[100px] truncate font-medium text-foreground/80">
-            {current.label}
-          </span>
-          <CaretDown className="size-3 opacity-70" weight="regular" />
-        </button>
-      </PopoverTrigger>
+      <AppTooltip label={current.description} side="top" multiline>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              'flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors',
+              'text-muted-foreground hover:bg-accent hover:text-foreground',
+            )}
+          >
+            <Icon className="size-3.5" weight="regular" />
+            <span className="max-w-[100px] truncate font-medium text-foreground/80">
+              {current.label}
+            </span>
+            <CaretDown className="size-3 opacity-70" weight="regular" />
+          </button>
+        </PopoverTrigger>
+      </AppTooltip>
 
       <PopoverContent align="end" className="w-64 p-2">
         <div className="space-y-0.5">
