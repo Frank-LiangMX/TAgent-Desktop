@@ -600,7 +600,7 @@ function BundleDetailDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="plugin-detail-dialog !max-w-[720px] !w-[min(720px,calc(100vw-48px))] !gap-0 !p-0 !overflow-hidden"
+        className="plugin-detail-dialog !gap-0 !p-0 !overflow-hidden"
         aria-describedby="plugin-detail-desc"
       >
         {!bundle ? (
