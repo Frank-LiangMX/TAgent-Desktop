@@ -395,7 +395,11 @@ export class SessionService {
             console.log(`[会话 ${input.sessionId}] 已保存 sdkSessionId: ${sdkSessionId}`)
           }
         },
-        onStderr: (data: string) => console.error(`[kscc stderr] ${data}`),
+        onStderr: (data: string) => {
+          console.error(`[kscc stderr] ${data}`)
+          // 喂给 runtime：累积 stderr 供过长上下文识别（见 session-runtime.runLoop）
+          this.runtimes.get(input.sessionId)?.reportStderr(data)
+        },
       }
       // 当前会话的权限模式（透传到 caller 决策；不影响 SDK 内部）
       void permissionMode

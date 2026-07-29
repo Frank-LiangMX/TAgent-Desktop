@@ -8,10 +8,28 @@
  * - 首次消息：spawn kscc（带 resume，读一次历史）+ 起持续事件循环
  * - 后续消息：复用进程，enqueue 新消息
  * - 会话关闭：destroy → 杀进程
+ *
+ * 2026-07-29 Round 4 会话可靠性：
+ * - 崩溃恢复：子进程异常退出 / channel 断连（非用户主动 stop）→ 自动 re-spawn + resumeSessionId
+ *   重试当前消息一次；再失败上报 session_error。见 {@link runLoop} 与 {@link attemptRecovery}。
+ * - 过长上下文：识别 SDK / stderr / result 中的 prompt too long → 推中文 session_error，不恢复。
+ *   识别纯函数见 @tagent/shared utils/session-error-classify。
+ * 见 docs/decisions/ADR-0002-longlived-process.md「已知缺口」。
  */
 import type { AgentProviderAdapter, SDKMessage, SDKUserMessageInput } from '@tagent/shared'
+import {
+  formatPromptTooLongError,
+  isPromptTooLongMessage,
+  isPromptTooLongResult,
+} from '@tagent/shared'
 
 export type SessionState = 'idle' | 'running' | 'closed'
+
+/** 自动崩溃恢复次数上限（避免无限重试；再失败即上报 session_error） */
+const MAX_AUTO_RECOVERY = 1
+
+/** stderr 累积上限（防无限增长；过长上下文错误文案通常在前几百字符即可命中） */
+const STDERR_BUFFER_CAP = 4096
 
 export class SessionRuntime {
   readonly sessionId: string
@@ -25,6 +43,21 @@ export class SessionRuntime {
   private onMessage?: (msg: SDKMessage) => void
   private onTurnEnd?: () => void
   private onError?: (err: Error) => void
+
+  /** 用户主动 destroy（关标签页 / 被顶 / 退出）→ 永久关闭，不恢复、不报错 */
+  private userClosing = false
+  /** 用户主动 stop（interrupt）→ 本轮退出不恢复、不报错；下一轮 sendMessage 清除 */
+  private userStopping = false
+  /** 已执行的自动恢复次数（≤ MAX_AUTO_RECOVERY） */
+  private recoveryAttempts = 0
+  /** 从流式消息捕获的最新 SDK session id（恢复时作为 resumeSessionId） */
+  private lastSdkSessionId: string | undefined
+  /** 当前在飞的用户消息文本（崩溃恢复时重注入），result 后清空 */
+  private lastInFlightPrompt: string | undefined
+  /** 上一次非过长类异常（恢复仍失败时上报用） */
+  private lastError: Error | undefined
+  /** 累积的 kscc 子进程 stderr（喂给过长上下文识别） */
+  private stderrBuffer = ''
 
   constructor(sessionId: string, adapter: AgentProviderAdapter) {
     this.sessionId = sessionId
@@ -47,6 +80,15 @@ export class SessionRuntime {
     this.onError = cb.onError
   }
 
+  /** 喂入子进程 stderr，供过长上下文等错误识别（session-service 的 onStderr 调用） */
+  reportStderr(data: string): void {
+    if (!data) return
+    // 简单截断：保留末尾 STDERR_BUFFER_CAP 字符（错误通常在末尾）
+    const next = this.stderrBuffer + data
+    this.stderrBuffer =
+      next.length > STDERR_BUFFER_CAP ? next.slice(next.length - STDERR_BUFFER_CAP) : next
+  }
+
   /**
    * 发消息。首次 spawn + 起循环；后续 enqueue 复用。
    * @param queryOptions 传给 adapter.query 的选项（首次才有用）
@@ -60,8 +102,13 @@ export class SessionRuntime {
       throw new Error(`[session ${this.sessionId}] 会话已关闭`)
     }
 
+    // 新一轮用户消息：清除上一轮的主动停止标记（本轮重新参与崩溃恢复判定）
+    this.userStopping = false
+
     // 首次：spawn + 起持续循环
     if (!this.hasLiveProcess()) {
+      // 记录在飞消息（崩溃恢复时重注入；result 后清空）
+      this.lastInFlightPrompt = queryOptions.prompt
       await this.startLoop(queryOptions)
       return
     }
@@ -73,11 +120,12 @@ export class SessionRuntime {
     if (!userMessage) {
       throw new Error(`[session ${this.sessionId}] 后续消息需提供 userMessage`)
     }
+    this.lastInFlightPrompt = userMessage.message.content
     this.turnInFlight = true
     await this.adapter.sendQueuedMessage?.(this.sessionId, userMessage)
   }
 
-  /** 起持续事件循环（首次） */
+  /** 起持续事件循环（首次 / 恢复重建） */
   private async startLoop(
     queryOptions: Parameters<AgentProviderAdapter['query']>[0]
   ): Promise<void> {
@@ -89,43 +137,171 @@ export class SessionRuntime {
     void this.runLoop(queryOptions)
   }
 
-  /** 持续事件循环：遍历 adapter.query 流，result 后不退，等下条 */
+  /**
+   * 持续事件循环：遍历 adapter.query 流，result 后不退，等下条。
+   *
+   * 外层 while 仅在「可恢复的崩溃」时再转一圈（re-spawn + resume）；正常长驻路径
+   * 一直在内层 for-await 里跑，不会回到外层。
+   */
   private async runLoop(
-    queryOptions: Parameters<AgentProviderAdapter['query']>[0]
+    initialQueryOptions: Parameters<AgentProviderAdapter['query']>[0]
   ): Promise<void> {
-    try {
-      const iterable = this.adapter.query(queryOptions)
-      for await (const msg of iterable) {
-        // 工具循环打点：assistant 含 tool_use 时记一下（验证工具循环跑通）
-        if (msg.type === 'assistant') {
-          const content = (msg as { message?: { content?: Array<{ type: string; name?: string }> } }).message?.content
-          const toolUses = Array.isArray(content) ? content.filter((b) => b.type === 'tool_use') : []
-          if (toolUses.length > 0) {
-            console.log(`[会话 ${this.sessionId}] 工具调用: ${toolUses.map((t) => t.name).join(', ')}`)
+    let queryOptions = initialQueryOptions
+
+    // 外层：崩溃恢复 re-spawn（最多 MAX_AUTO_RECOVERY 次）；正常路径只跑一圈
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      let crashed = false
+      try {
+        this.loopRunning = true
+        const iterable = this.adapter.query(queryOptions)
+        for await (const msg of iterable) {
+          // 捕获 SDK session id（恢复时作为 resumeSessionId）
+          const sid = (msg as { session_id?: unknown }).session_id
+          if (typeof sid === 'string' && sid) this.lastSdkSessionId = sid
+
+          // 工具循环打点：assistant 含 tool_use 时记一下（验证工具循环跑通）
+          if (msg.type === 'assistant') {
+            const content = (msg as { message?: { content?: Array<{ type: string; name?: string }> } }).message?.content
+            const toolUses = Array.isArray(content) ? content.filter((b) => b.type === 'tool_use') : []
+            if (toolUses.length > 0) {
+              console.log(`[会话 ${this.sessionId}] 工具调用: ${toolUses.map((t) => t.name).join(', ')}`)
+            }
+          }
+
+          // 推给 orchestrator（→ IPC → UI）
+          this.onMessage?.(msg)
+
+          if (msg.type === 'result') {
+            // 过长上下文：result.errors 命中 → 推中文错误，结束本轮，不恢复。
+            // 后续可在此接一层 compaction（COMPACT_SESSION IPC / sdk-compaction）自动压缩后重试，
+            // 当前 MVP 仅明确报错 + 建议开新会话/压缩（见 formatPromptTooLongError）。
+            if (isPromptTooLongResult(msg)) {
+              this.turnInFlight = false
+              this.lastInFlightPrompt = undefined
+              this.loopRunning = false
+              this.state = 'closed'
+              this.onError?.(new Error(formatPromptTooLongError()))
+              return
+            }
+            // 每轮 result：标记轮结束，发 turnEnd 信号（UI 知道这轮完）
+            // 循环不退，等下条 enqueue 触发新轮
+            this.turnInFlight = false
+            this.lastInFlightPrompt = undefined
+            this.onTurnEnd?.()
           }
         }
-        // 推给 orchestrator（→ IPC → UI）
-        this.onMessage?.(msg)
-
-        if (msg.type === 'result') {
-          // 每轮 result：标记轮结束，发 turnEnd 信号（UI 知道这轮完）
-          // 循环不退，等下条 enqueue 触发新轮
+        // 循环退出 = 进程退出（iterResult.done）/ abort
+        this.loopRunning = false
+        // 用户主动关闭 / 停止 → 干净收尾，不恢复、不报错
+        if (this.userClosing || this.userStopping) {
+          this.userStopping = false
+          this.state = 'closed'
+          return
+        }
+        // 进程在 turn 进行中退出（无 result 收尾）→ 视为崩溃，尝试恢复
+        // 注意：Pi 核每个 turn 正常 result 后 generator 也会退出，此时 turnInFlight=false，
+        // 走 else 干净关闭（下一轮 sendMessage 自然 re-spawn），不会被误判为崩溃。
+        if (this.turnInFlight) {
+          // stderr 已命中过长上下文 → 降级提示，不当崩溃恢复
+          if (isPromptTooLongMessage(this.stderrBuffer)) {
+            this.turnInFlight = false
+            this.lastInFlightPrompt = undefined
+            this.state = 'closed'
+            this.onError?.(new Error(formatPromptTooLongError()))
+            return
+          }
+          crashed = true
+        } else {
+          // turn 已正常结束后的退出（Pi 每 turn / kscc 干净退出）→ 关闭，下一轮重建
+          this.state = 'closed'
+          return
+        }
+      } catch (err) {
+        // query generator 抛错
+        this.loopRunning = false
+        if (this.userClosing || this.userStopping) {
+          this.userStopping = false
+          this.state = 'closed'
+          return
+        }
+        const error = err instanceof Error ? err : new Error(String(err))
+        // 过长上下文（抛错 message / stderr 命中）→ 中文提示，不恢复
+        if (isPromptTooLongMessage(error.message, this.stderrBuffer)) {
           this.turnInFlight = false
-          this.onTurnEnd?.()
+          this.lastInFlightPrompt = undefined
+          this.state = 'closed'
+          this.onError?.(new Error(formatPromptTooLongError()))
+          return
+        }
+        if (this.turnInFlight) {
+          // turn 进行中抛错 → 视为崩溃，尝试恢复；记录错误以便恢复失败时上报
+          crashed = true
+          this.lastError = error
+        } else {
+          // turn 外抛错（罕见）→ 直接上报
+          this.state = 'closed'
+          this.onError?.(error)
+          return
         }
       }
-      // 循环退出 = 进程退出（iterResult.done）/ abort
-      this.loopRunning = false
-      this.state = 'closed'
-    } catch (err) {
-      this.loopRunning = false
-      this.state = 'closed'
-      this.onError?.(err instanceof Error ? err : new Error(String(err)))
+
+      if (crashed) {
+        const recovery = this.attemptRecovery(queryOptions)
+        if (recovery) {
+          queryOptions = recovery
+          // 继续外层循环：re-spawn + resume + 重注入在飞消息
+          continue
+        }
+        // 不可恢复（无 resumeId / 无在飞消息 / 已用尽次数 / 用户停止）→ 上报 session_error
+        this.state = 'closed'
+        this.onError?.(
+          this.lastError ?? new Error(`[session ${this.sessionId}] 会话进程异常退出，自动恢复失败`),
+        )
+        return
+      }
     }
+  }
+
+  /**
+   * 计算崩溃恢复的 re-spawn 选项。返回新的 queryOptions 表示可恢复，undefined 表示放弃。
+   *
+   * 策略（MVP，后续可加重试退避 / fork 重放等）：
+   * - 仅当非用户停止、未超过 MAX_AUTO_RECOVERY、且有 resumeSessionId + 在飞消息时恢复
+   * - 恢复 = 复用原 queryOptions 配置（canUseTool / mcpServers / systemPrompt 等），
+   *   仅覆盖 resumeSessionId + prompt（重注入在飞消息）
+   * - 重注入在飞消息可能造成「重复用户气泡」（SDK transcript 是否已落盘该消息不确定）；
+   *   权衡：丢消息比重复气泡更糟，故选择重注入。后续可结合 resumeSessionAt / fork 精确去重。
+   */
+  private attemptRecovery(
+    queryOptions: Parameters<AgentProviderAdapter['query']>[0]
+  ): Parameters<AgentProviderAdapter['query']>[0] | undefined {
+    if (this.userClosing || this.userStopping) return undefined
+    if (this.recoveryAttempts >= MAX_AUTO_RECOVERY) return undefined
+    const resumeId = this.lastSdkSessionId ?? (queryOptions as { resumeSessionId?: string }).resumeSessionId
+    if (!resumeId || !this.lastInFlightPrompt) return undefined
+
+    this.recoveryAttempts++
+    this.lastError = undefined
+    this.state = 'running'
+    this.loopRunning = true
+    this.turnInFlight = true
+    // 清空 stderr：恢复后的新进程从空开始累积
+    this.stderrBuffer = ''
+    console.warn(
+      `[会话 ${this.sessionId}] 进程异常退出，自动恢复 #${this.recoveryAttempts}（resume=${resumeId}）`,
+    )
+    return {
+      ...queryOptions,
+      resumeSessionId: resumeId,
+      prompt: this.lastInFlightPrompt,
+    } as Parameters<AgentProviderAdapter['query']>[0]
   }
 
   /** 软中断当前 turn（保进程） */
   async interrupt(): Promise<void> {
+    // 用户主动 stop：本轮若异常退出不触发自动恢复
+    this.userStopping = true
     await this.adapter.interruptQuery?.(this.sessionId)
     this.turnInFlight = false
   }
@@ -146,6 +322,8 @@ export class SessionRuntime {
 
   /** 销毁会话：杀进程（标签页关/被顶、关 TAgent） */
   destroy(): void {
+    // 用户主动关闭：永久关闭，不触发自动恢复、不报错
+    this.userClosing = true
     this.adapter.abort(this.sessionId)
     this.loopRunning = false
     this.turnInFlight = false

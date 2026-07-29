@@ -52,6 +52,19 @@ export {
   formatThinkingSignatureError,
   normalizeThinkingSignatureError,
 } from './thinking-signature-error'
+export {
+  classifySessionError,
+  isPromptTooLongMessage,
+  isPromptTooLongResult,
+  extractResultErrors,
+  formatPromptTooLongError,
+  PROMPT_TOO_LONG_ERROR_TITLE,
+  PROMPT_TOO_LONG_ERROR_MESSAGE,
+} from './session-error-classify'
+export type {
+  SessionErrorKind,
+  ClassifySessionErrorInput,
+} from './session-error-classify'
 
 // kscc 核消息转译（SDKMessage → TAgentMessage IR，主进程 + renderer 共用）
 export { sdkMessageToIR } from './kscc-message-adapter'
