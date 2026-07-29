@@ -382,10 +382,11 @@ export class SessionService {
   ): Parameters<AgentProviderAdapter['query']>[0] {
     const model = this.resolveModel(channel, input.model)
 
-    // 解析 workspace：cwd + sanitizedPath（mcp 配置文件 slug）
-    const workspace = workspaceId ? resolveWorkspaceForSession(input.sessionId) : undefined
+    // 解析 workspace：始终按 session meta 反查（权限 cwd 必须用项目目录，不能靠 process.cwd()）
+    const workspace = resolveWorkspaceForSession(input.sessionId)
     const cwd = workspace?.projectDirectory ?? process.cwd()
     const sanitizedPath = workspace?.slug ?? ''
+    void workspaceId // 调用方仍传 workspaceId 用于落盘路径；cwd 以 session meta 为准
 
     // 权限模式：会话 meta 持久化（默认 auto）
     const metaForMode = getSessionMeta(input.sessionId)

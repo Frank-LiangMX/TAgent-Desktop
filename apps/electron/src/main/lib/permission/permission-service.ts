@@ -10,6 +10,7 @@
 import { ipcMain, type BrowserWindow } from 'electron'
 import {
   AGENT_IPC_CHANNELS,
+  extractBashCommand,
   hasWriteStructure,
   isAutoModeAutoAllowTool,
   isDangerousCommand,
@@ -105,7 +106,7 @@ async function checkPermission(args: {
     return { allow: true }
   }
 
-  // 只读工具：静默放行（auto/plan 都放行只读）
+  // 只读 / 项目内非破坏性 Bash：静默放行（auto/plan 都放行只读工具）
   if (isAutoModeAutoAllowTool(toolName, input, cwd)) return { allow: true }
 
   // plan 模式：写操作拒绝（只读已放行，其余拒绝）
@@ -114,10 +115,11 @@ async function checkPermission(args: {
   }
 
   // auto 模式：写操作/命令弹框确认
-  const command = typeof input.command === 'string' ? input.command : ''
+  const isBash = toolName.toLowerCase() === 'bash'
+  const command = isBash ? extractBashCommand(input) : typeof input.command === 'string' ? input.command : ''
   const dangerous =
     isDangerousCommand(command) ||
-    (toolName === 'Bash' && hasWriteStructure(command)) ||
+    (isBash && hasWriteStructure(command)) ||
     isWriteTool(toolName, input)
   const req: PermissionRequest = {
     id: nextId(),

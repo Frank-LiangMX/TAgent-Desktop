@@ -4,6 +4,7 @@ import {
   isAutoModeAutoAllowTool,
   isDangerousCommand,
   isProjectLocalReadOnlyBash,
+  isProjectScopedNonDestructiveBash,
   hasWriteStructure,
   requiresAutoModeConfirmation,
   resolveSdkPermissionModeForTAgent,
@@ -144,6 +145,40 @@ describe('isAutoModeAutoAllowTool（带 cwd）', () => {
     expect(isAutoModeAutoAllowTool('Write', { file_path: 'F:/TAgent_General/x.ts' }, cwd)).toBe(
       false
     )
+  })
+
+  test('项目内非破坏性 Bash（含未白名单命令）→ 有 cwd 时静默放行', () => {
+    expect(
+      isAutoModeAutoAllowTool(
+        'Bash',
+        { command: 'Get-ChildItem -Recurse | Select-Object -First 20' },
+        cwd,
+      ),
+    ).toBe(true)
+    expect(
+      isAutoModeAutoAllowTool('Bash', { command: 'rg --files -g "*.ts"' }, cwd),
+    ).toBe(true)
+  })
+
+  test('越界或危险 Bash → 仍需确认', () => {
+    expect(isAutoModeAutoAllowTool('Bash', { command: 'rm -rf node_modules' }, cwd)).toBe(false)
+    expect(
+      isAutoModeAutoAllowTool('Bash', { command: 'type C:\\Windows\\System32\\drivers\\etc\\hosts' }, cwd),
+    ).toBe(false)
+  })
+})
+
+describe('isProjectScopedNonDestructiveBash', () => {
+  const cwd = 'F:/TAgent_General'
+
+  test('allow exploratory listing under project', () => {
+    expect(isProjectScopedNonDestructiveBash('Get-ChildItem -Recurse', cwd)).toBe(true)
+    expect(isProjectScopedNonDestructiveBash('ls apps/electron', cwd)).toBe(true)
+  })
+
+  test('reject write and danger', () => {
+    expect(isProjectScopedNonDestructiveBash('echo x > a.txt', cwd)).toBe(false)
+    expect(isProjectScopedNonDestructiveBash('rm a.txt', cwd)).toBe(false)
   })
 })
 

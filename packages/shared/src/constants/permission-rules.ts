@@ -437,15 +437,57 @@ export function isProjectLocalReadOnlyBash(command: string, cwd?: string): boole
 }
 
 /**
+ * 提取 Bash 命令字符串（兼容 command / cmd / script 等字段）
+ */
+export function extractBashCommand(input: Record<string, unknown>): string {
+  for (const key of ['command', 'cmd', 'script', 'code'] as const) {
+    const v = input[key]
+    if (typeof v === 'string' && v.trim()) return v
+  }
+  return ''
+}
+
+/**
+ * 工作区范围内的「非破坏性」Bash：分析工程时模型会跑各种列目录/搜文件命令
+ * （含 PowerShell 管道、未收录的只读小工具），不能要求白名单穷举。
+ *
+ * 规则：
+ * 1. 有 cwd
+ * 2. 非危险命令前缀（rm/sudo/curl…）
+ * 3. 无写结构（重定向 / $() / -exec）
+ * 4. 参数中的绝对路径不得越出 cwd；`..` 越界仍询问
+ */
+export function isProjectScopedNonDestructiveBash(command: string, cwd?: string): boolean {
+  const trimmed = command.trim()
+  if (!cwd || !trimmed) return false
+  if (isDangerousCommand(trimmed)) return false
+  if (hasWriteStructure(trimmed)) return false
+
+  // 逐段检查路径边界（| && ; 拆开）；段本身可以不是白名单命令
+  const segments = splitShellSegments(trimmed)
+  const segs = segments.length > 0 ? segments : [trimmed]
+  for (const segment of segs) {
+    if (isDangerousCommand(segment)) return false
+    const tokens = segment.trim().split(/\s+/).slice(1)
+    for (const token of tokens) {
+      if (!token) continue
+      if (token.startsWith('-') && !token.startsWith('//')) continue
+      if (/^\/[a-zA-Z0-9]+$/i.test(token)) continue
+      if (isPathOutsideCwd(token, cwd)) return false
+    }
+  }
+  return true
+}
+
+/**
  * 自动审批模式下是否可静默放行
  *
- * - Read / Glob / Grep 等 SAFE_TOOLS：永远静默放行（读操作默认授权）
+ * - Read / Glob / Grep 等 SAFE_TOOLS：永远静默放行
  * - 安全 Bash（ls/git status 等）
- * - 项目内只读 Bash（cat/find/type/dir… 且路径在 cwd 内）
+ * - 项目内只读白名单 Bash（cat/find/type…）
+ * - **有 cwd 时**：项目范围内非破坏性 Bash（分析工程常用，免弹窗）
  *
- * 其余工具（写文件、危险命令、MCP 变更等）走 PermissionBanner。
- *
- * @param cwd 可选，传入会话 cwd 后会扩展放行「项目内只读 Bash」
+ * 写文件、危险命令、越界路径等仍走 PermissionBanner。
  */
 export function isAutoModeAutoAllowTool(
   toolName: string,
@@ -453,8 +495,9 @@ export function isAutoModeAutoAllowTool(
   cwd?: string,
 ): boolean {
   // 工具名大小写不敏感（防止模型/适配层变体）
+  const lower = toolName.toLowerCase()
   const name =
-    toolName === 'bash' || toolName === 'BASH'
+    lower === 'bash'
       ? 'Bash'
       : toolName.length > 0
         ? toolName[0]!.toUpperCase() + toolName.slice(1)
@@ -466,10 +509,13 @@ export function isAutoModeAutoAllowTool(
   }
   if (isAutomationReadTool(toolName) || isAutomationReadTool(name)) return true
 
-  if (name === 'Bash' || toolName === 'Bash') {
-    const command = typeof input.command === 'string' ? input.command : ''
+  if (name === 'Bash' || lower === 'bash') {
+    const command = extractBashCommand(input)
+    if (!command) return false
     if (isSafeBashCommand(command)) return true
     if (cwd && isProjectLocalReadOnlyBash(command, cwd)) return true
+    // 分析项目：cwd 内非破坏性 bash 默认放行（不必点「始终」）
+    if (cwd && isProjectScopedNonDestructiveBash(command, cwd)) return true
   }
   return false
 }
