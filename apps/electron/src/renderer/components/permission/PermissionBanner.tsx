@@ -2,7 +2,7 @@
  * PermissionBanner — 工具权限确认横幅
  *
  * 主进程推 PERMISSION_REQUEST 时显示在会话页底部（composer 上方）。
- * 允许 / 拒绝 / 始终允许（remember=true 加白名单）。
+ * 允许 / 拒绝 / 始终允许（remember=true：本会话按工具名白名单；Bash 整类放行，危险/写结构仍会再问）。
  */
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'motion/react'
@@ -86,7 +86,15 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
               >
                 <X size={16} weight="regular" />
               </button>
-              <AppTooltip label="始终允许此工具" side="top">
+              <AppTooltip
+                label={
+                  req.toolName === 'Bash'
+                    ? '本会话始终允许 Bash（危险命令仍会询问）'
+                    : `本会话始终允许 ${req.toolName}`
+                }
+                side="top"
+                multiline
+              >
                 <button
                   onClick={() => respond('allow', true)}
                   className="rounded-lg px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"

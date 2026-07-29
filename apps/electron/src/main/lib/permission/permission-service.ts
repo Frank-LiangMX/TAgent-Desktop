@@ -3,19 +3,24 @@
  *
  * 给 kscc 核（createCanUseTool，SDK 签名）+ Pi 核（createBeforeToolCall，pi-agent-core 签名）
  * 共享的权限审批逻辑。只读静默放行（isAutoModeAutoAllowTool）/ 危险命令拦截 / 写操作弹框
- * （发 IPC PERMISSION_REQUEST 给 renderer，等 PERMISSION_RESPOND 响应）。会话白名单（始终允许）。
+ * （发 IPC PERMISSION_REQUEST 给 renderer，等 PERMISSION_RESPOND 响应）。
  *
- * 复用 @tagent/shared permission-rules（isAutoModeAutoAllowTool/isDangerousCommand/isWriteTool）。
- * 复用 @tagent/pi-core checkToolPermission（黑名单兜底）。
+ * 「始终允许」见 session-whitelist.ts（Bash 会话整类放行，对齐 General）。
  */
 import { ipcMain, type BrowserWindow } from 'electron'
 import {
   AGENT_IPC_CHANNELS,
+  hasWriteStructure,
   isAutoModeAutoAllowTool,
   isDangerousCommand,
   isWriteTool,
 } from '@tagent/shared'
 import type { TAgentPermissionMode } from '@tagent/shared'
+import {
+  addToSessionWhitelist,
+  clearSessionWhitelist,
+  isSessionWhitelisted,
+} from './session-whitelist'
 
 /** 权限请求（推 renderer） */
 export interface PermissionRequest {
@@ -31,13 +36,10 @@ export interface PermissionRequest {
 interface Pending {
   resolve: (behavior: 'allow' | 'deny') => void
   sessionId: string
-  /** 工具名 + 输入（白名单精确 key 用） */
   toolName: string
   input: Record<string, unknown>
 }
 
-/** 会话级白名单：sessionId → Set<toolKey>（始终允许） */
-const sessionWhitelist = new Map<string, Set<string>>()
 /** pending 请求 Map：reqId → Pending */
 const pending = new Map<string, Pending>()
 
@@ -47,20 +49,32 @@ function nextId(): string {
   return `perm-${Date.now()}-${counter}`
 }
 
-/** tool 唯一 key（白名单用）：toolName + 关键参数 hash */
-function toolKey(toolName: string, input: Record<string, unknown>): string {
-  if (toolName === 'Bash') return `Bash:${typeof input.command === 'string' ? input.command.slice(0, 60) : ''}`
-  if (toolName === 'Write' || toolName === 'Edit') return `${toolName}:${input.file_path ?? ''}`
-  return toolName
+/** 规范化工具入参（Pi 优先用 beforeToolCall 的 validated args） */
+function resolveToolInput(
+  toolCall: { arguments?: Record<string, unknown> },
+  args?: unknown,
+): Record<string, unknown> {
+  if (args && typeof args === 'object' && !Array.isArray(args)) {
+    return args as Record<string, unknown>
+  }
+  if (toolCall.arguments && typeof toolCall.arguments === 'object') {
+    return toolCall.arguments
+  }
+  return {}
 }
 
 /** 发权限请求给 renderer 弹框，返回 Promise<allow|deny> */
 function askRenderer(
   win: BrowserWindow | null,
-  req: PermissionRequest
+  req: PermissionRequest,
 ): Promise<'allow' | 'deny'> {
   return new Promise((resolve) => {
-    pending.set(req.id, { resolve, sessionId: req.sessionId, toolName: req.toolName, input: req.input })
+    pending.set(req.id, {
+      resolve,
+      sessionId: req.sessionId,
+      toolName: req.toolName,
+      input: req.input,
+    })
     win?.webContents.send(AGENT_IPC_CHANNELS.PERMISSION_REQUEST, req)
     // 超时自动 deny（30s）
     setTimeout(() => {
@@ -86,10 +100,8 @@ async function checkPermission(args: {
   // bypass：全放行
   if (permissionMode === 'bypassPermissions') return { allow: true }
 
-  // 白名单：始终允许
-  const key = toolKey(toolName, input)
-  const whitelist = sessionWhitelist.get(sessionId)
-  if (whitelist?.has(key) && !isDangerousCommand(typeof input.command === 'string' ? input.command : '')) {
+  // 会话白名单：「始终允许」后放行（危险/写结构 Bash 除外）
+  if (isSessionWhitelisted(sessionId, toolName, input)) {
     return { allow: true }
   }
 
@@ -102,7 +114,10 @@ async function checkPermission(args: {
   }
 
   // auto 模式：写操作/命令弹框确认
-  const dangerous = isDangerousCommand(typeof input.command === 'string' ? input.command : '') ||
+  const command = typeof input.command === 'string' ? input.command : ''
+  const dangerous =
+    isDangerousCommand(command) ||
+    (toolName === 'Bash' && hasWriteStructure(command)) ||
     isWriteTool(toolName, input)
   const req: PermissionRequest = {
     id: nextId(),
@@ -126,35 +141,32 @@ export class PermissionService {
 
   /** 注册 PERMISSION_RESPOND IPC（renderer 回响应） */
   private registerIpc(): void {
-    ipcMain.on(AGENT_IPC_CHANNELS.PERMISSION_RESPOND, (_e, args: { reqId: string; behavior: 'allow' | 'deny'; remember?: boolean }) => {
-      const p = pending.get(args.reqId)
-      if (!p) return
-      pending.delete(args.reqId)
-      // 始终允许 → 加精确白名单（toolKey 含工具名 + 关键参数 hash，避免 Bash/Write/Edit 整类白名单）
-      if (args.behavior === 'allow' && args.remember) {
-        const key = toolKey(p.toolName, p.input)
-        // 危险命令永不入白名单（每次都问，避免误授权 rm -rf /）
-        if (!isDangerousCommand(typeof p.input.command === 'string' ? p.input.command : '')) {
-          let whitelist = sessionWhitelist.get(p.sessionId)
-          if (!whitelist) {
-            whitelist = new Set()
-            sessionWhitelist.set(p.sessionId, whitelist)
-          }
-          whitelist.add(key)
+    ipcMain.on(
+      AGENT_IPC_CHANNELS.PERMISSION_RESPOND,
+      (
+        _e,
+        args: { reqId: string; behavior: 'allow' | 'deny'; remember?: boolean },
+      ) => {
+        const p = pending.get(args.reqId)
+        if (!p) return
+        pending.delete(args.reqId)
+        // 始终允许 → 会话级工具白名单（Bash 整类，非单条 command）
+        if (args.behavior === 'allow' && args.remember) {
+          addToSessionWhitelist(p.sessionId, p.toolName, p.input)
         }
-      }
-      p.resolve(args.behavior)
-    })
+        p.resolve(args.behavior)
+      },
+    )
   }
 
   /**
    * kscc 核 canUseTool（Claude Agent SDK 签名）
-   * 返回 { behavior: 'allow'|'deny'|'ask', message? }
+   * 返回 { behavior: 'allow'|'deny', message? }
    */
   createCanUseTool(sessionId: string, getMode: () => TAgentPermissionMode, cwd?: string) {
     return async (
       toolName: string,
-      input: Record<string, unknown>
+      input: Record<string, unknown>,
     ): Promise<{ behavior: 'allow' | 'deny'; message?: string }> => {
       const { allow, reason } = await checkPermission({
         win: this.getWindow,
@@ -170,17 +182,20 @@ export class PermissionService {
 
   /**
    * Pi 核 beforeToolCall（pi-agent-core 签名）
-   * 返回 { block: true, reason } 阻止，undefined/不返回则放行
+   * 返回 { block: true, reason } 阻止；undefined 则放行。
+   * 入参优先用 validated `args`（schema 校验后），回退 toolCall.arguments。
    */
   createBeforeToolCall(sessionId: string, getMode: () => TAgentPermissionMode, cwd?: string) {
     return async (ctx: {
-      toolCall: { name: string; arguments: Record<string, unknown> }
+      toolCall: { name: string; arguments?: Record<string, unknown> }
+      args?: unknown
     }): Promise<{ block: true; reason: string } | undefined> => {
+      const input = resolveToolInput(ctx.toolCall, ctx.args)
       const { allow, reason } = await checkPermission({
         win: this.getWindow,
         sessionId,
         toolName: ctx.toolCall.name,
-        input: ctx.toolCall.arguments,
+        input,
         cwd,
         permissionMode: getMode(),
       })
@@ -190,6 +205,6 @@ export class PermissionService {
 
   /** 清除会话白名单（会话删除时） */
   static clearWhitelist(sessionId: string): void {
-    sessionWhitelist.delete(sessionId)
+    clearSessionWhitelist(sessionId)
   }
 }

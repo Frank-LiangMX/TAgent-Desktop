@@ -133,6 +133,8 @@ export class SessionService {
         rt.destroy()
         this.runtimes.delete(sessionId)
       }
+      // 清会话权限白名单（「始终允许」状态）
+      PermissionService.clearWhitelist(sessionId)
       deleteSessionMeta(sessionId)
       return { ok: true }
     })
