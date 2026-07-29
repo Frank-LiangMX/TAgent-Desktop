@@ -8,7 +8,12 @@
 // M1：kscc bare 模型泵
 export { createKsccBareStreamFn, type CreateKsccBareStreamFnOptions } from "./kscc-bare-stream-fn.ts";
 // M1+：HTTP 直连 streamFn（不走 kscc，直接 HTTP 请求外部渠道）
-export { createHttpDirectStreamFn, type CreateHttpDirectStreamFnOptions } from "./http-direct-stream-fn.ts";
+export {
+  createHttpDirectStreamFn,
+  DEFAULT_HTTP_STREAM_TIMEOUT_MS,
+  DEFAULT_HTTP_STREAM_MAX_RETRIES,
+  type CreateHttpDirectStreamFnOptions,
+} from "./http-direct-stream-fn.ts";
 export { AssistantMessageBuilder } from "./assistant-message-builder.ts";
 export {
   mapKsccLineToPiEvents,

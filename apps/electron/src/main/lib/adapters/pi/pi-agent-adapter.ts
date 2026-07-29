@@ -821,7 +821,7 @@ function piEventToSdkMessages(event: AgentEvent, sessionId: string): SDKMessage[
         results.push({
           type: 'assistant',
           message: {
-            content: [{ type: 'text', text: `[请求失败] ${msg.errorMessage}` }],
+            content: [{ type: 'text', text: formatStreamErrorForUser(msg.errorMessage) }],
             usage: { input_tokens: 0, output_tokens: 0 },
             model: '',
             stop_reason: 'error',
@@ -995,6 +995,59 @@ function piStreamEventToSdk(
 }
 
 // ===== 工具函数 =====
+
+/**
+ * 将 pi-ai / SDK 原始错误文案整理成用户可读的中文提示。
+ * 常见：「Request timed out.」来自 OpenAI SDK 的 APIConnectionTimeoutError（到首包超时）。
+ */
+function formatStreamErrorForUser(raw: string): string {
+  const msg = (raw || '').trim()
+  const lower = msg.toLowerCase()
+
+  if (
+    lower.includes('request timed out') ||
+    lower.includes('timed out') ||
+    lower.includes('timeout') ||
+    lower.includes('etimedout')
+  ) {
+    return [
+      '[请求失败] 模型接口响应超时。',
+      '多轮工具后上下文变大，或 thinking 模型在出字前处理较久时容易触发。',
+      '可稍后重试；若反复出现，可新开会话缩短上下文，或检查网络与渠道连通性。',
+      msg ? `（原始错误：${msg}）` : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+  }
+
+  if (
+    lower.includes('401') ||
+    lower.includes('unauthorized') ||
+    lower.includes('invalid api key') ||
+    lower.includes('authentication')
+  ) {
+    return `[请求失败] 鉴权失败，请检查 API Key 与渠道配置。（${msg}）`
+  }
+
+  if (
+    lower.includes('429') ||
+    lower.includes('rate limit') ||
+    lower.includes('too many requests')
+  ) {
+    return `[请求失败] 请求过于频繁或额度受限，请稍后重试。（${msg}）`
+  }
+
+  if (
+    lower.includes('econnrefused') ||
+    lower.includes('enotfound') ||
+    lower.includes('network') ||
+    lower.includes('fetch failed')
+  ) {
+    return `[请求失败] 网络连接失败，请检查网络与 base URL。（${msg}）`
+  }
+
+  return `[请求失败] ${msg || '未知错误'}`
+}
 
 /** Pi Usage → SDK usage 格式 */
 function piUsageToSdk(usage: Usage): SDKAssistantMessage['message']['usage'] {

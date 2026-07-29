@@ -26,6 +26,16 @@ import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { googleProvider } from "@earendil-works/pi-ai/providers/google";
 
+/**
+ * 默认 HTTP 首包超时：30 分钟。
+ * OpenAI/Anthropic SDK 默认仅 10 分钟；多轮工具后上下文变大、thinking 模型
+ * 在开始流式输出前可能处理很久，易触发 APIConnectionTimeoutError（"Request timed out."）。
+ */
+export const DEFAULT_HTTP_STREAM_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** 默认客户端重试次数（短暂网络抖动 / 连接超时） */
+export const DEFAULT_HTTP_STREAM_MAX_RETRIES = 2;
+
 /** HTTP 直连 streamFn 工厂选项 */
 export interface CreateHttpDirectStreamFnOptions {
   /** API provider 类型（决定用哪个 pi-ai Provider） */
@@ -40,6 +50,13 @@ export interface CreateHttpDirectStreamFnOptions {
   thinkingEnabled?: boolean;
   /** thinking level（默认 'medium'） */
   thinkingLevel?: "minimal" | "low" | "medium" | "high";
+  /**
+   * HTTP 请求超时（毫秒）。对 OpenAI 兼容 SDK 主要约束「到首包」的等待时间。
+   * 默认 30 分钟（{@link DEFAULT_HTTP_STREAM_TIMEOUT_MS}）。
+   */
+  timeoutMs?: number;
+  /** 客户端重试次数，默认 2 */
+  maxRetries?: number;
 }
 
 /**
@@ -60,9 +77,15 @@ export function createHttpDirectStreamFn(
     options?: SimpleStreamOptions,
   ): AssistantMessageEventStream => {
     // 合并 streamOptions：工厂层的 apiKey + 调用层的 signal
+    // timeoutMs / maxRetries 优先用调用层，其次工厂配置，最后放宽后的默认值
+    // （SDK 默认 10 分钟对长上下文 + thinking 不够，易出现 Request timed out）
     const streamOptions: SimpleStreamOptions = {
       apiKey: opts.apiKey,
       signal: options?.signal,
+      timeoutMs:
+        options?.timeoutMs ?? opts.timeoutMs ?? DEFAULT_HTTP_STREAM_TIMEOUT_MS,
+      maxRetries:
+        options?.maxRetries ?? opts.maxRetries ?? DEFAULT_HTTP_STREAM_MAX_RETRIES,
       // thinking 配置
       ...(opts.thinkingEnabled
         ? { reasoning: opts.thinkingLevel ?? "medium" }
