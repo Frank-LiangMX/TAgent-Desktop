@@ -15,7 +15,8 @@ import {
   TAGENT_DEFAULT_PERMISSION_MODE,
   type TAgentUsage,
 } from '@tagent/shared'
-import { ContextUsageBadge, type ContextUsageSnapshotView } from './ContextUsageBadge'
+import { type ContextUsageSnapshotView } from './ContextUsageBadge'
+import { TokenStatsBar, type SessionTokenTotals } from './TokenStatsBar'
 import {
   Conversation,
   ConversationContent,
@@ -31,7 +32,7 @@ import {
   ReasoningContent,
   Button,
 } from '@tagent/ui'
-import { ArrowUp, Square, Shrink } from 'lucide-react'
+import { ArrowUp, Square } from 'lucide-react'
 import {
   COMPACTION_IN_PROGRESS_LABEL,
   getCompactBoundaryLabel,
@@ -110,25 +111,53 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('conservative')
   /** 最近一轮 usage（仅外部/Pi 展示；kscc 不采信） */
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshotView | null>(null)
+  const [tokenTotals, setTokenTotals] = useState<SessionTokenTotals>({
+    totalInput: 0,
+    totalOutput: 0,
+    totalCacheRead: 0,
+    totalCacheWrite: 0,
+    turnCount: 0,
+  })
   const [isCompactingUi, setIsCompactingUi] = useState(false)
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
 
   const applyUsage = (usage: TAgentUsage | undefined, contextWindow = 128_000): void => {
-    if (!usage || usage.inputTokens <= 0) return
+    if (!usage) return
+    const input = usage.inputTokens ?? 0
+    const output = usage.outputTokens ?? 0
+    const cacheRead = usage.cacheReadTokens ?? 0
+    const cacheWrite = usage.cacheCreationTokens ?? 0
+    // 有任意 usage 字段就更新（有的 provider 主字段只在 cache 上）
+    if (input <= 0 && output <= 0 && cacheRead <= 0 && cacheWrite <= 0) return
+
     setContextUsage((prev) => ({
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      cacheReadTokens: usage.cacheReadTokens,
-      cacheCreationTokens: usage.cacheCreationTokens,
-      // 保留上一轮窗口，避免闪烁；首轮用默认（与 Pi 占位 Model 一致）
-      contextWindow: prev?.contextWindow && prev.contextWindow > 0 ? prev.contextWindow : contextWindow,
+      inputTokens: Math.max(input, cacheRead + cacheWrite > 0 ? input : 0) || input,
+      outputTokens: output,
+      cacheReadTokens: cacheRead,
+      cacheCreationTokens: cacheWrite,
+      contextWindow:
+        prev?.contextWindow && prev.contextWindow > 0 ? prev.contextWindow : contextWindow,
+    }))
+    setTokenTotals((prev) => ({
+      totalInput: prev.totalInput + input,
+      totalOutput: prev.totalOutput + output,
+      totalCacheRead: prev.totalCacheRead + cacheRead,
+      totalCacheWrite: prev.totalCacheWrite + cacheWrite,
+      turnCount: prev.turnCount + (input > 0 || output > 0 ? 1 : 0),
     }))
   }
 
-  // 切会话时清空占用环（Chat 若被 key 重建则多余无害）
+  // 切会话时清空占用与累计
   useEffect(() => {
     setContextUsage(null)
+    setTokenTotals({
+      totalInput: 0,
+      totalOutput: 0,
+      totalCacheRead: 0,
+      totalCacheWrite: 0,
+      turnCount: 0,
+    })
     setIsCompactingUi(false)
   }, [sessionId])
   const scrollContextRef = useRef<StickToBottomContext | null>(null)
@@ -195,7 +224,17 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
     ? { channelId: session.channelId, modelId: sessionModelId }
     : null
   const effectiveSelection = selectionOverride ?? persistedSelection ?? selectedModelSelection
-  const lockedKind = sessionChannel ? getChannelCoreKind(sessionChannel) : sentCoreKind
+  const selectionChannel = effectiveSelection
+    ? channels.find((c) => c.id === effectiveSelection.channelId)
+    : undefined
+  // 会话已绑渠道优先；否则用当前选择；再否则用本会话已发送过的核
+  const lockedKind: ChannelCoreKind | null = sessionChannel
+    ? getChannelCoreKind(sessionChannel)
+    : selectionChannel
+      ? getChannelCoreKind(selectionChannel)
+      : sentCoreKind
+  /** 仅外部/Pi 显示 token 栏；kscc 占用不可信 */
+  const showTokenBar = lockedKind === 'external'
 
   // 切换会话时加载历史。滚动位置恢复交给 ScrollPositionManager（Conversation 内部），
   // 它用 useLayoutEffect + stopScroll + 直接设 scrollTop（无动画、无可见滚动过程）。
@@ -218,6 +257,14 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
         }
       }
       setItems(irItems)
+      // 从历史 assistant.usage 回填底栏（最近一条有 usage 的 assistant）
+      for (let i = irItems.length - 1; i >= 0; i--) {
+        const m = irItems[i]?.message
+        if (m?.type === 'assistant' && m.usage && (m.usage.inputTokens ?? 0) > 0) {
+          applyUsage(m.usage)
+          break
+        }
+      }
       setScrollReady(true)
       // 回显持久化的子代理委派积极性（新会话无 meta → resolveEagerness 回退默认 conservative）
       try {
@@ -375,6 +422,18 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
       } else if (evt.type === 'compact_complete') {
         setIsCompactingUi(false)
         const trigger = (evt as { trigger?: 'auto' | 'manual' }).trigger
+        const tokensBefore = (evt as { tokensBefore?: number }).tokensBefore
+        // 压缩后用 tokensBefore 刷新环（估算）；无则保留旧 usage
+        if (typeof tokensBefore === 'number' && tokensBefore > 0) {
+          setContextUsage((prev) =>
+            prev
+              ? { ...prev, inputTokens: Math.min(prev.inputTokens, tokensBefore) || tokensBefore }
+              : {
+                  inputTokens: tokensBefore,
+                  contextWindow: 128_000,
+                },
+          )
+        }
         setItems((prev) => {
           // 去掉进行中的占位，换成完成分隔
           const filtered = prev.filter((it) => it.compactStatus !== 'compacting')
@@ -571,28 +630,6 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
                       await window.electronAPI.updateSessionMeta(sessionId, { subagentEagerness: level })
                     }}
                   />
-                  {/* 手动压缩（Pi 核；无活跃 Agent 时主进程返回 reason） */}
-                  {!running && lockedKind === 'external' && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 gap-1 rounded-full px-2 text-[11px] text-muted-foreground"
-                      title="压缩上下文"
-                      onClick={() => void compactContext()}
-                    >
-                      <Shrink className="size-3.5" />
-                      压缩
-                    </Button>
-                  )}
-                  {/* Context 占用环：仅外部/Pi；kscc 占用率不可信，不展示 */}
-                  {lockedKind === 'external' && (
-                    <ContextUsageBadge
-                      usage={contextUsage}
-                      isCompacting={isCompactingUi}
-                      onCompact={() => void compactContext()}
-                    />
-                  )}
                 </div>
                 <div className="flex items-center gap-1.5">
                   {running && (
@@ -617,6 +654,16 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
               </div>
             }
           />
+          {/* General 风格：token 栏在输入玻璃壳下方，圆环在栏内；仅 external/Pi */}
+          {showTokenBar && (
+            <TokenStatsBar
+              className="mt-1 px-2"
+              usage={contextUsage}
+              totals={tokenTotals}
+              isCompacting={isCompactingUi}
+              onCompact={() => void compactContext()}
+            />
+          )}
         </div>
       </div>
     </div>

@@ -59,11 +59,14 @@ export function ContextUsageBadge({
 
   const stats = useMemo(() => {
     if (!usage || usage.inputTokens <= 0 || usage.contextWindow <= 0) return null
-    const used = sumContextUsedTokens({
+    // 主进程已把「当前上下文占用」写入 inputTokens（含 totalTokens 优先）；
+    // 环用 max(input, input+cache) 避免双计，也兼容只回 cache 的端点。
+    const summed = sumContextUsedTokens({
       input_tokens: usage.inputTokens,
       cache_read_input_tokens: usage.cacheReadTokens,
       cache_creation_input_tokens: usage.cacheCreationTokens,
     })
+    const used = Math.max(usage.inputTokens, summed)
     const ratio = calculateContextUsageRatio(used, usage.contextWindow) ?? 0
     const percent = Math.min(100, Math.round(ratio * 100))
     return { used, ratio, percent, window: usage.contextWindow }

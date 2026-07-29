@@ -711,13 +711,39 @@ function piEventToSdkMessages(event: AgentEvent, sessionId: string): SDKMessage[
       break
 
     case 'agent_end': {
-      // Agent 结束：从最后一条带 usage 的 assistant 消息汇总 result.usage（供底栏 token 环）
+      // Agent 结束：从最后一条带 usage 的 assistant 汇总 result.usage（底栏 TokenStatsBar）
       const endMsgs = event.messages ?? []
-      let usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+      let usage = {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      }
       for (let i = endMsgs.length - 1; i >= 0; i--) {
         const m = endMsgs[i]
         if (m && m.role === 'assistant' && 'usage' in m && m.usage) {
-          usage = piUsageToSdk(m.usage as Usage) as typeof usage
+          const u = m.usage as Usage
+          const mapped = piUsageToSdk(u) ?? {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          }
+          const inTok = mapped.input_tokens ?? 0
+          const outTok = mapped.output_tokens ?? 0
+          const cacheRead = mapped.cache_read_input_tokens ?? 0
+          const cacheWrite = mapped.cache_creation_input_tokens ?? 0
+          // 占用口径：优先 provider totalTokens；否则 input+cache（与 statusline 一致）
+          const contextUsed =
+            typeof u.totalTokens === 'number' && u.totalTokens > 0
+              ? u.totalTokens
+              : inTok + cacheRead + cacheWrite
+          usage = {
+            input_tokens: contextUsed,
+            output_tokens: outTok,
+            cache_read_input_tokens: cacheRead,
+            cache_creation_input_tokens: cacheWrite,
+          }
           break
         }
       }
