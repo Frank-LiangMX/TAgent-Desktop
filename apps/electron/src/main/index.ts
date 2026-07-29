@@ -10,6 +10,7 @@ import { SessionService } from './lib/ipc/session-service'
 import { ChannelService } from './lib/ipc/channel-service'
 import { WorkspaceService } from './lib/ipc/workspace-service'
 import { McpService } from './lib/ipc/mcp-service'
+import { PluginService } from './lib/ipc/plugin-service'
 import { PermissionService } from './lib/permission/permission-service'
 import { seedBuiltinChannels } from './lib/channel/channel-store'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
@@ -211,6 +212,7 @@ app.whenReady().then(() => {
   seedBuiltinChannels()
   ChannelService.create()
   McpService.create()
+  PluginService.create()
   permissionService = PermissionService.create(() => mainWindow)
   sessionService = SessionService.create(() => mainWindow, permissionService)
   WorkspaceService.create(

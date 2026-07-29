@@ -1826,6 +1826,10 @@ export const AGENT_IPC_CHANNELS = {
   INSTALL_STORE_BUNDLE: 'agent:install-store-bundle',
   /** 获取插件商店目录 */
   GET_PLUGIN_STORE_CATALOG: 'agent:get-plugin-store-catalog',
+  /** 获取工作区已安装整合包记录（plugins-installed.json） */
+  GET_INSTALLED_PLUGIN_BUNDLES: 'agent:get-installed-plugin-bundles',
+  /** 卸载整合包（移除 manifest 记录 + 仍匹配商店形态的 MCP + 记录的 Skill 目录） */
+  UNINSTALL_STORE_BUNDLE: 'agent:uninstall-store-bundle',
   /** 读取 SKILL.md 全文内容 */
   READ_SKILL_CONTENT: 'agent:read-skill-content',
   /** 写入 SKILL.md 全文内容 */

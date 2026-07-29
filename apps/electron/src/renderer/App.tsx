@@ -17,8 +17,11 @@ import type {
   FetchModelsInput,
   FetchModelsForChannelInput,
   FetchModelsResult,
+  InstallStoreBundleResult,
   McpServerEntry,
+  PluginStoreCatalog,
   WorkspaceMcpConfig,
+  WorkspacePluginBundleRecord,
 } from '@tagent/shared'
 import { Button, ConversationEmptyState, TooltipProvider } from '@tagent/ui'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
@@ -94,6 +97,15 @@ declare global {
       deleteMcpServer: (slug: string, name: string) => Promise<{ ok: boolean; error?: string }>
       /** 真实测试 MCP server 连接（成功/失败顺带持久化 lastTestResult） */
       testMcpServer: (slug: string, name: string, entry: McpServerEntry) => Promise<{ success: boolean; message: string }>
+      // 插件商店（整合包市场）
+      /** 获取插件商店目录（整合包 + Skill + MCP） */
+      getPluginStoreCatalog: () => Promise<PluginStoreCatalog>
+      /** 获取工作区已安装整合包记录（plugins-installed.json） */
+      getInstalledPluginBundles: (slug: string) => Promise<WorkspacePluginBundleRecord[]>
+      /** 安装整合包（写 MCP + 可装 Skill + 写 manifest） */
+      installStoreBundle: (slug: string, bundleId: string) => Promise<InstallStoreBundleResult>
+      /** 卸载整合包（移除 manifest 记录 + 仍匹配商店形态的 MCP + 记录的 Skill 目录） */
+      uninstallStoreBundle: (slug: string, bundleId: string) => Promise<{ ok: boolean; removedMcps: string[]; removedSkills: string[]; errors: string[] }>
       // 权限审批
       onPermissionRequest: (cb: (req: unknown) => void) => () => void
       respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) => void
