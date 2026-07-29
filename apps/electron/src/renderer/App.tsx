@@ -1,10 +1,8 @@
 /**
  * TAgent-Desktop App 根组件
  *
- * 顶栏（WorkspaceSelector + 渠道管理入口 + 当前渠道）
- * + 侧栏（按 workspace 分组的会话列表）
- * + Chat（消息区）。
- * 无 workspace 时显示引导界面。
+ * 浮岛壳（Rail 仅会话/设置 + Sidebar + main）。
+ * 渠道 / 主题入口在设置页；无 workspace 时显示引导界面。
  */
 import { useEffect, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
