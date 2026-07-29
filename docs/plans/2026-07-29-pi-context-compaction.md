@@ -88,11 +88,12 @@ UI / IPC（后续 phase）
 
 ### Phase 1（本轮必做）— 长会话可用
 
-- [ ] 自研 settings + 窗口推断最小实现  
-- [ ] 接线 Pi `shouldCompact` / `compact`（或 `generateSummary` + 自研消息替换）  
-- [ ] 挂到 Pi `Agent` 创建路径  
-- [ ] 单测：阈值换算、shouldCompact 边界、noop/过小会话  
-- [ ] typecheck 绿  
+- [x] 自研 settings + 窗口推断最小实现（`pi-context-settings.ts`）  
+- [x] 接线 Pi `shouldCompact` / `generateSummary` + 自研切点/装配（`pi-context-compaction.ts`；未用 session tree 的 `prepareCompaction` 全路径，见实现注释）  
+- [x] 挂到 Pi `Agent` 的 `transformContext`，并写回 `state.messages`  
+- [x] 单测：阈值换算、shouldCompact 边界、noop/成功压缩  
+- [x] typecheck 绿  
+
 
 ### Phase 2 — 产品完整
 

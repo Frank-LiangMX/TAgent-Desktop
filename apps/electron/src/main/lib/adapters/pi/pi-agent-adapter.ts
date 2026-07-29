@@ -441,7 +441,57 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     const taskTool = createTaskTool(sessionId, channelConfig, cwd ?? process.cwd(), piCore, piAgentCore)
     const agentTools = [...finalBaseTools, ...mcpTools, taskTool]
 
-    // 创建 Agent（挂 beforeToolCall 权限钩子）
+    // 上下文自动压缩接线（TAgent 自研，仅外部渠道；kscc bare 暂不接线，见 plan §4.2）。
+    // 算法用 Pi（estimateContextTokens/shouldCompact/generateSummary），编排/写回用 TAgent。
+    // transformContext 仅影响本轮请求视图，故压缩后需显式写回 state.messages（plan §4.3），
+    // 并原地替换本轮视图避免同一 run 内重复压缩。
+    let agentRef: AgentType | null = null
+    let transformContext: ((messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>) | undefined
+    if (channelConfig.type === 'external') {
+      const compactionSettings = piCore.buildTagentCompactionSettings(model.contextWindow)
+      const piCompactionSettings = piCore.toPiCompactionSettings(compactionSettings)
+      const compactionModels = piCore.createCompactionModelsShim(streamFn, model)
+      transformContext = async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
+        try {
+          const result = await piCore.maybeCompactMessages({
+            messages,
+            contextWindow: compactionSettings.contextWindow,
+            settings: piCompactionSettings,
+            models: compactionModels,
+            model,
+            signal,
+          })
+          if (!result.compacted) {
+            // 仅对非常规跳过原因打日志（below threshold/disabled/empty 是正常不压）
+            if (
+              result.reason &&
+              result.reason !== 'below threshold' &&
+              result.reason !== 'disabled' &&
+              result.reason !== 'empty'
+            ) {
+              console.log(`[pi-compaction] ${sessionId} 跳过压缩: ${result.reason}`)
+            }
+            return messages
+          }
+          console.log(
+            `[pi-compaction] ${sessionId} 已压缩 tokensBefore=${result.tokensBefore} ` +
+              `summaryLen=${result.summary?.length ?? 0} 压后消息数=${result.messages.length}`,
+          )
+          // 显式写回 state（transformContext 仅影响本轮请求视图，需持久化避免下一轮再膨胀）
+          if (agentRef) agentRef.state.messages = result.messages
+          // 原地替换本轮视图，避免同一 run 内重复触发压缩
+          messages.length = 0
+          messages.push(...result.messages)
+          return messages
+        } catch (err) {
+          // transformContext 契约：不得抛错，回退原消息
+          console.error(`[pi-compaction] ${sessionId} 压缩异常，回退原消息:`, err)
+          return messages
+        }
+      }
+    }
+
+    // 创建 Agent（挂 beforeToolCall 权限钩子 + 外部渠道的 transformContext 压缩钩子）
     const agent = new piAgentCore.Agent({
       initialState: {
         systemPrompt: systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
@@ -455,7 +505,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       streamFn,
       toolExecution: 'sequential',
       ...(beforeToolCall ? { beforeToolCall } : {}),
+      ...(transformContext ? { transformContext } : {}),
     } as never)
+    agentRef = agent
 
     return { agent, controller, isStreaming: false, channelConfig }
   }

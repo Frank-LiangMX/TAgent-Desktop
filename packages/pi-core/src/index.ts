@@ -57,3 +57,23 @@ export {
   type WorkspaceMcpConfig,
   type McpTestResult,
 } from "./mcp-bridge.ts";
+
+// M6：Pi 上下文自动压缩（TAgent 自研接线 + Pi 压缩算法）
+// 见 docs/plans/2026-07-29-pi-context-compaction.md（Phase 1：外部渠道长会话自动压缩）
+export {
+  TAGENT_PI_COMPACTION_THRESHOLD_RATIO,
+  TAGENT_PI_COMPACTION_FALLBACK_CONTEXT_WINDOW,
+  calculateReserveTokens,
+  resolveContextWindow,
+  buildTagentCompactionSettings,
+  toPiCompactionSettings,
+  type TagentCompactionSettings,
+} from "./pi-context-settings.ts";
+export {
+  maybeCompactMessages,
+  findCompactionCutIndex,
+  assembleCompactedMessages,
+  createCompactionModelsShim,
+  type MaybeCompactOptions,
+  type MaybeCompactResult,
+} from "./pi-context-compaction.ts";
