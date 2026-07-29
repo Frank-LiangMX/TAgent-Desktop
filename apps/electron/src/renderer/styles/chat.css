@@ -236,6 +236,73 @@
   opacity: 0.95;
 }
 
+/* 思考行：会话区直接可见（对齐 General agent-thinking） */
+.agent-thinking-row {
+  min-width: 0;
+  margin: 2px 0 6px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: color-mix(in srgb, hsl(var(--foreground)) 3%, transparent);
+}
+
+.agent-thinking-row.is-live {
+  background: color-mix(in srgb, hsl(var(--primary)) 5%, transparent);
+}
+
+.agent-thinking-row__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+
+.agent-thinking-row__badge {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
+  font-size: 10px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground) / 0.85);
+}
+
+.agent-thinking-row__dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: hsl(var(--primary) / 0.75);
+  animation: agent-thinking-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes agent-thinking-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.agent-thinking-row__body {
+  margin-top: 6px;
+  max-height: min(28vh, 220px);
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: hsl(var(--muted-foreground) / 0.88);
+  scrollbar-width: thin;
+}
+
 /*
  * 会话项样式（对齐 TAgent_General sidebar 会话行 + 加丰富过渡）
  * 玻璃属 sidebar 容器一层，会话项实色印在玻璃上（无 backdrop-filter 防掉帧）。

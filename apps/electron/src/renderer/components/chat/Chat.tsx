@@ -617,10 +617,21 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
                   <span>正在加载更早的 {items.length - effectiveVisible} 条…</span>
                 </div>
               )}
-              {visibleTurns.map((turn) => (
-                <TurnView key={turn.key} turn={turn} />
-              ))}
-              {running && !items.some((it) => it.streaming) && <MessageLoading />}
+              {visibleTurns.map((turn, turnIndex) => {
+                // 整轮 Agent 仍在跑且是最新 turn → 过程区保持展开（含工具间隙，不只 stream delta）
+                const isLiveTurn =
+                  running &&
+                  turnIndex === visibleTurns.length - 1 &&
+                  turn.kind === 'assistant-turn'
+                return (
+                  <TurnView key={turn.key} turn={turn} isLiveTurn={isLiveTurn} />
+                )
+              })}
+              {running &&
+                !items.some((it) => it.streaming) &&
+                visibleTurns[visibleTurns.length - 1]?.kind !== 'assistant-turn' && (
+                  <MessageLoading />
+                )}
             </div>
           )}
         </ConversationContent>
@@ -716,7 +727,13 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
 }
 
 /** turn 渲染：user / assistant-turn / 独立状态行 */
-function TurnView({ turn }: { turn: ReturnType<typeof groupItemsIntoTurns>[number] }): JSX.Element {
+function TurnView({
+  turn,
+  isLiveTurn = false,
+}: {
+  turn: ReturnType<typeof groupItemsIntoTurns>[number]
+  isLiveTurn?: boolean
+}): JSX.Element {
   if (turn.kind === 'user') {
     return (
       <div data-message-id={turn.key}>
@@ -727,7 +744,7 @@ function TurnView({ turn }: { turn: ReturnType<typeof groupItemsIntoTurns>[numbe
   if (turn.kind === 'assistant-turn') {
     return (
       <div data-message-id={turn.key}>
-        <AssistantTurnView turn={turn} />
+        <AssistantTurnView turn={turn} isLiveTurn={isLiveTurn} />
       </div>
     )
   }

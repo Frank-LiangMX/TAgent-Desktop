@@ -1,9 +1,9 @@
 /**
- * ProcessGroupView — Agent 过程区
+ * ProcessGroupView — Agent 过程区（对齐 General）
  *
- * - **运行中**：强制展开，实时看到思考 + 当前工具行（不能只剩步数）
- * - **结束后**：自动收成一行摘要（用户未手动钉开时）
- * - 行内是语义短语，不是 Bash/结果徽章墙
+ * - **运行中（isLive）**：会话区直接展开，看见思考内容 + 工具语义行
+ * - **结束后**：自动收成一行摘要（用户未手动展开则收起）
+ * - 不是「只显示步数」的黑盒
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
@@ -12,9 +12,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
   CopyButton,
-  Reasoning,
-  ReasoningContent,
-  ReasoningTrigger,
   ScrollArea,
 } from '@tagent/ui'
 import { cn } from '../../lib/utils'
@@ -25,68 +22,73 @@ import type { TAgentToolResultBlock, TAgentToolUseBlock } from '@tagent/shared'
 
 interface ProcessGroupViewProps {
   process: ProcessEntry[]
+  /** 本轮 Agent 仍在活动（含流式与工具间隙） */
+  isLive?: boolean
+  /** @deprecated 使用 isLive */
   isStreaming?: boolean
 }
 
 export function ProcessGroupView({
   process,
+  isLive,
   isStreaming = false,
 }: ProcessGroupViewProps): JSX.Element | null {
   if (process.length === 0) return null
 
+  const live = isLive ?? isStreaming
   const summary = summarizeProcess(process)
-  // 运行中默认展开；历史回合默认折叠
-  const [expanded, setExpanded] = useState(isStreaming)
+  const [expanded, setExpanded] = useState(live)
   const userToggledRef = useRef(false)
-  const wasStreamingRef = useRef(isStreaming)
+  const wasLiveRef = useRef(live)
   const bodyRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (isStreaming) {
-      // 新一轮流式：复位手动折叠，强制展开让用户看到过程
-      if (!wasStreamingRef.current) userToggledRef.current = false
+    if (live) {
+      if (!wasLiveRef.current) userToggledRef.current = false
+      // 运行中强制展开（除非用户刚手动收起）
       if (!userToggledRef.current) setExpanded(true)
-      wasStreamingRef.current = true
+      wasLiveRef.current = true
       return
     }
-    // 刚结束且用户没手动钉开 → 收起，主线只留回答
-    if (wasStreamingRef.current && !userToggledRef.current) {
-      const t = window.setTimeout(() => setExpanded(false), 600)
-      wasStreamingRef.current = false
+    if (wasLiveRef.current && !userToggledRef.current) {
+      const t = window.setTimeout(() => setExpanded(false), 800)
+      wasLiveRef.current = false
       return () => window.clearTimeout(t)
     }
-    wasStreamingRef.current = false
-  }, [isStreaming])
+    wasLiveRef.current = false
+  }, [live])
 
-  // 运行中过程变长时滚到最新一行
   useEffect(() => {
-    if (!isStreaming || !expanded) return
+    if (!live || !expanded) return
     const el = bodyRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
-  }, [process.length, isStreaming, expanded, process[process.length - 1]?.key])
+  }, [process.length, live, expanded, process[process.length - 1]?.key])
 
   const liveHint = useMemo(() => {
-    if (!isStreaming) return null
-    // 从后往前找当前正在进行的活动
+    if (!live) return null
     for (let i = process.length - 1; i >= 0; i--) {
       const e = process[i]!
       if (e.type === 'tool' && !e.result) {
         return getToolPhrase(e.tool.name, e.tool.input).loadingLabel
       }
-      if (e.type === 'thinking') return '正在思考…'
+      if (e.type === 'thinking') {
+        const t = e.thinking.trim().replace(/\s+/g, ' ')
+        if (t) return t.length > 48 ? `思考：${t.slice(0, 48)}…` : `思考：${t}`
+        return '正在思考…'
+      }
       if (e.type === 'tool' && e.result) {
         return getToolPhrase(e.tool.name, e.tool.input).label
       }
     }
     return '正在执行…'
-  }, [isStreaming, process])
+  }, [live, process])
 
   const headerLabel = useMemo(() => {
-    if (isStreaming) {
+    if (live) {
       const done = process.filter((p) => p.type === 'tool' && p.result).length
       const total = summary.toolCount
-      const steps = total > 0 ? `${done}/${total} 步` : null
+      const steps = total > 0 ? `${done}/${total}` : null
       if (liveHint && steps) return `${liveHint} · ${steps}`
       if (liveHint) return liveHint
       return '正在思考与执行…'
@@ -97,12 +99,10 @@ export function ProcessGroupView({
     if (summary.toolCount > 0) return `已执行 ${summary.toolCount} 步`
     if (summary.thinkingCount > 0) return `思考 ${summary.thinkingCount} 段`
     return summary.label
-  }, [isStreaming, process, summary, liveHint])
+  }, [live, process, summary, liveHint])
 
-  // 运行中以展开为准（用户手动收起仍尊重）
   const showBody = expanded
 
-  // 最后一条 thinking 在流式中保持展开，便于盯着想
   const lastThinkingKey = useMemo(() => {
     for (let i = process.length - 1; i >= 0; i--) {
       if (process[i]?.type === 'thinking') return process[i]!.key
@@ -111,7 +111,7 @@ export function ProcessGroupView({
   }, [process])
 
   return (
-    <div className={cn('agent-process-group', isStreaming && 'is-live')}>
+    <div className={cn('agent-process-group', live && 'is-live')}>
       <button
         type="button"
         className="agent-process-group__toggle"
@@ -130,17 +130,14 @@ export function ProcessGroupView({
         />
         <span
           className={cn(
-            'min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground/75',
-            isStreaming && 'agent-process-group__live',
+            'min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground/80',
+            live && 'agent-process-group__live',
           )}
         >
           {headerLabel}
         </span>
-        {!showBody && !isStreaming && summary.toolCount > 0 && (
+        {!showBody && !live && (summary.toolCount > 0 || summary.thinkingCount > 0) && (
           <span className="shrink-0 text-[11px] text-muted-foreground/40">查看过程</span>
-        )}
-        {isStreaming && showBody && (
-          <span className="shrink-0 text-[11px] text-muted-foreground/40">运行中</span>
         )}
       </button>
 
@@ -148,14 +145,13 @@ export function ProcessGroupView({
         <div ref={bodyRef} className="agent-process-group__body agent-process-group__body--scroll">
           {process.map((entry) => {
             if (entry.type === 'thinking') {
-              const live = isStreaming && entry.key === lastThinkingKey
+              const isCurrent = live && entry.key === lastThinkingKey
               return (
-                <div key={entry.key} className="agent-tool-row agent-tool-row--thinking">
-                  <Reasoning isStreaming={live} defaultOpen={live}>
-                    <ReasoningTrigger />
-                    <ReasoningContent>{entry.thinking}</ReasoningContent>
-                  </Reasoning>
-                </div>
+                <ThinkingActivityRow
+                  key={entry.key}
+                  thinking={entry.thinking}
+                  isLive={isCurrent}
+                />
               )
             }
             if (entry.type === 'tool') {
@@ -164,7 +160,7 @@ export function ProcessGroupView({
                   key={entry.key}
                   tool={entry.tool}
                   result={entry.result}
-                  isStreaming={isStreaming && !entry.result}
+                  isStreaming={live && !entry.result}
                 />
               )
             }
@@ -181,7 +177,7 @@ export function ProcessGroupView({
             }
             return null
           })}
-          {!isStreaming && (
+          {!live && (
             <button
               type="button"
               className="agent-process-group__collapse"
@@ -199,7 +195,56 @@ export function ProcessGroupView({
   )
 }
 
-/** 单行语义工具活动：读取 a.ts · 执行 ls — 点开才看明细 */
+/** 思考行：运行中直接展开正文（对齐 General live thinking） */
+function ThinkingActivityRow({
+  thinking,
+  isLive,
+}: {
+  thinking: string
+  isLive: boolean
+}): JSX.Element {
+  const [open, setOpen] = useState(isLive)
+  useEffect(() => {
+    if (isLive) setOpen(true)
+  }, [isLive])
+
+  const preview = thinking.trim().replace(/\s+/g, ' ')
+  const short = preview.length > 72 ? `${preview.slice(0, 72)}…` : preview
+
+  return (
+    <div className={cn('agent-thinking-row', isLive && 'is-live')}>
+      <button
+        type="button"
+        className="agent-thinking-row__head"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="agent-thinking-row__badge">思考</span>
+        {isLive && <span className="agent-thinking-row__dot" aria-hidden />}
+        {!open && (
+          <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground/65">
+            {short || '…'}
+          </span>
+        )}
+        {open && isLive && (
+          <span className="text-[11px] text-muted-foreground/45">进行中</span>
+        )}
+        <CaretRight
+          size={11}
+          className={cn(
+            'ml-auto shrink-0 text-muted-foreground/35 transition-transform',
+            open && 'rotate-90',
+          )}
+        />
+      </button>
+      {open && (
+        <div className="agent-thinking-row__body">
+          {thinking.trim() || (isLive ? '…' : '')}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ToolActivityRow({
   tool,
   result,
@@ -215,9 +260,7 @@ function ToolActivityRow({
   const isError = Boolean(result?.isError)
   const label = done || !isStreaming ? phrase.label : phrase.loadingLabel
   const resultHint =
-    done && result
-      ? summarizeToolResult(result.content, result.isError)
-      : undefined
+    done && result ? summarizeToolResult(result.content, result.isError) : undefined
 
   const inputJson = useMemo(() => JSON.stringify(tool.input, null, 2), [tool.input])
   const resultText = useMemo(() => {
@@ -226,7 +269,11 @@ function ToolActivityRow({
     if (typeof c === 'string') return c
     if (Array.isArray(c)) {
       return c
-        .map((b) => (b && typeof b === 'object' && 'text' in b ? String((b as { text: unknown }).text) : ''))
+        .map((b) =>
+          b && typeof b === 'object' && 'text' in b
+            ? String((b as { text: unknown }).text)
+            : '',
+        )
         .join('\n')
     }
     try {
@@ -238,11 +285,7 @@ function ToolActivityRow({
 
   return (
     <div className={cn('agent-tool-row', isStreaming && 'is-active')}>
-      <button
-        type="button"
-        className="agent-tool-row__main"
-        onClick={() => setOpen((v) => !v)}
-      >
+      <button type="button" className="agent-tool-row__main" onClick={() => setOpen((v) => !v)}>
         <span className="agent-tool-row__status" aria-hidden>
           {isStreaming ? (
             <CircleNotch size={13} className="animate-spin text-muted-foreground/50" />
@@ -254,7 +297,7 @@ function ToolActivityRow({
         </span>
         <span
           className={cn(
-            'min-w-0 flex-1 truncate text-left text-[13px] text-muted-foreground/80',
+            'min-w-0 flex-1 truncate text-left text-[13px] text-muted-foreground/85',
             isStreaming && 'agent-process-group__live',
           )}
         >

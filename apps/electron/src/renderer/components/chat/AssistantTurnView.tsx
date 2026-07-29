@@ -1,10 +1,9 @@
 /**
- * AssistantTurnView — 一轮助手主线
+ * AssistantTurnView — 一轮助手主线（对齐 General 的 turn 分层）
  *
- * 布局：
- * 1. 模型铭牌 ×1
- * 2. 过程区：运行中展开看思考/工具；结束后可折叠
- * 3. 一段回答：落盘与流式互斥
+ * - 模型铭牌 ×1
+ * - 过程区：运行中始终展开，直接看到思考/工具活动（不是只显示步数）
+ * - 回答区：一段正文（与流式互斥）
  */
 import {
   Message,
@@ -21,9 +20,14 @@ import { MessageView } from './MessageView'
 
 interface AssistantTurnViewProps {
   turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>
+  /** 当前会话仍在跑且本 turn 是最新一轮（含工具间隙） */
+  isLiveTurn?: boolean
 }
 
-export function AssistantTurnView({ turn }: AssistantTurnViewProps): JSX.Element {
+export function AssistantTurnView({
+  turn,
+  isLiveTurn = false,
+}: AssistantTurnViewProps): JSX.Element {
   const subagentItems = turn.items.filter(
     (it) => it.message?.type === 'assistant' && it.message.parentToolUseId,
   )
@@ -32,15 +36,16 @@ export function AssistantTurnView({ turn }: AssistantTurnViewProps): JSX.Element
   )
   const presentation = buildTurnPresentation({ ...turn, items: mainItems })
 
+  // 运行中：过程区按 live 处理（展开 + 实时思考/工具）
+  const processLive = isLiveTurn || presentation.isStreaming
+
   const answerText =
     presentation.answerTexts[0] ??
     (presentation.isStreaming ? presentation.streamingText : undefined)
 
   const showAnswerShell =
     Boolean(answerText?.trim()) ||
-    (presentation.isStreaming &&
-      presentation.process.length === 0 &&
-      !answerText)
+    (processLive && presentation.process.length === 0 && !answerText)
 
   return (
     <div className="agent-turn flex flex-col gap-3">
@@ -50,10 +55,7 @@ export function AssistantTurnView({ turn }: AssistantTurnViewProps): JSX.Element
 
       {presentation.process.length > 0 && (
         <div className="agent-turn-process">
-          <ProcessGroupView
-            process={presentation.process}
-            isStreaming={presentation.isStreaming}
-          />
+          <ProcessGroupView process={presentation.process} isLive={processLive} />
         </div>
       )}
 
@@ -70,9 +72,9 @@ export function AssistantTurnView({ turn }: AssistantTurnViewProps): JSX.Element
           <MessageContent>
             {answerText?.trim() ? (
               <MessageResponse>{answerText}</MessageResponse>
-            ) : (
+            ) : processLive ? (
               <MessageLoading />
-            )}
+            ) : null}
           </MessageContent>
         </Message>
       )}
