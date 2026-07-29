@@ -45,69 +45,86 @@
 }
 
 .session-composer-cluster.has-token-bar {
-  /* 仅扣 token 栏高；与输入底的间隙 = band - status - 栏高 ≈ 5–6px */
-  --shell-token-slot: var(--shell-token-h, 12px);
+  /* 栏占位 + 与输入底多留一点气（勿贴紧） */
+  --shell-token-slot: calc(var(--shell-token-h, 16px) + 4px);
 }
 
 /*
- * token 栏：落在 status↔输入底之间；磨砂底挡住滚动文字，勿透明透字。
- * 圆环略小；栏高 12px + 输入 margin 自动留出与输入底的间隙（~5px）。
+ * token 栏：读数淡色印在 scene 上，无硬边界面板。
+ * 底层用 mask 渐变 + blur：滚动文字滚入时变糊，栏本身融入背景。
  */
 .session-bottom-stack .token-stats-bar {
   position: relative;
   z-index: 1;
   box-sizing: border-box;
   display: flex;
-  flex: 0 0 var(--shell-token-h, 12px);
+  flex: 0 0 var(--shell-token-h, 16px);
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  height: var(--shell-token-h, 12px);
-  min-height: var(--shell-token-h, 12px);
-  max-height: var(--shell-token-h, 12px);
+  gap: 10px;
+  height: var(--shell-token-h, 16px);
+  min-height: var(--shell-token-h, 16px);
+  max-height: var(--shell-token-h, 16px);
   margin: 0;
-  /* 左右略伸出，磨砂盖住读数区全宽 */
-  padding: 0 10px;
-  margin-left: -6px;
-  margin-right: -6px;
+  padding: 0 4px;
   overflow: visible;
-  font-size: 8px;
+  font-size: 9px;
   line-height: 1;
-  color: hsl(var(--muted-foreground) / 0.62);
+  color: hsl(var(--muted-foreground) / 0.58);
   border: 0;
-  border-radius: 8px;
-  /* 磨砂：半透玻璃 + blur，避免与滚动消息叠字 */
-  background: linear-gradient(
-    180deg,
-    rgb(var(--glass-rgb) / 0.52),
-    rgb(var(--glass-rgb) / 0.38)
-  );
-  -webkit-backdrop-filter: blur(14px) saturate(1.04);
-  backdrop-filter: blur(14px) saturate(1.04);
-  box-shadow:
-    0 1px 0 rgb(255 255 255 / 0.22) inset,
-    0 -6px 12px -8px rgb(23 30 40 / 0.12);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
-.dark .session-bottom-stack .token-stats-bar {
+/* 无硬边的底区雾化：向上淡出，只模糊滚到脚下的消息 */
+.session-bottom-stack .token-stats-bar::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  /* 向上多伸一点接住滚动文字，左右铺满主区 */
+  top: -18px;
+  right: -24px;
+  bottom: -6px;
+  left: -24px;
+  pointer-events: none;
   background: linear-gradient(
-    180deg,
-    rgb(var(--glass-rgb) / 0.42),
-    rgb(var(--glass-rgb) / 0.28)
+    to bottom,
+    rgb(var(--scene-base-rgb, 248 248 250) / 0) 0%,
+    rgb(var(--scene-base-rgb, 248 248 250) / 0.22) 35%,
+    rgb(var(--scene-base-rgb, 248 248 250) / 0.55) 70%,
+    rgb(var(--scene-base-rgb, 248 248 250) / 0.78) 100%
   );
-  box-shadow:
-    0 1px 0 rgb(255 255 255 / 0.06) inset,
-    0 -6px 14px -8px rgb(0 0 0 / 0.35);
+  -webkit-backdrop-filter: blur(12px) saturate(1.02);
+  backdrop-filter: blur(12px) saturate(1.02);
+  /* 顶部软裁，避免出现一条硬雾边 */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    black 28%,
+    black 100%
+  );
+  mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
+}
+
+.dark .session-bottom-stack .token-stats-bar::before {
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--scene-base-rgb, 18 20 24) / 0) 0%,
+    rgb(var(--scene-base-rgb, 18 20 24) / 0.28) 40%,
+    rgb(var(--scene-base-rgb, 18 20 24) / 0.62) 75%,
+    rgb(var(--scene-base-rgb, 18 20 24) / 0.85) 100%
+  );
 }
 
 .session-bottom-stack .token-stats-bar--empty {
-  color: hsl(var(--muted-foreground) / 0.4);
+  color: hsl(var(--muted-foreground) / 0.38);
 }
 
-/* 圆环再小一点 */
+/* 圆环略小，但栏内留白别挤贴边 */
 .session-bottom-stack .token-stats-bar .token-stats-ring {
-  width: 11px;
-  height: 11px;
+  gap: 5px;
+  padding: 2px 4px;
 }
 
 .session-bottom-stack .token-stats-bar .token-stats-ring svg {

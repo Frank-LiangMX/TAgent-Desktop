@@ -74,9 +74,9 @@ export function ContextUsageBadge({
 
   if (!stats) return null
 
-  // 比初版再小一点，贴近 General 底栏 11–12px 环
-  const size = 12
-  const stroke = 1.75
+  // 环略小；与百分比字距靠 CSS gap，勿贴边
+  const size = 11
+  const stroke = 1.6
   const r = (size - stroke) / 2
   const c = 2 * Math.PI * r
   const dash = c * Math.min(1, stats.ratio)
@@ -87,9 +87,9 @@ export function ContextUsageBadge({
         <button
           type="button"
           className={cn(
-            'token-stats-ring inline-flex items-center gap-1 rounded-full px-0.5 py-0',
-            'text-[9px] leading-none text-muted-foreground',
-            'hover:bg-black/5 dark:hover:bg-white/5 transition-colors',
+            'token-stats-ring inline-flex items-center gap-1.5 rounded-sm',
+            'text-[9px] leading-none text-muted-foreground/80',
+            'hover:text-foreground/80 transition-colors',
             stats.ratio >= 0.9 && 'text-destructive',
             stats.ratio >= 0.8 && stats.ratio < 0.9 && 'text-amber-600 dark:text-amber-400',
             className,

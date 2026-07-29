@@ -45,8 +45,8 @@
     --shell-band-inset-bottom: 24px;
     /* 与 General 底栏坐标系一致：status 贴窗底，token 填 status↔band 间隙 */
     --spatial-status-bottom: 7px;
-    /* token 栏高度；间隙 = 24-7-h ≈ 6px，勿贴输入底 */
-    --shell-token-h: 11px;
+    /* token 栏占位高（读数行本身不高；环小、栏别挤） */
+    --shell-token-h: 16px;
     --shell-band-height: calc(100% - var(--shell-band-inset-top) - var(--shell-band-inset-bottom));
     --spatial-line: rgb(68 78 94 / 12%);
   }
