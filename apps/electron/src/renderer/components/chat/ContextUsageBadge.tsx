@@ -74,8 +74,9 @@ export function ContextUsageBadge({
 
   if (!stats) return null
 
-  const size = 18
-  const stroke = 2.5
+  // 比初版再小一点，贴近 General 底栏 11–12px 环
+  const size = 12
+  const stroke = 1.75
   const r = (size - stroke) / 2
   const c = 2 * Math.PI * r
   const dash = c * Math.min(1, stats.ratio)
@@ -86,8 +87,9 @@ export function ContextUsageBadge({
         <button
           type="button"
           className={cn(
-            'inline-flex items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] text-muted-foreground',
-            'hover:bg-muted/60 transition-colors',
+            'token-stats-ring inline-flex items-center gap-1 rounded-full px-0.5 py-0',
+            'text-[9px] leading-none text-muted-foreground',
+            'hover:bg-black/5 dark:hover:bg-white/5 transition-colors',
             stats.ratio >= 0.9 && 'text-destructive',
             stats.ratio >= 0.8 && stats.ratio < 0.9 && 'text-amber-600 dark:text-amber-400',
             className,
@@ -95,7 +97,7 @@ export function ContextUsageBadge({
           title="Context 占用（外部渠道 / Pi）"
           aria-label={`上下文占用 ${stats.percent}%`}
         >
-          <svg width={size} height={size} className="-rotate-90" aria-hidden>
+          <svg width={size} height={size} className="-rotate-90 shrink-0" aria-hidden>
             <circle
               cx={size / 2}
               cy={size / 2}

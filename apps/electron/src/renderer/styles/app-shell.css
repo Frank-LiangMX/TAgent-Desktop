@@ -45,35 +45,74 @@
 }
 
 .session-composer-cluster.has-token-bar {
-  --shell-token-slot: var(--shell-token-h, 14px);
+  /* 仅扣 token 栏高；与输入底的间隙 = band - status - 栏高 ≈ 5–6px */
+  --shell-token-slot: var(--shell-token-h, 12px);
 }
 
-/* token 栏：填 status↔输入底间隙，透明读数，不占 band 内文档流 */
+/*
+ * token 栏：落在 status↔输入底之间；磨砂底挡住滚动文字，勿透明透字。
+ * 圆环略小；栏高 12px + 输入 margin 自动留出与输入底的间隙（~5px）。
+ */
 .session-bottom-stack .token-stats-bar {
   position: relative;
-  z-index: 0;
+  z-index: 1;
   box-sizing: border-box;
   display: flex;
-  flex: 0 0 var(--shell-token-h, 14px);
+  flex: 0 0 var(--shell-token-h, 12px);
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
-  height: var(--shell-token-h, 14px);
-  min-height: var(--shell-token-h, 14px);
-  max-height: var(--shell-token-h, 14px);
+  gap: 8px;
+  height: var(--shell-token-h, 12px);
+  min-height: var(--shell-token-h, 12px);
+  max-height: var(--shell-token-h, 12px);
   margin: 0;
-  padding: 0 2px;
+  /* 左右略伸出，磨砂盖住读数区全宽 */
+  padding: 0 10px;
+  margin-left: -6px;
+  margin-right: -6px;
   overflow: visible;
-  font-size: 9px;
+  font-size: 8px;
   line-height: 1;
-  color: hsl(var(--muted-foreground) / 0.55);
-  background: transparent;
+  color: hsl(var(--muted-foreground) / 0.62);
   border: 0;
-  box-shadow: none;
+  border-radius: 8px;
+  /* 磨砂：半透玻璃 + blur，避免与滚动消息叠字 */
+  background: linear-gradient(
+    180deg,
+    rgb(var(--glass-rgb) / 0.52),
+    rgb(var(--glass-rgb) / 0.38)
+  );
+  -webkit-backdrop-filter: blur(14px) saturate(1.04);
+  backdrop-filter: blur(14px) saturate(1.04);
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.22) inset,
+    0 -6px 12px -8px rgb(23 30 40 / 0.12);
+}
+
+.dark .session-bottom-stack .token-stats-bar {
+  background: linear-gradient(
+    180deg,
+    rgb(var(--glass-rgb) / 0.42),
+    rgb(var(--glass-rgb) / 0.28)
+  );
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.06) inset,
+    0 -6px 14px -8px rgb(0 0 0 / 0.35);
 }
 
 .session-bottom-stack .token-stats-bar--empty {
-  color: hsl(var(--muted-foreground) / 0.35);
+  color: hsl(var(--muted-foreground) / 0.4);
+}
+
+/* 圆环再小一点 */
+.session-bottom-stack .token-stats-bar .token-stats-ring {
+  width: 11px;
+  height: 11px;
+}
+
+.session-bottom-stack .token-stats-bar .token-stats-ring svg {
+  width: 11px;
+  height: 11px;
 }
 
 /* composer：抬升浮岛；玻璃底 + 顶光 + blur + 向下柔影 + 顶高光 */
