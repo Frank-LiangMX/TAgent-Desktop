@@ -4,12 +4,9 @@
  * 数据目录：~/.tagent/（dev 模式 ~/.tagent-dev/）
  * 见 CLAUDE.md "本地文件存储"。
  */
-import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { existsSync, mkdirSync } from 'node:fs'
-
-const nodeRequire = createRequire(import.meta.url)
 
 let _configDirName: string | null = null
 
@@ -17,11 +14,17 @@ let _configDirName: string | null = null
  * 是否已打包。延迟 require electron，避免：
  * - CI `bun install --ignore-scripts` 未下载 electron 二进制时顶层 import 直接炸掉
  * - vitest / 纯 Node 单测环境无 Electron runtime
+ *
+ * 注意：不要 createRequire(import.meta.url)。esbuild 打 CJS 时会把 import.meta
+ * 收成空对象（url=undefined），模块一加载就崩。esbuild 对 external:electron
+ * 会保留 require('electron')，主进程 CJS 下可用。
+ *
  * 返回 null 表示无法探测（与原先 try/catch 回落 `.tagent` 一致）。
  */
 function isAppPackaged(): boolean | null {
   try {
-    const { app } = nodeRequire('electron') as typeof import('electron')
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { app } = require('electron') as typeof import('electron')
     return Boolean(app?.isPackaged)
   } catch {
     return null
