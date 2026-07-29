@@ -2,28 +2,31 @@
  * 插件主页（工作区维度）— Rail 一级入口，对齐 TAgent_General skills
  *
  * 产品单位 = 整合包 Bundle（Cursor/Codex/TAgent_General 风格）。
- * 顶栏：工作区选择 + Segmented（市场 / 已安装 / MCP）。
- * - 市场：整包卡片网格（name/description/category/N MCP + M Skill/安装按钮），点卡片展开详情。
- * - 已安装：来自 plugins-installed.json，可卸载。
- * - MCP：手动配置自定义 MCP 服务器（stdio/http/sse），原独立设置项并入此处。
- * 视觉：复用 ChannelsSettings 的 channel-* 卡片节奏 + @tagent/ui 组件，少量 .plugin-bundle-* CSS。
+ * - 市场：干净卡片网格；点击整卡打开详情弹窗（对齐 General 详情布局）
+ * - 已安装：列表，可卸载；点行亦可打开详情
+ * - MCP：手动配置自定义服务器
  */
 import { useEffect, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import {
   AlertCircle,
-  BookOpen,
   CheckCircle2,
-  ChevronDown,
   Download,
+  ExternalLink,
+  Loader2,
   Package,
   Plug,
   RefreshCw,
+  Sparkles,
   Trash2,
 } from 'lucide-react'
 import {
   Button,
   DestructiveConfirmDialog,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
   Select,
   SelectContent,
   SelectItem,
@@ -47,25 +50,16 @@ type PluginView = 'market' | 'installed' | 'mcp'
 type InstallNotice = { kind: 'success' | 'error'; message: string }
 
 const CATEGORY_LABELS: Record<string, string> = {
-  dev: '开发',
-  ta: 'TA',
+  dev: '开发工具',
+  ta: 'TA 专用',
   workflow: '工作流',
-  office: '办公',
-  planning: '规划',
-  meta: '元',
-}
-
-const TIER_LABELS: Record<string, string> = {
-  recommended: '推荐',
-  optional: '可选',
+  office: '办公文档',
+  planning: '任务规划',
+  meta: '扩展能力',
 }
 
 function categoryLabel(category: string): string {
   return CATEGORY_LABELS[category] ?? category
-}
-
-function tierLabel(tier: string): string | undefined {
-  return TIER_LABELS[tier]
 }
 
 function formatDate(iso: string | undefined): string {
@@ -81,19 +75,16 @@ export function PluginStoreSettings(): JSX.Element {
   const [loadingCatalog, setLoadingCatalog] = useState(false)
   const [loadingInstalled, setLoadingInstalled] = useState(false)
   const [view, setView] = useState<PluginView>('market')
-  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [detailBundleId, setDetailBundleId] = useState<string | null>(null)
   const [installingId, setInstallingId] = useState<string | null>(null)
   const [installResults, setInstallResults] = useState<Record<string, InstallNotice>>({})
   const [uninstallTarget, setUninstallTarget] = useState<{ bundleId: string; name: string } | null>(null)
-  const [uninstalling, setUninstalling] = useState(false)
   const [pageError, setPageError] = useState('')
 
-  // 打开设置时刷新工作区列表（可能在外部新建过项目）
   useEffect(() => {
     void loadWorkspaces()
   }, [loadWorkspaces])
 
-  // 默认选中第一个工作区
   useEffect(() => {
     if (!selectedId && workspaces.length > 0) {
       const first = workspaces[0]
@@ -103,7 +94,6 @@ export function PluginStoreSettings(): JSX.Element {
 
   const slug = selectedId
 
-  // 插件目录是全局静态数据，挂载时拉一次
   useEffect(() => {
     let cancelled = false
     setLoadingCatalog(true)
@@ -140,12 +130,9 @@ export function PluginStoreSettings(): JSX.Element {
     }
   }
 
-  // 切工作区时重载已安装记录，并清掉上一个工作区的安装反馈/展开态
   useEffect(() => {
     setInstallResults({})
-    setExpandedId(null)
     void reloadInstalled()
-    // reloadInstalled 闭包随 slug 变化，故仅依赖 slug
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug])
 
@@ -171,17 +158,20 @@ export function PluginStoreSettings(): JSX.Element {
   const doUninstall = async (): Promise<void> => {
     if (!uninstallTarget || !slug) return
     const target = uninstallTarget
-    setUninstalling(true)
     try {
       const result = await window.electronAPI.uninstallStoreBundle(slug, target.bundleId)
       if (!result.ok) throw new Error('该整合包未安装，无需卸载')
+      if (detailBundleId === target.bundleId) setDetailBundleId(null)
       await reloadInstalled()
     } catch (err) {
       throw new Error(err instanceof Error ? err.message : '卸载失败')
-    } finally {
-      setUninstalling(false)
     }
   }
+
+  const detailBundle =
+    detailBundleId && catalog
+      ? (catalog.bundles.find((b) => b.id === detailBundleId) ?? null)
+      : null
 
   if (workspaces.length === 0) {
     return (
@@ -265,11 +255,10 @@ export function PluginStoreSettings(): JSX.Element {
           catalog={catalog}
           loadingCatalog={loadingCatalog}
           installedIds={installedIds}
-          expandedId={expandedId}
-          onToggleExpand={(id) => setExpandedId(expandedId === id ? null : id)}
           installingId={installingId}
           installResults={installResults}
           canInstall={Boolean(slug)}
+          onOpenDetail={(id) => setDetailBundleId(id)}
           onInstall={installBundle}
         />
       ) : view === 'installed' ? (
@@ -277,11 +266,32 @@ export function PluginStoreSettings(): JSX.Element {
           installed={installed}
           catalog={catalog}
           loading={loadingInstalled}
+          onOpenDetail={(id) => setDetailBundleId(id)}
           onUninstall={(record, name) => setUninstallTarget({ bundleId: record.bundleId, name })}
         />
       ) : (
         <McpSettings embedded workspaceId={slug} />
       )}
+
+      <BundleDetailDialog
+        open={detailBundleId != null}
+        bundle={detailBundle}
+        catalog={catalog}
+        installed={detailBundle ? installedIds.has(detailBundle.id) : false}
+        installing={detailBundle ? installingId === detailBundle.id : false}
+        notice={detailBundle ? installResults[detailBundle.id] : undefined}
+        canInstall={Boolean(slug)}
+        onOpenChange={(open) => {
+          if (!open) setDetailBundleId(null)
+        }}
+        onInstall={() => {
+          if (detailBundle) void installBundle(detailBundle)
+        }}
+        onUninstall={() => {
+          if (!detailBundle) return
+          setUninstallTarget({ bundleId: detailBundle.id, name: detailBundle.name })
+        }}
+      />
 
       <DestructiveConfirmDialog
         open={Boolean(uninstallTarget)}
@@ -310,21 +320,19 @@ function MarketView({
   catalog,
   loadingCatalog,
   installedIds,
-  expandedId,
-  onToggleExpand,
   installingId,
   installResults,
   canInstall,
+  onOpenDetail,
   onInstall,
 }: {
   catalog: PluginStoreCatalog | null
   loadingCatalog: boolean
   installedIds: Set<string>
-  expandedId: string | null
-  onToggleExpand: (id: string) => void
   installingId: string | null
   installResults: Record<string, InstallNotice>
   canInstall: boolean
+  onOpenDetail: (id: string) => void
   onInstall: (bundle: StorePluginBundle) => void
 }): JSX.Element {
   if (loadingCatalog && !catalog) {
@@ -338,15 +346,13 @@ function MarketView({
   if (!catalog) return <></>
 
   const bundles = catalog.bundles
-  const mcpByName = new Map(catalog.mcps.map((m) => [m.name, m]))
-  const skillBySlug = new Map(catalog.skills.map((s) => [s.slug, s]))
 
   return (
     <>
       <div className="channel-settings-summary">
         <span>{bundles.length} 个整合包</span>
         <span aria-hidden>·</span>
-        <span>选择工作区后一键安装</span>
+        <span>点击卡片查看详情</span>
       </div>
       <div className="plugin-bundle-grid">
         {bundles.map((bundle) => (
@@ -354,14 +360,11 @@ function MarketView({
             key={bundle.id}
             bundle={bundle}
             installed={installedIds.has(bundle.id)}
-            expanded={expandedId === bundle.id}
-            onToggleExpand={() => onToggleExpand(bundle.id)}
             installing={installingId === bundle.id}
             notice={installResults[bundle.id]}
             canInstall={canInstall}
+            onSelect={() => onOpenDetail(bundle.id)}
             onInstall={() => onInstall(bundle)}
-            mcpByName={mcpByName}
-            skillBySlug={skillBySlug}
           />
         ))}
       </div>
@@ -369,106 +372,91 @@ function MarketView({
   )
 }
 
+/** 市场卡片 — 对齐 General MarketplaceBundleCard 节奏：头 / 描述 / 底栏安装 */
 function BundleCard({
   bundle,
   installed,
-  expanded,
-  onToggleExpand,
   installing,
   notice,
   canInstall,
+  onSelect,
   onInstall,
-  mcpByName,
-  skillBySlug,
 }: {
   bundle: StorePluginBundle
   installed: boolean
-  expanded: boolean
-  onToggleExpand: () => void
   installing: boolean
   notice: InstallNotice | undefined
   canInstall: boolean
+  onSelect: () => void
   onInstall: () => void
-  mcpByName: Map<string, BuiltinMcpCatalogEntry>
-  skillBySlug: Map<string, PluginStoreSkillEntry>
 }): JSX.Element {
-  const tier = tierLabel(bundle.tier)
   return (
-    <article className="plugin-bundle-card">
+    <div
+      role="button"
+      tabIndex={0}
+      className="plugin-bundle-card"
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onSelect()
+        }
+      }}
+    >
       <div className="plugin-bundle-card-head">
-        <div className="channel-provider-mark">
-          <Package size={15} />
+        <div className="plugin-bundle-logo" aria-hidden>
+          <Package size={16} strokeWidth={1.75} />
         </div>
         <div className="plugin-bundle-card-identity">
-          <div className="plugin-bundle-card-title">
-            <strong>{bundle.name}</strong>
-            <span className="channel-tag">{categoryLabel(bundle.category)}</span>
-            {tier && <span className="channel-tag">{tier}</span>}
-            {installed && <span className="channel-tag plugin-bundle-tag-installed">已安装</span>}
+          <div className="plugin-bundle-card-title-row">
+            <h3 className="plugin-bundle-card-name">{bundle.name}</h3>
+            {bundle.tier === 'recommended' && (
+              <span className="plugin-bundle-pill">推荐</span>
+            )}
           </div>
-          <p className="plugin-bundle-card-desc">{bundle.description}</p>
+          <p className="plugin-bundle-card-kind">
+            整合包 · MCP ×{bundle.mcps.length} · Skill ×{bundle.skills.length}
+          </p>
         </div>
       </div>
 
-      <div className="plugin-bundle-card-meta">
-        <Plug size={11} />
-        <span>{bundle.mcps.length} 个 MCP</span>
-        <span aria-hidden>·</span>
-        <BookOpen size={11} />
-        <span>{bundle.skills.length} 个 Skill</span>
-      </div>
+      <p className="plugin-bundle-card-desc">{bundle.description}</p>
 
       {notice && (
         <div className={`plugin-bundle-notice plugin-bundle-notice--${notice.kind}`} role="status">
-          {notice.kind === 'success' ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
+          {notice.kind === 'success' ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
           <span>{notice.message}</span>
         </div>
       )}
 
-      {expanded && (
-        <div className="plugin-bundle-details">
-          <div className="plugin-bundle-detail-line">
-            <strong>MCP</strong>
-            <div className="plugin-bundle-chip-list">
-              {bundle.mcps.length === 0 ? (
-                <span className="plugin-bundle-chip-empty">无</span>
-              ) : (
-                bundle.mcps.map((name) => (
-                  <span className="channel-tag" key={name}>
-                    {mcpByName.get(name)?.displayName ?? name}
-                  </span>
-                ))
-              )}
-            </div>
-          </div>
-          <div className="plugin-bundle-detail-line">
-            <strong>Skill</strong>
-            <div className="plugin-bundle-chip-list">
-              {bundle.skills.length === 0 ? (
-                <span className="plugin-bundle-chip-empty">无</span>
-              ) : (
-                bundle.skills.map((s) => (
-                  <span className="channel-tag" key={s}>
-                    {skillBySlug.get(s)?.name ?? s}
-                  </span>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="plugin-bundle-card-foot">
-        <button type="button" className="plugin-bundle-expand" onClick={onToggleExpand}>
-          <ChevronDown size={13} className={expanded ? 'plugin-bundle-chevron--open' : ''} />
-          {expanded ? '收起' : '详情'}
-        </button>
-        <Button size="sm" disabled={installing || !canInstall} onClick={onInstall}>
-          {installing ? <RefreshCw size={13} className="animate-spin" /> : <Download size={13} />}
-          {installed ? '重装' : '安装'}
-        </Button>
+      <div
+        className="plugin-bundle-card-foot"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        <span className="plugin-bundle-card-category">{categoryLabel(bundle.category)}</span>
+        {installed ? (
+          <span className="plugin-bundle-installed-mark">
+            <CheckCircle2 size={12} strokeWidth={1.75} />
+            已安装
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="plugin-bundle-install-btn"
+            disabled={installing || !canInstall}
+            onClick={onInstall}
+          >
+            {installing ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Download size={12} />
+            )}
+            {installing ? '安装中…' : '安装'}
+          </button>
+        )}
       </div>
-    </article>
+    </div>
   )
 }
 
@@ -476,11 +464,13 @@ function InstalledView({
   installed,
   catalog,
   loading,
+  onOpenDetail,
   onUninstall,
 }: {
   installed: WorkspacePluginBundleRecord[]
   catalog: PluginStoreCatalog | null
   loading: boolean
+  onOpenDetail: (id: string) => void
   onUninstall: (record: WorkspacePluginBundleRecord, name: string) => void
 }): JSX.Element {
   if (loading) {
@@ -509,6 +499,8 @@ function InstalledView({
     <>
       <div className="channel-settings-summary">
         <span>{installed.length} 个已安装整合包</span>
+        <span aria-hidden>·</span>
+        <span>点击查看详情</span>
       </div>
       <section className="channel-group">
         <div className="channel-list">
@@ -516,10 +508,22 @@ function InstalledView({
             const bundle = bundleById.get(record.bundleId)
             const name = bundle?.name ?? record.bundleId
             return (
-              <article className="channel-row" key={record.bundleId}>
+              <article
+                className="channel-row plugin-installed-row"
+                key={record.bundleId}
+                role="button"
+                tabIndex={0}
+                onClick={() => onOpenDetail(record.bundleId)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onOpenDetail(record.bundleId)
+                  }
+                }}
+              >
                 <div className="channel-row-topline">
-                  <div className="channel-provider-mark">
-                    <Package size={15} />
+                  <div className="plugin-bundle-logo plugin-bundle-logo--sm" aria-hidden>
+                    <Package size={14} strokeWidth={1.75} />
                   </div>
                   <div className="channel-row-identity">
                     <div className="channel-row-title">
@@ -527,10 +531,15 @@ function InstalledView({
                       {bundle && <span className="channel-tag">{categoryLabel(bundle.category)}</span>}
                     </div>
                     <p>
-                      {record.mcps.length} 个 MCP · {record.skills.length} 个 Skill · 安装于 {formatDate(record.installedAt)}
+                      {record.mcps.length} 个 MCP · {record.skills.length} 个 Skill · 安装于{' '}
+                      {formatDate(record.installedAt)}
                     </p>
                   </div>
-                  <div className="channel-row-actions">
+                  <div
+                    className="channel-row-actions"
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
                     <Button
                       variant="ghost"
                       size="icon-sm"
@@ -548,5 +557,235 @@ function InstalledView({
         </div>
       </section>
     </>
+  )
+}
+
+/** 详情弹窗 — 对齐 General PluginMarketplaceBundleDetail 信息结构 */
+function BundleDetailDialog({
+  open,
+  bundle,
+  catalog,
+  installed,
+  installing,
+  notice,
+  canInstall,
+  onOpenChange,
+  onInstall,
+  onUninstall,
+}: {
+  open: boolean
+  bundle: StorePluginBundle | null
+  catalog: PluginStoreCatalog | null
+  installed: boolean
+  installing: boolean
+  notice: InstallNotice | undefined
+  canInstall: boolean
+  onOpenChange: (open: boolean) => void
+  onInstall: () => void
+  onUninstall: () => void
+}): JSX.Element {
+  const mcps =
+    bundle && catalog
+      ? bundle.mcps
+          .map((name) => catalog.mcps.find((m) => m.name === name))
+          .filter((m): m is BuiltinMcpCatalogEntry => Boolean(m))
+      : []
+  const skills =
+    bundle && catalog
+      ? bundle.skills
+          .map((slug) => catalog.skills.find((s) => s.slug === slug))
+          .filter((s): s is PluginStoreSkillEntry => Boolean(s))
+      : []
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="plugin-detail-dialog !max-w-[720px] !w-[min(720px,calc(100vw-48px))] !gap-0 !p-0 !overflow-hidden"
+        aria-describedby="plugin-detail-desc"
+      >
+        {!bundle ? (
+          <div className="plugin-detail-shell" style={{ padding: 24 }}>
+            <DialogTitle className="plugin-detail-title">整合包不存在</DialogTitle>
+            <DialogDescription id="plugin-detail-desc" className="plugin-detail-id">
+              目录中找不到该整合包，可能已被移除。
+            </DialogDescription>
+          </div>
+        ) : (
+          <div className="plugin-detail-shell">
+            <header className="plugin-detail-header">
+              <div className="plugin-detail-header-main">
+                <div className="plugin-bundle-logo plugin-bundle-logo--lg" aria-hidden>
+                  <Package size={22} strokeWidth={1.75} />
+                </div>
+                <div className="plugin-detail-titles">
+                  <DialogTitle className="plugin-detail-title">{bundle.name}</DialogTitle>
+                  <DialogDescription id="plugin-detail-desc" className="plugin-detail-id">
+                    {bundle.id} · {bundle.publisher}
+                  </DialogDescription>
+                </div>
+              </div>
+              <div className="plugin-detail-header-actions">
+                {installed ? (
+                  <>
+                    <span className="plugin-bundle-installed-mark">
+                      <CheckCircle2 size={14} strokeWidth={1.75} />
+                      已安装
+                    </span>
+                    <Button variant="outline" size="sm" onClick={onUninstall}>
+                      <Trash2 size={13} />
+                      卸载
+                    </Button>
+                  </>
+                ) : (
+                  <Button size="sm" disabled={installing || !canInstall} onClick={onInstall}>
+                    {installing ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Download size={14} />
+                    )}
+                    {installing ? '安装中…' : '安装'}
+                  </Button>
+                )}
+              </div>
+            </header>
+
+            <div className="plugin-detail-body scrollbar-thin">
+              <aside className="plugin-detail-meta">
+                <MetaItem label="分类" value={categoryLabel(bundle.category)} />
+                <MetaItem
+                  label="包含"
+                  value={`MCP ×${bundle.mcps.length} · Skill ×${bundle.skills.length}`}
+                />
+                {bundle.tier === 'recommended' && <MetaItem label="层级" value="推荐" />}
+                <div className="plugin-detail-meta-item">
+                  <dt>源码</dt>
+                  <dd>
+                    <button
+                      type="button"
+                      className="plugin-detail-link"
+                      onClick={() => window.open(bundle.repositoryUrl, '_blank')}
+                    >
+                      查看仓库
+                      <ExternalLink size={11} />
+                    </button>
+                  </dd>
+                </div>
+                {bundle.homepageUrl && (
+                  <div className="plugin-detail-meta-item">
+                    <dt>主页</dt>
+                    <dd>
+                      <button
+                        type="button"
+                        className="plugin-detail-link"
+                        onClick={() => window.open(bundle.homepageUrl, '_blank')}
+                      >
+                        打开
+                        <ExternalLink size={11} />
+                      </button>
+                    </dd>
+                  </div>
+                )}
+              </aside>
+
+              <div className="plugin-detail-main">
+                <p className="plugin-detail-desc">{bundle.description}</p>
+
+                {notice && (
+                  <div
+                    className={`plugin-bundle-notice plugin-bundle-notice--${notice.kind}`}
+                    role="status"
+                  >
+                    {notice.kind === 'success' ? (
+                      <CheckCircle2 size={13} />
+                    ) : (
+                      <AlertCircle size={13} />
+                    )}
+                    <span>{notice.message}</span>
+                  </div>
+                )}
+
+                {mcps.length > 0 && (
+                  <section className="plugin-detail-section">
+                    <h3>
+                      MCP <span>{mcps.length}</span>
+                    </h3>
+                    <div className="plugin-detail-sublist">
+                      {mcps.map((mcp) => (
+                        <BundleSubItem
+                          key={mcp.name}
+                          kind="mcp"
+                          title={mcp.displayName}
+                          description={mcp.description}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {skills.length > 0 && (
+                  <section className="plugin-detail-section">
+                    <h3>
+                      Skill <span>{skills.length}</span>
+                    </h3>
+                    <div className="plugin-detail-sublist">
+                      {skills.map((skill) => (
+                        <BundleSubItem
+                          key={skill.slug}
+                          kind="skill"
+                          title={skill.name}
+                          description={skill.description}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {mcps.length === 0 && skills.length === 0 && (
+                  <p className="plugin-detail-empty">该整合包尚未收录 MCP / Skill 明细。</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function MetaItem({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div className="plugin-detail-meta-item">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  )
+}
+
+function BundleSubItem({
+  kind,
+  title,
+  description,
+}: {
+  kind: 'mcp' | 'skill'
+  title: string
+  description: string
+}): JSX.Element {
+  return (
+    <div className="plugin-detail-subitem">
+      <span
+        className={`plugin-detail-subitem-icon plugin-detail-subitem-icon--${kind}`}
+        aria-hidden
+      >
+        {kind === 'mcp' ? (
+          <Plug size={15} strokeWidth={1.75} />
+        ) : (
+          <Sparkles size={15} strokeWidth={1.75} />
+        )}
+      </span>
+      <div className="plugin-detail-subitem-body">
+        <p className="plugin-detail-subitem-title">{title}</p>
+        <p className="plugin-detail-subitem-desc">{description}</p>
+      </div>
+    </div>
   )
 }
