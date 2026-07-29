@@ -282,6 +282,61 @@ export function invalidateMcpServer(serverName: string): void {
   manager.invalidateServer(serverName);
 }
 
+// ============ 真实连接测试（独立短连接，不污染 agent 连接池） ============
+
+/** MCP 连接测试结果 */
+export interface McpTestResult {
+  success: boolean;
+  /** 成功时为发现的工具数量 */
+  toolCount?: number;
+  /** 用户可读消息（成功/失败均带） */
+  message: string;
+}
+
+/** 把未知错误转成可读字符串 */
+function readableMcpError(err: unknown): string {
+  if (err instanceof Error) return err.message || "未知错误";
+  if (typeof err === "string") return err || "未知错误";
+  return "未知错误";
+}
+
+/**
+ * 真实探测一个 MCP server 的连通性。
+ *
+ * 用一条独立短连接完成 connect + listTools，成功返回工具数量；
+ * 失败/超时返回 `{ success: false, message }`，**不抛错**。
+ * 超时尊重 `config.timeout`（秒），默认 30（由 getTimeoutMs 计算）。
+ * 不复用 McpClientManager 缓存，避免测试行为污染 agent 连接池。
+ */
+export async function testMcpServer(name: string, config: McpServerEntry): Promise<McpTestResult> {
+  const transport = createTransport(name, config);
+  if (!transport) {
+    return {
+      success: false,
+      message: config.type === "stdio" ? "配置不完整：缺少 command" : "配置不完整：缺少 url",
+    };
+  }
+  const timeoutMs = getTimeoutMs(config);
+  const client = new Client({ name: "tagent-mcp-test", version: "0.1.0" }, { capabilities: {} });
+  try {
+    await client.connect(transport, { timeout: timeoutMs });
+    const result = await client.listTools();
+    return {
+      success: true,
+      toolCount: result.tools.length,
+      message: `连接成功，发现 ${result.tools.length} 个工具`,
+    };
+  } catch (err) {
+    return { success: false, message: readableMcpError(err) };
+  } finally {
+    try {
+      await transport.close();
+    } catch {
+      /* 忽略关闭错误 */
+    }
+  }
+}
+
 // ============ MCP 工具 → Pi AgentTool 批量转换 ============
 
 /**

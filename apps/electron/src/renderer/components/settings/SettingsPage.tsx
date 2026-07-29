@@ -6,6 +6,7 @@ import {
   Cable,
   Folder,
   Info,
+  Plug,
   X,
 } from 'lucide-react'
 import {
@@ -31,13 +32,14 @@ import {
 } from '../../atoms/dynamic-bg'
 import { workspacesAtom } from '../../atoms/workspace-atoms'
 import { ChannelsSettings } from './ChannelsSettings'
+import { McpSettings } from './McpSettings'
 import appiconLight from '../../assets/tagent-appicon-light.png'
 import appiconDark from '../../assets/tagent-appicon-dark.png'
 
 const APP_VERSION =
   typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : '2.0.0-dev.9'
 
-export type SettingsTab = 'general' | 'appearance' | 'channels' | 'workspace' | 'about'
+export type SettingsTab = 'general' | 'appearance' | 'channels' | 'workspace' | 'mcp' | 'about'
 
 interface TabItem {
   id: SettingsTab
@@ -72,6 +74,13 @@ const ALL_TABS: TabItem[] = [
     label: '工作区',
     description: '项目目录与存储',
     icon: <Folder size={14} strokeWidth={1.75} />,
+    group: 'core',
+  },
+  {
+    id: 'mcp',
+    label: 'MCP',
+    description: '工作区 MCP 服务器与连接测试',
+    icon: <Plug size={14} strokeWidth={1.75} />,
     group: 'core',
   },
   {
@@ -111,6 +120,7 @@ function renderTabContent(tab: SettingsTab): JSX.Element {
     case 'appearance': return <AppearanceSettings />
     case 'channels': return <ChannelsSettings />
     case 'workspace': return <WorkspaceSettings />
+    case 'mcp': return <McpSettings />
     case 'about': return <AboutSettings />
     default: return <GeneralSettings />
   }
@@ -213,7 +223,7 @@ export function SettingsDialog({
                 <div className="settings-shell-scroll scrollbar-thin">
                   <div
                     key={`${activeTab}-${paneKey}`}
-                    className={`settings-shell-content settings-shell-pane ${activeTab === 'channels' ? 'settings-shell-content--wide' : ''}`}
+                    className={`settings-shell-content settings-shell-pane ${activeTab === 'channels' || activeTab === 'mcp' ? 'settings-shell-content--wide' : ''}`}
                   >
                     {renderTabContent(activeTab)}
                   </div>

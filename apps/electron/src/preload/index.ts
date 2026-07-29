@@ -18,6 +18,8 @@ import type {
   FetchModelsInput,
   FetchModelsForChannelInput,
   FetchModelsResult,
+  McpServerEntry,
+  WorkspaceMcpConfig,
 } from '@tagent/shared'
 
 export interface SendMessageInput {
@@ -113,9 +115,18 @@ const electronAPI = {
   },
   // MCP 配置（工作区 mcp.json）
   getMcpConfig: (slug: string) =>
-    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_MCP_CONFIG, slug) as Promise<unknown>,
-  saveMcpConfig: (slug: string, config: unknown) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_MCP_CONFIG, slug) as Promise<WorkspaceMcpConfig>,
+  saveMcpConfig: (slug: string, config: WorkspaceMcpConfig) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.SAVE_MCP_CONFIG, { slug, config }) as Promise<{ ok: boolean }>,
+  /** 新增/更新单个 MCP server（启用开关即时 upsert 也走这里） */
+  upsertMcpServer: (slug: string, name: string, entry: McpServerEntry) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.SAVE_MCP_CONFIG + ':upsert', { slug, name, entry }) as Promise<WorkspaceMcpConfig>,
+  /** 删除单个 MCP server */
+  deleteMcpServer: (slug: string, name: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.SAVE_MCP_CONFIG + ':delete', { slug, name }) as Promise<{ ok: boolean; error?: string }>,
+  /** 真实测试 MCP server 连接（成功/失败顺带持久化 lastTestResult） */
+  testMcpServer: (slug: string, name: string, entry: McpServerEntry) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.TEST_MCP_SERVER, { slug, name, entry }) as Promise<{ success: boolean; message: string }>,
   // 权限审批（主进程推请求 / renderer 回响应）
   onPermissionRequest: (cb: (req: unknown) => void) => {
     const handler = (_e: unknown, req: unknown): void => cb(req)

@@ -78,3 +78,22 @@ export function getEnabledMcpServers(sanitizedPath: string): Record<string, McpS
   }
   return enabled
 }
+
+/**
+ * 更新某个 MCP server 的最近测试结果。
+ *
+ * 仅在该 server 已存在时写回 `lastTestResult`（避免给尚未保存的草稿落盘），
+ * 返回是否成功更新。供 test handler 在真实探测后持久化用。
+ */
+export function setMcpLastTestResult(
+  sanitizedPath: string,
+  name: string,
+  result: { success: boolean; message: string; timestamp: number },
+): boolean {
+  const config = getMcpConfig(sanitizedPath)
+  const existing = config.servers[name]
+  if (!existing) return false
+  config.servers[name] = { ...existing, lastTestResult: result }
+  saveMcpConfig(sanitizedPath, config)
+  return true
+}

@@ -49,9 +49,11 @@ export {
 export {
   buildMcpTools,
   buildMcpToolsForServer,
+  testMcpServer,
   disposeMcpConnections,
   invalidateMcpServer,
   type McpServerEntry,
   type McpTransportType,
   type WorkspaceMcpConfig,
+  type McpTestResult,
 } from "./mcp-bridge.ts";

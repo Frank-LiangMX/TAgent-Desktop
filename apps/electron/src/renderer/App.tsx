@@ -17,6 +17,8 @@ import type {
   FetchModelsInput,
   FetchModelsForChannelInput,
   FetchModelsResult,
+  McpServerEntry,
+  WorkspaceMcpConfig,
 } from '@tagent/shared'
 import { Button, ConversationEmptyState, TooltipProvider } from '@tagent/ui'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
@@ -79,8 +81,14 @@ declare global {
       windowClose: () => void
       onWindowResize: (cb: () => void) => () => void
       // MCP 配置
-      getMcpConfig: (slug: string) => Promise<unknown>
-      saveMcpConfig: (slug: string, config: unknown) => Promise<{ ok: boolean }>
+      getMcpConfig: (slug: string) => Promise<WorkspaceMcpConfig>
+      saveMcpConfig: (slug: string, config: WorkspaceMcpConfig) => Promise<{ ok: boolean }>
+      /** 新增/更新单个 MCP server（启用开关即时 upsert 也走这里） */
+      upsertMcpServer: (slug: string, name: string, entry: McpServerEntry) => Promise<WorkspaceMcpConfig>
+      /** 删除单个 MCP server */
+      deleteMcpServer: (slug: string, name: string) => Promise<{ ok: boolean; error?: string }>
+      /** 真实测试 MCP server 连接（成功/失败顺带持久化 lastTestResult） */
+      testMcpServer: (slug: string, name: string, entry: McpServerEntry) => Promise<{ success: boolean; message: string }>
       // 权限审批
       onPermissionRequest: (cb: (req: unknown) => void) => () => void
       respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) => void
