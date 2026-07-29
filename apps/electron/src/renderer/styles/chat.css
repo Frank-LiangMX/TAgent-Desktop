@@ -145,46 +145,80 @@
   100% { background-position: -100% 0; }
 }
 
-.agent-process-group__chip {
-  display: inline-flex;
-  align-items: center;
-  max-width: 72px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
-  background: color-mix(in srgb, hsl(var(--card)) 50%, transparent);
-  font-size: 9px;
-  font-weight: 600;
-  color: hsl(var(--muted-foreground) / 0.8);
-}
-
 .agent-process-group__body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 4px 2px 2px 18px;
-}
-
-.agent-process-group__row {
-  min-width: 0;
+  gap: 2px;
+  padding: 2px 0 2px 4px;
 }
 
 .agent-process-group__collapse {
   align-self: flex-start;
-  margin-top: 2px;
+  margin-top: 6px;
+  margin-left: 18px;
   padding: 0;
   border: 0;
   background: transparent;
-  color: hsl(var(--muted-foreground) / 0.55);
+  color: hsl(var(--muted-foreground) / 0.5);
   font-size: 11px;
   cursor: pointer;
 }
 
 .agent-process-group__collapse:hover {
   color: hsl(var(--muted-foreground));
+}
+
+/* 语义工具行：像正常 Agent 活动流，不是 Badge 墙 */
+.agent-tool-row {
+  min-width: 0;
+  padding: 1px 0;
+}
+
+.agent-tool-row__main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+}
+
+.agent-tool-row__main:hover {
+  background: color-mix(in srgb, hsl(var(--foreground)) 3.5%, transparent);
+}
+
+.agent-tool-row__status {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-tool-row__detail {
+  margin: 2px 0 8px 22px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 5%, transparent);
+  background: color-mix(in srgb, hsl(var(--foreground)) 2%, transparent);
+}
+
+.agent-tool-row--muted {
+  padding: 2px 8px 2px 22px;
+}
+
+.agent-tool-row--thinking {
+  padding: 2px 4px 2px 6px;
+}
+
+.agent-tool-row.is-active .agent-tool-row__main {
+  opacity: 0.95;
 }
 
 /*
