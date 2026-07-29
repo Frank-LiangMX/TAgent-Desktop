@@ -60,7 +60,8 @@ jobs:
           ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
         run: |
           bun install --frozen-lockfile --ignore-scripts
-          node node_modules/electron/install.js
+          # bun workspaces hoist electron under the app package, not repo root
+          node apps/electron/node_modules/electron/install.js
 
       - name: Build ui tokens
         run: bun run --filter='@tagent/ui' tokens:generate
@@ -92,7 +93,7 @@ jobs:
           ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
         run: |
           bun install --frozen-lockfile --ignore-scripts
-          node node_modules/electron/install.js
+          node apps/electron/node_modules/electron/install.js
 
       - name: Rebuild native modules for Electron
         working-directory: apps/electron
