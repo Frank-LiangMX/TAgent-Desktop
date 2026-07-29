@@ -7,6 +7,75 @@
  * 「厚度光泽透明」：玻璃底 + scene-a 顶光折射层 + blur + 向下柔影 + 顶高光。
  */
 
+/*
+ * 底栏坐标系（对齐 General app-shell.css）：
+ *   窗底 ── status(7) ── token 栏 ── 间隙 ── 输入框底（= band inset = rail/sidebar 底）
+ * token 不把输入框顶上去：stack 锚在 status，输入用 margin-bottom 抬到 band。
+ */
+.session-bottom-stack {
+  right: 0;
+  bottom: var(--spatial-status-bottom, 7px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+
+.session-bottom-stack > * {
+  pointer-events: auto;
+}
+
+.session-composer-cluster {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+}
+
+/* 输入 dock：margin-bottom 使输入框底贴 band（有 token 时扣掉 token 高） */
+.session-input-dock {
+  margin-bottom: max(
+    0px,
+    calc(
+      var(--shell-band-inset-bottom, 24px) - var(--spatial-status-bottom, 7px) -
+        var(--shell-token-slot, 0px)
+    )
+  );
+}
+
+.session-composer-cluster.has-token-bar {
+  --shell-token-slot: var(--shell-token-h, 14px);
+}
+
+/* token 栏：填 status↔输入底间隙，透明读数，不占 band 内文档流 */
+.session-bottom-stack .token-stats-bar {
+  position: relative;
+  z-index: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 var(--shell-token-h, 14px);
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  height: var(--shell-token-h, 14px);
+  min-height: var(--shell-token-h, 14px);
+  max-height: var(--shell-token-h, 14px);
+  margin: 0;
+  padding: 0 2px;
+  overflow: visible;
+  font-size: 9px;
+  line-height: 1;
+  color: hsl(var(--muted-foreground) / 0.55);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.session-bottom-stack .token-stats-bar--empty {
+  color: hsl(var(--muted-foreground) / 0.35);
+}
+
 /* composer：抬升浮岛；玻璃底 + 顶光 + blur + 向下柔影 + 顶高光 */
 .app-shell-content-stage .chat-input-glass {
   position: relative;

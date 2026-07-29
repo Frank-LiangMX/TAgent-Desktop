@@ -46,9 +46,8 @@ export function TokenStatsBar({
   return (
     <div
       className={cn(
-        'token-stats-bar flex min-h-[18px] items-center justify-end gap-2.5 px-1 py-0.5',
-        'text-[10px] leading-none text-muted-foreground/60',
-        empty && 'opacity-40',
+        'token-stats-bar',
+        empty && 'token-stats-bar--empty',
         className,
       )}
       aria-label="Token 与上下文占用"

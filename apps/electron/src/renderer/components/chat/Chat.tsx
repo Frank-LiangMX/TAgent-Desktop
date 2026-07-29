@@ -592,72 +592,76 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
       {/* 权限确认横幅（工具写操作/危险命令时弹） */}
       <PermissionBanner sessionId={sessionId} />
 
-      {/* 输入区：composer 玻璃浮岛 absolute 浮在底部，680px 居中。
-       * 消息从下方滚过透出（透明玻璃 + blur），对齐 TAgent_General 浮岛布局 */}
-      <div
-        className="pointer-events-none absolute inset-x-0 px-4 pt-2"
-        style={{ bottom: 'var(--shell-band-inset-bottom, 24px)' }}
-      >
-        <div className="pointer-events-auto mx-auto max-w-[680px]">
-          <ChatInput
-            ref={chatInputRef}
-            onSubmit={() => void send()}
-            disabled={running}
-            placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
-            footer={
-              <div className="flex items-center justify-between px-2 pb-2 pt-1">
-                <div className="flex items-center gap-1">
-                  <ModelSelector
-                    selection={effectiveSelection}
-                    lockedKind={lockedKind}
-                    onSelect={(nextSelection) => {
-                      setSelectionOverride(nextSelection)
-                      setSelectedModelSelection(nextSelection)
-                    }}
-                  />
-                  <PermissionModeSelector
-                    mode={permissionMode}
-                    onChange={async (m) => {
-                      setPermissionMode(m)
-                      await window.electronAPI.setSessionPermissionMode(sessionId, m)
-                    }}
-                  />
-                  <SubagentEagernessSelector
-                    eagerness={subagentEagerness}
-                    onChange={async (level) => {
-                      setSubagentEagerness(level)
-                      // 持久化到会话 meta；下次发送时主进程注入 kscc systemPrompt append 生效
-                      await window.electronAPI.updateSessionMeta(sessionId, { subagentEagerness: level })
-                    }}
-                  />
-                </div>
-                <div className="flex items-center gap-1.5">
-                  {running && (
+      {/*
+        底栏坐标系（对齐 General）：
+        窗底 ── status(7) ── token 栏 ── 间隙 ── 输入框底（= band = rail/sidebar 底）
+        stack 锚在 status；输入用 margin-bottom 抬到 band，token 不把输入顶上去。
+      */}
+      <div className="session-bottom-stack absolute inset-x-0">
+        <div
+          className={`session-composer-cluster mx-auto max-w-[680px] px-4 ${showTokenBar ? 'has-token-bar' : ''}`}
+        >
+          <div className="session-input-dock">
+            <ChatInput
+              ref={chatInputRef}
+              onSubmit={() => void send()}
+              disabled={running}
+              placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
+              footer={
+                <div className="flex items-center justify-between px-2 pb-2 pt-1">
+                  <div className="flex items-center gap-1">
+                    <ModelSelector
+                      selection={effectiveSelection}
+                      lockedKind={lockedKind}
+                      onSelect={(nextSelection) => {
+                        setSelectionOverride(nextSelection)
+                        setSelectedModelSelection(nextSelection)
+                      }}
+                    />
+                    <PermissionModeSelector
+                      mode={permissionMode}
+                      onChange={async (m) => {
+                        setPermissionMode(m)
+                        await window.electronAPI.setSessionPermissionMode(sessionId, m)
+                      }}
+                    />
+                    <SubagentEagernessSelector
+                      eagerness={subagentEagerness}
+                      onChange={async (level) => {
+                        setSubagentEagerness(level)
+                        await window.electronAPI.updateSessionMeta(sessionId, {
+                          subagentEagerness: level,
+                        })
+                      }}
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {running && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-9 rounded-full text-destructive hover:bg-destructive/10"
+                        onClick={() => window.electronAPI.stopAgent(sessionIdRef.current)}
+                      >
+                        <Square className="size-4 fill-current" />
+                      </Button>
+                    )}
                     <Button
-                      variant="ghost"
                       size="icon"
-                      className="size-9 rounded-full text-destructive hover:bg-destructive/10"
-                      onClick={() => window.electronAPI.stopAgent(sessionIdRef.current)}
+                      className="size-9 rounded-full"
+                      disabled={running}
+                      onClick={() => void send()}
                     >
-                      <Square className="size-4 fill-current" />
+                      <ArrowUp className="size-5" />
                     </Button>
-                  )}
-                  <Button
-                    size="icon"
-                    className="size-9 rounded-full"
-                    disabled={running}
-                    onClick={() => void send()}
-                  >
-                    <ArrowUp className="size-5" />
-                  </Button>
+                  </div>
                 </div>
-              </div>
-            }
-          />
-          {/* General 风格：token 栏在输入玻璃壳下方，圆环在栏内；仅 external/Pi */}
+              }
+            />
+          </div>
+          {/* token 栏：stack 最底，落在 band 与窗边之间；仅 Pi/external */}
           {showTokenBar && (
             <TokenStatsBar
-              className="mt-1 px-2"
               usage={contextUsage}
               totals={tokenTotals}
               isCompacting={isCompactingUi}

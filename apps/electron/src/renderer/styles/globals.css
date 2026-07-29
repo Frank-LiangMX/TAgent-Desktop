@@ -43,6 +43,9 @@
     --shell-chrome-h: 40px;
     --shell-band-inset-top: 16px;
     --shell-band-inset-bottom: 24px;
+    /* 与 General 底栏坐标系一致：status 贴窗底，token 填 status↔band 间隙 */
+    --spatial-status-bottom: 7px;
+    --shell-token-h: 14px;
     --shell-band-height: calc(100% - var(--shell-band-inset-top) - var(--shell-band-inset-bottom));
     --spatial-line: rgb(68 78 94 / 12%);
   }
