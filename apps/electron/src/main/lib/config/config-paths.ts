@@ -4,12 +4,29 @@
  * 数据目录：~/.tagent/（dev 模式 ~/.tagent-dev/）
  * 见 CLAUDE.md "本地文件存储"。
  */
-import { app } from 'electron'
+import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { existsSync, mkdirSync } from 'node:fs'
 
+const nodeRequire = createRequire(import.meta.url)
+
 let _configDirName: string | null = null
+
+/**
+ * 是否已打包。延迟 require electron，避免：
+ * - CI `bun install --ignore-scripts` 未下载 electron 二进制时顶层 import 直接炸掉
+ * - vitest / 纯 Node 单测环境无 Electron runtime
+ * 返回 null 表示无法探测（与原先 try/catch 回落 `.tagent` 一致）。
+ */
+function isAppPackaged(): boolean | null {
+  try {
+    const { app } = nodeRequire('electron') as typeof import('electron')
+    return Boolean(app?.isPackaged)
+  } catch {
+    return null
+  }
+}
 
 /** 配置目录名：dev 模式 .tagent-dev，正式 .tagent */
 export function getConfigDirName(): string {
@@ -17,10 +34,11 @@ export function getConfigDirName(): string {
   if (process.env.TAGENT_DEV === '1') {
     _configDirName = '.tagent-dev'
   } else {
-    try {
-      _configDirName = app.isPackaged ? '.tagent' : '.tagent-dev'
-    } catch {
+    const packaged = isAppPackaged()
+    if (packaged === null) {
       _configDirName = '.tagent'
+    } else {
+      _configDirName = packaged ? '.tagent' : '.tagent-dev'
     }
   }
   return _configDirName
