@@ -130,12 +130,15 @@
 
 /*
  * 滚动到底部按钮：浮岛玻璃按钮，定位在 composer 输入框上方（不被浮岛盖住）。
- * 对齐 TAgent_General agent-thread.css:612 的玻璃浮岛按钮样式。
- * 库组件默认 bottom-[26px] 会被输入浮岛盖住，这里上移到输入框上方（~140px）。
+ * 对齐 TAgent_General：bottom = 输入区预留高度 + 空隙，避免贴死 composer 顶边。
+ * --session-composer-top：窗底到输入框顶的大致高度；--session-scroll-btn-gap：与输入顶的留白。
  */
 .conversation-scroll-btn,
 [data-conversation-scroll-btn] {
-  bottom: 140px !important;
+  /* 默认：输入顶约 140 + 与输入顶 14px 空隙（旧值 140 贴死） */
+  bottom: calc(
+    var(--session-composer-top, 140px) + var(--session-scroll-btn-gap, 14px)
+  ) !important;
   color: hsl(var(--muted-foreground) / 0.85);
   background: rgb(var(--glass-rgb) / 0.6) !important;
   border: 1px solid rgb(var(--glass-rgb) / 0.5) !important;
