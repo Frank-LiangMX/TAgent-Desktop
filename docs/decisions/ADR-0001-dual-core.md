@@ -30,6 +30,11 @@
 | Xfast/MoA | 削弱（单模型） | 全活（可并行） |
 | 换模型 | 核内（Anthropic 系） | 全互通 |
 
+## 上下文压缩（补充，2026-07-29）
+
+- **Pi 核**：使用 `@earendil-works/pi-agent-core` 原生 compaction API；**触发/接线/UI/重试为 TAgent 自研**。禁止照搬 Proma 业务代码。设计见 `docs/plans/2026-07-29-pi-context-compaction.md`。
+- **kscc 核**：继续依赖 Claude Agent SDK 长驻 + resume；SDK compact 另案，不与 Pi 混用同一套 API。
+
 ## TAgent-Desktop 落地
 
 - `adapters/claude/` = kscc 核（对外版编译排除）
