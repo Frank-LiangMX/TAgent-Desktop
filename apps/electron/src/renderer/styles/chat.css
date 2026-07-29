@@ -6,10 +6,14 @@
  * 禁染 primary/accent、禁 backdrop-filter（气泡），避免圆角糊黑。
  */
 
-/* 线程：680px 居中 */
+/*
+ * 会话信息流：可读宽度上限居中，不必拉满 main。
+ * 输入/token 另走 .session-composer-cluster 全宽。
+ */
 .tagent-thread {
-  width: min(var(--conversation-max, 680px), calc(100% - 24px));
-  margin: 0 auto;
+  width: min(var(--conversation-max, 720px), 100%);
+  max-width: var(--conversation-max, 720px);
+  margin-inline: auto;
   padding-top: 22px;
 }
 

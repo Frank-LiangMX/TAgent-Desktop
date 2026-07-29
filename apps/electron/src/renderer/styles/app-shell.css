@@ -26,11 +26,30 @@
   pointer-events: auto;
 }
 
+/*
+ * 输入 + token：铺满 main 内容宽（随窗口变宽），左右 gutter 对齐侧栏间距与右缘。
+ * 不再 max-width:680 居中卡死。
+ */
 .session-composer-cluster {
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
   min-width: 0;
   width: 100%;
+  max-width: none;
+  margin-inline: 0;
+  padding-left: var(--app-shell-session-gutter, 16px);
+  padding-right: var(--app-shell-session-gutter, 16px);
+}
+
+/* 权限条与输入同宽 */
+.session-permission-banner {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
+  padding-left: var(--app-shell-session-gutter, 16px);
+  padding-right: var(--app-shell-session-gutter, 16px);
 }
 
 /* 输入 dock：margin-bottom 使输入框底贴 band（有 token 时扣掉 token 高） */

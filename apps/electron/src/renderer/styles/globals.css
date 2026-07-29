@@ -20,8 +20,8 @@
 @layer base {
   :root {
     color-scheme: light;
-    /* 线程最大宽度（680px 居中） */
-    --conversation-max: 680px;
+    /* 会话信息流最大可读宽（居中）；输入/token 不套此限制，铺满 main */
+    --conversation-max: 720px;
     /* composer 玻璃浮岛圆角（对齐 TAgent_General --app-shell-composer-radius） */
     --app-shell-composer-radius: 16px;
     /* 用户气泡圆角 + 右下尖角 */

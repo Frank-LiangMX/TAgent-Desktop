@@ -50,7 +50,7 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 20 }}
           transition={{ type: 'spring', stiffness: 380, damping: 32 }}
-          className="pointer-events-auto absolute inset-x-0 bottom-2 z-30 mx-auto max-w-[680px] px-4"
+          className="session-permission-banner pointer-events-auto absolute inset-x-0 bottom-2 z-30"
         >
           <div
             className={cn(

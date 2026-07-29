@@ -593,14 +593,13 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
 
   return (
     <div className="relative h-full min-h-0">
-      {/* 消息区：占满全高，自动钉底，680px 居中线程。
-       * 底部 padding 给浮岛 composer 留位，最后一条不被盖死 */}
+      {/* 消息区：全高；线程有 max-width 居中；底栏输入/token 铺满 main（贴侧栏与右缘 gutter） */}
       <Conversation
         className="absolute inset-0 min-h-0"
         contextRef={scrollContextRef}
         resize={effectiveScrollReady ? 'smooth' : 'instant'}
       >
-        <ConversationContent className="px-4 pt-2 pb-44">
+        <ConversationContent className="session-conversation-pad px-4 pt-2 pb-44">
           {items.length === 0 && !running ? (
             <div className="flex h-full items-center justify-center">
               <p className="text-sm text-muted-foreground/60">输入消息开始对话</p>
@@ -651,7 +650,7 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
       */}
       <div className="session-bottom-stack absolute inset-x-0">
         <div
-          className={`session-composer-cluster mx-auto max-w-[680px] px-4 ${showTokenBar ? 'has-token-bar' : ''}`}
+          className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''}`}
         >
           <div className="session-input-dock">
             <ChatInput
