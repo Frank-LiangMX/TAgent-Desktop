@@ -20,6 +20,7 @@ import {
 import {
   themeModeAtom,
   themeStyleAtom,
+  resolvedDarkAtom,
   setThemeMode,
   setThemeStyle,
   type ThemeMode,
@@ -28,17 +29,15 @@ import {
 import {
   dynamicBgEnabledAtom,
 } from '../../atoms/dynamic-bg'
-import {
-  channelsAtom,
-  externalChannelsAtom,
-  ksccChannelAtom,
-  loadChannelsAtom,
-} from '../../atoms/channel-atoms'
 import { workspacesAtom } from '../../atoms/workspace-atoms'
+import { ChannelsSettings } from './ChannelsSettings'
+import appiconLight from '../../assets/tagent-appicon-light.png'
+import appiconDark from '../../assets/tagent-appicon-dark.png'
 
-const APP_VERSION = '2.0.0-dev.9'
+const APP_VERSION =
+  typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : '2.0.0-dev.9'
 
-type SettingsTab = 'general' | 'appearance' | 'channels' | 'workspace' | 'about'
+export type SettingsTab = 'general' | 'appearance' | 'channels' | 'workspace' | 'about'
 
 interface TabItem {
   id: SettingsTab
@@ -131,12 +130,20 @@ function SettingsPageIntro({ title, description }: { title: string; description?
 export function SettingsDialog({
   open,
   onOpenChange,
+  initialTab = 'general',
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
+  initialTab?: SettingsTab
 }): JSX.Element {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('general')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab)
   const [paneKey, setPaneKey] = useState(0)
+
+  useEffect(() => {
+    if (!open) return
+    setActiveTab(initialTab)
+    setPaneKey((key) => key + 1)
+  }, [initialTab, open])
 
   const handleTabChange = (tabId: SettingsTab): void => {
     if (tabId === activeTab) return
@@ -188,6 +195,7 @@ export function SettingsDialog({
                             key={tab.id}
                             type="button"
                             data-active={activeTab === tab.id || undefined}
+                            aria-current={activeTab === tab.id ? 'page' : undefined}
                             onClick={() => handleTabChange(tab.id)}
                             className="settings-shell-nav-item"
                           >
@@ -202,8 +210,11 @@ export function SettingsDialog({
               </aside>
 
               <section className="settings-shell-main">
-                <div className="settings-shell-scroll">
-                  <div key={`${activeTab}-${paneKey}`} className="settings-shell-content settings-shell-pane">
+                <div className="settings-shell-scroll scrollbar-thin">
+                  <div
+                    key={`${activeTab}-${paneKey}`}
+                    className={`settings-shell-content settings-shell-pane ${activeTab === 'channels' ? 'settings-shell-content--wide' : ''}`}
+                  >
                     {renderTabContent(activeTab)}
                   </div>
                 </div>
@@ -342,50 +353,6 @@ function AppearanceSettings(): JSX.Element {
   )
 }
 
-function ChannelsSettings(): JSX.Element {
-  const channels = useAtomValue(channelsAtom)
-  const kscc = useAtomValue(ksccChannelAtom)
-  const externals = useAtomValue(externalChannelsAtom)
-  const loadChannels = useSetAtom(loadChannelsAtom)
-
-  useEffect(() => {
-    void loadChannels()
-  }, [loadChannels])
-
-  return (
-    <div className="settings-page">
-      <SettingsPageIntro
-        title="渠道"
-        description={`${channels.length} 个 AI 供应商配置`}
-      />
-
-      <SettingsSection title="已配置渠道">
-        <SettingsCard>
-          {kscc && (
-            <ChannelSummaryRow
-              name={kscc.name}
-              provider="kscc 内网"
-              enabled={kscc.enabled}
-              builtin
-            />
-          )}
-          {externals.length === 0 && !kscc && (
-            <div className="settings-row text-xs text-muted-foreground">暂无渠道</div>
-          )}
-          {externals.map((ch) => (
-            <ChannelSummaryRow
-              key={ch.id}
-              name={ch.name}
-              provider={ch.provider}
-              enabled={ch.enabled}
-            />
-          ))}
-        </SettingsCard>
-      </SettingsSection>
-    </div>
-  )
-}
-
 function WorkspaceSettings(): JSX.Element {
   const workspaces = useAtomValue(workspacesAtom)
 
@@ -416,6 +383,9 @@ function WorkspaceSettings(): JSX.Element {
 }
 
 function AboutSettings(): JSX.Element {
+  const isDark = useAtomValue(resolvedDarkAtom)
+  const appiconSrc = isDark ? appiconDark : appiconLight
+
   return (
     <div className="settings-page">
       <SettingsPageIntro title="关于" />
@@ -423,6 +393,12 @@ function AboutSettings(): JSX.Element {
       <SettingsSection title="TAgent-Desktop">
         <SettingsCard divided={false}>
           <div className="settings-about">
+            <img
+              src={appiconSrc}
+              alt="TAgent"
+              draggable={false}
+              className="settings-about-logo"
+            />
             <div className="settings-about-name">TAgent-Desktop</div>
             <div className="settings-about-version">v{APP_VERSION}</div>
             <p className="settings-about-desc">
@@ -432,28 +408,6 @@ function AboutSettings(): JSX.Element {
           </div>
         </SettingsCard>
       </SettingsSection>
-    </div>
-  )
-}
-
-function ChannelSummaryRow({
-  name,
-  provider,
-  enabled,
-  builtin = false,
-}: {
-  name: string
-  provider: string
-  enabled: boolean
-  builtin?: boolean
-}): JSX.Element {
-  return (
-    <div className="channel-summary-item">
-      <div className={`channel-summary-dot ${enabled ? 'channel-summary-dot--on' : 'channel-summary-dot--off'}`} />
-      <span className="channel-summary-name">{name}</span>
-      <span className="channel-summary-provider">
-        {builtin ? `${provider} · 内置` : provider}
-      </span>
     </div>
   )
 }

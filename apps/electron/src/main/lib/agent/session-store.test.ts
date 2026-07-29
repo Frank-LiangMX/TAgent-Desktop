@@ -93,6 +93,26 @@ describe('session-store persistence smoke', () => {
     expect(store.readMessages(meta.workspaceId, meta.id)).toEqual([])
   })
 
+  it('deletes every session in one workspace without affecting other workspaces', async () => {
+    const store = await loadStore()
+    const first = store.createSession({ id: 'workspace-a-1', workspaceId: 'workspace-a' })
+    const second = store.createSession({ id: 'workspace-a-2', workspaceId: 'workspace-a' })
+    const untouched = store.createSession({ id: 'workspace-b-1', workspaceId: 'workspace-b' })
+    store.appendMessages(first.workspaceId, first.id, [userMessage('删除一')])
+    store.appendMessages(second.workspaceId, second.id, [userMessage('删除二')])
+    store.appendMessages(untouched.workspaceId, untouched.id, [userMessage('保留')])
+
+    const deletedIds = store.deleteSessionsByWorkspace('workspace-a')
+
+    expect(deletedIds).toEqual(['workspace-a-1', 'workspace-a-2'])
+    expect(store.getSessionMeta(first.id)).toBeUndefined()
+    expect(store.getSessionMeta(second.id)).toBeUndefined()
+    expect(store.readMessages(first.workspaceId, first.id)).toEqual([])
+    expect(store.readMessages(second.workspaceId, second.id)).toEqual([])
+    expect(store.getSessionMeta(untouched.id)).toBeDefined()
+    expect(store.readMessages(untouched.workspaceId, untouched.id)).toHaveLength(1)
+  })
+
   it('ignores malformed JSONL records without losing valid messages', async () => {
     const store = await loadStore()
     const meta = store.createSession({

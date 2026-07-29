@@ -3,7 +3,7 @@
  *
  * 暴露两类 IPC：
  * - 会话：发消息/收流式/停止/销毁/列会话/读历史（发消息按 channelId 绑核）
- * - 渠道：列/建/改/删/解密 apiKey/测连接/拉模型
+ * - 渠道：列/建/改/删/测连接/拉模型（密钥仅在主进程解密）
  *
  * 流式统一走 STREAM_EVENT，payload 是 TAgentDesktopStreamEvent（{ sessionId, payload }）。
  */
@@ -16,6 +16,7 @@ import type {
   ChannelUpdateInput,
   ChannelTestResult,
   FetchModelsInput,
+  FetchModelsForChannelInput,
   FetchModelsResult,
 } from '@tagent/shared'
 
@@ -64,15 +65,15 @@ const electronAPI = {
   /** 删除渠道（kscc-internal 不可删） */
   deleteChannel: (id: string) =>
     ipcRenderer.invoke(CHANNEL_IPC_CHANNELS.DELETE, id) as Promise<{ ok: boolean; error?: string }>,
-  /** 解密 apiKey（编辑时回填用；kscc 返回空串） */
-  decryptKey: (id: string) =>
-    ipcRenderer.invoke(CHANNEL_IPC_CHANNELS.DECRYPT_KEY, id) as Promise<string>,
   /** 测试渠道连接 */
   testChannel: (id: string) =>
     ipcRenderer.invoke(CHANNEL_IPC_CHANNELS.TEST, id) as Promise<ChannelTestResult>,
-  /** 拉取 Provider 可用模型（占位：返回内置默认模型） */
+  /** 使用当前输入的凭据拉取 Provider 可用模型 */
   fetchModels: (input: FetchModelsInput) =>
     ipcRenderer.invoke(CHANNEL_IPC_CHANNELS.FETCH_MODELS, input) as Promise<FetchModelsResult>,
+  /** 使用已保存渠道的加密凭据拉取模型，明文密钥不进入渲染进程 */
+  fetchModelsForChannel: (input: FetchModelsForChannelInput) =>
+    ipcRenderer.invoke(CHANNEL_IPC_CHANNELS.FETCH_MODELS_FOR_CHANNEL, input) as Promise<FetchModelsResult>,
 
   // ===== 工作区 =====
   /** 列出所有工作区 */
@@ -81,6 +82,12 @@ const electronAPI = {
   /** 创建项目工作区（弹出文件夹选择对话框） */
   createProjectWorkspace: () =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.CREATE_PROJECT_WORKSPACE) as Promise<AgentWorkspace | null>,
+  /** 删除工作区及其会话；不删除本地项目源码目录 */
+  deleteWorkspace: (id: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_WORKSPACE, id) as Promise<void>,
+  /** 持久化工作区侧栏顺序 */
+  reorderWorkspaces: (orderedIds: string[]) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.REORDER_WORKSPACES, orderedIds) as Promise<AgentWorkspace[]>,
   /** 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived；status 由主进程内部写，渲染层不直接写） */
   updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_META, { id, patch }) as Promise<unknown>,
@@ -120,6 +127,22 @@ const electronAPI = {
   // 热切换指定会话的权限模式（持久化 meta + 通知运行时）
   setSessionPermissionMode: (sessionId: string, mode: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_PERMISSION_MODE, { sessionId, mode }) as Promise<{ ok: boolean; error?: string }>,
+  /**
+   * 系统是否深色（主进程 nativeTheme.shouldUseDarkColors）。
+   * 渲染层「跟随系统」应信这个，不要只靠 matchMedia。
+   */
+  getSystemDark: () => ipcRenderer.invoke('theme:get-system-dark') as Promise<boolean>,
+  /** 系统明暗变化（nativeTheme updated） */
+  onSystemThemeUpdated: (cb: (dark: boolean) => void) => {
+    const handler = (_e: unknown, dark: boolean): void => cb(dark)
+    ipcRenderer.on('theme:system-updated', handler)
+    return () => ipcRenderer.removeListener('theme:system-updated', handler)
+  },
+  /**
+   * 上报应用内解析后的深浅（浅色/深色/跟随系统 → 最终 dark?）。
+   * 主进程用它切换窗口/Dock 的 light/dark appicon。
+   */
+  setResolvedDark: (dark: boolean) => ipcRenderer.send('theme:set-resolved-dark', dark),
 } as const
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

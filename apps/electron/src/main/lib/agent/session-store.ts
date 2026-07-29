@@ -125,16 +125,15 @@ export function updateSessionMeta(
   return updated
 }
 
-/** 删除会话（元数据 + JSONL，兼容新旧路径） */
-export function deleteSession(id: string): void {
-  const index = readIndex()
-  const meta = index.sessions.find((s) => s.id === id)
-  index.sessions = index.sessions.filter((s) => s.id !== id)
-  writeIndex(index)
+/** 删除单个会话的 JSONL，兼容新旧路径。 */
+function deleteSessionFiles(meta: AgentSessionMeta): void {
   // 删除 JSONL：优先删新路径，也删旧路径（兜底迁移前残留）
-  const pathsToDelete = meta?.workspaceId
-    ? [getProjectSessionPath(meta.workspaceId, id), getAgentSessionMessagesPath(id)]
-    : [getAgentSessionMessagesPath(id)]
+  const pathsToDelete = meta.workspaceId
+    ? [
+        getProjectSessionPath(meta.workspaceId, meta.id),
+        getAgentSessionMessagesPath(meta.id),
+      ]
+    : [getAgentSessionMessagesPath(meta.id)]
   for (const msgPath of pathsToDelete) {
     if (existsSync(msgPath)) {
       try {
@@ -144,6 +143,28 @@ export function deleteSession(id: string): void {
       }
     }
   }
+}
+
+/** 删除会话（元数据 + JSONL，兼容新旧路径） */
+export function deleteSession(id: string): void {
+  const index = readIndex()
+  const meta = index.sessions.find((s) => s.id === id)
+  index.sessions = index.sessions.filter((s) => s.id !== id)
+  writeIndex(index)
+  if (meta) deleteSessionFiles(meta)
+}
+
+/** 批量删除工作区下的全部会话，返回已删除的会话 ID。 */
+export function deleteSessionsByWorkspace(workspaceId: string): string[] {
+  const index = readIndex()
+  const targets = index.sessions.filter((session) => session.workspaceId === workspaceId)
+  if (targets.length === 0) return []
+
+  const targetIds = new Set(targets.map((session) => session.id))
+  index.sessions = index.sessions.filter((session) => !targetIds.has(session.id))
+  writeIndex(index)
+  for (const session of targets) deleteSessionFiles(session)
+  return targets.map((session) => session.id)
 }
 
 /** 解析会话 JSONL 路径：有 workspaceId 走新路径，否则走旧路径 */

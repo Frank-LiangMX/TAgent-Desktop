@@ -17,6 +17,51 @@ import { getProjectsDir, getProjectDir } from '../config/config-paths'
 
 /** workspace 元数据文件名 */
 const META_FILENAME = 'workspace-meta.json'
+/** 工作区侧栏顺序与隐藏状态；只管理应用索引，不触碰项目目录。 */
+const REGISTRY_FILENAME = 'workspace-registry.json'
+
+interface WorkspaceRegistry {
+  version: 1
+  order: string[]
+  hidden: string[]
+}
+
+function uniqueStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.filter((item): item is string => typeof item === 'string' && item.length > 0))]
+}
+
+function readRegistry(): WorkspaceRegistry {
+  const registryPath = join(getProjectsDir(), REGISTRY_FILENAME)
+  if (!existsSync(registryPath)) return { version: 1, order: [], hidden: [] }
+  try {
+    const parsed = JSON.parse(readFileSync(registryPath, 'utf8')) as Partial<WorkspaceRegistry>
+    return {
+      version: 1,
+      order: uniqueStrings(parsed.order),
+      hidden: uniqueStrings(parsed.hidden),
+    }
+  } catch {
+    return { version: 1, order: [], hidden: [] }
+  }
+}
+
+function writeRegistry(registry: WorkspaceRegistry): void {
+  const registryPath = join(getProjectsDir(), REGISTRY_FILENAME)
+  writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf8')
+}
+
+/** 新建或重新打开目录时恢复其可见性，并放到用户顺序最前。 */
+function revealWorkspace(id: string): void {
+  const registry = readRegistry()
+  const wasHidden = registry.hidden.includes(id)
+  const wasOrdered = registry.order.includes(id)
+  if (!wasHidden && wasOrdered) return
+
+  registry.hidden = registry.hidden.filter((item) => item !== id)
+  registry.order = [id, ...registry.order.filter((item) => item !== id)]
+  writeRegistry(registry)
+}
 
 /** 读 workspace-meta.json（不存在返回 undefined） */
 function readMeta(sanitizedPath: string): AgentWorkspace | undefined {
@@ -54,6 +99,7 @@ export function getOrCreateWorkspace(projectPath: string): AgentWorkspace {
       existing.updatedAt = Date.now()
       writeMeta(existing)
     }
+    revealWorkspace(existing.id)
     return existing
   }
 
@@ -70,6 +116,7 @@ export function getOrCreateWorkspace(projectPath: string): AgentWorkspace {
     updatedAt: now,
   }
   writeMeta(workspace)
+  revealWorkspace(workspace.id)
   return workspace
 }
 
@@ -81,6 +128,8 @@ export function getOrCreateWorkspace(projectPath: string): AgentWorkspace {
  */
 export function listWorkspaces(): AgentWorkspace[] {
   const projectsDir = getProjectsDir()
+  const registry = readRegistry()
+  const hidden = new Set(registry.hidden)
   let entries: Dirent[]
   try {
     entries = readdirSync(projectsDir, { withFileTypes: true })
@@ -92,6 +141,7 @@ export function listWorkspaces(): AgentWorkspace[] {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const id = entry.name
+    if (hidden.has(id)) continue
     const meta = readMeta(id)
     if (meta) {
       workspaces.push(meta)
@@ -108,9 +158,52 @@ export function listWorkspaces(): AgentWorkspace[] {
     }
   }
 
-  // 按 updatedAt 降序排列（最近使用的在前）
-  workspaces.sort((a, b) => b.updatedAt - a.updatedAt)
-  return workspaces
+  const byId = new Map(workspaces.map((workspace) => [workspace.id, workspace]))
+  const ordered: AgentWorkspace[] = []
+  for (const id of registry.order) {
+    const workspace = byId.get(id)
+    if (!workspace) continue
+    ordered.push(workspace)
+    byId.delete(id)
+  }
+
+  // 尚未进入用户顺序的历史工作区按最近使用排序，追加在后。
+  const remaining = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+  return [...ordered, ...remaining]
+}
+
+/** 按指定 ID 顺序持久化侧栏工作区；未列出的可见工作区追加到末尾。 */
+export function reorderWorkspaces(orderedIds: string[]): AgentWorkspace[] {
+  const current = listWorkspaces()
+  const byId = new Map(current.map((workspace) => [workspace.id, workspace]))
+  const reordered: AgentWorkspace[] = []
+
+  for (const id of uniqueStrings(orderedIds)) {
+    const workspace = byId.get(id)
+    if (!workspace) continue
+    reordered.push(workspace)
+    byId.delete(id)
+  }
+  for (const workspace of byId.values()) reordered.push(workspace)
+
+  const registry = readRegistry()
+  registry.order = reordered.map((workspace) => workspace.id)
+  writeRegistry(registry)
+  return reordered
+}
+
+/**
+ * 删除工作区的侧栏索引。
+ * 会话由 WorkspaceService 在调用前统一停止并删除；这里仍不删除用户的项目源码目录。
+ */
+export function deleteWorkspace(id: string): void {
+  const workspace = listWorkspaces().find((item) => item.id === id)
+  if (!workspace) throw new Error(`工作区不存在: ${id}`)
+
+  const registry = readRegistry()
+  registry.hidden = uniqueStrings([...registry.hidden, id])
+  registry.order = registry.order.filter((item) => item !== id)
+  writeRegistry(registry)
 }
 
 /**

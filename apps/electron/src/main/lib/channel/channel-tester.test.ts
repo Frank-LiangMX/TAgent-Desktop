@@ -205,6 +205,21 @@ describe('fetchModelsFromProvider response parsing', () => {
     ])
   })
 
+  test('does not duplicate /v1 for Anthropic-compatible base URLs', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ data: [{ id: 'coding-model', display_name: 'Coding Model' }] }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchModelsFromProvider({
+      provider: 'kimi-coding',
+      baseUrl: 'https://api.example/coding/v1/',
+      apiKey: 'secret-key',
+    })
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://api.example/coding/v1/models')
+  })
+
   test('normalizes Google model ids and display names', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({

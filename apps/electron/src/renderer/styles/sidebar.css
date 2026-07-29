@@ -171,14 +171,36 @@
   background: rgb(var(--glass-rgb) / 0.4);
 }
 
-/* ===== 置顶栏:横向胶囊陈列 ===== */
+/* ===== 置顶栏:单层磨砂轨道 + 横向胶囊陈列 ===== */
 .pin-rail {
+  position: relative;
+  z-index: 2;
   display: flex;
   gap: 6px;
-  padding: 4px 4px 8px;
-  border-bottom: 1px solid var(--hairline);
+  margin: 0 4px 4px;
+  padding: 5px;
+  border: 1px solid rgb(var(--glass-rgb) / 0.42);
+  border-radius: 12px;
+  background:
+    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.05), transparent 66%),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / 0.42),
+      rgb(var(--glass-rgb) / 0.22)
+    );
+  box-shadow:
+    0 8px 20px -14px rgb(23 30 40 / 0.18),
+    inset 0 1px 0 rgb(255 255 255 / 0.42);
+  -webkit-backdrop-filter: blur(22px) saturate(1.06);
+  backdrop-filter: blur(22px) saturate(1.06);
   overflow-x: auto;
   scrollbar-width: none;
+}
+.dark .pin-rail {
+  border-color: rgb(255 255 255 / 0.07);
+  box-shadow:
+    0 8px 20px -14px rgb(0 0 0 / 0.38),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
 }
 .pin-rail::-webkit-scrollbar {
   display: none;
@@ -194,8 +216,8 @@
   cursor: pointer;
   border: 1px solid rgb(var(--glass-rgb) / 0.3);
   background: rgb(var(--glass-rgb) / 0.34);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   transition: background 0.16s, border-color 0.16s, transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .pin-chip:hover {
@@ -294,6 +316,114 @@
   backdrop-filter: none;
 }
 
+.workspace-group-head {
+  position: relative;
+  display: block;
+  min-width: 0;
+  border-radius: 9px;
+}
+.workspace-group-head > .group-head {
+  width: 100%;
+  min-width: 0;
+}
+.workspace-drag-handle,
+.workspace-menu-button {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  width: 22px;
+  height: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition:
+    opacity 0.16s ease,
+    color 0.16s ease,
+    background 0.16s ease,
+    transform 0.16s ease;
+}
+.workspace-drag-handle {
+  left: 4px;
+  cursor: grab;
+}
+.workspace-drag-handle:active {
+  cursor: grabbing;
+}
+.workspace-menu-button {
+  right: 4px;
+  cursor: pointer;
+}
+.workspace-group-head:hover .workspace-drag-handle,
+.workspace-group-head:hover .workspace-menu-button,
+.workspace-group-head:has(.workspace-drag-handle:focus-visible, .workspace-menu-button:focus-visible)
+  .workspace-drag-handle,
+.workspace-group-head:has(.workspace-drag-handle:focus-visible, .workspace-menu-button:focus-visible)
+  .workspace-menu-button {
+  opacity: 0.68;
+  pointer-events: auto;
+}
+.workspace-menu-button[data-state='open'] {
+  opacity: 0.78;
+  pointer-events: auto;
+}
+.workspace-drag-handle:hover,
+.workspace-menu-button:hover,
+.workspace-menu-button[data-state='open'] {
+  color: hsl(var(--foreground) / 0.86);
+  background: hsl(var(--foreground) / 0.06);
+}
+.workspace-drag-handle:hover {
+  transform: translateY(-50%) scale(1.04);
+}
+.workspace-group-head:hover > .group-head .caret,
+.workspace-group-head:hover > .group-head .ws-badge,
+.workspace-group-head:has(.workspace-drag-handle:focus-visible, .workspace-menu-button:focus-visible)
+  > .group-head
+  .caret,
+.workspace-group-head:has(.workspace-drag-handle:focus-visible, .workspace-menu-button:focus-visible)
+  > .group-head
+  .ws-badge {
+  opacity: 0;
+}
+.workspace-dragging {
+  opacity: 0.42;
+}
+.workspace-drop-indicator {
+  position: absolute;
+  z-index: 3;
+  left: 5px;
+  right: 5px;
+  height: 2px;
+  pointer-events: none;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.1), 0 0 8px hsl(var(--primary) / 0.38);
+}
+.workspace-drop-indicator::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: -1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  transform: translateY(-50%);
+}
+.workspace-drop-indicator.before {
+  top: -1px;
+}
+.workspace-drop-indicator.after {
+  bottom: -1px;
+}
+
 .group-head {
   display: flex;
   align-items: center;
@@ -312,6 +442,19 @@
 .group-head:hover {
   background: rgb(var(--glass-rgb) / 0.28);
 }
+.workspace-group-head:hover > .group-head {
+  background: rgb(var(--glass-rgb) / 0.28);
+}
+.group-head:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.group-head:disabled:hover {
+  background: transparent;
+}
+.workspace-group-head:hover > .group-head:disabled {
+  background: rgb(var(--glass-rgb) / 0.28);
+}
 .group-head:hover .caret {
   color: hsl(var(--foreground) / 0.7);
 }
@@ -319,9 +462,15 @@
   width: 12px;
   flex: none;
   color: hsl(var(--muted-foreground));
-  transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.16s;
+  transition:
+    transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1),
+    color 0.16s,
+    opacity 0.16s ease;
   display: grid;
   place-items: center;
+}
+.caret-placeholder {
+  visibility: hidden;
 }
 .group.open .caret {
   transform: rotate(90deg);
@@ -349,6 +498,7 @@
   color: hsl(var(--muted-foreground) / 0.8);
   background: hsl(var(--foreground) / 0.06);
   border-radius: 6px;
+  transition: opacity 0.16s ease;
 }
 .group.has-stream .ws-badge {
   color: hsl(var(--primary));
@@ -406,95 +556,33 @@
   opacity: 0;
 }
 
-/* ===== 时间桶:整行折叠头(与 group-head 同宽可点) ===== */
+/* ===== 时间分段：弱标题，不形成第二层可折叠导航 ===== */
 .bucket-group .bucket-rows {
-  overflow: hidden;
-  max-height: 1600px;
-  transition: max-height 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
+  overflow: visible;
 }
-.bucket-group:not(.open) .bucket-rows {
-  max-height: 0;
-  opacity: 0;
-}
-/* 时间段标题：图标表明时间语义；折叠时保留数量和最近内容预览。 */
-.bucket {
+.bucket-divider {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  box-sizing: border-box;
-  margin: 6px 0 2px;
-  padding: 7px 10px 7px 12px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  transition: background 0.16s;
-}
-.bucket-group:first-child .bucket {
-  margin-top: 2px;
-}
-.bucket:not(.bucket-static):hover {
-  background: rgb(var(--glass-rgb) / 0.3);
-}
-.bucket-static {
-  cursor: default;
-}
-.bucket-icon {
-  flex: none;
-  color: hsl(var(--muted-foreground) / 0.62);
-}
-.bucket-group.open .bucket-icon {
-  color: hsl(var(--primary) / 0.72);
-}
-.bucket-copy {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-.bucket .b-caret {
-  width: 12px;
-  flex: none;
-  color: hsl(var(--muted-foreground) / 0.55);
-  transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.16s;
-  display: grid;
-  place-items: center;
-}
-.bucket:hover .b-caret {
-  color: hsl(var(--muted-foreground));
-}
-.bucket-group.open .bucket .b-caret {
-  transform: rotate(90deg);
-  color: hsl(var(--primary) / 0.8);
-}
-.bucket .b-name {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: hsl(var(--muted-foreground) / 0.75);
-}
-.bucket .b-preview {
-  min-width: 0;
-  overflow: hidden;
-  color: hsl(var(--muted-foreground) / 0.5);
-  font-size: 10px;
-  font-weight: 400;
-  line-height: 14px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.bucket .bucket-count {
-  flex: none;
-  margin-left: auto;
-  font-size: 10px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
+  margin: 9px 10px 3px 12px;
   color: hsl(var(--muted-foreground) / 0.58);
-  white-space: nowrap;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+  line-height: 16px;
+  user-select: none;
+}
+.bucket-group:first-child .bucket-divider {
+  margin-top: 4px;
+}
+.bucket-divider i {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted-foreground) / 0.16),
+    transparent
+  );
 }
 
 /* ===== 会话行 ===== */
@@ -605,15 +693,10 @@
   flex: none;
   font-variant-numeric: tabular-nums;
 }
-.turn-pill {
+.row .meta .turns {
   flex: none;
-  font-size: 9.5px;
-  font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: hsl(var(--muted-foreground));
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: hsl(var(--foreground) / 0.06);
+  color: hsl(var(--muted-foreground) / 0.72);
 }
 
 /* 行首状态色点 */
@@ -772,7 +855,18 @@
   box-shadow: none;
 }
 .arch-foot:not(:has(.group-archived.open))::before {
-  opacity: 0.1;
+  /*
+   * 折叠时仍须完整保留 backdrop-filter，否则滚动文字会直接穿过标题。
+   * 只把填充调成与 sidebar 底板接近，让它在静止时融入侧栏。
+   */
+  opacity: 1;
+  background:
+    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.05), transparent 66%),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / 0.42),
+      rgb(var(--glass-rgb) / 0.22)
+    );
 }
 .arch-foot:not(:has(.group-archived.open)):hover {
   border-color: rgb(var(--glass-rgb) / 0.42);
@@ -781,7 +875,14 @@
     inset 0 1px 0 rgb(255 255 255 / 0.34);
 }
 .arch-foot:not(:has(.group-archived.open)):hover::before {
-  opacity: 0.72;
+  opacity: 1;
+  background:
+    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.07), transparent 66%),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / 0.48),
+      rgb(var(--glass-rgb) / 0.3)
+    );
 }
 .arch-foot:not(:has(.group-archived.open)) .group-head:hover {
   background: transparent;
@@ -841,10 +942,6 @@
   font-weight: 500;
 }
 .row-archived .meta .m {
-  color: hsl(var(--muted-foreground) / 0.5);
-}
-.row-archived .turn-pill {
-  background: hsl(var(--foreground) / 0.04);
   color: hsl(var(--muted-foreground) / 0.5);
 }
 .row-archived:hover {

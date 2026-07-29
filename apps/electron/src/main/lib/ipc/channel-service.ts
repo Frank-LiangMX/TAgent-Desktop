@@ -1,7 +1,7 @@
 /**
  * 渠道服务：注册 CHANNEL_IPC_CHANNELS handler
  *
- * 渠道 CRUD + apiKey 解密 + 连接测试（HTTP）/ 拉模型（HTTP）。
+ * 渠道 CRUD + 连接测试（HTTP）/ 拉模型（HTTP）；apiKey 仅在主进程解密。
  * kscc-internal 内置渠道：不可删，TEST 走 resolveKsccPath 检测。
  *
  * 见 shared/types/channel.ts 的 CHANNEL_IPC_CHANNELS。
@@ -14,6 +14,7 @@ import {
   type ChannelUpdateInput,
   type ChannelTestResult,
   type FetchModelsInput,
+  type FetchModelsForChannelInput,
   type FetchModelsResult,
   type ProviderType,
 } from '@tagent/shared'
@@ -38,6 +39,19 @@ export class ChannelService {
   }
 
   private registerIpc(): void {
+    const fetchModelsWithFallback = async (input: FetchModelsInput): Promise<FetchModelsResult> => {
+      const result = await fetchModelsFromProvider(input)
+      if (result.success && result.models.length > 0) return result
+      const fallback = getDefaultModelsForProvider(input.provider)
+      return {
+        success: result.success,
+        message: result.models.length === 0
+          ? (fallback.length > 0 ? `${result.message}；使用内置预设（${fallback.length} 个）` : result.message)
+          : result.message,
+        models: fallback.length > 0 ? fallback : result.models,
+      }
+    }
+
     // 列渠道（apiKey 保持加密）
     ipcMain.handle(CHANNEL_IPC_CHANNELS.LIST, async (): Promise<Channel[]> => {
       return listChannels()
@@ -67,14 +81,6 @@ export class ChannelService {
       }
     )
 
-    // 解密 apiKey（渲染层编辑时回填用；kscc 返回空串）
-    ipcMain.handle(
-      CHANNEL_IPC_CHANNELS.DECRYPT_KEY,
-      async (_e, id: string): Promise<string> => {
-        return getDecryptedApiKey(id)
-      }
-    )
-
     // 测试连接（kscc 走 resolveKsccPath，外部走真实 HTTP 请求）
     ipcMain.handle(
       CHANNEL_IPC_CHANNELS.TEST,
@@ -90,16 +96,28 @@ export class ChannelService {
     ipcMain.handle(
       CHANNEL_IPC_CHANNELS.FETCH_MODELS,
       async (_e, input: FetchModelsInput): Promise<FetchModelsResult> => {
-        const result = await fetchModelsFromProvider(input)
-        if (result.success && result.models.length > 0) return result
-        const fallback = getDefaultModelsForProvider(input.provider)
-        return {
-          success: result.success,
-          message: result.models.length === 0
-            ? (fallback.length > 0 ? `API 未返回模型，使用内置默认列表（${fallback.length} 个）` : '未获取到模型列表')
-            : result.message,
-          models: fallback.length > 0 ? fallback : result.models,
+        return fetchModelsWithFallback(input)
+      }
+    )
+
+    // 编辑已保存渠道时在主进程解密凭据，明文 API Key 不进入渲染进程
+    ipcMain.handle(
+      CHANNEL_IPC_CHANNELS.FETCH_MODELS_FOR_CHANNEL,
+      async (_e, input: FetchModelsForChannelInput): Promise<FetchModelsResult> => {
+        const channel = getChannel(input.channelId)
+        if (!channel) return { success: false, message: '渠道不存在', models: [] }
+        if (channel.provider === 'kscc-internal') {
+          return { success: false, message: '内置渠道不支持远程同步模型', models: channel.models }
         }
+        const apiKey = getDecryptedApiKey(channel.id)
+        if (!apiKey) {
+          return { success: false, message: '已保存的 API Key 无法解密，请重新输入并保存', models: [] }
+        }
+        return fetchModelsWithFallback({
+          provider: channel.provider,
+          baseUrl: channel.baseUrl,
+          apiKey,
+        })
       }
     )
   }

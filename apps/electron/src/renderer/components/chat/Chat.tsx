@@ -3,12 +3,17 @@
  *
  * 吃 TAgentDesktopStreamPayload（IPC 流式）+ TAgentMessage IR 渲染。
  * 消息区用 Conversation 容器（自动钉底），输入区用 TipTap ChatInput。
- * 渠道：首条消息按 effectiveChannelId 绑核（kscc↔external 互斥），发送后锁定。
+ * 模型：首条消息只绑定运行内核（KSCC / 外部），同内核内渠道与模型可继续切换。
  */
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
+import type { StickToBottomContext } from 'use-stick-to-bottom'
 import type { TAgentDesktopStreamPayload, TAgentMessage, TAgentPermissionMode } from '@tagent/shared'
-import { sdkMessageToIR, TAGENT_DEFAULT_PERMISSION_MODE } from '@tagent/shared'
+import {
+  resolveChannelDefaultModelId,
+  sdkMessageToIR,
+  TAGENT_DEFAULT_PERMISSION_MODE,
+} from '@tagent/shared'
 import {
   Conversation,
   ConversationContent,
@@ -31,7 +36,17 @@ import { ModelSelector } from './ModelSelector'
 import { PermissionModeSelector } from './PermissionModeSelector'
 import { PermissionBanner } from '../permission/PermissionBanner'
 import { ScrollPositionManager } from '../shell/ScrollPositionManager'
-import { channelsAtom, selectedChannelIdAtom, bumpSessionsRefreshAtom } from '../../atoms/channel-atoms'
+import {
+  channelsAtom,
+  selectedModelSelectionAtom,
+  bumpSessionsRefreshAtom,
+} from '../../atoms/channel-atoms'
+import {
+  getChannelCoreKind,
+  type ChannelCoreKind,
+  type ModelSelection,
+} from '../../atoms/model-selection'
+import { tabsAtom } from '../../atoms/tabs'
 
 interface SessionMeta {
   id: string
@@ -69,19 +84,22 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   /** 虚拟化：当前挂载的消息条数（从尾部切）。20 首 batch，idle 帧递增 40/批，全挂完置 Infinity。
    * 保近期：底部对话区永远全量渲染，旧的渐进补齐，超长会话不卡。 */
   const [visibleCount, setVisibleCount] = useState<number>(20)
-  const [sentChannelId, setSentChannelId] = useState<string | null>(null)
+  const [selectionOverride, setSelectionOverride] = useState<ModelSelection | null>(null)
+  const [sentCoreKind, setSentCoreKind] = useState<ChannelCoreKind | null>(null)
   /** 会话当前权限模式（默认 auto；切会话 key 重建后重置。运行中切换即时生效） */
   const [permissionMode, setPermissionMode] = useState<TAgentPermissionMode>(TAGENT_DEFAULT_PERMISSION_MODE)
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
+  const scrollContextRef = useRef<StickToBottomContext | null>(null)
   const itemIdxRef = useRef(0)
   const streamingRef = useRef<DisplayItem | null>(null)
   const chatInputRef = useRef<ChatInputHandle>(null)
 
   const channels = useAtomValue(channelsAtom)
-  const selectedChannelId = useAtomValue(selectedChannelIdAtom)
-  const setSelectedChannelId = useSetAtom(selectedChannelIdAtom)
+  const selectedModelSelection = useAtomValue(selectedModelSelectionAtom)
+  const setSelectedModelSelection = useSetAtom(selectedModelSelectionAtom)
   const bumpRefresh = useSetAtom(bumpSessionsRefreshAtom)
+  const setTabs = useSetAtom(tabsAtom)
 
   // 构造 ScrollMinimap 的 items：按 user 分组，每项 = 用户消息 + 紧随的助手回复（对齐 TAgent_General）
   // 面板里用户气泡右对齐、助手 replyPreview 气泡左对齐。
@@ -128,10 +146,15 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   /** scrollReady 门控：历史加载完 && 全挂完才恢复滚动位置（对齐旧版 scrollReady = ready && fullyMounted） */
   const effectiveScrollReady = scrollReady && fullyMounted
 
-  // 绑核优先级：本会话已发送 > meta 已绑定 > 全局选中（新会话）
-  const effectiveChannelId = sentChannelId ?? session.channelId ?? selectedChannelId
-  const locked = sentChannelId !== null || !!session.channelId
-  const ksccChannelId = channels.find((c) => c.provider === 'kscc-internal')?.id
+  // 选择优先级：本会话最近选择 > 持久化会话选择 > 新会话全局选择。
+  // 旧会话只有 channelId 没有 modelId 时，用该渠道当前默认模型做一次迁移。
+  const sessionChannel = channels.find((channel) => channel.id === session.channelId)
+  const sessionModelId = session.modelId ?? resolveChannelDefaultModelId(sessionChannel)
+  const persistedSelection = session.channelId && sessionModelId
+    ? { channelId: session.channelId, modelId: sessionModelId }
+    : null
+  const effectiveSelection = selectionOverride ?? persistedSelection ?? selectedModelSelection
+  const lockedKind = sessionChannel ? getChannelCoreKind(sessionChannel) : sentCoreKind
 
   // 切换会话时加载历史。滚动位置恢复交给 ScrollPositionManager（Conversation 内部），
   // 它用 useLayoutEffect + stopScroll + 直接设 scrollTop（无动画、无可见滚动过程）。
@@ -155,6 +178,29 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
       setItems(irItems)
       setScrollReady(true)
     })()
+  }, [sessionId])
+
+  // main 会话滚动时关闭滚动内容自身的 backdrop-filter，避免 GPU 合成滞后产生拖影。
+  // 输入框是滚动容器的兄弟节点，不受 is-scrolling 选择器影响，玻璃遮挡保持不变。
+  useEffect(() => {
+    const scrollEl = scrollContextRef.current?.scrollRef.current
+    if (!scrollEl) return
+
+    let scrollTimer = 0
+    const handleScroll = (): void => {
+      scrollEl.classList.add('is-scrolling')
+      window.clearTimeout(scrollTimer)
+      scrollTimer = window.setTimeout(() => {
+        scrollEl.classList.remove('is-scrolling')
+      }, 150)
+    }
+
+    scrollEl.addEventListener('scroll', handleScroll, { passive: true })
+    return () => {
+      scrollEl.removeEventListener('scroll', handleScroll)
+      window.clearTimeout(scrollTimer)
+      scrollEl.classList.remove('is-scrolling')
+    }
   }, [sessionId])
 
   // 虚拟化分批递增：未全挂时，idle 帧每批 +40 补齐旧消息（保近期，底部对话不受影响）
@@ -272,25 +318,44 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   const send = async (): Promise<void> => {
     const text = chatInputRef.current?.getText().trim()
     if (!text || running) return
-    const channelId = effectiveChannelId ?? ksccChannelId
-    if (!channelId) {
-      alert('未选择渠道，请先在「渠道管理」中添加并启用渠道')
+    if (!effectiveSelection) {
+      alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
+      return
+    }
+    const channel = channels.find((item) => item.id === effectiveSelection.channelId)
+    const model = channel?.models.find((item) => item.id === effectiveSelection.modelId)
+    if (!channel?.enabled || !model?.enabled) {
+      alert('当前渠道或模型已停用，请选择同一运行区域内的可用模型')
       return
     }
     chatInputRef.current?.clear()
     setRunning(true)
-    setSentChannelId(channelId)
     try {
       const res = await window.electronAPI.sendMessage({
         sessionId: sessionIdRef.current,
         prompt: text,
-        channelId,
+        channelId: effectiveSelection.channelId,
+        model: effectiveSelection.modelId,
         workspaceId: session.workspaceId,
       })
       // IPC 返回失败：没有 result 事件会来，必须在这里解除 running，否则输入框永久 disabled
       if (res && !res.ok) {
         alert(`发送失败：${res.error ?? '未知错误'}`)
         setRunning(false)
+      } else {
+        const coreKind = getChannelCoreKind(channel)
+        setSelectionOverride(effectiveSelection)
+        setSentCoreKind(coreKind)
+        // 将本轮真实使用的渠道 / 模型同步到当前标签，切换标签后仍展示最新选择。
+        setTabs((prev) => prev.map((tab) => (
+          tab.sessionId === sessionIdRef.current
+            ? {
+                ...tab,
+                channelId: effectiveSelection.channelId,
+                modelId: effectiveSelection.modelId,
+              }
+            : tab
+        )))
       }
       bumpRefresh()
     } catch (err) {
@@ -305,7 +370,11 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
     <div className="relative h-full min-h-0">
       {/* 消息区：占满全高，自动钉底，680px 居中线程。
        * 底部 padding 给浮岛 composer 留位，最后一条不被盖死 */}
-      <Conversation className="absolute inset-0 min-h-0" resize={effectiveScrollReady ? 'smooth' : 'instant'}>
+      <Conversation
+        className="absolute inset-0 min-h-0"
+        contextRef={scrollContextRef}
+        resize={effectiveScrollReady ? 'smooth' : 'instant'}
+      >
         <ConversationContent className="px-4 pt-2 pb-44">
           {items.length === 0 && !running ? (
             <div className="flex h-full items-center justify-center">
@@ -355,9 +424,12 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
               <div className="flex items-center justify-between px-2 pb-2 pt-1">
                 <div className="flex items-center gap-1">
                   <ModelSelector
-                    effectiveChannelId={effectiveChannelId}
-                    locked={locked}
-                    onSelectChannel={setSelectedChannelId}
+                    selection={effectiveSelection}
+                    lockedKind={lockedKind}
+                    onSelect={(nextSelection) => {
+                      setSelectionOverride(nextSelection)
+                      setSelectedModelSelection(nextSelection)
+                    }}
                   />
                   <PermissionModeSelector
                     mode={permissionMode}

@@ -47,7 +47,9 @@ function normalizeBaseUrl(baseUrl: string): string {
 function buildTestUrl(baseUrl: string, provider: ProviderType): string | null {
   const url = normalizeBaseUrl(baseUrl)
   if (!url) return null
-  if (isAnthropicProtocol(provider)) return `${url}/v1/messages`
+  if (isAnthropicProtocol(provider)) {
+    return /\/v1$/i.test(url) ? `${url}/messages` : `${url}/v1/messages`
+  }
   if (isOpenAICompatible(provider)) return `${url}/chat/completions`
   if (isGoogle(provider)) return `${url}/models`
   return null
@@ -56,7 +58,9 @@ function buildTestUrl(baseUrl: string, provider: ProviderType): string | null {
 function buildModelsUrl(baseUrl: string, provider: ProviderType): string | null {
   const url = normalizeBaseUrl(baseUrl)
   if (!url) return null
-  if (isAnthropicProtocol(provider)) return `${url}/v1/models`
+  if (isAnthropicProtocol(provider)) {
+    return /\/v1$/i.test(url) ? `${url}/models` : `${url}/v1/models`
+  }
   if (isOpenAICompatible(provider)) return `${url}/models`
   if (isGoogle(provider)) return `${url}/models`
   return null

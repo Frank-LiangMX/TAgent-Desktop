@@ -2,7 +2,7 @@
  * 会话列表侧栏 — D 方案(形态重构 + 状态色点 + 时间桶 + 已归档 + 动效)
  *
  * 结构:顶行(标题/Threads + 新建+工作区胶囊)→ 搜索行 → 置顶栏 → 滚动列表
- *       (workspace 分组 + 当前 ws 内时间桶,默认只展开当前 ws)→ 已归档底部固定区
+ *       (workspace 分组 + 当前 ws 内静态时间分段,默认只展开当前 ws)→ 已归档底部固定区
  * 状态色点:从 sessionStatusMapAtom 派生(idle/running/error),running 由 onStreamEvent 实时更新。
  * 选中态:左边框 primary + 行玻璃高光(无独立竖条)。
  * 折叠/展开:CSS max-height 过渡(不用 motion height auto,避免收不回);motion 只管 layout 重排。
@@ -11,6 +11,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { motion } from 'motion/react'
+import type { AgentWorkspace } from '@tagent/shared'
 import {
   FolderOpen,
   CaretRight,
@@ -19,12 +20,13 @@ import {
   PushPin,
   Trash,
   DotsThreeVertical,
+  DotsSixVertical,
   Archive,
   MagnifyingGlass,
-  CalendarBlank,
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import {
+  DestructiveConfirmDialog,
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
@@ -57,13 +59,19 @@ interface SessionMeta {
 interface WorkspaceGroup {
   id: string
   name: string
+  workspace?: AgentWorkspace
   sessions: SessionMeta[]
   streamingCount: number
   errorCount: number
 }
 
+interface WorkspaceDropIndicator {
+  id: string
+  position: 'before' | 'after'
+}
+
 interface TimeBucket {
-  name: '今天' | '昨天' | '本周' | '更早'
+  name: '今天' | '昨天' | '近 7 天' | '更早'
   sessions: SessionMeta[]
 }
 
@@ -73,11 +81,8 @@ const STATUS_RANK: Record<SessionStatus, number> = { running: 0, error: 1, idle:
 /** 列表项进场/重排 spring(对齐现代 UI 丝滑感) */
 const SPRING = { type: 'spring', stiffness: 380, damping: 32, mass: 0.8 } as const
 
-const BUCKET_ORDER: TimeBucket['name'][] = ['今天', '昨天', '本周', '更早']
+const BUCKET_ORDER: TimeBucket['name'][] = ['今天', '昨天', '近 7 天', '更早']
 const EXPANDED_GROUPS_KEY = 'tagent.sidebar.expanded-groups.v1'
-const EXPANDED_BUCKETS_KEY = 'tagent.sidebar.expanded-buckets.v2'
-const bucketStateKey = (workspaceId: string, bucket: string): string =>
-  `${workspaceId}:${bucket}`
 
 function readStoredSet(key: string): Set<string> | null {
   try {
@@ -103,25 +108,31 @@ export function SessionSidebar({
   onSelect,
   onNew,
   onOpenProject,
+  onWorkspaceDeleted,
 }: {
   activeSessionId: string | null
   onSelect: (session: SessionMeta) => void
   onNew: () => void
   onOpenProject?: () => void
+  onWorkspaceDeleted?: (workspaceId: string) => void
 }): JSX.Element {
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
     () => readStoredSet(EXPANDED_GROUPS_KEY) ?? new Set(),
   )
-  const [expandedBuckets, setExpandedBuckets] = useState<Set<string>>(
-    () => readStoredSet(EXPANDED_BUCKETS_KEY) ?? new Set(),
-  )
   const [archivedExpanded, setArchivedExpanded] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
   const [query, setQuery] = useState('')
+  const [dragWorkspaceId, setDragWorkspaceId] = useState<string | null>(null)
+  const [workspaceDropIndicator, setWorkspaceDropIndicator] =
+    useState<WorkspaceDropIndicator | null>(null)
+  const [deleteSessionTarget, setDeleteSessionTarget] = useState<SessionMeta | null>(null)
+  const [deleteWorkspaceTarget, setDeleteWorkspaceTarget] =
+    useState<AgentWorkspace | null>(null)
   const refreshCounter = useAtomValue(sessionsRefreshAtom)
   const workspaces = useAtomValue(workspacesAtom)
+  const setWorkspaces = useSetAtom(workspacesAtom)
   const statusMap = useAtomValue(sessionStatusMapAtom)
   const initStatus = useSetAtom(initSessionStatusAtom)
   const setStatus = useSetAtom(setSessionStatusAtom)
@@ -139,26 +150,12 @@ export function SessionSidebar({
     void refresh()
   }, [activeSessionId, refreshCounter, refresh])
 
-  // 侧栏默认展开最近有活动的工作区；今天固定展开；昨天较少时展开。
+  // 侧栏默认展开最近有活动的工作区；时间段仅用于视觉分隔，不保存展开状态。
   useEffect(() => {
     if (readStoredSet(EXPANDED_GROUPS_KEY) === null) {
       const newestSession = sessions.find((session) => !session.archived && session.workspaceId)
       const firstGroupId = newestSession?.workspaceId ?? workspaces[0]?.id
       if (firstGroupId) setExpandedGroups(new Set([firstGroupId]))
-    }
-
-    if (readStoredSet(EXPANDED_BUCKETS_KEY) === null) {
-      const defaults = new Set<string>()
-      for (const workspace of workspaces) {
-        const workspaceSessions = sessions.filter(
-          (session) => !session.archived && session.workspaceId === workspace.id,
-        )
-        const buckets = bucketize(workspaceSessions)
-        if (buckets.昨天.length > 0 && buckets.昨天.length <= 3) {
-          defaults.add(bucketStateKey(workspace.id, '昨天'))
-        }
-      }
-      setExpandedBuckets(defaults)
     }
   }, [sessions, workspaces])
 
@@ -175,12 +172,23 @@ export function SessionSidebar({
     return off
   }, [setStatus])
 
-  const onDelete = async (id: string, e: React.MouseEvent): Promise<void> => {
+  const requestDeleteSession = (id: string, e: React.MouseEvent): void => {
     e.stopPropagation()
-    if (!confirm('删除该会话？历史消息将一并清除。')) return
-    setSessions((prev) => prev.filter((s) => s.id !== id))
-    await window.electronAPI.deleteSession(id)
-    void refresh()
+    const target = sessions.find((session) => session.id === id)
+    if (target) setDeleteSessionTarget(target)
+  }
+
+  const deleteSession = async (): Promise<void> => {
+    if (!deleteSessionTarget) return
+    const target = deleteSessionTarget
+    try {
+      await window.electronAPI.deleteSession(target.id)
+      setSessions((prev) => prev.filter((session) => session.id !== target.id))
+      void refresh()
+    } catch (error) {
+      console.error('[会话] 删除失败:', error)
+      throw new Error(`删除会话失败：${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   const onArchiveToggle = async (s: SessionMeta, e: React.MouseEvent): Promise<void> => {
@@ -222,15 +230,91 @@ export function SessionSidebar({
     })
   }
 
-  const toggleBucket = (workspaceId: string, name: string): void => {
-    setExpandedBuckets((prev) => {
-      const next = new Set(prev)
-      const key = bucketStateKey(workspaceId, name)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      storeSet(EXPANDED_BUCKETS_KEY, next)
-      return next
+  const deleteWorkspace = async (workspace: AgentWorkspace): Promise<void> => {
+    try {
+      await window.electronAPI.deleteWorkspace(workspace.id)
+      const remaining = await window.electronAPI.listWorkspaces()
+      setWorkspaces(remaining)
+      setSessions((prev) => prev.filter((session) => session.workspaceId !== workspace.id))
+      setExpandedGroups((prev) => {
+        const next = new Set(prev)
+        next.delete(workspace.id)
+        storeSet(EXPANDED_GROUPS_KEY, next)
+        return next
+      })
+      onWorkspaceDeleted?.(workspace.id)
+      setDeleteWorkspaceTarget(null)
+    } catch (error) {
+      console.error('[工作区] 删除失败:', error)
+      throw new Error(`删除工作区失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const startWorkspaceDrag = (event: React.DragEvent, workspaceId: string): void => {
+    event.stopPropagation()
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', workspaceId)
+    setDragWorkspaceId(workspaceId)
+  }
+
+  const updateWorkspaceDropIndicator = (
+    event: React.DragEvent,
+    targetWorkspaceId: string,
+  ): void => {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    if (!dragWorkspaceId || dragWorkspaceId === targetWorkspaceId) {
+      setWorkspaceDropIndicator(null)
+      return
+    }
+    const rect = event.currentTarget.getBoundingClientRect()
+    setWorkspaceDropIndicator({
+      id: targetWorkspaceId,
+      position: event.clientY < rect.top + rect.height / 2 ? 'before' : 'after',
     })
+  }
+
+  const finishWorkspaceDrag = (): void => {
+    setDragWorkspaceId(null)
+    setWorkspaceDropIndicator(null)
+  }
+
+  const dropWorkspace = async (
+    event: React.DragEvent,
+    targetWorkspaceId: string,
+  ): Promise<void> => {
+    event.preventDefault()
+    const indicator = workspaceDropIndicator
+    if (
+      !dragWorkspaceId ||
+      dragWorkspaceId === targetWorkspaceId ||
+      !indicator ||
+      indicator.id !== targetWorkspaceId
+    ) {
+      finishWorkspaceDrag()
+      return
+    }
+
+    const previous = workspaces
+    const orderedIds = workspaces.map((workspace) => workspace.id)
+    const nextIds = orderedIds.filter((id) => id !== dragWorkspaceId)
+    let insertAt = nextIds.indexOf(targetWorkspaceId)
+    if (insertAt < 0) insertAt = nextIds.length
+    if (indicator.position === 'after') insertAt += 1
+    nextIds.splice(insertAt, 0, dragWorkspaceId)
+
+    const byId = new Map(workspaces.map((workspace) => [workspace.id, workspace]))
+    setWorkspaces(nextIds.map((id) => byId.get(id)).filter((item): item is AgentWorkspace => Boolean(item)))
+    finishWorkspaceDrag()
+
+    try {
+      const saved = await window.electronAPI.reorderWorkspaces(nextIds)
+      setWorkspaces(saved)
+    } catch (error) {
+      console.error('[工作区] 排序保存失败:', error)
+      setWorkspaces(previous)
+      alert('工作区排序保存失败，已恢复原顺序')
+    }
   }
 
   // 会话状态(归档行不用色点;非归档按 statusMap 派生,默认 idle)
@@ -246,9 +330,14 @@ export function SessionSidebar({
       value?.toLocaleLowerCase().includes(normalizedQuery),
     )
 
-  const pinned = sessions.filter((s) => s.pinned && !s.archived && matchesQuery(s))
-  const activeSessions = sessions.filter((s) => !s.archived)
-  const archivedSessions = sessions.filter((s) => s.archived)
+  const visibleWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id))
+  const belongsToVisibleWorkspace = (session: SessionMeta): boolean =>
+    !session.workspaceId || visibleWorkspaceIds.has(session.workspaceId)
+  const pinned = sessions.filter(
+    (s) => s.pinned && !s.archived && belongsToVisibleWorkspace(s) && matchesQuery(s),
+  )
+  const activeSessions = sessions.filter((s) => !s.archived && belongsToVisibleWorkspace(s))
+  const archivedSessions = sessions.filter((s) => s.archived && belongsToVisibleWorkspace(s))
   const visibleActiveSessions = activeSessions.filter(matchesQuery)
   const visibleArchivedSessions = archivedSessions.filter(matchesQuery)
   const groups = buildGroups(visibleActiveSessions, workspaces, statusOf)
@@ -260,6 +349,9 @@ export function SessionSidebar({
   if (activeGroupId) effectiveExpandedGroups.add(activeGroupId)
 
   const archivedOpen = archivedExpanded || Boolean(normalizedQuery && visibleArchivedSessions.length)
+  const deleteWorkspaceSessionCount = deleteWorkspaceTarget
+    ? sessions.filter((session) => session.workspaceId === deleteWorkspaceTarget.id).length
+    : 0
 
   return (
     <div className="app-nav-sidebar flex flex-col h-full">
@@ -327,22 +419,15 @@ export function SessionSidebar({
         {groups.length === 0 && <div className="px-3 py-2 text-xs text-muted-foreground">暂无会话</div>}
         {groups.map((group) => {
           const isExpanded = effectiveExpandedGroups.has(group.id)
-          const groupExpandedBuckets = normalizedQuery
-            ? new Set<string>(BUCKET_ORDER)
-            : new Set(
-                BUCKET_ORDER.filter((name) =>
-                  expandedBuckets.has(bucketStateKey(group.id, name)),
-                ),
-              )
-          if (activeSession && activeGroupId === group.id) {
-            const activeBucket = BUCKET_ORDER.find(
-              (name) => bucketize([activeSession])[name].length > 0,
-            )
-            if (activeBucket) groupExpandedBuckets.add(activeBucket)
-          }
+          const hasSessions = group.sessions.length > 0
+          const isManagedWorkspace = Boolean(group.workspace)
           const groupHeaderContent = (
             <>
-              <CaretRight size={12} weight="regular" className="caret" />
+              {hasSessions ? (
+                <CaretRight size={12} weight="regular" className="caret" />
+              ) : (
+                <span className="caret caret-placeholder" aria-hidden="true" />
+              )}
               <span className="gname">{group.name}</span>
               <span className="ws-badge">{group.sessions.length}</span>
               {(group.streamingCount > 0 || group.errorCount > 0) && (
@@ -372,18 +457,88 @@ export function SessionSidebar({
             </>
           )
           return (
-            <div key={group.id} className={cn('group', isExpanded && 'open', group.streamingCount > 0 && 'has-stream', group.errorCount > 0 && 'has-error')}>
-              <button
-                type="button"
-                className="group-head"
-                onClick={() => toggleGroup(group.id)}
-                aria-expanded={isExpanded}
+            <div
+              key={group.id}
+              className={cn(
+                'group',
+                isManagedWorkspace && 'workspace-group',
+                isExpanded && 'open',
+                dragWorkspaceId === group.id && 'workspace-dragging',
+                group.streamingCount > 0 && 'has-stream',
+                group.errorCount > 0 && 'has-error',
+              )}
+            >
+              <div
+                className="workspace-group-head"
+                onDragOver={
+                  isManagedWorkspace
+                    ? (event) => updateWorkspaceDropIndicator(event, group.id)
+                    : undefined
+                }
+                onDrop={
+                  isManagedWorkspace
+                    ? (event) => void dropWorkspace(event, group.id)
+                    : undefined
+                }
               >
-                {groupHeaderContent}
-              </button>
+                {workspaceDropIndicator?.id === group.id && (
+                  <span
+                    className={cn(
+                      'workspace-drop-indicator',
+                      workspaceDropIndicator.position,
+                    )}
+                    aria-hidden="true"
+                  />
+                )}
+                {group.workspace && (
+                  <button
+                    type="button"
+                    className="workspace-drag-handle"
+                    draggable
+                    onDragStart={(event) => startWorkspaceDrag(event, group.id)}
+                    onDragEnd={finishWorkspaceDrag}
+                    onClick={(event) => event.stopPropagation()}
+                    aria-label={`拖拽调整工作区顺序：${group.name}`}
+                    title="拖拽调整工作区顺序"
+                  >
+                    <DotsSixVertical size={14} weight="bold" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="group-head"
+                  onClick={() => hasSessions && toggleGroup(group.id)}
+                  aria-expanded={hasSessions ? isExpanded : undefined}
+                  disabled={!hasSessions}
+                >
+                  {groupHeaderContent}
+                </button>
+                {group.workspace && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="workspace-menu-button"
+                        onClick={(event) => event.stopPropagation()}
+                        aria-label={`工作区操作：${group.name}`}
+                      >
+                        <DotsThreeVertical size={14} weight="bold" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-40">
+                      <DropdownMenuItem
+                        onClick={() => setDeleteWorkspaceTarget(group.workspace!)}
+                        className="text-red-500 focus:text-red-500"
+                      >
+                        <Trash size={13} weight="regular" /> 删除工作区
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </div>
 
               <div className="rows">
-                {renderBuckets(group.sessions, groupExpandedBuckets, (name) => toggleBucket(group.id, name), statusOf, activeSessionId, editingId, editingTitle, onSelect, onDelete, startRename, commitRename, togglePin, onArchiveToggle, setEditingTitle, () => setEditingId(null))}
+                {renderBuckets(group.sessions, statusOf, activeSessionId, editingId, editingTitle, onSelect, requestDeleteSession, startRename, commitRename, togglePin, onArchiveToggle, setEditingTitle, () => setEditingId(null))}
               </div>
             </div>
           )
@@ -414,7 +569,7 @@ export function SessionSidebar({
                   editing={editingId === s.id}
                   editingTitle={editingTitle}
                   onSelect={onSelect}
-                  onDelete={onDelete}
+                  onDelete={requestDeleteSession}
                   onRename={startRename}
                   onCommitRename={commitRename}
                   onTogglePin={togglePin}
@@ -427,21 +582,41 @@ export function SessionSidebar({
           </div>
         </div>
       )}
+
+      <DestructiveConfirmDialog
+        open={Boolean(deleteSessionTarget)}
+        onOpenChange={(open) => !open && setDeleteSessionTarget(null)}
+        icon={<Trash size={15} weight="duotone" />}
+        title={`删除“${deleteSessionTarget?.title ?? ''}”？`}
+        description="该会话的全部聊天记录将被永久删除，此操作无法撤销。"
+        confirmLabel="删除会话"
+        onConfirm={deleteSession}
+      />
+
+      <DestructiveConfirmDialog
+        open={Boolean(deleteWorkspaceTarget)}
+        onOpenChange={(open) => !open && setDeleteWorkspaceTarget(null)}
+        icon={<Trash size={15} weight="duotone" />}
+        title={`删除工作区“${deleteWorkspaceTarget?.name ?? ''}”？`}
+        description={`将永久删除其中 ${deleteWorkspaceSessionCount} 个会话及全部聊天记录。本地项目目录不会受影响。`}
+        confirmLabel="删除工作区"
+        onConfirm={() =>
+          deleteWorkspaceTarget ? deleteWorkspace(deleteWorkspaceTarget) : Promise.resolve()
+        }
+      />
     </div>
   )
 }
 
-/** 时间桶渲染:当前 workspace 内分 今天/昨天/本周/更早 */
+/** 时间分段渲染：仅用于扫描，不承担折叠交互。 */
 function renderBuckets(
   sessions: SessionMeta[],
-  expandedBuckets: Set<string>,
-  toggleBucket: (n: string) => void,
   statusOf: (s: SessionMeta) => SessionStatus,
   activeSessionId: string | null,
   editingId: string | null,
   editingTitle: string,
   onSelect: (s: SessionMeta) => void,
-  onDelete: (id: string, e: React.MouseEvent) => Promise<void>,
+  onDelete: (id: string, e: React.MouseEvent) => void,
   onRename: (s: SessionMeta, e: React.MouseEvent) => void,
   onCommitRename: () => Promise<void>,
   onTogglePin: (id: string, e: React.MouseEvent) => Promise<void>,
@@ -455,34 +630,12 @@ function renderBuckets(
       {BUCKET_ORDER.map((name) => {
         const arr = buckets[name]
         if (!arr || arr.length === 0) return null
-        const isToday = name === '今天'
-        const isOpen = isToday || expandedBuckets.has(name)
-        const preview = arr.slice(0, 2).map((session) => session.title).join('、')
-        const bucketContent = (
-          <>
-            <CalendarBlank size={13} weight="regular" className="bucket-icon" />
-            <span className="bucket-copy">
-              <span className="b-name">{name}</span>
-              {!isOpen && <span className="b-preview">最近：{preview}</span>}
-            </span>
-            <span className="bucket-count">{arr.length} 个</span>
-            {!isToday && <CaretRight size={12} weight="regular" className="b-caret" />}
-          </>
-        )
         return (
-          <div key={name} className={cn('bucket-group', isOpen && 'open')}>
-            {isToday ? (
-              <div className="bucket bucket-static">{bucketContent}</div>
-            ) : (
-              <button
-                type="button"
-                className="bucket"
-                onClick={() => toggleBucket(name)}
-                aria-expanded={isOpen}
-              >
-                {bucketContent}
-              </button>
-            )}
+          <section key={name} className="bucket-group" aria-label={name}>
+            <div className="bucket-divider">
+              <span>{name}</span>
+              <i aria-hidden="true" />
+            </div>
             <div className="bucket-rows">
               {arr.map((s) => (
                 <SessionRow
@@ -503,7 +656,7 @@ function renderBuckets(
                 />
               ))}
             </div>
-          </div>
+          </section>
         )
       })}
     </>
@@ -534,7 +687,7 @@ function SessionRow({
   editing: boolean
   editingTitle: string
   onSelect: (s: SessionMeta) => void
-  onDelete: (id: string, e: React.MouseEvent) => Promise<void>
+  onDelete: (id: string, e: React.MouseEvent) => void
   onRename: (s: SessionMeta, e: React.MouseEvent) => void
   onCommitRename: () => Promise<void>
   onTogglePin: (id: string, e: React.MouseEvent) => Promise<void>
@@ -578,11 +731,11 @@ function SessionRow({
           ) : (
             <span className="t">{s.title}</span>
           )}
-          {s.turnCount != null && s.turnCount > 0 && <span className="turn-pill">{s.turnCount}</span>}
         </div>
         <div className="meta">
-          {/* 归档行也保留 model(对齐原型 D archivedRowHtml),时间位改为「已归档」 */}
-          {s.modelId && <span className="m">{s.modelId}</span>}
+          {s.turnCount != null && s.turnCount > 0 && (
+            <span className="m turns">{s.turnCount} 轮</span>
+          )}
           <span className="m time">{archived ? '已归档' : s.updatedAt ? relTime(s.updatedAt) : ''}</span>
         </div>
       </div>
@@ -610,7 +763,7 @@ function SessionRow({
           <DropdownMenuItem onClick={(e) => void onArchiveToggle(s, e)}>
             <Archive size={13} weight="regular" /> {archived ? '取消归档' : '归档'}
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={(e) => void onDelete(s.id, e)} className="text-red-500 focus:text-red-500">
+          <DropdownMenuItem onClick={(e) => onDelete(s.id, e)} className="text-red-500 focus:text-red-500">
             <Trash size={13} weight="regular" /> 删除
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -622,17 +775,26 @@ function SessionRow({
 /** 构建 workspace 分组(非归档会话),组内排序:running → error → 其余按 updatedAt */
 function buildGroups(
   sessions: SessionMeta[],
-  workspaces: { id: string; name: string }[],
+  workspaces: AgentWorkspace[],
   statusOf: (s: SessionMeta) => SessionStatus,
 ): WorkspaceGroup[] {
   const groupMap = new Map<string, WorkspaceGroup>()
   for (const ws of workspaces) {
-    groupMap.set(ws.id, { id: ws.id, name: ws.name, sessions: [], streamingCount: 0, errorCount: 0 })
+    groupMap.set(ws.id, {
+      id: ws.id,
+      name: ws.name,
+      workspace: ws,
+      sessions: [],
+      streamingCount: 0,
+      errorCount: 0,
+    })
   }
   for (const s of sessions) {
     const wsId = s.workspaceId
     let group: WorkspaceGroup
-    if (wsId && groupMap.has(wsId)) {
+    if (wsId) {
+      // 不可见工作区的残留/旧版会话不混入“未分类”。
+      if (!groupMap.has(wsId)) continue
       group = groupMap.get(wsId)!
     } else {
       const unclassifiedId = '__unclassified__'
@@ -658,24 +820,34 @@ function buildGroups(
   const result: WorkspaceGroup[] = []
   for (const ws of workspaces) {
     const group = groupMap.get(ws.id)
-    if (group && group.sessions.length > 0) result.push(group)
+    if (group) result.push(group)
   }
   const unclassified = groupMap.get('__unclassified__')
   if (unclassified && unclassified.sessions.length > 0) result.push(unclassified)
   return result
 }
 
-/** 按时间分桶(今天/昨天/本周/更早) */
+/** 按时间分桶（今天/昨天/近 7 天/更早）。 */
 function bucketize(sessions: SessionMeta[]): Record<TimeBucket['name'], SessionMeta[]> {
   const now = Date.now()
   const DAY = 24 * 60 * 60 * 1000
-  const buckets: Record<TimeBucket['name'], SessionMeta[]> = { 今天: [], 昨天: [], 本周: [], 更早: [] }
+  const todayStart = new Date()
+  todayStart.setHours(0, 0, 0, 0)
+  const todayStartMs = todayStart.getTime()
+  const yesterdayStartMs = todayStartMs - DAY
+  const recentStartMs = now - 7 * DAY
+  const buckets: Record<TimeBucket['name'], SessionMeta[]> = {
+    今天: [],
+    昨天: [],
+    '近 7 天': [],
+    更早: [],
+  }
   for (const s of sessions) {
-    const age = now - (s.updatedAt ?? 0)
+    const updatedAt = s.updatedAt ?? 0
     let name: TimeBucket['name']
-    if (age < DAY) name = '今天'
-    else if (age < 2 * DAY) name = '昨天'
-    else if (age < 7 * DAY) name = '本周'
+    if (updatedAt >= todayStartMs) name = '今天'
+    else if (updatedAt >= yesterdayStartMs) name = '昨天'
+    else if (updatedAt >= recentStartMs) name = '近 7 天'
     else name = '更早'
     buckets[name].push(s)
   }

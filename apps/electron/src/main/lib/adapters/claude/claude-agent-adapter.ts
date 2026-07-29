@@ -227,6 +227,19 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
     await query.setPermissionMode(mode)
   }
 
+  /** 热切换 kscc 长驻 Query 的模型，下一轮请求生效 */
+  async setModel(sessionId: string, model: string): Promise<void> {
+    const sess = activeSessions.get(sessionId)
+    if (!sess) {
+      throw new Error(`[kscc adapter] 无活跃会话可切模型: ${sessionId}`)
+    }
+    const query = sess.query as unknown as { setModel?: (model?: string) => Promise<void> }
+    if (!query.setModel) {
+      throw new Error('[kscc adapter] SDK Query 不支持 setModel')
+    }
+    await query.setModel(model)
+  }
+
   /** 中止会话：杀进程（destroySession / abort 用） */
   abort(sessionId: string): void {
     const sess = activeSessions.get(sessionId)

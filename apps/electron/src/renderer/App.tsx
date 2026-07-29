@@ -15,12 +15,12 @@ import type {
   ChannelUpdateInput,
   ChannelTestResult,
   FetchModelsInput,
+  FetchModelsForChannelInput,
   FetchModelsResult,
 } from '@tagent/shared'
 import { Button, ConversationEmptyState, TooltipProvider } from '@tagent/ui'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
-import { ChannelManager } from './components/channel/ChannelManager'
-import { SettingsDialog } from './components/settings/SettingsPage'
+import { SettingsDialog, type SettingsTab } from './components/settings/SettingsPage'
 import { ThemeSettings } from './components/theme/ThemeSettings'
 import { AppShell } from './components/shell/AppShell'
 import { Rail } from './components/shell/Rail'
@@ -32,7 +32,6 @@ import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
 import {
   channelsAtom,
   loadChannelsAtom,
-  selectedChannelAtom,
 } from './atoms/channel-atoms'
 import {
   workspacesAtom,
@@ -59,12 +58,14 @@ declare global {
       createChannel: (input: ChannelCreateInput) => Promise<Channel>
       updateChannel: (id: string, patch: ChannelUpdateInput) => Promise<Channel | undefined>
       deleteChannel: (id: string) => Promise<{ ok: boolean; error?: string }>
-      decryptKey: (id: string) => Promise<string>
       testChannel: (id: string) => Promise<ChannelTestResult>
       fetchModels: (input: FetchModelsInput) => Promise<FetchModelsResult>
+      fetchModelsForChannel: (input: FetchModelsForChannelInput) => Promise<FetchModelsResult>
       // 工作区
       listWorkspaces: () => Promise<AgentWorkspace[]>
       createProjectWorkspace: () => Promise<AgentWorkspace | null>
+      deleteWorkspace: (id: string) => Promise<void>
+      reorderWorkspaces: (orderedIds: string[]) => Promise<AgentWorkspace[]>
       // 会话元数据（重命名/置顶/归档；status 由主进程内部写，渲染层不直接写）
       updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }) => Promise<unknown>
       togglePin: (id: string) => Promise<unknown>
@@ -85,17 +86,22 @@ declare global {
       respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) => void
       // 热切换会话权限模式
       setSessionPermissionMode: (sessionId: string, mode: string) => Promise<{ ok: boolean; error?: string }>
+      /** 系统是否深色（nativeTheme） */
+      getSystemDark: () => Promise<boolean>
+      /** 系统明暗变化 */
+      onSystemThemeUpdated: (cb: (dark: boolean) => void) => () => void
+      /** 上报应用内解析后的深浅（驱动窗口/Dock 图标） */
+      setResolvedDark: (dark: boolean) => void
     }
   }
 }
 
 export function App(): JSX.Element {
-  const [showChannels, setShowChannels] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general')
   const [showWorkspacePicker, setShowWorkspacePicker] = useState(false)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
-  const selected = useAtomValue(selectedChannelAtom)
   const channels = useAtomValue(channelsAtom)
   const workspaces = useAtomValue(workspacesAtom)
   // 多会话 tab
@@ -105,18 +111,31 @@ export function App(): JSX.Element {
   const setTabs = useSetAtom(tabsAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
 
+  const openSettings = (tab: SettingsTab): void => {
+    setSettingsInitialTab(tab)
+    setShowSettings(true)
+  }
+
   // 启动时同时加载渠道列表 + 工作区列表
   useEffect(() => {
     void Promise.all([loadChannels(), loadWorkspaces()])
   }, [loadChannels, loadWorkspaces])
 
   /** 开会话进 tab：已开激活，未开加 tab + 激活 */
-  const openSession = (sessionId: string, title: string, workspaceId?: string): void => {
+  const openSession = (
+    sessionId: string,
+    title: string,
+    workspaceId?: string,
+    channelId?: string,
+    modelId?: string,
+  ): void => {
     const { tabs: next, activeTabId: nextActive } = openTab(
       tabs,
       sessionId,
       title,
       workspaceId,
+      channelId,
+      modelId,
     )
     setTabs(next)
     setActiveTabId(nextActive)
@@ -153,6 +172,26 @@ export function App(): JSX.Element {
     openSession('session-' + Date.now(), '新会话', workspace.id)
   }
 
+  /** 删除工作区后同步关闭其全部标签，并为当前标签选择最近邻。 */
+  const handleWorkspaceDeleted = (workspaceId: string): void => {
+    const activeIndex = tabs.findIndex((tab) => tab.id === activeTabId)
+    const activeBelongsToWorkspace =
+      activeIndex >= 0 && tabs[activeIndex]?.workspaceId === workspaceId
+    const remaining = tabs.filter((tab) => tab.workspaceId !== workspaceId)
+
+    setTabs(remaining)
+    if (activeBelongsToWorkspace) {
+      const rightNeighbor = tabs
+        .slice(activeIndex + 1)
+        .find((tab) => tab.workspaceId !== workspaceId)
+      const leftNeighbor = tabs
+        .slice(0, activeIndex)
+        .reverse()
+        .find((tab) => tab.workspaceId !== workspaceId)
+      setActiveTabId(rightNeighbor?.id ?? leftNeighbor?.id ?? null)
+    }
+  }
+
   return (
     <TooltipProvider delayDuration={200}>
       <AppShell
@@ -161,17 +200,18 @@ export function App(): JSX.Element {
           <Rail
             active="chat"
             onChat={() => { if (!activeTab) newSession() }}
-            onChannels={() => setShowChannels(true)}
-            onSettings={() => setShowSettings((s) => !s)}
+            onChannels={() => openSettings('channels')}
+            onSettings={() => openSettings('general')}
             themeSlot={<ThemeSettings />}
           />
         }
         sidebar={
           <SessionSidebar
             activeSessionId={activeTabId}
-            onSelect={(s) => openSession(s.id, s.title, s.workspaceId)}
+            onSelect={(s) => openSession(s.id, s.title, s.workspaceId, s.channelId, s.modelId)}
             onNew={() => newSession()}
             onOpenProject={() => void handleOpenProject()}
+            onWorkspaceDeleted={handleWorkspaceDeleted}
           />
         }
       >
@@ -205,7 +245,6 @@ export function App(): JSX.Element {
         )}
       </AppShell>
 
-      {showChannels && <ChannelManager onClose={() => setShowChannels(false)} />}
       <WorkspacePickerDialog
         open={showWorkspacePicker}
         workspaces={workspaces}
@@ -219,7 +258,11 @@ export function App(): JSX.Element {
           void handleOpenProject(true)
         }}
       />
-      <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
+      <SettingsDialog
+        open={showSettings}
+        initialTab={settingsInitialTab}
+        onOpenChange={setShowSettings}
+      />
     </TooltipProvider>
   )
 }

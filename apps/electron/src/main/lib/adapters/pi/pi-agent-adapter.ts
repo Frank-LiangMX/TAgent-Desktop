@@ -129,6 +129,8 @@ interface SessionEntry {
   controller: AbortController
   /** 是否正在流式输出 */
   isStreaming: boolean
+  /** 当前 Agent 使用的渠道 / 模型配置 */
+  channelConfig: PiAgentAdapterConfig
 }
 
 // ===== 主类 =====
@@ -151,10 +153,30 @@ export class PiAgentAdapter implements AgentProviderAdapter {
   async *query(input: PiQueryOptions): AsyncIterable<SDKMessage> {
     const { sessionId, prompt, channelConfig, systemPrompt, tools, mcpConfig, cwd, beforeToolCall, abortSignal } = input
 
-    // 创建或复用 Agent 实例
+    // 创建或复用 Agent 实例。外部运行内核允许同会话切换渠道 / 模型：
+    // streamFn 与 task 工具都捕获了渠道配置，因此配置变化时保留消息历史并重建 Agent。
     let entry = this.sessions.get(sessionId)
     if (!entry) {
       entry = await this.createSession(sessionId, channelConfig, systemPrompt, tools, mcpConfig, cwd, beforeToolCall)
+      this.sessions.set(sessionId, entry)
+    } else if (!isSameChannelConfig(entry.channelConfig, channelConfig)) {
+      if (entry.isStreaming) {
+        throw new Error(`[pi adapter] 会话 ${sessionId} 仍在运行，暂不能切换渠道或模型`)
+      }
+      const previousMessages = [...entry.agent.state.messages]
+      const previousEntry = entry
+      entry = await this.createSession(
+        sessionId,
+        channelConfig,
+        systemPrompt,
+        tools,
+        mcpConfig,
+        cwd,
+        beforeToolCall,
+      )
+      ;(entry.agent.state as { messages: typeof previousMessages }).messages = previousMessages
+      previousEntry.agent.abort()
+      previousEntry.controller.abort()
       this.sessions.set(sessionId, entry)
     }
 
@@ -435,7 +457,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       ...(beforeToolCall ? { beforeToolCall } : {}),
     } as never)
 
-    return { agent, controller, isStreaming: false }
+    return { agent, controller, isStreaming: false, channelConfig }
   }
 }
 
@@ -765,6 +787,27 @@ function buildPlaceholderModel(config: PiAgentAdapterConfig): Model<Api> {
     contextWindow: 128_000,
     maxTokens: 8_192,
   }
+}
+
+/** 判断 Pi streamFn 所依赖的配置是否完全一致。 */
+function isSameChannelConfig(
+  left: PiAgentAdapterConfig,
+  right: PiAgentAdapterConfig,
+): boolean {
+  if (left.type !== right.type) return false
+  if (left.type === 'external' && right.type === 'external') {
+    return left.provider === right.provider
+      && left.apiKey === right.apiKey
+      && left.baseUrl === right.baseUrl
+      && left.modelId === right.modelId
+      && left.thinkingEnabled === right.thinkingEnabled
+      && left.thinkingLevel === right.thinkingLevel
+  }
+  if (left.type === 'kscc' && right.type === 'kscc') {
+    return left.ksccPath === right.ksccPath
+      && left.defaultModelId === right.defaultModelId
+  }
+  return false
 }
 
 /** provider 类型名 → pi-ai api 标识 */

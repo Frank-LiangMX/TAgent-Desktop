@@ -8,7 +8,7 @@
  * - 流式消息推给渲染进程（STREAM_MESSAGE/TURN_END/SESSION_ERROR）
  * - 按 channelId 选核（kscc-internal→kscc 核，其余→Pi 核）+ 会话绑核（互斥）
  *
- * 会话绑核：首条消息绑定 channelId 到 meta，之后不能换渠道（kscc↔external 互斥）。
+ * 会话绑定：首条消息锁定运行内核（KSCC / 外部）；同内核内渠道和模型可继续切换。
  */
 import { ipcMain, type BrowserWindow } from 'electron'
 import type {
@@ -32,6 +32,7 @@ import {
   listSessions,
   readMessages,
   deleteSession as deleteSessionMeta,
+  deleteSessionsByWorkspace,
 } from '../agent/session-store'
 import { getChannel, getDecryptedApiKey, getKsccChannelId } from '../channel/channel-store'
 import { KSCC_DEFAULT_MODEL_ID } from '../channel/default-models'
@@ -174,7 +175,7 @@ export class SessionService {
     return { status: 'idle', archived: !!meta?.archived }
   }
 
-  /** 处理发消息：解析渠道→绑核→首次 spawn + 起循环 / 后续 enqueue */
+  /** 处理发消息：解析渠道→锁定运行内核→首次 spawn / 后续同内核切换模型 */
   private async handleSend(input: SendMessageInput): Promise<void> {
     const channelId = input.channelId ?? getKsccChannelId()
     if (!channelId) {
@@ -188,21 +189,43 @@ export class SessionService {
       throw new Error(`渠道「${channel.name}」已禁用，请先启用`)
     }
 
-    // 绑核：会话已绑定不同渠道则拒绝（kscc↔external 互斥，核内可换模型）
     const meta = getSessionMeta(input.sessionId)
-    if (meta?.channelId && meta.channelId !== channelId) {
-      throw new Error('该会话已绑定其他渠道，不能切换（kscc↔external 互斥，核内可换模型）')
+    const adapterKind: ChannelKind = channel.provider === 'kscc-internal' ? 'kscc' : 'external'
+
+    // 会话只锁定运行内核：KSCC 内网与外部运行时不可互切；
+    // 同一内核里的渠道和模型都允许在后续轮次继续选择。
+    if (meta?.channelId) {
+      const boundChannel = getChannel(meta.channelId)
+      if (!boundChannel) {
+        throw new Error('该会话原绑定渠道已不存在，无法确认运行内核')
+      }
+      const boundKind: ChannelKind = boundChannel.provider === 'kscc-internal' ? 'kscc' : 'external'
+      if (boundKind !== adapterKind) {
+        throw new Error(
+          `该会话已锁定${boundKind === 'kscc' ? 'KSCC 内网' : '外部'}运行时，不能跨运行内核切换`,
+        )
+      }
     }
+    const modelId = this.resolveModel(
+      channel,
+      input.model ?? (meta?.channelId === channelId ? meta.modelId : undefined),
+    )
+    const normalizedInput: SendMessageInput = { ...input, channelId, model: modelId }
 
     // 解析 workspaceId：优先用 input 传入，否则从已有 meta 读
     const workspaceId = input.workspaceId ?? meta?.workspaceId
 
-    const adapterKind: ChannelKind = channel.provider === 'kscc-internal' ? 'kscc' : 'external'
     const adapter = getAdapter(adapterKind)
     let rt = this.runtimes.get(input.sessionId)
     const isFirst = !rt || !rt.hasLiveProcess()
 
     console.log(`[会话 ${input.sessionId}] ${isFirst ? '首次：spawn + 起循环' : '后续：复用长驻进程 enqueue'}（渠道=${channel.name} 核=${adapterKind} workspaceId=${workspaceId ?? '(无)'}）`)
+
+    // KSCC 是真正的长驻 Query，同内核切模型时先调用 SDK 热切接口。
+    if (!isFirst && adapterKind === 'kscc' && meta?.modelId !== modelId) {
+      await rt!.setModel(modelId)
+      console.log(`[会话 ${input.sessionId}] KSCC 热切模型：${meta?.modelId ?? '(未记录)'} → ${modelId}`)
+    }
 
     // 持久化用户消息到 JSONL（SDK 不回显 user 消息，不存则切回来看不到用户气泡）
     const userMsg: SDKMessage = {
@@ -218,8 +241,7 @@ export class SessionService {
     }
 
     if (isFirst) {
-      // 首条：建/绑会话元数据
-      const modelId = this.resolveModel(channel, input.model)
+      // 首条或进程重建：记录本轮真实使用的渠道和模型。
       if (!meta) {
         createSession({
           id: input.sessionId,
@@ -229,13 +251,14 @@ export class SessionService {
           workspaceId,
           turnCount: 1,
         })
-        console.log(`[会话 ${input.sessionId}] 已创建会话元数据，绑定渠道 ${channel.name}，workspaceId=${workspaceId ?? '(无)'}`)
-      } else if (!meta.channelId) {
-        updateSessionMeta(input.sessionId, { channelId, workspaceId, turnCount: (meta.turnCount ?? 0) + 1 })
-        console.log(`[会话 ${input.sessionId}] 绑定渠道 ${channel.name}，workspaceId=${workspaceId ?? '(无)'}`)
+        console.log(`[会话 ${input.sessionId}] 已创建会话元数据，运行内核=${adapterKind}，workspaceId=${workspaceId ?? '(无)'}`)
       } else {
-        // 已绑定渠道：轮数 +1
-        updateSessionMeta(input.sessionId, { turnCount: (meta.turnCount ?? 0) + 1 })
+        updateSessionMeta(input.sessionId, {
+          channelId,
+          modelId,
+          workspaceId,
+          turnCount: (meta.turnCount ?? 0) + 1,
+        })
       }
       // 建 SessionRuntime + 起循环
       rt = new SessionRuntime(input.sessionId, adapter)
@@ -254,25 +277,37 @@ export class SessionService {
         },
       })
 
-      await rt.sendMessage(this.buildQueryOptions(input, channel, workspaceId))
+      await rt.sendMessage(this.buildQueryOptions(normalizedInput, channel, workspaceId))
     } else {
+      updateSessionMeta(input.sessionId, {
+        channelId,
+        modelId,
+        turnCount: (meta?.turnCount ?? 0) + 1,
+      })
       // 后续：enqueue
       const userMessage: SDKUserMessageInput = {
         type: 'user',
         message: { role: 'user', content: input.prompt },
         parent_tool_use_id: null,
       } as unknown as SDKUserMessageInput
-      await rt!.sendMessage(this.buildQueryOptions(input, channel, workspaceId), userMessage)
+      await rt!.sendMessage(this.buildQueryOptions(normalizedInput, channel, workspaceId), userMessage)
     }
   }
 
   /** 解析模型 ID：input > 渠道默认 > 第一个启用模型 > kscc 兜底 */
   private resolveModel(channel: Channel, inputModel?: string): string {
-    if (inputModel) return inputModel
-    if (channel.defaultModelId) return channel.defaultModelId
-    const firstEnabled = channel.models.find((m) => m.enabled)
-    if (firstEnabled) return firstEnabled.id
-    return channel.provider === 'kscc-internal' ? KSCC_DEFAULT_MODEL_ID : ''
+    const modelId = inputModel
+      ?? channel.defaultModelId
+      ?? channel.models.find((model) => model.enabled)?.id
+      ?? (channel.provider === 'kscc-internal' ? KSCC_DEFAULT_MODEL_ID : '')
+    const configured = channel.models.find((model) => model.id === modelId)
+    if (!configured) {
+      throw new Error(`模型「${modelId}」不属于渠道「${channel.name}」`)
+    }
+    if (!configured.enabled) {
+      throw new Error(`模型「${configured.name}」已停用，请选择同一运行区域内的可用模型`)
+    }
+    return modelId
   }
 
   /** 构建 query 选项（按渠道 provider 选核） */
@@ -412,6 +447,23 @@ export class SessionService {
   private sendPayload(sessionId: string, payload: TAgentDesktopStreamPayload): void {
     const win = this.getWindow()
     win?.webContents.send(AGENT_IPC_CHANNELS.STREAM_EVENT, { sessionId, payload })
+  }
+
+  /** 停止并删除指定工作区的全部会话，供工作区删除流程复用。 */
+  deleteWorkspaceSessions(workspaceId: string): number {
+    const sessionIds = listSessions()
+      .filter((session) => session.workspaceId === workspaceId)
+      .map((session) => session.id)
+
+    for (const sessionId of sessionIds) {
+      const runtime = this.runtimes.get(sessionId)
+      if (runtime) {
+        runtime.destroy()
+        this.runtimes.delete(sessionId)
+      }
+    }
+
+    return deleteSessionsByWorkspace(workspaceId).length
   }
 
   /** 销毁所有会话（应用退出） */

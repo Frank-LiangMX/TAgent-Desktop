@@ -18,6 +18,8 @@ export function TabContent(): JSX.Element | null {
         id: activeTab.sessionId,
         title: activeTab.title,
         workspaceId: activeTab.workspaceId,
+        channelId: activeTab.channelId,
+        modelId: activeTab.modelId,
       }}
     />
   )

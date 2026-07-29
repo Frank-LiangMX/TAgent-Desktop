@@ -63,6 +63,8 @@ export interface AgentProviderAdapter {
   cancelQueuedMessage?(sessionId: string, messageUuid: string): Promise<void>
   /** 动态切换活跃查询的权限模式（可选，仅支持 SDK 原生 setPermissionMode 的 Provider） */
   setPermissionMode?(sessionId: string, mode: string): Promise<void>
+  /** 动态切换活跃查询的模型（可选，仅支持热切模型的 Provider） */
+  setModel?(sessionId: string, model: string): Promise<void>
   /** 获取当前会话 Context 分项占用（可选，仅 Claude Agent SDK 支持） */
   getContextUsage?(sessionId: string): Promise<import('@tagent/shared').ContextUsageSnapshot>
   /**

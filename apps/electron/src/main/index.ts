@@ -1,18 +1,19 @@
 /**
  * TAgent-Desktop 主进程入口
  *
- * 2.0 骨架重构版。见 docs/plans/2026-07-25-longlived-event-loop-rewrite-design.md。
- * 当前阶段：最小骨架，起一个 Electron 窗口加载 renderer。
- * 后续接入：双核适配层 + 长驻会话运行时 + agent 功能。
+ * 2.0 骨架：双核适配 + 长驻会话 + 托盘常驻（关窗隐藏，托盘退出）。
  */
-import { app, BrowserWindow, Menu, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, ipcMain, nativeImage, nativeTheme } from 'electron'
 import path from 'node:path'
+import { existsSync } from 'node:fs'
 import { SessionService } from './lib/ipc/session-service'
 import { ChannelService } from './lib/ipc/channel-service'
 import { WorkspaceService } from './lib/ipc/workspace-service'
 import { McpService } from './lib/ipc/mcp-service'
 import { PermissionService } from './lib/permission/permission-service'
 import { seedBuiltinChannels } from './lib/channel/channel-store'
+import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
+import { createTray, destroyTray, getTray, updateTrayTheme } from './tray'
 
 // cjs 打包格式下 __dirname 是全局可用，无需 fileURLToPath
 
@@ -21,14 +22,83 @@ let mainWindow: BrowserWindow | null = null
 let sessionService: SessionService | null = null
 let permissionService: PermissionService | null = null
 
+// Windows 的 LCD/ClearType 次像素文字在透明渐变与 backdrop-filter 叠层上滚动时，
+// 容易出现彩色高光边缘和视觉拖影。与旧版保持一致，改用灰度抗锯齿。
+// Chromium 命令行开关必须在 app ready 之前设置，热更新无法使其生效。
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-lcd-text')
+}
+
+/**
+ * 解析 resources 根目录：
+ * - 开发：`dist/resources`（build:resources 拷贝）或源码 `resources/`
+ * - 打包：`dist/resources` 在 asar 内，与 main.cjs 同级
+ */
+function getResourcesDir(): string {
+  const fromDist = path.join(__dirname, 'resources')
+  if (existsSync(fromDist)) return fromDist
+  return path.join(__dirname, '..', 'resources')
+}
+
+/**
+ * 应用内解析后的深浅（由渲染进程根据 浅色/深色/跟随系统 算好后上报）。
+ * 窗口/Dock/托盘图标跟这个走。
+ */
+let appResolvedDark: boolean | null = null
+
+/** App / 窗口图标（圆角底板 PNG）——跟应用主题解析结果联动 */
+function getAppIconPath(darkOverride?: boolean): string {
+  const dark =
+    typeof darkOverride === 'boolean'
+      ? darkOverride
+      : appResolvedDark !== null
+        ? appResolvedDark
+        : nativeTheme.shouldUseDarkColors
+  const name = dark ? 'dark.png' : 'light.png'
+  return path.join(getResourcesDir(), 'logo', 'appicon', name)
+}
+
+function applyChromeIcon(dark?: boolean): void {
+  if (typeof dark === 'boolean') appResolvedDark = dark
+  const resolved =
+    appResolvedDark !== null ? appResolvedDark : nativeTheme.shouldUseDarkColors
+  const iconPath = getAppIconPath(resolved)
+  if (existsSync(iconPath)) {
+    const img = nativeImage.createFromPath(iconPath)
+    mainWindow?.setIcon(img)
+    if (process.platform === 'darwin') app.dock?.setIcon(img)
+  }
+  // 托盘彩色图标同步
+  updateTrayTheme(resolved)
+}
+
+function focusMainWindow(): void {
+  const win = mainWindow
+  if (!win || win.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+}
+
 /** 主窗口：开发态加载 Vite dev server，生产态加载打包产物 */
 function createWindow(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    focusMainWindow()
+    return
+  }
+
+  const iconPath = getAppIconPath()
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     // Windows 隐藏系统标题栏，用自定义 WindowControls（对齐 TAgent_General）。
     // mac 用 hiddenInset 保留红绿灯；此处 Windows 走 hidden。
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
+    show: true,
+    ...(existsSync(iconPath) ? { icon: iconPath } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -36,28 +106,65 @@ function createWindow(): void {
     },
   })
 
+  // macOS Dock 图标
+  if (process.platform === 'darwin' && existsSync(iconPath)) {
+    app.dock?.setIcon(nativeImage.createFromPath(iconPath))
+  }
+
   mainWindow = win
 
   // 窗口控制 IPC（自定义 WindowControls 用）
-  ipcMain.handle('window:is-maximized', () => win.isMaximized())
-  ipcMain.on('window:minimize', () => win.minimize())
-  ipcMain.on('window:maximize', () => {
-    if (win.isMaximized()) win.unmaximize()
-    else win.maximize()
+  // 注意：close 走 win.close() → 触发 close 事件 → 非退出则 hide
+  ipcMain.removeHandler('window:is-maximized')
+  ipcMain.handle('window:is-maximized', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return false
+    return mainWindow.isMaximized()
   })
-  ipcMain.on('window:close', () => win.close())
-  // 最大化状态变化时广播给渲染层（WindowControls 更新图标）
-  win.on('resize', () => win.webContents.send('window:resize'))
+  // 避免重复 bind（热重载/二次 createWindow）
+  ipcMain.removeAllListeners('window:minimize')
+  ipcMain.removeAllListeners('window:maximize')
+  ipcMain.removeAllListeners('window:close')
+  ipcMain.on('window:minimize', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize()
+  })
+  ipcMain.on('window:maximize', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    else mainWindow.maximize()
+  })
+  ipcMain.on('window:close', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close()
+  })
 
-  // 转发 renderer console 到主进程 stdout（诊断输入框焦点 bug：renderer 的 [诊断] 日志会出现在 dev 日志里）
-  win.webContents.on('console-message', (_e, _level, message, _line, _source) => {
+  win.on('resize', () => {
+    if (!win.isDestroyed()) win.webContents.send('window:resize')
+  })
+
+  // 关窗 = 隐藏到托盘（真正退出见托盘「退出 TAgent」）
+  win.on('close', (event) => {
+    if (getIsQuitting()) return
+    // 有托盘才隐藏；托盘创建失败时允许正常关闭并退出
+    if (getTray()) {
+      event.preventDefault()
+      win.hide()
+      // mac：隐藏窗口时也像后台应用一样可从 Dock/托盘唤回
+      if (process.platform === 'darwin' && app.dock) {
+        // 保持 Dock 图标，仅 hide 窗口
+      }
+    }
+  })
+
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
+  })
+
+  // 转发 renderer console 到主进程 stdout
+  win.webContents.on('console-message', (_e, _level, message) => {
     if (typeof message === 'string' && message.includes('[诊断')) {
       console.log(`[renderer] ${message}`)
     }
   })
 
-  // 开发态：Vite dev server（端口 5174，避开 TAgent 的 5173）
-  // 生产态：打包后的 renderer
   const isDev = !app.isPackaged
   if (isDev) {
     void win.loadURL('http://localhost:5174')
@@ -68,34 +175,66 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  // 禁用默认应用菜单：Electron 默认菜单的 Edit 项（Cut/Copy/Paste/Select All）在 Windows 上
-  // 会注册全局快捷键，间歇性触发焦点重定向到菜单 owner，导致 input/textarea 点一下就失焦（输入不进去）。
-  // 1.x 设了自定义菜单所以无此问题；2.0 未设菜单走默认，需显式置 null 关闭。
-  // 文本编辑快捷键由 renderer 的 contentEditable/input 原生处理，不受影响。
+  // 禁用默认应用菜单（Windows 全局 Edit 快捷键抢焦点问题）
   Menu.setApplicationMenu(null)
-  createWindow()
-  // seed kscc-internal 内置渠道（幂等，首次启动写入）
-  seedBuiltinChannels()
-  // 起渠道服务（注册渠道 IPC handler）
-  ChannelService.create()
-  // 起工作区服务（注册工作区 IPC handler）
-  WorkspaceService.create(() => mainWindow)
-  // 起 MCP 服务（注册工作区 MCP 配置 IPC handler）
-  McpService.create()
-  // 起权限审批服务（注册 PERMISSION_RESPOND IPC handler）
-  permissionService = PermissionService.create(() => mainWindow)
-  // 起会话服务（注册 IPC handler；注入 PermissionService 供 canUseTool/beforeToolCall 闭包用）
-  sessionService = SessionService.create(() => mainWindow, permissionService)
 
+  // 强制 OS 级跟随：Chromium prefers-color-scheme 与 nativeTheme 对齐
+  nativeTheme.themeSource = 'system'
+
+  // 系统明暗 → 渲染进程
+  ipcMain.handle('theme:get-system-dark', () => nativeTheme.shouldUseDarkColors)
+  // 应用内解析后的深浅 → 窗口/Dock/托盘图标
+  ipcMain.on('theme:set-resolved-dark', (_e, dark: boolean) => {
+    applyChromeIcon(!!dark)
+  })
+  const broadcastSystemTheme = (): void => {
+    const dark = nativeTheme.shouldUseDarkColors
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('theme:system-updated', dark)
+    }
+  }
+  nativeTheme.on('updated', () => {
+    broadcastSystemTheme()
+  })
+
+  // 系统托盘（先于窗口，确保 close 时 getTray() 可用）
+  createTray({
+    showMainWindow: () => focusMainWindow(),
+    quitApp: () => {
+      setQuitting(true)
+      destroyTray()
+      app.quit()
+    },
+  })
+
+  createWindow()
+  seedBuiltinChannels()
+  ChannelService.create()
+  McpService.create()
+  permissionService = PermissionService.create(() => mainWindow)
+  sessionService = SessionService.create(() => mainWindow, permissionService)
+  WorkspaceService.create(
+    () => mainWindow,
+    (workspaceId) => sessionService?.deleteWorkspaceSessions(workspaceId) ?? 0,
+  )
+
+  // mac Dock / 再次激活：显示窗口
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow()
+    else focusMainWindow()
   })
 })
 
+// 托盘常驻：所有窗口关了也不退出（真正退出走托盘菜单）
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (getIsQuitting()) return
+  if (!getTray() && process.platform !== 'darwin') {
+    app.quit()
+  }
 })
 
 app.on('before-quit', () => {
+  setQuitting(true)
   sessionService?.disposeAll()
+  destroyTray()
 })

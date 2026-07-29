@@ -31,7 +31,8 @@ function getCachedThemeMode(): ThemeMode {
   } catch {
     /* ignore */
   }
-  return 'light'
+  // 默认跟随系统（桌面端与 OS 深浅一致）
+  return 'system'
 }
 
 function getCachedThemeStyle(): ThemeStyle {
@@ -64,8 +65,23 @@ function cacheThemeStyle(style: ThemeStyle): void {
 
 export const themeModeAtom = atom<ThemeMode>(getCachedThemeMode())
 export const themeStyleAtom = atom<ThemeStyle>(getCachedThemeStyle())
-/** 系统是否深色（matchMedia 驱动，ThemeInitializer 维护） */
-export const systemIsDarkAtom = atom<boolean>(false)
+/**
+ * 系统是否深色。
+ * - 优先由主进程 nativeTheme 经 IPC 推送（Electron 权威源）
+ * - 回退 matchMedia（首屏 / 无 IPC 时）
+ */
+export const systemIsDarkAtom = atom<boolean>(
+  typeof window !== 'undefined' ? matchMediaDarkSafe() : false,
+)
+
+/** 模块加载期可读的 matchMedia（theme.ts 顶部初始化用） */
+function matchMediaDarkSafe(): boolean {
+  try {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+  } catch {
+    return false
+  }
+}
 
 /** 解析后是否深色：system 跟系统，否则跟 mode */
 export const resolvedDarkAtom = atom<boolean>((get) => {
@@ -78,6 +94,22 @@ export const resolvedDarkAtom = atom<boolean>((get) => {
 
 /** 所有非 default 色系的 theme-* class（default 用 :root + .dark，无 theme- 类） */
 const ALL_THEME_CLASSES = ALL_STYLES.flatMap((s) => [`theme-${s}-light`, `theme-${s}-dark`])
+
+/** 解析当前应使用深色还是浅色 UI */
+export function resolveIsDark(mode: ThemeMode, systemIsDark: boolean): boolean {
+  return mode === 'system' ? systemIsDark : mode === 'dark'
+}
+
+/** 把解析结果同步给主进程（窗口/Dock 图标联动） */
+function notifyChromeIcon(dark: boolean): void {
+  try {
+    const api = (window as unknown as { electronAPI?: { setResolvedDark?: (d: boolean) => void } })
+      .electronAPI
+    api?.setResolvedDark?.(dark)
+  } catch {
+    /* ignore */
+  }
+}
 
 /**
  * 把主题应用到 DOM：切 .dark + theme-{style}-{light|dark} class（幂等）
@@ -93,14 +125,17 @@ export function applyThemeToDOM(
 ): void {
   const html = document.documentElement
 
-  const targetDark = mode === 'system' ? systemIsDark : mode === 'dark'
+  const targetDark = resolveIsDark(mode, systemIsDark)
   const targetClass = style === 'default' ? null : `theme-${style}-${targetDark ? 'dark' : 'light'}`
 
   const currentDark = html.classList.contains('dark')
   const currentClass = ALL_THEME_CLASSES.find((c) => html.classList.contains(c)) ?? null
 
-  // 幂等：签名未变直接 return
-  if (currentDark === targetDark && currentClass === targetClass) return
+  // 幂等：签名未变时仍上报图标（主进程可能尚未收到过）
+  if (currentDark === targetDark && currentClass === targetClass) {
+    notifyChromeIcon(targetDark)
+    return
+  }
 
   if (currentClass !== targetClass) {
     if (currentClass) html.classList.remove(currentClass)
@@ -109,27 +144,33 @@ export function applyThemeToDOM(
   if (currentDark !== targetDark) {
     html.classList.toggle('dark', targetDark)
   }
+  notifyChromeIcon(targetDark)
+}
+/** 读当前系统深色：atom（nativeTheme IPC）优先，否则 matchMedia */
+function currentSystemIsDark(): boolean {
+  try {
+    return getDefaultStore().get(systemIsDarkAtom)
+  } catch {
+    return matchMediaDarkSafe()
+  }
 }
 
-/** 切深浅模式（写 atom + localStorage + 立即应用 DOM） */
+/** 切深浅模式（写 atom + localStorage + 立即应用 DOM + 窗口图标） */
 export function setThemeMode(mode: ThemeMode, style: ThemeStyle): void {
   cacheThemeMode(mode)
-  applyThemeToDOM(mode, style, matchMediaDark())
   getDefaultStore().set(themeModeAtom, mode)
+  const sys = currentSystemIsDark()
+  applyThemeToDOM(mode, style, sys)
+  document.documentElement.style.colorScheme = resolveIsDark(mode, sys) ? 'dark' : 'light'
 }
-
 /** 切色系（写 atom + localStorage + 立即应用 DOM） */
 export function setThemeStyle(style: ThemeStyle, mode: ThemeMode): void {
   cacheThemeStyle(style)
-  applyThemeToDOM(mode, style, matchMediaDark())
   getDefaultStore().set(themeStyleAtom, style)
+  applyThemeToDOM(mode, style, currentSystemIsDark())
 }
 
-/** 当前系统是否深色（matchMedia） */
+/** 当前系统是否深色（matchMedia 回退；Electron 内优先信 nativeTheme IPC） */
 export function matchMediaDark(): boolean {
-  try {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches
-  } catch {
-    return false
-  }
+  return matchMediaDarkSafe()
 }

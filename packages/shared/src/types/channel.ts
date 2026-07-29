@@ -212,6 +212,14 @@ export interface FetchModelsInput {
 }
 
 /**
+ * 使用已保存渠道的加密凭据拉取模型。
+ * 地址与供应商同样取已保存值，避免把密钥发送到渲染进程指定的任意地址。
+ */
+export interface FetchModelsForChannelInput {
+  channelId: string
+}
+
+/**
  * 拉取模型的结果
  */
 export interface FetchModelsResult {
@@ -235,12 +243,12 @@ export const CHANNEL_IPC_CHANNELS = {
   UPDATE: 'channel:update',
   /** 删除渠道 */
   DELETE: 'channel:delete',
-  /** 解密获取明文 API Key */
-  DECRYPT_KEY: 'channel:decrypt-key',
   /** 测试渠道连接 */
   TEST: 'channel:test',
   /** 从供应商拉取可用模型列表 */
   FETCH_MODELS: 'channel:fetch-models',
+  /** 使用已保存渠道的凭据拉取模型（明文密钥不进入渲染进程） */
+  FETCH_MODELS_FOR_CHANNEL: 'channel:fetch-models-for-channel',
   /** 直接测试连接（无需已保存渠道，传入明文凭证） */
   TEST_DIRECT: 'channel:test-direct',
   /** 验证指定 model 名是否被供应商接受（P0-2, 防止 9120caac 那类 400 (2013)）*/

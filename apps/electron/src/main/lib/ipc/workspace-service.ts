@@ -12,15 +12,23 @@ import { ipcMain, dialog, type BrowserWindow } from 'electron'
 import { AGENT_IPC_CHANNELS } from '@tagent/shared'
 import type { AgentWorkspace } from '@tagent/shared'
 import {
+  deleteWorkspace,
   getOrCreateWorkspace,
   listWorkspaces,
+  reorderWorkspaces,
 } from '../workspace/workspace-manager'
 
 export class WorkspaceService {
-  private constructor(private readonly getWindow: () => BrowserWindow | null) {}
+  private constructor(
+    private readonly getWindow: () => BrowserWindow | null,
+    private readonly deleteSessionsForWorkspace: (workspaceId: string) => number,
+  ) {}
 
-  static create(getWindow: () => BrowserWindow | null): WorkspaceService {
-    const svc = new WorkspaceService(getWindow)
+  static create(
+    getWindow: () => BrowserWindow | null,
+    deleteSessionsForWorkspace: (workspaceId: string) => number,
+  ): WorkspaceService {
+    const svc = new WorkspaceService(getWindow, deleteSessionsForWorkspace)
     svc.registerIpc()
     return svc
   }
@@ -46,6 +54,23 @@ export class WorkspaceService {
         const workspace = getOrCreateWorkspace(projectPath)
         console.log(`[工作区] 已创建：${workspace.name}（${workspace.id}）`)
         return workspace
+      }
+    )
+
+    // 删除工作区索引及其全部会话；本地项目源码目录保持不变。
+    ipcMain.handle(AGENT_IPC_CHANNELS.DELETE_WORKSPACE, async (_event, id: string): Promise<void> => {
+      if (!listWorkspaces().some((workspace) => workspace.id === id)) {
+        throw new Error(`工作区不存在: ${id}`)
+      }
+      const deletedSessionCount = this.deleteSessionsForWorkspace(id)
+      deleteWorkspace(id)
+      console.log(`[工作区] 已删除：${id}（同时删除 ${deletedSessionCount} 个会话）`)
+    })
+
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.REORDER_WORKSPACES,
+      async (_event, orderedIds: string[]): Promise<AgentWorkspace[]> => {
+        return reorderWorkspaces(orderedIds)
       }
     )
   }

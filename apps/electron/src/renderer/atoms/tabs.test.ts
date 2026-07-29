@@ -51,6 +51,22 @@ describe('session tabs', () => {
     expect(result.tabs[0]?.workspaceId).toBe('workspace-b')
   })
 
+  test('carries persisted channel and model bindings into the tab', () => {
+    const result = openTab(
+      [],
+      'session-1',
+      'Bound session',
+      'workspace-a',
+      'channel-a',
+      'model-a',
+    )
+
+    expect(result.tabs[0]).toMatchObject({
+      channelId: 'channel-a',
+      modelId: 'model-a',
+    })
+  })
+
   test('closing another tab does not alter remaining workspace ownership', () => {
     const tabs: TabItem[] = [
       {

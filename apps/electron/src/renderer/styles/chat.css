@@ -68,6 +68,16 @@
 }
 
 /*
+ * main 滚动性能：只关闭随消息一起移动的模糊表面。
+ * is-scrolling 挂在 Conversation 的真实滚动元素上，不会命中外部 composer。
+ */
+.is-scrolling .tagent-thread,
+.is-scrolling .tagent-thread * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/*
  * 过程卡：tool_use / thinking 容器的极轻 well 底
  * color-mix foreground 3.2%（极轻），圆角比气泡大一档
  */

@@ -3,6 +3,7 @@ productName: TAgent
 
 directories:
   output: out
+  buildResources: resources
 
 files:
   - dist/**/*
@@ -12,7 +13,11 @@ asar: true
 asarUnpack:
   - node_modules/**/*.node
 
+# 安装包 / 快捷方式图标（圆角底板 PNG；builder 会按平台转 ico/icns）
+icon: logo/appicon/light.png
+
 win:
+  icon: logo/appicon/light.png
   target:
     - target: nsis
       arch:
@@ -26,6 +31,7 @@ nsis:
   createStartMenuShortcut: true
 
 mac:
+  icon: logo/appicon/light.png
   category: public.app-category.developer-tools
   target:
     - dmg
@@ -33,6 +39,7 @@ mac:
   artifactName: TAgent-${version}-${arch}.${ext}
 
 linux:
+  icon: logo/appicon/light.png
   category: Development
   target:
     - AppImage

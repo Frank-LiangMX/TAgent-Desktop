@@ -136,6 +136,14 @@ export class SessionRuntime {
     await this.adapter.setPermissionMode(this.sessionId, mode)
   }
 
+  /** 热切换活跃会话模型（当前由 kscc SDK 原生支持） */
+  async setModel(model: string): Promise<void> {
+    if (!this.adapter.setModel) {
+      throw new Error(`[session ${this.sessionId}] 当前运行内核不支持热切模型`)
+    }
+    await this.adapter.setModel(this.sessionId, model)
+  }
+
   /** 销毁会话：杀进程（标签页关/被顶、关 TAgent） */
   destroy(): void {
     this.adapter.abort(this.sessionId)

@@ -16,6 +16,10 @@ export interface TabItem {
   title: string
   /** 会话所属工作区；会话创建时确定，不依赖全局选择 */
   workspaceId?: string
+  /** 已持久化会话绑定的渠道；新会话发送首条消息前为空 */
+  channelId?: string
+  /** 已持久化会话绑定的模型；新会话发送首条消息前为空 */
+  modelId?: string
 }
 
 /** 打开的会话 tab 列表 */
@@ -39,17 +43,34 @@ export function openTab(
   sessionId: string,
   title: string,
   workspaceId?: string,
+  channelId?: string,
+  modelId?: string,
 ): { tabs: TabItem[]; activeTabId: string } {
   const existing = tabs.find((t) => t.sessionId === sessionId)
   if (existing) {
     // 已开：更新标题 + 激活
     const next = tabs.map((t) =>
-      t.id === existing.id ? { ...t, title, workspaceId: workspaceId ?? t.workspaceId } : t,
+      t.id === existing.id
+        ? {
+            ...t,
+            title,
+            workspaceId: workspaceId ?? t.workspaceId,
+            channelId: channelId ?? t.channelId,
+            modelId: modelId ?? t.modelId,
+          }
+        : t,
     )
     return { tabs: next, activeTabId: existing.id }
   }
   // 未开：追加 + 激活
-  const newTab: TabItem = { id: sessionId, sessionId, title, workspaceId }
+  const newTab: TabItem = {
+    id: sessionId,
+    sessionId,
+    title,
+    workspaceId,
+    ...(channelId ? { channelId } : {}),
+    ...(modelId ? { modelId } : {}),
+  }
   return { tabs: [...tabs, newTab], activeTabId: newTab.id }
 }
 
