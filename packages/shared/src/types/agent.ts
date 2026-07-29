@@ -855,6 +855,30 @@ export interface AgentCallStats {
   retryAttempts: number
 }
 
+// ===== 子代理委派积极性 =====
+
+/**
+ * 子代理委派积极性（per-session 持久化）
+ *
+ * 控制 SubAgent 委派策略注入主 Agent system prompt 的积极性档位：
+ * - 'never'：不主动委派，仅用户明确要求时使用
+ * - 'conservative'：明确有益才委派（默认）
+ * - 'balanced'：积极委派，保持主上下文干净
+ * - 'aggressive'：尽可能委派，主会话只做编排与决策
+ */
+export type SubagentEagerness = 'never' | 'conservative' | 'balanced' | 'aggressive'
+
+/** 子代理委派积极性默认值（meta 未持久化时使用） */
+export const DEFAULT_SUBAGENT_EAGERNESS: SubagentEagerness = 'conservative'
+
+/** 规范化委派积极性：非法 / 缺省值统一回退默认 conservative */
+export function migrateSubagentEagerness(value: string | undefined): SubagentEagerness {
+  if (value === 'never' || value === 'conservative' || value === 'balanced' || value === 'aggressive') {
+    return value
+  }
+  return DEFAULT_SUBAGENT_EAGERNESS
+}
+
 // ===== Agent 会话管理 =====
 
 /**
@@ -917,6 +941,12 @@ export interface AgentSessionMeta {
   stoppedByUser?: boolean
   /** 该会话当前的权限模式（持久化到磁盘，重启后恢复）。未设置时新会话默认 auto */
   permissionMode?: TAgentPermissionMode
+  /**
+   * 子代理委派积极性（持久化到磁盘，重启后恢复）。未设置时新会话默认 conservative。
+   * 主进程构建 kscc query 时读取该值，注入 SubAgent 委派策略 systemPrompt append
+   * （Pi 核 systemPrompt 为整体替换非 append，当前仅 kscc 核生效）。
+   */
+  subagentEagerness?: SubagentEagerness
   /**
    * Composer 档位（per-session 持久化）
    * - 'ask'：输入区 Ask 档位，只对话，不能写文件/执行命令

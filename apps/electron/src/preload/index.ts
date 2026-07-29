@@ -90,8 +90,13 @@ const electronAPI = {
   /** 持久化工作区侧栏顺序 */
   reorderWorkspaces: (orderedIds: string[]) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.REORDER_WORKSPACES, orderedIds) as Promise<AgentWorkspace[]>,
-  /** 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived；status 由主进程内部写，渲染层不直接写） */
-  updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }) =>
+  /** 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived / 子代理委派积极性 subagentEagerness；status 由主进程内部写，渲染层不直接写） */
+  updateSessionMeta: (id: string, patch: {
+    title?: string
+    pinned?: boolean
+    archived?: boolean
+    subagentEagerness?: 'never' | 'conservative' | 'balanced' | 'aggressive'
+  }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_META, { id, patch }) as Promise<unknown>,
   /** 切换会话置顶 */
   togglePin: (id: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.TOGGLE_PIN, id) as Promise<unknown>,

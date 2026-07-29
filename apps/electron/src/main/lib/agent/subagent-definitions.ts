@@ -7,6 +7,10 @@
  * Pi 核：通过自定义 task 工具实现（subagent-task-tool.ts）。
  */
 import type { AgentDefinition } from '@tagent/shared'
+import {
+  DEFAULT_SUBAGENT_EAGERNESS,
+  type SubagentEagerness,
+} from '@tagent/shared'
 
 // ===== 语言指令常量（复用 TAgent_General 模式） =====
 
@@ -103,8 +107,11 @@ export function buildBuiltinSubagentDefinitions(claudeAvailable = true): Record<
  *
  * 参考 TAgent_General agent-prompt-builder.ts 的 SubAgent 委派策略段落。
  * 教主 Agent 何时委派子代理、有哪些内置子代理可用。
+ *
+ * @param eagerness 委派积极性档位（never/conservative/balanced/aggressive），默认 conservative
+ *                  由 session-service 从会话 meta.subagentEagerness 读取后传入（不再写死）。
  */
-export function buildSubagentDelegationPrompt(eagerness: 'never' | 'conservative' | 'balanced' | 'aggressive' = 'conservative'): string {
+export function buildSubagentDelegationPrompt(eagerness: SubagentEagerness = DEFAULT_SUBAGENT_EAGERNESS): string {
   const subagentList = Object.entries(SUBAGENT_METADATA)
     .map(([name, meta]) => `- **${name}**（haiku）：${meta.usageHint}`)
     .join('\n')

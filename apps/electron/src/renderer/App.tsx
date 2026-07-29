@@ -68,8 +68,13 @@ declare global {
       createProjectWorkspace: () => Promise<AgentWorkspace | null>
       deleteWorkspace: (id: string) => Promise<void>
       reorderWorkspaces: (orderedIds: string[]) => Promise<AgentWorkspace[]>
-      // 会话元数据（重命名/置顶/归档；status 由主进程内部写，渲染层不直接写）
-      updateSessionMeta: (id: string, patch: { title?: string; pinned?: boolean; archived?: boolean }) => Promise<unknown>
+      // 会话元数据（重命名/置顶/归档/子代理委派积极性；status 由主进程内部写，渲染层不直接写）
+      updateSessionMeta: (id: string, patch: {
+        title?: string
+        pinned?: boolean
+        archived?: boolean
+        subagentEagerness?: 'never' | 'conservative' | 'balanced' | 'aggressive'
+      }) => Promise<unknown>
       togglePin: (id: string) => Promise<unknown>
       toggleArchive: (id: string) => Promise<unknown>
       /** 查会话生命状态（runtimes 内存 + meta 组合；running 不落盘） */

@@ -17,6 +17,7 @@ import type {
   SDKUserMessageInput,
   TAgentDesktopStreamPayload,
   Channel,
+  AgentSessionMeta,
 } from '@tagent/shared'
 import { AGENT_IPC_CHANNELS } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
@@ -41,7 +42,12 @@ import { getEnabledMcpServers } from '../mcp/mcp-store'
 import { PermissionService } from '../permission/permission-service'
 import { buildBuiltinSubagentDefinitions, buildSubagentDelegationPrompt } from '../agent/subagent-definitions'
 import type { TAgentPermissionMode } from '@tagent/shared'
-import { TAGENT_DEFAULT_PERMISSION_MODE, migratePermissionMode } from '@tagent/shared'
+import {
+  TAGENT_DEFAULT_PERMISSION_MODE,
+  migratePermissionMode,
+  DEFAULT_SUBAGENT_EAGERNESS,
+  migrateSubagentEagerness,
+} from '@tagent/shared'
 
 interface SendMessageInput {
   sessionId: string
@@ -131,14 +137,23 @@ export class SessionService {
       return { ok: true }
     })
 
-    // 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived 等；status 仅主进程内部写 error/idle）
+    // 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived / 子代理委派积极性 subagentEagerness 等；
+    // status 仅主进程内部写 error/idle，渲染层不直接写）
     ipcMain.handle(
       AGENT_IPC_CHANNELS.UPDATE_SESSION_META,
       async (
         _e,
-        args: { id: string; patch: { title?: string; pinned?: boolean; archived?: boolean } }
+        args: {
+          id: string
+          patch: Pick<Partial<AgentSessionMeta>, 'title' | 'pinned' | 'archived' | 'subagentEagerness'>
+        }
       ) => {
-        return updateSessionMeta(args.id, args.patch)
+        // 规范化 subagentEagerness（非法值回退默认），其余字段透传 updateSessionMeta 合并写
+        const patch: Partial<AgentSessionMeta> = { ...args.patch }
+        if (patch.subagentEagerness !== undefined) {
+          patch.subagentEagerness = migrateSubagentEagerness(patch.subagentEagerness)
+        }
+        return updateSessionMeta(args.id, patch)
       }
     )
 
@@ -339,6 +354,10 @@ export class SessionService {
         throw new Error('未检测到 kscc 命令，请先安装 kscc（内网渠道）')
       }
       const meta = getSessionMeta(input.sessionId)
+      // 子代理委派积极性：读会话 meta（持久化，默认 conservative），注入 kscc systemPrompt append。
+      // 每次发送都重新读取，UI 改完下次发送即生效（kscc 长驻进程 system prompt 在 spawn 时定稿，
+      // 切换积极性需重建进程才完全生效；非首次发送走 resume，沿用上一次注入的策略）。
+      const eagerness = migrateSubagentEagerness(meta?.subagentEagerness)
       // KsccQueryOptions：canUseTool/mcpServers/permissionMode/allowDangerouslySkipPermissions
       // canUseTool 透传 PermissionService.createCanUseTool（permissionMode 非硬编码）
       const canUseTool = this.permissionService
@@ -358,7 +377,7 @@ export class SessionService {
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
-          append: buildSubagentDelegationPrompt('conservative'),
+          append: buildSubagentDelegationPrompt(eagerness),
         },
         persistSession: true,
         // 工作区 MCP 配置
@@ -386,6 +405,9 @@ export class SessionService {
     // 外部渠道：Pi 核，构造 PiQueryOptions
     // PiAgentAdapter.query() 解构 channelConfig（嵌套对象），不是扁平字段。
     // 对应 PiExternalChannelConfig：type/provider/apiKey/baseUrl/modelId/thinking*
+    // 注：subagentEagerness 当前仅注入 kscc 核。Pi 核的 systemPrompt 是「整体替换」
+    // （systemPrompt ?? DEFAULT_SYSTEM_PROMPT）而非 append，且 DEFAULT_SYSTEM_PROMPT 未导出，
+    // 直接注入委派策略会覆盖默认 system prompt，故暂不接；如需支持需先给 Pi 核加 append 点。
     const apiKey = getDecryptedApiKey(channel.id)
     if (!apiKey) {
       // apiKey 解密失败（Windows DPAPI 跨实例不可互通）或未设置 → 早点报错，别让空 key 打到 HTTP

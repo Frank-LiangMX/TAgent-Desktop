@@ -8,7 +8,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import type { StickToBottomContext } from 'use-stick-to-bottom'
-import type { TAgentDesktopStreamPayload, TAgentMessage, TAgentPermissionMode } from '@tagent/shared'
+import type { TAgentDesktopStreamPayload, TAgentMessage, TAgentPermissionMode, SubagentEagerness } from '@tagent/shared'
 import {
   resolveChannelDefaultModelId,
   sdkMessageToIR,
@@ -34,6 +34,13 @@ import { MessageView } from './MessageView'
 import { ChatInput, type ChatInputHandle } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
 import { PermissionModeSelector } from './PermissionModeSelector'
+import { SubagentEagernessSelector } from './SubagentEagernessSelector'
+import {
+  resolveEagerness,
+  reduceTaskEvent,
+  type TaskCardState,
+  type TaskCardEvent,
+} from './subagent-ui-model'
 import { PermissionBanner } from '../permission/PermissionBanner'
 import { ScrollPositionManager } from '../shell/ScrollPositionManager'
 import {
@@ -73,6 +80,8 @@ interface DisplayItem {
   streamingThinking?: string
   /** 是否流式中 */
   streaming?: boolean
+  /** 子代理任务卡片（task_started/progress/notification 状态机，独立小卡片） */
+  taskCard?: TaskCardState
 }
 
 export function Chat({ session }: { session: SessionMeta }): JSX.Element {
@@ -88,6 +97,8 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   const [sentCoreKind, setSentCoreKind] = useState<ChannelCoreKind | null>(null)
   /** 会话当前权限模式（默认 auto；切会话 key 重建后重置。运行中切换即时生效） */
   const [permissionMode, setPermissionMode] = useState<TAgentPermissionMode>(TAGENT_DEFAULT_PERMISSION_MODE)
+  /** 子代理委派积极性（默认 conservative；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 kscc 生效） */
+  const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('conservative')
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
   const scrollContextRef = useRef<StickToBottomContext | null>(null)
@@ -166,6 +177,7 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
     setVisibleCount(20) // 虚拟化：切会话重置首批 20
     streamingRef.current = null
     itemIdxRef.current = 0
+    setSubagentEagerness('conservative') // 切会话重置，下面异步回显持久化值
     void (async () => {
       const history = (await window.electronAPI.getMessages(sessionId)) as unknown[]
       const irItems: DisplayItem[] = []
@@ -177,6 +189,17 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
       }
       setItems(irItems)
       setScrollReady(true)
+      // 回显持久化的子代理委派积极性（新会话无 meta → resolveEagerness 回退默认 conservative）
+      try {
+        const metas = (await window.electronAPI.listSessions()) as Array<{
+          id: string
+          subagentEagerness?: SubagentEagerness
+        }>
+        const persisted = metas.find((m) => m.id === sessionId)
+        if (persisted) setSubagentEagerness(resolveEagerness(persisted))
+      } catch {
+        /* 回显失败不影响主流程，沿用默认 conservative */
+      }
     })()
   }, [sessionId])
 
@@ -236,6 +259,16 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
     return off
   }, [])
 
+  /**
+   * 任务卡片 apply：existing=undefined 新建（分配稳定 key），否则就地更新 taskCard
+   * （保留 message / streamingText 等其他字段）。reduceTaskEvent 的承载项工厂。
+   */
+  const taskCardApply = (
+    existing: DisplayItem | undefined,
+    card: TaskCardState,
+  ): DisplayItem =>
+    existing ? { ...existing, taskCard: card } : { key: `task${itemIdxRef.current++}`, taskCard: card }
+
   const handlePayload = (p: TAgentDesktopStreamPayload): void => {
     if (p.kind === 'sdk_message') {
       if (streamingRef.current) {
@@ -269,7 +302,16 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
       setRunning(false)
       bumpRefresh()
     } else if (p.kind === 'tagent_event') {
-      const evt = p.event as { type: string; message?: string; taskId?: string; description?: string; status?: string; summary?: string; lastToolName?: string }
+      const evt = p.event as {
+        type: string
+        message?: string
+        taskId?: string
+        toolUseId?: string
+        description?: string
+        status?: string
+        summary?: string
+        lastToolName?: string
+      }
       if (evt.type === 'turn_end') {
         streamingRef.current = null
         setRunning(false)
@@ -287,30 +329,38 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
         ])
         setRunning(false)
       } else if (evt.type === 'task_started') {
-        // 子代理启动：显示状态提示
-        setItems((prev) => [
-          ...prev,
-          {
-            key: `task${itemIdxRef.current++}`,
-            message: {
-              type: 'assistant',
-              content: [{ type: 'text', text: `🔄 子代理启动: ${evt.description ?? ''}` }],
-            } as TAgentMessage,
-          },
-        ])
+        // 子代理启动：upsert 任务卡片（running），不再塞 assistant 文本气泡
+        const event: TaskCardEvent = {
+          type: 'task_started',
+          taskId: evt.taskId ?? '',
+          toolUseId: evt.toolUseId,
+          description: evt.description ?? '',
+        }
+        setItems((prev) => reduceTaskEvent(prev, event, taskCardApply))
+      } else if (evt.type === 'task_progress') {
+        // 子代理进度：更新同一张任务卡片的 lastToolName / progressText，不新增气泡
+        const event: TaskCardEvent = {
+          type: 'task_progress',
+          taskId: evt.taskId,
+          toolUseId: evt.toolUseId,
+          description: evt.description,
+          lastToolName: evt.lastToolName,
+        }
+        setItems((prev) => reduceTaskEvent(prev, event, taskCardApply))
       } else if (evt.type === 'task_notification') {
-        // 子代理完成：显示结果摘要
-        const status = evt.status === 'completed' ? '✅' : evt.status === 'failed' ? '❌' : '⏹️'
-        setItems((prev) => [
-          ...prev,
-          {
-            key: `task${itemIdxRef.current++}`,
-            message: {
-              type: 'assistant',
-              content: [{ type: 'text', text: `${status} 子代理完成: ${evt.summary ?? ''}` }],
-            } as TAgentMessage,
-          },
-        ])
+        // 子代理收口：置 status + summary，清空进度文案
+        const status: TaskCardState['status'] =
+          evt.status === 'completed' || evt.status === 'failed' || evt.status === 'stopped'
+            ? evt.status
+            : 'stopped'
+        const event: TaskCardEvent = {
+          type: 'task_notification',
+          taskId: evt.taskId ?? '',
+          toolUseId: evt.toolUseId,
+          status,
+          summary: evt.summary ?? '',
+        }
+        setItems((prev) => reduceTaskEvent(prev, event, taskCardApply))
       }
     }
   }
@@ -438,6 +488,14 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
                       await window.electronAPI.setSessionPermissionMode(sessionId, m)
                     }}
                   />
+                  <SubagentEagernessSelector
+                    eagerness={subagentEagerness}
+                    onChange={async (level) => {
+                      setSubagentEagerness(level)
+                      // 持久化到会话 meta；下次发送时主进程注入 kscc systemPrompt append 生效
+                      await window.electronAPI.updateSessionMeta(sessionId, { subagentEagerness: level })
+                    }}
+                  />
                 </div>
                 <div className="flex items-center gap-1.5">
                   {running && (
@@ -470,6 +528,15 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
 
 /** 显示项渲染 */
 function ItemView({ item }: { item: DisplayItem }): JSX.Element {
+  // 子代理任务卡片（task_started/progress/notification 状态机，独立小卡片）
+  if (item.taskCard) {
+    return (
+      <div data-message-id={item.key}>
+        <TaskCardView card={item.taskCard} />
+      </div>
+    )
+  }
+
   // 完整消息（IR）→ MessageView（挂 data-message-id 供 ScrollMinimap 定位）
   if (item.message) {
     return (
@@ -497,6 +564,72 @@ function ItemView({ item }: { item: DisplayItem }): JSX.Element {
           {!item.streamingText && !item.streamingThinking && <MessageLoading />}
         </MessageContent>
     </Message>
+    </div>
+  )
+}
+
+/**
+ * TaskCardView — 子代理任务卡片
+ *
+ * 圆角边框 + 状态色圆点（running 脉冲）+ 可选进度文案 / 收口摘要。
+ * 放在消息流中，承载 task_started → task_progress → task_notification 生命周期。
+ */
+const TASK_CARD_STATUS: Record<TaskCardState['status'], {
+  label: string
+  box: string
+  dot: string
+  text: string
+}> = {
+  running: {
+    label: '运行中',
+    box: 'border-muted-foreground/20 bg-muted/20',
+    dot: 'bg-muted-foreground/60 animate-pulse',
+    text: 'text-muted-foreground',
+  },
+  completed: {
+    label: '已完成',
+    box: 'border-emerald-500/30 bg-emerald-500/5',
+    dot: 'bg-emerald-500',
+    text: 'text-emerald-600 dark:text-emerald-400',
+  },
+  failed: {
+    label: '失败',
+    box: 'border-destructive/30 bg-destructive/5',
+    dot: 'bg-destructive',
+    text: 'text-destructive',
+  },
+  stopped: {
+    label: '已停止',
+    box: 'border-muted-foreground/20 bg-muted/20',
+    dot: 'bg-muted-foreground/40',
+    text: 'text-muted-foreground/70',
+  },
+}
+
+function TaskCardView({ card }: { card: TaskCardState }): JSX.Element {
+  const s = TASK_CARD_STATUS[card.status]
+  const isRunning = card.status === 'running'
+  return (
+    <div className={`flex items-start gap-2.5 rounded-lg border px-3 py-2 ${s.box}`}>
+      <span className={`mt-1 size-2 shrink-0 rounded-full ${s.dot}`} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 text-xs">
+          <span className="font-medium text-foreground/80">子代理</span>
+          <span className={s.text}>{s.label}</span>
+          {isRunning && card.lastToolName && (
+            <span className="truncate text-muted-foreground/60">· {card.lastToolName}</span>
+          )}
+        </div>
+        {card.description && (
+          <div className="mt-0.5 truncate text-xs text-foreground/70">{card.description}</div>
+        )}
+        {isRunning && card.progressText && (
+          <div className="mt-0.5 truncate text-xs text-muted-foreground">{card.progressText}</div>
+        )}
+        {!isRunning && card.summary && (
+          <div className="mt-0.5 truncate text-xs text-muted-foreground">{card.summary}</div>
+        )}
+      </div>
     </div>
   )
 }
