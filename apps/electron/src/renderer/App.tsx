@@ -1,8 +1,9 @@
 /**
  * TAgent-Desktop App 根组件
  *
- * 浮岛壳（Rail 仅会话/设置 + Sidebar + main）。
- * 渠道 / 主题入口在设置页；无 workspace 时显示引导界面。
+ * 浮岛壳（Rail：会话 / 插件 / 设置 + Sidebar + main）。
+ * 插件为一级入口（对齐 General）；渠道 / 主题在设置页；工作区在侧栏。
+ * 无 workspace 时显示引导界面。
  */
 import { useEffect, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
@@ -23,16 +24,16 @@ import type {
 } from '@tagent/shared'
 import { Button, ConversationEmptyState, TooltipProvider } from '@tagent/ui'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
+import { PluginStoreSettings } from './components/settings/PluginStoreSettings'
 import { SettingsDialog, type SettingsTab } from './components/settings/SettingsPage'
 import { AppShell } from './components/shell/AppShell'
-import { Rail } from './components/shell/Rail'
+import { Rail, type RailItem } from './components/shell/Rail'
 import { TabBar } from './components/shell/TabBar'
 import { TabContent } from './components/shell/TabContent'
 import { WelcomePage } from './components/shell/WelcomePage'
 import { WorkspacePickerDialog } from './components/shell/WorkspacePickerDialog'
 import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
 import {
-  channelsAtom,
   loadChannelsAtom,
 } from './atoms/channel-atoms'
 import {
@@ -128,10 +129,11 @@ declare global {
 export function App(): JSX.Element {
   const [showSettings, setShowSettings] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general')
+  /** 主区导航：会话 | 插件（设置走对话框，打开时 rail 高亮 settings） */
+  const [activeRail, setActiveRail] = useState<Exclude<RailItem, 'settings'>>('chat')
   const [showWorkspacePicker, setShowWorkspacePicker] = useState(false)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
-  const channels = useAtomValue(channelsAtom)
   const workspaces = useAtomValue(workspacesAtom)
   // 多会话 tab
   const tabs = useAtomValue(tabsAtom)
@@ -144,6 +146,8 @@ export function App(): JSX.Element {
     setSettingsInitialTab(tab)
     setShowSettings(true)
   }
+
+  const railActive: RailItem = showSettings ? 'settings' : activeRail
 
   // 启动时同时加载渠道列表 + 工作区列表
   useEffect(() => {
@@ -227,23 +231,43 @@ export function App(): JSX.Element {
         topbar={null}
         rail={
           <Rail
-            active="chat"
-            onChat={() => { if (!activeTab) newSession() }}
+            active={railActive}
+            onChat={() => {
+              setShowSettings(false)
+              setActiveRail('chat')
+              if (!activeTab) newSession()
+            }}
+            onPlugins={() => {
+              setShowSettings(false)
+              setActiveRail('plugins')
+            }}
             onSettings={() => openSettings('general')}
           />
         }
         sidebar={
           <SessionSidebar
             activeSessionId={activeTabId}
-            onSelect={(s) => openSession(s.id, s.title, s.workspaceId, s.channelId, s.modelId)}
-            onNew={() => newSession()}
+            onSelect={(s) => {
+              setShowSettings(false)
+              setActiveRail('chat')
+              openSession(s.id, s.title, s.workspaceId, s.channelId, s.modelId)
+            }}
+            onNew={() => {
+              setShowSettings(false)
+              setActiveRail('chat')
+              newSession()
+            }}
             onOpenProject={() => void handleOpenProject()}
             onWorkspaceDeleted={handleWorkspaceDeleted}
           />
         }
       >
-        {/* main：会话页或空状态 */}
-        {workspaces.length === 0 ? (
+        {/* main：插件页 | 会话页 | 空状态 */}
+        {activeRail === 'plugins' ? (
+          <div className="plugins-main-view scrollbar-thin">
+            <PluginStoreSettings />
+          </div>
+        ) : workspaces.length === 0 ? (
           <ConversationEmptyState
             title="打开项目目录开始"
             description="选择一个本地代码目录作为工作区，Agent 将在该目录下工作"

@@ -1,13 +1,12 @@
 /**
- * 插件商店设置页（工作区维度）
+ * 插件主页（工作区维度）— Rail 一级入口，对齐 TAgent_General skills
  *
  * 产品单位 = 整合包 Bundle（Cursor/Codex/TAgent_General 风格）。
- * 顶栏：工作区选择（与 McpSettings 同）+ Segmented（市场 / 已安装）。
+ * 顶栏：工作区选择 + Segmented（市场 / 已安装 / MCP）。
  * - 市场：整包卡片网格（name/description/category/N MCP + M Skill/安装按钮），点卡片展开详情。
  * - 已安装：来自 plugins-installed.json，可卸载。
- * 视觉：复用 ChannelsSettings 的 channel-* 卡片节奏 + @tagent/ui 组件，新增少量 .plugin-bundle-* CSS。
- *
- * MCP 原始 CRUD 降级为「高级 MCP」tab（见 SettingsPage）；本页只做整包一键安装。
+ * - MCP：手动配置自定义 MCP 服务器（stdio/http/sse），原独立设置项并入此处。
+ * 视觉：复用 ChannelsSettings 的 channel-* 卡片节奏 + @tagent/ui 组件，少量 .plugin-bundle-* CSS。
  */
 import { useEffect, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
@@ -42,8 +41,9 @@ import type {
   WorkspacePluginBundleRecord,
 } from '@tagent/shared'
 import { workspacesAtom, loadWorkspacesAtom } from '../../atoms/workspace-atoms'
+import { McpSettings } from './McpSettings'
 
-type PluginView = 'market' | 'installed'
+type PluginView = 'market' | 'installed' | 'mcp'
 type InstallNotice = { kind: 'success' | 'error'; message: string }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -208,19 +208,23 @@ export function PluginStoreSettings(): JSX.Element {
       <div className="channel-settings-heading">
         <div>
           <h2 className="settings-page-intro-title">插件</h2>
-          <p className="settings-page-intro-desc">整合包市场：一键安装 MCP 与 Skill，已安装可卸载</p>
+          <p className="settings-page-intro-desc">
+            整合包一键安装 MCP 与 Skill；高级 MCP 可手动配置服务器
+          </p>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={loadingCatalog || loadingInstalled}
-          onClick={() => {
-            void reloadInstalled()
-          }}
-        >
-          <RefreshCw size={14} className={loadingInstalled ? 'animate-spin' : ''} />
-          刷新
-        </Button>
+        {view !== 'mcp' && (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={loadingCatalog || loadingInstalled}
+            onClick={() => {
+              void reloadInstalled()
+            }}
+          >
+            <RefreshCw size={14} className={loadingInstalled ? 'animate-spin' : ''} />
+            刷新
+          </Button>
+        )}
       </div>
 
       <div className="flex items-center gap-2" style={{ marginTop: -6 }}>
@@ -246,9 +250,10 @@ export function PluginStoreSettings(): JSX.Element {
       >
         <SegmentedTabsItem value="market">市场</SegmentedTabsItem>
         <SegmentedTabsItem value="installed">已安装（{installed.length}）</SegmentedTabsItem>
+        <SegmentedTabsItem value="mcp">MCP</SegmentedTabsItem>
       </SegmentedTabs>
 
-      {pageError && (
+      {pageError && view !== 'mcp' && (
         <div className="channel-notice channel-notice--error" role="alert">
           <AlertCircle size={15} />
           <span className="channel-notice-copy">{pageError}</span>
@@ -267,13 +272,15 @@ export function PluginStoreSettings(): JSX.Element {
           canInstall={Boolean(slug)}
           onInstall={installBundle}
         />
-      ) : (
+      ) : view === 'installed' ? (
         <InstalledView
           installed={installed}
           catalog={catalog}
           loading={loadingInstalled}
           onUninstall={(record, name) => setUninstallTarget({ bundleId: record.bundleId, name })}
         />
+      ) : (
+        <McpSettings embedded workspaceId={slug} />
       )}
 
       <DestructiveConfirmDialog

@@ -371,6 +371,19 @@
   background: transparent;
 }
 
+/* 插件主区（Rail 一级入口）：与设置宽内容同节奏，可滚动 */
+.plugins-main-view {
+  box-sizing: border-box;
+  height: 100%;
+  overflow: auto;
+  padding: calc(var(--shell-band-inset-top, 16px) + 8px) var(--app-shell-session-gutter, 20px) 28px;
+}
+
+.plugins-main-view > .settings-page {
+  max-width: 960px;
+  margin-inline: auto;
+}
+
 
 /* ===== 会话标签栏 TabBar（逐项对齐 TAgent_General app-shell.css:1863-2317） =====
  * strip 顶对齐 rail/sidebar（margin-top: band-inset-top + 6px 顶垫对齐 sidebar head）。

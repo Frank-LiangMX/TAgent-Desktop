@@ -1,10 +1,12 @@
 /**
- * MCP 设置页（工作区维度）
+ * MCP 管理（工作区维度）
  *
+ * 产品归属：插件页（与整合包同级），不再单独出现在设置里。
  * 行为：先选工作区 → 列表（名称/type/enabled/command|url 摘要/lastTestResult）
  *      → 增删改表单（stdio/http/sse）+ 启用开关即时 upsert + 真实测试连接。
- * 视觉：复用 ChannelsSettings 的 channel-* 样式与 @tagent/ui 组件（Button/Switch/
- *       Select/DestructiveConfirmDialog），不新增 CSS。
+ * 视觉：复用 ChannelsSettings 的 channel-* 样式与 @tagent/ui 组件。
+ *
+ * embedded + workspaceId：嵌入插件页时隐藏顶栏与工作区选择，共用父级工作区。
  */
 import { useEffect, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
@@ -48,7 +50,14 @@ import {
 type EditorMode = 'add' | 'edit'
 type Operation = { kind: 'testing' | 'success' | 'error'; message: string }
 
-export function McpSettings(): JSX.Element {
+export interface McpSettingsProps {
+  /** 嵌入插件页：隐藏独立顶栏与工作区选择 */
+  embedded?: boolean
+  /** 受控工作区 id（embedded 时由插件页传入） */
+  workspaceId?: string
+}
+
+export function McpSettings({ embedded = false, workspaceId }: McpSettingsProps = {}): JSX.Element {
   const workspaces = useAtomValue(workspacesAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
   const [selectedId, setSelectedId] = useState('')
@@ -59,20 +68,21 @@ export function McpSettings(): JSX.Element {
   const [operations, setOperations] = useState<Record<string, Operation>>({})
   const [deleteTarget, setDeleteTarget] = useState<{ name: string } | null>(null)
 
-  // 打开设置时刷新工作区列表（可能在外部新建过项目）
+  // 打开时刷新工作区列表（可能在外部新建过项目）
   useEffect(() => {
     void loadWorkspaces()
   }, [loadWorkspaces])
 
-  // 默认选中第一个工作区
+  // 默认选中第一个工作区（非受控时）
   useEffect(() => {
+    if (workspaceId) return
     if (!selectedId && workspaces.length > 0) {
       const first = workspaces[0]
       if (first) setSelectedId(first.id)
     }
-  }, [workspaces, selectedId])
+  }, [workspaces, selectedId, workspaceId])
 
-  const slug = selectedId
+  const slug = workspaceId || selectedId
 
   const reload = async (): Promise<void> => {
     if (!slug) {
@@ -162,13 +172,15 @@ export function McpSettings(): JSX.Element {
 
   if (workspaces.length === 0) {
     return (
-      <div className="settings-page channel-settings-page">
-        <div className="channel-settings-heading">
-          <div>
-            <h2 className="settings-page-intro-title">MCP 服务器</h2>
-            <p className="settings-page-intro-desc">按工作区管理 MCP 工具服务器，并测试真实连接</p>
+      <div className={embedded ? undefined : 'settings-page channel-settings-page'}>
+        {!embedded && (
+          <div className="channel-settings-heading">
+            <div>
+              <h2 className="settings-page-intro-title">MCP 服务器</h2>
+              <p className="settings-page-intro-desc">按工作区管理 MCP 工具服务器，并测试真实连接</p>
+            </div>
           </div>
-        </div>
+        )}
         <div className="channel-empty">
           <Plug size={20} />
           <div>
@@ -184,39 +196,59 @@ export function McpSettings(): JSX.Element {
   const enabledCount = servers.filter((s) => s.entry.enabled).length
 
   return (
-    <div className="settings-page channel-settings-page">
-      <div className="channel-settings-heading">
-        <div>
-          <h2 className="settings-page-intro-title">MCP 服务器</h2>
-          <p className="settings-page-intro-desc">按工作区管理 MCP 工具服务器，并测试真实连接</p>
+    <div className={embedded ? undefined : 'settings-page channel-settings-page'}>
+      {!embedded && (
+        <>
+          <div className="channel-settings-heading">
+            <div>
+              <h2 className="settings-page-intro-title">MCP 服务器</h2>
+              <p className="settings-page-intro-desc">按工作区管理 MCP 工具服务器，并测试真实连接</p>
+            </div>
+            <Button size="sm" disabled={!slug} onClick={() => setEditor({ mode: 'add' })}>
+              <Plus size={14} />
+              添加服务器
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-2" style={{ marginTop: -6 }}>
+            <span className="text-[11px] text-muted-foreground">工作区</span>
+            <Select value={selectedId} onValueChange={setSelectedId}>
+              <SelectTrigger className="channel-input channel-provider-select" style={{ width: 240 }}>
+                <SelectValue placeholder="选择工作区" />
+              </SelectTrigger>
+              <SelectContent className="scrollbar-thin !z-[130]">
+                {workspaces.map((w) => (
+                  <SelectItem key={w.id} value={w.id}>
+                    {w.name ?? w.id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </>
+      )}
+
+      {embedded && (
+        <div className="channel-settings-heading" style={{ marginTop: 0 }}>
+          <div className="channel-settings-summary" style={{ margin: 0 }}>
+            <span>{servers.length} 个服务器</span>
+            <span aria-hidden>·</span>
+            <span>{enabledCount} 个已启用</span>
+          </div>
+          <Button size="sm" disabled={!slug} onClick={() => setEditor({ mode: 'add' })}>
+            <Plus size={14} />
+            添加服务器
+          </Button>
         </div>
-        <Button size="sm" disabled={!slug} onClick={() => setEditor({ mode: 'add' })}>
-          <Plus size={14} />
-          添加服务器
-        </Button>
-      </div>
+      )}
 
-      <div className="flex items-center gap-2" style={{ marginTop: -6 }}>
-        <span className="text-[11px] text-muted-foreground">工作区</span>
-        <Select value={selectedId} onValueChange={setSelectedId}>
-          <SelectTrigger className="channel-input channel-provider-select" style={{ width: 240 }}>
-            <SelectValue placeholder="选择工作区" />
-          </SelectTrigger>
-          <SelectContent className="scrollbar-thin !z-[130]">
-            {workspaces.map((w) => (
-              <SelectItem key={w.id} value={w.id}>
-                {w.name ?? w.id}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="channel-settings-summary">
-        <span>{servers.length} 个服务器</span>
-        <span aria-hidden>·</span>
-        <span>{enabledCount} 个已启用</span>
-      </div>
+      {!embedded && (
+        <div className="channel-settings-summary">
+          <span>{servers.length} 个服务器</span>
+          <span aria-hidden>·</span>
+          <span>{enabledCount} 个已启用</span>
+        </div>
+      )}
 
       {loadError && (
         <div className="channel-notice channel-notice--error" role="alert">
