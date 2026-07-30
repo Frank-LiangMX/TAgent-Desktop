@@ -29,10 +29,12 @@ import { SettingsDialog, type SettingsTab } from './components/settings/Settings
 import { AppShell } from './components/shell/AppShell'
 import { Rail, type RailItem } from './components/shell/Rail'
 import { TabBar } from './components/shell/TabBar'
-import { TabContent } from './components/shell/TabContent'
-import { WelcomePage } from './components/shell/WelcomePage'
-import { WorkspacePickerDialog } from './components/shell/WorkspacePickerDialog'
+import { SessionRouter } from './components/shell/SessionRouter'
+import { WelcomeStart } from './components/shell/WelcomeStart'
+import { NewConversationLanding } from './components/chat/NewConversationLanding'
+import type { SessionMeta } from './components/chat/Chat'
 import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
+import { pendingSuggestionAtom } from './atoms/pending-suggestion'
 import {
   loadChannelsAtom,
 } from './atoms/channel-atoms'
@@ -131,7 +133,6 @@ export function App(): JSX.Element {
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general')
   /** 主区导航：会话 | 插件（设置走对话框，打开时 rail 高亮 settings） */
   const [activeRail, setActiveRail] = useState<Exclude<RailItem, 'settings'>>('chat')
-  const [showWorkspacePicker, setShowWorkspacePicker] = useState(false)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
   const workspaces = useAtomValue(workspacesAtom)
@@ -141,6 +142,9 @@ export function App(): JSX.Element {
   const activeTab = useAtomValue(activeTabAtom)
   const setTabs = useSetAtom(tabsAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
+  const setPendingSuggestion = useSetAtom(pendingSuggestionAtom)
+  /** 草稿会话（无 tab 的新会话页）：点「新建会话」设置，发送首条消息时由 Chat 物化为 tab */
+  const [draftSession, setDraftSession] = useState<SessionMeta | null>(null)
 
   const openSettings = (tab: SettingsTab): void => {
     setSettingsInitialTab(tab)
@@ -181,28 +185,28 @@ export function App(): JSX.Element {
 
     await loadWorkspaces()
     if (startSession) {
-      openSession('session-' + Date.now(), '新会话', workspace.id)
+      // 注册工作区后开新会话：进入草稿（无 tab），发送首条消息才物化为 tab
+      setDraftSession({ id: 'session-' + Date.now(), title: '新会话', workspaceId: workspace.id })
     }
   }
 
   const newSession = (workspaceId?: string): void => {
-    const workspace = workspaceId
-      ? workspaces.find((item) => item.id === workspaceId)
-      : workspaces.length === 1
-        ? workspaces[0]
-        : undefined
-
-    if (!workspace) {
-      if (workspaces.length === 0) {
-        void handleOpenProject(true)
-        return
-      }
-      setShowWorkspacePicker(true)
+    // 没有工作区 → 先打开项目目录（注册工作区后直接开新会话）
+    if (workspaces.length === 0) {
+      void handleOpenProject(true)
       return
     }
-
-    // 新会话用临时 id（发首条消息时主进程建持久 meta + 绑定渠道 + 绑定 workspace）
-    openSession('session-' + Date.now(), '新会话', workspace.id)
+    // 已在草稿页（未发送）→ 复用，不另开（避免丢弃已输入内容）
+    if (draftSession && !activeTab) return
+    // 默认绑最近工作区（侧栏按 recency 排序，workspaces[0] 即最近）；
+    // 工作区可在新会话页的选择器里再改，发送首条消息时主进程才落盘绑定。
+    const workspace = workspaceId
+      ? workspaces.find((item) => item.id === workspaceId) ?? workspaces[0]
+      : workspaces[0]
+    // workspaces.length===0 已 early return，此处 workspace 必存在；兜底给 TS
+    if (!workspace) return
+    // 进入草稿（无 tab）：发送首条消息时主进程建持久 meta + 绑定渠道 + 绑定 workspace
+    setDraftSession({ id: 'session-' + Date.now(), title: '新会话', workspaceId: workspace.id })
   }
 
   /** 删除工作区后同步关闭其全部标签，并为当前标签选择最近邻。 */
@@ -225,6 +229,12 @@ export function App(): JSX.Element {
     }
   }
 
+  /**
+   * 标签栏显隐：多会话始终显示；单会话在已物化为 tab（channelId 非空）后显示。
+   * 草稿态（未发送、无 tab）不显示——对齐「新建会话阶段无标签」。
+   */
+  const showTabBar = tabs.length > 1 || Boolean(activeTab?.channelId)
+
   return (
     <TooltipProvider delayDuration={280} skipDelayDuration={120}>
       <AppShell
@@ -235,7 +245,8 @@ export function App(): JSX.Element {
             onChat={() => {
               setShowSettings(false)
               setActiveRail('chat')
-              if (!activeTab) newSession()
+              // 无 tab 且无草稿 → 进入新会话草稿；已有 tab/草稿则回到当前页
+              if (!activeTab && !draftSession) newSession()
             }}
             onPlugins={() => {
               setShowSettings(false)
@@ -250,6 +261,8 @@ export function App(): JSX.Element {
             onSelect={(s) => {
               setShowSettings(false)
               setActiveRail('chat')
+              // 选中已有会话 → 清掉草稿（避免关掉所有 tab 后复活旧草稿）
+              setDraftSession(null)
               openSession(s.id, s.title, s.workspaceId, s.channelId, s.modelId)
             }}
             onNew={() => {
@@ -262,7 +275,10 @@ export function App(): JSX.Element {
           />
         }
       >
-        {/* main：插件页 | 会话页 | 空状态 */}
+        {/* main：插件页 | 会话页（草稿或 tab） | 欢迎页。
+            欢迎页 / 新会话页的入场动画由 NewConversationLanding 内各元素自行承担
+            （标题逐词模糊渐现、输入框上滑淡入、提示词错落淡入），非整页位移；
+            故此处不做整页过渡，直接切换，新页元素各自重新入场。 */}
         {activeRail === 'plugins' ? (
           <div className="plugins-main-view scrollbar-thin">
             <PluginStoreSettings />
@@ -281,34 +297,35 @@ export function App(): JSX.Element {
               </p>
             </div>
           </ConversationEmptyState>
-        ) : activeTab ? (
+        ) : draftSession || activeTab ? (
           <div className="flex h-full flex-col">
-            <TabBar />
+            {showTabBar && <TabBar />}
             <div className="min-h-0 flex-1">
-              <TabContent />
+              <SessionRouter
+                draftSession={draftSession}
+                onDraftWorkspaceChange={(id) =>
+                  setDraftSession((prev) => (prev ? { ...prev, workspaceId: id } : prev))
+                }
+                onDraftBack={() => setDraftSession(null)}
+              />
             </div>
           </div>
         ) : (
-          <WelcomePage
-            onNewSession={() => newSession()}
-            onOpenProject={() => void handleOpenProject()}
+          <NewConversationLanding
+            composer={
+              <WelcomeStart
+                onNewSession={() => newSession()}
+                onOpenProject={() => void handleOpenProject()}
+              />
+            }
+            onPickSuggestion={(text) => {
+              setPendingSuggestion(text)
+              newSession()
+            }}
           />
         )}
       </AppShell>
 
-      <WorkspacePickerDialog
-        open={showWorkspacePicker}
-        workspaces={workspaces}
-        onOpenChange={setShowWorkspacePicker}
-        onSelect={(workspace) => {
-          setShowWorkspacePicker(false)
-          newSession(workspace.id)
-        }}
-        onOpenProject={() => {
-          setShowWorkspacePicker(false)
-          void handleOpenProject(true)
-        }}
-      />
       <SettingsDialog
         open={showSettings}
         initialTab={settingsInitialTab}

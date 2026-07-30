@@ -32,7 +32,7 @@ import {
   ReasoningContent,
   Button,
 } from '@tagent/ui'
-import { ArrowUp, Square } from 'lucide-react'
+import { ArrowUp, Square, Compass, Zap } from 'lucide-react'
 import {
   COMPACTION_IN_PROGRESS_LABEL,
   getCompactBoundaryLabel,
@@ -46,6 +46,8 @@ import {
 } from './session-turn-model'
 import { ChatInput, type ChatInputHandle } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
+import { WorkspaceSelector } from './WorkspaceSelector'
+import { NewConversationLanding } from './NewConversationLanding'
 import { PermissionModeSelector } from './PermissionModeSelector'
 import { SubagentEagernessSelector } from './SubagentEagernessSelector'
 import {
@@ -55,6 +57,7 @@ import {
   type TaskCardEvent,
 } from './subagent-ui-model'
 import { PermissionBanner } from '../permission/PermissionBanner'
+import { MessageQueue } from './MessageQueue'
 import { ScrollPositionManager } from '../shell/ScrollPositionManager'
 import {
   channelsAtom,
@@ -66,9 +69,11 @@ import {
   type ChannelCoreKind,
   type ModelSelection,
 } from '../../atoms/model-selection'
-import { tabsAtom } from '../../atoms/tabs'
+import { tabsAtom, activeTabIdAtom, materializeTab } from '../../atoms/tabs'
+import { loadWorkspacesAtom } from '../../atoms/workspace-atoms'
+import { pendingSuggestionAtom } from '../../atoms/pending-suggestion'
 
-interface SessionMeta {
+export interface SessionMeta {
   id: string
   title: string
   workspaceId?: string
@@ -100,10 +105,26 @@ interface DisplayItem {
   compactTrigger?: 'auto' | 'manual'
 }
 
-export function Chat({ session }: { session: SessionMeta }): JSX.Element {
+/** 新会话页提示词默认值见 NewConversationLanding（welcome / compose 两形态共用） */
+
+export function Chat({
+  session,
+  onDraftWorkspaceChange,
+  onBack,
+}: {
+  session: SessionMeta
+  /** 草稿态（无 tab）改工作区：改 App 的 draftSession。已有 tab 时由 SessionRouter 不传 */
+  onDraftWorkspaceChange?: (id: string) => void
+  /** 草稿态返回欢迎页（丢弃草稿）；会话页/线程态由 SessionRouter 不传 */
+  onBack?: () => void
+}): JSX.Element {
   const sessionId = session.id
   const [items, setItems] = useState<DisplayItem[]>([])
   const [running, setRunning] = useState(false)
+  /** 输入框是否有草稿（供发送/停止键同槽复用：运行中且有草稿→仍可追加发送，显示发送键；运行中无草稿→停止键） */
+  const [hasDraft, setHasDraft] = useState(false)
+  /** 运行中排队的消息（运行中发送→入队，运行结束→自动消费） */
+  const [messageQueue, setMessageQueue] = useState<Array<{ text: string; selection: ModelSelection }>>([])
   /** 历史加载完成的标志：false 时 Conversation resize=instant（无动画）+ ScrollPositionManager 恢复位置 */
   const [scrollReady, setScrollReady] = useState(false)
   /** 虚拟化：当前挂载的消息条数（从尾部切）。20 首 batch，idle 帧递增 40/批，全挂完置 Infinity。
@@ -172,10 +193,15 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
   const chatInputRef = useRef<ChatInputHandle>(null)
 
   const channels = useAtomValue(channelsAtom)
+  const tabs = useAtomValue(tabsAtom)
   const selectedModelSelection = useAtomValue(selectedModelSelectionAtom)
   const setSelectedModelSelection = useSetAtom(selectedModelSelectionAtom)
   const bumpRefresh = useSetAtom(bumpSessionsRefreshAtom)
   const setTabs = useSetAtom(tabsAtom)
+  const setActiveTabId = useSetAtom(activeTabIdAtom)
+  const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
+  const pendingSuggestion = useAtomValue(pendingSuggestionAtom)
+  const setPendingSuggestion = useSetAtom(pendingSuggestionAtom)
 
   /**
    * ScrollMinimap 刻度：一轮对话一刻度。
@@ -259,16 +285,31 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
     sessionIdRef.current = sessionId
     setItems([])
     setRunning(false)
+    setHasDraft(false)
     setScrollReady(false)
     setVisibleCount(20) // 虚拟化：切会话重置首批 20
     streamingRef.current = null
     itemIdxRef.current = 0
     setSubagentEagerness('conservative') // 切会话重置，下面异步回显持久化值
+    // welcome 形态点提示词时暂存的文本：草稿态挂载后预填输入框并清空。
+    // 只有刚 newSession 的草稿会带 pending；切到已有会话时它已被清空，不误填。
+    if (pendingSuggestion) {
+      chatInputRef.current?.setText(pendingSuggestion)
+      chatInputRef.current?.focus()
+      setPendingSuggestion(null)
+    }
     void (async () => {
       const history = (await window.electronAPI.getMessages(sessionId)) as unknown[]
+      // 按核分流转译：kscc 会话落盘 SDKMessage → sdkMessageToIR；pi 会话落盘 TAgentMessage IR → 直读。
+      // 旧 pi 会话可能仍是 SDKMessage 形态（有 message 包装），用 sdkMessageToIR 兜底。
+      const isKsccCore = sessionChannel ? getChannelCoreKind(sessionChannel) === 'kscc' : true
       const irItems: DisplayItem[] = []
       for (const raw of history) {
-        const { message } = sdkMessageToIR(raw as never)
+        const message = isKsccCore
+          ? sdkMessageToIR(raw as never).message
+          : isIRMessage(raw)
+            ? (raw as TAgentMessage)
+            : sdkMessageToIR(raw as never).message
         if (message) {
           irItems.push({ key: `h${itemIdxRef.current++}`, message })
         }
@@ -403,16 +444,31 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
 
   const handlePayload = (p: TAgentDesktopStreamPayload): void => {
     if (p.kind === 'sdk_message') {
+      // 先记下流式占位 key（下面要清 streamingRef），用于就地升级占位、保留打字机起点
+      const streamingKey = streamingRef.current?.key
       streamingRef.current = null
       // assistant.usage 更新底栏（Pi）；kscc 圆环不展示，但状态可写无害
       if (p.message.type === 'assistant' && p.message.usage) {
         applyUsage(p.message.usage)
       }
-      // 有落盘消息就换掉流式占位，只保留一条时间线
-      setItems((prev) => [
-        ...purgeStreamingItems(prev),
-        { key: `m${itemIdxRef.current++}`, message: p.message },
-      ])
+      // 落盘消息：若当前有流式占位，就地升级它为落盘 message 项。
+      // 关键：清掉 streamingText（打字机续接靠 useSmoothStream 内部 prevContentRef，不靠保留 streamingText）。
+      // 保留 streamingText 会导致多轮工具时旧轮的 streamingText 残留、buildTurnPresentation 误收集 → 重复文字。
+      // useSmoothStream 实例在 turn 生命周期内存活（turn key 稳定），content 从 streamingText 切到 answerText，
+      // 同源前缀则 isAppend 逐字追完，不重挂不跳变。无流式占位（历史回放/纯落盘）则 append 新项。
+      setItems((prev) => {
+        if (streamingKey != null && prev.some((it) => it.key === streamingKey && it.streaming)) {
+          return prev.map((it) =>
+            it.key === streamingKey
+              ? { ...it, message: p.message, streaming: false, streamingText: undefined, streamingThinking: undefined }
+              : it,
+          )
+        }
+        return [
+          ...purgeStreamingItems(prev),
+          { key: `m${itemIdxRef.current++}`, message: p.message },
+        ]
+      })
     } else if (p.kind === 'result') {
       if (p.usage) applyUsage(p.usage)
       streamingRef.current = null
@@ -550,72 +606,192 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
     }
   }
 
-  const send = async (): Promise<void> => {
-    const text = chatInputRef.current?.getText().trim()
-    if (!text || running) return
-    if (!effectiveSelection) {
+  /** 核心发送逻辑：校验渠道 → IPC sendMessage → materializeTab */
+  const sendQueued = async ({ text, selection }: { text: string; selection: ModelSelection }): Promise<void> => {
+    if (!selection) {
       alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
       return
     }
-    const channel = channels.find((item) => item.id === effectiveSelection.channelId)
-    const model = channel?.models.find((item) => item.id === effectiveSelection.modelId)
+    const channel = channels.find((item) => item.id === selection.channelId)
+    const model = channel?.models.find((item) => item.id === selection.modelId)
     if (!channel?.enabled || !model?.enabled) {
       alert('当前渠道或模型已停用，请选择同一运行区域内的可用模型')
       return
     }
-    chatInputRef.current?.clear()
     setRunning(true)
     try {
       const res = await window.electronAPI.sendMessage({
         sessionId: sessionIdRef.current,
         prompt: text,
-        channelId: effectiveSelection.channelId,
-        model: effectiveSelection.modelId,
+        channelId: selection.channelId,
+        model: selection.modelId,
         workspaceId: session.workspaceId,
       })
-      // IPC 返回失败：没有 result 事件会来，必须在这里解除 running，否则输入框永久 disabled
       if (res && !res.ok) {
         alert(`发送失败：${res.error ?? '未知错误'}`)
         setRunning(false)
       } else {
         const coreKind = getChannelCoreKind(channel)
-        setSelectionOverride(effectiveSelection)
+        setSelectionOverride(selection)
         setSentCoreKind(coreKind)
-        // 将本轮真实使用的渠道 / 模型同步到当前标签，切换标签后仍展示最新选择。
-        setTabs((prev) => prev.map((tab) => (
-          tab.sessionId === sessionIdRef.current
-            ? {
-                ...tab,
-                channelId: effectiveSelection.channelId,
-                modelId: effectiveSelection.modelId,
-              }
-            : tab
-        )))
+        const sid = sessionIdRef.current
+        const exists = tabs.some((t) => t.sessionId === sid)
+        if (!exists) {
+          const { tabs: nextTabs, activeTabId } = materializeTab(
+            tabs,
+            sid,
+            session.title || '新会话',
+            session.workspaceId,
+            selection.channelId,
+            selection.modelId,
+          )
+          setTabs(nextTabs)
+          setActiveTabId(activeTabId)
+        } else {
+          setTabs((prev) => prev.map((tab) => (
+            tab.sessionId === sid
+              ? { ...tab, channelId: selection.channelId, modelId: selection.modelId }
+              : tab
+          )))
+        }
       }
       bumpRefresh()
     } catch (err) {
-      // IPC 异常：同上，防止 running 卡死
       console.error('[Chat] sendMessage 异常:', err)
       alert(`发送异常：${err instanceof Error ? err.message : String(err)}`)
       setRunning(false)
     }
   }
 
+  /** 用户发送：空闲→立即发；运行中→入队 */
+  const send = async (): Promise<void> => {
+    const text = chatInputRef.current?.getText().trim()
+    if (!text) return
+    chatInputRef.current?.clear()
+    if (running) {
+      // 运行中 → 入队，等当前轮结束自动消费
+      if (effectiveSelection) {
+        setMessageQueue((q) => [...q, { text, selection: effectiveSelection }])
+      }
+      return
+    }
+    // 空闲 → 立即发
+    if (!effectiveSelection) {
+      alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
+      return
+    }
+    await sendQueued({ text, selection: effectiveSelection })
+  }
+
+  /** 运行结束 → 批量消费队列（逐条 await，确保 running 状态正确） */
+  useEffect(() => {
+    if (running || messageQueue.length === 0) return
+    const pending = messageQueue
+    setMessageQueue([])
+    void (async () => {
+      for (const item of pending) {
+        await sendQueued(item)
+      }
+    })()
+  }, [running, messageQueue])
+
+  /** 队列操作 */
+  const removeQueueItem = (index: number): void => {
+    setMessageQueue((q) => q.filter((_, i) => i !== index))
+  }
+  const clearQueue = (): void => setMessageQueue([])
+
+  /** 新会话页：切换工作区（草稿态无 tab → 改 App 的 draftSession；已有 tab → 改 tab） */
+  const changeWorkspace = (id: string): void => {
+    onDraftWorkspaceChange?.(id)
+    setTabs((prev) => prev.map((tab) => (
+      tab.sessionId === sessionId ? { ...tab, workspaceId: id } : tab
+    )))
+  }
+
+  /** 新会话页：打开其他项目（原生目录选择 → 注册工作区 → 切到新工作区） */
+  const handleOpenProjectInLanding = async (): Promise<void> => {
+    const workspace = await window.electronAPI.createProjectWorkspace()
+    if (!workspace) return
+    await loadWorkspaces()
+    changeWorkspace(workspace.id)
+  }
+
+  /** 提示词点击：填入输入框并聚焦（不自动发送） */
+  const pickSuggestion = (text: string): void => {
+    chatInputRef.current?.setText(text)
+    chatInputRef.current?.focus()
+  }
+
+  /** 新会话页底部工具栏：模型（左）+ 发送钮（右；草稿态 running 恒 false，无停止钮）。
+   *  工作区选择已移到输入框下方的独立容器（见 workspaceSlot），不再挤在 footer。 */
+  const landingFooter = (
+    <div className="flex items-center justify-between px-2 pb-2 pt-1">
+      <div className="flex items-center gap-1">
+        <ModelSelector
+          selection={effectiveSelection}
+          lockedKind={null}
+          onSelect={(nextSelection) => {
+            setSelectionOverride(nextSelection)
+            setSelectedModelSelection(nextSelection)
+          }}
+        />
+      </div>
+      <div className="flex items-center gap-1.5">
+        <Button
+          size="icon"
+          className="size-9 rounded-full"
+          disabled={!hasDraft}
+          onClick={() => void send()}
+          aria-label="发送"
+        >
+          <ArrowUp className="size-5" />
+        </Button>
+      </div>
+    </div>
+  )
+
+  const landingComposer = (
+    <ChatInput
+      ref={chatInputRef}
+      onSubmit={() => void send()}
+      placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
+      onDraftChange={setHasDraft}
+      footer={landingFooter}
+    />
+  )
+
+  /** 新会话页：输入框下方的工作区选择容器（独立卡片）。WorkspaceSelector 自带文件夹图标，左侧只放纯文字标签。 */
+  const workspaceSlot = (
+    <div className="flex items-center justify-between rounded-xl border border-border/55 bg-muted/20 pl-3 pr-1.5 py-1.5">
+      <span className="shrink-0 text-[11px] text-muted-foreground/70">工作区</span>
+      <WorkspaceSelector
+        value={session.workspaceId}
+        onSelect={changeWorkspace}
+        onOpenProject={() => void handleOpenProjectInLanding()}
+      />
+    </div>
+  )
+
   return (
     <div className="relative h-full min-h-0">
-      {/* 消息区：全高；线程有 max-width 居中；底栏输入/token 铺满 main（贴侧栏与右缘 gutter） */}
-      <Conversation
-        className="absolute inset-0 min-h-0"
-        contextRef={scrollContextRef}
-        resize={effectiveScrollReady ? 'smooth' : 'instant'}
-      >
-        <ConversationContent className="session-conversation-pad px-4 pt-2 pb-44">
-          {items.length === 0 && !running ? (
-            <div className="flex h-full items-center justify-center">
-              <p className="text-sm text-muted-foreground/60">输入消息开始对话</p>
-            </div>
-          ) : (
-            <div className="tagent-thread">
+      {items.length === 0 && !running ? (
+        <NewConversationLanding
+          composer={landingComposer}
+          workspaceSlot={workspaceSlot}
+          onPickSuggestion={pickSuggestion}
+          onBack={onBack}
+        />
+      ) : (
+        <>
+          {/* 消息区：全高；线程有 max-width 居中；底栏输入/token 铺满 main（贴侧栏与右缘 gutter） */}
+          <Conversation
+            className="absolute inset-0 min-h-0"
+            contextRef={scrollContextRef}
+            resize={effectiveScrollReady ? 'smooth' : 'instant'}
+          >
+            <ConversationContent className="session-conversation-pad px-4 pt-2 pb-44">
+              <div className="tagent-thread">
               {/* 虚拟化加载提示：未全挂时常驻显示（说清楚在加载、剩多少条），不闪烁 */}
               {!fullyMounted && items.length > 0 && (
                 <div
@@ -642,7 +818,6 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
                   <MessageLoading />
                 )}
             </div>
-          )}
         </ConversationContent>
         {/* 切会话恢复滚动位置（无动画、不打断查历史），对齐 TAgent_General ScrollPositionManager */}
         <ScrollPositionManager id={sessionId} ready={effectiveScrollReady} />
@@ -650,15 +825,15 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
         <ConversationScrollButton />
       </Conversation>
 
-      {/* 权限确认横幅（工具写操作/危险命令时弹） */}
-      <PermissionBanner sessionId={sessionId} />
-
       {/*
         底栏坐标系（对齐 General）：
         窗底 ── status(7) ── token 栏 ── 间隙 ── 输入框底（= band = rail/sidebar 底）
         stack 锚在 status；输入用 margin-bottom 抬到 band，token 不把输入顶上去。
+        权限确认面板放在 composer 上方（stack 内、cluster 之前），从输入框上方伸出，靠文档流撑高。
       */}
       <div className="session-bottom-stack absolute inset-x-0">
+        <MessageQueue queue={messageQueue} onRemove={removeQueueItem} onClear={clearQueue} />
+        <PermissionBanner sessionId={sessionId} />
         <div
           className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''}`}
         >
@@ -666,8 +841,8 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
             <ChatInput
               ref={chatInputRef}
               onSubmit={() => void send()}
-              disabled={running}
               placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
+              onDraftChange={setHasDraft}
               footer={
                 <div className="flex items-center justify-between px-2 pb-2 pt-1">
                   <div className="flex items-center gap-1">
@@ -697,24 +872,83 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
                     />
                   </div>
                   <div className="flex items-center gap-1.5">
-                    {running && (
+                    {/*
+                      发送/停止/引导/立即发送 同槽复用：
+                      · 运行中 + 无草稿 → 停止键（清队列 + 中断）
+                      · 运行中 + 有草稿 → [引导] [立即发送] [排队发送]
+                      · 空闲 + 有草稿 → 发送键（enabled，立即发）
+                      · 空闲 + 无草稿 → 发送键（disabled）
+                    */}
+                    {running && !hasDraft ? (
                       <Button
                         variant="ghost"
                         size="icon"
                         className="size-9 rounded-full text-destructive hover:bg-destructive/10"
-                        onClick={() => window.electronAPI.stopAgent(sessionIdRef.current)}
+                        onClick={() => {
+                          setMessageQueue([])
+                          window.electronAPI.stopAgent(sessionIdRef.current)
+                        }}
+                        aria-label="停止"
                       >
                         <Square className="size-4 fill-current" />
                       </Button>
+                    ) : running && hasDraft ? (
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                          onClick={() => {
+                            const text = chatInputRef.current?.getText().trim()
+                            if (!text) return
+                            chatInputRef.current?.clear()
+                            void (window.electronAPI as any).steerAgent(sessionIdRef.current, text)
+                          }}
+                          aria-label="引导"
+                          title="引导：不中断当前轮，Agent 在下一轮看到此消息"
+                        >
+                          <Compass className="size-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                          onClick={() => {
+                            const text = chatInputRef.current?.getText().trim()
+                            if (!text || !effectiveSelection) return
+                            chatInputRef.current?.clear()
+                            setMessageQueue([])
+                            void (async () => {
+                              await window.electronAPI.stopAgent(sessionIdRef.current)
+                              await sendQueued({ text, selection: effectiveSelection })
+                            })()
+                          }}
+                          aria-label="立即发送"
+                          title="立即发送：中断当前轮，立刻发送此消息"
+                        >
+                          <Zap className="size-4" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          className="size-8 rounded-full"
+                          onClick={() => void send()}
+                          aria-label="排队"
+                          title="排队：当前轮结束后自动发送"
+                        >
+                          <ArrowUp className="size-4" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button
+                        size="icon"
+                        className="size-9 rounded-full"
+                        disabled={!hasDraft}
+                        onClick={() => void send()}
+                        aria-label="发送"
+                      >
+                        <ArrowUp className="size-5" />
+                      </Button>
                     )}
-                    <Button
-                      size="icon"
-                      className="size-9 rounded-full"
-                      disabled={running}
-                      onClick={() => void send()}
-                    >
-                      <ArrowUp className="size-5" />
-                    </Button>
                   </div>
                 </div>
               }
@@ -731,6 +965,8 @@ export function Chat({ session }: { session: SessionMeta }): JSX.Element {
           )}
         </div>
       </div>
+        </>
+      )}
     </div>
   )
 }
@@ -940,4 +1176,12 @@ function TypewriterText({ text }: { text: string }): JSX.Element {
 function firstText(m: TAgentMessage): string | undefined {
   const block = m.content.find((b) => b.type === 'text') as { type: 'text'; text: string } | undefined
   return block?.text
+}
+
+/** 判断历史行是否已是 TAgentMessage IR（pi 落盘）而非 Claude SDKMessage（有 message 包装）。
+ *  IR：顶层 type='assistant'|'user' + content 数组、无 message 字段；SDKMessage：有 message 包装。 */
+function isIRMessage(raw: unknown): boolean {
+  if (raw == null || typeof raw !== 'object') return false
+  const r = raw as { type?: unknown; message?: unknown; content?: unknown }
+  return (r.type === 'assistant' || r.type === 'user') && r.message === undefined && Array.isArray(r.content)
 }

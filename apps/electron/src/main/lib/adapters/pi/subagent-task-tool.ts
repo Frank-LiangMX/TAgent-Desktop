@@ -19,10 +19,40 @@ type PiAgentCoreModule = typeof import('@earendil-works/pi-agent-core')
 
 /** task 工具参数 schema */
 const taskSchema = Type.Object({
-  subagent_type: Type.String({ description: '子代理类型：explore（只读探索）或 general（通用任务）' }),
+  subagent_type: Type.String({
+    description:
+      '子代理类型，必须是以下内置类型之一：explorer（只读探索代码库/搜索文件）、code-reviewer（代码修改后做质量审查）、researcher（调研技术方案/对比选项）。',
+  }),
   prompt: Type.String({ description: '子代理要执行的任务描述' }),
   description: Type.Optional(Type.String({ description: '任务简短描述（日志用）' })),
 })
+
+/** 子代理名容错：模型偶尔用 explore/general 等近名，归一到内置类型，避免直接报错中断任务 */
+function resolveSubagentType(raw: string, available: string[]): string {
+  if (available.includes(raw)) return raw
+  const lower = raw.toLowerCase()
+  // explore / 探索 → explorer
+  if (lower === 'explore' || lower === '探索' || lower.includes('explor')) {
+    const hit = available.find((n) => n === 'explorer')
+    if (hit) return hit
+  }
+  // general / 通用 → 退回 explorer（通用只读探索最安全）
+  if (lower === 'general' || lower === '通用') {
+    const hit = available.find((n) => n === 'explorer')
+    if (hit) return hit
+  }
+  // 代码审查近名
+  if (lower.includes('review') || lower.includes('审查')) {
+    const hit = available.find((n) => n === 'code-reviewer')
+    if (hit) return hit
+  }
+  // 调研近名
+  if (lower.includes('research') || lower.includes('调研')) {
+    const hit = available.find((n) => n === 'researcher')
+    if (hit) return hit
+  }
+  return raw
+}
 
 /** task 工具详情 */
 export interface TaskToolDetails {
@@ -56,13 +86,13 @@ export function createTaskTool(
     executionMode: 'parallel',
     execute: async (_toolCallId, params, signal): Promise<AgentToolResult<TaskToolDetails>> => {
       const startTime = Date.now()
-      const subagentType = params.subagent_type
+      const builtinAgents = buildBuiltinSubagentDefinitions()
+      const subagentType = resolveSubagentType(params.subagent_type, Object.keys(builtinAgents))
 
       // 查找子代理定义
-      const builtinAgents = buildBuiltinSubagentDefinitions()
       const def = builtinAgents[subagentType]
       if (!def) {
-        throw new Error(`未知的子代理类型: ${subagentType}。可用类型: ${Object.keys(builtinAgents).join(', ')}`)
+        throw new Error(`未知的子代理类型: ${params.subagent_type}。可用类型: ${Object.keys(builtinAgents).join(', ')}`)
       }
 
       console.log(`[子代理 ${parentSessionId}] 启动 ${subagentType}: ${params.description ?? params.prompt.slice(0, 60)}`)

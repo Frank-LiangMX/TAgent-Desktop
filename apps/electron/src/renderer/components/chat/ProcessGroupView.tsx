@@ -40,7 +40,6 @@ export function ProcessGroupView({
   const [expanded, setExpanded] = useState(live)
   const userToggledRef = useRef(false)
   const wasLiveRef = useRef(live)
-  const bodyRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (live) {
@@ -51,19 +50,13 @@ export function ProcessGroupView({
       return
     }
     if (wasLiveRef.current && !userToggledRef.current) {
-      const t = window.setTimeout(() => setExpanded(false), 800)
+      // 会话整体结束后给 2.5s 缓冲再收起，让用户能看清最后一段思考/工具
+      const t = window.setTimeout(() => setExpanded(false), 2500)
       wasLiveRef.current = false
       return () => window.clearTimeout(t)
     }
     wasLiveRef.current = false
   }, [live])
-
-  useEffect(() => {
-    if (!live || !expanded) return
-    const el = bodyRef.current
-    if (!el) return
-    el.scrollTop = el.scrollHeight
-  }, [process.length, live, expanded, process[process.length - 1]?.key])
 
   const liveHint = useMemo(() => {
     if (!live) return null
@@ -142,7 +135,7 @@ export function ProcessGroupView({
       </button>
 
       {showBody && (
-        <div ref={bodyRef} className="agent-process-group__body agent-process-group__body--scroll">
+        <div className="agent-process-group__body">
           {process.map((entry) => {
             if (entry.type === 'thinking') {
               const isCurrent = live && entry.key === lastThinkingKey

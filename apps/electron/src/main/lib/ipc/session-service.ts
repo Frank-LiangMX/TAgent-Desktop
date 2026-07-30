@@ -16,6 +16,7 @@ import type {
   SDKMessage,
   SDKUserMessageInput,
   TAgentDesktopStreamPayload,
+  TAgentMessage,
   Channel,
   AgentSessionMeta,
 } from '@tagent/shared'
@@ -47,6 +48,7 @@ import {
   migratePermissionMode,
   DEFAULT_SUBAGENT_EAGERNESS,
   migrateSubagentEagerness,
+  resolveSdkPermissionModeForTAgent,
 } from '@tagent/shared'
 
 interface SendMessageInput {
@@ -92,6 +94,13 @@ export class SessionService {
     ipcMain.handle(AGENT_IPC_CHANNELS.STOP_AGENT, async (_e, sessionId: string) => {
       const rt = this.runtimes.get(sessionId)
       if (rt) await rt.interrupt()
+      return { ok: true }
+    })
+
+    ipcMain.handle(AGENT_IPC_CHANNELS.STEER_AGENT, async (_e, sessionId: string, message: string) => {
+      const rt = this.runtimes.get(sessionId)
+      if (!rt) return { ok: false, error: '会话不存在' }
+      await rt.steerMessage(message)
       return { ok: true }
     })
 
@@ -210,7 +219,7 @@ export class SessionService {
     )
   }
 
-  /** 排出 Pi compactSession 暂存的 system 消息到渲染层 */
+  /** 排出 Pi compactSession 暂存的 system 事件到渲染层（已是 TAgentDesktopStreamPayload） */
   private flushPiPendingSystemMessages(
     sessionId: string,
     adapter: AgentProviderAdapter,
@@ -218,9 +227,9 @@ export class SessionService {
   ): void {
     const pi = adapter as PiAgentAdapter
     if (typeof pi.drainPendingSystemMessages !== 'function') return
-    const msgs = pi.drainPendingSystemMessages(sessionId)
-    for (const msg of msgs) {
-      this.handleStreamMessage(sessionId, workspaceId, msg)
+    const payloads = pi.drainPendingSystemMessages(sessionId)
+    for (const p of payloads) {
+      this.handlePiStreamPayload(sessionId, workspaceId, p)
     }
   }
 
@@ -291,16 +300,26 @@ export class SessionService {
       console.log(`[会话 ${input.sessionId}] KSCC 热切模型：${meta?.modelId ?? '(未记录)'} → ${modelId}`)
     }
 
-    // 持久化用户消息到 JSONL（SDK 不回显 user 消息，不存则切回来看不到用户气泡）
-    const userMsg: SDKMessage = {
-      type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text: input.prompt }] },
-      parent_tool_use_id: null,
-    } as unknown as SDKMessage
-    appendMessages(workspaceId, input.sessionId, [userMsg])
-    // 也推给渲染层（用户消息即时显示；首次时渲染层乐观加了，但重复不影响）
-    const { message: userIR } = sdkMessageToIR(userMsg)
-    if (userIR) {
+    // 持久化用户消息到 JSONL 并推渲染层。按核分流：
+    // - kscc：落盘 SDKMessage（resume 读 JSONL 要此格式）+ sdkMessageToIR 推 IR
+    // - pi：直接落盘 IR（pi 自管上下文，不靠 SDK resume）+ 直推 IR
+    if (adapterKind === 'kscc') {
+      const userMsg: SDKMessage = {
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: input.prompt }] },
+        parent_tool_use_id: null,
+      } as unknown as SDKMessage
+      appendMessages(workspaceId, input.sessionId, [userMsg])
+      const { message: userIR } = sdkMessageToIR(userMsg)
+      if (userIR) {
+        this.sendPayload(input.sessionId, { kind: 'sdk_message', message: userIR })
+      }
+    } else {
+      const userIR: TAgentMessage = {
+        type: 'user',
+        content: [{ type: 'text', text: input.prompt }],
+      }
+      appendMessages(workspaceId, input.sessionId, [userIR])
       this.sendPayload(input.sessionId, { kind: 'sdk_message', message: userIR })
     }
 
@@ -328,7 +347,14 @@ export class SessionService {
       rt = new SessionRuntime(input.sessionId, adapter)
       this.runtimes.set(input.sessionId, rt)
       rt.setCallbacks({
-        onMessage: (msg: SDKMessage) => this.handleStreamMessage(input.sessionId, workspaceId, msg),
+        onMessage: (msg: SDKMessage) => {
+          // 按核分流：kscc 产 SDKMessage → sdkMessageToIR；pi 实际产 TAgentDesktopStreamPayload（经 as 适配契约）
+          if (adapterKind === 'kscc') {
+            this.handleSdkStreamMessage(input.sessionId, workspaceId, msg)
+          } else {
+            this.handlePiStreamPayload(input.sessionId, workspaceId, msg as unknown as TAgentDesktopStreamPayload)
+          }
+        },
         onTurnEnd: () => {
           // 轮成功结束 → 清除可能的 error，落盘 idle（重启后仍为干净态）
           updateSessionMeta(input.sessionId, { status: 'idle' })
@@ -421,8 +447,12 @@ export class SessionService {
         sdkCliPath: ksccPath,
         env: { ...process.env } as Record<string, string | undefined>,
         maxTurns: 50,
-        sdkPermissionMode: 'bypassPermissions',
-        // 非 hardcoded：有 canUseTool 时跳过内置检查，全交给我们的服务
+        // 接上 resolveSdkPermissionModeForTAgent：auto/bypassPermissions → 'default'，
+        // 让 SDK 把每次工具调用都交给 TAgent canUseTool 审批，而非叠 SDK 自己的权限闸
+        // （之前硬编码 'bypassPermissions' + allowDangerouslySkipPermissions:false 的组合，
+        //   SDK 会拒绝「危险跳过」并启用内置审批，导致 cwd 内读操作也弹权限确认）。
+        sdkPermissionMode: resolveSdkPermissionModeForTAgent(permissionMode),
+        // 有 canUseTool 时交给我们的服务全权审批；无 canUseTool（无 PermissionService）时才让 SDK 自行跳过
         allowDangerouslySkipPermissions: !canUseTool,
         systemPrompt: {
           type: 'preset',
@@ -451,8 +481,6 @@ export class SessionService {
           this.runtimes.get(input.sessionId)?.reportStderr(data)
         },
       }
-      // 当前会话的权限模式（透传到 caller 决策；不影响 SDK 内部）
-      void permissionMode
       return opts as unknown as Parameters<AgentProviderAdapter['query']>[0]
     }
 
@@ -506,8 +534,8 @@ export class SessionService {
       : TAGENT_DEFAULT_PERMISSION_MODE
   }
 
-  /** 转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer，并持久化 */
-  private handleStreamMessage(sessionId: string, workspaceId: string | undefined, msg: SDKMessage): void {
+  /** kscc 路径：转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer，并落盘 SDKMessage */
+  private handleSdkStreamMessage(sessionId: string, workspaceId: string | undefined, msg: SDKMessage): void {
     const { message, event } = sdkMessageToIR(msg)
     if (message) {
       // 持久化完整消息到 JSONL（流式 delta 不持久化，完整 assistant/user 才存）
@@ -516,6 +544,17 @@ export class SessionService {
     }
     if (event) {
       this.sendPayload(sessionId, event)
+    }
+  }
+
+  /** pi 路径：已是 IR（TAgentDesktopStreamPayload），直接落盘 IR + 推 IPC，不经 sdkMessageToIR。
+   *  完整消息（sdk_message）落盘 IR；控制事件（result/stream_*_delta/tagent_event）不落盘。 */
+  private handlePiStreamPayload(sessionId: string, workspaceId: string | undefined, p: TAgentDesktopStreamPayload): void {
+    if (p.kind === 'sdk_message') {
+      appendMessages(workspaceId, sessionId, [p.message])
+      this.sendPayload(sessionId, p)
+    } else {
+      this.sendPayload(sessionId, p)
     }
   }
 

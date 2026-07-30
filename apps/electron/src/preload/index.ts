@@ -43,6 +43,9 @@ const electronAPI = {
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.SEND_MESSAGE, input),
   /** 停止当前轮（软中断，保进程） */
   stopAgent: (sessionId: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.STOP_AGENT, sessionId),
+  /** 引导 Agent（不中断当前轮，在下一轮边界注入用户消息） */
+  steerAgent: (sessionId: string, message: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.STEER_AGENT, sessionId, message),
   /** 销毁会话（杀进程 + 删元数据/JSONL） */
   deleteSession: (sessionId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_SESSION, sessionId),

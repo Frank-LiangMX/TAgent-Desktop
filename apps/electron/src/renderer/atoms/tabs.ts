@@ -92,3 +92,42 @@ export function closeTab(
   }
   return { tabs: next, activeTabId }
 }
+
+/**
+ * 首条消息发送时把草稿会话物化为真实 tab（append + 激活）。
+ *
+ * 与 openTab 的区别：草稿态（无 tab）才追加；已存在则只升级绑定字段 + 激活，
+ * 不覆盖 title。对齐 codex：新会话页不占 tab，发送后才生成 tab。
+ */
+export function materializeTab(
+  tabs: TabItem[],
+  sessionId: string,
+  title: string,
+  workspaceId?: string,
+  channelId?: string,
+  modelId?: string,
+): { tabs: TabItem[]; activeTabId: string } {
+  const existing = tabs.find((t) => t.sessionId === sessionId)
+  if (existing) {
+    const next = tabs.map((t) =>
+      t.id === existing.id
+        ? {
+            ...t,
+            channelId: channelId ?? t.channelId,
+            modelId: modelId ?? t.modelId,
+            workspaceId: workspaceId ?? t.workspaceId,
+          }
+        : t,
+    )
+    return { tabs: next, activeTabId: existing.id }
+  }
+  const newTab: TabItem = {
+    id: sessionId,
+    sessionId,
+    title,
+    workspaceId,
+    ...(channelId ? { channelId } : {}),
+    ...(modelId ? { modelId } : {}),
+  }
+  return { tabs: [...tabs, newTab], activeTabId: newTab.id }
+}

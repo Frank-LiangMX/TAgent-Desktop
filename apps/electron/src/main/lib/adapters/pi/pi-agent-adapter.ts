@@ -23,9 +23,11 @@ import type {
   AgentQueryInput,
   SDKUserMessageInput,
   SDKMessage,
-  SDKAssistantMessage,
-  SDKUserMessage,
-  SDKResultMessage,
+  TAgentMessage,
+  TAgentContentBlock,
+  TAgentUsage,
+  TAgentControlEvent,
+  TAgentDesktopStreamPayload,
 } from '@tagent/shared'
 import { isPromptTooLongMessage } from '@tagent/shared'
 
@@ -144,7 +146,7 @@ interface SessionEntry {
   /** 外部渠道压缩资源；kscc bare 为 undefined */
   compaction?: SessionCompactionBundle
   /** transformContext 自动压缩时暂存的 system 事件，下一轮 query 流开头排出 */
-  pendingSystemMessages: SDKMessage[]
+  pendingSystemMessages: TAgentDesktopStreamPayload[]
 }
 
 // ===== 主类 =====
@@ -203,15 +205,16 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     }
 
     // 创建事件队列：AgentEvent 回调往里推，generator 从里取
-    const queue: SDKMessage[] = []
+    // 队列装 TAgentDesktopStreamPayload（pi 直接产 IR，不经 SDKMessage 中转）
+    const queue: TAgentDesktopStreamPayload[] = []
     let waiting: boolean = false
     let resolveWait: (() => void) | null = null
     let generatorDone = false
     let generatorError: Error | null = null
 
-    /** 推一条 SDKMessage 进队列，唤醒等待中的 generator */
-    const pushMessage = (msg: SDKMessage) => {
-      queue.push(msg)
+    /** 推一条 payload 进队列，唤醒等待中的 generator */
+    const pushMessage = (p: TAgentDesktopStreamPayload) => {
+      queue.push(p)
       if (resolveWait) {
         const r = resolveWait
         resolveWait = null
@@ -265,9 +268,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       }
 
       try {
-        const sdkMessages = piEventToSdkMessages(event, sessionId)
-        for (const msg of sdkMessages) {
-          pushMessage(msg)
+        const payloads = piEventToIR(event, sessionId)
+        for (const p of payloads) {
+          pushMessage(p)
         }
       } catch (err) {
         console.error(`[Pi 适配器 ${sessionId}] 转译 ${event.type} 抛错:`, err)
@@ -308,21 +311,22 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             } catch (err2: unknown) {
               const msg2 = err2 instanceof Error ? err2.message : String(err2)
               pushMessage({
-                type: 'result',
+                kind: 'result',
                 subtype: 'error_during_execution',
-                usage: { input_tokens: 0, output_tokens: 0 },
+                usage: { inputTokens: 0, outputTokens: 0 },
+                // errors 供 session-runtime 过长检测（见 runLoop 归一化）
                 errors: [msg2],
-              } as SDKResultMessage)
+              } as TAgentControlEvent)
               return
             }
           }
         }
         pushMessage({
-          type: 'result',
+          kind: 'result',
           subtype: 'error_during_execution',
-          usage: { input_tokens: 0, output_tokens: 0 },
+          usage: { inputTokens: 0, outputTokens: 0 },
           errors: [errorMsg],
-        } as SDKResultMessage)
+        } as TAgentControlEvent)
       } finally {
         entry.isStreaming = false
         generatorDone = true
@@ -340,8 +344,10 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         }
 
         const batch = queue.splice(0)
-        for (const msg of batch) {
-          yield msg
+        for (const p of batch) {
+          // 接口契约为 AsyncIterable<SDKMessage>；pi 实际产 TAgentDesktopStreamPayload，
+          // 单点 as 适配，session-service 按 coreKind 还原（见 handlePiStreamPayload）
+          yield p as unknown as SDKMessage
         }
 
         if (generatorDone && queue.length === 0) {
@@ -359,7 +365,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
   }
 
   /** 取出并清空 pending system 消息（手动压缩后立即推 UI） */
-  drainPendingSystemMessages(sessionId: string): SDKMessage[] {
+  drainPendingSystemMessages(sessionId: string): TAgentDesktopStreamPayload[] {
     const entry = this.sessions.get(sessionId)
     if (!entry || entry.pendingSystemMessages.length === 0) return []
     return entry.pendingSystemMessages.splice(0, entry.pendingSystemMessages.length)
@@ -392,7 +398,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     }
     const trigger = options?.trigger ?? 'manual'
     const force = options?.force ?? trigger === 'manual'
-    entry.pendingSystemMessages.push(makeCompactingSystemMessage(sessionId))
+    entry.pendingSystemMessages.push(makeCompactingEvent())
     try {
       const piCore = await loadPiCore()
       const result = await piCore.maybeCompactMessages({
@@ -405,7 +411,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       })
       if (!result.compacted) {
         entry.pendingSystemMessages.push(
-          makeCompactBoundarySystemMessage(sessionId, {
+          makeCompactBoundaryEvent({
             trigger,
             noop: true,
             reason: result.reason,
@@ -421,7 +427,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       }
       entry.agent.state.messages = result.messages
       entry.pendingSystemMessages.push(
-        makeCompactBoundarySystemMessage(sessionId, {
+        makeCompactBoundaryEvent({
           trigger,
           tokensBefore: result.tokensBefore,
           summary: result.summary,
@@ -613,8 +619,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           )
           if (agentRef) agentRef.state.messages = result.messages
           entryRef?.pendingSystemMessages.push(
-            makeCompactingSystemMessage(sessionId),
-            makeCompactBoundarySystemMessage(sessionId, {
+            makeCompactingEvent(),
+            makeCompactBoundaryEvent({
               trigger: 'auto',
               tokensBefore: result.tokensBefore,
               summary: result.summary,
@@ -660,338 +666,224 @@ export class PiAgentAdapter implements AgentProviderAdapter {
   }
 }
 
-// ===== 压缩 system 消息工厂（TAgent 自研，形态对齐 SDK compact 事件） =====
+// ===== 压缩控制事件工厂（TAgent 自研，直接产 IR tagent_event，不绕伪 SDK system 消息） =====
 
-function makeCompactingSystemMessage(sessionId: string): SDKMessage {
-  return {
-    type: 'system',
-    subtype: 'compacting',
-    session_id: sessionId,
-  } as unknown as SDKMessage
+function makeCompactingEvent(): TAgentControlEvent {
+  return { kind: 'tagent_event', event: { type: 'compacting' } }
 }
 
-function makeCompactBoundarySystemMessage(
-  sessionId: string,
-  opts: {
-    trigger: 'auto' | 'manual'
-    tokensBefore?: number
-    summary?: string
-    noop?: boolean
-    reason?: string
-  },
-): SDKMessage {
+function makeCompactBoundaryEvent(opts: {
+  trigger: 'auto' | 'manual'
+  tokensBefore?: number
+  summary?: string
+  noop?: boolean
+  reason?: string
+}): TAgentControlEvent {
   return {
-    type: 'system',
-    subtype: 'compact_boundary',
-    session_id: sessionId,
-    compact_metadata: {
+    kind: 'tagent_event',
+    event: {
+      type: 'compact_complete',
       trigger: opts.trigger,
-      pre_tokens: opts.tokensBefore,
+      tokensBefore: opts.tokensBefore,
     },
-    ...(opts.noop ? { compact_result: 'noop', message: opts.reason } : { compact_result: 'success' }),
-    ...(opts.summary ? { summary: opts.summary } : {}),
-  } as unknown as SDKMessage
+  }
 }
 
-// ===== AgentEvent → SDKMessage 转译 =====
+// ===== AgentEvent → IR（TAgentDesktopStreamPayload）转译 =====
+// 彻底脱离 Claude SDKMessage：pi 事件直接翻成渲染层 IR + 控制事件，不再中转 SDKMessage。
+// 覆盖 4 件原翻译层凭空做的事：① content block 改名(toolCall→tool_use, arguments→input)
+// ② usage 字段名(input→inputTokens …) ③ stream error 兜底 ④ compact 控制事件。
+
+/** Pi Usage → IR TAgentUsage（字段名映射） */
+function piUsageToIR(u: Usage): TAgentUsage {
+  return {
+    inputTokens: Number(u.input ?? 0),
+    outputTokens: Number(u.output ?? 0),
+    cacheReadTokens: Number(u.cacheRead ?? 0),
+    cacheCreationTokens: Number(u.cacheWrite ?? 0),
+    costUsd: typeof u.cost?.total === 'number' ? u.cost.total : undefined,
+  }
+}
+
+/** Pi AssistantMessage content block → IR TAgentContentBlock */
+function piBlockToIR(block: AssistantMessage['content'][number]): TAgentContentBlock {
+  if (block.type === 'text') {
+    return { type: 'text', text: block.text }
+  }
+  if (block.type === 'thinking') {
+    return { type: 'thinking', thinking: block.thinking }
+  }
+  // toolCall → tool_use，arguments → input
+  const tc = block as ToolCall
+  return { type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments }
+}
+
+/** Pi AssistantMessage → IR TAgentAssistantMessage */
+function piAssistantToIR(msg: AssistantMessage, sessionId: string): TAgentMessage {
+  const content = msg.content.map(piBlockToIR)
+  const isError = msg.stopReason === 'error'
+  return {
+    type: 'assistant',
+    sessionId,
+    modelId: msg.model,
+    content,
+    usage: msg.usage ? piUsageToIR(msg.usage) : undefined,
+    error: isError ? { message: msg.errorMessage ?? '' } : undefined,
+  }
+}
+
+/** Pi ToolResultMessage → IR TAgentUserMessage（内含 tool_result 块） */
+function piToolResultToIR(tr: ToolResultMessage, sessionId: string): TAgentMessage {
+  const textContent = tr.content
+    .filter((c): c is TextContent => c.type === 'text')
+    .map((c) => c.text)
+    .join('\n')
+  return {
+    type: 'user',
+    sessionId,
+    content: [
+      {
+        type: 'tool_result',
+        toolUseId: tr.toolCallId,
+        content: textContent || undefined,
+        isError: tr.isError,
+      },
+    ],
+  } as TAgentMessage
+}
+
+/** Pi AssistantMessageEvent → IR 流式 delta / 工具完成消息 */
+function piStreamEventToIR(ev: AssistantMessageEvent, sessionId: string): TAgentDesktopStreamPayload | null {
+  switch (ev.type) {
+    case 'text_delta':
+      return { kind: 'stream_text_delta', text: ev.delta }
+    case 'thinking_delta':
+      return { kind: 'stream_thinking_delta', text: ev.delta }
+    case 'toolcall_end': {
+      const tc = ev.toolCall
+      const message: TAgentMessage = {
+        type: 'assistant',
+        sessionId,
+        content: [{ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments }],
+      }
+      return { kind: 'sdk_message', message }
+    }
+    // toolcall_delta / done / error / start 类：不产流式 delta（done/error 由 turn_end/agent_end 处理）
+    default:
+      return null
+  }
+}
 
 /**
- * Pi AgentEvent → TAgent SDKMessage 数组
- *
- * 一个 AgentEvent 可能产出多条 SDKMessage（如 turn_end 同时产出 assistant + tool_result）
- * 参考 kscc-message-adapter.ts 的 IR 转译逻辑
+ * Pi AgentEvent → IR payload 数组（一个事件可产多条，如 turn_end 产 assistant + tool_result）
  */
-function piEventToSdkMessages(event: AgentEvent, sessionId: string): SDKMessage[] {
-  const results: SDKMessage[] = []
+function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktopStreamPayload[] {
+  const results: TAgentDesktopStreamPayload[] = []
 
   switch (event.type) {
-    // ===== agent_start / agent_end：不产出转录消息 =====
     case 'agent_start':
-      // Agent 启动，无转录消息
+    case 'turn_start':
+    case 'tool_execution_update':
+    case 'tool_execution_end':
+      // 无转录 / 已在 turn_end 处理（tool_progress 渲染层不消费，直接略）
       break
 
     case 'agent_end': {
-      // Agent 结束：从最后一条带 usage 的 assistant 汇总 result.usage（底栏 TokenStatsBar）
+      // 从最后一条带 usage 的 assistant 汇总 result.usage（底栏 TokenStatsBar）
       const endMsgs = event.messages ?? []
-      let usage = {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
+      let usage: TAgentUsage = {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
       }
+      let totalCostUsd: number | undefined
       for (let i = endMsgs.length - 1; i >= 0; i--) {
         const m = endMsgs[i]
         if (m && m.role === 'assistant' && 'usage' in m && m.usage) {
           const u = m.usage as Usage
-          const mapped = piUsageToSdk(u) ?? {
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-          }
-          const inTok = mapped.input_tokens ?? 0
-          const outTok = mapped.output_tokens ?? 0
-          const cacheRead = mapped.cache_read_input_tokens ?? 0
-          const cacheWrite = mapped.cache_creation_input_tokens ?? 0
+          const ir = piUsageToIR(u)
+          const inTok = ir.inputTokens ?? 0
+          const cacheRead = ir.cacheReadTokens ?? 0
+          const cacheWrite = ir.cacheCreationTokens ?? 0
           // 占用口径：优先 provider totalTokens；否则 input+cache（与 statusline 一致）
           const contextUsed =
-            typeof u.totalTokens === 'number' && u.totalTokens > 0
-              ? u.totalTokens
-              : inTok + cacheRead + cacheWrite
+            typeof u.totalTokens === 'number' && u.totalTokens > 0 ? u.totalTokens : inTok + cacheRead + cacheWrite
           usage = {
-            input_tokens: contextUsed,
-            output_tokens: outTok,
-            cache_read_input_tokens: cacheRead,
-            cache_creation_input_tokens: cacheWrite,
+            inputTokens: contextUsed,
+            outputTokens: ir.outputTokens,
+            cacheReadTokens: cacheRead,
+            cacheCreationTokens: cacheWrite,
+            costUsd: ir.costUsd,
           }
+          totalCostUsd = ir.costUsd
           break
         }
       }
-      results.push({
-        type: 'result',
-        subtype: 'success',
-        usage,
-      } as SDKResultMessage)
+      results.push({ kind: 'result', subtype: 'success', usage, totalCostUsd })
       break
     }
-
-    // ===== turn_start / turn_end =====
-    case 'turn_start':
-      // 新 turn 开始，无转录消息
-      break
 
     case 'turn_end': {
-      // turn 结束：产出完整的 assistant 消息
       const { message: turnMsg, toolResults } = event
-      // turn_end 的 message 一定是 AssistantMessage（agent 完成一轮 assistant 输出）
       if (turnMsg.role === 'assistant') {
-        results.push(piAssistantToSdk(turnMsg as AssistantMessage, sessionId))
+        results.push({ kind: 'sdk_message', message: piAssistantToIR(turnMsg as AssistantMessage, sessionId) })
       }
-
-      // tool_result 作为独立 user 消息（匹配 SDK 格式）
       if (toolResults && toolResults.length > 0) {
         for (const tr of toolResults) {
-          results.push(piToolResultToSdk(tr, sessionId))
+          results.push({ kind: 'sdk_message', message: piToolResultToIR(tr, sessionId) })
         }
       }
       break
     }
 
-    // ===== message_start / message_update / message_end =====
     case 'message_start': {
-      // 消息开始（assistant），产出流式 stream_event
+      // 仅有 thinking block 时产一条空 thinking_delta 占位（流式起点，对齐旧逻辑）
       const msg = event.message
-      if (msg.role === 'assistant') {
-        // 检查是否有 thinking 或 text 内容开始
-        for (const block of msg.content) {
-          if (block.type === 'thinking') {
-            results.push({
-              type: 'stream_event',
-              event: {
-                type: 'content_block_delta',
-                delta: { type: 'thinking_delta', thinking: '' },
-              },
-            } as SDKMessage)
-          }
-        }
+      if (msg.role === 'assistant' && msg.content.some((b) => b.type === 'thinking')) {
+        results.push({ kind: 'stream_thinking_delta', text: '' })
       }
       break
     }
 
     case 'message_update': {
-      // 流式 delta：转成 stream_event
-      const { assistantMessageEvent } = event
-      const streamMsg = piStreamEventToSdk(assistantMessageEvent, sessionId)
-      if (streamMsg) {
-        results.push(streamMsg)
-      }
+      const streamPayload = piStreamEventToIR(event.assistantMessageEvent, sessionId)
+      if (streamPayload) results.push(streamPayload)
       break
     }
 
     case 'message_end': {
-      // pi-agent-core 的 Agent 会吞掉 streamFn 的 error 事件：stream 返回 error 时，
-      // Agent 不抛、不走 error 路径，而是照常走 message_end / turn_end / agent_end，
-      // 把错误信息藏在 message 的 stopReason='error' + errorMessage 里。
-      // 不处理的话上层"不报错但回复看不到"（空白消息）。
-      // 这里检测到 error 就产出一条可见的 assistant 文本 + error result，让 renderer 显示错误。
+      // stream error 兜底：pi-agent-core 吞掉 stream error、走 message_end，错误藏在
+      // stopReason='error'+errorMessage。检测到就产一条可见错误 assistant + error result，否则"不报错但空白"。
       const msg = event.message as { stopReason?: string; errorMessage?: string; role?: string }
       if (msg?.stopReason === 'error' && msg.errorMessage) {
         console.error(`[Pi 适配器 ${sessionId}] stream error 被 Agent 吞掉，已捕获: ${msg.errorMessage.slice(0, 120)}`)
-        // 可见错误文本（renderer 会作为 assistant 消息显示）
+        const errorText = formatStreamErrorForUser(msg.errorMessage)
         results.push({
-          type: 'assistant',
+          kind: 'sdk_message',
           message: {
-            content: [{ type: 'text', text: formatStreamErrorForUser(msg.errorMessage) }],
-            usage: { input_tokens: 0, output_tokens: 0 },
-            model: '',
-            stop_reason: 'error',
+            type: 'assistant',
+            sessionId,
+            content: [{ type: 'text', text: errorText }],
+            error: { message: msg.errorMessage },
+            usage: { inputTokens: 0, outputTokens: 0 },
           },
-          parent_tool_use_id: null,
-          session_id: sessionId,
-        } as SDKAssistantMessage)
-        // error result（让 renderer 的 result 分支结束本轮 + 标红）
+        })
         results.push({
-          type: 'result',
+          kind: 'result',
           subtype: 'error_during_execution',
-          usage: { input_tokens: 0, output_tokens: 0 },
-          errors: [msg.errorMessage],
-        } as SDKResultMessage)
+          usage: { inputTokens: 0, outputTokens: 0 },
+        })
       }
       break
     }
 
-    // ===== tool_execution_start / end =====
-    case 'tool_execution_start': {
-      // 工具开始执行：产出 tool_progress 类消息
-      results.push({
-        type: 'tool_progress',
-        tool_use_id: event.toolCallId,
-        tool_name: event.toolName,
-        parent_tool_use_id: null,
-      } as SDKMessage)
+    case 'tool_execution_start':
+      // 渲染层不消费 tool_progress（sdkMessageToIR 也丢弃），略。工具调用展示靠 turn_end 的 tool_use + tool_result。
       break
-    }
-
-    case 'tool_execution_update':
-      // 工具执行中间更新，暂不转译
-      break
-
-    case 'tool_execution_end': {
-      // 工具执行结束：tool_result 已在 turn_end 处理
-      // 这里不额外产出（避免重复）
-      break
-    }
   }
 
   return results
-}
-
-/**
- * Pi AssistantMessage → SDKAssistantMessage
- *
- * 将 Pi 的 assistant 消息转成 TAgent 渲染层能理解的 SDK 格式。
- */
-function piAssistantToSdk(msg: AssistantMessage, sessionId: string): SDKAssistantMessage {
-  const content = msg.content.map(block => {
-    if (block.type === 'text') {
-      return { type: 'text' as const, text: (block as TextContent).text }
-    }
-    if (block.type === 'thinking') {
-      return { type: 'thinking' as const, thinking: (block as ThinkingContent).thinking }
-    }
-    if (block.type === 'toolCall') {
-      const tc = block as ToolCall
-      return {
-        type: 'tool_use' as const,
-        id: tc.id,
-        name: tc.name,
-        input: tc.arguments,
-      }
-    }
-    // 兜底
-    return block as { type: string; [key: string]: unknown }
-  })
-
-  return {
-    type: 'assistant',
-    message: {
-      content,
-      usage: piUsageToSdk(msg.usage),
-      model: msg.model,
-      stop_reason: piStopReasonToSdk(msg.stopReason),
-    },
-    parent_tool_use_id: null,
-    session_id: sessionId,
-  }
-}
-
-/**
- * Pi ToolResultMessage → SDKUserMessage（内含 tool_result 块）
- */
-function piToolResultToSdk(tr: ToolResultMessage, sessionId: string): SDKUserMessage {
-  // 提取文本内容
-  const textContent = tr.content
-    .filter((c): c is TextContent => c.type === 'text')
-    .map(c => c.text)
-    .join('\n')
-
-  return {
-    type: 'user',
-    message: {
-      content: [
-        {
-          type: 'tool_result',
-          tool_use_id: tr.toolCallId,
-          content: textContent || undefined,
-          is_error: tr.isError,
-        },
-      ],
-    },
-    parent_tool_use_id: null,
-    session_id: sessionId,
-  }
-}
-
-/**
- * Pi AssistantMessageEvent → SDK stream_event（流式 delta）
- */
-function piStreamEventToSdk(
-  ev: AssistantMessageEvent,
-  sessionId: string,
-): SDKMessage | null {
-  switch (ev.type) {
-    case 'text_delta':
-      return {
-        type: 'stream_event',
-        event: {
-          type: 'content_block_delta',
-          delta: { type: 'text_delta', text: ev.delta },
-        },
-        session_id: sessionId,
-      } as SDKMessage
-
-    case 'thinking_delta':
-      return {
-        type: 'stream_event',
-        event: {
-          type: 'content_block_delta',
-          delta: { type: 'thinking_delta', thinking: ev.delta },
-        },
-        session_id: sessionId,
-      } as SDKMessage
-
-    case 'toolcall_delta':
-      // 工具调用 delta，暂不转译（等 toolcall_end 产出完整 tool_use）
-      return null
-
-    case 'toolcall_end': {
-      // 工具调用完成：产出包含 tool_use 块的 assistant 消息
-      const tc = ev.toolCall
-      return {
-        type: 'assistant',
-        message: {
-          content: [{
-            type: 'tool_use',
-            id: tc.id,
-            name: tc.name,
-            input: tc.arguments,
-          }],
-        },
-        parent_tool_use_id: null,
-        session_id: sessionId,
-      } as SDKAssistantMessage
-    }
-
-    case 'done':
-    case 'error':
-      // done/error 由 agent_end / turn_end 处理
-      return null
-
-    default:
-      // start / text_start / text_end / thinking_start / thinking_end / toolcall_start
-      // 这些事件暂不产出流式 delta
-      return null
-  }
 }
 
 // ===== 工具函数 =====
@@ -1047,28 +939,6 @@ function formatStreamErrorForUser(raw: string): string {
   }
 
   return `[请求失败] ${msg || '未知错误'}`
-}
-
-/** Pi Usage → SDK usage 格式 */
-function piUsageToSdk(usage: Usage): SDKAssistantMessage['message']['usage'] {
-  return {
-    input_tokens: usage.input,
-    output_tokens: usage.output,
-    cache_read_input_tokens: usage.cacheRead,
-    cache_creation_input_tokens: usage.cacheWrite,
-  }
-}
-
-/** Pi stopReason → SDK stop_reason */
-function piStopReasonToSdk(reason: string): string {
-  switch (reason) {
-    case 'stop': return 'end_turn'
-    case 'length': return 'max_tokens'
-    case 'toolUse': return 'tool_use'
-    case 'error': return 'error'
-    case 'aborted': return 'aborted'
-    default: return reason
-  }
 }
 
 /** 零成本占位（streamFn 内部有预构造的 Model，这里仅给 Agent initialState 用） */

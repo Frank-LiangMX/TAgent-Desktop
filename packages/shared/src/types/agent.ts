@@ -1793,6 +1793,8 @@ export const AGENT_IPC_CHANNELS = {
   SEND_MESSAGE: 'agent:send-message',
   /** 中止 Agent 执行 */
   STOP_AGENT: 'agent:stop',
+  /** 引导 Agent（不中断当前轮，在下一轮边界注入用户消息） */
+  STEER_AGENT: 'agent:steer',
 
   // 后台任务管理
   /** 获取任务输出 */

@@ -23,7 +23,7 @@ import {
 } from 'node:fs'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { AgentSessionMeta, SDKMessage } from '@tagent/shared'
+import type { AgentSessionMeta } from '@tagent/shared'
 import {
   getAgentSessionsIndexPath,
   getAgentSessionMessagesPath,
@@ -175,8 +175,9 @@ function resolveSessionPath(workspaceId: string | undefined, sessionId: string):
   return getAgentSessionMessagesPath(sessionId)
 }
 
-/** 追加 SDKMessage 到会话 JSONL（持久化消息） */
-export function appendMessages(workspaceId: string | undefined, sessionId: string, messages: SDKMessage[]): void {
+/** 追加消息到会话 JSONL（持久化）。
+ *  格式无关：kscc 存 SDKMessage、pi 存 TAgentMessage IR，此处只做 JSON 序列化。 */
+export function appendMessages(workspaceId: string | undefined, sessionId: string, messages: unknown[]): void {
   if (messages.length === 0) return
   const path = resolveSessionPath(workspaceId, sessionId)
   // 确保目录存在（新路径下 projects/{workspaceId}/ 可能首次写入）
@@ -190,9 +191,11 @@ export function appendMessages(workspaceId: string | undefined, sessionId: strin
 
 /** 读会话历史 JSONL（加载时用，长驻首次 spawn 前）
  *
+ * 返回原始行（unknown[]）：kscc 会话是 SDKMessage、pi 会话是 TAgentMessage IR，
+ * 由调用方按核分流转译（见 session-service GET_SDK_MESSAGES / Chat.tsx 历史加载）。
  * 兼容旧数据：优先读新路径，不存在时 fallback 到旧路径。
  */
-export function readMessages(workspaceId: string | undefined, sessionId: string): SDKMessage[] {
+export function readMessages(workspaceId: string | undefined, sessionId: string): unknown[] {
   // 有 workspaceId 时优先读新路径，不存在则 fallback 旧路径
   const path = workspaceId
     ? getProjectSessionPath(workspaceId, sessionId)
@@ -207,9 +210,9 @@ export function readMessages(workspaceId: string | undefined, sessionId: string)
   const lines = readFileSync(filePath, 'utf8').split('\n').filter(Boolean)
   return lines.map((l) => {
     try {
-      return JSON.parse(l) as SDKMessage
+      return JSON.parse(l)
     } catch {
       return null
     }
-  }).filter(Boolean) as SDKMessage[]
+  }).filter(Boolean)
 }

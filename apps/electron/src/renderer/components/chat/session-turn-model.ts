@@ -186,18 +186,42 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
       if (item.streamingText != null) streamingText = item.streamingText
       if (item.streamingThinking != null) streamingThinking = item.streamingThinking
     }
+    // 落盘升级项（sdk_message 就地升级）已清 streamingText，不再收集——
+    // 打字机续接靠 useSmoothStream 内部 prevContentRef，保留旧 streamingText 会导致多轮残留/重复文字。
     if (!modelId && item.message?.type === 'assistant') {
       modelId = item.message.modelId
     }
   }
 
   // 按顺序收集主线 assistant 内容块（子代理 parentToolUseId 不进主过程组）
+  // pi 内核 toolcall_end 与 turn_end 都产含 tool_use 的 assistant（同 id），需按 tool_use id 去重，
+  // 否则每个工具步骤显示两遍。去重策略：同 id 的 tool_use 只保留一条；优先保留来自「含 thinking/text
+  // 的完整消息」的那条（turn_end 产），丢弃 toolcall_end 的纯 tool_use 占位（modelId 通常为空）。
   const allBlocks: Array<{ block: TAgentContentBlock; key: string }> = []
+  const toolUseSeen = new Map<string, { block: TAgentToolUseBlock; key: string; rich: boolean }>()
   for (const item of turn.items) {
     if (item.message?.type !== 'assistant') continue
     if (item.message.parentToolUseId) continue
+    const rich = item.message.content.some((b) => b.type === 'thinking' || b.type === 'text')
     item.message.content.forEach((block, i) => {
-      allBlocks.push({ block, key: `${item.key}-b${i}` })
+      if (block.type === 'tool_use') {
+        const tu = block as TAgentToolUseBlock
+        const prev = toolUseSeen.get(tu.id)
+        if (prev) {
+          // 已有同 id：若当前消息更完整（rich）且旧的只是占位，替换；否则丢弃当前
+          if (rich && !prev.rich) {
+            const idx = allBlocks.findIndex((x) => x.key === prev.key)
+            if (idx >= 0) allBlocks[idx] = { block, key: `${item.key}-b${i}` }
+            toolUseSeen.set(tu.id, { block: tu, key: `${item.key}-b${i}`, rich })
+          }
+          return
+        }
+        const key = `${item.key}-b${i}`
+        toolUseSeen.set(tu.id, { block: tu, key, rich })
+        allBlocks.push({ block, key })
+      } else {
+        allBlocks.push({ block, key: `${item.key}-b${i}` })
+      }
     })
   }
 
@@ -273,15 +297,13 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
     }
   }
 
-  // 回答区与流式正文互斥：有落盘回答就只显示落盘；否则只显示流式
-  // 若流式正文已被某段落盘回答包含（或相等），丢弃流式，防双份
+  // 回答区用 useSmoothStream 逐字挤出（AssistantTurnView 喂 content=answerFull ?? streamingText，
+  // 单条时间线单调追加）。pi-ai done.message === delta 拼接 / kscc includePartialMessages 同源前缀，
+  // 故落盘 answerFull 必以 streamingText 为前缀 → useSmoothStream isAppend 成立，从已显示进度逐字
+  // 追到完整正文，不 purge 重建、不跳变。
+  // 落盘后保留 streamingText：让 needsTypewriter 仍为 true，useSmoothStream 继续逐字追完（流式
+  // 已停 → streamDone → /4 加速排空，但不一次性 dump）。
   const streamText = streamingText?.trim() ?? ''
-  const streamDupesAnswer =
-    streamText.length > 0 &&
-    (answerJoined === streamText ||
-      answerJoined.includes(streamText) ||
-      streamText.includes(answerJoined))
-  const showStreamAnswer = isStreaming && streamText.length > 0 && !streamDupesAnswer && !answerJoined
   const finalAnswers = answerJoined ? [answerJoined] : []
 
   return {
@@ -289,7 +311,9 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
     process,
     answerTexts: finalAnswers,
     isStreaming: isStreaming && !answerJoined,
-    streamingText: showStreamAnswer ? streamText : undefined,
+    // 落盘后仍保留 streamingText：AssistantTurnView 的 needsTypewriter = isStreaming || streamingText，
+    // 保留它使打字机在落盘后继续追完；content 由 answerFull 优先（answerTexts[0]）。
+    streamingText: streamText.length > 0 ? streamText : undefined,
     // 思考已进 process，回答区不再单独带 streamingThinking
     streamingThinking: undefined,
   }

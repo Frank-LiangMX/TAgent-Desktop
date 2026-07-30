@@ -156,13 +156,6 @@
   padding: 2px 0 2px 4px;
 }
 
-/* 运行中过程列表可滚动，避免长工具链把回答顶没 */
-.agent-process-group__body--scroll {
-  max-height: min(42vh, 360px);
-  overflow-y: auto;
-  scrollbar-width: thin;
-}
-
 .agent-process-group.is-live {
   border-radius: 12px;
   outline: 1px solid color-mix(in srgb, hsl(var(--primary)) 12%, transparent);

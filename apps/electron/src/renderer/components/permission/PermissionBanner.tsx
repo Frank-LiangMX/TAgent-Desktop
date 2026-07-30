@@ -1,7 +1,8 @@
 /**
- * PermissionBanner — 工具权限确认横幅
+ * PermissionBanner — 工具权限确认面板
  *
- * 主进程推 PERMISSION_REQUEST 时显示在会话页底部（composer 上方）。
+ * 主进程推 PERMISSION_REQUEST 时显示。放在底栏栈内、composer 上方（从输入框上方伸出），
+ * 靠文档流撑高底栏（非绝对浮窗），不挡输入框、不与滚动到底部按钮争位。
  * 允许 / 拒绝 / 始终允许（remember=true：本会话按工具名白名单；Bash 整类放行，危险/写结构仍会再问）。
  */
 import { useState, useEffect } from 'react'
@@ -46,15 +47,16 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
     <AnimatePresence>
       {req && (
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 16, height: 0 }}
+          animate={{ opacity: 1, y: 0, height: 'auto' }}
+          exit={{ opacity: 0, y: 16, height: 0 }}
           transition={{ type: 'spring', stiffness: 380, damping: 32 }}
-          className="session-permission-banner pointer-events-auto absolute inset-x-0 bottom-2 z-30"
+          className="session-permission-banner pointer-events-auto overflow-hidden"
         >
           <div
             className={cn(
-              'flex items-center gap-3 rounded-2xl border p-3 shadow-lg backdrop-blur-xl',
+              'mx-3 mb-2 flex items-center gap-3 rounded-2xl border p-3 shadow-lg backdrop-blur-xl',
+              'pl-[calc(var(--app-shell-session-gutter,16px)_-_3px)] pr-[calc(var(--app-shell-session-gutter,16px)_-_3px)]',
               req.dangerous
                 ? 'border-red-500/40 bg-red-500/10'
                 : 'border-border/60 bg-background/80',

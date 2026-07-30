@@ -156,7 +156,12 @@ export class SessionRuntime {
         this.loopRunning = true
         const iterable = this.adapter.query(queryOptions)
         for await (const msg of iterable) {
-          // 捕获 SDK session id（恢复时作为 resumeSessionId）
+          // pi adapter 实际产 TAgentDesktopStreamPayload（{kind:...}），kscc 产 SDKMessage（{type:...}）。
+          // 两者经同一 AsyncIterable<SDKMessage> 契约；此处按形状归一化 result 判定。
+          const m = msg as { type?: string; kind?: string; errors?: unknown }
+          const isResult = m.type === 'result' || m.kind === 'result'
+
+          // 捕获 SDK session id（恢复时作为 resumeSessionId）；pi 无 session_id（自管），undefined 无害
           const sid = (msg as { session_id?: unknown }).session_id
           if (typeof sid === 'string' && sid) this.lastSdkSessionId = sid
 
@@ -172,11 +177,15 @@ export class SessionRuntime {
           // 推给 orchestrator（→ IPC → UI）
           this.onMessage?.(msg)
 
-          if (msg.type === 'result') {
+          if (isResult) {
             // 过长上下文：result.errors 命中 → 推中文错误，结束本轮，不恢复。
-            // 后续可在此接一层 compaction（COMPACT_SESSION IPC / sdk-compaction）自动压缩后重试，
-            // 当前 MVP 仅明确报错 + 建议开新会话/压缩（见 formatPromptTooLongError）。
-            if (isPromptTooLongResult(msg)) {
+            // kscc：isPromptTooLongResult 读 .type==='result'+.errors；
+            // pi：result 是 {kind:'result', errors:[...]}，直接用 isPromptTooLongMessage 判 .errors。
+            const tooLong =
+              m.type === 'result'
+                ? isPromptTooLongResult(msg)
+                : isPromptTooLongMessage(...(Array.isArray(m.errors) ? m.errors.filter((e): e is string => typeof e === 'string') : []))
+            if (tooLong) {
               this.turnInFlight = false
               this.lastInFlightPrompt = undefined
               this.loopRunning = false
@@ -304,6 +313,15 @@ export class SessionRuntime {
     this.userStopping = true
     await this.adapter.interruptQuery?.(this.sessionId)
     this.turnInFlight = false
+  }
+
+  /** 引导 Agent：不中断当前轮，在下一轮边界注入用户消息（Pi steer / kscc enqueue） */
+  async steerMessage(message: string): Promise<void> {
+    if (!this.hasLiveProcess()) return
+    const steerInput = {
+      message: { role: 'user' as const, content: message },
+    }
+    await this.adapter.sendQueuedMessage?.(this.sessionId, steerInput as any)
   }
 
   /** 热切换活跃会话的权限模式（kscc 走 SDK setPermissionMode；Pi 靠 beforeToolCall 闭包读 meta，无需重建） */
