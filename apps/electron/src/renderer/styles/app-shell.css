@@ -830,7 +830,7 @@
 }
 
 /* rail + sidebar 并列
- * 展开/收起：gap 与 sidebar 宽度同拍过渡（对齐 General --left-sidebar-layout-ms/ease）
+ * 展开/收起：gap 与 sidebar 宽度由 JS 注入 --left-sidebar-layout-ms/ease（分 opening/closing）
  */
 .app-nav-stack {
   position: relative;
@@ -839,17 +839,17 @@
   align-items: stretch;
   gap: var(--nav-cluster-gap, 10px);
   background: transparent;
-  transition: gap var(--left-sidebar-layout-ms, 480ms) var(--left-sidebar-layout-ease, cubic-bezier(0.18, 0.72, 0.14, 1));
+  transition: gap var(--left-sidebar-layout-ms, 500ms) var(--left-sidebar-layout-ease, cubic-bezier(0.18, 0.72, 0.14, 1));
 }
 .app-nav-stack--sidebar-closed {
   gap: 0;
 }
 
-/* 侧栏槽：用 width 过渡，内层固定宽避免内容挤压
- * open ~500ms / close ~460ms 量级，与 General SIDEBAR_OPEN/CLOSE_MS 一致
- *
- * 关键：展开时 overflow 必须 visible，否则圆角外的 box-shadow 被矩形裁切，
- * 四角会像「实心阴影块」。仅收起时 hidden 裁内容。
+/*
+ * 侧栏槽：width 丝滑过渡；内层固定 254px。
+ * - opening/open：overflow visible，阴影完整
+ * - closing/closed：overflow hidden，裁掉收起过程中的溢出
+ * 内容透明度单独控（先淡出再收宽 / 先撑开再淡入），避免「整栏 alpha 闪一下」
  */
 .app-nav-sidebar-slot {
   position: relative;
@@ -859,28 +859,41 @@
   min-width: 0;
   height: 100%;
   overflow: visible;
-  opacity: 1;
   pointer-events: auto;
-  transition:
-    width var(--left-sidebar-layout-ms, 480ms) var(--left-sidebar-layout-ease, cubic-bezier(0.18, 0.72, 0.14, 1)),
-    opacity 280ms ease-out;
+  will-change: width;
+  transition: width var(--left-sidebar-layout-ms, 500ms) var(--left-sidebar-layout-ease, cubic-bezier(0.18, 0.72, 0.14, 1));
 }
-.app-nav-sidebar-slot--closed {
+.app-nav-sidebar-slot--closed,
+.app-nav-sidebar-slot--closing {
   width: 0;
-  opacity: 0;
   overflow: hidden;
   pointer-events: none;
 }
+.app-nav-sidebar-slot--opening {
+  overflow: hidden; /* 撑开过程裁边，结束 open 再 visible 放阴影 */
+}
+.app-nav-sidebar-slot--open {
+  overflow: visible;
+  pointer-events: auto;
+}
+
 .app-nav-sidebar-slot-inner {
   width: var(--nav-sidebar-width, 254px);
   min-width: var(--nav-sidebar-width, 254px);
   height: 100%;
-  /* 外投阴影放在这一层（无 overflow:hidden），避免圆角四角被硬裁 */
   border-radius: 22px;
+  /* 外投阴影：不在 overflow:hidden 的同一层 */
   box-shadow:
     12px 0 36px -12px rgb(48 59 76 / 0.22),
     0 16px 40px -16px rgb(48 59 76 / 0.16),
     0 4px 14px -6px rgb(48 59 76 / 0.1);
+  /* 内容整体：淡入淡出 + 轻微横向位移，更「抽屉」 */
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    opacity 190ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 190ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 220ms ease-out;
 }
 .dark .app-nav-sidebar-slot-inner {
   box-shadow:
@@ -888,15 +901,28 @@
     0 18px 44px -14px rgb(0 0 0 / 0.45),
     0 6px 16px -6px rgb(0 0 0 / 0.35);
 }
-/* 收起时内层也可淡出一点，减少「内容被硬裁」感 */
-.app-nav-sidebar-slot--closed .app-nav-sidebar-slot-inner {
+
+/* 内容隐藏：收起前 / 展开刚开始 */
+.app-nav-sidebar-slot-inner--content-hidden {
   opacity: 0;
-  box-shadow: none;
-  transition: opacity 200ms ease-out, box-shadow 200ms ease-out;
+  transform: translateX(-10px);
+  transition:
+    opacity 120ms ease-out,
+    transform 120ms ease-out,
+    box-shadow 120ms ease-out;
 }
-.app-nav-sidebar-slot--open .app-nav-sidebar-slot-inner {
+.app-nav-sidebar-slot--closed .app-nav-sidebar-slot-inner,
+.app-nav-sidebar-slot--closing .app-nav-sidebar-slot-inner {
+  box-shadow: none;
+}
+/* 展开完成后阴影才完整放出，避免撑开时硬裁 */
+.app-nav-sidebar-slot--opening .app-nav-sidebar-slot-inner {
+  box-shadow: none;
+}
+
+.app-nav-sidebar-slot-inner--content-visible {
   opacity: 1;
-  transition: opacity 280ms ease-out 80ms;
+  transform: translateX(0);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -904,6 +930,9 @@
   .app-nav-sidebar-slot,
   .app-nav-sidebar-slot-inner {
     transition: none !important;
+  }
+  .app-nav-sidebar-slot-inner {
+    transform: none !important;
   }
 }
 
