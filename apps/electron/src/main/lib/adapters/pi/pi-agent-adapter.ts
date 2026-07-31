@@ -628,16 +628,38 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             signal,
             asyncAuto: true,
             retrieveRag: async (query: string) => {
+              const out: Array<{ source: string; text: string; score?: number }> = []
               try {
                 const hits = memoryLayerService.searchSessions(sessionMode, query, 5)
-                return hits.map((h) => ({
-                  source: `L4:${h.session_slug ?? h.id}`,
-                  text: `${h.title ?? ''}\n${h.summary ?? ''}`.trim(),
-                  score: 1,
-                }))
+                for (const h of hits) {
+                  out.push({
+                    source: `L4:${h.session_slug ?? h.id}`,
+                    text: `${h.title ?? ''}\n${h.summary ?? ''}`.trim(),
+                    score: 1,
+                  })
+                }
               } catch {
-                return []
+                /* ignore L4 */
               }
+              // 本会话向量（D11）
+              try {
+                const { searchSessionVectors } = await import('../../memory/session-vector-store')
+                const local = await searchSessionVectors({
+                  sessionId,
+                  query,
+                  topK: 3,
+                })
+                for (const h of local) {
+                  out.push({
+                    source: `local:${h.turnHint ?? h.id}`,
+                    text: h.text,
+                    score: h.score,
+                  })
+                }
+              } catch {
+                /* ignore local */
+              }
+              return out
             },
             onCompacted: (r) => {
               if (!r.compacted) return
@@ -650,6 +672,25 @@ export class PiAgentAdapter implements AgentProviderAdapter {
                   summary: r.summary,
                 }),
               )
+              // 被压出窗口的摘要段进本会话向量库（异步）
+              if (r.summary) {
+                void import('../../memory/session-vector-store')
+                  .then(({ indexSessionChunks }) =>
+                    indexSessionChunks({
+                      sessionId,
+                      chunks: [
+                        {
+                          id: `compact-${Date.now()}`,
+                          text: r.summary ?? '',
+                          turnHint: 'mid',
+                        },
+                      ],
+                    }),
+                  )
+                  .catch(() => {
+                    /* ignore */
+                  })
+              }
             },
           })
           if (!result.compacted) {

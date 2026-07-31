@@ -451,8 +451,9 @@ class ReflectService {
    * TODO(2.2)：Desktop 未移植 settings-service / channel-manager / proxy-fetch，
    * 原实现走 streamSSE 调默认渠道。此处 stub 抛错，由 extractInsights 回退规则版。
    */
-  private async callLLM(_systemPrompt: string, _userPrompt: string): Promise<string> {
-    throw new Error('ReflectService LLM 提炼未接线（Desktop 2.1 未移植渠道客户端），回退规则版')
+  private async callLLM(systemPrompt: string, userPrompt: string): Promise<string> {
+    const { completeMemoryLlm } = await import('./memory-llm-client')
+    return completeMemoryLlm({ systemPrompt, userPrompt })
   }
 
   /**

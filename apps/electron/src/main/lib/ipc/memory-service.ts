@@ -135,18 +135,20 @@ export class MemoryService {
       },
     )
 
-    // ===== Graph（未移植 learning-graph-service，空图兜底）=====
+    // ===== Graph =====
     ipcMain.handle(
       MEMORY_IPC_CHANNELS.GET_GRAPH_DATA,
-      async (_e, _mode: MemoryMode, _workspaceSlug?: string): Promise<GraphPayload> => {
-        return {
-          nodes: [],
-          edges: [],
-          stats: {
-            memoryNodes: 0,
-            skillNodes: 0,
-            edges: 0,
-          },
+      async (_e, mode: MemoryMode, workspaceSlug?: string): Promise<GraphPayload> => {
+        try {
+          const { buildGraphPayload } = await import('../memory/learning-graph-service')
+          return buildGraphPayload(mode, workspaceSlug)
+        } catch (err) {
+          console.warn('[memory-service] buildGraphPayload failed:', err)
+          return {
+            nodes: [],
+            edges: [],
+            stats: { memoryNodes: 0, skillNodes: 0, edges: 0 },
+          }
         }
       },
     )

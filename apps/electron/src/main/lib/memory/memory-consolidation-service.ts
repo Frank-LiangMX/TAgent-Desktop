@@ -239,11 +239,48 @@ const RETRY_BACKOFF_MS = 30 * 60 * 1000
  * 上层按 preflight 错误处理（不计数、退避），保证文件可编译、不阻塞 typecheck。
  * 接线后替换为真实 LLM 调用。
  */
-export async function defaultExecutor(_request: ConsolidationRequest): Promise<BatchOutput> {
-  throw new ConsolidationError(
-    'NOT_WIRED',
-    'MemoryConsolidationService LLM executor 未接线（Desktop 2.1 未移植渠道客户端），跳过批量整理'
-  )
+export async function defaultExecutor(request: ConsolidationRequest): Promise<BatchOutput> {
+  try {
+    const { completeMemoryLlm, MemoryLlmError } = await import('./memory-llm-client')
+    const evidenceText = request.evidence
+      .map(
+        (e, i) =>
+          `[${i}] session=${e.sessionId.slice(0, 8)} source=${e.source} createdAt=${e.createdAt}` +
+          (e.sessionTitle ? ` title=${e.sessionTitle}` : '') +
+          (e.sessionSummary ? ` summary=${e.sessionSummary}` : '') +
+          (e.nudgeCandidate ? ` pattern=${e.nudgeCandidate.pattern}` : '') +
+          (e.toolsUsed?.length ? ` tools=${e.toolsUsed.join(',')}` : ''),
+      )
+      .join('\n')
+
+    const systemPrompt = `你是一个记忆整理助手。基于增量证据输出结构化 JSON。
+要求：
+1. sessionKeyFacts：每会话 1-3 个关键事实
+2. memoryCandidates：L0/L1/L2/L3 候选（高置信度优先）
+3. insights：跨会话洞察（content≤80字、confidence 0-1、evidenceIds）
+4. contradictions：矛盾发现
+严格 JSON：
+{"sessionKeyFacts":[{"sessionId":"...","facts":["..."]}],"memoryCandidates":[{"targetLayer":"L2","content":"...","confidence":0.9,"evidenceIds":[]}],"insights":[{"content":"...","confidence":0.8,"evidenceIds":[]}],"contradictions":[{"content":"...","evidenceIds":[]}]}`
+
+    const userPrompt = `=== 增量证据 ===\n${evidenceText || '（无）'}\n\n请输出 JSON：`
+    const raw = await completeMemoryLlm({ systemPrompt, userPrompt })
+    const start = raw.indexOf('{')
+    const end = raw.lastIndexOf('}')
+    if (start < 0 || end <= start) {
+      return { sessionKeyFacts: [], memoryCandidates: [], insights: [], contradictions: [] }
+    }
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw.slice(start, end + 1))
+    } catch {
+      return { sessionKeyFacts: [], memoryCandidates: [], insights: [], contradictions: [] }
+    }
+    return sanitizeBatchOutput(parsed)
+  } catch (e) {
+    const code = e instanceof Error && 'code' in e ? String((e as { code: string }).code) : 'LLM_FAILED'
+    const msg = e instanceof Error ? e.message : String(e)
+    throw new ConsolidationError(code || 'LLM_FAILED', `consolidation LLM 失败: ${msg}`)
+  }
 }
 
 const VALID_TARGET_LAYERS = ['L0', 'L1', 'L2', 'L3'] as const

@@ -565,6 +565,33 @@ export function Chat({
         setItems((prev) => purgeStreamingItems(prev))
         setRunning(false)
         bumpRefresh()
+      } else if (evt.type === 'memory_organizing') {
+        // Phase 4/5：kscc 软重置 / 影子压缩 — 显示「正在整理记忆」
+        setIsCompactingUi(true)
+        setItems((prev) => {
+          if (prev.some((it) => it.compactStatus === 'compacting')) return prev
+          return [
+            ...prev,
+            {
+              key: `mem-org-${itemIdxRef.current++}`,
+              compactStatus: 'compacting' as const,
+            },
+          ]
+        })
+        if (evt.status === 'ready' || evt.status === 'idle') {
+          setIsCompactingUi(false)
+          setItems((prev) => {
+            const filtered = prev.filter((it) => it.compactStatus !== 'compacting')
+            return [
+              ...filtered,
+              {
+                key: `mem-org-done-${itemIdxRef.current++}`,
+                compactStatus: 'complete' as const,
+                compactTrigger: 'auto' as const,
+              },
+            ]
+          })
+        }
       } else if (evt.type === 'session_error') {
         setItems((prev) => [
           ...prev,

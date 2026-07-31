@@ -88,29 +88,24 @@ function resolveSdkPath(workspaceId: string | undefined, sessionId: string): str
     : getAgentSessionMessagesPath(sessionId)
 }
 
-/**
- * 本地规则版「压缩」：无 LLM 时生成摘要消息（保底可用）。
- * 有 LLM 时可后续替换为 stream 调用。
- */
-function localSummarize(messages: unknown[]): {
-  summaryMsg: SDKMessage
-  facts: string[]
-  summary: string
-} {
+function collectDialogText(messages: unknown[]): string {
   const texts: string[] = []
   for (const raw of messages.slice(0, 80)) {
     const m = raw as { type?: string; message?: { content?: unknown } }
     if (m.type !== 'user' && m.type !== 'assistant') continue
     const content = m.message?.content
-    if (typeof content === 'string') texts.push(content.slice(0, 200))
+    if (typeof content === 'string') texts.push(content.slice(0, 400))
     else if (Array.isArray(content)) {
       for (const b of content as Array<{ type?: string; text?: string }>) {
-        if (b?.type === 'text' && b.text) texts.push(b.text.slice(0, 200))
+        if (b?.type === 'text' && b.text) texts.push(b.text.slice(0, 400))
       }
     }
   }
-  const summary = `[会话摘要] 共 ${messages.length} 条消息。要点：\n` + texts.slice(0, 12).join('\n• ')
-  const summaryMsg = {
+  return texts.join('\n')
+}
+
+function toSummaryMsg(summary: string): SDKMessage {
+  return {
     type: 'user',
     uuid: randomUUID(),
     message: {
@@ -125,7 +120,50 @@ function localSummarize(messages: unknown[]): {
     },
     parent_tool_use_id: null,
   } as unknown as SDKMessage
-  return { summaryMsg, facts: [], summary }
+}
+
+/** 本地规则摘要（LLM 失败时保底） */
+function localSummarize(messages: unknown[]): {
+  summaryMsg: SDKMessage
+  facts: string[]
+  summary: string
+} {
+  const body = collectDialogText(messages)
+  const summary =
+    `[会话摘要] 共 ${messages.length} 条消息。要点：\n` +
+    body
+      .split('\n')
+      .filter(Boolean)
+      .slice(0, 12)
+      .map((l) => `• ${l.slice(0, 200)}`)
+      .join('\n')
+  return { summaryMsg: toSummaryMsg(summary), facts: [], summary }
+}
+
+/** 优先 LLM 分流压缩，失败回退本地 */
+async function summarizeMessages(messages: unknown[]): Promise<{
+  summaryMsg: SDKMessage
+  facts: string[]
+  summary: string
+}> {
+  try {
+    const { completeMemoryLlm } = await import('../memory/memory-llm-client')
+    const dialog = collectDialogText(messages).slice(0, 60_000)
+    if (dialog.length < 40) return localSummarize(messages)
+    const raw = await completeMemoryLlm({
+      systemPrompt: COMPACTION_SPLIT_SYSTEM,
+      userPrompt: buildCompactionSplitUserPrompt(dialog),
+    })
+    const parsed = parseCompactionSplitResult(raw)
+    return {
+      summaryMsg: toSummaryMsg(parsed.summary),
+      facts: parsed.facts,
+      summary: parsed.summary,
+    }
+  } catch (e) {
+    console.warn('[kscc-soft-reset] LLM summarize failed, local fallback:', e)
+    return localSummarize(messages)
+  }
 }
 
 class KsccSoftResetService {
@@ -253,22 +291,12 @@ class KsccSoftResetService {
 
     const run = async (): Promise<void> => {
       try {
-        const { summaryMsg, facts, summary } = localSummarize(sdkMsgs)
+        const { summaryMsg, facts, summary } = await summarizeMessages(sdkMsgs)
         writeSdkMessages(workspaceId, shadowSessionId, [summaryMsg])
         // 事实进 evidence sink
         for (const fact of facts.slice(0, 10)) {
           try {
-            // writeNudgeEvidence 若无则跳过
-            const sink = memoryEvidenceSink as {
-              writeSessionEvidence?: (
-                mode: 'general' | 'ta',
-                sid: string,
-                title: string,
-                summary: string,
-                tools: string[],
-              ) => void
-            }
-            sink.writeSessionEvidence?.(
+            memoryEvidenceSink.writeSessionEvidence(
               meta.mode === 'ta' ? 'ta' : 'general',
               sessionId,
               'soft-reset-fact',

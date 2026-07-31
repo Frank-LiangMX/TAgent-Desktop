@@ -150,3 +150,6 @@ export {
   recordBurstAndLearn,
   type LearnedLimitEntry,
 } from './context-limits-store'
+export { completeMemoryLlm, embedTexts, resolveMemoryLlmChannel, MemoryLlmError } from './memory-llm-client'
+export { indexSessionChunks, searchSessionVectors } from './session-vector-store'
+export { buildGraphPayload } from './learning-graph-service'
