@@ -38,6 +38,7 @@ import {
 } from '../agent/session-store'
 import { getChannel, getDecryptedApiKey, getKsccChannelId } from '../channel/channel-store'
 import { KSCC_DEFAULT_MODEL_ID } from '../channel/default-models'
+import { resolveModelContextWindow } from '../channel/model-window'
 import { resolveWorkspaceForSession } from '../workspace/workspace-manager'
 import { getEnabledMcpServers } from '../mcp/mcp-store'
 import { PermissionService } from '../permission/permission-service'
@@ -581,6 +582,8 @@ export class SessionService {
         // thinking 控制：默认关闭，后续可加 UI toggle
         thinkingEnabled: false,
         thinkingLevel: 'medium' as const,
+        // Phase 1.1：注入真实 contextWindow（替代 buildPlaceholderModel 旧的 128k 硬编码）
+        contextWindow: resolveModelContextWindow(channel, model),
       },
     }
     void permissionMode

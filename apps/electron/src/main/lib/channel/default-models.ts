@@ -11,12 +11,14 @@ import type { ChannelModel, ProviderType } from '@tagent/shared'
 
 /** kscc 内网渠道默认模型（与 TAgent kscc-config.ts 保持一致） */
 export const KSCC_DEFAULT_MODELS: ChannelModel[] = [
-  { id: 'glm-5.1', name: 'GLM-5.1', enabled: true },
-  { id: 'glm-5.2', name: 'GLM-5.2 (1M)', enabled: true },
-  { id: 'kimi-k2.5', name: 'Kimi K2.5', enabled: true },
-  { id: 'kimi-k2.6', name: 'Kimi K2.6', enabled: true },
-  { id: 'mimo-v2.5', name: 'MiMo V2.5 (1M)', enabled: true },
-  { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro (1M)', enabled: true },
+  { id: 'glm-5.1', name: 'GLM-5.1', enabled: true, contextWindow: 200_000 },
+  // GLM-5.2 标称 1M，但实测 256k 就爆 → safeContextLimit 手动标 180k（256k×0.7），
+  // 软重置按 180k 提前触发，永远到不了 256k 爆点。contextWindow 仍标 1M（算 8k 预算用标称值）。
+  { id: 'glm-5.2', name: 'GLM-5.2 (1M)', enabled: true, contextWindow: 1_000_000, safeContextLimit: 180_000 },
+  { id: 'kimi-k2.5', name: 'Kimi K2.5', enabled: true, contextWindow: 200_000 },
+  { id: 'kimi-k2.6', name: 'Kimi K2.6', enabled: true, contextWindow: 200_000 },
+  { id: 'mimo-v2.5', name: 'MiMo V2.5 (1M)', enabled: true, contextWindow: 1_000_000 },
+  { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro (1M)', enabled: true, contextWindow: 1_000_000 },
 ]
 
 /** kscc 内置渠道默认模型 ID */
@@ -25,29 +27,29 @@ export const KSCC_DEFAULT_MODEL_ID = 'glm-5.2'
 /** 各外部 Provider 的默认模型列表（仅常见 Provider 预填，其余空由用户填） */
 const EXTERNAL_DEFAULT_MODELS: Partial<Record<ProviderType, ChannelModel[]>> = {
   anthropic: [
-    { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', enabled: true },
-    { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', enabled: true },
-    { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', enabled: true },
+    { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', enabled: true, contextWindow: 200_000 },
+    { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', enabled: true, contextWindow: 200_000 },
+    { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', enabled: true, contextWindow: 200_000 },
   ],
-  'anthropic-compatible': [{ id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', enabled: true }],
+  'anthropic-compatible': [{ id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', enabled: true, contextWindow: 200_000 }],
   deepseek: [
-    { id: 'deepseek-chat', name: 'DeepSeek Chat', enabled: true },
-    { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', enabled: true },
+    { id: 'deepseek-chat', name: 'DeepSeek Chat', enabled: true, contextWindow: 64_000 },
+    { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', enabled: true, contextWindow: 64_000 },
   ],
   openai: [
-    { id: 'gpt-4o', name: 'GPT-4o', enabled: true },
-    { id: 'gpt-4o-mini', name: 'GPT-4o mini', enabled: true },
+    { id: 'gpt-4o', name: 'GPT-4o', enabled: true, contextWindow: 128_000 },
+    { id: 'gpt-4o-mini', name: 'GPT-4o mini', enabled: true, contextWindow: 128_000 },
   ],
-  'kimi-api': [{ id: 'kimi-k2', name: 'Kimi K2', enabled: true }],
-  'kimi-coding': [{ id: 'kimi-k2', name: 'Kimi K2', enabled: true }],
-  zhipu: [{ id: 'glm-4.6', name: 'GLM-4.6', enabled: true }],
-  'zhipu-coding': [{ id: 'glm-4.6', name: 'GLM-4.6', enabled: true }],
-  minimax: [{ id: 'abab6.5s-chat', name: 'abab6.5s', enabled: true }],
-  doubao: [{ id: 'doubao-1-5-pro-32k', name: 'Doubao 1.5 Pro', enabled: true }],
-  qwen: [{ id: 'qwen-max', name: 'Qwen Max', enabled: true }],
-  'qwen-anthropic': [{ id: 'qwen-max', name: 'Qwen Max', enabled: true }],
-  xiaomi: [{ id: 'mimo-v2.5', name: 'MiMo V2.5', enabled: true }],
-  'xiaomi-token-plan': [{ id: 'mimo-v2.5', name: 'MiMo V2.5', enabled: true }],
+  'kimi-api': [{ id: 'kimi-k2', name: 'Kimi K2', enabled: true, contextWindow: 200_000 }],
+  'kimi-coding': [{ id: 'kimi-k2', name: 'Kimi K2', enabled: true, contextWindow: 200_000 }],
+  zhipu: [{ id: 'glm-4.6', name: 'GLM-4.6', enabled: true, contextWindow: 128_000 }],
+  'zhipu-coding': [{ id: 'glm-4.6', name: 'GLM-4.6', enabled: true, contextWindow: 128_000 }],
+  minimax: [{ id: 'abab6.5s-chat', name: 'abab6.5s', enabled: true, contextWindow: 245_760 }],
+  doubao: [{ id: 'doubao-1-5-pro-32k', name: 'Doubao 1.5 Pro', enabled: true, contextWindow: 32_000 }],
+  qwen: [{ id: 'qwen-max', name: 'Qwen Max', enabled: true, contextWindow: 32_000 }],
+  'qwen-anthropic': [{ id: 'qwen-max', name: 'Qwen Max', enabled: true, contextWindow: 32_000 }],
+  xiaomi: [{ id: 'mimo-v2.5', name: 'MiMo V2.5', enabled: true, contextWindow: 1_000_000 }],
+  'xiaomi-token-plan': [{ id: 'mimo-v2.5', name: 'MiMo V2.5', enabled: true, contextWindow: 1_000_000 }],
 }
 
 /** 取某 Provider 的默认模型列表（无预填则返回空数组，由用户手动填） */

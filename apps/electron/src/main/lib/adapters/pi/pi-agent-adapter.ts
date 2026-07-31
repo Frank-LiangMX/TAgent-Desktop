@@ -92,6 +92,11 @@ export interface PiExternalChannelConfig {
   thinkingEnabled?: boolean
   /** thinking level */
   thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high'
+  /**
+   * 模型标称上下文窗口（token）。由 session-service 从 ChannelModel.contextWindow 注入。
+   * buildPlaceholderModel 用它替代旧的 128k 硬编码；缺失走 fallback(200k)。
+   */
+  contextWindow?: number
 }
 
 /** Pi 核适配器配置（kscc bare 模式） */
@@ -101,6 +106,8 @@ export interface PiKsccChannelConfig {
   ksccPath?: string
   /** 默认模型 ID */
   defaultModelId?: string
+  /** 模型标称上下文窗口（token），同 PiExternalChannelConfig.contextWindow */
+  contextWindow?: number
 }
 
 /** Pi 核适配器总配置 */
@@ -961,7 +968,9 @@ function buildPlaceholderModel(config: PiAgentAdapterConfig): Model<Api> {
       reasoning: config.thinkingEnabled ?? false,
       input: ['text'],
       cost: ZERO_COST,
-      contextWindow: 128_000,
+      // 优先用注入的真实窗口（session-service 从 ChannelModel.contextWindow 解析），
+      // 缺失走 fallback(200k)。替代旧的 128k 硬编码（Phase 1.1）。
+      contextWindow: config.contextWindow && config.contextWindow > 0 ? config.contextWindow : 128_000,
       maxTokens: 8_192,
     }
   }
@@ -975,7 +984,7 @@ function buildPlaceholderModel(config: PiAgentAdapterConfig): Model<Api> {
     reasoning: false,
     input: ['text'],
     cost: ZERO_COST,
-    contextWindow: 128_000,
+    contextWindow: config.contextWindow && config.contextWindow > 0 ? config.contextWindow : 128_000,
     maxTokens: 8_192,
   }
 }

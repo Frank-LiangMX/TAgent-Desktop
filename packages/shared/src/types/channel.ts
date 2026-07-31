@@ -110,6 +110,17 @@ export interface ChannelModel {
   name: string
   /** 是否启用 */
   enabled: boolean
+  /**
+   * 模型标称上下文窗口（token），如 200_000 / 1_000_000。
+   * 用于 8k 四层预算比例 + compaction 阈值分母。缺省走运行时 fallback（200k）。
+   */
+  contextWindow?: number
+  /**
+   * 实测安全上限（token）。软重置/压缩按此提前触发，避免撞真实爆点。
+   * 优先级：此字段 > 自学习回写值 > contextWindow × 0.7 > fallback。
+   * 用户实测过的模型手动填（如 GLM-5.2 标 1M 实测 256k 爆 → 填 180_000）。
+   */
+  safeContextLimit?: number
 }
 
 /**
