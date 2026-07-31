@@ -310,6 +310,7 @@ export function App(): JSX.Element {
       <AppShell
         topbar={null}
         sidebarOpen={activeRail === 'chat' && sidebarOpen}
+        activeRailItem={activeRail === 'chat' ? 'chat' : activeRail}
         rail={
           <Rail
             active={railActive}

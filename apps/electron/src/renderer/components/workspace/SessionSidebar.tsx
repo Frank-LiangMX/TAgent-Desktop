@@ -355,7 +355,7 @@ export function SessionSidebar({
     : 0
 
   return (
-    <div className="app-nav-sidebar flex flex-col h-full">
+    <div className="app-sidebar-body flex h-full min-h-0 flex-col">
       {/* 顶行:标题 + 新建/工作区胶囊 */}
       <div className="side-title">
         <span className="label">

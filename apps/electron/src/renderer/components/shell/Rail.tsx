@@ -41,18 +41,21 @@ export function Rail({
       {/* 上胶囊：会话 + 插件 + 记忆 */}
       <div className="app-rail-island">
         <RailIcon
+          railId="chat"
           icon={<ChatsCircle {...RAIL_ICON} />}
           label="会话"
           active={active === 'chat'}
           onClick={onChat}
         />
         <RailIcon
+          railId="plugins"
           icon={<PuzzlePiece {...RAIL_ICON} />}
           label="插件"
           active={active === 'plugins'}
           onClick={onPlugins}
         />
         <RailIcon
+          railId="memory"
           icon={<Brain {...RAIL_ICON} />}
           label="记忆"
           active={active === 'memory'}
@@ -62,6 +65,7 @@ export function Rail({
       {/* 下胶囊：设置 */}
       <div className="app-rail-island">
         <RailIcon
+          railId="settings"
           icon={<GearSix {...RAIL_ICON} />}
           label="设置"
           active={active === 'settings'}
@@ -73,11 +77,14 @@ export function Rail({
 }
 
 function RailIcon({
+  railId,
   icon,
   label,
   active = false,
   onClick,
 }: {
+  /** morph 源测量用，对齐 General data-rail-id */
+  railId?: string
   icon: React.ReactNode
   label: string
   active?: boolean
@@ -87,10 +94,12 @@ function RailIcon({
     <AppTooltip label={label} side="right" sideOffset={10}>
       <button
         type="button"
+        data-rail-id={railId}
         aria-label={label}
         onClick={onClick}
         className={cn(
           'rail-island-btn titlebar-no-drag flex size-9 items-center justify-center rounded-xl transition-colors',
+          active && 'rail-island-btn--active',
           active
             ? 'bg-primary/15 text-primary'
             : 'text-muted-foreground hover:bg-accent hover:text-foreground',
