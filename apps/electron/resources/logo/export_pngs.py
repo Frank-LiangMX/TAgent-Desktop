@@ -152,24 +152,51 @@ def compose_tray_icon(
     padding_ratio: float = 0.20,
 ) -> Image.Image:
     """
-    托盘专用：圆角底板 + 加大内边距的 mark。
+    Windows 托盘：圆角底板 + 加大内边距的 mark。
 
     Windows 浅色任务栏对「全透明 + 细几何」缩放很差，边缘糊成黑团。
     底板提供与系统栏对比稳定的缓冲色；padding 避免几何贴边被裁切。
     """
-    # 先把 mark 裁进带 padding 的透明画布
     fitted = trim_and_fit(mark, size, padding_ratio=padding_ratio)
-    # 圆角半径约 22%（小尺寸略圆，读得清）
     radius = max(2, int(size * 0.22))
     plate = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     ImageDraw.Draw(plate).rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=bg)
     out = Image.alpha_composite(plate, fitted)
-    # 圆角裁切 alpha（防止直角像素在 16px 发糊）
     mask = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=255)
     r, g, b, a = out.split()
     a = Image.composite(a, Image.new("L", (size, size), 0), mask)
     return Image.merge("RGBA", (r, g, b, a))
+
+
+def make_template_mark(mark: Image.Image) -> Image.Image:
+    """
+    macOS 菜单栏 template：透明底 + 黑色不透明（及半透明抗锯齿）。
+    系统会按菜单栏浅/深自动染成合适前景色。
+    """
+    im = mark.convert("RGBA")
+    w, h = im.size
+    px = im.load()
+    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    opx = out.load()
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if a < 8:
+                continue
+            # 保留 alpha 作抗锯齿；RGB 一律黑（template 约定）
+            opx[x, y] = (0, 0, 0, a)
+    return out
+
+
+def compose_mac_template(
+    mark: Image.Image,
+    size: int = 22,
+    padding_ratio: float = 0.16,
+) -> Image.Image:
+    """macOS 菜单栏：透明底 + 简化黑标 + 适度留白（无底板）。"""
+    template = make_template_mark(mark)
+    return trim_and_fit(template, size, padding_ratio=padding_ratio)
 
 
 def main() -> int:
@@ -182,14 +209,16 @@ def main() -> int:
     save(compose_appicon(trim_and_fit(mark_l, 1024, 0.18), BG_LIGHT), APPICON / "light.png")
     save(compose_appicon(trim_and_fit(mark_d, 1024, 0.18), BG_DARK), APPICON / "dark.png")
 
-    # 托盘：边缘必须留缓冲。全透明 + 8% 内边距时，Windows 浅色任务栏 16px 缩放
-    # 会把密面几何糊成一团黑。这里加大 padding，并铺圆角底板（跟 appicon 同色），
-    # 让图标在浅/深任务栏上都有「背景色缓冲」，不依赖系统主题抠透明。
+    # —— Windows：彩色 + 圆角底板 + 大 padding ——
     save(compose_tray_icon(mark_l, BG_LIGHT, size=32, padding_ratio=0.20), TRAY / "color-light.png")
     save(compose_tray_icon(mark_d, BG_DARK, size=32, padding_ratio=0.20), TRAY / "color-dark.png")
-    # 16px 预烘焙（避免运行时二次缩小更糊）
     save(compose_tray_icon(mark_l, BG_LIGHT, size=16, padding_ratio=0.18), TRAY / "color-light-16.png")
     save(compose_tray_icon(mark_d, BG_DARK, size=16, padding_ratio=0.18), TRAY / "color-dark-16.png")
+
+    # —— macOS：template（透明底黑标，系统自动适配菜单栏浅/深）——
+    # 菜单栏约 18–22pt；@2x 为 2 倍。Electron 会按 xxx@2x.png 约定加载。
+    save(compose_mac_template(mark_l, size=22, padding_ratio=0.16), TRAY / "template.png")
+    save(compose_mac_template(mark_l, size=44, padding_ratio=0.16), TRAY / "template@2x.png")
 
     print("\n[DONE]", OUT)
     return 0

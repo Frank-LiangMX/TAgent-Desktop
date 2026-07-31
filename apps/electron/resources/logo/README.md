@@ -10,11 +10,12 @@ logo/
   mark/             纯标（无底，背景透明）
     light.png       1024
     dark.png        1024
-  tray/             托盘（圆角底板 + 加大内边距，抗 Windows 浅色任务栏糊边）
-    color-light.png     32 · 浅底板
-    color-dark.png      32 · 深底板
-    color-light-16.png  16 · 预烘焙（避免运行时缩小）
-    color-dark-16.png   16
+  tray/
+    # Windows：圆角底板 + 加大内边距（抗浅色任务栏糊边）
+    color-light.png / color-dark.png         32
+    color-light-16.png / color-dark-16.png   16 预烘焙
+    # macOS：菜单栏 template（透明底黑标，系统自动染前景色）
+    template.png / template@2x.png           22 / 44
   export_pngs.py
 ```
 
@@ -25,7 +26,7 @@ logo/
 | 窗口 / Dock 图标 | `main/index.ts` → `logo/appicon/{light,dark}.png`（跟系统明暗） |
 | 安装包图标 | `electron-builder.yml` → `logo/appicon/light.png` |
 | 关于页 logo | `renderer/assets/tagent-appicon-*.png`（带圆角底板） |
-| 系统托盘 | `logo/tray/color-*.png`（`main/tray.ts`，跟主题浅深） |
+| 系统托盘 | Win：`tray/color-*.png`；Mac：`tray/template.png`（`main/tray.ts` 平台分流） |
 | 便捷别名 | `resources/icon.png` = appicon/light |
 
 托盘行为：关窗 = 隐藏；托盘左键打开；右键「退出 TAgent」真正退出。
