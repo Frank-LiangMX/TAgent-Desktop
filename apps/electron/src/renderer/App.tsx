@@ -16,10 +16,12 @@ import type {
   FetchModelsInput,
   FetchModelsForChannelInput,
   FetchModelsResult,
+  GraphPayload,
   InstallStoreBundleResult,
   McpServerEntry,
   NudgeCandidate,
   PluginStoreCatalog,
+  StageEntry,
   WorkspaceMcpConfig,
   WorkspacePluginBundleRecord,
 } from '@tagent/shared'
@@ -127,21 +129,34 @@ declare global {
       onSystemThemeUpdated: (cb: (dark: boolean) => void) => () => void
       /** 上报应用内解析后的深浅（驱动窗口/Dock 图标） */
       setResolvedDark: (dark: boolean) => void
-      // 记忆系统
+      // 记忆系统（类型对齐 General preload，供记忆页组件直接消费）
       initMemoryLayers: () => Promise<unknown>
-      getMemoryStats: (mode: 'general' | 'ta') => Promise<unknown>
+      getMemoryStats: (mode: 'general' | 'ta') => Promise<{
+        l0: { exists: boolean; lines: number; lastUpdated: number | null }
+        l1: { exists: boolean; lines: number; lastUpdated: number | null }
+        l2: { exists: boolean; lines: number; lastUpdated: number | null }
+        l3: { rawCount: number; rulesCount: number; lastUpdated: number | null }
+        l4: { sessions: number; oldestDate: number | null; newestDate: number | null }
+        l5: { exists: boolean; lines: number; lastUpdated: number | null }
+      }>
       searchMemorySessions: (
         mode: 'general' | 'ta',
         query: string,
         limit?: number,
-      ) => Promise<unknown[]>
-      listRecentMemorySessions: (mode: 'general' | 'ta', limit?: number) => Promise<unknown[]>
+      ) => Promise<Array<{ id: number; title: string; summary: string; created_at: number }>>
+      listRecentMemorySessions: (
+        mode: 'general' | 'ta',
+        limit?: number,
+      ) => Promise<Array<{ id: number; title: string; summary: string; created_at: number }>>
       getMemoryMdContent: (
         mode: 'general' | 'ta',
         layer: 'L0' | 'L1' | 'L2' | 'L5',
       ) => Promise<string | null>
-      getMemoryCorrections: (mode: 'general' | 'ta', limit?: number) => Promise<unknown[]>
-      getPendingNudges: (sessionId: string) => Promise<unknown[]>
+      getMemoryCorrections: (
+        mode: 'general' | 'ta',
+        limit?: number,
+      ) => Promise<Array<{ timestamp: number; correction: string; context: string }>>
+      getPendingNudges: (sessionId: string) => Promise<NudgeCandidate[]>
       respondNudge: (
         sessionId: string,
         nudgeId: string,
@@ -149,12 +164,12 @@ declare global {
         mode: 'general' | 'ta',
       ) => Promise<{ ok: boolean }>
       onNudgeEvent: (cb: (payload: unknown) => void) => () => void
-      getStageQueue: (mode: 'general' | 'ta') => Promise<unknown[]>
-      acceptStageAll: (mode: 'general' | 'ta') => Promise<unknown[]>
-      rejectStageAll: (mode: 'general' | 'ta') => Promise<unknown[]>
+      getStageQueue: (mode: 'general' | 'ta') => Promise<StageEntry[]>
+      acceptStageAll: (mode: 'general' | 'ta') => Promise<StageEntry[]>
+      rejectStageAll: (mode: 'general' | 'ta') => Promise<StageEntry[]>
       acceptStageOne: (mode: 'general' | 'ta', id: string) => Promise<{ ok: boolean }>
       rejectStageOne: (mode: 'general' | 'ta', id: string) => Promise<{ ok: boolean }>
-      getGraphData: (mode: 'general' | 'ta', workspaceSlug?: string) => Promise<unknown>
+      getGraphData: (mode: 'general' | 'ta', workspaceSlug?: string) => Promise<GraphPayload>
     }
   }
 }
@@ -359,7 +374,7 @@ export function App(): JSX.Element {
             <PluginStoreSettings />
           </div>
         ) : activeRail === 'memory' ? (
-          <div className="h-full min-h-0">
+          <div className="app-shell-content-stage relative h-full min-h-0 animate-in fade-in duration-300">
             <MemoryMonitorPanel />
           </div>
         ) : workspaces.length === 0 ? (

@@ -1,6 +1,9 @@
 /* TAgent-Desktop renderer 全局样式 */
 @import '@tagent/ui/src/tokens/__generated__/tokens.css';
+/* 与 General 同序：md 字色 + surface token 先于 glass / pressable */
+@import '@tagent/ui/styles/md-surface.css';
 @import '@tagent/ui/styles/glass.css';
+@import '@tagent/ui/styles/pressable.css';
 @import '@tagent/ui/styles/switch.css';
 @import '@tagent/ui/styles/segmented-tabs.css';
 @import './chat.css';
@@ -9,6 +12,8 @@
 @import './sidebar.css';
 @import './welcome.css';
 @import './settings-shell.css';
+/* 记忆页 content-glass（General 原样） */
+@import './content-glass.css';
 
 @tailwind base;
 @tailwind components;

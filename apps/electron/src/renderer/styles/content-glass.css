@@ -1,0 +1,175 @@
+/**
+ * content-glass — 主内容画布（原样取自 TAgent_General globals.css）
+ *
+ * 记忆页 MemoryMonitorPanel 使用 content-glass + md-text*。
+ * 在 app-shell-main / app-shell-content-stage 内视觉由 scene 承担（透明），
+ * 与 General 一致，不画第二层实体板。
+ */
+
+/**
+ * content-glass — 主内容画布，surface token 基线 frosted
+ */
+.content-glass {
+  position: relative;
+  isolation: isolate;
+  -webkit-backdrop-filter: blur(var(--surface-blur, 0px)) saturate(var(--surface-saturate, 1));
+  backdrop-filter: blur(var(--surface-blur, 0px)) saturate(var(--surface-saturate, 1));
+  background: hsl(var(--content-area) / var(--surface-opacity, 1));
+  border: 1px solid var(--surface-rim, hsl(var(--border) / 0.5));
+  border-radius: 20px;
+  box-shadow: var(--surface-shadow, 0 1px 2px rgba(0, 0, 0, 0.04));
+}
+
+.content-glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: var(--surface-shine-opacity, 0);
+  background: linear-gradient(
+    135deg,
+    hsl(var(--primary) / 0.03) 0%,
+    transparent 25%,
+    transparent 75%,
+    hsl(var(--primary) / 0.02) 100%
+  );
+  pointer-events: none;
+}
+
+.content-glass::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: var(--surface-shine-opacity, 0);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  padding: 1px;
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.18) 35%,
+    rgba(255, 255, 255, 0.28) 50%,
+    rgba(255, 255, 255, 0.18) 65%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  pointer-events: none;
+}
+
+.content-glass > * {
+  position: relative;
+  z-index: 1;
+}
+
+[data-material='glass'] .content-glass {
+  background: linear-gradient(
+    to bottom,
+    hsl(var(--content-area) / 0.18) 0%,
+    hsl(var(--content-area) / 0.1) 100%
+  );
+  border-color: hsl(var(--foreground) / 0.08);
+  box-shadow:
+    0 2px 16px rgba(0, 0, 0, 0.05),
+    0 8px 28px rgba(0, 0, 0, 0.03);
+}
+
+.dark[data-material='glass'] .content-glass,
+[data-material='glass'].dark .content-glass {
+  background: hsl(var(--content-area) / 0.15);
+  box-shadow:
+    0 2px 20px rgba(0, 0, 0, 0.1),
+    0 12px 36px rgba(0, 0, 0, 0.06);
+}
+
+[data-material='soft'] .content-glass {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: hsl(var(--content-area));
+  box-shadow: var(--surface-shadow, 0 1px 3px rgba(0, 0, 0, 0.06));
+}
+
+.dark .content-glass::before {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--primary) / 0.05) 0%,
+    transparent 25%,
+    transparent 75%,
+    hsl(var(--primary) / 0.03) 100%
+  );
+}
+
+/* 主题仅在 glass 材质下微调 content 色相，不改 frosted 实色 */
+[data-material='glass'].theme-ocean-light .content-glass,
+.theme-ocean-light[data-material='glass'] .content-glass {
+  background: hsl(205 35% 98% / 0.22);
+}
+
+[data-material='glass'].theme-forest-light .content-glass,
+.theme-forest-light[data-material='glass'] .content-glass {
+  background: hsl(140 25% 98% / 0.22);
+}
+
+/* 主区内容层透明，视觉由窗口 scene 承担（对齐 General） */
+.content-main-shell .content-glass,
+.app-shell-content-stage .content-glass,
+.app-shell-main .content-glass {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+  overflow: visible;
+}
+
+.content-main-shell .content-glass::before,
+.content-main-shell .content-glass::after,
+.app-shell-content-stage .content-glass::before,
+.app-shell-content-stage .content-glass::after,
+.app-shell-main .content-glass::before,
+.app-shell-main .content-glass::after {
+  display: none;
+}
+
+html.material-frosted .content-main-shell .content-glass,
+html.material-frosted .app-shell-content-stage .content-glass,
+html.material-frosted .app-shell-main .content-glass {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/*
+ * 主区 content-glass 只作为布局容器，视觉由窗口 scene 承担。
+ * 高级材质的全局 .content-glass 规则会重新加背景/阴影，和左侧 Nav 浮岛叠出实体隔断感。
+ */
+[data-material='glass'] .content-main-shell .content-glass,
+[data-material='soft'] .content-main-shell .content-glass,
+[data-material='glass'] .app-shell-content-stage .content-glass,
+[data-material='soft'] .app-shell-content-stage .content-glass,
+[data-material='glass'] .app-shell-main .content-glass,
+[data-material='soft'] .app-shell-main .content-glass {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+[data-material='glass'] .content-main-shell .content-glass::before,
+[data-material='glass'] .content-main-shell .content-glass::after,
+[data-material='soft'] .content-main-shell .content-glass::before,
+[data-material='soft'] .content-main-shell .content-glass::after,
+[data-material='glass'] .app-shell-content-stage .content-glass::before,
+[data-material='glass'] .app-shell-content-stage .content-glass::after,
+[data-material='soft'] .app-shell-content-stage .content-glass::before,
+[data-material='soft'] .app-shell-content-stage .content-glass::after,
+[data-material='glass'] .app-shell-main .content-glass::before,
+[data-material='glass'] .app-shell-main .content-glass::after,
+[data-material='soft'] .app-shell-main .content-glass::before,
+[data-material='soft'] .app-shell-main .content-glass::after {
+  display: none;
+}
