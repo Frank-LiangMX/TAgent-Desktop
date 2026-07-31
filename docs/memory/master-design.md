@@ -192,10 +192,10 @@ memory-layer-service / nudge-service / memory-evidence-sink / memory-consolidati
 
 ## 9. 待办
 
-- [ ] 写 `memory-phase1-data-foundation.md`（Phase 1 细节）
-- [ ] 写 `memory-phase2-global-l5-port.md`（Phase 2 细节）
-- [ ] 写 `memory-phase3-pi-8k-coordinator.md`（Phase 3 细节）
-- [ ] 写 `memory-phase4-kscc-soft-reset.md`（Phase 4 细节）
-- [ ] 写 `memory-phase5-polish.md`（Phase 5 细节）
+- [x] 写 `phase-1-data-foundation.md`（Phase 1 细节）
+- [x] 写 `phase-2-global-l5-port.md`（Phase 2 细节）
+- [x] 写 `phase-3-pi-8k-coordinator.md`（Phase 3 细节）
+- [x] 写 `phase-4-kscc-soft-reset.md`（Phase 4 细节）
+- [x] 写 `phase-5-polish.md`（Phase 5 细节）
 
 > 子文档在本 plan 批准后写全。本主文档先定方向，供审阅。
