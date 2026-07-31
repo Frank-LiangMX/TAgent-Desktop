@@ -11,10 +11,8 @@ import {
   calculateContextUsageRatio,
   sumContextUsedTokens,
   getCompactBoundaryLabel,
+  AUTO_COMPACT_THRESHOLD_RATIO,
 } from '@tagent/shared'
-
-/** 与 packages/pi-core 自动压缩阈值一致（展示用，不跨包引用 pi-core） */
-const AUTO_COMPACT_THRESHOLD_RATIO = 0.8
 import { AppTooltip, Popover, PopoverContent, PopoverTrigger, Button } from '@tagent/ui'
 import { Shrink } from 'lucide-react'
 import { cn } from '../../lib/utils'

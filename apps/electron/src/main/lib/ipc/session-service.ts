@@ -20,7 +20,7 @@ import type {
   Channel,
   AgentSessionMeta,
 } from '@tagent/shared'
-import { AGENT_IPC_CHANNELS } from '@tagent/shared'
+import { AGENT_IPC_CHANNELS, MEMORY_IPC_CHANNELS } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
 import { getAdapter, PiAgentAdapter, type ChannelKind } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
@@ -29,16 +29,26 @@ import type { KsccQueryOptions } from '../adapters/claude/claude-agent-adapter'
 import {
   getSessionMeta,
   updateSessionMeta,
-  appendMessages,
+  appendSdkMessages,
+  appendPanelMessages,
   createSession,
   listSessions,
-  readMessages,
+  readPanelMessages,
   deleteSession as deleteSessionMeta,
   deleteSessionsByWorkspace,
 } from '../agent/session-store'
 import { getChannel, getDecryptedApiKey, getKsccChannelId } from '../channel/channel-store'
 import { KSCC_DEFAULT_MODEL_ID } from '../channel/default-models'
 import { resolveModelContextWindow } from '../channel/model-window'
+import {
+  buildMemoryPromptSections,
+  memoryLayerService,
+  memoryEvidenceSink,
+  nudgeService,
+  normalizeToTextMessages,
+  type MemoryMode,
+} from '../memory'
+import { ksccSoftReset } from '../agent/kscc-soft-reset'
 import { resolveWorkspaceForSession } from '../workspace/workspace-manager'
 import { getEnabledMcpServers } from '../mcp/mcp-store'
 import { PermissionService } from '../permission/permission-service'
@@ -77,6 +87,35 @@ export class SessionService {
     permissionService: PermissionService | null = null,
   ): SessionService {
     const svc = new SessionService(getWindow, permissionService)
+    // Phase 4：软重置钩子
+    ksccSoftReset.setHooks({
+      abortSession: (sessionId) => {
+        const rt = svc.runtimes.get(sessionId)
+        rt?.destroy()
+        svc.runtimes.delete(sessionId)
+        try {
+          getAdapter('kscc').abort?.(sessionId)
+        } catch {
+          /* ignore */
+        }
+      },
+      onStatus: (sessionId, status) => {
+        const win = getWindow()
+        win?.webContents.send(AGENT_IPC_CHANNELS.STREAM_EVENT, {
+          sessionId,
+          payload: {
+            kind: 'tagent_event',
+            event: {
+              type:
+                status === 'switching' || status === 'compacting'
+                  ? 'memory_organizing'
+                  : 'memory_status',
+              status,
+            },
+          },
+        })
+      },
+    })
     svc.registerIpc()
     return svc
   }
@@ -188,8 +227,9 @@ export class SessionService {
 
     ipcMain.handle(AGENT_IPC_CHANNELS.GET_SDK_MESSAGES, async (_e, sessionId: string) => {
       // 从 session meta 查 workspaceId，兼容旧数据（无 workspaceId 传 undefined）
+      // Phase 1.2：面板历史读只追加那份，不受 SDK JSONL 压缩影响
       const meta = getSessionMeta(sessionId)
-      return readMessages(meta?.workspaceId, sessionId)
+      return readPanelMessages(meta?.workspaceId, sessionId)
     })
 
     ipcMain.handle(AGENT_IPC_CHANNELS.DELETE_SESSION, async (_e, sessionId: string) => {
@@ -201,6 +241,10 @@ export class SessionService {
       // 清会话权限白名单（「始终允许」状态）
       PermissionService.clearWhitelist(sessionId)
       deleteSessionMeta(sessionId)
+      // Phase 2.5：记忆层标记会话已删（L0/L2/L3/L5 行加 deleted:1）
+      void nudgeService.markSessionDeleted(sessionId).catch((err) => {
+        console.warn('[session-service] markSessionDeleted failed:', err)
+      })
       return { ok: true }
     })
 
@@ -321,6 +365,9 @@ export class SessionService {
     const meta = getSessionMeta(input.sessionId)
     const adapterKind: ChannelKind = channel.provider === 'kscc-internal' ? 'kscc' : 'external'
 
+    // Phase 2.5：每轮 turn 开始统一跑 Nudge（双核共用，读面板消息）
+    this.runNudgeOnTurnStart(input.sessionId, meta)
+
     // 会话只锁定运行内核：KSCC 内网与外部运行时不可互切；
     // 同一内核里的渠道和模型都允许在后续轮次继续选择。
     if (meta?.channelId) {
@@ -368,7 +415,17 @@ export class SessionService {
         createdAt: now,
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       } as unknown as SDKMessage
-      appendMessages(workspaceId, input.sessionId, [userMsg])
+      // Phase 1.2 双写：先面板（保可见）再 SDK（resume）
+      try {
+        appendPanelMessages(workspaceId, input.sessionId, [userMsg])
+      } catch (err) {
+        console.warn('[session-service] appendPanelMessages failed (user):', err)
+      }
+      try {
+        appendSdkMessages(workspaceId, input.sessionId, [userMsg])
+      } catch (err) {
+        console.error('[session-service] appendSdkMessages failed (user):', err)
+      }
       const { message: userIR } = sdkMessageToIR(userMsg)
       if (userIR) {
         if (input.attachments?.length) (userIR as any).attachments = input.attachments
@@ -381,7 +438,12 @@ export class SessionService {
         content: [{ type: 'text', text: input.prompt }],
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       }
-      appendMessages(workspaceId, input.sessionId, [userIR])
+      // pi 只写面板份（无 SDK resume；L-rag / 历史统一读面板）
+      try {
+        appendPanelMessages(workspaceId, input.sessionId, [userIR])
+      } catch (err) {
+        console.warn('[session-service] appendPanelMessages failed (pi user):', err)
+      }
       this.sendPayload(input.sessionId, { kind: 'sdk_message', message: userIR })
     }
 
@@ -421,6 +483,8 @@ export class SessionService {
           // 轮成功结束 → 清除可能的 error，落盘 idle（重启后仍为干净态）
           updateSessionMeta(input.sessionId, { status: 'idle' })
           this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
+          // Phase 2.5：L4 recordSession + evidence sink
+          this.recordSessionToMemory(input.sessionId, input.prompt)
         },
         onError: (err: Error) => {
           // 出错 → 落盘 error（重启保留，下轮成功回 idle）
@@ -496,6 +560,13 @@ export class SessionService {
       // 每次发送都重新读取，UI 改完下次发送即生效（kscc 长驻进程 system prompt 在 spawn 时定稿，
       // 切换积极性需重建进程才完全生效；非首次发送走 resume，沿用上一次注入的策略）。
       const eagerness = migrateSubagentEagerness(meta?.subagentEagerness)
+      // Phase 2.2：记忆管理规则 + Frozen 记忆快照（createSession/spawn 时注入，会话内不刷新）
+      const sessionMode: MemoryMode = meta?.mode === 'ta' ? 'ta' : 'general'
+      const snap = memoryLayerService.readMemorySnapshot(sessionMode)
+      const mem = buildMemoryPromptSections({
+        mode: sessionMode,
+        memorySnapshot: { l0: snap.l0User, l1: snap.l1Project, l2: snap.l2Facts },
+      })
       // KsccQueryOptions：canUseTool/mcpServers/permissionMode/allowDangerouslySkipPermissions
       // canUseTool 透传 PermissionService.createCanUseTool（permissionMode 非硬编码）
       const canUseTool = this.permissionService
@@ -519,7 +590,14 @@ export class SessionService {
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
-          append: buildSubagentDelegationPrompt(eagerness),
+          // 子代理委派 + 记忆防线 + Frozen 快照（D1/D8）
+          append: [
+            buildSubagentDelegationPrompt(eagerness),
+            mem.managementRules,
+            mem.memorySnapshotSection,
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
         },
         persistSession: true,
         // 工作区 MCP 配置
@@ -563,6 +641,7 @@ export class SessionService {
     const beforeToolCall = this.permissionService
       ? this.permissionService.createBeforeToolCall(input.sessionId, () => this.getPermissionMode(input.sessionId), cwd)
       : undefined
+    const piMeta = getSessionMeta(input.sessionId)
     const opts = {
       sessionId: input.sessionId,
       prompt: input.prompt,
@@ -572,6 +651,8 @@ export class SessionService {
       mcpConfig,
       // 权限钩子（bypass 模式不挂）
       ...(beforeToolCall ? { beforeToolCall } : {}),
+      // Phase 2.2：记忆模式透传（Frozen 快照 / L-rag）
+      sessionMode: (piMeta?.mode === 'ta' ? 'ta' : 'general') as MemoryMode,
       // Pi 核专属：渠道凭证 + provider，pi-ai streamFn 用
       channelConfig: {
         type: 'external' as const,
@@ -598,27 +679,54 @@ export class SessionService {
       : TAGENT_DEFAULT_PERMISSION_MODE
   }
 
-  /** kscc 路径：转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer，并落盘 SDKMessage */
+  /** kscc 路径：转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer，并双写 JSONL */
   private handleSdkStreamMessage(sessionId: string, workspaceId: string | undefined, msg: SDKMessage): void {
     // 注入 createdAt（落盘带上，加载时 sdkMessageToIR 读回 → 渲染层显示时间）
     ;(msg as any).createdAt = (msg as any).createdAt ?? Date.now()
     const { message, event } = sdkMessageToIR(msg)
     if (message) {
-      // 持久化完整消息到 JSONL（流式 delta 不持久化，完整 assistant/user 才存）
-      appendMessages(workspaceId, sessionId, [msg])
+      // Phase 1.2 双写：先面板（保可见）再 SDK；流式 delta 不落盘
+      try {
+        appendPanelMessages(workspaceId, sessionId, [msg])
+      } catch (err) {
+        console.warn('[session-service] appendPanelMessages failed:', err)
+      }
+      try {
+        appendSdkMessages(workspaceId, sessionId, [msg])
+      } catch (err) {
+        console.error('[session-service] appendSdkMessages failed:', err)
+      }
       this.sendPayload(sessionId, { kind: 'sdk_message', message })
     }
     if (event) {
       this.sendPayload(sessionId, event)
     }
+    // Phase 4：result 后跑软重置阈值（廉价清理 / 影子 / 切换）
+    if ((msg as { type?: string }).type === 'result') {
+      const meta = getSessionMeta(sessionId)
+      const usage = (msg as { usage?: { input_tokens?: number; inputTokens?: number } }).usage
+      const inputTokens = usage?.input_tokens ?? usage?.inputTokens
+      void ksccSoftReset
+        .onTurnResult({
+          sessionId,
+          inputTokens,
+          modelId: meta?.modelId,
+          channelId: meta?.channelId,
+        })
+        .catch((e) => console.warn('[session-service] soft-reset onTurnResult failed:', e))
+    }
   }
 
-  /** pi 路径：已是 IR（TAgentDesktopStreamPayload），直接落盘 IR + 推 IPC，不经 sdkMessageToIR。
+  /** pi 路径：已是 IR（TAgentDesktopStreamPayload），落盘面板 IR + 推 IPC，不经 sdkMessageToIR。
    *  完整消息（sdk_message）落盘 IR；控制事件（result/stream_*_delta/tagent_event）不落盘。 */
   private handlePiStreamPayload(sessionId: string, workspaceId: string | undefined, p: TAgentDesktopStreamPayload): void {
     if (p.kind === 'sdk_message') {
       ;(p.message as any).createdAt = (p.message as any).createdAt ?? Date.now()
-      appendMessages(workspaceId, sessionId, [p.message])
+      try {
+        appendPanelMessages(workspaceId, sessionId, [p.message])
+      } catch (err) {
+        console.warn('[session-service] appendPanelMessages failed (pi):', err)
+      }
       this.sendPayload(sessionId, p)
     } else {
       this.sendPayload(sessionId, p)
@@ -629,6 +737,151 @@ export class SessionService {
   private sendPayload(sessionId: string, payload: TAgentDesktopStreamPayload): void {
     const win = this.getWindow()
     win?.webContents.send(AGENT_IPC_CHANNELS.STREAM_EVENT, { sessionId, payload })
+  }
+
+  /**
+   * Phase 2.5：turn 开始 Nudge 检测（双核统一入口）。
+   * 读面板消息 → onTurnStart → 有候选则推 NUdge_EVENT。
+   */
+  private runNudgeOnTurnStart(sessionId: string, meta: AgentSessionMeta | undefined): void {
+    try {
+      // switching 时提示 UI，不打断 Nudge（仍可记）
+      if (meta?.shadowState === 'switching') {
+        this.sendPayload(sessionId, {
+          kind: 'tagent_event',
+          event: { type: 'memory_organizing', status: 'switching' },
+        })
+      }
+      const mode: MemoryMode = meta?.mode === 'ta' ? 'ta' : 'general'
+      // Phase 5.2：跨核归一化
+      const recentMsgs = normalizeToTextMessages(
+        readPanelMessages(meta?.workspaceId, sessionId).slice(-10),
+      ).map((m) => ({ role: m.role, content: m.contentText }))
+      const candidates = nudgeService.onTurnStart(sessionId, recentMsgs, mode)
+      if (candidates.length > 0) {
+        const win = this.getWindow()
+        win?.webContents.send(MEMORY_IPC_CHANNELS.NUdge_EVENT, {
+          type: 'nudge_candidates',
+          sessionId,
+          mode,
+          nudges: candidates,
+        })
+      }
+    } catch (err) {
+      console.warn('[session-service] runNudgeOnTurnStart failed:', err)
+    }
+  }
+
+  /**
+   * Phase 2.5：turn 结束后写 L4 + evidence sink。
+   * 失败仅 warn，不阻塞主流程。
+   */
+  private recordSessionToMemory(sessionId: string, userPrompt: string): void {
+    try {
+      const meta = getSessionMeta(sessionId)
+      const mode: MemoryMode = meta?.mode === 'ta' ? 'ta' : 'general'
+      const workspaceSlug = meta?.workspaceId ?? ''
+      const panel = readPanelMessages(meta?.workspaceId, sessionId)
+      const { toolsUsed, lastAssistantText } = this.extractToolsAndAssistant(panel.slice(-20))
+      const title = (userPrompt || meta?.title || '会话').slice(0, 100)
+      const summary = lastAssistantText.slice(0, 500)
+      void memoryLayerService
+        .recordSession({
+          sessionId,
+          title,
+          summary,
+          keyFacts: [],
+          toolsUsed,
+          mode,
+          workspaceSlug,
+        })
+        .catch((e) => console.warn('[session-service] recordSession failed:', e))
+
+      // 将会话证据写入 sink，供空闲 consolidation 批量处理
+      try {
+        memoryEvidenceSink.writeSessionEvidence(mode, sessionId, title, summary, toolsUsed)
+      } catch (e) {
+        console.warn('[session-service] writeSessionEvidence failed:', e)
+      }
+    } catch (err) {
+      console.warn('[session-service] recordSessionToMemory failed:', err)
+    }
+  }
+
+  /** 面板消息 → Nudge 用的 role/content 列表（兼容 SDKMessage 与 IR） */
+  private panelMessagesToRoleContent(
+    messages: unknown[],
+  ): Array<{ role: 'user' | 'assistant'; content: string }> {
+    const out: Array<{ role: 'user' | 'assistant'; content: string }> = []
+    for (const raw of messages) {
+      const m = raw as {
+        type?: string
+        role?: string
+        message?: { role?: string; content?: unknown }
+        content?: unknown
+      }
+      const roleRaw =
+        m.message?.role ??
+        (m.type === 'user' || m.type === 'assistant' ? m.type : m.role)
+      if (roleRaw !== 'user' && roleRaw !== 'assistant') continue
+      const content = m.message?.content ?? m.content
+      const text = this.contentToText(content)
+      if (!text.trim()) continue
+      out.push({ role: roleRaw, content: text })
+    }
+    return out
+  }
+
+  private contentToText(content: unknown): string {
+    if (typeof content === 'string') return content
+    if (!Array.isArray(content)) return ''
+    return content
+      .map((b) => {
+        if (b && typeof b === 'object' && 'type' in b && (b as { type: string }).type === 'text') {
+          return String((b as { text?: string }).text ?? '')
+        }
+        return ''
+      })
+      .join('')
+  }
+
+  private extractToolsAndAssistant(messages: unknown[]): {
+    toolsUsed: string[]
+    lastAssistantText: string
+  } {
+    const tools = new Set<string>()
+    let lastAssistantText = ''
+    for (const raw of messages) {
+      const m = raw as {
+        type?: string
+        role?: string
+        message?: { role?: string; content?: unknown }
+        content?: unknown
+      }
+      const content = m.message?.content ?? m.content
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (
+            block &&
+            typeof block === 'object' &&
+            'type' in block &&
+            (block as { type: string }).type === 'tool_use' &&
+            'name' in block &&
+            typeof (block as { name: unknown }).name === 'string'
+          ) {
+            tools.add((block as { name: string }).name)
+          }
+        }
+      }
+      const role =
+        m.message?.role ??
+        (m.type === 'assistant' || m.type === 'user' ? m.type : m.role)
+      if (role === 'assistant') {
+        const text = this.contentToText(content)
+        if (text) lastAssistantText = text
+      }
+    }
+    return { toolsUsed: Array.from(tools), lastAssistantText }
   }
 
   /** 停止并删除指定工作区的全部会话，供工作区删除流程复用。 */

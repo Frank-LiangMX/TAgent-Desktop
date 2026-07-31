@@ -11,10 +11,20 @@ import { ChannelService } from './lib/ipc/channel-service'
 import { WorkspaceService } from './lib/ipc/workspace-service'
 import { McpService } from './lib/ipc/mcp-service'
 import { PluginService } from './lib/ipc/plugin-service'
+import { MemoryService } from './lib/ipc/memory-service'
 import { PermissionService } from './lib/permission/permission-service'
 import { seedBuiltinChannels } from './lib/channel/channel-store'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
 import { createTray, destroyTray, getTray, updateTrayTheme } from './tray'
+import {
+  memoryLayerService,
+  scheduledCleanupService,
+  selfRepairService,
+  reflectService,
+  resolveIdleConsolidationFlag,
+  startIdleConsolidationScheduler,
+  stopIdleConsolidationScheduler,
+} from './lib/memory'
 
 // cjs 打包格式下 __dirname 是全局可用，无需 fileURLToPath
 
@@ -210,9 +220,29 @@ app.whenReady().then(() => {
 
   createWindow()
   seedBuiltinChannels()
+
+  // Phase 2：全局记忆 L5 服务启动 wiring
+  try {
+    memoryLayerService.initialize()
+    scheduledCleanupService.initialize()
+    selfRepairService.initialize()
+    const idleOn = resolveIdleConsolidationFlag(app.isPackaged)
+    // 空闲整理接管时不另起 Reflect LLM 日调度
+    reflectService.initialize(!idleOn)
+    if (idleOn) {
+      void startIdleConsolidationScheduler().catch((err) => {
+        console.error('[memory] startIdleConsolidationScheduler failed:', err)
+      })
+    }
+    console.log(`[memory] services initialized (idleConsolidation=${idleOn})`)
+  } catch (err) {
+    console.error('[memory] initializeMemoryServices failed:', err)
+  }
+
   ChannelService.create()
   McpService.create()
   PluginService.create()
+  MemoryService.create()
   permissionService = PermissionService.create(() => mainWindow)
   sessionService = SessionService.create(() => mainWindow, permissionService)
   WorkspaceService.create(
@@ -237,6 +267,15 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   setQuitting(true)
+  try {
+    stopIdleConsolidationScheduler()
+    memoryLayerService.close()
+    scheduledCleanupService.close()
+    selfRepairService.close()
+    reflectService.close()
+  } catch (err) {
+    console.error('[memory] shutdown cleanup failed:', err)
+  }
   sessionService?.disposeAll()
   destroyTray()
 })

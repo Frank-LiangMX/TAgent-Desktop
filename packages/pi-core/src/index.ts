@@ -82,3 +82,16 @@ export {
   type MaybeCompactOptions,
   type MaybeCompactResult,
 } from "./pi-context-compaction.ts";
+
+// M7：会话内 8k 四层协调器（Phase 3）
+export {
+  SessionMemoryCoordinator,
+  getSessionMemoryCoordinator,
+  disposeSessionMemoryCoordinator,
+  allocateLayerBudgets,
+  type LayerBudgets,
+  type RagHit,
+  type CoordinatorState,
+  type ReconcileOptions,
+  type ReconcileResult,
+} from "./session-memory-coordinator.ts";

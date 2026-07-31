@@ -1,12 +1,13 @@
 /**
- * 会话持久化服务（2.0 workspace 组织版）
+ * 会话持久化服务（2.0 workspace 组织版 + Phase 1.2 JSONL 分离）
  *
  * 核心改动：会话数据按 workspace 组织存储。
- * - 新会话 JSONL 存 ~/.tagent/projects/{workspaceId}/{sessionId}.jsonl
- * - 旧会话（无 workspaceId）fallback 到 ~/.tagent/agent-sessions/{sessionId}.jsonl
+ * - SDK JSONL：~/.tagent/projects/{workspaceId}/{sessionId}.jsonl（可压缩重写，SDK resume）
+ * - 面板消息：~/.tagent/projects/{workspaceId}/{sessionId}.messages.jsonl（只追加，永不压缩）
+ * - 旧会话（无 workspaceId）fallback 到 ~/.tagent/agent-sessions/{sessionId}.jsonl(.messages.jsonl)
  * - 索引 agent-sessions.json 格式不变，每个 session meta 多了 workspaceId 字段
  *
- * 见 docs/decisions/ADR-0002-longlived-process.md。
+ * 见 docs/decisions/ADR-0002-longlived-process.md、.context/memory-phase1-data-foundation.md §1.2。
  * 长驻下：首次 spawn 带 resumeSessionId（SDK 读 JSONL 一次），之后靠内存；
  * SDK persistSession=true 每轮追加写 JSONL，崩溃后可 resume 恢复。
  *
@@ -27,8 +28,10 @@ import type { AgentSessionMeta } from '@tagent/shared'
 import {
   getAgentSessionsIndexPath,
   getAgentSessionMessagesPath,
+  getAgentSessionPanelMessagesPath,
   getAgentSessionsDir,
   getProjectSessionPath,
+  getProjectMessagesPath,
 } from '../config/config-paths'
 
 /** 索引版本号（与 1.x 一致） */
@@ -125,15 +128,19 @@ export function updateSessionMeta(
   return updated
 }
 
-/** 删除单个会话的 JSONL，兼容新旧路径。 */
+/** 删除单个会话的 SDK JSONL + 面板消息 JSONL，兼容新旧路径。 */
 function deleteSessionFiles(meta: AgentSessionMeta): void {
-  // 删除 JSONL：优先删新路径，也删旧路径（兜底迁移前残留）
   const pathsToDelete = meta.workspaceId
     ? [
         getProjectSessionPath(meta.workspaceId, meta.id),
+        getProjectMessagesPath(meta.workspaceId, meta.id),
         getAgentSessionMessagesPath(meta.id),
+        getAgentSessionPanelMessagesPath(meta.id),
       ]
-    : [getAgentSessionMessagesPath(meta.id)]
+    : [
+        getAgentSessionMessagesPath(meta.id),
+        getAgentSessionPanelMessagesPath(meta.id),
+      ]
   for (const msgPath of pathsToDelete) {
     if (existsSync(msgPath)) {
       try {
@@ -167,20 +174,25 @@ export function deleteSessionsByWorkspace(workspaceId: string): string[] {
   return targets.map((session) => session.id)
 }
 
-/** 解析会话 JSONL 路径：有 workspaceId 走新路径，否则走旧路径 */
-function resolveSessionPath(workspaceId: string | undefined, sessionId: string): string {
+/** 解析 SDK JSONL 路径：有 workspaceId 走项目路径，否则走旧 agent-sessions 路径 */
+function resolveSdkSessionPath(workspaceId: string | undefined, sessionId: string): string {
   if (workspaceId) {
     return getProjectSessionPath(workspaceId, sessionId)
   }
   return getAgentSessionMessagesPath(sessionId)
 }
 
-/** 追加消息到会话 JSONL（持久化）。
- *  格式无关：kscc 存 SDKMessage、pi 存 TAgentMessage IR，此处只做 JSON 序列化。 */
-export function appendMessages(workspaceId: string | undefined, sessionId: string, messages: unknown[]): void {
+/** 解析面板消息 JSONL 路径 */
+function resolvePanelMessagesPath(workspaceId: string | undefined, sessionId: string): string {
+  if (workspaceId) {
+    return getProjectMessagesPath(workspaceId, sessionId)
+  }
+  return getAgentSessionPanelMessagesPath(sessionId)
+}
+
+/** 确保父目录存在后追加 JSONL 行 */
+function appendJsonl(path: string, messages: unknown[]): void {
   if (messages.length === 0) return
-  const path = resolveSessionPath(workspaceId, sessionId)
-  // 确保目录存在（新路径下 projects/{workspaceId}/ 可能首次写入）
   const dir = dirname(path)
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true })
@@ -189,30 +201,111 @@ export function appendMessages(workspaceId: string | undefined, sessionId: strin
   appendFileSync(path, lines, 'utf8')
 }
 
-/** 读会话历史 JSONL（加载时用，长驻首次 spawn 前）
- *
- * 返回原始行（unknown[]）：kscc 会话是 SDKMessage、pi 会话是 TAgentMessage IR，
- * 由调用方按核分流转译（见 session-service GET_SDK_MESSAGES / Chat.tsx 历史加载）。
- * 兼容旧数据：优先读新路径，不存在时 fallback 到旧路径。
- */
-export function readMessages(workspaceId: string | undefined, sessionId: string): unknown[] {
-  // 有 workspaceId 时优先读新路径，不存在则 fallback 旧路径
-  const path = workspaceId
-    ? getProjectSessionPath(workspaceId, sessionId)
-    : getAgentSessionMessagesPath(sessionId)
-  const fallbackPath = workspaceId ? getAgentSessionMessagesPath(sessionId) : undefined
-
-  let filePath = path
-  if (!existsSync(filePath) && fallbackPath && existsSync(fallbackPath)) {
-    filePath = fallbackPath
-  }
+/** 读 JSONL 文件为 unknown[]（坏行跳过） */
+function readJsonlFile(filePath: string): unknown[] {
   if (!existsSync(filePath)) return []
   const lines = readFileSync(filePath, 'utf8').split('\n').filter(Boolean)
-  return lines.map((l) => {
-    try {
-      return JSON.parse(l)
-    } catch {
-      return null
-    }
-  }).filter(Boolean)
+  return lines
+    .map((l) => {
+      try {
+        return JSON.parse(l)
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+}
+
+/**
+ * 追加到 SDK JSONL（可压缩重写）。kscc resume / 软重置压缩用。
+ */
+export function appendSdkMessages(
+  workspaceId: string | undefined,
+  sessionId: string,
+  messages: unknown[],
+): void {
+  appendJsonl(resolveSdkSessionPath(workspaceId, sessionId), messages)
+}
+
+/**
+ * 追加到面板消息 JSONL（只追加，永不压缩）。面板历史 / L-rag 原文用。
+ */
+export function appendPanelMessages(
+  workspaceId: string | undefined,
+  sessionId: string,
+  messages: unknown[],
+): void {
+  appendJsonl(resolvePanelMessagesPath(workspaceId, sessionId), messages)
+}
+
+/**
+ * 全量重写 SDK JSONL（compactor / 软重置影子 B 用）。
+ * 面板那份**没有**对应 write 方法——只追加。
+ */
+export function writeSdkMessages(
+  workspaceId: string | undefined,
+  sessionId: string,
+  messages: unknown[],
+): void {
+  const path = resolveSdkSessionPath(workspaceId, sessionId)
+  const dir = dirname(path)
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true })
+  }
+  if (messages.length === 0) {
+    writeFileSync(path, '', 'utf8')
+    return
+  }
+  const lines = messages.map((m) => JSON.stringify(m)).join('\n') + '\n'
+  writeFileSync(path, lines, 'utf8')
+}
+
+/**
+ * 读 SDK JSONL（resume / 软重置压缩读 A）。
+ * 兼容：workspace 新路径不存在时 fallback 旧 agent-sessions 路径。
+ */
+export function readSdkMessages(workspaceId: string | undefined, sessionId: string): unknown[] {
+  const primary = resolveSdkSessionPath(workspaceId, sessionId)
+  if (existsSync(primary)) return readJsonlFile(primary)
+  if (workspaceId) {
+    const legacy = getAgentSessionMessagesPath(sessionId)
+    if (existsSync(legacy)) return readJsonlFile(legacy)
+  }
+  return []
+}
+
+/**
+ * 读面板消息 JSONL（GET_SDK_MESSAGES / L-rag 原文）。
+ * 兼容迁移期：面板份不存在时 fallback 读 SDK JSONL（老会话只有一份）。
+ */
+export function readPanelMessages(workspaceId: string | undefined, sessionId: string): unknown[] {
+  const primary = resolvePanelMessagesPath(workspaceId, sessionId)
+  if (existsSync(primary)) return readJsonlFile(primary)
+  // 旧路径面板份
+  if (workspaceId) {
+    const legacyPanel = getAgentSessionPanelMessagesPath(sessionId)
+    if (existsSync(legacyPanel)) return readJsonlFile(legacyPanel)
+  }
+  // 迁移期：只有 SDK JSONL 时读 SDK 份，避免面板空白
+  return readSdkMessages(workspaceId, sessionId)
+}
+
+/**
+ * @deprecated Phase 1.2 起请用 appendPanelMessages + appendSdkMessages 显式双写。
+ * 保留为 appendSdkMessages 别名，避免外部遗漏调用点崩溃。
+ */
+export function appendMessages(
+  workspaceId: string | undefined,
+  sessionId: string,
+  messages: unknown[],
+): void {
+  appendSdkMessages(workspaceId, sessionId, messages)
+}
+
+/**
+ * @deprecated Phase 1.2 起请用 readPanelMessages（面板）或 readSdkMessages（SDK）。
+ * 保留为 readPanelMessages 别名（面板优先 + fallback SDK）。
+ */
+export function readMessages(workspaceId: string | undefined, sessionId: string): unknown[] {
+  return readPanelMessages(workspaceId, sessionId)
 }

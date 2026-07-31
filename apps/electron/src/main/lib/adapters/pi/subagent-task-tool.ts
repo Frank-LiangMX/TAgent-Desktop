@@ -220,7 +220,7 @@ function buildSubagentModel(channelConfig: PiAgentAdapterConfig) {
       reasoning: false,
       input: ['text'] as ('text' | 'image')[],
       cost: ZERO_COST,
-      contextWindow: 128_000,
+      contextWindow: 200_000,
       maxTokens: 8_192,
     }
   }
@@ -233,7 +233,7 @@ function buildSubagentModel(channelConfig: PiAgentAdapterConfig) {
     reasoning: false,
     input: ['text'] as ('text' | 'image')[],
     cost: ZERO_COST,
-    contextWindow: 128_000,
+    contextWindow: 200_000,
     maxTokens: 8_192,
   }
 }

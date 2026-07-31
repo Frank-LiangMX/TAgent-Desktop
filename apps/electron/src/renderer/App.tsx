@@ -18,11 +18,13 @@ import type {
   FetchModelsResult,
   InstallStoreBundleResult,
   McpServerEntry,
+  NudgeCandidate,
   PluginStoreCatalog,
   WorkspaceMcpConfig,
   WorkspacePluginBundleRecord,
 } from '@tagent/shared'
-import { Button, ConversationEmptyState, TooltipProvider } from '@tagent/ui'
+import { Button, ConversationEmptyState, Toaster, TooltipProvider } from '@tagent/ui'
+import { MemoryMonitorPanel, showNudgeToasts } from './components/memory'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
 import { PluginStoreSettings } from './components/settings/PluginStoreSettings'
 import { SettingsDialog, type SettingsTab } from './components/settings/SettingsPage'
@@ -125,6 +127,34 @@ declare global {
       onSystemThemeUpdated: (cb: (dark: boolean) => void) => () => void
       /** 上报应用内解析后的深浅（驱动窗口/Dock 图标） */
       setResolvedDark: (dark: boolean) => void
+      // 记忆系统
+      initMemoryLayers: () => Promise<unknown>
+      getMemoryStats: (mode: 'general' | 'ta') => Promise<unknown>
+      searchMemorySessions: (
+        mode: 'general' | 'ta',
+        query: string,
+        limit?: number,
+      ) => Promise<unknown[]>
+      listRecentMemorySessions: (mode: 'general' | 'ta', limit?: number) => Promise<unknown[]>
+      getMemoryMdContent: (
+        mode: 'general' | 'ta',
+        layer: 'L0' | 'L1' | 'L2' | 'L5',
+      ) => Promise<string | null>
+      getMemoryCorrections: (mode: 'general' | 'ta', limit?: number) => Promise<unknown[]>
+      getPendingNudges: (sessionId: string) => Promise<unknown[]>
+      respondNudge: (
+        sessionId: string,
+        nudgeId: string,
+        action: 'accept' | 'reject' | 'defer',
+        mode: 'general' | 'ta',
+      ) => Promise<{ ok: boolean }>
+      onNudgeEvent: (cb: (payload: unknown) => void) => () => void
+      getStageQueue: (mode: 'general' | 'ta') => Promise<unknown[]>
+      acceptStageAll: (mode: 'general' | 'ta') => Promise<unknown[]>
+      rejectStageAll: (mode: 'general' | 'ta') => Promise<unknown[]>
+      acceptStageOne: (mode: 'general' | 'ta', id: string) => Promise<{ ok: boolean }>
+      rejectStageOne: (mode: 'general' | 'ta', id: string) => Promise<{ ok: boolean }>
+      getGraphData: (mode: 'general' | 'ta', workspaceSlug?: string) => Promise<unknown>
     }
   }
 }
@@ -132,11 +162,26 @@ declare global {
 export function App(): JSX.Element {
   const [showSettings, setShowSettings] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general')
-  /** 主区导航：会话 | 插件（设置走对话框，打开时 rail 高亮 settings） */
+  /** 主区导航：会话 | 插件 | 记忆（设置走对话框，打开时 rail 高亮 settings） */
   const [activeRail, setActiveRail] = useState<Exclude<RailItem, 'settings'>>('chat')
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
   const workspaces = useAtomValue(workspacesAtom)
+
+  // Phase 2：全局 Nudge 事件 → sonner toast
+  useEffect(() => {
+    return window.electronAPI.onNudgeEvent((payload: unknown) => {
+      const p = payload as {
+        type?: string
+        sessionId?: string
+        mode?: 'general' | 'ta'
+        nudges?: NudgeCandidate[]
+      }
+      if (p?.type === 'nudge_candidates' && p.sessionId && Array.isArray(p.nudges) && p.nudges.length > 0) {
+        showNudgeToasts(p.nudges, p.sessionId, p.mode === 'ta' ? 'ta' : 'general')
+      }
+    })
+  }, [])
   // 多会话 tab
   const tabs = useAtomValue(tabsAtom)
   const activeTabId = useAtomValue(activeTabIdAtom)
@@ -254,6 +299,10 @@ export function App(): JSX.Element {
               setShowSettings(false)
               setActiveRail('plugins')
             }}
+            onMemory={() => {
+              setShowSettings(false)
+              setActiveRail('memory')
+            }}
             onSettings={() => openSettings('general')}
           />
         }
@@ -284,6 +333,10 @@ export function App(): JSX.Element {
         {activeRail === 'plugins' ? (
           <div className="plugins-main-view scrollbar-thin">
             <PluginStoreSettings />
+          </div>
+        ) : activeRail === 'memory' ? (
+          <div className="h-full min-h-0">
+            <MemoryMonitorPanel />
           </div>
         ) : workspaces.length === 0 ? (
           <ConversationEmptyState
@@ -339,6 +392,7 @@ export function App(): JSX.Element {
         initialTab={settingsInitialTab}
         onOpenChange={setShowSettings}
       />
+      <Toaster position="top-center" richColors closeButton />
     </TooltipProvider>
   )
 }

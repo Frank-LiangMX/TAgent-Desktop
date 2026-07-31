@@ -189,8 +189,21 @@ export class SessionRuntime {
               this.turnInFlight = false
               this.lastInFlightPrompt = undefined
               this.loopRunning = false
-              this.state = 'closed'
-              this.onError?.(new Error(formatPromptTooLongError()))
+              // Phase 4：先尝试软重置爆了兜底，失败再 closed + 报错
+              void this.trySoftResetOnBurst().then((recovered) => {
+                if (recovered) {
+                  this.state = 'closed' // 进程需重建；下次 send 会 re-spawn
+                  this.onTurnEnd?.()
+                  this.onMessage?.({
+                    type: 'system',
+                    subtype: 'tagent_soft_reset',
+                    content: '上下文过长，已整理记忆，请重试发送',
+                  } as unknown as SDKMessage)
+                } else {
+                  this.state = 'closed'
+                  this.onError?.(new Error(formatPromptTooLongError()))
+                }
+              })
               return
             }
             // 每轮 result：标记轮结束，发 turnEnd 信号（UI 知道这轮完）
@@ -216,8 +229,11 @@ export class SessionRuntime {
           if (isPromptTooLongMessage(this.stderrBuffer)) {
             this.turnInFlight = false
             this.lastInFlightPrompt = undefined
-            this.state = 'closed'
-            this.onError?.(new Error(formatPromptTooLongError()))
+            void this.trySoftResetOnBurst().then((recovered) => {
+              this.state = 'closed'
+              if (!recovered) this.onError?.(new Error(formatPromptTooLongError()))
+              else this.onTurnEnd?.()
+            })
             return
           }
           crashed = true
@@ -239,8 +255,11 @@ export class SessionRuntime {
         if (isPromptTooLongMessage(error.message, this.stderrBuffer)) {
           this.turnInFlight = false
           this.lastInFlightPrompt = undefined
-          this.state = 'closed'
-          this.onError?.(new Error(formatPromptTooLongError()))
+          void this.trySoftResetOnBurst().then((recovered) => {
+            this.state = 'closed'
+            if (!recovered) this.onError?.(new Error(formatPromptTooLongError()))
+            else this.onTurnEnd?.()
+          })
           return
         }
         if (this.turnInFlight) {
@@ -282,6 +301,23 @@ export class SessionRuntime {
    * - 重注入在飞消息可能造成「重复用户气泡」（SDK transcript 是否已落盘该消息不确定）；
    *   权衡：丢消息比重复气泡更糟，故选择重注入。后续可结合 resumeSessionAt / fork 精确去重。
    */
+  /**
+   * Phase 4：prompt_too_long 时尝试 kscc 软重置兜底（廉价清理 + 影子压缩切换）。
+   * 动态 import 避免 runtime ↔ soft-reset 循环依赖启动成本。
+   */
+  private async trySoftResetOnBurst(): Promise<boolean> {
+    try {
+      const { ksccSoftReset } = await import('../kscc-soft-reset')
+      return await ksccSoftReset.onBurst({
+        sessionId: this.sessionId,
+        burstTokens: undefined,
+      })
+    } catch (e) {
+      console.warn(`[会话 ${this.sessionId}] soft-reset onBurst failed:`, e)
+      return false
+    }
+  }
+
   private attemptRecovery(
     queryOptions: Parameters<AgentProviderAdapter['query']>[0]
   ): Parameters<AgentProviderAdapter['query']>[0] | undefined {

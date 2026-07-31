@@ -15,6 +15,7 @@ import {
   TAGENT_DEFAULT_PERMISSION_MODE,
   TAGENT_PERMISSION_MODE_CONFIG,
   DEFAULT_REASONING_EFFORT,
+  DEFAULT_CONTEXT_WINDOW,
   migrateReasoningEffort,
   type TAgentUsage,
 } from '@tagent/shared'
@@ -164,7 +165,7 @@ export function Chat({
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
 
-  const applyUsage = (usage: TAgentUsage | undefined, contextWindow = 128_000): void => {
+  const applyUsage = (usage: TAgentUsage | undefined, contextWindow = DEFAULT_CONTEXT_WINDOW): void => {
     if (!usage) return
     const input = usage.inputTokens ?? 0
     const output = usage.outputTokens ?? 0
@@ -596,7 +597,7 @@ export function Chat({
               ? { ...prev, inputTokens: Math.min(prev.inputTokens, tokensBefore) || tokensBefore }
               : {
                   inputTokens: tokensBefore,
-                  contextWindow: 128_000,
+                  contextWindow: DEFAULT_CONTEXT_WINDOW,
                 },
           )
         }

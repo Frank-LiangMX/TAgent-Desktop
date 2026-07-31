@@ -955,6 +955,36 @@ export interface AgentSessionMeta {
   forkSourceSdkSessionId?: string
   /** 回退后的 resume 截断点：下次发消息时传给 SDK resumeSessionAt（消费后清除） */
   resumeAtMessageUuid?: string
+  /**
+   * 软重置影子 B 的 SDK session id（压缩生成后填）。
+   * Phase 4 消费；Phase 1.3 仅备位字段。
+   */
+  shadowSessionId?: string
+  /**
+   * 影子状态机：idle → compacting → ready → switching → switched
+   * Phase 4 消费；Phase 1.3 仅备位字段。
+   */
+  shadowState?: 'idle' | 'compacting' | 'ready' | 'switching' | 'switched'
+  /**
+   * 拉起 B 时 A 的末尾消息 uuid（切换补尾游标基准）。
+   * Phase 4 消费；Phase 1.3 仅备位字段。
+   */
+  shadowCursor?: string
+  /**
+   * 单向链前驱（A→B→C），归档溯源用。
+   * Phase 4 消费；Phase 1.3 仅备位字段。
+   */
+  shadowChainPrev?: string
+  /**
+   * 阈值自学习回写的安全上限（token）。
+   * Phase 5 消费；resolveModelSafeContextLimit 可读此字段。
+   */
+  learnedSafeContextLimit?: number
+  /**
+   * 上次爆点 token 数（自学习用）。
+   * Phase 5 消费。
+   */
+  lastBurstTokenCount?: number
   /** 手动标记为工作中 */
   manualWorking?: boolean
   /** Agent 执行完成但用户尚未确认（跨重启保留在工作中列表） */

@@ -9,6 +9,12 @@ export const DEFAULT_CONTEXT_WINDOW = 200_000
 export const ONE_MILLION_CONTEXT_WINDOW = 1_000_000
 
 /**
+ * 自动压缩触发占比（与 packages/pi-core TAGENT_PI_COMPACTION_THRESHOLD_RATIO 对齐）。
+ * 渲染层 ContextUsageBadge 展示阈值线用此常量，避免再硬编码 0.8。
+ */
+export const AUTO_COMPACT_THRESHOLD_RATIO = 0.8
+
+/**
  * 是否支持 1M context（与 Claude Code 判定对齐的子集）
  *
  * 只列确认支持 1M 的模型。

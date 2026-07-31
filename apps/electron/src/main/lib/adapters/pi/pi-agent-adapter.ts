@@ -30,6 +30,11 @@ import type {
   TAgentDesktopStreamPayload,
 } from '@tagent/shared'
 import { isPromptTooLongMessage } from '@tagent/shared'
+import {
+  buildMemoryPromptSections,
+  memoryLayerService,
+  type MemoryMode,
+} from '../../memory'
 
 import type {
   AgentEvent,
@@ -127,6 +132,8 @@ export interface PiQueryOptions extends AgentQueryInput {
   cwd?: string
   /** 权限模式回调（beforeToolCall 用） */
   beforeToolCall?: (ctx: { toolCall: { name: string; arguments: Record<string, unknown> } }) => Promise<{ block: true; reason: string } | undefined>
+  /** 记忆模式（Phase 2.2 Frozen 快照 / Phase 3 L-rag） */
+  sessionMode?: MemoryMode
 }
 
 // ===== 会话状态 =====
@@ -174,13 +181,13 @@ export class PiAgentAdapter implements AgentProviderAdapter {
    * 4. AgentEvent 回调转译成 SDKMessage，推给 generator
    */
   async *query(input: PiQueryOptions): AsyncIterable<SDKMessage> {
-    const { sessionId, prompt, channelConfig, systemPrompt, tools, mcpConfig, cwd, beforeToolCall, abortSignal } = input
+    const { sessionId, prompt, channelConfig, systemPrompt, tools, mcpConfig, cwd, beforeToolCall, abortSignal, sessionMode } = input
 
     // 创建或复用 Agent 实例。外部运行内核允许同会话切换渠道 / 模型：
     // streamFn 与 task 工具都捕获了渠道配置，因此配置变化时保留消息历史并重建 Agent。
     let entry = this.sessions.get(sessionId)
     if (!entry) {
-      entry = await this.createSession(sessionId, channelConfig, systemPrompt, tools, mcpConfig, cwd, beforeToolCall)
+      entry = await this.createSession(sessionId, channelConfig, systemPrompt, tools, mcpConfig, cwd, beforeToolCall, sessionMode)
       this.sessions.set(sessionId, entry)
     } else if (!isSameChannelConfig(entry.channelConfig, channelConfig)) {
       if (entry.isStreaming) {
@@ -196,6 +203,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         mcpConfig,
         cwd,
         beforeToolCall,
+        sessionMode,
       )
       ;(entry.agent.state as { messages: typeof previousMessages }).messages = previousMessages
       previousEntry.agent.abort()
@@ -501,6 +509,13 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     entry.agent.abort()
     entry.controller.abort()
     this.sessions.delete(sessionId)
+    void loadPiCore()
+      .then((piCore) => {
+        piCore.disposeSessionMemoryCoordinator?.(sessionId)
+      })
+      .catch(() => {
+        /* ignore */
+      })
   }
 
   /** 释放所有会话的 Agent 实例 */
@@ -527,6 +542,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     mcpConfig?: { servers: Record<string, unknown> },
     cwd?: string,
     beforeToolCall?: (ctx: { toolCall: { name: string; arguments: Record<string, unknown> } }) => Promise<{ block: true; reason: string } | undefined>,
+    sessionMode: MemoryMode = 'general',
   ): Promise<SessionEntry> {
     const controller = new AbortController()
 
@@ -599,24 +615,57 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         models: compactionModels,
         model,
       }
+      // Phase 3：8k 四层协调器（L-rag + L-mid 链 + 异步自动压缩）
+      const coordinator = piCore.getSessionMemoryCoordinator(sessionId)
       transformContext = async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
         try {
-          const result = await piCore.maybeCompactMessages({
+          const result = await coordinator.reconcile({
             messages,
             contextWindow: compactionSettings.contextWindow,
             settings: piCompactionSettings,
             models: compactionModels,
             model,
             signal,
+            asyncAuto: true,
+            retrieveRag: async (query: string) => {
+              try {
+                const hits = memoryLayerService.searchSessions(sessionMode, query, 5)
+                return hits.map((h) => ({
+                  source: `L4:${h.session_slug ?? h.id}`,
+                  text: `${h.title ?? ''}\n${h.summary ?? ''}`.trim(),
+                  score: 1,
+                }))
+              } catch {
+                return []
+              }
+            },
+            onCompacted: (r) => {
+              if (!r.compacted) return
+              if (agentRef) agentRef.state.messages = r.messages
+              entryRef?.pendingSystemMessages.push(
+                makeCompactingEvent(),
+                makeCompactBoundaryEvent({
+                  trigger: 'auto',
+                  tokensBefore: r.tokensBefore,
+                  summary: r.summary,
+                }),
+              )
+            },
           })
           if (!result.compacted) {
             if (
               result.reason &&
               result.reason !== 'below threshold' &&
               result.reason !== 'disabled' &&
-              result.reason !== 'empty'
+              result.reason !== 'empty' &&
+              result.reason !== 'async pending'
             ) {
               console.log(`[pi-compaction] ${sessionId} 跳过压缩: ${result.reason}`)
+            }
+            // 仍可能注入了 L-rag / L-mid 前缀
+            if (result.messages !== messages) {
+              messages.length = 0
+              messages.push(...result.messages)
             }
             return messages
           }
@@ -633,6 +682,12 @@ export class PiAgentAdapter implements AgentProviderAdapter {
               summary: result.summary,
             }),
           )
+          if (result.ragHits.length > 0) {
+            entryRef?.pendingSystemMessages.push({
+              kind: 'tagent_event',
+              event: { type: 'rag_hit', hits: result.ragHits },
+            } as TAgentDesktopStreamPayload)
+          }
           messages.length = 0
           messages.push(...result.messages)
           return messages
@@ -643,10 +698,21 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       }
     }
 
+    // Phase 2.2/2.4：记忆管理规则 + Frozen 记忆快照（createSession 读一次写死，保 cache）
+    const snap = memoryLayerService.readMemorySnapshot(sessionMode)
+    const mem = buildMemoryPromptSections({
+      mode: sessionMode,
+      memorySnapshot: { l0: snap.l0User, l1: snap.l1Project, l2: snap.l2Facts },
+    })
+    const baseSystem = systemPrompt ?? DEFAULT_SYSTEM_PROMPT
+    const fullSystemPrompt = [baseSystem, mem.managementRules, mem.memorySnapshotSection]
+      .filter(Boolean)
+      .join('\n\n')
+
     // 创建 Agent（挂 beforeToolCall 权限钩子 + 外部渠道的 transformContext 压缩钩子）
     const agent = new piAgentCore.Agent({
       initialState: {
-        systemPrompt: systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+        systemPrompt: fullSystemPrompt,
         model,
         thinkingLevel: channelConfig.type === 'external' && channelConfig.thinkingEnabled
           ? (channelConfig.thinkingLevel ?? 'medium')
@@ -970,7 +1036,7 @@ function buildPlaceholderModel(config: PiAgentAdapterConfig): Model<Api> {
       cost: ZERO_COST,
       // 优先用注入的真实窗口（session-service 从 ChannelModel.contextWindow 解析），
       // 缺失走 fallback(200k)。替代旧的 128k 硬编码（Phase 1.1）。
-      contextWindow: config.contextWindow && config.contextWindow > 0 ? config.contextWindow : 128_000,
+      contextWindow: config.contextWindow && config.contextWindow > 0 ? config.contextWindow : 200_000,
       maxTokens: 8_192,
     }
   }
@@ -984,7 +1050,7 @@ function buildPlaceholderModel(config: PiAgentAdapterConfig): Model<Api> {
     reasoning: false,
     input: ['text'],
     cost: ZERO_COST,
-    contextWindow: config.contextWindow && config.contextWindow > 0 ? config.contextWindow : 128_000,
+    contextWindow: config.contextWindow && config.contextWindow > 0 ? config.contextWindow : 200_000,
     maxTokens: 8_192,
   }
 }

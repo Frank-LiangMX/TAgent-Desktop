@@ -90,9 +90,30 @@ export function getProjectDir(sanitizedPath: string): string {
   return dir
 }
 
-/** 项目内会话 JSONL：~/.tagent[-dev]/projects/{sanitizedPath}/{sessionId}.jsonl */
+/**
+ * 项目内 SDK 会话 JSONL：~/.tagent[-dev]/projects/{sanitizedPath}/{sessionId}.jsonl
+ * 仅供 SDK resume / 软重置压缩重写（可压缩、可分叉）。
+ * 面板历史请用 getProjectMessagesPath。
+ */
 export function getProjectSessionPath(sanitizedPath: string, sessionId: string): string {
   return join(getProjectDir(sanitizedPath), `${sessionId}.jsonl`)
+}
+
+/**
+ * 项目内面板消息 JSONL：~/.tagent[-dev]/projects/{sanitizedPath}/{sessionId}.messages.jsonl
+ * 只追加、永不压缩。面板历史 / L-rag 原文 / 软重置读用户可见历史均读此文件。
+ * Phase 1.2 与 SDK JSONL 分离（D5）。
+ */
+export function getProjectMessagesPath(sanitizedPath: string, sessionId: string): string {
+  return join(getProjectDir(sanitizedPath), `${sessionId}.messages.jsonl`)
+}
+
+/**
+ * 旧路径下的面板消息文件：~/.tagent[-dev]/agent-sessions/{id}.messages.jsonl
+ * 无 workspaceId 的老会话兼容用。
+ */
+export function getAgentSessionPanelMessagesPath(id: string): string {
+  return join(getAgentSessionsDir(), `${id}.messages.jsonl`)
 }
 
 /** 项目记忆目录：~/.tagent[-dev]/projects/{sanitizedPath}/memory/ */

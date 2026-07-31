@@ -8,7 +8,7 @@
  * 流式统一走 STREAM_EVENT，payload 是 TAgentDesktopStreamEvent（{ sessionId, payload }）。
  */
 import { contextBridge, ipcRenderer } from 'electron'
-import { AGENT_IPC_CHANNELS, CHANNEL_IPC_CHANNELS } from '@tagent/shared'
+import { AGENT_IPC_CHANNELS, CHANNEL_IPC_CHANNELS, MEMORY_IPC_CHANNELS } from '@tagent/shared'
 import type {
   AgentWorkspace,
   Channel,
@@ -196,6 +196,61 @@ const electronAPI = {
    * 主进程用它切换窗口/Dock 的 light/dark appicon。
    */
   setResolvedDark: (dark: boolean) => ipcRenderer.send('theme:set-resolved-dark', dark),
+
+  // ===== 记忆系统（Phase 2）=====
+  initMemoryLayers: () =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.INIT_MEMORY_LAYERS) as Promise<unknown>,
+  getMemoryStats: (mode: 'general' | 'ta') =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_MEMORY_STATS, mode) as Promise<unknown>,
+  searchMemorySessions: (mode: 'general' | 'ta', query: string, limit?: number) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.SEARCH_MEMORY_SESSIONS, mode, query, limit) as Promise<
+      unknown[]
+    >,
+  listRecentMemorySessions: (mode: 'general' | 'ta', limit?: number) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_RECENT_MEMORY_SESSIONS, mode, limit) as Promise<
+      unknown[]
+    >,
+  getMemoryMdContent: (mode: 'general' | 'ta', layer: 'L0' | 'L1' | 'L2' | 'L5') =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_MEMORY_MD_CONTENT, mode, layer) as Promise<
+      string | null
+    >,
+  getMemoryCorrections: (mode: 'general' | 'ta', limit?: number) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_MEMORY_CORRECTIONS, mode, limit) as Promise<unknown[]>,
+  getPendingNudges: (sessionId: string) =>
+    ipcRenderer.invoke(MEMORY_IPC_CHANNELS.GET_PENDING_NUDGES, sessionId) as Promise<unknown[]>,
+  respondNudge: (
+    sessionId: string,
+    nudgeId: string,
+    action: 'accept' | 'reject' | 'defer',
+    mode: 'general' | 'ta',
+  ) =>
+    ipcRenderer.invoke(MEMORY_IPC_CHANNELS.RESPOND_NUDGE, {
+      sessionId,
+      nudgeId,
+      action,
+      mode,
+    }) as Promise<{ ok: boolean }>,
+  onNudgeEvent: (cb: (payload: unknown) => void) => {
+    const handler = (_e: unknown, payload: unknown): void => cb(payload)
+    ipcRenderer.on(MEMORY_IPC_CHANNELS.NUdge_EVENT, handler)
+    return () => ipcRenderer.removeListener(MEMORY_IPC_CHANNELS.NUdge_EVENT, handler)
+  },
+  getStageQueue: (mode: 'general' | 'ta') =>
+    ipcRenderer.invoke(MEMORY_IPC_CHANNELS.GET_STAGE_QUEUE, mode) as Promise<unknown[]>,
+  acceptStageAll: (mode: 'general' | 'ta') =>
+    ipcRenderer.invoke(MEMORY_IPC_CHANNELS.ACCEPT_STAGE_ALL, mode) as Promise<unknown[]>,
+  rejectStageAll: (mode: 'general' | 'ta') =>
+    ipcRenderer.invoke(MEMORY_IPC_CHANNELS.REJECT_STAGE_ALL, mode) as Promise<unknown[]>,
+  acceptStageOne: (mode: 'general' | 'ta', id: string) =>
+    ipcRenderer.invoke(MEMORY_IPC_CHANNELS.ACCEPT_STAGE_ONE, { mode, id }) as Promise<{
+      ok: boolean
+    }>,
+  rejectStageOne: (mode: 'general' | 'ta', id: string) =>
+    ipcRenderer.invoke(MEMORY_IPC_CHANNELS.REJECT_STAGE_ONE, { mode, id }) as Promise<{
+      ok: boolean
+    }>,
+  getGraphData: (mode: 'general' | 'ta', workspaceSlug?: string) =>
+    ipcRenderer.invoke(MEMORY_IPC_CHANNELS.GET_GRAPH_DATA, mode, workspaceSlug) as Promise<unknown>,
 } as const
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

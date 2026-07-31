@@ -8,14 +8,14 @@
  * 品牌标不放进导航按钮列：多面体在 18px 按钮位里过密、且与功能入口抢戏。
  * 品牌露出改在关于页（带底板 appicon）与窗口/安装包图标。
  */
-import { ChatsCircle, GearSix, PuzzlePiece } from '@phosphor-icons/react'
+import { Brain, ChatsCircle, GearSix, PuzzlePiece } from '@phosphor-icons/react'
 import { AppTooltip } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 
 /** phosphor 图标统一参数（对齐旧版 RAIL_ICON） */
 const RAIL_ICON = { size: 18, weight: 'regular' as const }
 
-export type RailItem = 'chat' | 'plugins' | 'settings'
+export type RailItem = 'chat' | 'plugins' | 'memory' | 'settings'
 
 interface RailProps {
   active?: RailItem
@@ -23,6 +23,8 @@ interface RailProps {
   onChat?: () => void
   /** 点击插件 */
   onPlugins?: () => void
+  /** 点击记忆 */
+  onMemory?: () => void
   /** 点击设置 */
   onSettings?: () => void
 }
@@ -31,11 +33,12 @@ export function Rail({
   active = 'chat',
   onChat,
   onPlugins,
+  onMemory,
   onSettings,
 }: RailProps): JSX.Element {
   return (
     <div className="app-nav-rail">
-      {/* 上胶囊：会话 + 插件 */}
+      {/* 上胶囊：会话 + 插件 + 记忆 */}
       <div className="app-rail-island">
         <RailIcon
           icon={<ChatsCircle {...RAIL_ICON} />}
@@ -48,6 +51,12 @@ export function Rail({
           label="插件"
           active={active === 'plugins'}
           onClick={onPlugins}
+        />
+        <RailIcon
+          icon={<Brain {...RAIL_ICON} />}
+          label="记忆"
+          active={active === 'memory'}
+          onClick={onMemory}
         />
       </div>
       {/* 下胶囊：设置 */}

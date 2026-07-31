@@ -26,6 +26,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk'
 
 import { createMessageChannel, type MessageChannel } from '../shared/message-channel'
+import { getDiscardedMemoryDir } from '../../memory/discarded-memory'
 import { spawnKscc } from './spawn-kscc'
 
 /** kscc 核查询选项（扩展 AgentQueryInput） */
@@ -169,6 +170,8 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       }),
       ...(options.onStderr && { stderr: options.onStderr }),
       ...(options.persistSession != null && { persistSession: options.persistSession }),
+      // Phase 2.4：SDK auto-memory 重定向到废目录（主防线是 MEMORY_MANAGEMENT_RULES）
+      autoMemoryDirectory: getDiscardedMemoryDir(),
       toolUseConcurrency: 1,
       spawnClaudeCodeProcess: (spawnOpts: SpawnOptions) => {
         const { child, command, args } = spawnKscc(

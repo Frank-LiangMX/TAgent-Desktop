@@ -21,6 +21,7 @@ export { normalizeContextUsageSnapshot } from './context-usage-snapshot'
 export {
   DEFAULT_CONTEXT_WINDOW,
   ONE_MILLION_CONTEXT_WINDOW,
+  AUTO_COMPACT_THRESHOLD_RATIO,
   inferContextWindow,
   pickResultContextWindow,
   resolveDisplayContextWindow,
