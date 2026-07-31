@@ -25,30 +25,44 @@ function getResourcesDir(): string {
   return path.join(__dirname, '..', 'resources')
 }
 
-function getTrayIconPath(dark: boolean): string {
-  const name = dark ? 'color-dark.png' : 'color-light.png'
+function getTrayIconPath(dark: boolean, size: 16 | 32 = 32): string {
+  const base = dark ? 'color-dark' : 'color-light'
+  const name = size === 16 ? `${base}-16.png` : `${base}.png`
   const preferred = path.join(getResourcesDir(), 'logo', 'tray', name)
   if (existsSync(preferred)) return preferred
-  // 回退 appicon
-  const fallback = path.join(
+  // 无 16 预烘焙时回退 32
+  const fallback32 = path.join(getResourcesDir(), 'logo', 'tray', `${base}.png`)
+  if (existsSync(fallback32)) return fallback32
+  // 再回退 appicon
+  return path.join(
     getResourcesDir(),
     'logo',
     'appicon',
     dark ? 'dark.png' : 'light.png',
   )
-  return fallback
 }
 
 function loadTrayImage(dark: boolean): NativeImage | null {
-  const iconPath = getTrayIconPath(dark)
-  if (!existsSync(iconPath)) {
-    console.warn('[tray] icon not found:', iconPath)
-    return null
-  }
   try {
-    let image = nativeImage.createFromPath(iconPath)
-    // Windows 托盘建议 16/32；过大时缩小
+    // Windows 托盘多为 16×16：优先预烘焙 16，避免运行时把 32/1024 硬缩小糊成黑团。
+    // 其它平台可用 32。
+    const path16 = getTrayIconPath(dark, 16)
+    const path32 = getTrayIconPath(dark, 32)
+    const mainPath =
+      process.platform === 'win32' && existsSync(path16)
+        ? path16
+        : existsSync(path32)
+          ? path32
+          : path16
+
+    if (!existsSync(mainPath)) {
+      console.warn('[tray] icon not found:', mainPath)
+      return null
+    }
+
+    let image = nativeImage.createFromPath(mainPath)
     const size = image.getSize()
+    // 仅 appicon 回退时才会 >32：缩到 16 并保持比例
     if (size.width > 32 || size.height > 32) {
       image = image.resize({ width: 16, height: 16, quality: 'best' })
     }

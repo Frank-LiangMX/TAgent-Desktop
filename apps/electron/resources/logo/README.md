@@ -10,9 +10,11 @@ logo/
   mark/             纯标（无底，背景透明）
     light.png       1024
     dark.png        1024
-  tray/             托盘（背景透明，彩色标）
-    color-light.png 32
-    color-dark.png  32
+  tray/             托盘（圆角底板 + 加大内边距，抗 Windows 浅色任务栏糊边）
+    color-light.png     32 · 浅底板
+    color-dark.png      32 · 深底板
+    color-light-16.png  16 · 预烘焙（避免运行时缩小）
+    color-dark-16.png   16
   export_pngs.py
 ```
 

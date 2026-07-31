@@ -145,6 +145,33 @@ def compose_appicon(mark: Image.Image, bg: tuple[int, int, int, int], size: int 
     return Image.merge("RGBA", (r, g, b, a))
 
 
+def compose_tray_icon(
+    mark: Image.Image,
+    bg: tuple[int, int, int, int],
+    size: int = 32,
+    padding_ratio: float = 0.20,
+) -> Image.Image:
+    """
+    托盘专用：圆角底板 + 加大内边距的 mark。
+
+    Windows 浅色任务栏对「全透明 + 细几何」缩放很差，边缘糊成黑团。
+    底板提供与系统栏对比稳定的缓冲色；padding 避免几何贴边被裁切。
+    """
+    # 先把 mark 裁进带 padding 的透明画布
+    fitted = trim_and_fit(mark, size, padding_ratio=padding_ratio)
+    # 圆角半径约 22%（小尺寸略圆，读得清）
+    radius = max(2, int(size * 0.22))
+    plate = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ImageDraw.Draw(plate).rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=bg)
+    out = Image.alpha_composite(plate, fitted)
+    # 圆角裁切 alpha（防止直角像素在 16px 发糊）
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size - 1, size - 1), radius=radius, fill=255)
+    r, g, b, a = out.split()
+    a = Image.composite(a, Image.new("L", (size, size), 0), mask)
+    return Image.merge("RGBA", (r, g, b, a))
+
+
 def main() -> int:
     mark_l = extract_mark_light(Image.open(SRC_LIGHT))
     mark_d = make_flat_dark_from_light(mark_l)
@@ -155,8 +182,14 @@ def main() -> int:
     save(compose_appicon(trim_and_fit(mark_l, 1024, 0.18), BG_LIGHT), APPICON / "light.png")
     save(compose_appicon(trim_and_fit(mark_d, 1024, 0.18), BG_DARK), APPICON / "dark.png")
 
-    save(trim_and_fit(mark_l, 32, 0.08), TRAY / "color-light.png")
-    save(trim_and_fit(mark_d, 32, 0.08), TRAY / "color-dark.png")
+    # 托盘：边缘必须留缓冲。全透明 + 8% 内边距时，Windows 浅色任务栏 16px 缩放
+    # 会把密面几何糊成一团黑。这里加大 padding，并铺圆角底板（跟 appicon 同色），
+    # 让图标在浅/深任务栏上都有「背景色缓冲」，不依赖系统主题抠透明。
+    save(compose_tray_icon(mark_l, BG_LIGHT, size=32, padding_ratio=0.20), TRAY / "color-light.png")
+    save(compose_tray_icon(mark_d, BG_DARK, size=32, padding_ratio=0.20), TRAY / "color-dark.png")
+    # 16px 预烘焙（避免运行时二次缩小更糊）
+    save(compose_tray_icon(mark_l, BG_LIGHT, size=16, padding_ratio=0.18), TRAY / "color-light-16.png")
+    save(compose_tray_icon(mark_d, BG_DARK, size=16, padding_ratio=0.18), TRAY / "color-dark-16.png")
 
     print("\n[DONE]", OUT)
     return 0
