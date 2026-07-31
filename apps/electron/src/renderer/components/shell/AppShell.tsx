@@ -1,7 +1,6 @@
 /**
  * AppShell — 全局浮岛布局壳
- *
- * sidebar 开合交给 NavIsland（General 同款 morph）。
+ * 侧栏开合：原样使用 General NavIsland（morph 照抄）。
  */
 import type { ReactNode } from 'react'
 import { WindowControls } from './WindowControls'
@@ -11,9 +10,7 @@ interface AppShellProps {
   topbar?: ReactNode
   rail?: ReactNode
   sidebar?: ReactNode
-  /** 目标展开态 */
   sidebarOpen?: boolean
-  /** morph 源按钮 data-rail-id，默认 chat */
   activeRailItem?: string | null
   children?: ReactNode
 }

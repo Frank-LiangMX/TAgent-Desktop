@@ -5,6 +5,7 @@
 @import '@tagent/ui/styles/segmented-tabs.css';
 @import './chat.css';
 @import './app-shell.css';
+@import './nav-island-morph.css';
 @import './sidebar.css';
 @import './welcome.css';
 @import './settings-shell.css';

@@ -1,11 +1,19 @@
 /**
- * NavIsland — 左侧导航组合层（对齐 TAgent_General NavIsland）
+ * NavIsland — 左侧导航组合层
  *
- * 开合：rail 按钮 → sidebar morph（droplet / stream / tether）+ width 让位同步。
- * effect 只依赖 requestedOpen，避免 children 重渲染打断动画。
+ * 开合动画：移植 layout-direction-study 的 rail→sidebar morph
+ * （droplet / stream / tether / ghost + 交叠交接）
+ *
+ * 关键约束：
+ * - morph effect 只依赖 requestedOpen（禁止把 ReactNode children 放进 deps，
+ *   否则父组件重渲染会反复 cancel/重开 → 乱抽且永不落位）
+ * - settledOpenRef 只在 morph 成功结束后更新（Strict Mode 安全）
+ * - 交接对齐右栏：commitStyles → 真壳落位 → 代理淡出
  */
+
 import * as React from 'react'
-import { cn } from '../../lib/utils'
+
+import { InertRegion } from './InertRegion'
 import {
   createSidebarMorphKeyframes,
   createSidebarTetherKeyframes,
@@ -20,18 +28,47 @@ import {
   SIDEBAR_OPEN_MS,
   type SidebarMotionRect,
 } from './left-sidebar-motion'
+import {
+  NAV_MAC_CHROME_HEIGHT,
+  NAV_RAIL_WIDTH,
+  NAV_SIDEBAR_WIDTH,
+} from '@tagent/shared'
+import { cn } from '../../lib/utils'
 
-export const NAV_SIDEBAR_DEFAULT_WIDTH = 254
+/** 与 General PanelPresence 同语义 */
+export type PanelPresence = 'hidden' | 'collapsed' | 'open'
+
+function detectIsMac(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const platform =
+    (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform
+  if (typeof platform === 'string' && platform.toLowerCase().includes('mac')) return true
+  return /mac/i.test(navigator.platform || '')
+}
+
+export const NAV_SIDEBAR_DEFAULT_WIDTH = NAV_SIDEBAR_WIDTH
 export const NAV_CLUSTER_GAP = 10
-export const NAV_RAIL_WIDTH = 58
+export const NAV_RAIL_EDGE_LEFT = 5
 
 const RAIL_BTN_FALLBACK = 36
+/** 收回：代理先盖住真壳再开 morph，避免「啪」一下换成空壳 */
 const SIDEBAR_COVER_FADE_MS = 130
+/** 展开：真壳落位后代理溶出（略长 + ease，压材质差） */
 const SIDEBAR_HANDOFF_FADE_MS = 160
 const SIDEBAR_HANDOFF_EASE = 'cubic-bezier(0.33, 0, 0.2, 1)'
 
 type SidebarPhase = 'collapsed' | 'opening' | 'open' | 'closing'
-export type PanelPresence = 'hidden' | 'collapsed' | 'open'
+
+export function getNavClusterWidth(
+  showSidebar: boolean,
+  railWidth = NAV_RAIL_WIDTH,
+  sidebarWidth = NAV_SIDEBAR_DEFAULT_WIDTH,
+  clusterGap = NAV_CLUSTER_GAP,
+  railEdgeLeft = NAV_RAIL_EDGE_LEFT
+): number {
+  const core = showSidebar ? railWidth + clusterGap + sidebarWidth : railWidth
+  return core + railEdgeLeft
+}
 
 function prefersReducedMotion(): boolean {
   if (typeof window === 'undefined') return false
@@ -53,13 +90,10 @@ function waitForLayout(): Promise<void> {
 }
 
 export interface NavIslandProps {
-  /** open | collapsed（Desktop 无 hidden 场景时等同 collapsed） */
   sidebarPresence: PanelPresence
-  /** 用于量 rail 源按钮，如 'chat' */
   activeRailItem?: string | null
   sidebarWidth?: number
   railWidth?: number
-  /** [0]=rail, [1]=sidebar 内容（不含 app-nav-sidebar 外壳） */
   children: React.ReactNode
 }
 
@@ -70,6 +104,7 @@ export function NavIsland({
   railWidth = NAV_RAIL_WIDTH,
   children,
 }: NavIslandProps): React.ReactElement {
+  const isMac = React.useMemo(() => detectIsMac(), [])
   const childList = React.Children.toArray(children)
   const rail = childList[0]
   const sidebar = childList[1]
@@ -78,7 +113,9 @@ export function NavIsland({
   const requestedOpen = sidebarPresence === 'open'
   const [phase, setPhase] = React.useState<SidebarPhase>(requestedOpen ? 'open' : 'collapsed')
   const [isContentLeaving, setIsContentLeaving] = React.useState(false)
+  const [isContentRevealing, setIsContentRevealing] = React.useState(false)
 
+  /** 仅在 morph 完整结束后更新，禁止 effect 开头改（Strict Mode 会吞 open） */
   const settledOpenRef = React.useRef(requestedOpen)
   const phaseRef = React.useRef<SidebarPhase>(phase)
   phaseRef.current = phase
@@ -98,9 +135,15 @@ export function NavIsland({
   const morphSurfaceRef = React.useRef<HTMLDivElement>(null)
   const morphTetherRef = React.useRef<HTMLDivElement>(null)
 
+  /**
+   * 占位只跟 phase：opening 才撑开、closing 即收窄。
+   * 禁止用 requestedOpen（一点击 main 会秒切，morph 还没开始）。
+   */
   const shellExpanded = phase === 'open' || phase === 'opening'
   const isMorphing = phase === 'opening' || phase === 'closing'
+  // content-leaving 只淡内容，不整栏 hidden（否则收回开头真壳先空一拍再出代理）
   const suppressRealSidebar = isMorphing || (requestedOpen && phase === 'collapsed')
+  /** 与 morph 同步：驱动 flex 让 main 跟着让位，避免秒切 */
   const layoutMotionMs =
     phase === 'opening' ? SIDEBAR_OPEN_MS : phase === 'closing' ? SIDEBAR_CLOSE_MS : 0
   const layoutMotionEase =
@@ -161,6 +204,10 @@ export function NavIsland({
     }
   }, [])
 
+  /**
+   * 目标几何：优先用 stack + 已知 sidebarWidth 推算（不依赖 morph 中
+   * visibility:hidden / contain:strict 的测量噪声）。
+   */
   const resolvePanelViewport = React.useCallback((): SidebarMotionRect => {
     const width = sidebarWidthRef.current
     const stack = stackRef.current
@@ -218,6 +265,7 @@ export function NavIsland({
           settledOpenRef.current = false
           setPhase('collapsed')
           setIsContentLeaving(false)
+          setIsContentRevealing(false)
           resetMorphSurface()
         })()
         return () => {
@@ -239,6 +287,7 @@ export function NavIsland({
           settledOpenRef.current = true
           setPhase('open')
           setIsContentLeaving(false)
+          setIsContentRevealing(false)
           resetMorphSurface()
         })()
         return () => {
@@ -252,9 +301,11 @@ export function NavIsland({
       }
       if (!requestedOpen && currentPhase === 'collapsed') {
         setIsContentLeaving(false)
+        setIsContentRevealing(false)
         return
       }
 
+      // 无动画可 reverse 的卡死态：直接对齐
       if (requestedOpen && (currentPhase === 'collapsed' || currentPhase === 'closing')) {
         setPhase('open')
         settledOpenRef.current = true
@@ -264,6 +315,7 @@ export function NavIsland({
         setPhase('collapsed')
         settledOpenRef.current = false
         setIsContentLeaving(false)
+        setIsContentRevealing(false)
         resetMorphSurface()
       }
       return
@@ -277,6 +329,7 @@ export function NavIsland({
         setPhase(requestedOpen ? 'open' : 'collapsed')
         settledOpenRef.current = requestedOpen
         setIsContentLeaving(false)
+        setIsContentRevealing(false)
         resetMorphSurface()
         return
       }
@@ -295,10 +348,11 @@ export function NavIsland({
         panelViewport: SidebarMotionRect,
         overlay: SidebarMotionRect,
         sourceViewport: SidebarMotionRect,
-        direction: 'opening' | 'closing',
+        direction: 'opening' | 'closing'
       ) => {
         Object.assign(surface.style, getSidebarSurfaceBaseStyle(panelViewport, overlay))
         Object.assign(tether.style, getSidebarTetherStyle(sourceViewport, panelViewport, overlay))
+        // 交接帧不挂 ghost 文案：空壳更接近真面板材质，避免「替代面板」感
         surface.replaceChildren()
         surface.classList.add('is-active', direction === 'opening' ? 'is-opening' : 'is-closing')
         surface.classList.remove(direction === 'opening' ? 'is-closing' : 'is-opening')
@@ -311,7 +365,7 @@ export function NavIsland({
           try {
             finishedAnim.commitStyles()
           } catch {
-            /* ignore */
+            // ignore
           }
           finishedAnim.cancel()
           morphAnimRef.current = null
@@ -320,12 +374,13 @@ export function NavIsland({
           try {
             finishedTether.commitStyles()
           } catch {
-            /* ignore */
+            // ignore
           }
           finishedTether.cancel()
           tetherAnimRef.current = null
         }
 
+        // 代理固定在终态，盖住真壳首帧；内容直接上，不做 0→1 reveal（否则溶掉后再闪一次）
         surface.style.opacity = '1'
         surface.style.transition = 'none'
         surface.classList.add('is-active')
@@ -337,9 +392,11 @@ export function NavIsland({
         if (mode === 'open') {
           settledOpenRef.current = true
           setPhase('open')
+          setIsContentRevealing(false)
         } else {
           settledOpenRef.current = false
           setPhase('collapsed')
+          setIsContentRevealing(false)
         }
         setIsContentLeaving(false)
 
@@ -358,6 +415,7 @@ export function NavIsland({
       }
 
       if (closingEdge) {
+        // 内容先轻收，同时量几何（真壳仍在）
         setIsContentLeaving(true)
         await waitMs(SIDEBAR_CONTENT_LEAVE_MS)
         if (cancelled || version !== morphVersionRef.current) return
@@ -375,6 +433,7 @@ export function NavIsland({
         resetMorphSurface()
         button?.classList.add('is-morph-absorbing')
         prepareProxyShell(panelViewport, overlay, sourceViewport, 'closing')
+        // 盖住真壳：先淡入代理，再切 morphing（真壳瞬间消失时已被盖住）
         surface.style.opacity = '0'
         surface.style.transition = `opacity ${SIDEBAR_COVER_FADE_MS}ms ${SIDEBAR_HANDOFF_EASE}`
         tether.classList.remove('is-active')
@@ -396,7 +455,7 @@ export function NavIsland({
             duration: SIDEBAR_CLOSE_MS,
             easing: SIDEBAR_CLOSE_OUTER_EASE,
             fill: 'forwards',
-          },
+          }
         )
         const tAnim = tether.animate(createSidebarTetherKeyframes('closing'), {
           duration: SIDEBAR_CLOSE_MS,
@@ -412,8 +471,9 @@ export function NavIsland({
         return
       }
 
-      // opening
+      // —— opening ——
       setPhase('opening')
+      setIsContentRevealing(false)
       await waitForLayout()
       if (cancelled || version !== morphVersionRef.current) return
 
@@ -438,7 +498,7 @@ export function NavIsland({
           duration: SIDEBAR_OPEN_MS,
           easing: SIDEBAR_OPEN_EASE,
           fill: 'forwards',
-        },
+        }
       )
       const tAnim = tether.animate(createSidebarTetherKeyframes('opening'), {
         duration: SIDEBAR_OPEN_MS,
@@ -457,7 +517,8 @@ export function NavIsland({
     return () => {
       cancelled = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只跟 requestedOpen，同 General
+    // 只跟 requestedOpen：children / callback 身份变化不得重开 morph
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 见文件头
   }, [requestedOpen])
 
   React.useEffect(() => {
@@ -476,33 +537,50 @@ export function NavIsland({
           shellExpanded && hasSidebar && 'app-nav-stack--expanded',
           suppressRealSidebar && 'app-nav-stack--sidebar-morphing',
           isContentLeaving && 'app-nav-stack--sidebar-content-leaving',
-          phase === 'closing' && 'app-nav-stack--sidebar-closing',
+          isContentRevealing && 'app-nav-stack--sidebar-revealing',
+          phase === 'closing' && 'app-nav-stack--sidebar-closing'
         )}
         aria-label="主导航"
         data-sidebar-presence={sidebarPresence}
         data-sidebar-phase={phase}
-        style={
-          {
-            ['--app-nav-rail-width' as string]: `${railWidth}px`,
-            ['--app-nav-sidebar-width' as string]: `${sidebarWidth}px`,
-            ['--app-nav-cluster-gap' as string]: `${NAV_CLUSTER_GAP}px`,
-            ['--left-sidebar-layout-ms' as string]: `${layoutMotionMs}ms`,
-            ['--left-sidebar-layout-ease' as string]: layoutMotionEase,
-          } as React.CSSProperties
-        }
+        style={{
+          ['--app-nav-rail-width' as string]: `${railWidth}px`,
+          ['--app-nav-sidebar-width' as string]: `${sidebarWidth}px`,
+          ['--app-nav-cluster-gap' as string]: `${NAV_CLUSTER_GAP}px`,
+          ['--left-sidebar-layout-ms' as string]: `${layoutMotionMs}ms`,
+          ['--left-sidebar-layout-ease' as string]: layoutMotionEase,
+        }}
       >
-        {rail}
+        <div
+          className={cn('app-nav-rail', isMac && 'app-nav-rail--mac')}
+          style={
+            {
+              width: railWidth,
+              ['--nav-mac-chrome-height' as string]: `${NAV_MAC_CHROME_HEIGHT}px`,
+            } as React.CSSProperties
+          }
+        >
+          {isMac ? (
+            <div
+              className="app-nav-mac-chrome titlebar-drag-region"
+              style={{ height: NAV_MAC_CHROME_HEIGHT }}
+              aria-hidden
+            />
+          ) : null}
+          <div className="app-nav-rail-content">{rail}</div>
+        </div>
 
         {sidebar ? (
-          <div
+          <InertRegion
             ref={sidebarRef}
             id="app-navigation-sidebar"
             className="app-nav-sidebar"
+            data-surface-role="panel-elevated"
             style={{ width: shellExpanded ? sidebarWidth : 0 }}
-            aria-hidden={!requestedOpen || suppressRealSidebar}
+            inactive={!requestedOpen || suppressRealSidebar}
           >
             <div className="app-nav-sidebar-content">{sidebar}</div>
-          </div>
+          </InertRegion>
         ) : null}
       </aside>
 
