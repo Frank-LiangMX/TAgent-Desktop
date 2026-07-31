@@ -62,8 +62,10 @@ import type {
   AssistantMessageEventStream,
 } from '@earendil-works/pi-ai'
 
-// ESM-only 包不能 CJS require，用动态 import 延迟加载
-// 首次 query() 时才 import，避免启动时阻塞
+// Pi 栈（pi-core / pi-ai / pi-agent-core）在 build:main 时打进 dist/main.cjs（CJS），
+// 勿再 external 后运行时 require——这些包 package.json 多为 ESM-only exports，
+// Electron 主进程 require 会 ERR_PACKAGE_PATH_NOT_EXPORTED。
+// 动态 import 仍可懒加载；打包后 esbuild 会解析进同一 CJS 包。
 type PiCoreModule = typeof import('@tagent/pi-core')
 let _piCore: PiCoreModule | null = null
 async function loadPiCore(): Promise<PiCoreModule> {
