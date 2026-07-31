@@ -10,20 +10,24 @@ TAgent-Desktop/
 ├── docs/
 │   ├── plans/        # 设计计划文档（长期，功能设计、改造方案）
 │   ├── decisions/    # 架构决策记录（长期，ADR，定调不轻易改）
+│   ├── memory/       # 记忆系统专题（主设计、分 phase、交接、archive）
 │   └── dev/          # 开发期间临时记录（调研、实验、进度日志，可定期清理）
 ├── release-notes/   # 每个版本一份 release note（vX.Y.Z.md）
 ├── CHANGELOG.md      # 变更总览（Keep a Changelog 格式）
 ├── .github/workflows/ # CI/CD（release.yml 等，参照 kun）
+├── .context/         # agent 会话临时稿（gitignore，不进库）
 ```
 
 ### 文档归类规则（避免 TAgent_General 的乱）
 
 - **plans/**：功能设计、改造方案。写"要做什么、怎么做"，长期保留。文件名 `YYYY-MM-DD-<主题>.md`。
 - **decisions/**：架构决策（ADR）。写"为什么这样定、否决了什么"，长期保留。如双核定调、长驻决策。文件名 `ADR-NNNN-<主题>.md`。
+- **memory/**：记忆 / 双核上下文专题文档（主设计、phase 实现说明、handoff）。入口见 `docs/memory/README.md`。执行期 brief 放 `memory/archive/`，可定期清理。
 - **dev/**：开发期间临时记录。调研报告、实验数据、进度日志、待办。**可定期清理**（归档或删）。文件名 `YYYY-MM-DD-<主题>.md`，带 `[dev]` 前缀标识可清。
 - **release-notes/**：每个 release 一份，格式见 §3。
+- **.context/**：本地 agent 交接草稿 / 会话转储，**不进 git**（见根 `.gitignore`）。有价值内容整理进 `docs/**` 后再提交。
 
-**禁止**：把临时实验/调研塞进 plans/（TAgent_General 的教训）。临时内容进 dev/。
+**禁止**：把临时实验/调研塞进 plans/（TAgent_General 的教训）。临时内容进 dev/ 或 `.context/`；定稿后进 plans/、memory/ 或 decisions/。
 
 ## 2. 版本号
 
