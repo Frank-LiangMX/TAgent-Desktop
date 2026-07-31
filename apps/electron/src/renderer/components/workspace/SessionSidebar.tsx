@@ -530,10 +530,10 @@ export function SessionSidebar({
                         <DotsThreeVertical size={14} weight="bold" />
                       </button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-40">
+                    <DropdownMenuContent align="end" className="w-32 p-1 text-xs">
                       <DropdownMenuItem
                         onClick={() => setDeleteWorkspaceTarget(group.workspace!)}
-                        className="text-red-500 focus:text-red-500"
+                        className="rounded-lg px-2 py-1 text-xs text-red-500 focus:text-red-500"
                       >
                         <Trash size={13} weight="regular" /> 删除工作区
                       </DropdownMenuItem>
@@ -756,19 +756,19 @@ function SessionRow({
             <DotsThreeVertical size={14} weight="regular" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-36">
-          <DropdownMenuItem onClick={(e) => onRename(s, e)}>
+        <DropdownMenuContent align="end" className="w-32 p-1 text-xs">
+          <DropdownMenuItem onClick={(e) => onRename(s, e)} className="rounded-lg px-2 py-1 text-xs">
             <PencilSimple size={13} weight="regular" /> 重命名
           </DropdownMenuItem>
           {!archived && (
-            <DropdownMenuItem onClick={(e) => void onTogglePin(s.id, e)}>
+            <DropdownMenuItem onClick={(e) => void onTogglePin(s.id, e)} className="rounded-lg px-2 py-1 text-xs">
               <PushPin size={13} weight="regular" /> {s.pinned ? '取消置顶' : '置顶'}
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem onClick={(e) => void onArchiveToggle(s, e)}>
+          <DropdownMenuItem onClick={(e) => void onArchiveToggle(s, e)} className="rounded-lg px-2 py-1 text-xs">
             <Archive size={13} weight="regular" /> {archived ? '取消归档' : '归档'}
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={(e) => onDelete(s.id, e)} className="text-red-500 focus:text-red-500">
+          <DropdownMenuItem onClick={(e) => onDelete(s.id, e)} className="rounded-lg px-2 py-1 text-xs text-red-500 focus:text-red-500">
             <Trash size={13} weight="regular" /> 删除
           </DropdownMenuItem>
         </DropdownMenuContent>

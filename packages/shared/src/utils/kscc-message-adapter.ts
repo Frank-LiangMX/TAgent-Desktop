@@ -76,6 +76,7 @@ export function sdkMessageToIR(
         sessionId: m.session_id as string | undefined,
         isReplay: m.isReplay as boolean | undefined,
         isSynthetic: m.isSynthetic as boolean | undefined,
+        createdAt: m.createdAt as number | undefined,
         content: content as unknown as TAgentMessage['content'],
       } as TAgentMessage,
     }
@@ -96,6 +97,7 @@ export function sdkMessageToIR(
         parentToolUseId: (m.parent_tool_use_id as string | null) ?? null,
         sessionId: m.session_id as string | undefined,
         isReplay: m.isReplay as boolean | undefined,
+        createdAt: m.createdAt as number | undefined,
         modelId: (m._channelModelId as string | undefined) ?? message?.model,
         error: error ? { message: error.message ?? '', code: error.errorType } : undefined,
         content: content as TAgentContentBlock[],

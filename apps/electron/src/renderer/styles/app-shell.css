@@ -27,6 +27,53 @@
 }
 
 /*
+ * 底部统一模糊带：一块独立 backdrop-filter + 向下渐浓底色，覆盖
+ * 「输入框顶 → 窗口底」整条底层，宽度 = 输入框宽（左右 gutter 对齐）。
+ *
+ * 定位用 --session-composer-top（窗底→输入框顶的距离）：它由 Chat.tsx 功能栏
+ * 展开效果抬高（+47px），所以背板顶会自动跟着输入框上移、高度自动变大。
+ *   · 顶：var(--session-composer-top) 在窗底之上 = 输入框顶
+ *   · 底：下探 status(7px) 到窗口底
+ *   · 宽：左右各 gutter(16px) = 输入框宽
+ * 输入框 / token 栏 / 功能栏都不再各自 backdrop-filter，共用这一块 blur，
+ * 避免两层模糊在输入框底部叠成糊块。z-index:-1 沉到 stack 内最底
+ * （低于 token(z1)/输入框(z2) 与 queue/banner），backdrop 采样越过 stack 采到滚动消息。
+ */
+.session-bottom-stack .composer-blur-underlay {
+  position: absolute;
+  left: var(--app-shell-session-gutter, 16px);
+  right: var(--app-shell-session-gutter, 16px);
+  /* stack 本体 bottom:7px，再下探 7px 贴到窗口底 */
+  bottom: calc(-1 * var(--spatial-status-bottom, 7px));
+  /* 高度 = 窗底→输入框顶；展开时该变量被抬高，背板自动长高 */
+  height: var(--session-composer-top, 140px);
+  z-index: -1;
+  pointer-events: none;
+  /* blur + 向下渐浓底色（压暗保 token 文字可读）+ 顶部软裁（无硬雾边） */
+  -webkit-backdrop-filter: blur(20px) saturate(1.06);
+  backdrop-filter: blur(20px) saturate(1.06);
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--scene-base-rgb, 248 248 250) / 0) 0%,
+    rgb(var(--scene-base-rgb, 248 248 250) / 0.18) 45%,
+    rgb(var(--scene-base-rgb, 248 248 250) / 0.45) 82%,
+    rgb(var(--scene-base-rgb, 248 248 250) / 0.55) 100%
+  );
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 6%, black 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 6%, black 100%);
+}
+
+.dark .session-bottom-stack .composer-blur-underlay {
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--scene-base-rgb, 18 20 24) / 0) 0%,
+    rgb(var(--scene-base-rgb, 18 20 24) / 0.24) 45%,
+    rgb(var(--scene-base-rgb, 18 20 24) / 0.55) 82%,
+    rgb(var(--scene-base-rgb, 18 20 24) / 0.65) 100%
+  );
+}
+
+/*
  * 输入 + token：铺满 main 内容宽（随窗口变宽），左右 gutter 对齐侧栏间距与右缘。
  * 不再 max-width:680 居中卡死。
  */
@@ -69,6 +116,450 @@
 }
 
 /*
+ * ComposerUnderlay — 原样对齐 TAgent_General app-shell.css:2400-2537
+ */
+.session-composer-cluster .composer-underlay {
+  --composer-underlay-inset-x: 4px;
+  --composer-underlay-h: 42px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  height: 0;
+  min-height: 0;
+  margin-right: var(--composer-underlay-inset-x);
+  margin-bottom: 0;
+  margin-left: var(--composer-underlay-inset-x);
+  padding: 0 5px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  border: 1px solid transparent;
+  border-radius: var(--app-shell-composer-radius, 16px);
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transform: translateY(-10px) scale(0.985);
+  transform-origin: center bottom;
+  transition:
+    height 220ms var(--app-shell-motion),
+    min-height 220ms var(--app-shell-motion),
+    margin 220ms var(--app-shell-motion),
+    padding 220ms var(--app-shell-motion),
+    opacity 180ms var(--app-shell-motion),
+    transform 220ms var(--app-shell-motion),
+    border-color 180ms var(--app-shell-motion),
+    background-color 220ms var(--app-shell-motion),
+    box-shadow 220ms var(--app-shell-motion);
+}
+
+.session-composer-cluster.is-composer-expanded .composer-underlay {
+  height: var(--composer-underlay-h, 42px);
+  min-height: var(--composer-underlay-h, 42px);
+  margin-top: -2px;
+  margin-bottom: max(
+    0px,
+    calc(
+      var(--shell-band-inset-bottom, 24px) - var(--spatial-status-bottom, 7px) -
+        var(--shell-token-h, 12px)
+    )
+  );
+  padding: 4px;
+  opacity: 1;
+  pointer-events: auto;
+  position: relative;
+  z-index: 3;
+  border-color: var(--surface-role-composer-underlay-rim, rgb(255 255 255 / 0.55));
+  background: var(--surface-role-composer-underlay-fill,
+    radial-gradient(circle at 18% 0%, rgb(var(--scene-a-rgb) / 0.1), transparent 44%),
+    linear-gradient(180deg, rgb(var(--glass-rgb) / 0.55), rgb(var(--glass-rgb) / 0.36))) !important;
+  box-shadow: var(--surface-role-composer-underlay-shadow,
+    inset 0 1px 0 rgb(255 255 255 / 0.56),
+    inset 1px 0 0 rgb(255 255 255 / 0.18),
+    inset 0 -1px 0 rgb(54 64 80 / 0.04),
+    0 10px 26px rgb(54 64 80 / 0.1));
+  /* blur 由底部统一背板 (.composer-blur-underlay) 负责；功能栏不再自带 backdrop-filter，
+     避免与背板叠成两层糊块。 */
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transform: translateY(0) scale(1);
+}
+
+.session-composer-cluster.is-composer-expanded .session-input-dock {
+  position: relative;
+  z-index: 4;
+  margin-bottom: 0;
+}
+
+.dark .session-composer-cluster.is-composer-expanded .composer-underlay {
+  border-color: var(--surface-role-composer-underlay-rim, rgb(255 255 255 / 0.1));
+  box-shadow: var(--surface-role-composer-underlay-shadow,
+    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    0 10px 26px rgb(0 0 0 / 0.3));
+}
+
+/* Underlay 功能格子 — 原样对齐 General */
+.composer-underlay-cell {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: 1fr 1fr;
+  align-items: center;
+  gap: 0 5px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 10px;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 160ms var(--app-shell-motion), color 160ms var(--app-shell-motion);
+}
+
+.composer-underlay-cell:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.06);
+}
+
+.composer-underlay-cell--open {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.08);
+}
+
+.composer-underlay-cell__icon {
+  grid-row: 1 / -1;
+  width: 13px;
+  height: 13px;
+  color: hsl(var(--primary));
+  flex-shrink: 0;
+}
+
+.composer-underlay-cell__label {
+  align-self: end;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 8px;
+  line-height: 1.15;
+  opacity: 0.88;
+}
+
+.composer-underlay-cell__value {
+  align-self: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: hsl(var(--foreground));
+  font-size: 8px;
+  font-weight: 650;
+  line-height: 1.15;
+}
+
+/* ===== 思考强度滑杆（ReasoningSlider） — 粗条 + 扫光能量 + 粒子动画 ===== */
+.reasoning-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 2px 4px;
+}
+
+/* 两端标签：更快 / 更深 */
+.reasoning-slider-scale {
+  display: flex;
+  justify-content: space-between;
+  color: hsl(var(--muted-foreground) / 0.6);
+  font-size: 8px;
+  font-weight: 520;
+  line-height: 1;
+}
+
+/* ---- 轨道区 ---- */
+.reasoning-slider-rail {
+  position: relative;
+  box-sizing: border-box;
+  height: 24px;
+  cursor: pointer;
+  outline: none;
+  border-radius: 6px;
+  transition: background-color 160ms var(--app-shell-motion);
+}
+.reasoning-slider-rail:hover {
+  background: hsl(var(--foreground) / 0.04);
+}
+.reasoning-slider-rail:focus-visible {
+  background: hsl(var(--foreground) / 0.06);
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.35);
+}
+
+/* 粗轨道（8px 高） */
+.reasoning-slider-track {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  right: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: hsl(var(--muted-foreground) / 0.12);
+  transform: translateY(-50%);
+  overflow: hidden;
+}
+
+/* 填充段：从左到 thumb，带发光 */
+.reasoning-slider-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg,
+    hsl(var(--primary) / 0.55),
+    hsl(var(--primary) / 0.85),
+    hsl(var(--primary))
+  );
+  box-shadow: 0 0 8px hsl(var(--primary) / 0.3);
+  transition: width 180ms var(--app-shell-motion), box-shadow 300ms var(--app-shell-motion);
+}
+
+/* ---- 扫光条（能量加载动画） ---- */
+.reasoning-slider-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -40%;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(90deg,
+    transparent,
+    hsl(var(--primary) / 0.0) 0%,
+    hsl(0 0% 100% / 0.15) 40%,
+    hsl(0 0% 100% / 0.35) 50%,
+    hsl(0 0% 100% / 0.15) 60%,
+    hsl(var(--primary) / 0.0) 100%,
+    transparent
+  );
+  border-radius: 4px;
+  opacity: 0;
+  animation: reasoning-sweep 3s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* low: 扫光慢且淡 */
+.reasoning-slider--low .reasoning-slider-fill::after {
+  opacity: 0.4;
+  animation-duration: 3.5s;
+}
+/* medium: 扫光适中 */
+.reasoning-slider--medium .reasoning-slider-fill::after {
+  opacity: 0.65;
+  animation-duration: 2.5s;
+  background: linear-gradient(90deg,
+    transparent,
+    hsl(var(--primary) / 0.0) 0%,
+    hsl(0 0% 100% / 0.2) 35%,
+    hsl(0 0% 100% / 0.45) 50%,
+    hsl(0 0% 100% / 0.2) 65%,
+    hsl(var(--primary) / 0.0) 100%,
+    transparent
+  );
+}
+/* high: 扫光快且亮 */
+.reasoning-slider--high .reasoning-slider-fill::after {
+  opacity: 0.85;
+  animation-duration: 1.8s;
+  background: linear-gradient(90deg,
+    transparent,
+    hsl(var(--primary) / 0.0) 0%,
+    hsl(0 0% 100% / 0.25) 30%,
+    hsl(0 0% 100% / 0.55) 50%,
+    hsl(0 0% 100% / 0.25) 70%,
+    hsl(var(--primary) / 0.0) 100%,
+    transparent
+  );
+}
+/* max: 扫光极快极亮 + 双扫光 */
+.reasoning-slider--max .reasoning-slider-fill::after {
+  opacity: 1;
+  animation-duration: 1.2s;
+  width: 50%;
+  background: linear-gradient(90deg,
+    transparent,
+    hsl(var(--primary) / 0.0) 0%,
+    hsl(0 0% 100% / 0.3) 25%,
+    hsl(0 0% 100% / 0.65) 50%,
+    hsl(0 0% 100% / 0.3) 75%,
+    hsl(var(--primary) / 0.0) 100%,
+    transparent
+  );
+}
+
+@keyframes reasoning-sweep {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+/* 强度越高，填充发光越强 */
+.reasoning-slider--medium .reasoning-slider-fill {
+  box-shadow: 0 0 10px hsl(var(--primary) / 0.4), 0 0 20px hsl(var(--primary) / 0.15);
+}
+.reasoning-slider--high .reasoning-slider-fill {
+  box-shadow: 0 0 12px hsl(var(--primary) / 0.5), 0 0 28px hsl(var(--primary) / 0.2);
+}
+.reasoning-slider--max .reasoning-slider-fill {
+  box-shadow: 0 0 16px hsl(var(--primary) / 0.6), 0 0 36px hsl(var(--primary) / 0.28);
+}
+
+/* ---- 能量粒子 ---- */
+.reasoning-slider-particles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+.reasoning-slider-particle {
+  position: absolute;
+  border-radius: 999px;
+  background: hsl(var(--primary) / 0.7);
+  box-shadow: 0 0 4px hsl(var(--primary) / 0.5);
+  animation: reasoning-particle-float var(--particle-dur, 3s) ease-in-out infinite alternate;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+/* 高强度时粒子可见 */
+.reasoning-slider--medium .reasoning-slider-particle {
+  opacity: 0.35;
+}
+.reasoning-slider--high .reasoning-slider-particle {
+  opacity: 0.6;
+}
+.reasoning-slider--max .reasoning-slider-particle {
+  opacity: 0.85;
+  animation-name: reasoning-particle-float-intense;
+}
+
+@keyframes reasoning-particle-float {
+  0% {
+    transform: translate(0, 0) scale(0.7);
+  }
+  100% {
+    transform: translate(var(--particle-dx, 4px), var(--particle-dy, -4px)) scale(1.1);
+  }
+}
+
+@keyframes reasoning-particle-float-intense {
+  0% {
+    transform: translate(0, 0) scale(0.6);
+    opacity: 0.5;
+  }
+  50% {
+    transform: translate(
+      calc(var(--particle-dx, 4px) * 1.6),
+      calc(var(--particle-dy, -4px) * 1.6)
+    ) scale(1.3);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(
+      calc(var(--particle-dx, 4px) * -0.5),
+      calc(var(--particle-dy, -4px) * -0.5)
+    ) scale(0.8);
+    opacity: 0.6;
+  }
+}
+
+/* ---- Thumb ---- */
+.reasoning-slider-thumb {
+  position: absolute;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 2.5px solid hsl(var(--primary));
+  background: hsl(var(--background));
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.15), 0 1px 4px rgb(0 0 0 / 0.2);
+  transform: translate(-50%, -50%);
+  transition:
+    left 180ms var(--app-shell-motion),
+    box-shadow 200ms var(--app-shell-motion);
+  pointer-events: none;
+}
+
+.reasoning-slider-rail:hover .reasoning-slider-thumb {
+  box-shadow: 0 0 0 4px hsl(var(--primary) / 0.2), 0 1px 6px rgb(0 0 0 / 0.24);
+}
+.reasoning-slider-rail:active .reasoning-slider-thumb {
+  box-shadow: 0 0 0 5px hsl(var(--primary) / 0.28), 0 1px 6px rgb(0 0 0 / 0.24);
+}
+
+/* 强度越高，thumb 脉冲光晕越强 */
+.reasoning-slider--medium .reasoning-slider-thumb {
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.2), 0 0 8px hsl(var(--primary) / 0.2), 0 1px 4px rgb(0 0 0 / 0.2);
+  animation: reasoning-thumb-pulse 2.4s ease-in-out infinite;
+}
+.reasoning-slider--high .reasoning-slider-thumb {
+  box-shadow: 0 0 0 4px hsl(var(--primary) / 0.25), 0 0 12px hsl(var(--primary) / 0.3), 0 1px 4px rgb(0 0 0 / 0.2);
+  animation: reasoning-thumb-pulse 1.8s ease-in-out infinite;
+}
+.reasoning-slider--max .reasoning-slider-thumb {
+  box-shadow: 0 0 0 5px hsl(var(--primary) / 0.3), 0 0 18px hsl(var(--primary) / 0.4), 0 1px 4px rgb(0 0 0 / 0.2);
+  animation: reasoning-thumb-pulse 1.2s ease-in-out infinite;
+  border-color: hsl(var(--primary));
+  background: radial-gradient(circle at 35% 35%, hsl(var(--primary) / 0.25), hsl(var(--background)));
+}
+
+@keyframes reasoning-thumb-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.15), 0 0 6px hsl(var(--primary) / 0.15), 0 1px 4px rgb(0 0 0 / 0.2);
+  }
+  50% {
+    box-shadow: 0 0 0 5px hsl(var(--primary) / 0.28), 0 0 14px hsl(var(--primary) / 0.35), 0 1px 4px rgb(0 0 0 / 0.2);
+  }
+}
+
+/* ---- 档位标签 ---- */
+.reasoning-slider-labels {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 4px;
+  color: hsl(var(--muted-foreground) / 0.5);
+  font-size: 8px;
+  font-weight: 520;
+  line-height: 1;
+}
+.reasoning-slider-label.is-active {
+  color: hsl(var(--primary));
+  font-weight: 650;
+}
+
+/* ---- Dark mode adjustments ---- */
+.dark .reasoning-slider--max .reasoning-slider-fill {
+  box-shadow: 0 0 20px hsl(var(--primary) / 0.5), 0 0 44px hsl(var(--primary) / 0.2);
+}
+.dark .reasoning-slider-particle {
+  background: hsl(var(--primary) / 0.55);
+  box-shadow: 0 0 6px hsl(var(--primary) / 0.35);
+}
+.dark .reasoning-slider--max .reasoning-slider-fill::after {
+  background: linear-gradient(90deg,
+    transparent,
+    hsl(var(--primary) / 0.0) 0%,
+    hsl(0 0% 100% / 0.35) 25%,
+    hsl(0 0% 100% / 0.7) 50%,
+    hsl(0 0% 100% / 0.35) 75%,
+    hsl(var(--primary) / 0.0) 100%,
+    transparent
+  );
+}
+
+/*
  * token 栏：读数淡色印在 scene 上，无硬边界面板。
  * 底层用 mask 渐变 + blur：滚动文字滚入时变糊，栏本身融入背景。
  */
@@ -81,59 +572,23 @@
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
+  width: 100%;
+  max-width: 100%;
   height: var(--shell-token-h, 16px);
   min-height: var(--shell-token-h, 16px);
   max-height: var(--shell-token-h, 16px);
   margin: 0;
-  padding: 0 4px;
-  overflow: visible;
+  padding: 0 var(--app-shell-session-gutter, 16px);
+  overflow: hidden;
   font-size: 9px;
   line-height: 1;
   color: hsl(var(--muted-foreground) / 0.58);
   border: 0;
   border-radius: 0;
+  /* 透明：blur + 压暗底色都由底部统一背板 (.composer-blur-underlay) 负责。
+     左右 padding 对齐输入框 gutter，token 内容右缘不超出输入框。 */
   background: transparent;
   box-shadow: none;
-}
-
-/* 无硬边的底区雾化：向上淡出，只模糊滚到脚下的消息 */
-.session-bottom-stack .token-stats-bar::before {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  /* 向上多伸一点接住滚动文字，左右铺满主区 */
-  top: -18px;
-  right: -24px;
-  bottom: -6px;
-  left: -24px;
-  pointer-events: none;
-  background: linear-gradient(
-    to bottom,
-    rgb(var(--scene-base-rgb, 248 248 250) / 0) 0%,
-    rgb(var(--scene-base-rgb, 248 248 250) / 0.22) 35%,
-    rgb(var(--scene-base-rgb, 248 248 250) / 0.55) 70%,
-    rgb(var(--scene-base-rgb, 248 248 250) / 0.78) 100%
-  );
-  -webkit-backdrop-filter: blur(12px) saturate(1.02);
-  backdrop-filter: blur(12px) saturate(1.02);
-  /* 顶部软裁，避免出现一条硬雾边 */
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent 0%,
-    black 28%,
-    black 100%
-  );
-  mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
-}
-
-.dark .session-bottom-stack .token-stats-bar::before {
-  background: linear-gradient(
-    to bottom,
-    rgb(var(--scene-base-rgb, 18 20 24) / 0) 0%,
-    rgb(var(--scene-base-rgb, 18 20 24) / 0.28) 40%,
-    rgb(var(--scene-base-rgb, 18 20 24) / 0.62) 75%,
-    rgb(var(--scene-base-rgb, 18 20 24) / 0.85) 100%
-  );
 }
 
 .session-bottom-stack .token-stats-bar--empty {
@@ -158,7 +613,8 @@
   isolation: isolate;
   border: 1px solid rgb(var(--glass-rgb) / 0.5);
   border-radius: var(--app-shell-composer-radius, 16px);
-  /* 玻璃底：极透（消息可从下方滚过透出），靠 blur + 顶光 + 阴影维持玻璃质感 */
+  /* 玻璃底：极透（消息可从下方滚过透出），靠底部统一模糊带 (.composer-blur-underlay)
+     + 顶光 + 阴影维持玻璃质感。自身不再 backdrop-filter（与遮罩共用一块 blur）。 */
   background:
     radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 66%),
     linear-gradient(145deg, rgb(var(--glass-rgb) / 0.42), rgb(var(--glass-rgb) / 0.28)) !important;
@@ -168,8 +624,10 @@
     0 2px 6px -2px rgb(23 30 40 / 0.08),
     inset 0 1px 0 rgb(255 255 255 / 0.5),
     inset 1px 0 0 rgb(255 255 255 / 0.14);
-  -webkit-backdrop-filter: blur(22px) saturate(1.06);
-  backdrop-filter: blur(22px) saturate(1.06);
+  /* 去掉自身 backdrop-filter：与底部统一模糊带共用一块 blur，避免两层叠加。
+     !important 压过 glass.css 基础类 / neonav 规则。 */
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
   transition:
     border-color 180ms var(--app-shell-motion),
     box-shadow 220ms var(--app-shell-motion);
@@ -219,6 +677,106 @@
     0 0 0 2px var(--spatial-accent-soft),
     0 10px 30px -10px rgb(0 0 0 / 0.4);
   transform: none;
+}
+
+/*
+ * 权限模式 focus 描边色：非默认模式聚焦输入框时，浮岛边框 + 外发光按模式变色。
+ * 静态着色（无扩散动画），配合工具栏角标一起标识当前模式。
+ *   auto  → 默认 focus ring（见上方 .chat-input-glass:focus-within）
+ *   plan  → 紫（克制规划）
+ *   bypass→ 橙（放权激进）
+ */
+.session-input-dock[data-permission-mode='plan'] .chat-input-glass:focus-within {
+  border-color: hsl(245 70% 60% / 0.75);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    0 0 0 2px hsl(245 70% 60% / 0.2),
+    0 0 14px hsl(245 70% 60% / 0.4),
+    0 10px 30px -10px rgb(23 30 40 / 0.18);
+  transform: none;
+}
+.session-input-dock[data-permission-mode='bypassPermissions'] .chat-input-glass:focus-within {
+  border-color: hsl(28 85% 58% / 0.78);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    0 0 0 2px hsl(28 85% 58% / 0.22),
+    0 0 18px hsl(28 85% 58% / 0.45),
+    0 10px 30px -10px rgb(23 30 40 / 0.18);
+  transform: none;
+}
+.dark .session-input-dock[data-permission-mode='plan'] .chat-input-glass:focus-within {
+  border-color: hsl(245 70% 70% / 0.65);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    0 0 0 2px hsl(245 70% 70% / 0.18),
+    0 0 16px hsl(245 70% 70% / 0.36),
+    0 10px 30px -10px rgb(0 0 0 / 0.4);
+}
+.dark .session-input-dock[data-permission-mode='bypassPermissions'] .chat-input-glass:focus-within {
+  border-color: hsl(28 85% 65% / 0.7);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    0 0 0 2px hsl(28 85% 65% / 0.2),
+    0 0 20px hsl(28 85% 65% / 0.42),
+    0 10px 30px -10px rgb(0 0 0 / 0.4);
+}
+
+/*
+ * 权限模式角标：功能栏折叠时，输入框工具栏的权限 chip 仍可见，
+ * 图标 + 状态色一眼区分模式（plan 紫 / bypass 橙；auto 不显示）。
+ */
+.composer-permission-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+  border: 1px solid transparent;
+  transition: background-color 160ms var(--app-shell-motion), border-color 160ms var(--app-shell-motion), color 160ms var(--app-shell-motion);
+}
+.composer-permission-chip__icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+/* auto：自动审批 —— 中性绿（默认安全） */
+.composer-permission-chip--auto {
+  color: hsl(142 60% 32%);
+  background: hsl(142 60% 42% / 0.1);
+  border-color: hsl(142 60% 42% / 0.25);
+}
+/* plan：计划模式 —— 紫（克制规划） */
+.composer-permission-chip--plan {
+  color: hsl(245 60% 50%);
+  background: hsl(245 60% 55% / 0.1);
+  border-color: hsl(245 60% 55% / 0.25);
+}
+/* bypassPermissions：完全自动 —— 橙（放权激进） */
+.composer-permission-chip--bypassPermissions {
+  color: hsl(28 80% 48%);
+  background: hsl(28 80% 55% / 0.1);
+  border-color: hsl(28 80% 55% / 0.28);
+}
+
+.dark .composer-permission-chip--auto {
+  color: hsl(142 55% 62%);
+  background: hsl(142 55% 50% / 0.14);
+  border-color: hsl(142 55% 50% / 0.3);
+}
+.dark .composer-permission-chip--plan {
+  color: hsl(245 70% 72%);
+  background: hsl(245 70% 60% / 0.16);
+  border-color: hsl(245 70% 60% / 0.32);
+}
+.dark .composer-permission-chip--bypassPermissions {
+  color: hsl(28 85% 65%);
+  background: hsl(28 85% 55% / 0.16);
+  border-color: hsl(28 85% 55% / 0.34);
 }
 
 /* ===== 浮岛布局（对齐 TAgent_General AppShell 视觉，flex 行布局 + 玻璃浮岛） =====

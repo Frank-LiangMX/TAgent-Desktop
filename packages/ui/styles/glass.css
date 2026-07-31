@@ -754,6 +754,48 @@
 }
 
 /* ============================================================================
+ * 4b. 弹窗类菜单项（session-menu-item）—— 通用菜单积木
+ *     不复用 session-list-row（其默认 hover = primary 7% 在 popover 玻璃面偏浊）。
+ *     hover 用中性 foreground/8；选中态挂 session-list-item-active（玻璃浮岛，
+ *     自身无 hover 规则，由 session-menu-item 接管 hover，零视觉漂移）。
+ * ========================================================================== */
+.session-menu-item {
+  position: relative;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0.75rem;
+  padding: 0.375rem 0.625rem;
+  text-align: left;
+  color: hsl(var(--foreground) / 0.78);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.session-menu-item--active {
+  color: hsl(var(--foreground));
+}
+@media (hover: hover) {
+  .session-menu-item:not(.session-menu-item--active):hover {
+    background-color: hsl(var(--foreground) / 0.08);
+    color: hsl(var(--foreground));
+  }
+}
+.session-menu-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px hsl(var(--ring));
+}
+/* 选中态：玻璃浮岛（复用 session-list-item-active 的材质，但圆角/内边距归 session-menu-item） */
+.session-menu-item.session-list-item-active {
+  border-radius: 0.75rem;
+}
+
+/* ============================================================================
  * 5. Tooltip — 全局玻璃气泡（非浏览器 title）
  *    对齐折叠右轨胶囊（navigation / spatial-rail）
  * ========================================================================== */

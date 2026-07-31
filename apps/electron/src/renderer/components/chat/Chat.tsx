@@ -5,14 +5,17 @@
  * 消息区用 Conversation 容器（自动钉底），输入区用 TipTap ChatInput。
  * 模型：首条消息只绑定运行内核（KSCC / 外部），同内核内渠道与模型可继续切换。
  */
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import type { StickToBottomContext } from 'use-stick-to-bottom'
-import type { TAgentDesktopStreamPayload, TAgentMessage, TAgentPermissionMode, SubagentEagerness } from '@tagent/shared'
+import type { TAgentDesktopStreamPayload, TAgentMessage, TAgentPermissionMode, SubagentEagerness, ReasoningEffort } from '@tagent/shared'
 import {
   resolveChannelDefaultModelId,
   sdkMessageToIR,
   TAGENT_DEFAULT_PERMISSION_MODE,
+  TAGENT_PERMISSION_MODE_CONFIG,
+  DEFAULT_REASONING_EFFORT,
+  migrateReasoningEffort,
   type TAgentUsage,
 } from '@tagent/shared'
 import { type ContextUsageSnapshotView } from './ContextUsageBadge'
@@ -31,8 +34,9 @@ import {
   ReasoningTrigger,
   ReasoningContent,
   Button,
+  AppTooltip,
 } from '@tagent/ui'
-import { ArrowUp, Square, Compass, Zap } from 'lucide-react'
+import { ArrowUp, Square, Compass, Zap, Plus, SlidersHorizontal, Unlock } from 'lucide-react'
 import {
   COMPACTION_IN_PROGRESS_LABEL,
   getCompactBoundaryLabel,
@@ -48,8 +52,6 @@ import { ChatInput, type ChatInputHandle } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
 import { WorkspaceSelector } from './WorkspaceSelector'
 import { NewConversationLanding } from './NewConversationLanding'
-import { PermissionModeSelector } from './PermissionModeSelector'
-import { SubagentEagernessSelector } from './SubagentEagernessSelector'
 import {
   resolveEagerness,
   reduceTaskEvent,
@@ -58,6 +60,7 @@ import {
 } from './subagent-ui-model'
 import { PermissionBanner } from '../permission/PermissionBanner'
 import { MessageQueue } from './MessageQueue'
+import { ComposerUnderlay } from './ComposerUnderlay'
 import { ScrollPositionManager } from '../shell/ScrollPositionManager'
 import {
   channelsAtom,
@@ -125,6 +128,10 @@ export function Chat({
   const [hasDraft, setHasDraft] = useState(false)
   /** 运行中排队的消息（运行中发送→入队，运行结束→自动消费） */
   const [messageQueue, setMessageQueue] = useState<Array<{ text: string; selection: ModelSelection }>>([])
+  /** 待发送附件（输入框暂存，发送后清空） */
+  const [pendingAttachments, setPendingAttachments] = useState<Array<{
+    id: string; filename: string; mediaType: string; size: number; previewUrl?: string; data: string
+  }>>([])
   /** 历史加载完成的标志：false 时 Conversation resize=instant（无动画）+ ScrollPositionManager 恢复位置 */
   const [scrollReady, setScrollReady] = useState(false)
   /** 虚拟化：当前挂载的消息条数（从尾部切）。20 首 batch，idle 帧递增 40/批，全挂完置 Infinity。
@@ -136,6 +143,14 @@ export function Chat({
   const [permissionMode, setPermissionMode] = useState<TAgentPermissionMode>(TAGENT_DEFAULT_PERMISSION_MODE)
   /** 子代理委派积极性（默认 conservative；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 kscc 生效） */
   const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('conservative')
+  /** 思考强度（默认 medium；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 SDK query 生效） */
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(DEFAULT_REASONING_EFFORT)
+  /** 会话页入场动画：mount 后一帧加 is-mounted class 触发 CSS transition */
+  const [pageMounted, setPageMounted] = useState(false)
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setPageMounted(true))
+    return () => cancelAnimationFrame(raf)
+  }, [])
   /** 最近一轮 usage（仅外部/Pi 展示；kscc 不采信） */
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshotView | null>(null)
   const [tokenTotals, setTokenTotals] = useState<SessionTokenTotals>({
@@ -191,6 +206,10 @@ export function Chat({
   const itemIdxRef = useRef(0)
   const streamingRef = useRef<DisplayItem | null>(null)
   const chatInputRef = useRef<ChatInputHandle>(null)
+  const composerClusterRef = useRef<HTMLDivElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+  /** 输入框聚焦时展开功能栏 */
+  const [composerExpanded, setComposerExpanded] = useState(false)
 
   const channels = useAtomValue(channelsAtom)
   const tabs = useAtomValue(tabsAtom)
@@ -291,6 +310,7 @@ export function Chat({
     streamingRef.current = null
     itemIdxRef.current = 0
     setSubagentEagerness('conservative') // 切会话重置，下面异步回显持久化值
+    setReasoningEffort(DEFAULT_REASONING_EFFORT) // 切会话重置，下面异步回显持久化值
     // welcome 形态点提示词时暂存的文本：草稿态挂载后预填输入框并清空。
     // 只有刚 newSession 的草稿会带 pending；切到已有会话时它已被清空，不误填。
     if (pendingSuggestion) {
@@ -329,11 +349,15 @@ export function Chat({
         const metas = (await window.electronAPI.listSessions()) as Array<{
           id: string
           subagentEagerness?: SubagentEagerness
+          reasoningEffort?: ReasoningEffort
         }>
         const persisted = metas.find((m) => m.id === sessionId)
-        if (persisted) setSubagentEagerness(resolveEagerness(persisted))
+        if (persisted) {
+          setSubagentEagerness(resolveEagerness(persisted))
+          setReasoningEffort(migrateReasoningEffort(persisted.reasoningEffort))
+        }
       } catch {
-        /* 回显失败不影响主流程，沿用默认 conservative */
+        /* 回显失败不影响主流程，沿用默认 */
       }
     })()
   }, [sessionId])
@@ -360,6 +384,41 @@ export function Chat({
       scrollEl.classList.remove('is-scrolling')
     }
   }, [sessionId])
+
+  // 点击输入框外部时折叠功能栏
+  useEffect(() => {
+    if (!composerExpanded) return
+    const handlePointerDown = (e: PointerEvent): void => {
+      const cluster = composerClusterRef.current
+      if (!cluster) return
+      const target = e.target as HTMLElement
+      // 点击在 composer 内部 → 不折叠
+      if (cluster.contains(target)) return
+      // 点击在 Radix popover 内 → 不折叠
+      if (target.closest('[data-radix-popper-content-wrapper]')) return
+      setComposerExpanded(false)
+    }
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    return () => document.removeEventListener('pointerdown', handlePointerDown, true)
+  }, [composerExpanded])
+
+  // 功能栏展开时抬高底部预留（scroll button + 渐隐区跟随上移，避免被遮 / 边界突兀）
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const UNDERLAY_H = 42 + 5 // 功能栏高 + margin
+    if (composerExpanded) {
+      const base = parseFloat(getComputedStyle(root).getPropertyValue('--session-composer-top')) || 140
+      root.style.setProperty('--session-composer-top', `${base + UNDERLAY_H}px`)
+      root.style.setProperty('--session-bottom-reserve', `${(parseFloat(getComputedStyle(root).getPropertyValue('--session-bottom-reserve')) || 140) + UNDERLAY_H}px`)
+    } else {
+      // 还原：减回 UNDERLAY_H（若之前被加过）
+      const cur = parseFloat(getComputedStyle(root).getPropertyValue('--session-composer-top')) || 140
+      root.style.setProperty('--session-composer-top', `${Math.max(140, cur - UNDERLAY_H)}px`)
+      const curRes = parseFloat(getComputedStyle(root).getPropertyValue('--session-bottom-reserve')) || 140
+      root.style.setProperty('--session-bottom-reserve', `${Math.max(140, curRes - UNDERLAY_H)}px`)
+    }
+  }, [composerExpanded])
 
   // 虚拟化分批递增：未全挂时，idle 帧每批 +40 补齐旧消息（保近期，底部对话不受影响）
   useEffect(() => {
@@ -606,8 +665,11 @@ export function Chat({
     }
   }
 
-  /** 核心发送逻辑：校验渠道 → IPC sendMessage → materializeTab */
-  const sendQueued = async ({ text, selection }: { text: string; selection: ModelSelection }): Promise<void> => {
+  /** 核心发送逻辑：校验渠道 → 保存附件 → IPC sendMessage → materializeTab */
+  const sendQueued = async ({ text, selection, attachments }: {
+    text: string; selection: ModelSelection;
+    attachments?: Array<{ id: string; filename: string; mediaType: string; size: number; previewUrl?: string; data: string }>
+  }): Promise<void> => {
     if (!selection) {
       alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
       return
@@ -618,6 +680,28 @@ export function Chat({
       alert('当前渠道或模型已停用，请选择同一运行区域内的可用模型')
       return
     }
+    // 保存附件到磁盘
+    let savedAttachments: Array<{ id: string; filename: string; mediaType: string; localPath: string; size: number }> = []
+    if (attachments?.length) {
+      for (const att of attachments) {
+        try {
+          const saved = await (window.electronAPI as any).saveAttachment({
+            sessionId: sessionIdRef.current,
+            filename: att.filename,
+            mediaType: att.mediaType,
+            data: att.data,
+          })
+          savedAttachments.push(saved)
+        } catch (err) {
+          console.error('[Chat] 保存附件失败:', att.filename, err)
+        }
+      }
+      // 清空待发附件 + revoke blob URLs
+      for (const att of attachments) {
+        if (att.previewUrl) URL.revokeObjectURL(att.previewUrl)
+      }
+      setPendingAttachments([])
+    }
     setRunning(true)
     try {
       const res = await window.electronAPI.sendMessage({
@@ -626,7 +710,8 @@ export function Chat({
         channelId: selection.channelId,
         model: selection.modelId,
         workspaceId: session.workspaceId,
-      })
+        ...(savedAttachments.length ? { attachments: savedAttachments } : {}),
+      } as any)
       if (res && !res.ok) {
         alert(`发送失败：${res.error ?? '未知错误'}`)
         setRunning(false)
@@ -680,7 +765,7 @@ export function Chat({
       alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
       return
     }
-    await sendQueued({ text, selection: effectiveSelection })
+    await sendQueued({ text, selection: effectiveSelection, attachments: pendingAttachments })
   }
 
   /** 运行结束 → 批量消费队列（逐条 await，确保 running 状态正确） */
@@ -723,31 +808,47 @@ export function Chat({
     chatInputRef.current?.focus()
   }
 
+  /** 打开文件选择器 → 添加待发附件 */
+  const handleOpenFileDialog = useCallback(async () => {
+    const result = await (window.electronAPI as any).openFileDialog()
+    if (!result?.files?.length) return
+    const newAttachments = result.files.map((f: any) => {
+      const id = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const isImage = f.mediaType?.startsWith('image/')
+      return {
+        id,
+        filename: f.filename,
+        mediaType: f.mediaType,
+        size: f.size,
+        previewUrl: isImage && f.data ? `data:${f.mediaType};base64,${f.data}` : undefined,
+        data: f.data,
+      }
+    })
+    setPendingAttachments((prev) => [...prev, ...newAttachments])
+  }, [])
+
   /** 新会话页底部工具栏：模型（左）+ 发送钮（右；草稿态 running 恒 false，无停止钮）。
    *  工作区选择已移到输入框下方的独立容器（见 workspaceSlot），不再挤在 footer。 */
   const landingFooter = (
-    <div className="flex items-center justify-between px-2 pb-2 pt-1">
-      <div className="flex items-center gap-1">
-        <ModelSelector
-          selection={effectiveSelection}
-          lockedKind={null}
-          onSelect={(nextSelection) => {
-            setSelectionOverride(nextSelection)
-            setSelectedModelSelection(nextSelection)
-          }}
-        />
-      </div>
-      <div className="flex items-center gap-1.5">
-        <Button
-          size="icon"
-          className="size-9 rounded-full"
-          disabled={!hasDraft}
-          onClick={() => void send()}
-          aria-label="发送"
-        >
-          <ArrowUp className="size-5" />
-        </Button>
-      </div>
+    <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1">
+      <ModelSelector
+        selection={effectiveSelection}
+        lockedKind={null}
+        onSelect={(nextSelection) => {
+          setSelectionOverride(nextSelection)
+          setSelectedModelSelection(nextSelection)
+        }}
+      />
+      <Button
+        variant={hasDraft ? 'default' : 'ghost'}
+        size="icon"
+        className="size-9 rounded-full"
+        disabled={!hasDraft}
+        onClick={() => void send()}
+        aria-label="发送"
+      >
+        <ArrowUp className="size-5" />
+      </Button>
     </div>
   )
 
@@ -757,6 +858,9 @@ export function Chat({
       onSubmit={() => void send()}
       placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
       onDraftChange={setHasDraft}
+      attachments={pendingAttachments}
+      onAttachmentsChange={setPendingAttachments}
+      onOpenFileDialog={handleOpenFileDialog}
       footer={landingFooter}
     />
   )
@@ -774,7 +878,7 @@ export function Chat({
   )
 
   return (
-    <div className="relative h-full min-h-0">
+    <div ref={rootRef} className="relative h-full min-h-0 session-body">
       {items.length === 0 && !running ? (
         <NewConversationLanding
           composer={landingComposer}
@@ -783,7 +887,7 @@ export function Chat({
           onBack={onBack}
         />
       ) : (
-        <>
+        <div className={`relative h-full min-h-0 chat-page-enter ${pageMounted ? 'is-mounted' : ''}`}>
           {/* 消息区：全高；线程有 max-width 居中；底栏输入/token 铺满 main（贴侧栏与右缘 gutter） */}
           <Conversation
             className="absolute inset-0 min-h-0"
@@ -832,20 +936,78 @@ export function Chat({
         权限确认面板放在 composer 上方（stack 内、cluster 之前），从输入框上方伸出，靠文档流撑高。
       */}
       <div className="session-bottom-stack absolute inset-x-0">
+        {/* 底部统一模糊带：一块 backdrop-filter + 向下渐浓底色，覆盖「输入框顶→窗口底」
+            整条底层，宽 = 输入框宽（gutter）。定位用 --session-composer-top，功能栏展开时
+            该变量被抬高，背板顶自动上移、高度自动变大。输入框 / token 栏 / 功能栏都不再
+            各自 backdrop-filter，共用这一块，避免两层模糊叠成糊块。z-index:-1 沉到 stack
+            内最底（在 token(z1)/输入框(z2) 与 MessageQueue/PermissionBanner 之下）。 */}
+        <div className="composer-blur-underlay" aria-hidden="true" />
         <MessageQueue queue={messageQueue} onRemove={removeQueueItem} onClear={clearQueue} />
         <PermissionBanner sessionId={sessionId} />
         <div
-          className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''}`}
+          ref={composerClusterRef}
+          className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''} ${composerExpanded ? 'is-composer-expanded' : ''}`}
         >
-          <div className="session-input-dock">
+          <div className="session-input-dock" data-permission-mode={permissionMode}>
             <ChatInput
               ref={chatInputRef}
               onSubmit={() => void send()}
               placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
               onDraftChange={setHasDraft}
+              attachments={pendingAttachments}
+              onAttachmentsChange={setPendingAttachments}
+              onOpenFileDialog={handleOpenFileDialog}
               footer={
                 <div className="flex items-center justify-between px-2 pb-2 pt-1">
                   <div className="flex items-center gap-1">
+                    {/* 权限角标：仅非默认模式（plan/bypass）显示，提示当前处于非常规权限。
+                        auto 不显示（默认安全态）。点击展开功能栏切换。 */}
+                    {permissionMode !== 'auto' && (
+                      <AppTooltip
+                        label={`权限：${TAGENT_PERMISSION_MODE_CONFIG[permissionMode]?.label ?? permissionMode}`}
+                      >
+                        <button
+                          type="button"
+                          className={`composer-permission-chip composer-permission-chip--${permissionMode}`}
+                          onClick={() => setComposerExpanded(true)}
+                          aria-label={`权限：${TAGENT_PERMISSION_MODE_CONFIG[permissionMode]?.label ?? permissionMode}（点击展开切换）`}
+                        >
+                          {permissionMode === 'plan' ? (
+                            <Compass className="composer-permission-chip__icon" aria-hidden />
+                          ) : (
+                            <Unlock className="composer-permission-chip__icon" aria-hidden />
+                          )}
+                          <span className="max-w-[64px] truncate">
+                            {TAGENT_PERMISSION_MODE_CONFIG[permissionMode]?.label ?? permissionMode}
+                          </span>
+                        </button>
+                      </AppTooltip>
+                    )}
+                    <AppTooltip label="添加附件">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 rounded-lg text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                        onClick={handleOpenFileDialog}
+                        aria-label="添加附件"
+                      >
+                        <Plus className="size-4" />
+                      </Button>
+                    </AppTooltip>
+                    <AppTooltip label={composerExpanded ? '收起功能栏' : '展开功能栏（权限 / 子代理 / 思考强度）'}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className={`size-7 rounded-lg transition-colors hover:bg-foreground/10 hover:text-foreground ${composerExpanded ? 'bg-foreground/10 text-foreground' : 'text-muted-foreground'}`}
+                        onClick={() => setComposerExpanded((v) => !v)}
+                        aria-label={composerExpanded ? '收起功能栏' : '展开功能栏'}
+                      >
+                        <SlidersHorizontal className="size-4" />
+                      </Button>
+                    </AppTooltip>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {/* 模型选择器：放在发送键左侧 */}
                     <ModelSelector
                       selection={effectiveSelection}
                       lockedKind={lockedKind}
@@ -854,24 +1016,6 @@ export function Chat({
                         setSelectedModelSelection(nextSelection)
                       }}
                     />
-                    <PermissionModeSelector
-                      mode={permissionMode}
-                      onChange={async (m) => {
-                        setPermissionMode(m)
-                        await window.electronAPI.setSessionPermissionMode(sessionId, m)
-                      }}
-                    />
-                    <SubagentEagernessSelector
-                      eagerness={subagentEagerness}
-                      onChange={async (level) => {
-                        setSubagentEagerness(level)
-                        await window.electronAPI.updateSessionMeta(sessionId, {
-                          subagentEagerness: level,
-                        })
-                      }}
-                    />
-                  </div>
-                  <div className="flex items-center gap-1.5">
                     {/*
                       发送/停止/引导/立即发送 同槽复用：
                       · 运行中 + 无草稿 → 停止键（清队列 + 中断）
@@ -894,52 +1038,56 @@ export function Chat({
                       </Button>
                     ) : running && hasDraft ? (
                       <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                          onClick={() => {
-                            const text = chatInputRef.current?.getText().trim()
-                            if (!text) return
-                            chatInputRef.current?.clear()
-                            void (window.electronAPI as any).steerAgent(sessionIdRef.current, text)
-                          }}
-                          aria-label="引导"
-                          title="引导：不中断当前轮，Agent 在下一轮看到此消息"
-                        >
-                          <Compass className="size-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                          onClick={() => {
-                            const text = chatInputRef.current?.getText().trim()
-                            if (!text || !effectiveSelection) return
-                            chatInputRef.current?.clear()
-                            setMessageQueue([])
-                            void (async () => {
-                              await window.electronAPI.stopAgent(sessionIdRef.current)
-                              await sendQueued({ text, selection: effectiveSelection })
-                            })()
-                          }}
-                          aria-label="立即发送"
-                          title="立即发送：中断当前轮，立刻发送此消息"
-                        >
-                          <Zap className="size-4" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          className="size-8 rounded-full"
-                          onClick={() => void send()}
-                          aria-label="排队"
-                          title="排队：当前轮结束后自动发送"
-                        >
-                          <ArrowUp className="size-4" />
-                        </Button>
+                        <AppTooltip label="引导：不中断当前轮，Agent 在下一轮看到此消息">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                            onClick={() => {
+                              const text = chatInputRef.current?.getText().trim()
+                              if (!text) return
+                              chatInputRef.current?.clear()
+                              void (window.electronAPI as any).steerAgent(sessionIdRef.current, text)
+                            }}
+                            aria-label="引导"
+                          >
+                            <Compass className="size-4" />
+                          </Button>
+                        </AppTooltip>
+                        <AppTooltip label="立即发送：中断当前轮，立刻发送此消息">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                            onClick={() => {
+                              const text = chatInputRef.current?.getText().trim()
+                              if (!text || !effectiveSelection) return
+                              chatInputRef.current?.clear()
+                              setMessageQueue([])
+                              void (async () => {
+                                await window.electronAPI.stopAgent(sessionIdRef.current)
+                                await sendQueued({ text, selection: effectiveSelection })
+                              })()
+                            }}
+                            aria-label="立即发送"
+                          >
+                            <Zap className="size-4" />
+                          </Button>
+                        </AppTooltip>
+                        <AppTooltip label="排队：当前轮结束后自动发送">
+                          <Button
+                            size="icon"
+                            className="size-8 rounded-full"
+                            onClick={() => void send()}
+                            aria-label="排队"
+                          >
+                            <ArrowUp className="size-4" />
+                          </Button>
+                        </AppTooltip>
                       </div>
                     ) : (
                       <Button
+                        variant={hasDraft ? 'default' : 'ghost'}
                         size="icon"
                         className="size-9 rounded-full"
                         disabled={!hasDraft}
@@ -954,18 +1102,40 @@ export function Chat({
               }
             />
           </div>
-          {/* token 栏：stack 最底，落在 band 与窗边之间；仅 Pi/external */}
-          {showTokenBar && (
-            <TokenStatsBar
-              usage={contextUsage}
-              totals={tokenTotals}
-              isCompacting={isCompactingUi}
-              onCompact={() => void compactContext()}
-            />
-          )}
+          {/* 可折叠功能栏：聚焦输入框时展开 */}
+          <ComposerUnderlay
+            permissionMode={permissionMode}
+            onPermissionModeChange={async (m) => {
+              setPermissionMode(m)
+              await window.electronAPI.setSessionPermissionMode(sessionId, m)
+            }}
+            subagentEagerness={subagentEagerness}
+            onSubagentEagernessChange={async (level) => {
+              setSubagentEagerness(level)
+              await window.electronAPI.updateSessionMeta(sessionId, {
+                subagentEagerness: level,
+              })
+            }}
+            reasoningEffort={reasoningEffort}
+            onReasoningEffortChange={async (effort) => {
+              setReasoningEffort(effort)
+              await window.electronAPI.updateSessionMeta(sessionId, {
+                reasoningEffort: effort,
+              })
+            }}
+          />
         </div>
+        {/* token 栏：cluster 外部，stack 最底，落在 band 与窗边之间；仅 Pi/external */}
+        {showTokenBar && (
+          <TokenStatsBar
+            usage={contextUsage}
+            totals={tokenTotals}
+            isCompacting={isCompactingUi}
+            onCompact={() => void compactContext()}
+          />
+        )}
       </div>
-        </>
+        </div>
       )}
     </div>
   )

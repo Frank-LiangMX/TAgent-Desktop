@@ -24,10 +24,12 @@ import {
   Message,
   MessageContent,
   UserMessageContent,
+  MessageAttachments,
 } from '@tagent/ui'
 import { ChevronDown } from 'lucide-react'
 
 import { cn } from '../../lib/utils'
+import { formatMessageTime } from '../../lib/time-utils'
 import { ContentBlockView } from './ContentBlockView'
 import { ToolResultView } from './ToolResultView'
 import { summarizeFirstText } from './subagent-ui-model'
@@ -59,6 +61,16 @@ function UserView({
   return (
     <Message from="user">
       <MessageContent>
+        {/* 附件展示 */}
+        {message.attachments?.length ? (
+          <MessageAttachments
+            attachments={message.attachments}
+            onReadAttachment={async (localPath) => {
+              const base64 = await (window as any).electronAPI.readAttachment(localPath)
+              return base64
+            }}
+          />
+        ) : null}
         {/* text 块拼接传给 UserMessageContent（超4行自动折叠） */}
         {textBlocks.length > 0 && (
           <UserMessageContent>
@@ -70,6 +82,12 @@ function UserView({
           <ToolResultView key={b.toolUseId} block={b} />
         ))}
       </MessageContent>
+      {/* 时间条：气泡外下方，仅 text 消息 + 有 createdAt 时显示 */}
+      {textBlocks.length > 0 && message.createdAt ? (
+        <div className="agent-user-toolbar">
+          <span className="agent-user-toolbar__time">{formatMessageTime(message.createdAt)}</span>
+        </div>
+      ) : null}
     </Message>
   )
 }
@@ -118,7 +136,15 @@ function AssistantView({
           {/* 展开后保留左边框样式（对齐旧版子代理输出区） */}
           <CollapsibleContent>
             {message.modelId && (
-              <div className="agent-turn-title mb-2.5 mt-2">{message.modelId}</div>
+              <div className="agent-turn-title mb-2.5 mt-2">
+                {message.modelId}
+                {message.createdAt ? (
+                  <>
+                    {' · '}
+                    <span className="agent-turn-title__time">{formatMessageTime(message.createdAt)}</span>
+                  </>
+                ) : null}
+              </div>
             )}
             <MessageContent className="border-l-2 border-primary/20 pl-3">
               {/* 错误状态 */}
@@ -141,9 +167,17 @@ function AssistantView({
   // 主 Agent 输出：不折叠，原样渲染
   return (
     <Message from="assistant">
-      {/* 模型名胶囊（9px 玻璃胶囊，对齐 TAgent_General，无头像） */}
+      {/* 模型名胶囊（9px 玻璃胶囊，对齐 TAgent_General，无头像）+ 时间 */}
       {message.modelId && (
-        <div className="agent-turn-title mb-2.5">{message.modelId}</div>
+        <div className="agent-turn-title mb-2.5">
+          {message.modelId}
+          {message.createdAt ? (
+            <>
+              {' · '}
+              <span className="agent-turn-title__time">{formatMessageTime(message.createdAt)}</span>
+            </>
+          ) : null}
+        </div>
       )}
       <MessageContent>
         {/* 错误状态 */}

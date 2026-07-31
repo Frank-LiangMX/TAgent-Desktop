@@ -72,6 +72,34 @@
 }
 
 /*
+ * 铭牌内时间：模型名 · 时间，时间弱化（opacity 0.6）+ 等宽数字
+ */
+.agent-turn-title__time {
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 用户气泡下方时间条：气泡外、右对齐，10px muted，对齐 General agent-thread.css:488-508
+ */
+.tagent-thread .agent-user-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 18px;
+  margin-top: 4px;
+  padding: 0 2px;
+  color: hsl(var(--muted-foreground) / 0.55);
+}
+.tagent-thread .agent-user-toolbar__time {
+  font-size: 10px;
+  line-height: 1;
+  color: hsl(var(--muted-foreground) / 0.6);
+  padding: 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
  * main 滚动性能：只关闭随消息一起移动的模糊表面。
  * is-scrolling 挂在 Conversation 的真实滚动元素上，不会命中外部 composer。
  */
@@ -568,4 +596,21 @@
 }
 .dark .scroll-progress-thumb-active {
   background-color: hsl(var(--primary) / 0.4) !important;
+}
+
+/*
+ * 会话页入场动画：从下方淡入，对齐引导页 NewConversationLanding 的线性节奏。
+ * 不用 filter blur（Electron Chromium 下 motion filter 动画不稳定，且会持续模糊输入框）。
+ * 用 opacity + transform 微上滑，duration / ease 对齐引导页 composer 入场（0.45s / EASE）。
+ */
+.chat-page-enter {
+  opacity: 0;
+  transform: translateY(12px);
+  transition:
+    opacity 0.45s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.chat-page-enter.is-mounted {
+  opacity: 1;
+  transform: translateY(0);
 }

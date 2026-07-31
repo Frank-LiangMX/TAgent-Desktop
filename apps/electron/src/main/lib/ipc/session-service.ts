@@ -60,6 +60,8 @@ interface SendMessageInput {
   model?: string
   /** 工作区 ID（= sanitizePath(projectPath)，用于 JSONL 按项目存储） */
   workspaceId?: string
+  /** 附件（已持久化到磁盘的 FileAttachment） */
+  attachments?: Array<{ id: string; filename: string; mediaType: string; localPath: string; size: number }>
 }
 
 export class SessionService {
@@ -102,6 +104,59 @@ export class SessionService {
       if (!rt) return { ok: false, error: '会话不存在' }
       await rt.steerMessage(message)
       return { ok: true }
+    })
+
+    // 附件管理
+    ipcMain.handle(AGENT_IPC_CHANNELS.SAVE_ATTACHMENT, async (_e, input: {
+      sessionId: string; filename: string; mediaType: string; data: string
+    }) => {
+      const { saveAttachment } = await import('../attachment-service')
+      return saveAttachment(input)
+    })
+
+    ipcMain.handle(AGENT_IPC_CHANNELS.READ_ATTACHMENT, async (_e, localPath: string) => {
+      const { readAttachmentAsBase64 } = await import('../attachment-service')
+      return readAttachmentAsBase64(localPath)
+    })
+
+    ipcMain.handle(AGENT_IPC_CHANNELS.OPEN_FILE_DIALOG, async () => {
+      const { dialog } = await import('electron')
+      const win = this.getWindow()
+      const result = await dialog.showOpenDialog(win!, {
+        properties: ['openFile', 'multiSelections'],
+        filters: [
+          { name: '图片', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp'] },
+          { name: '文档', extensions: ['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json'] },
+          { name: '所有文件', extensions: ['*'] },
+        ],
+      })
+      if (result.canceled || result.filePaths.length === 0) {
+        return { files: [] as Array<{ path: string; filename: string; mediaType: string; data: string; size: number }> }
+      }
+      const { readFileSync, statSync } = await import('node:fs')
+      const { basename } = await import('node:path')
+      const MIME_MAP: Record<string, string> = {
+        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+        '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+        '.bmp': 'image/bmp', '.pdf': 'application/pdf', '.txt': 'text/plain',
+        '.md': 'text/markdown', '.csv': 'text/csv', '.json': 'application/json',
+        '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      }
+      const MAX_INLINE = 10 * 1024 * 1024 // 10MB 以内读 base64
+      const files: Array<{ path: string; filename: string; mediaType: string; data: string; size: number }> = []
+      for (const fp of result.filePaths) {
+        const stat = statSync(fp)
+        const ext = '.' + fp.split('.').pop()?.toLowerCase()
+        const mime = MIME_MAP[ext] ?? 'application/octet-stream'
+        if (stat.size <= MAX_INLINE) {
+          const buf = readFileSync(fp)
+          files.push({ path: fp, filename: basename(fp), mediaType: mime, data: buf.toString('base64'), size: stat.size })
+        } else {
+          // 大文件只返回路径，由主进程后续按需读取
+          files.push({ path: fp, filename: basename(fp), mediaType: mime, data: '', size: stat.size })
+        }
+      }
+      return { files }
     })
 
     // 热切换会话权限模式：持久化 meta → 通知 runtime（kscc 走 SDK setPermissionMode；Pi 靠闭包读 meta）
@@ -304,20 +359,26 @@ export class SessionService {
     // - kscc：落盘 SDKMessage（resume 读 JSONL 要此格式）+ sdkMessageToIR 推 IR
     // - pi：直接落盘 IR（pi 自管上下文，不靠 SDK resume）+ 直推 IR
     if (adapterKind === 'kscc') {
+      const now = Date.now()
       const userMsg: SDKMessage = {
         type: 'user',
         message: { role: 'user', content: [{ type: 'text', text: input.prompt }] },
         parent_tool_use_id: null,
+        createdAt: now,
+        ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       } as unknown as SDKMessage
       appendMessages(workspaceId, input.sessionId, [userMsg])
       const { message: userIR } = sdkMessageToIR(userMsg)
       if (userIR) {
+        if (input.attachments?.length) (userIR as any).attachments = input.attachments
         this.sendPayload(input.sessionId, { kind: 'sdk_message', message: userIR })
       }
     } else {
       const userIR: TAgentMessage = {
         type: 'user',
+        createdAt: Date.now(),
         content: [{ type: 'text', text: input.prompt }],
+        ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       }
       appendMessages(workspaceId, input.sessionId, [userIR])
       this.sendPayload(input.sessionId, { kind: 'sdk_message', message: userIR })
@@ -536,6 +597,8 @@ export class SessionService {
 
   /** kscc 路径：转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer，并落盘 SDKMessage */
   private handleSdkStreamMessage(sessionId: string, workspaceId: string | undefined, msg: SDKMessage): void {
+    // 注入 createdAt（落盘带上，加载时 sdkMessageToIR 读回 → 渲染层显示时间）
+    ;(msg as any).createdAt = (msg as any).createdAt ?? Date.now()
     const { message, event } = sdkMessageToIR(msg)
     if (message) {
       // 持久化完整消息到 JSONL（流式 delta 不持久化，完整 assistant/user 才存）
@@ -551,6 +614,7 @@ export class SessionService {
    *  完整消息（sdk_message）落盘 IR；控制事件（result/stream_*_delta/tagent_event）不落盘。 */
   private handlePiStreamPayload(sessionId: string, workspaceId: string | undefined, p: TAgentDesktopStreamPayload): void {
     if (p.kind === 'sdk_message') {
+      ;(p.message as any).createdAt = (p.message as any).createdAt ?? Date.now()
       appendMessages(workspaceId, sessionId, [p.message])
       this.sendPayload(sessionId, p)
     } else {

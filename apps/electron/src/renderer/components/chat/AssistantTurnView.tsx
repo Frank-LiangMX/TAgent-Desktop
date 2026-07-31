@@ -18,6 +18,7 @@ import {
   type SessionRenderTurn,
 } from './session-turn-model'
 import { MessageView } from './MessageView'
+import { formatMessageTime } from '../../lib/time-utils'
 
 interface AssistantTurnViewProps {
   turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>
@@ -57,10 +58,23 @@ export function AssistantTurnView({
     Boolean(content.trim()) ||
     (processLive && presentation.process.length === 0 && !content)
 
+  // 取 turn 内首条 assistant message 的 createdAt 作铭牌时间（主 Agent，不含子代理）
+  const turnCreatedAt = mainItems.find(
+    (it) => it.message?.type === 'assistant',
+  )?.message?.createdAt
+
   return (
     <div className="agent-turn flex flex-col gap-3">
       {presentation.modelId && (
-        <div className="agent-turn-title">{presentation.modelId}</div>
+        <div className="agent-turn-title">
+          {presentation.modelId}
+          {turnCreatedAt ? (
+            <>
+              {' · '}
+              <span className="agent-turn-title__time">{formatMessageTime(turnCreatedAt)}</span>
+            </>
+          ) : null}
+        </div>
       )}
 
       {presentation.process.length > 0 && (

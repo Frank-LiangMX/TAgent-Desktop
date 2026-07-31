@@ -30,9 +30,9 @@ import { AppShell } from './components/shell/AppShell'
 import { Rail, type RailItem } from './components/shell/Rail'
 import { TabBar } from './components/shell/TabBar'
 import { SessionRouter } from './components/shell/SessionRouter'
+import { Chat, type SessionMeta } from './components/chat/Chat'
 import { WelcomeStart } from './components/shell/WelcomeStart'
 import { NewConversationLanding } from './components/chat/NewConversationLanding'
-import type { SessionMeta } from './components/chat/Chat'
 import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
 import { pendingSuggestionAtom } from './atoms/pending-suggestion'
 import {
@@ -71,12 +71,13 @@ declare global {
       createProjectWorkspace: () => Promise<AgentWorkspace | null>
       deleteWorkspace: (id: string) => Promise<void>
       reorderWorkspaces: (orderedIds: string[]) => Promise<AgentWorkspace[]>
-      // 会话元数据（重命名/置顶/归档/子代理委派积极性；status 由主进程内部写，渲染层不直接写）
+      // 会话元数据（重命名/置顶/归档/子代理委派积极性/思考强度；status 由主进程内部写，渲染层不直接写）
       updateSessionMeta: (id: string, patch: {
         title?: string
         pinned?: boolean
         archived?: boolean
         subagentEagerness?: 'never' | 'conservative' | 'balanced' | 'aggressive'
+        reasoningEffort?: 'low' | 'medium' | 'high' | 'max'
       }) => Promise<unknown>
       togglePin: (id: string) => Promise<unknown>
       toggleArchive: (id: string) => Promise<unknown>
@@ -206,6 +207,7 @@ export function App(): JSX.Element {
     // workspaces.length===0 已 early return，此处 workspace 必存在；兜底给 TS
     if (!workspace) return
     // 进入草稿（无 tab）：发送首条消息时主进程建持久 meta + 绑定渠道 + 绑定 workspace
+    // 草稿以 overlay 覆盖当前页（tab 激活态保持），返回键关掉蒙版回原页
     setDraftSession({ id: 'session-' + Date.now(), title: '新会话', workspaceId: workspace.id })
   }
 
@@ -275,7 +277,7 @@ export function App(): JSX.Element {
           />
         }
       >
-        {/* main：插件页 | 会话页（草稿或 tab） | 欢迎页。
+        {/* main：插件页 | 会话页/欢迎页（底层）+ 新会话草稿 overlay（覆盖层）。
             欢迎页 / 新会话页的入场动画由 NewConversationLanding 内各元素自行承担
             （标题逐词模糊渐现、输入框上滑淡入、提示词错落淡入），非整页位移；
             故此处不做整页过渡，直接切换，新页元素各自重新入场。 */}
@@ -297,17 +299,23 @@ export function App(): JSX.Element {
               </p>
             </div>
           </ConversationEmptyState>
-        ) : draftSession || activeTab ? (
+        ) : draftSession && draftSession.id !== activeTab?.sessionId ? (
+          // 新会话草稿态：优先渲染草稿 Chat（NewConversationLanding compose 形态）。
+          // tab 状态保留在 atoms（activeTabId 不清），返回键关草稿 → 回到下方会话页/欢迎页。
+          // 物化成 tab 后 draftSession.id === activeTab.sessionId → 条件不成立，自动切到会话页。
+          <Chat
+            key={draftSession.id}
+            session={draftSession}
+            onDraftWorkspaceChange={(id) =>
+              setDraftSession((prev) => (prev ? { ...prev, workspaceId: id } : prev))
+            }
+            onBack={() => setDraftSession(null)}
+          />
+        ) : activeTab ? (
           <div className="flex h-full flex-col">
             {showTabBar && <TabBar />}
             <div className="min-h-0 flex-1">
-              <SessionRouter
-                draftSession={draftSession}
-                onDraftWorkspaceChange={(id) =>
-                  setDraftSession((prev) => (prev ? { ...prev, workspaceId: id } : prev))
-                }
-                onDraftBack={() => setDraftSession(null)}
-              />
+              <SessionRouter />
             </div>
           </div>
         ) : (

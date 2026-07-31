@@ -10,6 +10,8 @@
  * 控制消息（result/system/tool_progress）走独立 kind，不混入转录。
  */
 
+import type { FileAttachment } from './chat'
+
 // ===== 内容块（assistant 输出单元） =====
 export interface TAgentTextBlock {
   type: 'text'
@@ -49,6 +51,7 @@ export interface TAgentUserMessage {
   isReplay?: boolean
   isSynthetic?: boolean
   content: Array<TAgentTextBlock | TAgentToolResultBlock | { type: string; [key: string]: unknown }>
+  attachments?: FileAttachment[]
 }
 
 export interface TAgentUsage {

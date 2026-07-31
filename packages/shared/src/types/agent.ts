@@ -200,6 +200,28 @@ export type ThinkingConfig =
 export type AgentEffort = 'low' | 'medium' | 'high' | 'max'
 
 /**
+ * 思考强度档位（UI 层独立命名，语义更清晰）
+ *
+ * - low:    最少思考，最快响应
+ * - medium: 适度思考（默认）
+ * - high:   深度推理
+ * - max:    最大深度
+ */
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'max'
+
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'medium'
+
+export const REASONING_EFFORT_ORDER: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'max']
+
+/** 规范化思考强度：非法 / 缺省值统一回退默认 medium */
+export function migrateReasoningEffort(value: string | undefined): ReasoningEffort {
+  if (value === 'low' || value === 'medium' || value === 'high' || value === 'max') {
+    return value
+  }
+  return DEFAULT_REASONING_EFFORT
+}
+
+/**
  * 自定义子代理定义
  *
  * 通过 SDK 的 agents 选项注册可被 Agent 工具调用的自定义子代理。
@@ -947,6 +969,11 @@ export interface AgentSessionMeta {
    * （Pi 核 systemPrompt 为整体替换非 append，当前仅 kscc 核生效）。
    */
   subagentEagerness?: SubagentEagerness
+  /**
+   * 思考强度（持久化到磁盘，重启后恢复）。未设置时新会话默认 medium。
+   * 控制 Claude extended thinking / adaptive thinking 的深度档位，发送时注入到 SDK query。
+   */
+  reasoningEffort?: ReasoningEffort
   /**
    * Composer 档位（per-session 持久化）
    * - 'ask'：输入区 Ask 档位，只对话，不能写文件/执行命令
@@ -1924,6 +1951,14 @@ export const AGENT_IPC_CHANNELS = {
   SEARCH_WORKSPACE_FILES: 'agent:search-workspace-files',
   /** 将文本内容写入临时预览文件并返回绝对路径 */
   WRITE_CLIPBOARD_PREVIEW: 'agent:write-clipboard-preview',
+
+  // 附件管理
+  /** 保存附件到磁盘（base64 → 文件） */
+  SAVE_ATTACHMENT: 'agent:save-attachment',
+  /** 读取附件为 base64 */
+  READ_ATTACHMENT: 'agent:read-attachment',
+  /** 打开系统文件选择器 */
+  OPEN_FILE_DIALOG: 'agent:open-file-dialog',
 
   // 标题自动生成通知（主进程 → 渲染进程推送）
   /** 标题已更新（首次对话完成后自动生成） */

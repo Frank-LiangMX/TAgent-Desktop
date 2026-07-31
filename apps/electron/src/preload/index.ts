@@ -46,6 +46,15 @@ const electronAPI = {
   /** 引导 Agent（不中断当前轮，在下一轮边界注入用户消息） */
   steerAgent: (sessionId: string, message: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.STEER_AGENT, sessionId, message),
+  /** 保存附件到磁盘 */
+  saveAttachment: (input: { sessionId: string; filename: string; mediaType: string; data: string }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.SAVE_ATTACHMENT, input),
+  /** 读取附件为 base64 */
+  readAttachment: (localPath: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.READ_ATTACHMENT, localPath),
+  /** 打开系统文件选择器 */
+  openFileDialog: () =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.OPEN_FILE_DIALOG),
   /** 销毁会话（杀进程 + 删元数据/JSONL） */
   deleteSession: (sessionId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_SESSION, sessionId),
@@ -96,12 +105,13 @@ const electronAPI = {
   /** 持久化工作区侧栏顺序 */
   reorderWorkspaces: (orderedIds: string[]) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.REORDER_WORKSPACES, orderedIds) as Promise<AgentWorkspace[]>,
-  /** 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived / 子代理委派积极性 subagentEagerness；status 由主进程内部写，渲染层不直接写） */
+  /** 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived / 子代理委派积极性 subagentEagerness / 思考强度 reasoningEffort；status 由主进程内部写，渲染层不直接写） */
   updateSessionMeta: (id: string, patch: {
     title?: string
     pinned?: boolean
     archived?: boolean
     subagentEagerness?: 'never' | 'conservative' | 'balanced' | 'aggressive'
+    reasoningEffort?: 'low' | 'medium' | 'high' | 'max'
   }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_META, { id, patch }) as Promise<unknown>,
   /** 切换会话置顶 */
