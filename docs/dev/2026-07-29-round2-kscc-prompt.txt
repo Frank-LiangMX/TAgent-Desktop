@@ -1,0 +1,82 @@
+﻿你是 TAgent-Desktop 实现工程师。严格按 Round 2 brief 完成子代理 UX。
+
+工作目录: F:\TAgent-Desktop
+只改 brief 范围内文件。完成后跑 typecheck 和相关 vitest，修到绿。
+不要 git commit / push。
+完成后用简短中文列出改动文件、验证方式、已知限制。
+
+Brief:
+# [dev] Round 2 Brief 鈥?瀛愪唬鐞?UX 鏀跺彛
+
+> 涓荤嚎鎬荤洃 brief銆傚紑鍙戜唬鐞嗭紙kscc / glm-5.2锛夋寜姝ゆ墽琛屻€?> 鑼冨洿锛氬瓙浠ｇ悊鍙鎬?+ 绉瀬鎬ц缃€備笉瑕佸仛 MCP銆佽蹇嗐€侀敊璇仮澶嶃€?
+## 鑳屾櫙
+
+dev.8 宸叉帴閫氫袱鏍稿瓙浠ｇ悊杩愯鏃讹紝UI 浠嶆槸绠€鍖栫増锛?- `task_started` / `task_notification` 琚鎴愭櫘閫?assistant 鏂囨湰姘旀场
+- **鏃?* `task_progress` 澶勭悊
+- `parentToolUseId` 鍙姞宸﹁竟妗嗭紝**涓嶅彲鎶樺彔/宓屽鍒扮埗 tool**
+- `buildSubagentDelegationPrompt('conservative')` **鍐欐** conservative
+
+## 鐩爣锛圖oD锛?
+1. **瀹炴椂杩涘害**锛氭敹鍒?`task_progress` 鏃舵洿鏂板悓涓€浠诲姟鍗＄墖鐨勮繘搴︽枃妗?鏉★紝涓嶆柊寮€涓€鍫嗘皵娉?2. **浠诲姟鍗＄墖鐢熷懡鍛ㄦ湡**锛歚task_started` 寤哄崱 鈫?`task_progress` 鏇存柊 鈫?`task_notification` 鏀跺彛锛堝畬鎴?澶辫触/鍋滄锛?3. **鐖跺瓙宓屽锛堝疄鐢ㄧ増锛?*锛氬甫 `parentToolUseId` 鐨?assistant 娑堟伅榛樿鎶樺彔鍦ㄣ€屽瓙浠ｇ悊杈撳嚭銆嶅尯鍧楋紝鍙睍寮€/鎶樺彔
+4. **绉瀬鎬ц缃?*锛? 妗?never / conservative / balanced / aggressive 鍙€夊苟鎸佷箙鍖栵紱kscc system append 璇昏鍊硷紙涓嶅啀鍐欐锛?5. typecheck + 鐩稿叧鍗曟祴閫氳繃
+
+## 瀹炵幇鎸囧紩
+
+### A. Chat 娴佷簨浠讹細浠诲姟鍗＄姸鎬佹満
+
+鏂囦欢锛歚apps/electron/src/renderer/components/chat/Chat.tsx`
+
+鎵╁睍 `DisplayItem`锛堟垨鏃佽矾 state锛夋敮鎸侊細
+
+```ts
+type TaskCardState = {
+  kind: 'task_card'
+  taskId: string
+  description: string
+  status: 'running' | 'completed' | 'failed' | 'stopped'
+  lastToolName?: string
+  summary?: string
+  progressText?: string // 鏉ヨ嚜 description / lastToolName / elapsed
+}
+```
+
+浜嬩欢鏄犲皠锛?- `task_started` 鈫?upsert 鍗★紙running锛?- `task_progress` 鈫?鎸?taskId/toolUseId 鏇存柊 lastToolName / progressText锛?*涓嶈**姣忔 append 鏂?message锛?- `task_notification` 鈫?status + summary
+
+娓叉煋锛氱嫭绔嬪皬鍗＄墖锛堝渾瑙掕竟妗?+ 鐘舵€佽壊 + 鍙€?indeterminate/杩涘害鏂囨锛夛紝鏀惧湪娑堟伅娴佷腑銆?
+### B. MessageView 宓屽鎶樺彔
+
+鏂囦欢锛歚MessageView.tsx`锛堝強蹇呰鏃?`Chat.tsx` 鍒嗙粍閫昏緫锛?
+鏈€灏忓彲鐢ㄦ柟妗堬紙浼樺厛绠€鍗曪級锛?- 瀵?`message.parentToolUseId` 鐨?assistant锛氶粯璁?`collapsed=true` 鐨?details/鎶樺彔澶?- 鎶樺彔澶达細銆屽瓙浠ｇ悊 路 鐐瑰嚮灞曞紑銆? 涓€琛屾憳瑕侊紙棣栨 text 鎴柇锛?- 灞曞紑鍚庣幇鏈夊乏杈规鏍峰紡淇濈暀
+
+鍙€夊寮猴紙鏃堕棿澶熷啀鍋氾級锛氭寜 parentToolUseId 鎶婂瓙娑堟伅鎸傚埌鐖?tool_use 鍧椾笅鏂广€?
+### C. subagentEagerness 璁剧疆
+
+1. **绫诲瀷**锛氬湪 `AgentSessionMeta` 鍔犲彲閫? 
+   `subagentEagerness?: 'never' | 'conservative' | 'balanced' | 'aggressive'`  
+   榛樿 `conservative`
+
+2. **涓昏繘绋?*锛歚session-service` 鏋勯€?kscc opts 鏃? 
+   `buildSubagentDelegationPrompt(meta?.subagentEagerness ?? 'conservative')`  
+   Pi 鏍歌嫢鏈夊悓绛?system 娉ㄥ叆鐐逛竴骞舵帴涓婏紱娌℃湁灏辫嚦灏?kscc 鎺ラ€氬苟鍦ㄦ敞閲婃爣鏄庛€?
+3. **IPC**锛氬彲澶嶇敤 `UPDATE_SESSION_META` / 鐜版湁 updateSessionMeta锛涜嫢鏃犵儹鏇存柊鑳藉姏锛屼細璇濈骇涓嬫鍙戦€佺敓鏁堝嵆鍙€?
+4. **UI**锛氬湪 Chat 杈撳叆鍖?footer锛堥潬杩?`PermissionModeSelector`锛夋垨璁剧疆椤靛姞绱у噾 Select/Segmented锛? 
+   浠庝笉 / 淇濆畧 / 鍧囪　 / 绉瀬  
+   鍙樻洿鍚?`updateSessionMeta({ subagentEagerness })`銆?
+### D. 娴嬭瘯
+
+- 绾嚱鏁帮細eagerness 榛樿鍊?/ meta 鍚堝苟 / task 鍗?reducer锛堣嫢鎶芥垚 model 鏂囦欢锛?- 璺緞寤鸿锛? 
+  `apps/electron/src/renderer/components/chat/subagent-ui-model.ts` + `.test.ts`  
+  鎴?`task-card-model.test.ts`
+
+## 绾︽潫
+
+- 涓嶈 git commit/push锛堟€荤洃 checkpoint锛?- 涓嶇 MCP / 娓犻亾 / 鎵撳寘
+- 涓枃娉ㄩ噴鍙繚鐣欙紱UI 鏂囨涓枃
+- 鏈€灏忓彲鐢ㄤ紭鍏堬紝鍒笂澶ч噸鏋勮櫄鎷熷垪琛?
+## 鍏抽敭鏂囦欢
+
+- `Chat.tsx` 鈥?娴佷簨浠?- `MessageView.tsx` 鈥?宓屽 UI
+- `PermissionModeSelector.tsx` 鈥?UI 椋庢牸鍙傝€?- `subagent-definitions.ts` 鈥?eagerness prompt
+- `session-service.ts` 鈥?娉ㄥ叆 eagerness
+- `packages/shared/.../agent.ts` 鈥?AgentSessionMeta / AgentEvent
+

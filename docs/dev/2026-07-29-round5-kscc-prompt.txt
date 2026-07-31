@@ -1,0 +1,186 @@
+﻿你是 TAgent-Desktop 实现工程师。实现 Round 5 Phase 1：Pi 上下文自动压缩。
+
+工作目录: F:\TAgent-Desktop
+
+## 红线（必须遵守）
+1. 可以使用 @earendil-works/pi-agent-core 官方 export 的 compaction API（shouldCompact、estimateContextTokens、prepareCompaction、compact、DEFAULT_COMPACTION_SETTINGS、transformContext 等）。读 node_modules 的 d.ts/README 即可。
+2. 禁止读取、复制、引用 F:/Proma 或任何 Proma 源码。不要 open Proma 路径。
+3. 配置换算、触发接线、测试、日志全部 TAgent 自研。
+
+## 必读
+- docs/plans/2026-07-29-pi-context-compaction.md
+- docs/dev/2026-07-29-round5-pi-compaction-brief.md
+- apps/electron/src/main/lib/adapters/pi/pi-agent-adapter.ts
+- node_modules/@earendil-works/pi-agent-core/dist/harness/compaction/compaction.d.ts
+
+## 交付
+按 brief DoD 实现。跑 typecheck 与相关 vitest，修到绿。
+不要 git commit/push。
+完成后中文总结：文件列表、触发方式、已知限制。
+
+## Plan
+# Pi 涓婁笅鏂囩鐞嗕笌鍘嬬缉锛圱Agent 鑷爺锛?
+> 鐘舵€侊細涓荤嚎杩涜涓紙2026-07-29锛? 
+> 鑼冨洿锛歅i 鏍搁暱浼氳瘽鍙敤锛沰scc 鍙︽銆?
+## 1. 鑳屾櫙
+
+TAgent 2.0 鍙屾牳涓紝**Pi 鏍?*涓婁笅鏂囧湪涓昏繘绋?`Agent.state.messages` 鍐呯疮绉紝姣忚疆鏁存甯︾粰妯″瀷銆? 
+姝ゅ墠**鏃犲帇缂?*锛氱獥鍙ｆ墦婊″悗鍙兘鎶ャ€屼笂涓嬫枃杩囬暱銆嶃€?
+kscc 鏍镐緷璧?SDK 闀块┗ + resume锛屽帇缂╄蛋 SDK 浜嬩欢锛堝彟妗堬級銆?
+## 2. 鍘熷垯锛堢孩绾匡級
+
+| 鍙互 | 涓嶅彲浠?|
+|------|--------|
+| 浣跨敤 `@earendil-works/pi-agent-core` / `pi-ai` **瀹樻柟 API**锛坄shouldCompact`銆乣prepareCompaction`銆乣compact`銆乣estimateContextTokens`銆乣DEFAULT_COMPACTION_SETTINGS`銆乣transformContext` 绛夛級 | 澶嶅埗鎴栫矘璐?**Proma** 浠撳簱涓殑涓氬姟浠ｇ爜銆佸伐鍏峰畾涔夈€佺画璺戞ā鏉裤€乤dapter 灏佽 |
+| 鍊熼壌涓氱晫/Proma 鐨?*浜у搧鎰忓浘**锛堢害 80% 瑙﹀彂銆佹墜鍔ㄥ帇銆乁I 鍙锛?| 渚濊禆 `F:/Proma` 璺緞鎴栨妸 Proma 鏂囦欢褰撳疄鐜版潵婧?|
+| **TAgent 鑷爺**闃堝€笺€佽Е鍙戞椂鏈恒€両PC銆乁I銆佷笌 session-runtime 鐨勯噸璇曠瓥鐣?| 鎶?Proma 鐨?`CompactContext` / continuation prompt 鍘熸牱鎼繘鏈粨 |
+
+**涓€鍙ヨ瘽锛氱畻娉曠敤 Pi锛岀紪鎺掔敤 TAgent銆?*
+
+## 3. Pi 鍘熺敓鑳藉姏锛堝綋鍓嶄緷璧?`pi-agent-core@0.82.x`锛?
+鍖呭叆鍙ｅ凡 export compaction 涓?harness 鑳藉姏锛屼緥濡傦細
+
+- `shouldCompact(contextTokens, contextWindow, settings)`
+- `estimateContextTokens(messages)` / `estimateTokens`
+- `DEFAULT_COMPACTION_SETTINGS` / `CompactionSettings`锛坄enabled`銆乣reserveTokens`銆乣keepRecentTokens`锛?- `prepareCompaction` / `compact` / `generateSummary`
+- 搴曞眰 `Agent` 鏀寔 `transformContext`锛堝彂妯″瀷鍓嶆敼鍐欐秷鎭垪琛級
+- 楂樺眰 `AgentHarness.compact()`锛堟湰闃舵**涓嶅己鍒?*涓?Harness锛屼紭鍏堝湪鐜版湁瑁?`Agent` 璺緞鎺ョ嚎锛?
+鍘熺敓闃堝€艰涔夛紙鏂囨。/绫诲瀷锛夛細褰?`contextTokens > contextWindow - reserveTokens` 鏃惰涓哄簲鍘嬬缉銆?
+## 4. 鐩爣鏋舵瀯锛圱Agent锛?
+```text
+PiAgentAdapter (鑷爺)
+  鈹斺攢 new Agent({
+       transformContext: tagentPiTransformContext,  // 鑷爺閽╁瓙
+       ...
+     })
+
+tagentPiTransformContext / maybeCompactMessages (鑷爺)
+  鈹溾攢 estimateContextTokens (Pi)
+  鈹溾攢 shouldCompact (Pi) + 鎴戞柟 settings锛堢獥鍙ｃ€乺eserve銆乲eepRecent锛?  鈹溾攢 灏?messages 閫傞厤涓?prepareCompaction 鎵€闇€缁撴瀯锛堟垨绛変环鏈€灏忚矾寰勶級
+  鈹溾攢 compact / generateSummary (Pi)
+  鈹斺攢 杩斿洖鍘嬬缉鍚庣殑 AgentMessage[]锛屽啓鍥炴垨浠呮湰杞杺妯″瀷
+
+UI / IPC锛堝悗缁?phase锛?  鈹斺攢 compacting / compact_boundary 浜嬩欢 + 鎵嬪姩鍘嬬缉
+```
+
+### 4.1 Settings锛堣嚜鐮斿父閲忥紝涓嶅紩鐢?Proma 妯″潡锛?
+寤鸿榛樿锛堝彲鍚庣画杩?settings.json锛夛細
+
+| 閰嶇疆 | 寤鸿榛樿 | 鍚箟 |
+|------|----------|------|
+| `enabled` | `true` | 鏄惁鑷姩鍘嬬缉 |
+| `thresholdRatio` | `0.8` | 绾?80% 绐楀彛瑙﹀彂锛堟崲绠椾负 reserveTokens锛?|
+| `keepRecentTokens` | 浣跨敤 Pi `DEFAULT_COMPACTION_SETTINGS.keepRecentTokens` 鎴栫瓑浠峰悎鐞嗛粯璁?| 鍘嬪悗淇濈暀杩戞湡閲?|
+| `contextWindow` | 妯″瀷澹版槑鍊?鈫?鎺ㄦ柇 fallback锛?00_000锛?| 鍒嗘瘝 |
+
+`reserveTokens = ceil(contextWindow * (1 - thresholdRatio))` 鈥斺€?**鍏紡鑷爺鍐欏湪 TAgent 浠撳簱**锛屼笉 import 澶栭儴椤圭洰銆?
+### 4.2 瑙﹀彂鏃舵満锛圥hase 1锛?
+1. **鑷姩**锛歚transformContext` 鍐咃紝姣忔鍗冲皢璇锋眰 LLM 鍓嶆鏌ワ紱闇€鍘嬬缉鍒欒皟鐢?Pi `compact` 璺緞锛岃繑鍥炲帇缂╁悗 messages銆? 
+2. **杩囬暱閿欒鍚庨噸璇曪紙鍙€夊悓 Phase锛?*锛氬懡涓?`prompt_too_long` 鏃跺己鍒?compact 涓€娆″啀 `prompt`锛屼粛澶辫触鍒欐部鐢ㄧ幇鏈変腑鏂囬敊璇€? 
+3. **鎵嬪姩 / 宸ュ叿**锛圥hase 2锛夛細IPC + UI锛屼笉鍦?Phase 1 蹇呭仛銆?
+### 4.3 涓庢秷鎭姸鎬佷竴鑷存€?
+鍘嬬缉鍚庡繀椤绘洿鏂?**`agent.state.messages`**锛堟垨 Pi API 淇濊瘉鐨勬寔涔呯粨鏋滐級锛岄伩鍏嶅彧鏀广€屾湰杞彂閫佽鍥俱€嶅鑷翠笅涓€杞張鑶ㄨ儉銆?
+鑻?`prepareCompaction` 闇€瑕?session tree entries锛氫紭鍏堢敤 memory session / 浠庡綋鍓?messages 鏋勯€犳渶灏?entry 鍒楄〃锛?*涓嶈**涓轰簡瀵归綈 Proma 寮曞叆鏁村 SessionManager 涓氬姟閫昏緫銆?
+### 4.4 鍙娴嬫€?
+- 寮€濮嬪帇缂╋細鎺?`system/compacting` 鎴栫幇鏈?IR 鑳借〃杈剧殑浜嬩欢锛堢敤 `@tagent/shared` 宸叉湁鏂囨宸ュ叿鍗冲彲锛? 
+- 瀹屾垚锛氭帹 compact 瀹屾垚绫?system 娑堟伅锛堟憳瑕佸彲閫夋埅鏂睍绀猴級  
+- 鏃ュ織锛歚[pi-compaction]` 鍓嶇紑
+
+## 5. 鍒嗛樁娈典氦浠?
+### Phase 1锛堟湰杞繀鍋氾級鈥?闀夸細璇濆彲鐢?
+- [ ] 鑷爺 settings + 绐楀彛鎺ㄦ柇鏈€灏忓疄鐜? 
+- [ ] 鎺ョ嚎 Pi `shouldCompact` / `compact`锛堟垨 `generateSummary` + 鑷爺娑堟伅鏇挎崲锛? 
+- [ ] 鎸傚埌 Pi `Agent` 鍒涘缓璺緞  
+- [ ] 鍗曟祴锛氶槇鍊兼崲绠椼€乻houldCompact 杈圭晫銆乶oop/杩囧皬浼氳瘽  
+- [ ] typecheck 缁? 
+
+### Phase 2 鈥?浜у搧瀹屾暣
+
+- [ ] 鎵嬪姩鍘嬬缉 IPC  
+- [ ] UI 鍒嗛殧鏉?/ 鐘舵€? 
+- [ ] 杩囬暱鑷姩 compact 鍐嶈瘯  
+
+### Phase 3 鈥?鍙€夊寮?
+- [ ] 鑷爺銆岃姹傚帇缂┿€嶅伐鍏凤紙鑷畾涔夊悕绉颁笌鍗忚锛? 
+- [ ] kscc SDK compact 瀵归綈  
+
+## 6. 鏄庣‘闈炵洰鏍囷紙鏈疆锛?
+- 涓嶅崌绾у埌 Proma 鍚屾 `pi-coding-agent` 鍏ㄤ細璇濆３锛堥櫎闈炲崟鐙?ADR锛? 
+- 涓嶅疄鐜?kscc 鍘嬬缉  
+- 涓嶅鍒?Proma 婧愮爜  
+
+## 7. 楠屾敹
+
+- 澶栭儴娓犻亾 Pi 浼氳瘽鍦ㄦ帴杩戠獥鍙ｆ椂鑳借嚜鍔ㄥ帇涓€杞紝鍚庣画杞 token 鏄庢樉涓嬮檷鎴栦笉鍐嶇珛鍒?prompt_too_long  
+- 浠ｇ爜涓棤 `F:/Proma`銆佹棤浠?Proma 绮樿创鐨勫ぇ娈靛疄鐜? 
+- 渚濊禆浠呴檺鏈粨 + `@earendil-works/*` + 鐜版湁 workspace 鍖? 
+
+
+## Brief
+# [dev] Round 5 Brief 鈥?Pi 涓婁笅鏂囪嚜鍔ㄥ帇缂╋紙Phase 1锛?
+> 涓荤嚎鎬荤洃 brief銆傚紑鍙戜唬鐞嗭紙kscc / glm-5.2锛夋墽琛屻€? 
+> 璁捐鍏ㄦ枃锛歚docs/plans/2026-07-29-pi-context-compaction.md`
+
+## 绾㈢嚎
+
+1. **鍙互鐢?* `@earendil-works/pi-agent-core` 瀵煎嚭鐨?compaction API銆? 
+2. **绂佹**璇诲彇銆佸鍒躲€佹敼鍐?`F:/Proma` 鎴栦换浣?Proma 婧愭枃浠躲€? 
+3. 浜у搧鎺ョ嚎銆佸父閲忋€佷簨浠躲€佹祴璇曞叏閮?**TAgent 鑷爺**銆?
+## 蹇呭仛
+
+### 1. 鑷爺閰嶇疆妯″潡
+
+鏂板缓渚嬪锛?
+- `packages/shared/src/utils/pi-context-settings.ts`锛堟垨 `packages/pi-core/src/context-compaction-settings.ts`锛?
+鍐呭锛?
+- `TAGENT_PI_COMPACTION_THRESHOLD_RATIO = 0.8`  
+- `calculateReserveTokens(contextWindow)`  
+- `resolveContextWindow(modelId?: string): number`锛堟渶灏忥細鏈夊０鏄庣敤澹版槑锛屽惁鍒?200_000锛? 
+- 缁勮 `CompactionSettings`锛歚enabled: true` + Pi `DEFAULT_COMPACTION_SETTINGS` 涓悎鐞嗗瓧娈?+ 鎴戞柟 reserveTokens  
+
+### 2. 鑷爺鍘嬬缉鎵ц鍣?
+鏂板缓渚嬪 `packages/pi-core/src/pi-context-compaction.ts` 鎴?`apps/electron/.../pi/pi-context-compaction.ts`锛?
+- 杈撳叆锛歚AgentMessage[]`銆乣contextWindow`銆乣model`锛圥i Model锛夈€佸彲閫?signal  
+- 鐢?Pi锛歚estimateContextTokens` / `shouldCompact`  
+- 鑻ヤ笉闇€瑕侊細鍘熸牱杩斿洖 `{ compacted: false, messages }`  
+- 鑻ラ渶瑕侊細璋冪敤 Pi `prepareCompaction` + `compact`锛堟垨鏂囨。鎺ㄨ崘鐨勬渶灏忕粍鍚堬級锛涙妸缁撴灉鍙樻垚鏂扮殑 `AgentMessage[]`锛堟憳瑕佹秷鎭?+ retainedTail锛? 
+- 娉ㄦ剰锛氳８ `Agent` 鍙湁 messages銆佹病鏈夊畬鏁?Session tree 鏃讹紝鐢?Pi 鎻愪緵鐨勬渶灏忚矾寰勶紱璇?`node_modules/@earendil-works/pi-agent-core` 鐨?**d.ts/README**锛屼笉瑕佽 Proma銆?
+鑻?`prepareCompaction` 寮轰緷璧?session entries锛氬疄鐜颁竴涓?**TAgent 鑷爺** 鐨勩€宮essages 鈫?鏈€灏?SessionTreeEntry[]銆嶉€傞厤锛屾垨浣跨敤 `transformContext` 鍐呫€岃秴闃堝€煎垯 `generateSummary` + 鎴柇鏃ф秷鎭€嶇殑 **鍙伐浣?MVP**锛屽苟鍦ㄦ敞閲婂啓鏄庨檺鍒躲€?
+### 3. 鎸傚埌 PiAgentAdapter
+
+鏂囦欢锛歚apps/electron/src/main/lib/adapters/pi/pi-agent-adapter.ts`
+
+鍒涘缓 `Agent` 鏃跺鍔狅細
+
+```ts
+transformContext: async (messages, signal) => {
+  // 璋冪敤鑷爺鍘嬬缉鎵ц鍣紱鍘嬪畬杩斿洖鏂板垪琛?}
+```
+
+鍘嬬缉鍙戠敓鏃讹細
+
+- `console.log('[pi-compaction] ...')`  
+- 鑻ヤ究浜庢帹娴侊細缁忕幇鏈?event鈫扴DKMessage 绠￠亾鍙?compacting/瀹屾垚绫?system锛堣兘鎺ュ氨鎺ワ紝Phase 1 鏃ュ織浼樺厛锛?
+鍘嬬缉鍚庡敖閲忓悓姝?`agent.state.messages`锛堣嫢 transformContext 浠呭奖鍝嶆湰杞姹傦紝闇€纭 Pi 琛屼负锛涘繀瑕佹椂鍘嬪畬鍚庢樉寮忓啓鍥?state锛夈€?
+### 4. 娴嬭瘯
+
+- 闃堝€?鎹㈢畻鍗曟祴  
+- shouldCompact 杈圭晫锛堜綆浜庨槇鍊间笉鍘嬨€侀珮浜庡帇锛? 
+- mock 鎴栬交娴嬫墽琛屽櫒 noop 璺緞  
+- `bun run typecheck` + 鐩稿叧 vitest 缁? 
+
+## 涓嶈鍋?
+- CompactContext 宸ュ叿銆佽嚜鍔ㄧ画璺?prompt锛圥hase 3锛? 
+- 鎵嬪姩 IPC锛圥hase 2锛? 
+- kscc 鍘嬬缉  
+- 澶ч噸鏋勫崌 AgentHarness锛堥櫎闈炰笉鍗囧氨鏃犳硶璋冪敤 compact API鈥斺€旈偅鏃跺啀鏈€灏忔帴鍏ワ紝骞跺啓娉ㄩ噴锛?
+## DoD
+
+- [ ] Pi 璺緞鍏峰鑷姩鍘嬬缉鑳藉姏锛堝熀浜?Pi API + 鑷爺鎺ョ嚎锛? 
+- [ ] 鏃犱换浣?Proma 婧愮爜寮曠敤  
+- [ ] typecheck + 鍗曟祴缁? 
+- [ ] 璁捐鏂囨。璺緞鍦?PR/鎬荤粨閲屽彲鐐? 
+
+## 瀹屾垚鍚?
+涓枃鎬荤粨锛氭敼浜嗗摢浜涙枃浠躲€佸浣曡Е鍙戝帇缂┿€佸凡鐭ラ檺鍒躲€? 
+**涓嶈** git commit / push锛堟€荤洃 checkpoint锛夈€?

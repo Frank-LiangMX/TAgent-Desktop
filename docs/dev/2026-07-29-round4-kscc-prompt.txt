@@ -1,0 +1,37 @@
+﻿你是 TAgent-Desktop 实现工程师。严格按 Round 4 brief 做会话可靠性（崩溃恢复 + 过长上下文提示）。
+
+工作目录: F:\TAgent-Desktop
+重点看: session-runtime.ts, claude-agent-adapter.ts, session-service.ts, ADR-0002。
+只改 brief 范围。完成后 typecheck + 相关 vitest 修绿。
+不要 git commit/push。
+完成后中文总结改动与限制。
+
+Brief:
+# [dev] Round 4 Brief 鈥?浼氳瘽鍙潬鎬э紙宕╂簝鎭㈠ + 闀夸笂涓嬫枃锛?
+> 涓荤嚎鎬荤洃 brief銆俴scc / glm-5.2 鎵ц銆?> 鑼冨洿锛歬scc 鏍歌繘绋嬪穿婧冨彲鎭㈠锛沺rompt 杩囬暱鍙檷绾ф彁绀?鍩虹 compaction 閽╁瓙銆備笉瑕佸仛鎻掍欢/UI 澶ф敼銆?
+## 鑳屾櫙
+
+ADR-0002 宸茬煡缂哄彛锛?- 閿欒鎭㈠锛堣繘绋嬪穿 鈫?spawn+resume锛?- prompt_too_long / compaction
+
+## 鐩爣锛圡VP锛?
+### 1. 宕╂簝 / 寮傚父閫€鍑烘仮澶嶏紙kscc锛?
+鍦?`session-runtime` / `claude-agent-adapter` / `session-service` 閾捐矾涓細
+
+- 妫€娴嬪瓙杩涚▼寮傚父閫€鍑?/ channel 鏂繛锛堥潪鐢ㄦ埛涓诲姩 stop锛?- 鏍囪浼氳瘽 `status: 'error'` 鎴栧彲鎭㈠涓棿鎬?- **鑷姩涓€娆?* re-spawn + `resumeSessionId`锛堝凡鏈?meta.sdkSessionId锛夐噸璇曞綋鍓?涓嬩竴鏉?- 閬垮厤鏃犻檺閲嶈瘯锛氭渶澶?1 娆¤嚜鍔ㄦ仮澶嶏紱鍐嶅け璐ヤ笂鎶?session_error 缁?UI
+- 鐢ㄦ埛涓诲姩 stop 涓嶈Е鍙戣嚜鍔ㄦ仮澶?
+### 2. 杩囬暱涓婁笅鏂?
+- 璇嗗埆 SDK / stderr / result 涓殑 prompt too long / context length 绫婚敊璇?- 鍚?renderer 鎺ㄩ€佸彲璇?`session_error` 鎴栦笓鐢ㄤ簨浠舵枃妗堬紙涓枃锛?- 鑻ュ凡鏈?compaction API 鍙畨鍏ㄨ皟鐢ㄥ垯鎺ヤ竴灞傦紱鍚﹀垯鑷冲皯 **鏄庣‘閿欒 + 寤鸿寮€鏂颁細璇?鍘嬬缉**锛屼笉瑕侀潤榛樺け璐?- 鍦?shared 鎴?session-service 鎶界函鍑芥暟璇嗗埆閿欒娑堟伅锛堝崟娴嬶級
+
+### 3. 娴嬭瘯
+
+- 绾嚱鏁帮細閿欒鍒嗙被锛坈rash vs user_stop vs prompt_too_long锛?- 鑻ュ彲 mock runtime锛氭仮澶嶅彧瑙﹀彂涓€娆?
+## DoD
+
+- [ ] 闈炵敤鎴?stop 鐨勮繘绋嬫鎺変細灏濊瘯 resume 涓€娆?- [ ] 杩囬暱涓婁笅鏂囨湁鏄庣‘涓枃閿欒锛堥潪瑁稿爢鏍堬級
+- [ ] typecheck + 鍗曟祴缁?- [ ] 涓嶇牬鍧忔甯搁暱椹昏矾寰?
+## 绾︽潫
+
+- 涓嶈 git commit/push
+- 涓嶇鎻掍欢甯傚満 / 璁剧疆澶ф敼
+- 鏈€灏忓彲鐢紝娉ㄩ噴璇存槑鍚庣画鍙姞閲嶈瘯绛栫暐
+

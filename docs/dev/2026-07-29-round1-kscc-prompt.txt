@@ -1,0 +1,88 @@
+﻿你是 TAgent-Desktop 项目的实现工程师。请严格按 docs/dev/2026-07-29-round1-mcp-ui-brief.md 完成 Round 1：MCP 配置 UI + 真实连接测试。
+
+工作目录: F:\TAgent-Desktop
+模型任务: 只改本 brief 范围内的文件。完成后运行 bun run typecheck 和相关 vitest，修复失败。
+不要 git commit / push。
+不要改无关模块。
+完成后用简短中文列出：改了哪些文件、如何验证、已知限制。
+
+Brief 全文:
+# [dev] Round 1 Brief 鈥?MCP 閰嶇疆 UI + 鐪熷疄杩炴帴娴嬭瘯
+
+> 涓荤嚎鎬荤洃 brief銆傚紑鍙戜唬鐞嗭紙kscc / glm-5.2锛夋寜姝ゆ墽琛屻€?> 鑼冨洿锛氬彧鍋?MCP 绠＄悊闂幆銆備笉瑕侀『鎵嬪仛瀛愪唬鐞?/ 璁板繂 / 閿欒鎭㈠銆?
+## 鐩爣
+
+璁╃敤鎴疯兘鍦ㄨ缃噷鎸?*宸ヤ綔鍖?*绠＄悊 MCP锛氬垪琛?/ 澧炲垹鏀?/ 鍚敤寮€鍏?/ 鐪熷疄杩炴帴娴嬭瘯銆? 
+鍚庣 store + IPC 宸叉湁锛宎gent 寰幆宸叉敞鍏?enabled MCP锛涚己 UI 涓庣湡瀹?TEST銆?
+## 鐜扮姸锛堝凡鏈夛級
+
+| 灞?| 鏂囦欢 | 鐘舵€?|
+|----|------|------|
+| 绫诲瀷 | `packages/shared/src/types/agent.ts` `McpServerEntry` / `WorkspaceMcpConfig` | 瀹屾暣 |
+| 瀛樺偍 | `apps/electron/src/main/lib/mcp/mcp-store.ts` | CRUD + getEnabled 瀹屾垚 |
+| IPC | `apps/electron/src/main/lib/ipc/mcp-service.ts` | GET/SAVE/upsert/delete 瀹屾垚锛?*TEST 鍗犱綅** |
+| preload | `apps/electron/src/preload/index.ts` | 浠?get/save锛涚己 upsert/delete/test |
+| 妗?| `packages/pi-core/src/mcp-bridge.ts` | stdio/http/sse 鐪熷疄杩炴帴 + listTools |
+| UI | 鏃?MCP 璁剧疆椤?| **寰呭仛** |
+| 璁剧疆澹?| `SettingsPage.tsx` | channels/workspace/鈥?鍙姞 `mcp` tab |
+
+## 蹇呴』浜や粯
+
+### 1. 鐪熷疄 MCP 杩炴帴娴嬭瘯锛坢ain锛?
+鍦?`mcp-service.ts` 鐨?`TEST_MCP_SERVER` 涓疄鐜扮湡瀹炴帰娴嬶細
+
+- 澶嶇敤 `@tagent/pi-core` 鐨?`buildMcpToolsForServer` **鎴?* 鍚屽寘杩炴帴閫昏緫锛堜紭鍏堝鍑轰竴涓交閲?`testMcpServer(name, entry)`锛屾垚鍔熻繑鍥?tool 鏁伴噺锛?- stdio锛氳兘 spawn + listTools
+- http / sse锛氳兘 connect + listTools
+- 澶辫触锛氳繑鍥?`{ success: false, message: 鍙閿欒 }`
+- 瓒呮椂锛氬皧閲?`entry.timeout`锛堢锛夛紝榛樿 30
+- 娴嬭瘯鎴愬姛/澶辫触鍙啓鍥?entry 鐨?`lastTestResult`锛堝彲閫変絾鎺ㄨ崘锛歶psert 鏃剁敱 UI 鎴?test handler 鎸佷箙鍖栵級
+
+### 2. preload + App 绫诲瀷琛ラ綈
+
+`window.electronAPI` 澧炲姞锛?
+- `upsertMcpServer(slug, name, entry)`
+- `deleteMcpServer(slug, name)`
+- `testMcpServer(entry)` 鈫?`{ success, message }`  
+  锛堣嫢 test 闇€瑕?slug 浠ヤ究鍐?lastTestResult锛歚testMcpServer(slug, name, entry)` 涔熷彲浠ワ級
+
+`App.tsx` Window 绫诲瀷鍚屾銆?
+### 3. 璁剧疆 UI锛歁CP 椤?
+鏂板缓渚嬪锛?
+- `apps/electron/src/renderer/components/settings/McpSettings.tsx`
+- 鍙€?model 绾嚱鏁帮細`mcp-settings-model.ts`锛堟牎楠?/ draft锛屽榻?ChannelsSettings 椋庢牸锛?
+琛屼负锛?
+1. **鍏堥€夊伐浣滃尯**锛坄workspacesAtom`锛涙棤宸ヤ綔鍖烘彁绀哄厛鎵撳紑椤圭洰锛?2. slug锛氱敤 workspace 鐨?`id`锛堝嵆 projects/{id}/mcp.json 鐨?sanitizedPath锛涚‘璁や笌 `getProjectDir` / listWorkspaces 涓€鑷达級
+3. 鍒楄〃锛氬悕绉般€乼ype銆乪nabled Switch銆乧ommand/url 鎽樿銆乴astTestResult
+4. 娣诲姞 / 缂栬緫琛ㄥ崟锛?   - name锛堢紪杈戞椂涓嶅彲鏀瑰悕锛屾垨鏀寔 rename=delete+upsert锛?   - type: stdio | http | sse
+   - stdio: command, args锛堢┖鏍兼垨 JSON 鏁扮粍锛夛紝env锛堝彲閫?key=value 澶氳锛?   - http/sse: url, headers锛堝彲閫夛級
+   - timeout锛堢锛屽彲閫夛級
+   - enabled
+5. 鎿嶄綔锛氫繚瀛樸€佸垹闄わ紙纭锛夈€佹祴璇曡繛鎺ャ€佸惎鐢ㄥ紑鍏冲嵆鏃?upsert
+6. 瑙嗚锛氬鐢?ChannelsSettings / SettingsCard / Button / Switch / DestructiveConfirmDialog 绛?`@tagent/ui` 缁勪欢锛涜缃?shell 宸叉湁 styles
+
+### 4. Settings 鎺ュ叆
+
+- `SettingsTab` 澧炲姞 `'mcp'`
+- ALL_TABS 鍔犮€孧CP銆嶉」锛堝缓璁?core 缁勶紝鍥炬爣鍙敤 `Plugs` / `Server`锛?- `renderTabContent` 鎸?`McpSettings`
+- 瀹藉唴瀹瑰彲鍍?channels 涓€鏍峰姞 `settings-shell-content--wide`
+
+### 5. 娴嬭瘯
+
+鑷冲皯锛?
+- unit锛歚mcp-settings-model` 鏍￠獙锛坣ame 蹇呭～銆乻tdio 瑕?command銆乭ttp/sse 瑕?url锛?- unit 鎴栬交娴嬶細test 缁撴灉褰㈢姸 / store upsert锛堣嫢鏂逛究 mock锛?- `bun run typecheck` + 鐩稿叧 vitest 閫氳繃
+
+## 绾︽潫
+
+- 涓枃 commit message 鐢辨€荤洃鍐欙紱浣?*涓嶈** git push锛堟€荤洃 checkpoint锛?- 涓嶈鏀规棤鍏冲ぇ閲嶆瀯
+- 涓嶈鎻愪氦 `node_modules` / dist / out
+- 淇濇寔 typecheck 缁?
+## 瀹屾垚瀹氫箟锛圖oD锛?
+- [ ] 璁剧疆閲岃兘鐪嬪埌 MCP tab
+- [ ] 鑳芥寜宸ヤ綔鍖?CRUD + 鍚敤
+- [ ] 娴嬭瘯杩炴帴瀵?stdio/http/sse 闈炲崰浣?- [ ] typecheck 閫氳繃
+- [ ] 鏈夋渶灏忓崟娴?
+## 鍙傝€冮鏍?
+- `ChannelsSettings.tsx` + `channel-settings-model.ts`
+- `mcp-store.ts` / `mcp-service.ts`
+- `packages/pi-core/src/mcp-bridge.ts`
+

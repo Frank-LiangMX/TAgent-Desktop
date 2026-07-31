@@ -1,0 +1,82 @@
+﻿你是 TAgent-Desktop 实现工程师。严格按 Round 3 brief 实现【插件整包市场】。
+
+工作目录: F:\TAgent-Desktop
+核心原则: 产品单位是整合包 Bundle（Cursor/Codex/TAgent_General 风格），不是零散 MCP 行。
+参考逻辑: F:/TAgent_General/apps/electron/src/main/lib/agent-workspace-manager.ts 的 installStore*，但 UI 干净重写。
+只改 brief 范围。完成后 typecheck + 相关 vitest 修到绿。
+不要 git commit/push。
+完成后用中文列出改动、验证方式、已知限制。
+
+Brief:
+# [dev] Round 3 Brief 鈥?鎻掍欢鏁村寘甯傚満锛圥0锛?
+> 涓荤嚎鎬荤洃 brief銆傚紑鍙戜唬鐞嗭紙kscc / glm-5.2锛夋墽琛屻€?> **浜у搧鍗曚綅 = 鏁村悎鍖?Bundle**锛圕ursor/Codex/TAgent_General 椋庢牸锛夛紝涓嶆槸闆舵暎 MCP 琛屻€?
+## 瀹氳皟
+
+- 鐢ㄦ埛涓昏矾寰勶細娴忚鏁村寘 鈫?涓€閿畨瑁?鈫?宸茶鍒楄〃绠＄悊
+- MCP 鍘熷 CRUD锛堣缃噷鐜版湁 MCP 椤碉級闄嶄负 **楂樼骇鑷畾涔?*
+- 鏁版嵁妯″瀷宸插湪 `@tagent/shared`锛?  - `StorePluginBundle` / `TAGENT_STORE_PLUGIN_BUNDLES`
+  - `buildPluginStoreCatalog()` / `InstallStoreBundleResult`
+  - `WorkspacePluginBundleRecord` / `plugins-installed.json`
+  - IPC 鍚嶏細`GET_PLUGIN_STORE_CATALOG` / `INSTALL_STORE_BUNDLE` / `INSTALL_STORE_SKILL`
+- 鍙傝€冨疄鐜帮細`F:/TAgent_General/apps/electron/src/main/lib/agent-workspace-manager.ts` 鐨?installStore*锛?*閫昏緫鍙簿绠€绉绘锛孶I 骞插噣閲嶅啓锛屼笉鎼睅灞?*锛?
+## 鑼冨洿锛圡VP 蹇呭仛锛?
+### 1. 涓昏繘绋嬶細plugin-store 鏈嶅姟
+
+鏂板缓渚嬪锛?
+- `apps/electron/src/main/lib/plugin/plugin-store.ts`
+- `apps/electron/src/main/lib/ipc/plugin-service.ts`
+
+鑳藉姏锛?
+| API | 琛屼负 |
+|-----|------|
+| `getPluginStoreCatalog()` | 璋?`buildPluginStoreCatalog()` |
+| `getInstalledPlugins(slug)` | 璇?`projects/{slug}/plugins-installed.json` |
+| `installStoreBundle(slug, bundleId)` | 瑁呭寘鍐?MCP + 鍙 Skill + 鍐?manifest |
+| `uninstallStoreBundle(slug, bundleId)` | 鍒?manifest锛涚Щ闄よ鍖呰褰曠殑 MCP锛堜粎褰撲粛鏄晢搴楀畨瑁呭舰鎬佸彲鍒狅級锛汼kill 鐩綍鑻ュ瓨鍦ㄥ垯鍒?|
+| `installStoreMcp(slug, mcpName)` | 鍙€夛細鍗曟潯 MCP 瀹夎锛堝競鍦烘瑕佸叆鍙ｏ級 |
+
+MCP 瀹夎锛氱敤 `mcpCatalogEntryToServerEntry` + **enabled: true** 鍐欏叆鐜版湁 `mcp-store`锛堝凡瀛樺湪鍒?skip锛夈€?
+Skill 瀹夎锛堟渶灏忓彲鐢級锛?
+- `installKind === 'inline'`锛氬啓鍏?`projects/{slug}/skills/{skillSlug}/SKILL.md`锛坒rontmatter + body锛?- `installKind === 'bundled'`锛氳嫢鏈粨搴撳皻鏃?bundled 璧勬簮鐩綍锛?*璁板叆 errors 骞?skip**锛屼笉瑕佸亣鎴愬姛
+- 宸ヤ綔鍖?skills 鏍癸細`getProjectDir(slug)/skills/`
+
+鍗歌浇锛?
+- 浠?manifest 鍘绘帀 bundle
+- 鍒犻櫎璇?bundle 璁板綍鐨?mcp 鍚嶏紙浠呭綋 mcp.json 鏉＄洰浠嶅尮閰嶅晢搴?command/args 鏃跺彲鍒狅紝閬垮厤璇垹鐢ㄦ埛鏀硅繃鐨勮嚜瀹氫箟锛?- 鍒犻櫎璇?bundle 璁板綍鐨?skill 鐩綍锛堝瓨鍦ㄥ垯 rm锛?
+### 2. preload + App 绫诲瀷
+
+鏆撮湶锛?
+- `getPluginStoreCatalog()`
+- `getInstalledPluginBundles(slug)`
+- `installStoreBundle(slug, bundleId)`
+- `uninstallStoreBundle(slug, bundleId)`
+
+鍦?`main/index.ts` 鍒涘缓 PluginService銆?
+### 3. UI锛氳缃?鈫掋€屾彃浠躲€嶄负涓?
+- `SettingsTab` 澧炲姞 `'plugins'`锛坈ore 缁勶紝浼樺厛浜?MCP锛?- 鏂扮粍浠讹細`PluginStoreSettings.tsx`锛堟垨 `plugins/` 鐩綍锛?  - 椤堕儴锛氬伐浣滃尯閫夋嫨锛堜笌 McpSettings 鍚岋級
+  - Segmented锛?*甯傚満** | **宸插畨瑁?*
+  - **甯傚満**锛氶粯璁ゅ睍绀?**鏁村悎鍖呭崱鐗囩綉鏍?*锛坣ame/description/category/鍚?N MCP + M Skill/瀹夎鎸夐挳锛?  - 鐐瑰崱鐗囧彲灞曞紑璇︽儏锛堝寘鍐?MCP/Skill 鍒楄〃锛?  - **宸插畨瑁?*锛氭潵鑷?plugins-installed.json锛屽嵏杞芥寜閽?- 鐜版湁 `mcp` tab 鏍囩鏀逛负 **銆岄珮绾?MCP銆?* 鎴?description 鏍囨槑銆岃嚜瀹氫箟鏈嶅姟鍣ㄣ€?
+瑙嗚锛氬鐢ㄨ缃〉 + ChannelsSettings 鍗＄墖鑺傚锛涗笉蹇?1:1 鎶?General spatial 鐨偆銆?
+### 4. 娴嬭瘯
+
+- `plugin-store.test.ts`锛歩nstall bundle 鍐?mcp + manifest锛涢噸澶嶅畨瑁?skip锛泆ninstall 娓?manifest
+- 鐢?`TAGENT_CONFIG_DIR` 涓存椂鐩綍
+- typecheck + vitest 缁?
+## 鏄庣‘涓嶅仛锛堟湰杞級
+
+- 瀹屾暣 Skill 缂栬緫鍣?/ skill 鍚敤鍒囨崲 UI
+- 浠?GitHub 杩滅▼鎷?skill bundle 璧勬簮
+- 瑙掕壊鍟嗗簵 / TA 涓€閿
+- 鎼?General 鐨?PluginMarketplace 宸ㄥ瀷缁勪欢鏍?
+## DoD
+
+- [ ] 璁剧疆閲屾湁銆屾彃浠躲€嶅叆鍙ｏ紝榛樿鐪嬫暣鍖?- [ ] 閫夊伐浣滃尯鍚庡彲瀹夎 catalog 涓煇涓?bundle锛堣嚦灏?MCP 閮ㄥ垎鐢熸晥锛?- [ ] plugins-installed.json 姝ｇ‘钀界洏
+- [ ] 宸插畨瑁呭垪琛ㄥ彲鍗歌浇
+- [ ] 楂樼骇 MCP 椤典粛鍙敤
+- [ ] typecheck + 鍗曟祴閫氳繃
+
+## 绾︽潫
+
+- 涓嶈 git commit/push
+- 涓枃 UI
+- 鏈€灏忓彲鐢ㄤ紭鍏?
