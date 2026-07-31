@@ -846,7 +846,11 @@
 }
 
 /* 侧栏槽：用 width 过渡，内层固定宽避免内容挤压
- * open ~500ms / close ~460ms 量级，与 General SIDEBAR_OPEN/CLOSE_MS 一致 */
+ * open ~500ms / close ~460ms 量级，与 General SIDEBAR_OPEN/CLOSE_MS 一致
+ *
+ * 关键：展开时 overflow 必须 visible，否则圆角外的 box-shadow 被矩形裁切，
+ * 四角会像「实心阴影块」。仅收起时 hidden 裁内容。
+ */
 .app-nav-sidebar-slot {
   position: relative;
   z-index: 2;
@@ -854,7 +858,7 @@
   width: var(--nav-sidebar-width, 254px);
   min-width: 0;
   height: 100%;
-  overflow: hidden;
+  overflow: visible;
   opacity: 1;
   pointer-events: auto;
   transition:
@@ -864,17 +868,31 @@
 .app-nav-sidebar-slot--closed {
   width: 0;
   opacity: 0;
+  overflow: hidden;
   pointer-events: none;
 }
 .app-nav-sidebar-slot-inner {
   width: var(--nav-sidebar-width, 254px);
   min-width: var(--nav-sidebar-width, 254px);
   height: 100%;
+  /* 外投阴影放在这一层（无 overflow:hidden），避免圆角四角被硬裁 */
+  border-radius: 22px;
+  box-shadow:
+    12px 0 36px -12px rgb(48 59 76 / 0.22),
+    0 16px 40px -16px rgb(48 59 76 / 0.16),
+    0 4px 14px -6px rgb(48 59 76 / 0.1);
+}
+.dark .app-nav-sidebar-slot-inner {
+  box-shadow:
+    14px 0 40px -10px rgb(0 0 0 / 0.55),
+    0 18px 44px -14px rgb(0 0 0 / 0.45),
+    0 6px 16px -6px rgb(0 0 0 / 0.35);
 }
 /* 收起时内层也可淡出一点，减少「内容被硬裁」感 */
 .app-nav-sidebar-slot--closed .app-nav-sidebar-slot-inner {
   opacity: 0;
-  transition: opacity 200ms ease-out;
+  box-shadow: none;
+  transition: opacity 200ms ease-out, box-shadow 200ms ease-out;
 }
 .app-nav-sidebar-slot--open .app-nav-sidebar-slot-inner {
   opacity: 1;
@@ -930,12 +948,16 @@
 
 /* sidebar 玻璃抽屉（254px）— 层叠感在这一层：盖住右侧主页面，不是内层再套圆角盒
  * 会话/归档行都直接画在这块画布上。
+ *
+ * 外投阴影已移到 .app-nav-sidebar-slot-inner：本层 overflow:hidden 会裁掉圆角外
+ * 的软阴影，四角变成实心黑边。这里只保留 inset 高光。
  */
 .app-nav-sidebar {
   position: relative;
   z-index: 2;
   flex: 0 0 auto;
   width: var(--nav-sidebar-width, 254px);
+  height: 100%;
   overflow: hidden;
   border: 1px solid rgb(var(--glass-rgb) / 0.48);
   border-radius: 22px;
@@ -946,11 +968,8 @@
   background: transparent !important;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
-  /* 外投阴影：压住右侧主内容 + 顶沿高光 = 抽屉厚度 */
+  /* 仅内高光；外阴影见 .app-nav-sidebar-slot-inner */
   box-shadow:
-    12px 0 36px -12px rgb(48 59 76 / 0.22),
-    0 16px 40px -16px rgb(48 59 76 / 0.16),
-    0 4px 14px -6px rgb(48 59 76 / 0.1),
     inset 0 1px 0 rgb(255 255 255 / 0.55),
     inset 1px 0 0 rgb(255 255 255 / 0.18);
 }
@@ -976,9 +995,6 @@
   border-color: rgb(255 255 255 / 0.08);
   background: transparent !important;
   box-shadow:
-    14px 0 40px -10px rgb(0 0 0 / 0.55),
-    0 18px 44px -14px rgb(0 0 0 / 0.45),
-    0 6px 16px -6px rgb(0 0 0 / 0.35),
     inset 0 1px 0 rgb(255 255 255 / 0.1),
     inset 1px 0 0 rgb(255 255 255 / 0.05);
 }
