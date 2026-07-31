@@ -164,9 +164,32 @@ export function App(): JSX.Element {
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general')
   /** 主区导航：会话 | 插件 | 记忆（设置走对话框，打开时 rail 高亮 settings） */
   const [activeRail, setActiveRail] = useState<Exclude<RailItem, 'settings'>>('chat')
+  /**
+   * 会话侧栏展开态（对齐 General navigationSidebarOpen + deriveRailSelection）：
+   * - 仅 chat 支持侧栏；plugins / memory 强制收起
+   * - 再点当前 chat rail → 切换展开/收起
+   * - 从其它页切回 chat → 自动展开
+   */
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
   const workspaces = useAtomValue(workspacesAtom)
+
+  /** 仅会话页需要 SessionSidebar（插件/记忆为 rail-only） */
+  const railSupportsSidebar = (item: Exclude<RailItem, 'settings'>): boolean => item === 'chat'
+
+  const selectRail = (next: Exclude<RailItem, 'settings'>): void => {
+    setShowSettings(false)
+    if (next === activeRail) {
+      // 再点当前项：chat 可折叠侧栏；rail-only 页无操作
+      if (railSupportsSidebar(next)) {
+        setSidebarOpen((v) => !v)
+      }
+      return
+    }
+    setActiveRail(next)
+    setSidebarOpen(railSupportsSidebar(next))
+  }
 
   // Phase 2：全局 Nudge 事件 → sonner toast
   useEffect(() => {
@@ -286,23 +309,21 @@ export function App(): JSX.Element {
     <TooltipProvider delayDuration={280} skipDelayDuration={120}>
       <AppShell
         topbar={null}
+        sidebarOpen={activeRail === 'chat' && sidebarOpen}
         rail={
           <Rail
             active={railActive}
             onChat={() => {
-              setShowSettings(false)
-              setActiveRail('chat')
-              // 无 tab 且无草稿 → 进入新会话草稿；已有 tab/草稿则回到当前页
-              if (!activeTab && !draftSession) newSession()
+              const wasChat = activeRail === 'chat'
+              const willOpenSidebar = wasChat ? !sidebarOpen : true
+              selectRail('chat')
+              // 从其它页进入会话且无 tab/草稿 → 新会话；再点 chat 仅折叠侧栏时不打断
+              if (!wasChat && !activeTab && !draftSession) newSession()
+              // 侧栏从收起点开、且没有任何会话页时，也给草稿入口
+              if (wasChat && willOpenSidebar && !activeTab && !draftSession) newSession()
             }}
-            onPlugins={() => {
-              setShowSettings(false)
-              setActiveRail('plugins')
-            }}
-            onMemory={() => {
-              setShowSettings(false)
-              setActiveRail('memory')
-            }}
+            onPlugins={() => selectRail('plugins')}
+            onMemory={() => selectRail('memory')}
             onSettings={() => openSettings('general')}
           />
         }
@@ -312,6 +333,7 @@ export function App(): JSX.Element {
             onSelect={(s) => {
               setShowSettings(false)
               setActiveRail('chat')
+              setSidebarOpen(true)
               // 选中已有会话 → 清掉草稿（避免关掉所有 tab 后复活旧草稿）
               setDraftSession(null)
               openSession(s.id, s.title, s.workspaceId, s.channelId, s.modelId)
@@ -319,6 +341,7 @@ export function App(): JSX.Element {
             onNew={() => {
               setShowSettings(false)
               setActiveRail('chat')
+              setSidebarOpen(true)
               newSession()
             }}
             onOpenProject={() => void handleOpenProject()}

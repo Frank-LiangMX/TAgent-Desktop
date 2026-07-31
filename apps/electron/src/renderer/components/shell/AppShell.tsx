@@ -2,10 +2,10 @@
  * AppShell — 全局浮岛布局壳（对齐 TAgent_General 视觉，flex 行 + 玻璃浮岛）
  *
  * 结构：.app-shell-scene（flex 行）→ SpatialTopBar（absolute 浮顶）+ nav(rail+sidebar) + main
- * 不复刻旧版 1234 行 AppShell（无右 inspector/morph/折叠动画/mac-win 差异）。
- * 顶栏内容（渠道/主题等）、rail、sidebar、main 由 App 通过 props 传入。
+ * sidebar 展开/收起：width + gap 过渡（对齐 General left-sidebar layout ms/ease，无 morph 代理层）。
  */
 import type { ReactNode } from 'react'
+import { cn } from '../../lib/utils'
 import { WindowControls } from './WindowControls'
 
 interface AppShellProps {
@@ -13,13 +13,27 @@ interface AppShellProps {
   topbar?: ReactNode
   /** 左导航轨（Rail 组件） */
   rail?: ReactNode
-  /** 侧栏（SessionSidebar） */
+  /** 侧栏（SessionSidebar）；插件/记忆等页不传或配合 sidebarOpen=false */
   sidebar?: ReactNode
+  /**
+   * 会话侧栏是否展开。
+   * - true：width=254 + gap
+   * - false：width=0 + gap=0（仍可挂载 DOM，便于过渡）
+   */
+  sidebarOpen?: boolean
   /** 主区内容（会话页/空状态） */
   children?: ReactNode
 }
 
-export function AppShell({ topbar, rail, sidebar, children }: AppShellProps): JSX.Element {
+export function AppShell({
+  topbar,
+  rail,
+  sidebar,
+  sidebarOpen = true,
+  children,
+}: AppShellProps): JSX.Element {
+  const hasSidebarSlot = sidebar != null
+
   return (
     <div className="app-shell-scene">
       {/* 顶栏：单独一行浮顶（窗口栏），含窗口控制 + 可选额外内容。对齐 TAgent_General SpatialTopBar */}
@@ -33,9 +47,27 @@ export function AppShell({ topbar, rail, sidebar, children }: AppShellProps): JS
 
       {/* nav：rail + sidebar 玻璃浮岛，顶栏下 16px 间隙（band-inset-top） */}
       <nav className="app-shell-nav">
-        <div className="app-nav-stack">
+        <div
+          className={cn(
+            'app-nav-stack',
+            hasSidebarSlot && sidebarOpen && 'app-nav-stack--sidebar-open',
+            hasSidebarSlot && !sidebarOpen && 'app-nav-stack--sidebar-closed',
+          )}
+          data-sidebar-open={hasSidebarSlot && sidebarOpen ? 'true' : 'false'}
+        >
           {rail}
-          {sidebar}
+          {hasSidebarSlot ? (
+            <div
+              className={cn(
+                'app-nav-sidebar-slot',
+                sidebarOpen ? 'app-nav-sidebar-slot--open' : 'app-nav-sidebar-slot--closed',
+              )}
+              data-open={sidebarOpen ? 'true' : 'false'}
+              aria-hidden={!sidebarOpen}
+            >
+              <div className="app-nav-sidebar-slot-inner">{sidebar}</div>
+            </div>
+          ) : null}
         </div>
       </nav>
 

@@ -39,6 +39,9 @@
     --nav-rail-width: 58px;
     --nav-sidebar-width: 254px;
     --nav-cluster-gap: 10px;
+    /* 左 sidebar 展开/收起（对齐 General left-sidebar-motion） */
+    --left-sidebar-layout-ms: 480ms;
+    --left-sidebar-layout-ease: cubic-bezier(0.18, 0.72, 0.14, 1);
     --rail-edge-left: 5px;
     --shell-chrome-h: 40px;
     --shell-band-inset-top: 16px;

@@ -829,7 +829,9 @@
   padding-left: var(--rail-edge-left, 5px);
 }
 
-/* rail + sidebar 并列 */
+/* rail + sidebar 并列
+ * 展开/收起：gap 与 sidebar 宽度同拍过渡（对齐 General --left-sidebar-layout-ms/ease）
+ */
 .app-nav-stack {
   position: relative;
   display: flex;
@@ -837,6 +839,54 @@
   align-items: stretch;
   gap: var(--nav-cluster-gap, 10px);
   background: transparent;
+  transition: gap var(--left-sidebar-layout-ms, 480ms) var(--left-sidebar-layout-ease, cubic-bezier(0.18, 0.72, 0.14, 1));
+}
+.app-nav-stack--sidebar-closed {
+  gap: 0;
+}
+
+/* 侧栏槽：用 width 过渡，内层固定宽避免内容挤压
+ * open ~500ms / close ~460ms 量级，与 General SIDEBAR_OPEN/CLOSE_MS 一致 */
+.app-nav-sidebar-slot {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  width: var(--nav-sidebar-width, 254px);
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  opacity: 1;
+  pointer-events: auto;
+  transition:
+    width var(--left-sidebar-layout-ms, 480ms) var(--left-sidebar-layout-ease, cubic-bezier(0.18, 0.72, 0.14, 1)),
+    opacity 280ms ease-out;
+}
+.app-nav-sidebar-slot--closed {
+  width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.app-nav-sidebar-slot-inner {
+  width: var(--nav-sidebar-width, 254px);
+  min-width: var(--nav-sidebar-width, 254px);
+  height: 100%;
+}
+/* 收起时内层也可淡出一点，减少「内容被硬裁」感 */
+.app-nav-sidebar-slot--closed .app-nav-sidebar-slot-inner {
+  opacity: 0;
+  transition: opacity 200ms ease-out;
+}
+.app-nav-sidebar-slot--open .app-nav-sidebar-slot-inner {
+  opacity: 1;
+  transition: opacity 280ms ease-out 80ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-nav-stack,
+  .app-nav-sidebar-slot,
+  .app-nav-sidebar-slot-inner {
+    transition: none !important;
+  }
 }
 
 /* rail 列（58px）：无 padding，上下两胶囊拆分（上靠顶、下靠底，中间透 scene） */
