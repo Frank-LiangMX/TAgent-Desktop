@@ -6,7 +6,8 @@
  * 视觉上是「同一页的两种形态」。原 WelcomePage 的 page/stage/copy/prompts
  * 样式已随其删除而移除。
  */
-.welcome-start {
+.welcome-start,
+.onboarding-open {
   position: relative;
   display: grid;
   width: min(520px, 100%);
@@ -43,7 +44,18 @@
     transform 180ms var(--app-shell-motion);
 }
 
-.welcome-start:hover {
+/* 引导页主行动卡差异化：更宽更高、更圆润，作为首页视觉焦点 */
+.onboarding-open {
+  width: min(560px, 100%);
+  min-height: 88px;
+  gap: 16px;
+  margin: 0 auto;
+  padding: 16px 20px;
+  border-radius: 18px;
+}
+
+.welcome-start:hover,
+.onboarding-open:hover {
   border-color: hsl(var(--primary) / 0.24);
   box-shadow:
     0 18px 42px -18px hsl(var(--foreground) / 0.28),
@@ -52,17 +64,20 @@
   transform: translateY(-2px);
 }
 
-.welcome-start:active {
+.welcome-start:active,
+.onboarding-open:active {
   transform: translateY(0) scale(0.992);
 }
 
 .welcome-start:focus-visible,
-.welcome-project:focus-visible {
+.welcome-project:focus-visible,
+.onboarding-open:focus-visible {
   outline: 2px solid hsl(var(--primary) / 0.72);
   outline-offset: 3px;
 }
 
-.welcome-start__icon {
+.welcome-start__icon,
+.onboarding-open__icon {
   display: grid;
   width: 40px;
   height: 40px;
@@ -72,32 +87,47 @@
   background: hsl(var(--primary) / 0.1);
 }
 
-.welcome-start__copy {
+.onboarding-open__icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+}
+
+.welcome-start__copy,
+.onboarding-open__copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 3px;
 }
 
-.welcome-start__copy strong {
+.welcome-start__copy strong,
+.onboarding-open__copy strong {
   font-size: 13px;
   font-weight: 620;
 }
 
-.welcome-start__copy small {
+.onboarding-open__copy strong {
+  font-size: 14px;
+}
+
+.welcome-start__copy small,
+.onboarding-open__copy small {
   color: hsl(var(--muted-foreground) / 0.78);
   font-size: 11px;
   font-weight: 400;
 }
 
-.welcome-start__arrow {
+.welcome-start__arrow,
+.onboarding-open__arrow {
   color: hsl(var(--muted-foreground) / 0.62);
   transition:
     color 160ms ease,
     transform 220ms var(--app-shell-motion);
 }
 
-.welcome-start:hover .welcome-start__arrow {
+.welcome-start:hover .welcome-start__arrow,
+.onboarding-open:hover .onboarding-open__arrow {
   color: hsl(var(--primary));
   transform: translateX(3px);
 }
@@ -134,14 +164,16 @@
   background: hsl(var(--foreground) / 0.055);
 }
 
-.dark .welcome-start {
+.dark .welcome-start,
+.dark .onboarding-open {
   border-color: rgb(255 255 255 / 0.08);
   box-shadow:
     0 16px 38px -18px rgb(0 0 0 / 0.58),
     inset 0 1px 0 rgb(255 255 255 / 0.07);
 }
 
-.dark .welcome-start:hover {
+.dark .welcome-start:hover,
+.dark .onboarding-open:hover {
   border-color: hsl(var(--primary) / 0.25);
   box-shadow:
     0 20px 46px -18px rgb(0 0 0 / 0.68),
@@ -159,7 +191,9 @@
 
 @media (prefers-reduced-motion: reduce) {
   .welcome-start,
-  .welcome-start__arrow {
+  .onboarding-open,
+  .welcome-start__arrow,
+  .onboarding-open__arrow {
     transition: none;
   }
 }

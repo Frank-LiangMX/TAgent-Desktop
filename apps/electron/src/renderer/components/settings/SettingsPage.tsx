@@ -1,18 +1,26 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type KeyboardEvent } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import {
-  Settings,
   Palette,
   Cable,
   Info,
   X,
+  BrainCircuit,
+  Boxes,
+  Layers,
+  Cpu,
+  Monitor,
+  Moon,
+  Sun,
+  UserRound,
 } from 'lucide-react'
+import { cn } from '../../lib/utils'
 import {
   Dialog,
   DialogContent,
+  SettingsInput,
   SettingsSection,
   SettingsCard,
-  SettingsSegmentedControl,
   Switch,
 } from '@tagent/ui'
 import {
@@ -21,12 +29,15 @@ import {
   resolvedDarkAtom,
   setThemeMode,
   setThemeStyle,
-  type ThemeMode,
   type ThemeStyle,
 } from '../../atoms/theme'
 import {
   dynamicBgEnabledAtom,
 } from '../../atoms/dynamic-bg'
+import {
+  userProfileAtom,
+  saveUserProfileAtom,
+} from '../../atoms/user-profile'
 import { ChannelsSettings } from './ChannelsSettings'
 import appiconLight from '../../assets/tagent-appicon-light.png'
 import appiconDark from '../../assets/tagent-appicon-dark.png'
@@ -54,8 +65,15 @@ const ALL_TABS: TabItem[] = [
   {
     id: 'general',
     label: '通用',
-    description: '外观、主题等基础偏好',
-    icon: <Settings size={14} strokeWidth={1.75} />,
+    description: '称呼、语言与偏好',
+    icon: <UserRound size={14} strokeWidth={1.75} />,
+    group: 'core',
+  },
+  {
+    id: 'appearance',
+    label: '外观',
+    description: '外观模式、主题色与动态背景',
+    icon: <Palette size={14} strokeWidth={1.75} />,
     group: 'core',
   },
   {
@@ -66,13 +84,6 @@ const ALL_TABS: TabItem[] = [
     group: 'core',
   },
   {
-    id: 'appearance',
-    label: '外观',
-    description: '主题、色系与材质',
-    icon: <Palette size={14} strokeWidth={1.75} />,
-    group: 'advanced',
-  },
-  {
     id: 'about',
     label: '关于',
     description: '版本与环境信息',
@@ -81,20 +92,199 @@ const ALL_TABS: TabItem[] = [
   },
 ]
 
-const THEME_COLORS: { value: ThemeStyle; label: string; rgb: string }[] = [
-  { value: 'default', label: '默认', rgb: '37 37 37' },
-  { value: 'ocean', label: '海洋', rgb: '23 55 94' },
-  { value: 'forest', label: '森林', rgb: '20 60 40' },
-  { value: 'slate', label: '石板', rgb: '60 60 70' },
-  { value: 'orange', label: '暖橙', rgb: '100 55 20' },
-  { value: 'purple', label: '紫罗兰', rgb: '70 30 90' },
+/** 预览装饰符号（对齐 TAgent_General 风格库） */
+type DecoKind =
+  | 'cloud'
+  | 'wave'
+  | 'leaf'
+  | 'star'
+  | 'moon'
+  | 'gem'
+  | 'sun'
+  | 'flame'
+  | 'flower'
+  | 'orb'
+
+interface StyleCardDef {
+  family: ThemeStyle
+  variant: 'light' | 'dark'
+  name: string
+  tag: string
+  previewClass: string
+  deco: DecoKind
+}
+
+/**
+ * 命名对齐 TAgent_General scene 配色气质。
+ * 浅/深各一套，按当前 resolvedDark 只显示对应变体。
+ */
+const STYLE_CARDS: readonly StyleCardDef[] = [
+  { family: 'default', name: '中性', tag: 'Neutral', variant: 'light', previewClass: 'tagent-theme-default-light', deco: 'orb' },
+  { family: 'slate', name: '暖砂', tag: 'Slate', variant: 'light', previewClass: 'tagent-theme-cloud-dancer', deco: 'cloud' },
+  { family: 'ocean', name: '碧海', tag: 'Ocean', variant: 'light', previewClass: 'tagent-theme-ocean-light', deco: 'wave' },
+  { family: 'forest', name: '翠林', tag: 'Forest', variant: 'light', previewClass: 'tagent-theme-forest-light', deco: 'leaf' },
+  { family: 'orange', name: '琥珀', tag: 'Amber', variant: 'light', previewClass: 'tagent-theme-terracotta-dawn', deco: 'sun' },
+  { family: 'purple', name: '紫藤', tag: 'Violet', variant: 'light', previewClass: 'tagent-theme-wisteria-dawn', deco: 'flower' },
+  { family: 'default', name: '中性', tag: 'Neutral', variant: 'dark', previewClass: 'tagent-theme-default-dark', deco: 'orb' },
+  { family: 'slate', name: '暖砂', tag: 'Slate', variant: 'dark', previewClass: 'tagent-theme-morandi-night', deco: 'gem' },
+  { family: 'ocean', name: '碧海', tag: 'Ocean', variant: 'dark', previewClass: 'tagent-theme-ocean-dark', deco: 'star' },
+  { family: 'forest', name: '翠林', tag: 'Forest', variant: 'dark', previewClass: 'tagent-theme-forest-dark', deco: 'moon' },
+  { family: 'orange', name: '琥珀', tag: 'Amber', variant: 'dark', previewClass: 'tagent-theme-terracotta-night', deco: 'flame' },
+  { family: 'purple', name: '紫藤', tag: 'Violet', variant: 'dark', previewClass: 'tagent-theme-wisteria-night', deco: 'orb' },
 ]
 
-const MODE_OPTIONS = [
-  { value: 'light', label: '浅色' },
-  { value: 'dark', label: '深色' },
-  { value: 'system', label: '跟随系统' },
-]
+const DECO_PATHS: Record<DecoKind, JSX.Element> = {
+  cloud: (
+    <path
+      d="M10 28 Q4 28 4 22 Q4 16 10 16 Q11 8 20 8 Q28 8 30 16 Q38 16 38 22 Q38 28 32 28 Z"
+      fill="currentColor"
+    />
+  ),
+  wave: (
+    <path
+      d="M4 22 Q12 14 20 22 T36 22 M4 30 Q12 22 20 30 T36 30"
+      stroke="currentColor"
+      strokeWidth="3"
+      fill="none"
+      strokeLinecap="round"
+    />
+  ),
+  leaf: (
+    <path
+      d="M20 6 C30 10 34 22 30 32 C20 30 12 22 14 12 C16 8 18 6 20 6 Z M16 14 L24 26"
+      stroke="currentColor"
+      strokeWidth="2"
+      fill="currentColor"
+      fillOpacity="0.4"
+    />
+  ),
+  star: (
+    <g fill="currentColor">
+      <circle cx="12" cy="14" r="1.5" />
+      <circle cx="28" cy="12" r="1" />
+      <circle cx="20" cy="22" r="2" />
+      <circle cx="32" cy="26" r="1" />
+      <circle cx="10" cy="30" r="1" />
+      <circle cx="24" cy="32" r="1.2" />
+    </g>
+  ),
+  moon: <path d="M28 8 A14 14 0 1 0 28 32 A10 10 0 1 1 28 8 Z" fill="currentColor" />,
+  gem: (
+    <path
+      d="M20 6 L32 16 L20 34 L8 16 Z M20 6 L20 34 M8 16 L32 16"
+      stroke="currentColor"
+      strokeWidth="2"
+      fill="currentColor"
+      fillOpacity="0.3"
+    />
+  ),
+  sun: (
+    <g fill="currentColor">
+      <circle cx="20" cy="20" r="6" />
+      <g stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+        <line x1="20" y1="6" x2="20" y2="10" />
+        <line x1="20" y1="30" x2="20" y2="34" />
+        <line x1="6" y1="20" x2="10" y2="20" />
+        <line x1="30" y1="20" x2="34" y2="20" />
+        <line x1="10" y1="10" x2="13" y2="13" />
+        <line x1="27" y1="27" x2="30" y2="30" />
+        <line x1="10" y1="30" x2="13" y2="27" />
+        <line x1="27" y1="13" x2="30" y2="10" />
+      </g>
+    </g>
+  ),
+  flame: (
+    <path
+      d="M20 4 C22 10 26 12 27 18 C28 24 25 30 20 32 C15 30 12 24 13 18 C14 14 16 14 17 16 C18 13 17 9 20 4 Z"
+      fill="currentColor"
+      fillOpacity="0.85"
+    />
+  ),
+  flower: (
+    <g fill="currentColor">
+      <ellipse cx="20" cy="10" rx="3.5" ry="5.5" />
+      <ellipse cx="30" cy="20" rx="5.5" ry="3.5" />
+      <ellipse cx="20" cy="30" rx="3.5" ry="5.5" />
+      <ellipse cx="10" cy="20" rx="5.5" ry="3.5" />
+      <circle cx="20" cy="20" r="2.2" fillOpacity="0.5" />
+    </g>
+  ),
+  orb: (
+    <g>
+      <circle
+        cx="20"
+        cy="20"
+        r="11"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        fill="none"
+        opacity="0.7"
+      />
+      <circle cx="20" cy="20" r="4" fill="currentColor" />
+    </g>
+  ),
+}
+
+function ThemePreview({ previewClass, deco }: { previewClass: string; deco: DecoKind }): JSX.Element {
+  return (
+    <div className={cn('tagent-theme-preview', previewClass)}>
+      <div className="tagent-theme-deco">
+        <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+          {DECO_PATHS[deco]}
+        </svg>
+      </div>
+    </div>
+  )
+}
+
+function StyleCard({
+  style,
+  isSelected,
+  onSelect,
+}: {
+  style: StyleCardDef
+  isSelected: boolean
+  onSelect: () => void
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={isSelected}
+      aria-label={`${style.name}（${style.variant === 'light' ? '浅色' : '深色'}）`}
+      data-style={`${style.family}-${style.variant}`}
+      data-variant={style.variant}
+      data-selected={isSelected || undefined}
+      className="tagent-style-card"
+    >
+      <div className="tagent-style-preview-wrap">
+        <ThemePreview previewClass={style.previewClass} deco={style.deco} />
+        <div className="tagent-style-chrome" aria-hidden="true">
+          <span className="tagent-style-chrome-rail" />
+          <span className="tagent-style-chrome-panel" />
+          <span className="tagent-style-chrome-main" />
+        </div>
+        {isSelected && (
+          <span className="tagent-style-check" aria-hidden="true">
+            <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+              <path
+                d="M2.5 6.2 5 8.7 9.5 3.5"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+        )}
+      </div>
+      <div className="tagent-style-card-label">
+        <span className="tagent-style-card-name">{style.name}</span>
+        <span className="tagent-style-card-meta">{style.tag}</span>
+      </div>
+    </button>
+  )
+}
 
 function renderTabContent(tab: SettingsTab): JSX.Element {
   switch (tab) {
@@ -102,7 +292,7 @@ function renderTabContent(tab: SettingsTab): JSX.Element {
     case 'appearance': return <AppearanceSettings />
     case 'channels': return <ChannelsSettings />
     case 'about': return <AboutSettings />
-    default: return <GeneralSettings />
+    default: return <AppearanceSettings />
   }
 }
 
@@ -120,7 +310,7 @@ function SettingsPageIntro({ title, description }: { title: string; description?
 export function SettingsDialog({
   open,
   onOpenChange,
-  initialTab = 'general',
+  initialTab = 'appearance',
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -219,62 +409,130 @@ export function SettingsDialog({
 
 /* ===== Tab 内容组件 ===== */
 
+/** 深浅切换胶囊（对齐 TAgent_General：日夜图标交叉动画 + 自动） */
+function ThemeModeControl({
+  isDark,
+  isAuto,
+  onVariantToggle,
+  onAutoToggle,
+}: {
+  isDark: boolean
+  isAuto: boolean
+  onVariantToggle: () => void
+  onAutoToggle: () => void
+}): JSX.Element {
+  return (
+    <div className="tagent-theme-mode-control">
+      <DayNightToggle isDark={isDark} onToggle={onVariantToggle} />
+      <button
+        type="button"
+        aria-pressed={isAuto}
+        onClick={onAutoToggle}
+        data-active={isAuto || undefined}
+        className="tagent-theme-auto"
+      >
+        <Monitor size={14} strokeWidth={2} aria-hidden="true" />
+        <span>自动</span>
+      </button>
+    </div>
+  )
+}
+
+function DayNightToggle({
+  isDark,
+  onToggle,
+}: {
+  isDark: boolean
+  onToggle: () => void
+}): JSX.Element {
+  // 本地视觉态：先翻图标开启动画，再延后抛主题切换，
+  // 避免 html.dark / 风格库重排把 CSS transition 掐掉。
+  const [visualDark, setVisualDark] = useState(isDark)
+
+  useEffect(() => {
+    setVisualDark(isDark)
+  }, [isDark])
+
+  const handleClick = useCallback(() => {
+    const next = !visualDark
+    setVisualDark(next)
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        onToggle()
+      })
+    })
+  }, [onToggle, visualDark])
+
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={visualDark}
+      aria-label={visualDark ? '切换到浅色模式' : '切换到深色模式'}
+      onClick={handleClick}
+      data-dark={visualDark || undefined}
+      className="tagent-daynight-toggle"
+    >
+      <span className="tagent-daynight-icon tagent-daynight-icon--moon" aria-hidden="true">
+        <Moon size={14} strokeWidth={2} fill="currentColor" />
+      </span>
+      <span className="tagent-daynight-icon tagent-daynight-icon--sun" aria-hidden="true">
+        <Sun size={14} strokeWidth={2} />
+      </span>
+    </button>
+  )
+}
+
 function GeneralSettings(): JSX.Element {
-  const themeMode = useAtomValue(themeModeAtom)
-  const themeStyle = useAtomValue(themeStyleAtom)
-  const dynamicBg = useAtomValue(dynamicBgEnabledAtom)
-  const setDynamicBg = useSetAtom(dynamicBgEnabledAtom)
+  const userProfile = useAtomValue(userProfileAtom)
+  const saveUserProfile = useSetAtom(saveUserProfileAtom)
+  const [nameInput, setNameInput] = useState(userProfile.userName)
+  const [error, setError] = useState('')
+
+  // 外部（引导页 / Rail 侧）更新档案后同步输入框
+  useEffect(() => {
+    setNameInput(userProfile.userName)
+  }, [userProfile.userName])
+
+  /** 失焦 / 回车时自动保存；空值恢复原称呼 */
+  const handleCommit = useCallback(async (): Promise<void> => {
+    const trimmed = nameInput.trim()
+    if (!trimmed) {
+      setNameInput(userProfile.userName)
+      setError('')
+      return
+    }
+    if (trimmed === userProfile.userName) return
+    try {
+      await saveUserProfile({ userName: trimmed })
+      setError('')
+    } catch (err) {
+      console.error('[通用设置] 更新称呼失败:', err)
+      setError('保存失败，请重试')
+    }
+  }, [nameInput, userProfile.userName, saveUserProfile])
 
   return (
     <div className="settings-page">
-      <SettingsPageIntro title="通用" description="界面外观与基础偏好" />
+      <SettingsPageIntro title="通用" description="称呼与偏好" />
 
-      <SettingsSection title="显示设定">
+      <SettingsSection title="档案">
         <SettingsCard>
-          <SettingsSegmentedControl
-            label="外观模式"
-            description="选择浅色、深色或跟随系统主题"
-            value={themeMode}
-            onValueChange={(v) => setThemeMode(v as ThemeMode, themeStyle)}
-            options={MODE_OPTIONS}
+          <SettingsInput
+            label="我的称呼"
+            description="左侧设置入口的头像取首字；输入后自动保存"
+            value={nameInput}
+            onChange={(v) => {
+              setNameInput(v)
+              setError('')
+            }}
+            onBlur={() => void handleCommit()}
+            onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+              if (e.key === 'Enter') e.currentTarget.blur()
+            }}
+            placeholder="输入你希望被称呼的名字"
+            error={error}
           />
-        </SettingsCard>
-        <SettingsCard divided={false}>
-          <div className="px-3 pt-2.5 pb-0.5">
-            <span className="settings-field-label text-xs text-muted-foreground">主题色</span>
-          </div>
-          <div className="theme-swatch-grid">
-            {THEME_COLORS.map(({ value, label, rgb }) => (
-              <button
-                key={value}
-                type="button"
-                className={`theme-swatch-btn ${themeStyle === value ? 'theme-swatch-btn--active' : ''}`}
-                onClick={() => setThemeStyle(value as ThemeStyle, themeMode)}
-              >
-                <div className="theme-swatch-dot" style={{ background: `rgb(${rgb})` }} />
-                <span className="theme-swatch-label">{label}</span>
-              </button>
-            ))}
-          </div>
-        </SettingsCard>
-        <SettingsCard divided={false}>
-          <div className="settings-row">
-            <div className="settings-row-main min-w-0 flex-1">
-              <span className="settings-field-label">动态背景</span>
-              <div className="settings-row-bottom mt-1">
-                <span className="text-xs leading-relaxed text-muted-foreground">渐变光晕缓慢流动，透过侧栏与面板可见</span>
-              </div>
-            </div>
-            <div className="settings-row-control shrink-0">
-              <Switch
-                checked={dynamicBg}
-                onCheckedChange={(v) => {
-                  setDynamicBg(v)
-                  try { localStorage.setItem('tagent-dynamic-bg', v ? 'true' : 'false') } catch {}
-                }}
-              />
-            </div>
-          </div>
         </SettingsCard>
       </SettingsSection>
     </div>
@@ -284,47 +542,81 @@ function GeneralSettings(): JSX.Element {
 function AppearanceSettings(): JSX.Element {
   const themeMode = useAtomValue(themeModeAtom)
   const themeStyle = useAtomValue(themeStyleAtom)
+  const resolvedDark = useAtomValue(resolvedDarkAtom)
   const dynamicBg = useAtomValue(dynamicBgEnabledAtom)
   const setDynamicBg = useSetAtom(dynamicBgEnabledAtom)
 
+  const isAuto = themeMode === 'system'
+
+  /** 深浅翻转：退出自动，落到明确 light/dark */
+  const handleVariantToggle = useCallback(() => {
+    setThemeMode(resolvedDark ? 'light' : 'dark', themeStyle)
+  }, [resolvedDark, themeStyle])
+
+  /** 自动：开 → system；关 → 锁定当前解析结果 */
+  const handleAutoToggle = useCallback(() => {
+    if (isAuto) {
+      setThemeMode(resolvedDark ? 'dark' : 'light', themeStyle)
+    } else {
+      setThemeMode('system', themeStyle)
+    }
+  }, [isAuto, resolvedDark, themeStyle])
+
+  const visibleCards = STYLE_CARDS.filter(
+    (s) => s.variant === (resolvedDark ? 'dark' : 'light'),
+  )
+
   return (
     <div className="settings-page">
-      <SettingsPageIntro title="外观" description="主题色系与材质风格" />
+      <SettingsPageIntro title="外观" description="外观模式、主题色与动态背景" />
 
-      <SettingsSection title="主题">
+      <SettingsSection title="外观">
         <SettingsCard>
-          <SettingsSegmentedControl
-            label="外观模式"
-            description="选择浅色、深色或跟随系统主题"
-            value={themeMode}
-            onValueChange={(v) => setThemeMode(v as ThemeMode, themeStyle)}
-            options={MODE_OPTIONS}
-          />
-        </SettingsCard>
-        <SettingsCard divided={false}>
-          <div className="px-3 pt-2.5 pb-0.5">
-            <span className="settings-field-label text-xs text-muted-foreground">主题色</span>
+          <div className="settings-row">
+            <div className="settings-row-main min-w-0 flex-1">
+              <span className="settings-field-label">深浅模式</span>
+              <div className="settings-row-bottom mt-1">
+                <span className="text-xs leading-relaxed text-muted-foreground">
+                  {isAuto
+                    ? `自动 · 当前为${resolvedDark ? '深色' : '浅色'}`
+                    : `手动 · ${resolvedDark ? '深色' : '浅色'}`}
+                </span>
+              </div>
+            </div>
+            <div className="settings-row-control shrink-0">
+              <ThemeModeControl
+                isDark={resolvedDark}
+                isAuto={isAuto}
+                onVariantToggle={handleVariantToggle}
+                onAutoToggle={handleAutoToggle}
+              />
+            </div>
           </div>
-          <div className="theme-swatch-grid">
-            {THEME_COLORS.map(({ value, label, rgb }) => (
-              <button
-                key={value}
-                type="button"
-                className={`theme-swatch-btn ${themeStyle === value ? 'theme-swatch-btn--active' : ''}`}
-                onClick={() => setThemeStyle(value as ThemeStyle, themeMode)}
-              >
-                <div className="theme-swatch-dot" style={{ background: `rgb(${rgb})` }} />
-                <span className="theme-swatch-label">{label}</span>
-              </button>
-            ))}
+          <div className="tagent-style-library">
+            <div className="tagent-style-group-label">
+              <span>主题色系</span>
+              <span className="tagent-style-group-hint">
+                {resolvedDark ? '深色 · 中暗底 + 透亮光斑' : '浅色 · 冷暖撞色弥散'}
+              </span>
+            </div>
+            <div className="tagent-style-grid" role="listbox" aria-label="主题色系">
+              {visibleCards.map((style) => (
+                <StyleCard
+                  key={`${style.family}-${style.variant}`}
+                  style={style}
+                  isSelected={themeStyle === style.family}
+                  onSelect={() => setThemeStyle(style.family, themeMode)}
+                />
+              ))}
+            </div>
           </div>
-        </SettingsCard>
-        <SettingsCard divided={false}>
           <div className="settings-row">
             <div className="settings-row-main min-w-0 flex-1">
               <span className="settings-field-label">动态背景</span>
               <div className="settings-row-bottom mt-1">
-                <span className="text-xs leading-relaxed text-muted-foreground">渐变光晕缓慢流动，透过侧栏与面板可见</span>
+                <span className="text-xs leading-relaxed text-muted-foreground">
+                  渐变光晕缓慢流动，透过侧栏与面板可见
+                </span>
               </div>
             </div>
             <div className="settings-row-control shrink-0">
@@ -343,32 +635,125 @@ function AppearanceSettings(): JSX.Element {
   )
 }
 
+const ARCH_ITEMS = [
+  {
+    icon: Layers,
+    title: '双核可拔插',
+    desc: '内网 kscc 核 + 外部 Pi 核，按渠道选核，对外版可移除 kscc',
+  },
+  {
+    icon: Boxes,
+    title: '会话长驻',
+    desc: '一个会话一个常驻进程，多轮复用上下文，不重放历史',
+  },
+  {
+    icon: BrainCircuit,
+    title: '记忆系统',
+    desc: '双核上下文记忆，软重置无感压缩 + 爆上下文兜底续命',
+  },
+]
+
+/** 运行环境版本（renderer 沙箱无 process，用 typeof 守卫 + UA 解析兜底） */
+function getRuntimeVersions(): { electron: string; chrome: string; node: string } {
+  if (typeof process !== 'undefined' && process.versions) {
+    return {
+      electron: process.versions.electron ?? '—',
+      chrome: process.versions.chrome ?? '—',
+      node: process.versions.node ?? '—',
+    }
+  }
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  return {
+    electron: ua.match(/Electron\/([\d.]+)/)?.[1] ?? '—',
+    chrome: ua.match(/Chrome\/([\d.]+)/)?.[1] ?? '—',
+    node: '—',
+  }
+}
+
+const RUNTIME_VERSIONS = getRuntimeVersions()
+const PLATFORM =
+  typeof navigator !== 'undefined' && navigator.platform ? navigator.platform : '—'
+
 function AboutSettings(): JSX.Element {
   const isDark = useAtomValue(resolvedDarkAtom)
   const appiconSrc = isDark ? appiconDark : appiconLight
 
-  return (
-    <div className="settings-page">
-      <SettingsPageIntro title="关于" />
+  const envItems = [
+    { label: 'Electron', value: RUNTIME_VERSIONS.electron },
+    { label: 'Chromium', value: RUNTIME_VERSIONS.chrome },
+    { label: 'Node.js', value: RUNTIME_VERSIONS.node },
+    { label: '平台', value: PLATFORM },
+  ]
 
-      <SettingsSection title="TAgent-Desktop">
-        <SettingsCard divided={false}>
-          <div className="settings-about">
+  return (
+    <div className="settings-page settings-about-page">
+      <SettingsPageIntro title="关于" description="版本、架构与运行环境" />
+
+      <SettingsCard divided={false} className="settings-about-hero-card">
+        <div className="settings-about-hero">
+          <div className="settings-about-hero-mark" aria-hidden="true">
             <img
               src={appiconSrc}
-              alt="TAgent"
+              alt=""
               draggable={false}
               className="settings-about-logo"
             />
-            <div className="settings-about-name">TAgent-Desktop</div>
-            <div className="settings-about-version">v{APP_VERSION}</div>
+          </div>
+          <div className="settings-about-hero-copy">
+            <div className="settings-about-hero-title-row">
+              <h3 className="settings-about-name">TAgent-Desktop</h3>
+              <span className="settings-about-version">v{APP_VERSION}</span>
+            </div>
             <p className="settings-about-desc">
-              双核架构（kscc + Pi）的 AI 编程助手桌面端。
-              会话 = 进程常驻，双核可拔插。
+              双核架构（kscc + Pi）的 AI 编程助手桌面端。会话进程常驻，双核可拔插，上下文记忆可续命。
             </p>
+            <div className="settings-about-meta">
+              <span className="settings-about-meta-item">
+                <Cpu size={12} strokeWidth={1.75} aria-hidden="true" />
+                kscc · Pi
+              </span>
+              <span className="settings-about-meta-dot" aria-hidden="true" />
+              <span className="settings-about-meta-item">
+                <Monitor size={12} strokeWidth={1.75} aria-hidden="true" />
+                Desktop
+              </span>
+            </div>
+          </div>
+        </div>
+      </SettingsCard>
+
+      <SettingsSection title="架构">
+        <div className="settings-arch-grid">
+          {ARCH_ITEMS.map(({ icon: Icon, title, desc }) => (
+            <article key={title} className="settings-arch-card">
+              <span className="settings-arch-icon" aria-hidden="true">
+                <Icon size={15} strokeWidth={1.75} />
+              </span>
+              <h4 className="settings-arch-title">{title}</h4>
+              <p className="settings-arch-desc">{desc}</p>
+            </article>
+          ))}
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title="运行环境">
+        <SettingsCard divided={false}>
+          <div className="settings-env-grid">
+            {envItems.map(({ label, value }) => (
+              <div key={label} className="settings-env-item">
+                <span className="settings-env-label">{label}</span>
+                <span className="settings-env-value" title={value}>{value}</span>
+              </div>
+            ))}
           </div>
         </SettingsCard>
       </SettingsSection>
+
+      <footer className="settings-about-footer">
+        <span>AGPL-3.0</span>
+        <span className="settings-about-footer-sep" aria-hidden="true" />
+        <span className="settings-about-footer-repo">Frank-LiangMX/TAgent-Desktop</span>
+      </footer>
     </div>
   )
 }

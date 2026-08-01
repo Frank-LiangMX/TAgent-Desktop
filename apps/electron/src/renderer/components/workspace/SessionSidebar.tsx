@@ -8,7 +8,7 @@
  * 折叠/展开:CSS max-height 过渡(不用 motion height auto,避免收不回);motion 只管 layout 重排。
  * 置顶后会话仍在列表原位,置顶栏是额外陈列。
  */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { motion } from 'motion/react'
 import type { AgentWorkspace } from '@tagent/shared'
@@ -25,6 +25,7 @@ import {
   MagnifyingGlass,
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
+import { getPlatform } from '../../lib/platform'
 import {
   AppTooltip,
   DestructiveConfirmDialog,
@@ -125,12 +126,27 @@ export function SessionSidebar({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
   const [query, setQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
+
+  // 全局唤出搜索：mac ⌘K / win·linux Ctrl+K（与 kbd 提示一致）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
   const [dragWorkspaceId, setDragWorkspaceId] = useState<string | null>(null)
   const [workspaceDropIndicator, setWorkspaceDropIndicator] =
     useState<WorkspaceDropIndicator | null>(null)
   const [deleteSessionTarget, setDeleteSessionTarget] = useState<SessionMeta | null>(null)
   const [deleteWorkspaceTarget, setDeleteWorkspaceTarget] =
     useState<AgentWorkspace | null>(null)
+  /** 工作区三点菜单打开期间保持按钮可见（失焦组头后 :hover 失配） */
+  const [workspaceMenuOpenId, setWorkspaceMenuOpenId] = useState<string | null>(null)
   const refreshCounter = useAtomValue(sessionsRefreshAtom)
   const workspaces = useAtomValue(workspacesAtom)
   const setWorkspaces = useSetAtom(workspacesAtom)
@@ -391,12 +407,13 @@ export function SessionSidebar({
         <div className="search">
           <MagnifyingGlass size={13} weight="regular" />
           <input
+            ref={searchInputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索会话…"
             aria-label="搜索会话"
           />
-          <span className="kbd">⌘K</span>
+          <span className="kbd">{getPlatform() === 'mac' ? '⌘K' : 'Ctrl+K'}</span>
         </div>
       </div>
 
@@ -473,7 +490,10 @@ export function SessionSidebar({
               )}
             >
               <div
-                className="workspace-group-head"
+                className={cn(
+                  'workspace-group-head',
+                  workspaceMenuOpenId === group.id && 'is-dots-open',
+                )}
                 onDragOver={
                   isManagedWorkspace
                     ? (event) => updateWorkspaceDropIndicator(event, group.id)
@@ -519,7 +539,10 @@ export function SessionSidebar({
                   {groupHeaderContent}
                 </button>
                 {group.workspace && (
-                  <DropdownMenu>
+                  <DropdownMenu
+                    open={workspaceMenuOpenId === group.id}
+                    onOpenChange={(open) => setWorkspaceMenuOpenId(open ? group.id : null)}
+                  >
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
@@ -700,6 +723,9 @@ function SessionRow({
   onEditingTitleChange: (v: string) => void
   onCancelRename: () => void
 }): JSX.Element {
+  // 三点菜单打开时保持按钮可见（指针移开行后 .row:hover 失配，需要显式状态）
+  const [dotsOpen, setDotsOpen] = useState(false)
+
   return (
     <motion.div
       layout={!archived} /* 归档行不做 layout 重排,避免与 arch-foot 折叠高度抢位 */
@@ -708,7 +734,7 @@ function SessionRow({
       exit={archived ? undefined : { opacity: 0, height: 0 }}
       transition={SPRING}
       onClick={() => onSelect(s)}
-      className={cn('row', active && 'is-active', archived && 'row-archived')}
+      className={cn('row', active && 'is-active', archived && 'row-archived', dotsOpen && 'is-dots-open')}
     >
       {/* 行首:归档行用小方块标记,否则状态色点 */}
       {archived ? (
@@ -744,8 +770,8 @@ function SessionRow({
           <span className="m time">{archived ? '已归档' : s.updatedAt ? relTime(s.updatedAt) : ''}</span>
         </div>
       </div>
-      {/* 三点菜单:hover 让位展开 */}
-      <DropdownMenu>
+      {/* 三点菜单:hover 让位展开；打开期间保持展开（is-dots-open） */}
+      <DropdownMenu open={dotsOpen} onOpenChange={setDotsOpen}>
         <DropdownMenuTrigger asChild>
           <button
             type="button"

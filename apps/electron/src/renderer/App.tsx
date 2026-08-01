@@ -5,11 +5,12 @@
  * 插件为一级入口（对齐 General）；渠道 / 主题在设置页；工作区在侧栏。
  * 无 workspace 时显示引导界面。
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import type {
   AgentWorkspace,
   Channel,
+  ChannelBalanceResult,
   ChannelCreateInput,
   ChannelUpdateInput,
   ChannelTestResult,
@@ -22,10 +23,11 @@ import type {
   NudgeCandidate,
   PluginStoreCatalog,
   StageEntry,
+  UserProfile,
   WorkspaceMcpConfig,
   WorkspacePluginBundleRecord,
 } from '@tagent/shared'
-import { Button, ConversationEmptyState, Toaster, TooltipProvider } from '@tagent/ui'
+import { RichSourceContext, Toaster, TooltipProvider } from '@tagent/ui'
 import { MemoryMonitorPanel, showNudgeToasts } from './components/memory'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
 import { PluginStoreSettings } from './components/settings/PluginStoreSettings'
@@ -37,8 +39,10 @@ import { SessionRouter } from './components/shell/SessionRouter'
 import { Chat, type SessionMeta } from './components/chat/Chat'
 import { WelcomeStart } from './components/shell/WelcomeStart'
 import { NewConversationLanding } from './components/chat/NewConversationLanding'
+import { ProjectOnboarding } from './components/chat/ProjectOnboarding'
 import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
 import { pendingSuggestionAtom } from './atoms/pending-suggestion'
+import { loadUserProfileAtom } from './atoms/user-profile'
 import {
   loadChannelsAtom,
 } from './atoms/channel-atoms'
@@ -75,6 +79,11 @@ declare global {
       createProjectWorkspace: () => Promise<AgentWorkspace | null>
       deleteWorkspace: (id: string) => Promise<void>
       reorderWorkspaces: (orderedIds: string[]) => Promise<AgentWorkspace[]>
+      readWorkspaceFile: (filePath: string) => Promise<{
+        content?: string
+        dataUrl?: string
+        mime?: string
+      } | null>
       // 会话元数据（重命名/置顶/归档/子代理委派积极性/思考强度；status 由主进程内部写，渲染层不直接写）
       updateSessionMeta: (id: string, patch: {
         title?: string
@@ -170,13 +179,18 @@ declare global {
       acceptStageOne: (mode: 'general' | 'ta', id: string) => Promise<{ ok: boolean }>
       rejectStageOne: (mode: 'general' | 'ta', id: string) => Promise<{ ok: boolean }>
       getGraphData: (mode: 'general' | 'ta', workspaceSlug?: string) => Promise<GraphPayload>
+      // 用户档案
+      getUserProfile: () => Promise<UserProfile>
+      updateUserProfile: (updates: Partial<UserProfile>) => Promise<UserProfile>
+      // 渠道余额
+      getChannelBalance: (channelId: string) => Promise<ChannelBalanceResult>
     }
   }
 }
 
 export function App(): JSX.Element {
   const [showSettings, setShowSettings] = useState(false)
-  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general')
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('appearance')
   /** 主区导航：会话 | 插件 | 记忆（设置走对话框，打开时 rail 高亮 settings） */
   const [activeRail, setActiveRail] = useState<Exclude<RailItem, 'settings'>>('chat')
   /**
@@ -188,6 +202,7 @@ export function App(): JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
+  const loadUserProfile = useSetAtom(loadUserProfileAtom)
   const workspaces = useAtomValue(workspacesAtom)
 
   /** 仅会话页需要 SessionSidebar（插件/记忆为 rail-only） */
@@ -237,10 +252,10 @@ export function App(): JSX.Element {
 
   const railActive: RailItem = showSettings ? 'settings' : activeRail
 
-  // 启动时同时加载渠道列表 + 工作区列表
+  // 启动时同时加载渠道列表 + 工作区列表 + 用户档案
   useEffect(() => {
-    void Promise.all([loadChannels(), loadWorkspaces()])
-  }, [loadChannels, loadWorkspaces])
+    void Promise.all([loadChannels(), loadWorkspaces(), loadUserProfile()])
+  }, [loadChannels, loadWorkspaces, loadUserProfile])
 
   /** 开会话进 tab：已开激活，未开加 tab + 激活 */
   const openSession = (
@@ -320,9 +335,15 @@ export function App(): JSX.Element {
    */
   const showTabBar = tabs.length > 1 || Boolean(activeTab?.channelId)
 
+  // 富内容预览数据源：主进程鉴权读工作区文件（仅限已注册工作区目录内）
+  const richSourceResolver = useCallback(async (src: string) => {
+    return window.electronAPI.readWorkspaceFile(src)
+  }, [])
+
   return (
     <TooltipProvider delayDuration={280} skipDelayDuration={120}>
-      <AppShell
+      <RichSourceContext.Provider value={{ resolve: richSourceResolver }}>
+        <AppShell
         topbar={null}
         sidebarOpen={activeRail === 'chat' && sidebarOpen}
         activeRailItem={activeRail === 'chat' ? 'chat' : activeRail}
@@ -330,17 +351,12 @@ export function App(): JSX.Element {
           <Rail
             active={railActive}
             onChat={() => {
-              const wasChat = activeRail === 'chat'
-              const willOpenSidebar = wasChat ? !sidebarOpen : true
+              // 会话 rail 只负责：切到会话页 / 展开收起侧栏，不创建会话
               selectRail('chat')
-              // 从其它页进入会话且无 tab/草稿 → 新会话；再点 chat 仅折叠侧栏时不打断
-              if (!wasChat && !activeTab && !draftSession) newSession()
-              // 侧栏从收起点开、且没有任何会话页时，也给草稿入口
-              if (wasChat && willOpenSidebar && !activeTab && !draftSession) newSession()
             }}
             onPlugins={() => selectRail('plugins')}
             onMemory={() => selectRail('memory')}
-            onSettings={() => openSettings('general')}
+            onSettings={() => openSettings('appearance')}
           />
         }
         sidebar={
@@ -378,19 +394,7 @@ export function App(): JSX.Element {
             <MemoryMonitorPanel />
           </div>
         ) : workspaces.length === 0 ? (
-          <ConversationEmptyState
-            title="打开项目目录开始"
-            description="选择一个本地代码目录作为工作区，Agent 将在该目录下工作"
-          >
-            <div className="flex flex-col items-center gap-3">
-              <Button size="lg" onClick={() => void handleOpenProject()}>
-                打开项目目录
-              </Button>
-              <p className="text-muted-foreground text-xs">
-                选择包含代码的本地文件夹即可开始
-              </p>
-            </div>
-          </ConversationEmptyState>
+          <ProjectOnboarding onOpenProject={() => void handleOpenProject()} />
         ) : draftSession && draftSession.id !== activeTab?.sessionId ? (
           // 新会话草稿态：优先渲染草稿 Chat（NewConversationLanding compose 形态）。
           // tab 状态保留在 atoms（activeTabId 不清），返回键关草稿 → 回到下方会话页/欢迎页。
@@ -432,6 +436,7 @@ export function App(): JSX.Element {
         onOpenChange={setShowSettings}
       />
       <Toaster position="top-center" richColors closeButton />
+      </RichSourceContext.Provider>
     </TooltipProvider>
   )
 }
