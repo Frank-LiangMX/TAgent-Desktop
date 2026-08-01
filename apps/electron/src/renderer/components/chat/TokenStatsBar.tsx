@@ -9,6 +9,7 @@
 import { Database, TrendingDown, TrendingUp } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ContextUsageBadge, type ContextUsageSnapshotView } from './ContextUsageBadge'
+import { ChannelBalanceBadge } from './ChannelBalanceBadge'
 
 export interface SessionTokenTotals {
   totalInput: number
@@ -21,6 +22,8 @@ export interface SessionTokenTotals {
 interface TokenStatsBarProps {
   usage: ContextUsageSnapshotView | null
   totals: SessionTokenTotals
+  /** 当前会话绑定的渠道 ID（用于左侧余额徽章） */
+  channelId?: string
   isCompacting?: boolean
   onCompact?: () => void
   className?: string
@@ -32,9 +35,24 @@ function formatTokens(tokens: number): string {
   return `${tokens}`
 }
 
+/** 缓存命中率：缓存读 token 占全部输入（含缓存命中）的比例，保证 ≤100% */
+function calcCacheHitRate(totals: SessionTokenTotals): number | null {
+  // usage.inputTokens 不含 cacheRead（Anthropic 口径分离），分母必须加回缓存读，
+  // 否则多轮会话命中率会 >100%（如旧会话 8381%）。
+  const denominator = totals.totalInput + totals.totalCacheRead
+  if (denominator <= 0) return null
+  return totals.totalCacheRead / denominator
+}
+
+function formatHitRate(rate: number | null): string {
+  if (rate === null) return '—'
+  return `${Math.round(rate * 100)}%`
+}
+
 export function TokenStatsBar({
   usage,
   totals,
+  channelId,
   isCompacting,
   onCompact,
   className,
@@ -42,6 +60,7 @@ export function TokenStatsBar({
   const hasContext = (usage?.inputTokens ?? 0) > 0 || (usage?.cacheReadTokens ?? 0) > 0
   const hasTotals = totals.totalInput > 0 || totals.totalOutput > 0
   const empty = !hasContext && !hasTotals
+  const cacheHitRate = calcCacheHitRate(totals)
 
   return (
     <div
@@ -52,6 +71,9 @@ export function TokenStatsBar({
       )}
       aria-label="Token 与上下文占用"
     >
+      {/* 左侧：渠道余额（支持且可展示时左对齐排首位） */}
+      <ChannelBalanceBadge channelId={channelId} className="mr-auto" />
+
       {/* 左侧：占用圆环（有 usage 才出；无数据时仍占位保持栏高） */}
       {hasContext && usage ? (
         <>
@@ -86,7 +108,7 @@ export function TokenStatsBar({
               <StatItem
                 icon={<Database size={10} />}
                 label="缓存读"
-                value={formatTokens(totals.totalCacheRead)}
+                value={formatHitRate(cacheHitRate)}
               />
             </>
           )}

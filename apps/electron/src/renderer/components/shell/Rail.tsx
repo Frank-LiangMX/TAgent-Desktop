@@ -2,8 +2,10 @@
  * Rail — 左导航轨图标内容（仅内容，外壳由 NavIsland 包 app-nav-rail）
  * 与 General FunctionalRail 一致：children 进 app-nav-rail-content。
  */
-import { Brain, ChatsCircle, GearSix, PuzzlePiece } from '@phosphor-icons/react'
+import { Brain, ChatsCircle, PuzzlePiece } from '@phosphor-icons/react'
+import { useAtomValue } from 'jotai'
 import { AppTooltip } from '@tagent/ui'
+import { userProfileAtom } from '../../atoms/user-profile'
 import { cn } from '../../lib/utils'
 
 const RAIL_ICON = { size: 18, weight: 'regular' as const }
@@ -25,6 +27,10 @@ export function Rail({
   onMemory,
   onSettings,
 }: RailProps): JSX.Element {
+  const userName = useAtomValue(userProfileAtom).userName
+  /** 用户名首字符（中文取首字；英文转大写） */
+  const avatarLetter = userName?.charAt(0)?.toUpperCase() || 'U'
+
   return (
     <>
       {/* 上胶囊：会话 + 插件 + 记忆 */}
@@ -51,15 +57,21 @@ export function Rail({
           onClick={onMemory}
         />
       </div>
-      {/* 下胶囊：设置 */}
+      {/* 下胶囊：设置（用户名首字头像，对齐 TAgent_General rail-avatar-btn） */}
       <div className="app-rail-island">
-        <RailIcon
-          railId="settings"
-          icon={<GearSix {...RAIL_ICON} />}
-          label="设置"
-          active={active === 'settings'}
-          onClick={onSettings}
-        />
+        <AppTooltip label="设置" side="right" sideOffset={10}>
+          <button
+            type="button"
+            data-rail-id="settings"
+            data-active={active === 'settings' || undefined}
+            aria-label="设置"
+            aria-pressed={active === 'settings' || undefined}
+            onClick={onSettings}
+            className="rail-avatar-btn titlebar-no-drag flex size-9 items-center justify-center rounded-full"
+          >
+            <span className="rail-avatar-letter">{avatarLetter}</span>
+          </button>
+        </AppTooltip>
       </div>
     </>
   )

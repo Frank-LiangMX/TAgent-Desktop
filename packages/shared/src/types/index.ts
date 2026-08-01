@@ -87,3 +87,9 @@ export * from './command'
 
 // 内置终端（node-pty + xterm.js）
 export * from './terminal'
+
+// 用户档案（用户名 / 称呼）
+export * from './user-profile'
+
+// 渠道余额查询
+export * from './balance'

@@ -122,3 +122,8 @@ export function getProjectMemoryDir(sanitizedPath: string): string {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   return dir
 }
+
+/** 用户档案文件：~/.tagent[-dev]/user-profile.json */
+export function getUserProfilePath(): string {
+  return join(getConfigDir(), 'user-profile.json')
+}

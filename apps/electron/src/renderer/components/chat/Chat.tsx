@@ -1158,6 +1158,7 @@ export function Chat({
           <TokenStatsBar
             usage={contextUsage}
             totals={tokenTotals}
+            channelId={effectiveSelection?.channelId}
             isCompacting={isCompactingUi}
             onCompact={() => void compactContext()}
           />

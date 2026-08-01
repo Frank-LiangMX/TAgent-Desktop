@@ -12,6 +12,8 @@ import { WorkspaceService } from './lib/ipc/workspace-service'
 import { McpService } from './lib/ipc/mcp-service'
 import { PluginService } from './lib/ipc/plugin-service'
 import { MemoryService } from './lib/ipc/memory-service'
+import { UserProfileService } from './lib/ipc/user-profile-service'
+import { BalanceService } from './lib/ipc/balance-service'
 import { PermissionService } from './lib/permission/permission-service'
 import { seedBuiltinChannels } from './lib/channel/channel-store'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
@@ -105,6 +107,9 @@ function createWindow(): void {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
+    // 对齐 TAgent_General：保证侧栏 + 会话主区不被无限压扁
+    minWidth: 800,
+    minHeight: 600,
     // Windows 隐藏系统标题栏，用自定义 WindowControls（对齐 TAgent_General）。
     // mac 用 hiddenInset 保留红绿灯；此处 Windows 走 hidden。
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
@@ -242,6 +247,8 @@ app.whenReady().then(() => {
   ChannelService.create()
   McpService.create()
   PluginService.create()
+  UserProfileService.create()
+  BalanceService.create()
   MemoryService.create()
   permissionService = PermissionService.create(() => mainWindow)
   sessionService = SessionService.create(() => mainWindow, permissionService)
