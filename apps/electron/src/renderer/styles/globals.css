@@ -6,6 +6,7 @@
 @import '@tagent/ui/styles/pressable.css';
 @import '@tagent/ui/styles/switch.css';
 @import '@tagent/ui/styles/segmented-tabs.css';
+@import '@tagent/ui/styles/rich-content.css';
 @import './chat.css';
 @import './app-shell.css';
 @import './nav-island-morph.css';
@@ -77,6 +78,9 @@ body,
 #root {
   width: 100%;
   height: 100%;
+  /* 对齐 TAgent_General：锁死窗口层溢出，布局切换瞬间的内容超出
+   * 不会在窗口右侧露原生滚动条（消息区滚动全部在内部容器，body 不滚动） */
+  overflow: hidden;
 }
 html {
   /*
@@ -102,6 +106,30 @@ body {
 }
 #root {
   background: transparent;
+}
+
+/*
+ * 全局兜底：任何滚动容器默认主题细滚动条（6px 圆角 thumb + 透明 track + 无箭头）。
+ * 防止漏加类的新增滚动容器露原生滚动条；scrollbar-none / scrollbar-thin
+ * 类规则优先级更高，按需覆盖本兜底。
+ */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--muted-foreground) / 0.3);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: hsl(var(--muted-foreground) / 0.5);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
 }
 
 /*

@@ -8,10 +8,11 @@
  * 流式统一走 STREAM_EVENT，payload 是 TAgentDesktopStreamEvent（{ sessionId, payload }）。
  */
 import { contextBridge, ipcRenderer } from 'electron'
-import { AGENT_IPC_CHANNELS, CHANNEL_IPC_CHANNELS, MEMORY_IPC_CHANNELS } from '@tagent/shared'
+import { AGENT_IPC_CHANNELS, BALANCE_IPC_CHANNELS, CHANNEL_IPC_CHANNELS, MEMORY_IPC_CHANNELS, USER_PROFILE_IPC_CHANNELS } from '@tagent/shared'
 import type {
   AgentWorkspace,
   Channel,
+  ChannelBalanceResult,
   ChannelCreateInput,
   ChannelUpdateInput,
   ChannelTestResult,
@@ -21,6 +22,7 @@ import type {
   InstallStoreBundleResult,
   McpServerEntry,
   PluginStoreCatalog,
+  UserProfile,
   WorkspaceMcpConfig,
   WorkspacePluginBundleRecord,
 } from '@tagent/shared'
@@ -102,6 +104,13 @@ const electronAPI = {
   /** 删除工作区及其会话；不删除本地项目源码目录 */
   deleteWorkspace: (id: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_WORKSPACE, id) as Promise<void>,
+  /** 读取工作区文件（富内容预览块用；仅限已注册工作区目录内） */
+  readWorkspaceFile: (filePath: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.READ_WORKSPACE_FILE, filePath) as Promise<{
+      content?: string
+      dataUrl?: string
+      mime?: string
+    } | null>,
   /** 持久化工作区侧栏顺序 */
   reorderWorkspaces: (orderedIds: string[]) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.REORDER_WORKSPACES, orderedIds) as Promise<AgentWorkspace[]>,
@@ -251,6 +260,16 @@ const electronAPI = {
     }>,
   getGraphData: (mode: 'general' | 'ta', workspaceSlug?: string) =>
     ipcRenderer.invoke(MEMORY_IPC_CHANNELS.GET_GRAPH_DATA, mode, workspaceSlug) as Promise<unknown>,
+
+  // ===== 用户档案 =====
+  getUserProfile: () =>
+    ipcRenderer.invoke(USER_PROFILE_IPC_CHANNELS.GET) as Promise<UserProfile>,
+  updateUserProfile: (updates: Partial<UserProfile>) =>
+    ipcRenderer.invoke(USER_PROFILE_IPC_CHANNELS.UPDATE, updates) as Promise<UserProfile>,
+
+  // ===== 渠道余额 =====
+  getChannelBalance: (channelId: string) =>
+    ipcRenderer.invoke(BALANCE_IPC_CHANNELS.GET, channelId) as Promise<ChannelBalanceResult>,
 } as const
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

@@ -1981,6 +1981,8 @@ export const AGENT_IPC_CHANNELS = {
   SEARCH_WORKSPACE_FILES: 'agent:search-workspace-files',
   /** 将文本内容写入临时预览文件并返回绝对路径 */
   WRITE_CLIPBOARD_PREVIEW: 'agent:write-clipboard-preview',
+  /** 读取工作区文件（富内容预览用；仅限已注册工作区目录内，防路径穿越） */
+  READ_WORKSPACE_FILE: 'agent:read-workspace-file',
 
   // 附件管理
   /** 保存附件到磁盘（base64 → 文件） */

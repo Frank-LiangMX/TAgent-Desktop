@@ -24,7 +24,7 @@ import { AGENT_IPC_CHANNELS, MEMORY_IPC_CHANNELS } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
 import { getAdapter, PiAgentAdapter, type ChannelKind } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
-import { sdkMessageToIR } from '@tagent/shared'
+import { buildRichContentSystemPrompt, sdkMessageToIR } from '@tagent/shared'
 import type { KsccQueryOptions } from '../adapters/claude/claude-agent-adapter'
 import {
   getSessionMeta,
@@ -590,9 +590,10 @@ export class SessionService {
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
-          // 子代理委派 + 记忆防线 + Frozen 快照（D1/D8）
+          // 子代理委派 + 富内容输出规范 + 记忆防线 + Frozen 快照（D1/D8）
           append: [
             buildSubagentDelegationPrompt(eagerness),
+            buildRichContentSystemPrompt(),
             mem.managementRules,
             mem.memorySnapshotSection,
           ]

@@ -1,0 +1,147 @@
+/*
+ * 富内容块样式（自研）
+ *
+ * 全部走全局 tokens：颜色用语义色（primary / muted-foreground / destructive）
+ * 与项目既有 success 绿（hsl(145 …)，同 settings-shell 成功色）；
+ * 圆角/动效复用 radius-glass-* 与 --app-shell-motion。
+ */
+
+/* ===== 块外壳 ===== */
+.rich-frame-body > *:first-child {
+  margin-top: 0;
+}
+
+.rich-fullscreen-body {
+  overscroll-behavior: contain;
+}
+
+/* ===== Diff ===== */
+.diff-view {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: hsl(var(--foreground) / 0.85);
+  background: hsl(var(--background) / 0.3);
+}
+
+.diff-hunk-head {
+  font-size: 11px;
+}
+
+.diff-line {
+  display: flex;
+  align-items: stretch;
+  min-height: 20px;
+}
+
+.diff-line-num {
+  flex: 0 0 3.25rem;
+  padding-right: 0.625rem;
+  text-align: right;
+  color: hsl(var(--muted-foreground) / 0.45);
+  font-size: 10px;
+  line-height: 1.9;
+  user-select: none;
+}
+
+.diff-line-mark {
+  flex: 0 0 1.25rem;
+  text-align: center;
+  color: hsl(var(--muted-foreground) / 0.55);
+  line-height: 1.9;
+  user-select: none;
+}
+
+.diff-line-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.9;
+}
+
+.diff-line--add {
+  background: hsl(145 60% 45% / 0.1);
+}
+
+.diff-line--add .diff-line-text {
+  color: hsl(145 60% 32%);
+}
+
+.diff-line--del {
+  background: hsl(var(--destructive) / 0.08);
+}
+
+.diff-line--del .diff-line-text {
+  color: hsl(var(--destructive) / 0.9);
+}
+
+.dark .diff-line--add .diff-line-text {
+  color: hsl(145 60% 62%);
+}
+
+/* ===== JSON 树 ===== */
+.json-tree {
+  background: hsl(var(--background) / 0.3);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.json-node {
+  line-height: 1.7;
+}
+
+.json-node-toggle {
+  display: inline-block;
+  width: 1rem;
+  text-align: center;
+  transition: transform 160ms var(--app-shell-motion);
+}
+
+.json-node-toggle.open {
+  transform: rotate(90deg);
+}
+
+.json-node-key {
+  color: hsl(var(--primary) / 0.78);
+}
+
+.json-node--string {
+  color: hsl(145 50% 34%);
+}
+
+.json-node--number,
+.json-node--boolean {
+  color: hsl(var(--primary) / 0.85);
+}
+
+.json-node--null {
+  color: hsl(var(--muted-foreground) / 0.7);
+  font-style: italic;
+}
+
+.dark .json-node--string {
+  color: hsl(145 50% 60%);
+}
+
+/* ===== 数学 ===== */
+.rich-math {
+  background: hsl(var(--background) / 0.3);
+  overflow-x: auto;
+}
+
+/* ===== 预览提示 ===== */
+.rich-preview-hint {
+  margin: 0;
+  padding: 1rem;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.rich-preview-hint--error {
+  color: hsl(var(--destructive) / 0.85);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .json-node-toggle {
+    transition: none;
+  }
+}

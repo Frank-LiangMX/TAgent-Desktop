@@ -270,7 +270,7 @@ export function CodeBlock({ children }: CodeBlockProps): React.ReactElement {
 
       {/* 代码区域：逐行渲染 */}
       <pre
-        className="shiki m-0 overflow-x-auto bg-[hsl(var(--code-bg))] p-3.5 text-[0.8125em] leading-[1.55]"
+        className="shiki scrollbar-thin m-0 overflow-x-auto bg-[hsl(var(--code-bg))] p-3.5 text-[0.8125em] leading-[1.55]"
         style={{
           color: usePlainTextColors
             ? 'hsl(var(--foreground))'

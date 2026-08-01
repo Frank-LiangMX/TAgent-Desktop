@@ -34,6 +34,7 @@ import remarkMath from 'remark-math'
 import type { HTMLAttributes, ComponentProps, ReactNode } from 'react'
 
 import { cn } from '../../lib/utils'
+import { isRichFenceLanguage, RichFence, unclosedFenceLanguage } from '../../rich-content'
 
 // ===== Message 根容器 =====
 
@@ -274,6 +275,23 @@ interface MessageResponseProps {
   basePaths?: string[]
   /** 额外的 remark 插件 */
   remarkPlugins?: Array<() => (tree: unknown) => void>
+  /** 是否流式输出中（富内容围栏未闭合时渲染占位，闭合后挂载富组件） */
+  streaming?: boolean
+}
+
+/** 流式占位：富内容围栏尚未闭合 */
+function PendingRichBlock(): React.ReactElement {
+  return (
+    <div className="my-2 overflow-hidden rounded-glass-popover border border-border/70">
+      <div className="flex h-[34px] items-center justify-between bg-foreground/[0.05] px-2 py-1 text-xs text-muted-foreground">
+        <span className="select-none font-medium">正在生成内容</span>
+      </div>
+      <div className="flex items-center gap-2 px-3 py-2.5 text-xs text-muted-foreground">
+        <span className="size-1.5 animate-pulse rounded-full bg-muted-foreground/50" />
+        内容完成后将自动呈现
+      </div>
+    </div>
+  )
 }
 
 /** 使用 react-markdown 渲染 assistant 消息内容 */
@@ -283,10 +301,17 @@ export const MessageResponse = React.memo(
     className,
     onOpenExternal,
     remarkPlugins,
+    streaming = false,
   }: MessageResponseProps): React.ReactElement {
     const mergedRemarkPlugins = React.useMemo(
       () => (remarkPlugins ? [...REMARK_PLUGINS, ...remarkPlugins] : REMARK_PLUGINS),
       [remarkPlugins]
+    )
+
+    /** 流式中最后一个未闭合围栏的语言（用于富内容占位判断） */
+    const unclosedLanguage = React.useMemo(
+      () => (streaming ? unclosedFenceLanguage(children) : null),
+      [streaming, children]
     )
 
     const components = React.useMemo(
@@ -314,23 +339,35 @@ export const MessageResponse = React.memo(
             <TooltipContent className="max-w-[400px] break-all">{href}</TooltipContent>
           </Tooltip>
         ),
-        pre: ({ children: preChildren }: { children?: React.ReactNode }) => {
-          const codeChild = React.Children.toArray(preChildren).find(
-            (child): child is React.ReactElement => {
-              if (!React.isValidElement(child)) return false
-              const t = child.type
-              return t === 'code' || typeof t === 'function' || typeof t === 'object'
-            }
-          ) as React.ReactElement | undefined
+        // 拆掉 pre，由 code 组件统一包外壳（CodeBlock / 富内容块）
+        pre: ({ children: preChildren }: { children?: React.ReactNode }) => <>{preChildren}</>,
+        code: ({ className: codeClassName, children: codeChildren }: { className?: string; children?: React.ReactNode }) => {
+          const langMatch = /language-(\S+)/.exec(codeClassName || '')
+          if (!langMatch) return <code className={codeClassName}>{codeChildren}</code>
 
-          if (codeChild) {
-            const codeProps = codeChild.props as { className?: string; children?: React.ReactNode }
-            return <CodeBlock>{preChildren}</CodeBlock>
+          const language = langMatch[1]!.toLowerCase()
+          const code = String(codeChildren ?? '').replace(/\n$/, '')
+          const fallback = (
+            <CodeBlock>
+              <code className={codeClassName}>{codeChildren}</code>
+            </CodeBlock>
+          )
+
+          if (isRichFenceLanguage(language)) {
+            // 流式中围栏未闭合 → 占位；闭合后正常渲染富块
+            if (streaming && unclosedLanguage === language) return <PendingRichBlock />
+            return (
+              <RichFence
+                language={language}
+                code={code}
+                fallback={fallback}
+              />
+            )
           }
-          return <CodeBlock>{preChildren}</CodeBlock>
+          return fallback
         },
       }),
-      [onOpenExternal]
+      [onOpenExternal, streaming, unclosedLanguage]
     )
 
     const normalizedContent = React.useMemo(() => {
@@ -367,7 +404,8 @@ export const MessageResponse = React.memo(
   (prevProps, nextProps) =>
     prevProps.children === nextProps.children &&
     prevProps.onOpenExternal === nextProps.onOpenExternal &&
-    prevProps.remarkPlugins === nextProps.remarkPlugins
+    prevProps.remarkPlugins === nextProps.remarkPlugins &&
+    prevProps.streaming === nextProps.streaming
 )
 
 // ===== UserMessageContent 可折叠用户消息 =====

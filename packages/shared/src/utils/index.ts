@@ -69,3 +69,14 @@ export type {
 
 // kscc 核消息转译（SDKMessage → TAgentMessage IR，主进程 + renderer 共用）
 export { sdkMessageToIR } from './kscc-message-adapter'
+
+// 模型侧富内容输出校验（渲染层围栏检测的单一事实源）
+export {
+  RICH_FENCE_LANGUAGES,
+  isRichFenceLanguage,
+  unclosedFenceLanguage,
+  validateRichOutput,
+  buildRichOutputFixPrompt,
+  buildRichContentSystemPrompt,
+} from './rich-output-validate'
+export type { RichOutputIssue } from './rich-output-validate'

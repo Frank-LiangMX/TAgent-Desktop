@@ -29,7 +29,7 @@ import type {
   TAgentControlEvent,
   TAgentDesktopStreamPayload,
 } from '@tagent/shared'
-import { isPromptTooLongMessage } from '@tagent/shared'
+import { buildRichContentSystemPrompt, isPromptTooLongMessage } from '@tagent/shared'
 import {
   buildMemoryPromptSections,
   memoryLayerService,
@@ -748,7 +748,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       memorySnapshot: { l0: snap.l0User, l1: snap.l1Project, l2: snap.l2Facts },
     })
     const baseSystem = systemPrompt ?? DEFAULT_SYSTEM_PROMPT
-    const fullSystemPrompt = [baseSystem, mem.managementRules, mem.memorySnapshotSection]
+    const fullSystemPrompt = [baseSystem, buildRichContentSystemPrompt(), mem.managementRules, mem.memorySnapshotSection]
       .filter(Boolean)
       .join('\n\n')
 

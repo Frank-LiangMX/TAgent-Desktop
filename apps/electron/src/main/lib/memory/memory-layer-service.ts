@@ -399,9 +399,13 @@ export class MemoryLayerService {
    */
   private getMdFileStats(filePath: string): { lines: number; lastUpdated: number } {
     const content = fs.readFileSync(filePath, 'utf-8')
+    // 只数真实条目行：排除空行、标题(#)、模板说明(>) 与分隔线(---)
     const lines = content
       .split('\n')
-      .filter((line) => line.trim() && !line.startsWith('#') && !line.startsWith('---')).length
+      .filter((line) => {
+        const t = line.trim()
+        return t && !t.startsWith('#') && !t.startsWith('>') && !t.startsWith('---')
+      }).length
     const lastUpdated = fs.statSync(filePath).mtimeMs
     return { lines, lastUpdated }
   }

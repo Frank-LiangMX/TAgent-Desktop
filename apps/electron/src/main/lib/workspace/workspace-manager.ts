@@ -9,9 +9,10 @@
  * - listWorkspaces：扫描 projects/ 下所有子目录
  * - resolveWorkspaceForSession：从 session meta 的 workspaceId 反查 workspace
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync, type Dirent } from 'node:fs'
+import { existsSync, readdirSync, type Dirent } from 'node:fs'
 import { join, basename } from 'node:path'
 import type { AgentWorkspace } from '@tagent/shared'
+import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import { sanitizePath } from './workspace-utils'
 import { getProjectsDir, getProjectDir } from '../config/config-paths'
 
@@ -33,22 +34,18 @@ function uniqueStrings(value: unknown): string[] {
 
 function readRegistry(): WorkspaceRegistry {
   const registryPath = join(getProjectsDir(), REGISTRY_FILENAME)
-  if (!existsSync(registryPath)) return { version: 1, order: [], hidden: [] }
-  try {
-    const parsed = JSON.parse(readFileSync(registryPath, 'utf8')) as Partial<WorkspaceRegistry>
-    return {
-      version: 1,
-      order: uniqueStrings(parsed.order),
-      hidden: uniqueStrings(parsed.hidden),
-    }
-  } catch {
-    return { version: 1, order: [], hidden: [] }
+  const parsed = readJsonSafe<Partial<WorkspaceRegistry> | null>(registryPath, null)
+  if (!parsed) return { version: 1, order: [], hidden: [] }
+  return {
+    version: 1,
+    order: uniqueStrings(parsed.order),
+    hidden: uniqueStrings(parsed.hidden),
   }
 }
 
 function writeRegistry(registry: WorkspaceRegistry): void {
   const registryPath = join(getProjectsDir(), REGISTRY_FILENAME)
-  writeFileSync(registryPath, JSON.stringify(registry, null, 2), 'utf8')
+  writeJsonAtomic(registryPath, registry)
 }
 
 /** 新建或重新打开目录时恢复其可见性，并放到用户顺序最前。 */
@@ -63,22 +60,16 @@ function revealWorkspace(id: string): void {
   writeRegistry(registry)
 }
 
-/** 读 workspace-meta.json（不存在返回 undefined） */
+/** 读 workspace-meta.json（不存在返回 undefined；损坏自愈恢复） */
 function readMeta(sanitizedPath: string): AgentWorkspace | undefined {
   const metaPath = join(getProjectDir(sanitizedPath), META_FILENAME)
-  if (!existsSync(metaPath)) return undefined
-  try {
-    const raw = readFileSync(metaPath, 'utf8')
-    return JSON.parse(raw) as AgentWorkspace
-  } catch {
-    return undefined
-  }
+  return readJsonSafe<AgentWorkspace | undefined>(metaPath, undefined)
 }
 
-/** 写 workspace-meta.json */
+/** 写 workspace-meta.json（原子写） */
 function writeMeta(workspace: AgentWorkspace): void {
   const metaPath = join(getProjectDir(workspace.id), META_FILENAME)
-  writeFileSync(metaPath, JSON.stringify(workspace, null, 2), 'utf8')
+  writeJsonAtomic(metaPath, workspace)
 }
 
 /**

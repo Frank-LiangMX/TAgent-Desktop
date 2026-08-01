@@ -14,7 +14,6 @@
  * 见 docs/plans/2026-07-25-2.0-architecture-decision-dual-core.md §1.5。
  */
 import { randomUUID } from 'node:crypto'
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { safeStorage } from 'electron'
 import type {
   Channel,
@@ -24,6 +23,7 @@ import type {
   ChannelModel,
   ProviderType,
 } from '@tagent/shared'
+import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import { getChannelsPath } from '../config/config-paths'
 import { getDefaultModelsForProvider, KSCC_DEFAULT_MODEL_ID, KSCC_DEFAULT_MODELS } from './default-models'
 
@@ -38,27 +38,19 @@ export function getKsccChannelId(): string | undefined {
   return readConfig().channels.find((c) => c.provider === 'kscc-internal')?.id
 }
 
-/** 读渠道配置文件 */
+/** 读渠道配置文件（损坏时从 .bak 自愈恢复） */
 function readConfig(): ChannelsConfig {
-  const path = getChannelsPath()
-  if (!existsSync(path)) return { version: CONFIG_VERSION, channels: [] }
-  try {
-    const raw = readFileSync(path, 'utf-8')
-    const parsed = JSON.parse(raw) as ChannelsConfig
-    if (!parsed || !Array.isArray(parsed.channels)) {
-      return { version: CONFIG_VERSION, channels: [] }
-    }
-    return parsed
-  } catch (err) {
-    console.error('[渠道存储] 读取配置失败:', err)
+  const parsed = readJsonSafe<ChannelsConfig | null>(getChannelsPath(), null)
+  if (!parsed || !Array.isArray(parsed.channels)) {
     return { version: CONFIG_VERSION, channels: [] }
   }
+  return parsed
 }
 
-/** 写渠道配置文件 */
+/** 写渠道配置文件（原子写：tmp + 备份 + rename） */
 function writeConfig(config: ChannelsConfig): void {
   try {
-    writeFileSync(getChannelsPath(), JSON.stringify(config, null, 2), 'utf-8')
+    writeJsonAtomic(getChannelsPath(), config)
   } catch (err) {
     console.error('[渠道存储] 写入配置失败:', err)
     throw new Error('写入渠道配置失败')

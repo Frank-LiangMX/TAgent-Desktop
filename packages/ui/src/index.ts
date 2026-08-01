@@ -65,3 +65,6 @@ export {
 export { CodeBlock } from './code-block/index.ts'
 export { MermaidBlock } from './mermaid-block/index.ts'
 export { useSmoothStream } from './hooks/index.ts'
+
+// 消息富内容（围栏语言分派）
+export { RichFence, RichSourceContext, isRichFenceLanguage } from './rich-content'

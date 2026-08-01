@@ -17,6 +17,7 @@ import remarkMath from 'remark-math'
 import type { ComponentProps, ReactNode } from 'react'
 
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../collapsible'
+import { CodeBlock } from '../../code-block'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../tooltip'
 import { cn } from '../../lib/utils'
 
@@ -254,6 +255,18 @@ export const ReasoningContent = React.memo(
                   <TooltipContent className="max-w-[400px] break-all">{href}</TooltipContent>
                 </Tooltip>
               ),
+              // 代码块走 CodeBlock（与消息区一致：shiki 高亮 + 主题滚动条），
+              // 不再用 react-markdown 默认 pre（原生横向滚动条）
+              pre: ({ children: preChildren }: { children?: React.ReactNode }) => <>{preChildren}</>,
+              code: ({ className: codeClassName, children: codeChildren }: { className?: string; children?: React.ReactNode }) => {
+                const langMatch = /language-(\S+)/.exec(codeClassName || '')
+                if (!langMatch) return <code className={codeClassName}>{codeChildren}</code>
+                return (
+                  <CodeBlock>
+                    <code className={codeClassName}>{codeChildren}</code>
+                  </CodeBlock>
+                )
+              },
             }}
           >
             {normalizedContent}

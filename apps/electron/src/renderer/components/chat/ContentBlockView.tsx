@@ -42,7 +42,7 @@ export function ContentBlockView({
   isStreaming = false,
 }: ContentBlockViewProps): React.ReactElement | null {
   if (block.type === 'text') {
-    return <TextBlockView block={block} />
+    return <TextBlockView block={block} isStreaming={isStreaming} />
   }
   if (block.type === 'thinking') {
     return <ThinkingBlockView block={block} isStreaming={isStreaming} />
@@ -56,9 +56,15 @@ export function ContentBlockView({
 
 // ===== text 块 =====
 
-function TextBlockView({ block }: { block: TAgentContentBlock }): React.ReactElement {
+function TextBlockView({
+  block,
+  isStreaming,
+}: {
+  block: TAgentContentBlock
+  isStreaming?: boolean
+}): React.ReactElement {
   const textBlock = block as { type: 'text'; text: string }
-  return <MessageResponse>{textBlock.text}</MessageResponse>
+  return <MessageResponse streaming={isStreaming}>{textBlock.text}</MessageResponse>
 }
 
 // ===== thinking 块 =====
