@@ -31,6 +31,7 @@ import { RichSourceContext, Toaster, TooltipProvider } from '@tagent/ui'
 import { MemoryMonitorPanel, showNudgeToasts } from './components/memory'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
 import { PluginStoreSettings } from './components/settings/PluginStoreSettings'
+import { RolesPage } from './components/roles/RolesPage'
 import { SettingsDialog, type SettingsTab } from './components/settings/SettingsPage'
 import { AppShell } from './components/shell/AppShell'
 import { Rail, type RailItem } from './components/shell/Rail'
@@ -42,6 +43,15 @@ import { NewConversationLanding } from './components/chat/NewConversationLanding
 import { ProjectOnboarding } from './components/chat/ProjectOnboarding'
 import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
 import { pendingSuggestionAtom } from './atoms/pending-suggestion'
+import {
+  makeStatusTickerItem,
+  pushStatusTickerAtom,
+} from './atoms/status-ticker'
+import {
+  getNotificationPrefsSnapshot,
+  notificationPrefsAtom,
+  syncNotificationPrefsToMain,
+} from './atoms/notification-prefs'
 import { loadUserProfileAtom } from './atoms/user-profile'
 import {
   loadChannelsAtom,
@@ -125,6 +135,72 @@ declare global {
       respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) => void
       // 热切换会话权限模式
       setSessionPermissionMode: (sessionId: string, mode: string) => Promise<{ ok: boolean; error?: string }>
+      /** 热切换 Chat|Work（仅用户源） */
+      setSessionExecutionMode: (
+        sessionId: string,
+        mode: 'chat' | 'work',
+        source?: 'user' | 'user-confirm-suggestion',
+      ) => Promise<{
+        ok: boolean
+        error?: string
+        mode?: 'chat' | 'work'
+        /** Work→Chat 时若班组仍有在途任务 */
+        backgroundCrew?: {
+          running: number
+          ready: number
+          pending: number
+          boardId?: string
+        }
+      }>
+      onExecutionModeSuggestion: (cb: (suggestion: unknown) => void) => () => void
+      dismissExecutionModeSuggestion: (sessionId: string) => Promise<{ ok: boolean }>
+      getNotificationPrefs: () => Promise<{
+        titlebarTicker: boolean
+        systemDesktop: boolean
+        panelToast: boolean
+      }>
+      setNotificationPrefs: (prefs: {
+        titlebarTicker?: boolean
+        systemDesktop?: boolean
+        panelToast?: boolean
+      }) => Promise<{
+        titlebarTicker: boolean
+        systemDesktop: boolean
+        panelToast: boolean
+      }>
+      // 看板 / 班组
+      kanbanListBoards: (input?: { status?: string }) => Promise<unknown>
+      kanbanGetBoard: (boardId: string) => Promise<unknown>
+      kanbanGetTask?: (taskId: string) => Promise<unknown>
+      kanbanListTasks: (boardId: string, status?: string) => Promise<unknown>
+      kanbanCreateBoard: (input: Record<string, unknown>) => Promise<unknown>
+      kanbanCreateTask: (input: Record<string, unknown>) => Promise<unknown>
+      kanbanPauseBoard: (boardId: string, sessionId?: string) => Promise<unknown>
+      kanbanResumeBoard: (boardId: string, sessionId?: string) => Promise<unknown>
+      kanbanUnblockTask: (taskId: string, reason?: string) => Promise<unknown>
+      kanbanRetryTask: (taskId: string) => Promise<unknown>
+      kanbanCommentTask?: (
+        taskId: string,
+        comment: string,
+        author?: string,
+      ) => Promise<{ ok: boolean; error?: string; result?: string }>
+      onKanbanChanged: (cb: (payload: unknown) => void) => () => void
+      onKanbanBoardCompleted: (cb: (payload: unknown) => void) => () => void
+      // 角色库
+      listAgentRoles: () => Promise<import('@tagent/shared').AgentRoleProfile[]>
+      getAgentRole: (roleId: string) => Promise<import('@tagent/shared').AgentRoleProfile | undefined>
+      saveAgentRole: (input: import('@tagent/shared').SaveAgentRoleInput) => Promise<import('@tagent/shared').AgentRoleProfile[]>
+      deleteAgentRole: (roleId: string) => Promise<{
+        roles: import('@tagent/shared').AgentRoleProfile[]
+        deleted: boolean
+        reason?: string
+      }>
+      resetDefaultAgentRoles: () => Promise<import('@tagent/shared').AgentRoleProfile[]>
+      listRoleStoreCatalog: () => Promise<import('@tagent/shared').RoleStoreCatalogResult>
+      installStoreRole: (roleId: string) => Promise<import('@tagent/shared').InstallStoreRoleResult>
+      importAgentRoleFromMd: () => Promise<import('@tagent/shared').ImportRoleFromMdResult>
+      findSimilarAgentRoles: (displayName: string) => Promise<import('@tagent/shared').AgentRoleProfile[]>
+      deleteAgentRolesBatch: (roleIds: string[]) => Promise<import('@tagent/shared').DeleteRolesResult>
       /** 手动压缩会话上下文（Pi） */
       compactSession: (sessionId: string) => Promise<{
         ok: boolean
@@ -191,11 +267,11 @@ declare global {
 export function App(): JSX.Element {
   const [showSettings, setShowSettings] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('appearance')
-  /** 主区导航：会话 | 插件 | 记忆（设置走对话框，打开时 rail 高亮 settings） */
+  /** 主区导航：会话 | 插件 | 记忆 | 角色库（设置走对话框，打开时 rail 高亮 settings） */
   const [activeRail, setActiveRail] = useState<Exclude<RailItem, 'settings'>>('chat')
   /**
    * 会话侧栏展开态（对齐 General navigationSidebarOpen + deriveRailSelection）：
-   * - 仅 chat 支持侧栏；plugins / memory 强制收起
+   * - 仅 chat 支持侧栏；plugins / memory / roles 强制收起
    * - 再点当前 chat rail → 切换展开/收起
    * - 从其它页切回 chat → 自动展开
    */
@@ -205,7 +281,7 @@ export function App(): JSX.Element {
   const loadUserProfile = useSetAtom(loadUserProfileAtom)
   const workspaces = useAtomValue(workspacesAtom)
 
-  /** 仅会话页需要 SessionSidebar（插件/记忆为 rail-only） */
+  /** 仅会话页需要 SessionSidebar（插件/记忆/角色库为 rail-only 主区页） */
   const railSupportsSidebar = (item: Exclude<RailItem, 'settings'>): boolean => item === 'chat'
 
   const selectRail = (next: Exclude<RailItem, 'settings'>): void => {
@@ -221,7 +297,15 @@ export function App(): JSX.Element {
     setSidebarOpen(railSupportsSidebar(next))
   }
 
-  // Phase 2：全局 Nudge 事件 → sonner toast
+  const pushTicker = useSetAtom(pushStatusTickerAtom)
+  const notificationPrefs = useAtomValue(notificationPrefsAtom)
+
+  // 启动时把通知偏好同步到主进程
+  useEffect(() => {
+    syncNotificationPrefsToMain()
+  }, [])
+
+  // Phase 2：全局 Nudge → 按设置：顶栏 ticker / 面板 toast
   useEffect(() => {
     return window.electronAPI.onNudgeEvent((payload: unknown) => {
       const p = payload as {
@@ -231,10 +315,54 @@ export function App(): JSX.Element {
         nudges?: NudgeCandidate[]
       }
       if (p?.type === 'nudge_candidates' && p.sessionId && Array.isArray(p.nudges) && p.nudges.length > 0) {
-        showNudgeToasts(p.nudges, p.sessionId, p.mode === 'ta' ? 'ta' : 'general')
+        const prefs = getNotificationPrefsSnapshot()
+        const first = p.nudges[0]
+        if (prefs.titlebarTicker && first?.userMessage) {
+          pushTicker(
+            makeStatusTickerItem(
+              `记忆提示：${first.userMessage.slice(0, 80)}${first.userMessage.length > 80 ? '…' : ''}`,
+              'info',
+              8000,
+            ),
+          )
+        }
+        if (prefs.panelToast) {
+          showNudgeToasts(p.nudges, p.sessionId, p.mode === 'ta' ? 'ta' : 'general')
+        }
       }
     })
-  }, [])
+  }, [pushTicker])
+
+  // 班组状态 → 顶栏 ticker（若开启）
+  useEffect(() => {
+    const off1 = window.electronAPI.onKanbanChanged?.((payload: unknown) => {
+      if (!getNotificationPrefsSnapshot().titlebarTicker) return
+      const p = payload as { taskId?: string; status?: string }
+      if (!p?.status || !p.taskId) return
+      if (p.status === 'running') {
+        pushTicker(makeStatusTickerItem(`班组：任务开始执行`, 'info', 4000))
+      } else if (p.status === 'done') {
+        pushTicker(makeStatusTickerItem(`班组：任务已完成`, 'success', 5000))
+      } else if (p.status === 'failed') {
+        pushTicker(makeStatusTickerItem(`班组：任务失败`, 'error', 7000))
+      } else if (p.status === 'blocked') {
+        pushTicker(makeStatusTickerItem(`班组：任务阻塞，需处理`, 'warn', 7000))
+      }
+    })
+    const off2 = window.electronAPI.onKanbanBoardCompleted?.((payload: unknown) => {
+      if (!getNotificationPrefsSnapshot().titlebarTicker) return
+      const p = payload as { summary?: { done?: number; total?: number; failed?: number } }
+      const s = p?.summary
+      const text = s
+        ? `班组全部结束：${s.done ?? 0}/${s.total ?? 0} 完成${s.failed ? `，${s.failed} 失败` : ''}`
+        : '班组全部结束'
+      pushTicker(makeStatusTickerItem(text, (s?.failed ?? 0) > 0 ? 'warn' : 'success', 8000))
+    })
+    return () => {
+      off1?.()
+      off2?.()
+    }
+  }, [pushTicker])
   // 多会话 tab
   const tabs = useAtomValue(tabsAtom)
   const activeTabId = useAtomValue(activeTabIdAtom)
@@ -356,6 +484,7 @@ export function App(): JSX.Element {
             }}
             onPlugins={() => selectRail('plugins')}
             onMemory={() => selectRail('memory')}
+            onRoles={() => selectRail('roles')}
             onSettings={() => openSettings('appearance')}
           />
         }
@@ -392,6 +521,10 @@ export function App(): JSX.Element {
         ) : activeRail === 'memory' ? (
           <div className="app-shell-content-stage relative h-full min-h-0 animate-in fade-in duration-300">
             <MemoryMonitorPanel />
+          </div>
+        ) : activeRail === 'roles' ? (
+          <div className="plugins-main-view scrollbar-thin animate-in fade-in duration-300">
+            <RolesPage />
           </div>
         ) : workspaces.length === 0 ? (
           <ProjectOnboarding onOpenProject={() => void handleOpenProject()} />
@@ -435,7 +568,10 @@ export function App(): JSX.Element {
         initialTab={settingsInitialTab}
         onOpenChange={setShowSettings}
       />
-      <Toaster position="top-center" richColors closeButton />
+      {/* 面板 Toast：受通用设置「面板悬浮」开关；进度类默认走顶栏 */}
+      {notificationPrefs.panelToast ? (
+        <Toaster position="top-center" richColors closeButton visibleToasts={2} />
+      ) : null}
       </RichSourceContext.Provider>
     </TooltipProvider>
   )

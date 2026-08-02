@@ -56,9 +56,6 @@ export interface AgentRoleProfile {
  */
 export const DEFAULT_KANBAN_ROLE_ID = 'generalist'
 
-/** 内置角色共用模型池（kscc 渠道已有模型，不创造渠道没有的模型） */
-const DEFAULT_ROLE_MODEL_POOL = ['glm-5.1', 'glm-5.2', 'kimi-k2.5']
-
 /**
  * 内置默认角色（8 个）
  *
@@ -74,8 +71,8 @@ const DEFAULT_ROLE_MODEL_POOL = ['glm-5.1', 'glm-5.2', 'kimi-k2.5']
  * - chat：对话 / 头脑风暴
  * - doc-writer：通用办公文档（Word/PPT/Excel/Markdown）
  *
- * 模型池严格用 kscc 渠道已有模型：
- * glm-5.1 > glm-5.2 > kimi-k2.5 > kimi-k2.6 > mimo-v2.5 > mimo-v2.5-pro
+ * modelPool 默认空：跟渠道默认模型，不写死 glm/kimi 等具体 id
+ *（用户可在角色上自配模型池；dispatcher 空池时走渠道 default）
  */
 export const DEFAULT_ROLES: AgentRoleProfile[] = [
   {
@@ -277,7 +274,7 @@ grep -r "import.*infrastructure" src/domain/ && echo "领域层不应依赖基�
 **挑战假设示例：**
 > "你提到要用 Redis 做分布式锁。如果 Redis 主节点宕机，在 failover 期间锁会丢失。这个场景下数据不一致的影响有多大？如果不可接受，我们可能需要 Redlock 或换用 ZooKeeper。"`,
     permissionMode: 'bypassPermissions',
-    modelPool: ['glm-5.1', 'glm-5.2', 'kimi-k2.5'],
+    modelPool: [],
     maxConcurrentPerModel: 2,
     fallbackToChannelDefault: true,
   },
@@ -514,7 +511,7 @@ app.get('/api/users/:id',
 
 **指令参考**：你的详细架构方法论在你的核心训练中——参考全面的系统设计模式、数据库优化技术和安全框架获取完整指导。`,
     permissionMode: 'bypassPermissions',
-    modelPool: ['glm-5.1', 'glm-5.2', 'kimi-k2.5'],
+    modelPool: [],
     maxConcurrentPerModel: 2,
     fallbackToChannelDefault: true,
   },
@@ -689,7 +686,7 @@ async function fetchData() {
 **提问而非假设示例：**
 > "💭 这里选择用递归而不是迭代，是因为数据结构是树形的吗？如果调用深度可能超过几百层，可以考虑用显式栈来避免栈溢出。"`,
     permissionMode: 'auto',
-    modelPool: ['glm-5.1', 'glm-5.2', 'kimi-k2.5'],
+    modelPool: [],
     maxConcurrentPerModel: 2,
     fallbackToChannelDefault: true,
   },
@@ -1101,7 +1098,7 @@ const config = {
 
 **参考说明**：你的技术写作方法论在此——应用这些模式，为 README、API 参考、教程和概念指南打造一致、准确、开发者喜爱的文档。`,
     permissionMode: 'bypassPermissions',
-    modelPool: ['glm-5.1', 'glm-5.2', 'kimi-k2.5'],
+    modelPool: [],
     maxConcurrentPerModel: 2,
     fallbackToChannelDefault: true,
   },
@@ -1135,7 +1132,7 @@ const config = {
 - 先给结果，再必要时补充过程
 - 用中文回复（除非 body 要求其他语言）`,
     permissionMode: 'bypassPermissions',
-    modelPool: [...DEFAULT_ROLE_MODEL_POOL],
+    modelPool: [],
     maxConcurrentPerModel: 2,
     fallbackToChannelDefault: true,
   },
@@ -1173,7 +1170,7 @@ const config = {
 - 「发现 → 含义 → 建议」三段式
 - 数字带单位与口径；百分比同时给绝对量`,
     permissionMode: 'bypassPermissions',
-    modelPool: [...DEFAULT_ROLE_MODEL_POOL],
+    modelPool: [],
     maxConcurrentPerModel: 2,
     fallbackToChannelDefault: true,
   },
@@ -1211,7 +1208,7 @@ const config = {
 - 先回应情绪与目标，再给结构
 - 用中文（除非 body 另有要求）`,
     permissionMode: 'bypassPermissions',
-    modelPool: [...DEFAULT_ROLE_MODEL_POOL],
+    modelPool: [],
     maxConcurrentPerModel: 2,
     fallbackToChannelDefault: true,
   },
@@ -1267,11 +1264,22 @@ const config = {
 - 先给目录/大纲，再展开（长文时）
 - 用中文（除非 body 另有要求）`,
     permissionMode: 'bypassPermissions',
-    modelPool: [...DEFAULT_ROLE_MODEL_POOL],
+    modelPool: [],
     maxConcurrentPerModel: 2,
     fallbackToChannelDefault: true,
   },
 ]
+
+/**
+ * 历史误 seed 的内置模型池（曾写死 kscc 模型 id）
+ * load 时若命中则清为空，避免用户未改过池仍被钉死
+ */
+export const LEGACY_BUILTIN_MODEL_POOL = ['glm-5.1', 'glm-5.2', 'kimi-k2.5'] as const
+
+export function isLegacyBuiltinModelPool(pool: string[] | undefined): boolean {
+  if (!pool || pool.length !== LEGACY_BUILTIN_MODEL_POOL.length) return false
+  return LEGACY_BUILTIN_MODEL_POOL.every((id, i) => pool[i] === id)
+}
 
 /** 角色库 IPC 通道常量 */
 export const AGENT_ROLE_IPC_CHANNELS = {

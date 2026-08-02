@@ -2,6 +2,8 @@ import { describe, expect, test } from 'vitest'
 
 import {
   isAutoModeAutoAllowTool,
+  isChatModeBlockedTool,
+  CHAT_MODE_BLOCK_REASON,
   isDangerousCommand,
   isProjectLocalReadOnlyBash,
   isProjectScopedNonDestructiveBash,
@@ -187,6 +189,31 @@ describe('requiresAutoModeConfirmation', () => {
     expect(requiresAutoModeConfirmation('Read', {})).toBe(false)
     expect(requiresAutoModeConfirmation('Write', { file_path: 'a.ts' })).toBe(true)
     expect(requiresAutoModeConfirmation('AskUserQuestion', {})).toBe(false)
+  })
+})
+
+describe('isChatModeBlockedTool（Chat 硬拦）', () => {
+  const cwd = 'F:/TAgent_General'
+
+  test('只读工具放行', () => {
+    expect(isChatModeBlockedTool('Read', { path: 'a.ts' }, cwd)).toBe(false)
+    expect(isChatModeBlockedTool('Glob', { pattern: '**/*' }, cwd)).toBe(false)
+    expect(isChatModeBlockedTool('Grep', { pattern: 'foo' }, cwd)).toBe(false)
+    expect(isChatModeBlockedTool('Bash', { command: 'ls' }, cwd)).toBe(false)
+  })
+
+  test('写工具 / 看板 / 破坏性命令拦截', () => {
+    expect(isChatModeBlockedTool('Write', { file_path: 'a.ts' }, cwd)).toBe(true)
+    expect(isChatModeBlockedTool('Edit', { file_path: 'a.ts' }, cwd)).toBe(true)
+    expect(isChatModeBlockedTool('Bash', { command: 'rm -rf node_modules' }, cwd)).toBe(true)
+    expect(isChatModeBlockedTool('kanban_create_board', {}, cwd)).toBe(true)
+    expect(isChatModeBlockedTool('mcp__kanban__add_task', {}, cwd)).toBe(true)
+    expect(isChatModeBlockedTool('Task', { prompt: 'x' }, cwd)).toBe(true)
+  })
+
+  test('拦截原因文案非空', () => {
+    expect(CHAT_MODE_BLOCK_REASON.length).toBeGreaterThan(10)
+    expect(CHAT_MODE_BLOCK_REASON).toMatch(/Chat/)
   })
 })
 

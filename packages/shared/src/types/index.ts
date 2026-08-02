@@ -24,6 +24,9 @@ export * from './chat'
 // Agent 相关类型
 export * from './agent'
 
+// 协作/执行形态（Chat / Work）
+export * from './execution-mode'
+
 // Ask 档位相关类型
 export * from './ask'
 
@@ -81,6 +84,7 @@ export * from './kanban-ipc'
 
 // Agent 角色库（看板 worker 角色定义）
 export * from './agent-role'
+export * from './mention'
 
 // 命令注册表（command-registry 统一命令路由）
 export * from './command'

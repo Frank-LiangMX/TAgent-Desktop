@@ -108,6 +108,112 @@
 }
 
 /* ===== 顶栏 ===== */
+/* 通用设置 · 通知偏好 */
+.notif-pref-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 720px) {
+  .notif-pref-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+.notif-pref-card__inner {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  /* SettingsCard 本身无内边距，这里必须给足，否则标题/图示贴边 */
+  padding: 14px 16px 16px;
+  box-sizing: border-box;
+}
+.notif-pref-card__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+.notif-pref-card__head .settings-field-label,
+.notif-pref-card__head p {
+  /* 窄栏三列时避免长句顶满卡片边 */
+  padding-right: 2px;
+}
+.notif-pref-card--off {
+  opacity: 0.78;
+}
+.notif-pref-diagram {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  padding: 14px 14px 12px;
+  border-radius: 12px;
+  border: 1px solid hsl(var(--border) / 0.55);
+  background: hsl(var(--muted) / 0.2);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.notif-pref-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 108px;
+  /* 几何图形与示意框边框之间再留一点气 */
+  padding: 2px 4px 0;
+  box-sizing: border-box;
+}
+.notif-pref-caption {
+  margin: 0;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+  text-align: center;
+  /* 单行优先；过窄时允许换行但不贴边 */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.notif-pref-caption--on {
+  color: hsl(var(--foreground) / 0.78);
+}
+.notif-pref-svg .npd-window {
+  fill: hsl(var(--background) / 0.65);
+  stroke: hsl(var(--border) / 0.75);
+  stroke-width: 1.2;
+}
+.notif-pref-svg .npd-chrome {
+  fill: hsl(var(--muted) / 0.5);
+}
+.notif-pref-svg .npd-panel {
+  fill: hsl(var(--muted) / 0.32);
+  stroke: hsl(var(--border) / 0.45);
+  stroke-width: 1;
+}
+.notif-pref-svg .npd-muted {
+  fill: hsl(var(--muted-foreground) / 0.18);
+}
+.notif-pref-svg .npd-accent {
+  fill: hsl(var(--primary) / 0.2);
+  stroke: hsl(var(--primary) / 0.5);
+  stroke-width: 1.2;
+}
+.notif-pref-svg .npd-accent-fill {
+  fill: hsl(var(--primary) / 0.26);
+  stroke: hsl(var(--primary) / 0.55);
+  stroke-width: 1.2;
+}
+.notif-pref-svg .npd-accent-bar {
+  fill: hsl(var(--primary) / 0.75);
+}
+.notif-pref-svg .npd-btn {
+  fill: hsl(var(--primary) / 0.85);
+}
+.notif-pref-svg .npd-btn-ghost {
+  fill: hsl(var(--foreground) / 0.12);
+  stroke: hsl(var(--border) / 0.5);
+  stroke-width: 0.8;
+}
+
 .settings-shell-topbar {
   display: flex;
   align-items: center;

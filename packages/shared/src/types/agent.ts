@@ -5,6 +5,11 @@
  */
 
 import type { ComposerMode } from './ask'
+import type {
+  ExecutionMode,
+  ExecutionModeHistoryEntry,
+  ExecutionModeSuggestion,
+} from './execution-mode'
 
 // ===== 记忆 IPC 通道 =====
 
@@ -994,6 +999,23 @@ export interface AgentSessionMeta {
   /** 该会话当前的权限模式（持久化到磁盘，重启后恢复）。未设置时新会话默认 auto */
   permissionMode?: TAgentPermissionMode
   /**
+   * 协作/执行形态（Chat 只读讨论 | Work 真干活）。
+   * 与 permissionMode 分层：Plan/自动/完全自动仅在 work 下约束写操作。
+   * 未设置时 migrate 回退 work（兼容旧会话）；新建会话应显式写 chat。
+   * @see docs/decisions/ADR-0003-execution-mode-chat-work.md
+   */
+  executionMode?: ExecutionMode
+  /**
+   * executionMode 切换审计（可选，最近 N 条由主进程裁剪）
+   * @see docs/decisions/ADR-0005-user-owned-mode-switch.md
+   */
+  executionModeHistory?: ExecutionModeHistoryEntry[]
+  /**
+   * 待用户确认的形态切换建议（Chat↔Work 确认条）。
+   * 确认后清空并写入 executionMode；取消仅清空。
+   */
+  pendingExecutionModeSuggestion?: ExecutionModeSuggestion | null
+  /**
    * 子代理委派积极性（持久化到磁盘，重启后恢复）。未设置时新会话默认 conservative。
    * 主进程构建 kscc query 时读取该值，注入 SubAgent 委派策略 systemPrompt append
    * （Pi 核 systemPrompt 为整体替换非 append，当前仅 kscc 核生效）。
@@ -1032,6 +1054,16 @@ export interface AgentSessionMeta {
    * 与 parentBoardId 一起写入，用于侧栏关联展示和 dispatcher 状态回流。
    */
   sourceKanbanTaskId?: string
+  /**
+   * 隐藏会话：不出现在侧栏列表（看板工人 headless 会话等）。
+   * listSessions 默认过滤；调试可用 includeHidden。
+   */
+  hidden?: boolean
+  /**
+   * Chat @ 提及：下一轮助手应以这些角色顺序发言（roleId 列表）。
+   * 发消息时写入；turn_end 后清空。
+   */
+  pendingMentionRoleIds?: string[]
   /** 创建时间戳 */
   createdAt: number
   /** 更新时间戳 */
@@ -2009,6 +2041,18 @@ export const AGENT_IPC_CHANNELS = {
   PERMISSION_RESPOND: 'agent:permission:respond',
   /** 热切换指定会话的权限模式（运行中生效，不广播到其他会话） */
   UPDATE_SESSION_PERMISSION_MODE: 'agent:update-session-permission-mode',
+  /**
+   * 热切换指定会话的 executionMode（Chat|Work）。
+   * 仅接受 source=user | user-confirm-suggestion（ADR-0005）。
+   */
+  UPDATE_SESSION_EXECUTION_MODE: 'agent:update-session-execution-mode',
+  /**
+   * 主进程 → 渲染：建议切换 Chat|Work（不改变 mode，等用户确认条）
+   * @see docs/plans/multi-runtime/02-chat-work-and-permissions.md §3.4
+   */
+  EXECUTION_MODE_SUGGESTION: 'agent:execution-mode-suggestion',
+  /** 渲染 → 主进程：关闭建议条（不切换） */
+  DISMISS_EXECUTION_MODE_SUGGESTION: 'agent:dismiss-execution-mode-suggestion',
 
   // AskUserQuestion 交互式问答
   /** AskUser 响应（渲染进程 → 主进程） */

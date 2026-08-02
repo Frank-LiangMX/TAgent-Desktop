@@ -38,4 +38,10 @@ describe('DEFAULT_ROLES 非编程角色补齐', () => {
     expect(docWriter!.displayName).toBe('通用文档撰稿')
     expect(docWriter!.description).toMatch(/PPT|Excel|Markdown/)
   })
+
+  test('内置角色 modelPool 默认为空（不写死渠道模型）', () => {
+    for (const role of DEFAULT_ROLES) {
+      expect(role.modelPool).toEqual([])
+    }
+  })
 })

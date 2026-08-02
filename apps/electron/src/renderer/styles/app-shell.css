@@ -28,28 +28,31 @@
 
 /*
  * 底部统一模糊带：一块独立 backdrop-filter + 向下渐浓底色，覆盖
- * 「输入框顶 → 窗口底」整条底层，宽度 = 输入框宽（左右 gutter 对齐）。
+ * 「底部 UI 最高点 → 窗口底」整条底层，全宽铺满 main 区域。
  *
- * 定位用 --session-composer-top（窗底→输入框顶的距离）：它由 Chat.tsx 功能栏
- * 展开效果抬高（+47px），所以背板顶会自动跟着输入框上移、高度自动变大。
- *   · 顶：var(--session-composer-top) 在窗底之上 = 输入框顶
+ * 背板铺满整个 bottom-stack（top:-8px）：stack 是 flex 纵向流、锚定窗底，
+ * 附件/横幅/功能栏/token/多行输入任何变化都会自然撑高 stack，
+ * 背板自动跟随——不依赖手动维护的 --session-composer-top 高度。
+ *   · 顶：stack 顶再上盖 8px（mask 渐入区落在消息区，输入框顶不透）
  *   · 底：下探 status(7px) 到窗口底
- *   · 宽：左右各 gutter(16px) = 输入框宽
+ *   · 宽：全宽（main 区域）
  * 输入框 / token 栏 / 功能栏都不再各自 backdrop-filter，共用这一块 blur，
  * 避免两层模糊在输入框底部叠成糊块。z-index:-1 沉到 stack 内最底
  * （低于 token(z1)/输入框(z2) 与 queue/banner），backdrop 采样越过 stack 采到滚动消息。
  */
 .session-bottom-stack .composer-blur-underlay {
   position: absolute;
-  left: var(--app-shell-session-gutter, 16px);
-  right: var(--app-shell-session-gutter, 16px);
+  /* 全宽铺满 main（无 gutter 收窄） */
+  left: 0;
+  right: 0;
+  /* 顶：stack 顶再向上盖 8px，让 mask 渐入区（0-8px）刚好落在消息区，
+   * 输入框/附件的顶部边界处 mask 已完全不透明——顶部不透且上盖最小 */
+  top: -8px;
   /* stack 本体 bottom:7px，再下探 7px 贴到窗口底 */
   bottom: calc(-1 * var(--spatial-status-bottom, 7px));
-  /* 高度 = 窗底→输入框顶；展开时该变量被抬高，背板自动长高 */
-  height: var(--session-composer-top, 140px);
   z-index: -1;
   pointer-events: none;
-  /* blur + 向下渐浓底色（压暗保 token 文字可读）+ 顶部软裁（无硬雾边） */
+  /* blur + 向下渐浓底色（压暗保 token 文字可读）+ 顶部软裁（渐入区在消息区，固定像素不随高度漂移） */
   -webkit-backdrop-filter: blur(20px) saturate(1.06);
   backdrop-filter: blur(20px) saturate(1.06);
   background: linear-gradient(
@@ -59,8 +62,8 @@
     rgb(var(--scene-base-rgb, 248 248 250) / 0.45) 82%,
     rgb(var(--scene-base-rgb, 248 248 250) / 0.55) 100%
   );
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 6%, black 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 6%, black 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0px, black 8px, black 100%);
+  mask-image: linear-gradient(to bottom, transparent 0px, black 8px, black 100%);
 }
 
 .dark .session-bottom-stack .composer-blur-underlay {
@@ -118,46 +121,18 @@
 /*
  * ComposerUnderlay — 原样对齐 TAgent_General app-shell.css:2400-2537
  */
+/* 功能栏：仅展开时挂载（见 Chat.tsx），始终为「展开态」尺寸，不再用 height:0 占位 */
 .session-composer-cluster .composer-underlay {
   --composer-underlay-inset-x: 4px;
   --composer-underlay-h: 42px;
   box-sizing: border-box;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
-  height: 0;
-  min-height: 0;
-  margin-right: var(--composer-underlay-inset-x);
-  margin-bottom: 0;
-  margin-left: var(--composer-underlay-inset-x);
-  padding: 0 5px;
-  overflow: hidden;
-  opacity: 0;
-  pointer-events: none;
-  border: 1px solid transparent;
-  border-radius: var(--app-shell-composer-radius, 16px);
-  background: transparent;
-  box-shadow: none;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-  transform: translateY(-10px) scale(0.985);
-  transform-origin: center bottom;
-  transition:
-    height 220ms var(--app-shell-motion),
-    min-height 220ms var(--app-shell-motion),
-    margin 220ms var(--app-shell-motion),
-    padding 220ms var(--app-shell-motion),
-    opacity 180ms var(--app-shell-motion),
-    transform 220ms var(--app-shell-motion),
-    border-color 180ms var(--app-shell-motion),
-    background-color 220ms var(--app-shell-motion),
-    box-shadow 220ms var(--app-shell-motion);
-}
-
-.session-composer-cluster.is-composer-expanded .composer-underlay {
   height: var(--composer-underlay-h, 42px);
   min-height: var(--composer-underlay-h, 42px);
   margin-top: -2px;
+  margin-right: var(--composer-underlay-inset-x);
   margin-bottom: max(
     0px,
     calc(
@@ -165,12 +140,12 @@
         var(--shell-token-h, 12px)
     )
   );
+  margin-left: var(--composer-underlay-inset-x);
   padding: 4px;
-  opacity: 1;
-  pointer-events: auto;
   position: relative;
   z-index: 3;
-  border-color: var(--surface-role-composer-underlay-rim, rgb(255 255 255 / 0.55));
+  border: 1px solid var(--surface-role-composer-underlay-rim, rgb(255 255 255 / 0.55));
+  border-radius: var(--app-shell-composer-radius, 16px);
   background: var(--surface-role-composer-underlay-fill,
     radial-gradient(circle at 18% 0%, rgb(var(--scene-a-rgb) / 0.1), transparent 44%),
     linear-gradient(180deg, rgb(var(--glass-rgb) / 0.55), rgb(var(--glass-rgb) / 0.36))) !important;
@@ -179,20 +154,30 @@
     inset 1px 0 0 rgb(255 255 255 / 0.18),
     inset 0 -1px 0 rgb(54 64 80 / 0.04),
     0 10px 26px rgb(54 64 80 / 0.1));
-  /* blur 由底部统一背板 (.composer-blur-underlay) 负责；功能栏不再自带 backdrop-filter，
-     避免与背板叠成两层糊块。 */
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
-  transform: translateY(0) scale(1);
+  animation: composer-underlay-in 180ms var(--app-shell-motion);
 }
 
+@keyframes composer-underlay-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 展开功能栏时：输入底 margin 交给 underlay，避免双重抬升 */
 .session-composer-cluster.is-composer-expanded .session-input-dock {
   position: relative;
   z-index: 4;
   margin-bottom: 0;
 }
 
-.dark .session-composer-cluster.is-composer-expanded .composer-underlay {
+.dark .session-composer-cluster .composer-underlay {
   border-color: var(--surface-role-composer-underlay-rim, rgb(255 255 255 / 0.1));
   box-shadow: var(--surface-role-composer-underlay-shadow,
     inset 0 1px 0 rgb(255 255 255 / 0.06),
@@ -255,6 +240,114 @@
   font-size: 8px;
   font-weight: 650;
   line-height: 1.15;
+}
+
+/* Chat | Work — 紧凑文本开关（无大号分段外壳） */
+.execution-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.execution-mode-switch__item {
+  display: inline-flex;
+  align-items: center;
+}
+
+.execution-mode-switch__sep {
+  width: 1px;
+  height: 10px;
+  margin: 0 1px;
+  background: hsl(var(--border) / 0.9);
+  border-radius: 1px;
+}
+
+.execution-mode-switch__btn {
+  position: relative;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground) / 0.85);
+  font-size: 11px;
+  font-weight: 520;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.execution-mode-switch__btn:hover:not(:disabled):not(.execution-mode-switch__btn--active) {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.05);
+}
+
+.execution-mode-switch__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.execution-mode-switch__btn:focus-visible {
+  outline: 2px solid hsl(var(--primary) / 0.5);
+  outline-offset: 1px;
+}
+
+.execution-mode-switch__btn--active {
+  font-weight: 650;
+}
+
+.execution-mode-switch__btn--active.execution-mode-switch__btn--chat {
+  color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.1);
+}
+
+.execution-mode-switch__btn--active.execution-mode-switch__btn--work {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.08);
+}
+
+/* 思考强度 — 输入区 compact pill */
+.reasoning-effort-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  font-weight: 550;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.reasoning-effort-picker:hover,
+.reasoning-effort-picker--open {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.08);
+}
+
+.reasoning-effort-picker__icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: hsl(var(--primary));
+}
+
+.reasoning-effort-picker__label {
+  max-width: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ===== 思考强度滑杆（ReasoningSlider） — 粗条 + 扫光能量 + 粒子动画 ===== */
@@ -729,17 +822,121 @@
  * 权限模式角标：功能栏折叠时，输入框工具栏的权限 chip 仍可见，
  * 图标 + 状态色一眼区分模式（plan 紫 / bypass 橙；auto 不显示）。
  */
+/* 输入底栏：固定行高，模式切换不改变玻璃高度 */
+.composer-footer-bar {
+  box-sizing: content-box;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.composer-footer-bar__left,
+.composer-footer-bar__right {
+  min-width: 0;
+}
+
+/*
+ * 窄方案（右栏班组展开 / 对话列 <560px）：
+ * - 班组/权限 仅图标
+ * - 思考强度隐藏文字
+ * - 模型名极短截断
+ * - token 栏只留圆环 + 数字
+ */
+.is-composer-compact .composer-crew-btn {
+  width: 28px;
+  padding-inline: 0;
+  gap: 0;
+}
+.is-composer-compact .composer-crew-btn__label {
+  display: none;
+}
+.is-composer-compact .composer-permission-chip__label {
+  display: none;
+}
+.is-composer-compact .composer-permission-chip {
+  width: 22px;
+  padding-inline: 0;
+  justify-content: center;
+  gap: 0;
+}
+.is-composer-compact .reasoning-effort-picker__label {
+  display: none;
+}
+.is-composer-compact .reasoning-effort-picker {
+  width: 28px;
+  min-width: 28px;
+  padding-inline: 0;
+  justify-content: center;
+  gap: 0;
+}
+.is-composer-compact .composer-footer-bar__right button[aria-label='选择模型'] {
+  max-width: 88px !important;
+  min-width: 0;
+  padding-inline: 5px !important;
+  gap: 3px !important;
+}
+.is-composer-compact .composer-footer-bar__right button[aria-label='选择模型'] > span {
+  max-width: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 窄宽时隐藏模型触发器上的 chevron，再省 12px */
+.is-composer-compact .composer-footer-bar__right button[aria-label='选择模型'] > svg:last-child {
+  display: none;
+}
+.is-composer-compact .execution-mode-switch__btn {
+  padding-inline: 6px;
+  font-size: 10px;
+  min-width: 0;
+}
+.is-composer-compact .composer-footer-bar {
+  gap: 2px;
+}
+
+/* token 窄方案 */
+.session-bottom-stack .token-stats-bar--compact {
+  gap: 6px;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+.session-bottom-stack .token-stats-bar--compact .token-stats-item__label {
+  display: none;
+}
+.session-bottom-stack .is-composer-compact .token-stats-bar,
+.session-chat-col.is-composer-compact .token-stats-bar {
+  gap: 6px;
+}
+
+.composer-footer-status-slot {
+  display: inline-flex;
+  align-items: center;
+  min-width: 2.25rem;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.composer-footer-icon-slot {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
 .composer-permission-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   height: 22px;
+  max-height: 22px;
   padding: 0 7px;
   border-radius: 999px;
   font-size: 10px;
   font-weight: 550;
   letter-spacing: -0.01em;
+  line-height: 1;
   border: 1px solid transparent;
+  box-sizing: border-box;
   transition: background-color 160ms var(--app-shell-motion), border-color 160ms var(--app-shell-motion), color 160ms var(--app-shell-motion);
 }
 .composer-permission-chip__icon {
@@ -810,6 +1007,7 @@
   display: flex;
   height: var(--shell-chrome-h, 40px);
   align-items: center;
+  gap: 8px;
   padding: 0 12px;
   border-bottom: 1px solid var(--spatial-line);
   background: linear-gradient(180deg, rgb(247 250 254 / 0.16), rgb(226 234 245 / 0.08));
@@ -821,6 +1019,122 @@
 .dark .app-spatial-topbar {
   background: linear-gradient(180deg, rgb(255 255 255 / 0.04), transparent);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+/* 顶栏中央：滚动/淡入状态通知（替代占空间的居中 toast） */
+.status-ticker {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  max-width: min(520px, 46vw);
+  height: 26px;
+  margin-inline: auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border) / 0.55);
+  background: hsl(var(--background) / 0.45);
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.2;
+  cursor: pointer;
+  overflow: hidden;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease;
+}
+.status-ticker--empty {
+  flex: 1 1 auto;
+  max-width: min(520px, 46vw);
+  margin-inline: auto;
+  height: 26px;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+.status-ticker:hover {
+  color: hsl(var(--foreground));
+  border-color: hsl(var(--border) / 0.85);
+  background: hsl(var(--background) / 0.62);
+}
+.status-ticker--success {
+  color: hsl(142 45% 38%);
+  border-color: hsl(142 40% 42% / 0.35);
+  background: hsl(142 40% 42% / 0.1);
+}
+.status-ticker--warn {
+  color: hsl(32 80% 40%);
+  border-color: hsl(32 80% 48% / 0.35);
+  background: hsl(32 80% 48% / 0.1);
+}
+.status-ticker--error {
+  color: hsl(var(--destructive));
+  border-color: hsl(var(--destructive) / 0.35);
+  background: hsl(var(--destructive) / 0.08);
+}
+.dark .status-ticker--success {
+  color: hsl(142 50% 62%);
+}
+.dark .status-ticker--warn {
+  color: hsl(32 90% 62%);
+}
+.status-ticker__viewport {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, transparent, #000 8px, #000 calc(100% - 8px), transparent);
+}
+.status-ticker__track {
+  display: inline-flex;
+  align-items: center;
+  gap: 2.5rem;
+  white-space: nowrap;
+  animation: status-ticker-in 220ms ease;
+}
+.status-ticker__track--marquee {
+  animation: status-ticker-marquee 14s linear infinite;
+  padding-right: 2.5rem;
+}
+.status-ticker__text {
+  display: inline-block;
+  white-space: nowrap;
+}
+.status-ticker__badge {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: hsl(var(--foreground) / 0.08);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--muted-foreground));
+}
+@keyframes status-ticker-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes status-ticker-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-ticker__track,
+  .status-ticker__track--marquee {
+    animation: none;
+  }
 }
 
 /* nav 容器：band inset 上下留白透 scene + rail 离左窗边 */

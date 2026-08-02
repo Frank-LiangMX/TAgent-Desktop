@@ -111,7 +111,8 @@ export function ConversationScrollButton({
         /* left-0 right-0 mx-auto 居中：固定宽度下用 margin auto，
          * 完全不依赖 transform，避免 hover/active 的 translateY 覆盖
          * translateX 导致按钮水平弹跳 */
-        'conversation-scroll-btn absolute bottom-[26px] left-0 right-0 z-10 mx-auto size-9 rounded-full',
+        /* bottom/z-index 由 chat.css 用 --session-composer-top 覆盖（!important） */
+        'conversation-scroll-btn absolute bottom-[26px] left-0 right-0 z-30 mx-auto size-9 rounded-full',
         'border shadow-none',
         className
       )}

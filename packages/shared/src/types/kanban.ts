@@ -317,6 +317,11 @@ export interface CreateKanbanTaskInput {
   modelId?: string
   /** 优先级（默认 0） */
   priority?: number
+  /**
+   * 前置任务 ID 列表：这些任务 done 前，本任务保持 pending。
+   * 会写入 type=blocks 的 KanbanTaskLink（from=前置，to=本任务）。
+   */
+  dependsOnTaskIds?: string[]
   /** 是否 goal 模式 */
   goalMode?: boolean
   /** 验收标准 */

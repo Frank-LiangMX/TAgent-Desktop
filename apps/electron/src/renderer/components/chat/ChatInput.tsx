@@ -3,11 +3,20 @@
  *
  * 支持：文件附件（回形针按钮 + 拖拽 + 粘贴）、附件预览、模型/权限工具栏。
  * Enter 提交 / Shift+Enter 换行。父组件通过 ref 调用 getText() / clear()。
+ * Chat 模式：@ 角色点名（MentionPicker）。
  */
-import { forwardRef, useImperativeHandle, useRef, useCallback, useState } from 'react'
+import {
+  forwardRef,
+  useImperativeHandle,
+  useRef,
+  useCallback,
+  useState,
+  useEffect,
+} from 'react'
 import { Paperclip } from 'lucide-react'
 import { AttachmentPreviewItem } from '@tagent/ui'
 import { shouldConvertTextToAttachment, createTextAttachment } from '../../lib/clipboard-text-attachment'
+import { MentionPicker, type MentionRoleOption } from './MentionPicker'
 
 /** 通过 ref 暴露的方法 */
 export interface ChatInputHandle {
@@ -37,12 +46,31 @@ interface ChatInputProps {
   onAttachmentsChange?: (attachments: PendingAttachment[]) => void
   /** 打开文件选择器 */
   onOpenFileDialog?: () => void
+  /**
+   * 可 @ 的角色列表；空/undefined 则不启用 MentionPicker。
+   * Chat 模式由父组件传入；Work 传空。
+   */
+  mentionRoles?: MentionRoleOption[]
 }
 
 export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
-  function ChatInput({ onSubmit, placeholder, footer, onDraftChange, attachments = [], onAttachmentsChange, onOpenFileDialog }, ref) {
+  function ChatInput({
+    onSubmit,
+    placeholder,
+    footer,
+    onDraftChange,
+    attachments = [],
+    onAttachmentsChange,
+    onOpenFileDialog,
+    mentionRoles,
+  }, ref) {
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const [isDragOver, setIsDragOver] = useState(false)
+    const [mentionOpen, setMentionOpen] = useState(false)
+    const [mentionQuery, setMentionQuery] = useState('')
+    const [mentionActive, setMentionActive] = useState(0)
+    /** 当前 @ 词起始光标 */
+    const mentionStartRef = useRef<number | null>(null)
 
     const getText = useCallback(() => textareaRef.current?.value ?? '', [])
     const clear = useCallback(() => {
@@ -51,6 +79,8 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         autoResize()
         onDraftChange?.(false)
       }
+      setMentionOpen(false)
+      mentionStartRef.current = null
     }, [onDraftChange])
     const focus = useCallback(() => textareaRef.current?.focus(), [])
     const setText = useCallback((text: string) => {
@@ -70,17 +100,120 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       el.style.height = Math.min(el.scrollHeight, 200) + 'px'
     }, [])
 
-    const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault()
-        onSubmit()
+    /** 根据光标位置探测 @query */
+    const syncMentionFromCaret = useCallback(() => {
+      const el = textareaRef.current
+      if (!el || !mentionRoles?.length) {
+        setMentionOpen(false)
+        return
       }
-    }, [onSubmit])
+      const pos = el.selectionStart ?? 0
+      const before = el.value.slice(0, pos)
+      const at = before.lastIndexOf('@')
+      if (at < 0) {
+        setMentionOpen(false)
+        mentionStartRef.current = null
+        return
+      }
+      // @ 前应为空白或行首
+      if (at > 0 && !/[\s\n]/.test(before[at - 1]!)) {
+        setMentionOpen(false)
+        mentionStartRef.current = null
+        return
+      }
+      const query = before.slice(at + 1)
+      // 查询中不能有空白
+      if (/[\s\n]/.test(query)) {
+        setMentionOpen(false)
+        mentionStartRef.current = null
+        return
+      }
+      mentionStartRef.current = at
+      setMentionQuery(query)
+      setMentionActive(0)
+      setMentionOpen(true)
+    }, [mentionRoles])
+
+    const insertMention = useCallback(
+      (role: MentionRoleOption) => {
+        const el = textareaRef.current
+        const start = mentionStartRef.current
+        if (!el || start == null) return
+        const pos = el.selectionStart ?? el.value.length
+        const insert = `@${role.displayName} `
+        const next = el.value.slice(0, start) + insert + el.value.slice(pos)
+        el.value = next
+        const caret = start + insert.length
+        el.setSelectionRange(caret, caret)
+        autoResize()
+        onDraftChange?.(next.length > 0)
+        setMentionOpen(false)
+        mentionStartRef.current = null
+        el.focus()
+      },
+      [autoResize, onDraftChange],
+    )
+
+    const handleKeyDown = useCallback(
+      (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (mentionOpen && mentionRoles?.length) {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault()
+            setMentionActive((i) => i + 1)
+            return
+          }
+          if (e.key === 'ArrowUp') {
+            e.preventDefault()
+            setMentionActive((i) => Math.max(0, i - 1))
+            return
+          }
+          if (e.key === 'Enter' || e.key === 'Tab') {
+            e.preventDefault()
+            // 由 MentionPicker 的 filtered 逻辑：父用 activeIndex，此处简化：用 query 过滤后取 active
+            const q = mentionQuery.trim().toLowerCase()
+            const filtered = (mentionRoles ?? [])
+              .filter(
+                (r) =>
+                  !q ||
+                  r.id.toLowerCase().includes(q) ||
+                  r.displayName.toLowerCase().includes(q),
+              )
+              .slice(0, 12)
+            const role = filtered[Math.min(mentionActive, filtered.length - 1)]
+            if (role) insertMention(role)
+            return
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault()
+            setMentionOpen(false)
+            return
+          }
+        }
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault()
+          setMentionOpen(false)
+          onSubmit()
+        }
+      },
+      [
+        mentionOpen,
+        mentionRoles,
+        mentionQuery,
+        mentionActive,
+        insertMention,
+        onSubmit,
+      ],
+    )
 
     const handleInput = useCallback(() => {
       autoResize()
       onDraftChange?.((textareaRef.current?.value ?? '').length > 0)
-    }, [autoResize, onDraftChange])
+      syncMentionFromCaret()
+    }, [autoResize, onDraftChange, syncMentionFromCaret])
+
+    useEffect(() => {
+      if (!mentionRoles?.length) setMentionOpen(false)
+    }, [mentionRoles])
 
     /** 移除单个附件 */
     const removeAttachment = useCallback((id: string) => {
@@ -170,7 +303,9 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <div className={`chat-input-glass ${isDragOver ? 'ring-2 ring-dashed ring-primary/40' : ''}`}>
+        <div
+          className={`chat-input-glass relative ${isDragOver ? 'ring-2 ring-dashed ring-primary/40' : ''}`}
+        >
           {/* 附件预览区 */}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 px-3 pt-2.5 pb-1.5">
@@ -193,7 +328,19 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
             onKeyDown={handleKeyDown}
             onInput={handleInput}
             onPaste={handlePaste}
+            onClick={syncMentionFromCaret}
+            onKeyUp={syncMentionFromCaret}
           />
+          {mentionRoles?.length ? (
+            <MentionPicker
+              open={mentionOpen}
+              query={mentionQuery}
+              roles={mentionRoles}
+              activeIndex={mentionActive}
+              onActiveIndexChange={setMentionActive}
+              onSelect={insertMention}
+            />
+          ) : null}
           {footer}
         </div>
       </div>

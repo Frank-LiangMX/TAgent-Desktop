@@ -1,10 +1,11 @@
 /**
  * AssistantTurnView — 一轮助手主线（对齐 General 的 turn 分层）
  *
- * - 模型铭牌 ×1
- * - 过程区：运行中始终展开，直接看到思考/工具活动（不是只显示步数）
- * - 回答区：一段正文（与流式互斥）
+ * - 模型铭牌 ×1 + 运行中计时 / 完成后时间
+ * - 过程区：运行中始终展开
+ * - 回答区 + 底部复制
  */
+import { useMemo, useRef } from 'react'
 import {
   Message,
   MessageContent,
@@ -18,17 +19,25 @@ import {
   type SessionRenderTurn,
 } from './session-turn-model'
 import { MessageView } from './MessageView'
-import { formatMessageTime } from '../../lib/time-utils'
+import { MessageCopyButton } from './MessageCopyButton'
+import {
+  formatElapsedDuration,
+  formatMessageTime,
+  useLiveElapsedMs,
+} from '../../lib/time-utils'
 
 interface AssistantTurnViewProps {
   turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>
   /** 当前会话仍在跑且本 turn 是最新一轮（含工具间隙） */
   isLiveTurn?: boolean
+  /** Chat @ 本轮点名角色展示名（顺序） */
+  mentionLabels?: string[]
 }
 
 export function AssistantTurnView({
   turn,
   isLiveTurn = false,
+  mentionLabels,
 }: AssistantTurnViewProps): JSX.Element {
   const subagentItems = turn.items.filter(
     (it) => it.message?.type === 'assistant' && it.message.parentToolUseId,
@@ -38,41 +47,80 @@ export function AssistantTurnView({
   )
   const presentation = buildTurnPresentation({ ...turn, items: mainItems })
 
-  // 过程区 live 判定只用会话级 isLiveTurn（来自 Chat 的 running），不用 presentation.isStreaming：
-  // 后者在 answerText 落盘即翻 false，且 pi 多轮工具每轮 turn_end 都落盘 → 轮间反复折叠/展开、
-  // 思考没输完就被收起。会话级 running 轮间不抖，过程区全程展开直到会话整体结束。
   const processLive = isLiveTurn
 
-  // 回答区用 useSmoothStream 逐字挤出。打字机是否开启跟会话级 isLiveTurn（running）：
-  // 流式期 content=streamingText（增长）；turn_end 落盘后 content 切 answerText（同源前缀），
-  // useSmoothStream 同实例 isAppend 逐字追完，落盘不重挂、不跳变、不重复。
-  // 用 isLiveTurn 而非 presentation.isStreaming：后者落盘即翻 false，会触发 hook 非流式安全网
-  // 把 answerText 瞬间全显（回到「一下子全出来」），且多轮工具轮间反复抖。
-  // 历史轮次（非 live）isStreaming=false → hook 安全网直接全显示，无逐字动画。
-  const answerFull = presentation.answerTexts[0]
-  const content = answerFull ?? presentation.streamingText ?? ''
-  const needsTypewriter = isLiveTurn || presentation.isStreaming || Boolean(presentation.streamingText)
-  const { displayedContent } = useSmoothStream({ content, isStreaming: needsTypewriter })
+  // 回答正文：流式与落盘取「更长且互为前缀」的那份，避免 answerFull 抢先导致
+  // useSmoothStream 回退/重入队 → 画面上出现重复字（完成后又正常）。
+  const answerFull = presentation.answerTexts[0] ?? ''
+  const streamText = presentation.streamingText ?? ''
+  const content = resolveAnswerContent(answerFull, streamText)
+  // 仅在「文本仍在增长或打字机未追上」时开流式；整轮 isLiveTurn（含纯工具间隙）不必强开
+  const needsTypewriter =
+    presentation.isStreaming ||
+    Boolean(streamText) ||
+    // 落盘后仍保留 streamText 时，让 rAF 把队列追完（session-turn-model 约定）
+    (isLiveTurn && Boolean(content) && Boolean(streamText || presentation.isStreaming))
+  const { displayedContent } = useSmoothStream({
+    content,
+    isStreaming: needsTypewriter,
+  })
 
   const showAnswerShell =
     Boolean(content.trim()) ||
     (processLive && presentation.process.length === 0 && !content)
 
-  // 取 turn 内首条 assistant message 的 createdAt 作铭牌时间（主 Agent，不含子代理）
+  // 首条 assistant createdAt 作为运行起点；完成时间取最后一条有时间的 assistant
   const turnCreatedAt = mainItems.find(
     (it) => it.message?.type === 'assistant',
   )?.message?.createdAt
 
+  const turnFinishedAt = useMemo(() => {
+    for (let i = mainItems.length - 1; i >= 0; i--) {
+      const m = mainItems[i]?.message
+      if (m?.type === 'assistant' && m.createdAt) return m.createdAt
+    }
+    return turnCreatedAt
+  }, [mainItems, turnCreatedAt])
+
+  // live 且尚无 createdAt：用首次进入 live 的时刻（结束后 ref 保留，不重置）
+  const liveStartRef = useRef<number | null>(null)
+  if (isLiveTurn && liveStartRef.current == null) {
+    liveStartRef.current = turnCreatedAt ?? Date.now()
+  }
+  const startedAt = turnCreatedAt ?? liveStartRef.current ?? undefined
+  const elapsedMs = useLiveElapsedMs(startedAt, isLiveTurn)
+
+  const statusLabel = isLiveTurn
+    ? `运行 ${formatElapsedDuration(elapsedMs)}`
+    : turnFinishedAt
+      ? formatMessageTime(turnFinishedAt)
+      : ''
+
+  // 复制用最终全文（优先落盘 answer；流式中用已显示内容）
+  const copyText = (answerFull || displayedContent || content).trim()
+
   return (
     <div className="agent-turn flex flex-col gap-3">
-      {presentation.modelId && (
-        <div className="agent-turn-title">
-          {presentation.modelId}
-          {turnCreatedAt ? (
-            <>
-              {' · '}
-              <span className="agent-turn-title__time">{formatMessageTime(turnCreatedAt)}</span>
-            </>
+      {(presentation.modelId || statusLabel || (mentionLabels && mentionLabels.length > 0)) && (
+        <div className="agent-turn-title-row flex-wrap">
+          {presentation.modelId ? (
+            <div className="agent-turn-title">{presentation.modelId}</div>
+          ) : null}
+          {mentionLabels && mentionLabels.length > 0 ? (
+            <div className="agent-turn-mention-chip" title="本轮 @ 点名顺序">
+              @{mentionLabels.join(' → @')}
+            </div>
+          ) : null}
+          {statusLabel ? (
+            <span
+              className={
+                isLiveTurn
+                  ? 'agent-turn-title-row__time agent-turn-title-row__time--live'
+                  : 'agent-turn-title-row__time'
+              }
+            >
+              {statusLabel}
+            </span>
           ) : null}
         </div>
       )}
@@ -92,16 +140,38 @@ export function AssistantTurnView({
       )}
 
       {showAnswerShell && (
-        <Message from="assistant">
-          <MessageContent>
-            {displayedContent.trim() ? (
-              <MessageResponse>{displayedContent}</MessageResponse>
-            ) : processLive ? (
-              <MessageLoading />
-            ) : null}
-          </MessageContent>
-        </Message>
+        <div className="agent-answer-block">
+          <Message from="assistant">
+            <MessageContent>
+              {displayedContent.trim() ? (
+                <MessageResponse>{displayedContent}</MessageResponse>
+              ) : processLive ? (
+                <MessageLoading />
+              ) : null}
+            </MessageContent>
+          </Message>
+          {copyText ? (
+            <div className="agent-answer-toolbar">
+              <MessageCopyButton text={copyText} />
+            </div>
+          ) : null}
+        </div>
       )}
     </div>
   )
+}
+
+/**
+ * 合并流式/落盘正文：同源前缀取更长；不相交时优先当前 stream（正在写）。
+ */
+function resolveAnswerContent(answer: string, stream: string): string {
+  const a = answer.trimEnd()
+  const s = stream.trimEnd()
+  if (!a) return s
+  if (!s) return a
+  if (s.startsWith(a) || a.startsWith(s)) {
+    return s.length >= a.length ? s : a
+  }
+  // 多轮工具后新开一段 stream，与旧 answer 不相交 → 用 stream（过程区另有旧文）
+  return s
 }

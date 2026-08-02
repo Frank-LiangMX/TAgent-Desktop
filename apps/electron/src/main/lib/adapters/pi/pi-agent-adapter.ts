@@ -126,8 +126,20 @@ export interface PiQueryOptions extends AgentQueryInput {
   channelConfig: PiAgentAdapterConfig
   /** 系统提示词 */
   systemPrompt?: string
+  /**
+   * 追加到系统提示词末尾（不整体替换默认 prompt）
+   * 用于 executionMode 策略等短段落
+   */
+  systemPromptAppend?: string
+  /**
+   * 执行形态（Chat|Work）。SessionRuntime 用其判断是否需 re-spawn；
+   * Pi 核内还用 extraTools/systemPromptAppend 指纹热重建 Agent。
+   */
+  executionMode?: 'chat' | 'work'
   /** 自定义工具列表（默认用 pi-core 的 defaultTools + mcpTools） */
   tools?: AgentTool[]
+  /** 追加工具（与默认工具合并，不替换） */
+  extraTools?: AgentTool[]
   /** 工作区 MCP 配置（合并 mcpTools） */
   mcpConfig?: { servers: Record<string, unknown> }
   /** 工作目录（bashTool/相对路径用，不传 process.cwd） */
@@ -159,10 +171,35 @@ interface SessionEntry {
   isStreaming: boolean
   /** 当前 Agent 使用的渠道 / 模型配置 */
   channelConfig: PiAgentAdapterConfig
+  /**
+   * 工具 + 执行形态指纹（extraTools 名 + systemPromptAppend）。
+   * Chat↔Work 切换后不同 → 须重建 Agent（否则看板工具永远不进上下文）。
+   */
+  toolingKey: string
   /** 外部渠道压缩资源；kscc bare 为 undefined */
   compaction?: SessionCompactionBundle
   /** transformContext 自动压缩时暂存的 system 事件，下一轮 query 流开头排出 */
   pendingSystemMessages: TAgentDesktopStreamPayload[]
+}
+
+/** 计算工具/执行形态指纹，供 Chat↔Work 热切换判断 */
+function computeToolingKey(
+  systemPromptAppend: string | undefined,
+  extraTools: AgentTool[] | undefined,
+): string {
+  const tools = (extraTools ?? [])
+    .map((t) => t.name)
+    .sort()
+    .join(',')
+  // append 可能较长，取稳定摘要即可
+  const append = systemPromptAppend ?? ''
+  const mode =
+    /协作模式：Work|Work（执行）/.test(append)
+      ? 'work'
+      : /协作模式：Chat|Chat（只读/.test(append)
+        ? 'chat'
+        : 'unknown'
+  return `${mode}|tools=${tools}|appendLen=${append.length}`
 }
 
 // ===== 主类 =====
@@ -183,20 +220,27 @@ export class PiAgentAdapter implements AgentProviderAdapter {
    * 4. AgentEvent 回调转译成 SDKMessage，推给 generator
    */
   async *query(input: PiQueryOptions): AsyncIterable<SDKMessage> {
-    const { sessionId, prompt, channelConfig, systemPrompt, tools, mcpConfig, cwd, beforeToolCall, abortSignal, sessionMode } = input
+    const {
+      sessionId,
+      prompt,
+      channelConfig,
+      systemPrompt,
+      systemPromptAppend,
+      tools,
+      extraTools,
+      mcpConfig,
+      cwd,
+      beforeToolCall,
+      abortSignal,
+      sessionMode,
+    } = input
 
-    // 创建或复用 Agent 实例。外部运行内核允许同会话切换渠道 / 模型：
-    // streamFn 与 task 工具都捕获了渠道配置，因此配置变化时保留消息历史并重建 Agent。
+    // 创建或复用 Agent 实例。
+    // 渠道/模型变化，或 Chat↔Work 导致 extraTools/systemPromptAppend 变化时：
+    // 保留消息历史并重建 Agent（否则看板工具 / Work 文案永远停留在首轮状态）。
+    const toolingKey = computeToolingKey(systemPromptAppend, extraTools)
     let entry = this.sessions.get(sessionId)
     if (!entry) {
-      entry = await this.createSession(sessionId, channelConfig, systemPrompt, tools, mcpConfig, cwd, beforeToolCall, sessionMode)
-      this.sessions.set(sessionId, entry)
-    } else if (!isSameChannelConfig(entry.channelConfig, channelConfig)) {
-      if (entry.isStreaming) {
-        throw new Error(`[pi adapter] 会话 ${sessionId} 仍在运行，暂不能切换渠道或模型`)
-      }
-      const previousMessages = [...entry.agent.state.messages]
-      const previousEntry = entry
       entry = await this.createSession(
         sessionId,
         channelConfig,
@@ -206,11 +250,43 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         cwd,
         beforeToolCall,
         sessionMode,
+        systemPromptAppend,
+        extraTools,
       )
-      ;(entry.agent.state as { messages: typeof previousMessages }).messages = previousMessages
-      previousEntry.agent.abort()
-      previousEntry.controller.abort()
       this.sessions.set(sessionId, entry)
+    } else {
+      const channelChanged = !isSameChannelConfig(entry.channelConfig, channelConfig)
+      const toolingChanged = entry.toolingKey !== toolingKey
+      if (channelChanged || toolingChanged) {
+        if (entry.isStreaming) {
+          throw new Error(
+            `[pi adapter] 会话 ${sessionId} 仍在运行，暂不能切换渠道/模型/执行形态工具集`,
+          )
+        }
+        const previousMessages = [...entry.agent.state.messages]
+        const previousEntry = entry
+        entry = await this.createSession(
+          sessionId,
+          channelConfig,
+          systemPrompt,
+          tools,
+          mcpConfig,
+          cwd,
+          beforeToolCall,
+          sessionMode,
+          systemPromptAppend,
+          extraTools,
+        )
+        ;(entry.agent.state as { messages: typeof previousMessages }).messages = previousMessages
+        previousEntry.agent.abort()
+        previousEntry.controller.abort()
+        this.sessions.set(sessionId, entry)
+        if (toolingChanged) {
+          console.log(
+            `[Pi 适配器 ${sessionId}] 工具/执行形态已热切换: ${previousEntry.toolingKey} → ${toolingKey}`,
+          )
+        }
+      }
     }
 
     const { agent, controller } = entry
@@ -545,6 +621,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     cwd?: string,
     beforeToolCall?: (ctx: { toolCall: { name: string; arguments: Record<string, unknown> } }) => Promise<{ block: true; reason: string } | undefined>,
     sessionMode: MemoryMode = 'general',
+    systemPromptAppend?: string,
+    extraTools?: AgentTool[],
   ): Promise<SessionEntry> {
     const controller = new AbortController()
 
@@ -594,9 +672,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         ? baseTools.map((t) => (t.name === 'Bash' ? piCore.createBashTool(cwd) : t))
         : baseTools
 
-    // 注册 task 工具（子代理：主 Agent 可派发子任务给独立子 Agent 执行）
+    // 注册 task 工具（子代理）+ extraTools（看板等）
     const taskTool = createTaskTool(sessionId, channelConfig, cwd ?? process.cwd(), piCore, piAgentCore)
-    const agentTools = [...finalBaseTools, ...mcpTools, taskTool]
+    const agentTools = [...finalBaseTools, ...mcpTools, taskTool, ...(extraTools ?? [])]
 
     // 上下文自动压缩接线（TAgent 自研，仅外部渠道；kscc bare 暂不接线，见 plan §4.2）。
     // 算法用 Pi（estimateContextTokens/shouldCompact/generateSummary），编排/写回用 TAgent。
@@ -748,11 +826,18 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       memorySnapshot: { l0: snap.l0User, l1: snap.l1Project, l2: snap.l2Facts },
     })
     const baseSystem = systemPrompt ?? DEFAULT_SYSTEM_PROMPT
-    const fullSystemPrompt = [baseSystem, buildRichContentSystemPrompt(), mem.managementRules, mem.memorySnapshotSection]
+    const fullSystemPrompt = [
+      baseSystem,
+      systemPromptAppend,
+      buildRichContentSystemPrompt(),
+      mem.managementRules,
+      mem.memorySnapshotSection,
+    ]
       .filter(Boolean)
       .join('\n\n')
 
     // 创建 Agent（挂 beforeToolCall 权限钩子 + 外部渠道的 transformContext 压缩钩子）
+    const toolingKey = computeToolingKey(systemPromptAppend, extraTools)
     const agent = new piAgentCore.Agent({
       initialState: {
         systemPrompt: fullSystemPrompt,
@@ -774,6 +859,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       controller,
       isStreaming: false,
       channelConfig,
+      toolingKey,
       compaction: compactionBundle,
       pendingSystemMessages: [],
     }

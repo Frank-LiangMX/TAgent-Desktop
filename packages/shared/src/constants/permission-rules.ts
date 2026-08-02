@@ -533,6 +533,46 @@ export function requiresAutoModeConfirmation(
 }
 
 /**
+ * Chat 协作模式下是否应硬拦该工具（服务端 enforce，不单靠 prompt）
+ *
+ * 放行：只读类（isAutoModeAutoAllowTool）
+ * 拦截：写文件、非只读 Bash、看板派工、自动化变更类 MCP 等
+ *
+ * @see docs/plans/multi-runtime/02-chat-work-and-permissions.md
+ */
+export function isChatModeBlockedTool(
+  toolName: string,
+  input: Record<string, unknown>,
+  cwd?: string,
+): boolean {
+  // 只读静默放行集：Chat 同样放行
+  if (isAutoModeAutoAllowTool(toolName, input, cwd)) return false
+
+  const lower = toolName.toLowerCase()
+  // 看板 / 协作编排派工（命名兼容 MCP 前缀）
+  if (
+    lower.includes('kanban') ||
+    lower.startsWith('mcp__kanban') ||
+    lower.includes('create_board') ||
+    lower.includes('add_task')
+  ) {
+    return true
+  }
+  // 写工具
+  if (WRITE_TOOLS.some((w) => w.toLowerCase() === lower)) return true
+  if (isWriteTool(toolName, input)) return true
+  // 自动化变更类
+  if (isAutomationMutationTool(toolName)) return true
+  // 其余非只读：Chat 一律拦（含 Task/Agent 写活；Phase A 保守）
+  // Task 探索在 Chat 也暂禁，避免子代理写盘旁路；后续可按 runtimeModes 放宽只读 SubAgent
+  return true
+}
+
+/** Chat 拦截时的用户/模型可见原因 */
+export const CHAT_MODE_BLOCK_REASON =
+  '当前为 Chat 模式：只读讨论，不能改本地文件、执行有副作用命令或派看板工人。请切换到 Work 后再试。'
+
+/**
  * TAgent 权限模式 → 传给 Claude Agent SDK 的 permissionMode
  *
  * 「自动审批」与「完全自动」的决策全部由 TAgent canUseTool 完成。

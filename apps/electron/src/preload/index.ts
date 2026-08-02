@@ -8,20 +8,34 @@
  * 流式统一走 STREAM_EVENT，payload 是 TAgentDesktopStreamEvent（{ sessionId, payload }）。
  */
 import { contextBridge, ipcRenderer } from 'electron'
-import { AGENT_IPC_CHANNELS, BALANCE_IPC_CHANNELS, CHANNEL_IPC_CHANNELS, MEMORY_IPC_CHANNELS, USER_PROFILE_IPC_CHANNELS } from '@tagent/shared'
+import {
+  AGENT_IPC_CHANNELS,
+  AGENT_ROLE_IPC_CHANNELS,
+  BALANCE_IPC_CHANNELS,
+  CHANNEL_IPC_CHANNELS,
+  KANBAN_IPC_CHANNELS,
+  MEMORY_IPC_CHANNELS,
+  USER_PROFILE_IPC_CHANNELS,
+} from '@tagent/shared'
 import type {
+  AgentRoleProfile,
   AgentWorkspace,
   Channel,
   ChannelBalanceResult,
   ChannelCreateInput,
   ChannelUpdateInput,
   ChannelTestResult,
+  DeleteRolesResult,
   FetchModelsInput,
   FetchModelsForChannelInput,
   FetchModelsResult,
+  ImportRoleFromMdResult,
   InstallStoreBundleResult,
+  InstallStoreRoleResult,
   McpServerEntry,
   PluginStoreCatalog,
+  RoleStoreCatalogResult,
+  SaveAgentRoleInput,
   UserProfile,
   WorkspaceMcpConfig,
   WorkspacePluginBundleRecord,
@@ -181,6 +195,124 @@ const electronAPI = {
   // 热切换指定会话的权限模式（持久化 meta + 通知运行时）
   setSessionPermissionMode: (sessionId: string, mode: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_PERMISSION_MODE, { sessionId, mode }) as Promise<{ ok: boolean; error?: string }>,
+
+  // ===== 角色库 =====
+  listAgentRoles: () =>
+    ipcRenderer.invoke(AGENT_ROLE_IPC_CHANNELS.LIST) as Promise<AgentRoleProfile[]>,
+  getAgentRole: (roleId: string) =>
+    ipcRenderer.invoke(AGENT_ROLE_IPC_CHANNELS.GET, roleId) as Promise<AgentRoleProfile | undefined>,
+  saveAgentRole: (input: SaveAgentRoleInput) =>
+    ipcRenderer.invoke(AGENT_ROLE_IPC_CHANNELS.SAVE, input) as Promise<AgentRoleProfile[]>,
+  deleteAgentRole: (roleId: string) =>
+    ipcRenderer.invoke(AGENT_ROLE_IPC_CHANNELS.DELETE, { roleId }) as Promise<{
+      roles: AgentRoleProfile[]
+      deleted: boolean
+      reason?: string
+    }>,
+  resetDefaultAgentRoles: () =>
+    ipcRenderer.invoke(AGENT_ROLE_IPC_CHANNELS.RESET_DEFAULT) as Promise<AgentRoleProfile[]>,
+  listRoleStoreCatalog: () =>
+    ipcRenderer.invoke(AGENT_ROLE_IPC_CHANNELS.STORE_LIST) as Promise<RoleStoreCatalogResult>,
+  installStoreRole: (roleId: string) =>
+    ipcRenderer.invoke(AGENT_ROLE_IPC_CHANNELS.STORE_INSTALL, roleId) as Promise<InstallStoreRoleResult>,
+  importAgentRoleFromMd: () =>
+    ipcRenderer.invoke(AGENT_ROLE_IPC_CHANNELS.IMPORT_MD) as Promise<ImportRoleFromMdResult>,
+  findSimilarAgentRoles: (displayName: string) =>
+    ipcRenderer.invoke(AGENT_ROLE_IPC_CHANNELS.FIND_SIMILAR, displayName) as Promise<AgentRoleProfile[]>,
+  deleteAgentRolesBatch: (roleIds: string[]) =>
+    ipcRenderer.invoke(AGENT_ROLE_IPC_CHANNELS.DELETE_BATCH, roleIds) as Promise<DeleteRolesResult>,
+  /**
+   * 热切换 executionMode（Chat|Work）。
+   * source 必须是 user | user-confirm-suggestion（ADR-0005）；Agent 不得调用。
+   */
+  setSessionExecutionMode: (
+    sessionId: string,
+    mode: 'chat' | 'work',
+    source: 'user' | 'user-confirm-suggestion' = 'user',
+  ) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_EXECUTION_MODE, {
+      sessionId,
+      mode,
+      source,
+    }) as Promise<{
+      ok: boolean
+      error?: string
+      mode?: 'chat' | 'work'
+      /** Work→Chat 时若班组仍有在途任务 */
+      backgroundCrew?: {
+        running: number
+        ready: number
+        pending: number
+        boardId?: string
+      }
+    }>,
+  /** 监听形态切换建议条（主进程 Chat 硬拦等推送） */
+  onExecutionModeSuggestion: (cb: (suggestion: unknown) => void) => {
+    const handler = (_e: unknown, suggestion: unknown): void => cb(suggestion)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.EXECUTION_MODE_SUGGESTION, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.EXECUTION_MODE_SUGGESTION, handler)
+  },
+  /** 关闭建议条（不切换 mode） */
+  dismissExecutionModeSuggestion: (sessionId: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.DISMISS_EXECUTION_MODE_SUGGESTION, {
+      sessionId,
+    }) as Promise<{ ok: boolean }>,
+
+  // ===== 通知偏好 =====
+  getNotificationPrefs: () =>
+    ipcRenderer.invoke('notification-prefs:get') as Promise<{
+      titlebarTicker: boolean
+      systemDesktop: boolean
+      panelToast: boolean
+    }>,
+  setNotificationPrefs: (prefs: {
+    titlebarTicker?: boolean
+    systemDesktop?: boolean
+    panelToast?: boolean
+  }) =>
+    ipcRenderer.invoke('notification-prefs:set', prefs) as Promise<{
+      titlebarTicker: boolean
+      systemDesktop: boolean
+      panelToast: boolean
+    }>,
+
+  // ===== 看板 / 派工（Phase D）=====
+  kanbanListBoards: (input?: { status?: string }) =>
+    ipcRenderer.invoke(KANBAN_IPC_CHANNELS.LIST_BOARDS, input),
+  kanbanGetBoard: (boardId: string) =>
+    ipcRenderer.invoke(KANBAN_IPC_CHANNELS.GET_BOARD, boardId),
+  kanbanGetTask: (taskId: string) =>
+    ipcRenderer.invoke(KANBAN_IPC_CHANNELS.GET_TASK, taskId),
+  kanbanListTasks: (boardId: string, status?: string) =>
+    ipcRenderer.invoke(KANBAN_IPC_CHANNELS.LIST_TASKS, { boardId, status }),
+  kanbanCreateBoard: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke(KANBAN_IPC_CHANNELS.CREATE_BOARD, input),
+  kanbanCreateTask: (input: Record<string, unknown>) =>
+    ipcRenderer.invoke(KANBAN_IPC_CHANNELS.CREATE_TASK, input),
+  kanbanPauseBoard: (boardId: string, sessionId?: string) =>
+    ipcRenderer.invoke(KANBAN_IPC_CHANNELS.PAUSE_BOARD, { boardId, sessionId }),
+  kanbanResumeBoard: (boardId: string, sessionId?: string) =>
+    ipcRenderer.invoke(KANBAN_IPC_CHANNELS.RESUME_BOARD, { boardId, sessionId }),
+  /** 解除阻塞（blocked → ready） */
+  kanbanUnblockTask: (taskId: string, reason?: string) =>
+    ipcRenderer.invoke(KANBAN_IPC_CHANNELS.UNBLOCK_TASK, { taskId, reason }),
+  /** 重试失败任务（failed → ready/pending） */
+  kanbanRetryTask: (taskId: string) =>
+    ipcRenderer.invoke(KANBAN_IPC_CHANNELS.RETRY_TASK, { taskId }),
+  /** 写 blackboard 评论 */
+  kanbanCommentTask: (taskId: string, comment: string, author = 'main') =>
+    ipcRenderer.invoke(KANBAN_IPC_CHANNELS.COMMENT_TASK, { taskId, comment, author }),
+  onKanbanChanged: (cb: (payload: unknown) => void) => {
+    const handler = (_e: unknown, payload: unknown): void => cb(payload)
+    ipcRenderer.on(KANBAN_IPC_CHANNELS.CHANGED, handler)
+    return () => ipcRenderer.removeListener(KANBAN_IPC_CHANNELS.CHANGED, handler)
+  },
+  onKanbanBoardCompleted: (cb: (payload: unknown) => void) => {
+    const handler = (_e: unknown, payload: unknown): void => cb(payload)
+    ipcRenderer.on(KANBAN_IPC_CHANNELS.BOARD_COMPLETED, handler)
+    return () => ipcRenderer.removeListener(KANBAN_IPC_CHANNELS.BOARD_COMPLETED, handler)
+  },
+
   /** 手动压缩会话上下文（Pi 核；需会话已在本机启动） */
   compactSession: (sessionId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.COMPACT_SESSION, { sessionId }) as Promise<{

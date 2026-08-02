@@ -49,6 +49,11 @@ export interface KsccQueryOptions extends AgentQueryInput {
   ) => Promise<{ behavior: 'allow' | 'deny' | 'ask'; message?: string }>
   /** 系统提示词 */
   systemPrompt: string | { type: 'preset'; preset: 'claude_code'; append?: string }
+  /**
+   * 执行形态（Chat|Work）。长驻进程在形态切换时须 re-spawn 才能换工具集。
+   * 由 SessionRuntime 做指纹比对。
+   */
+  executionMode?: 'chat' | 'work'
   /** resume 的 SDK session id */
   resumeSessionId?: string
   /** MCP 服务器配置 */

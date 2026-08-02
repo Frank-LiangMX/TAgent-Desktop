@@ -2,19 +2,18 @@
  * MessageView — 消息壳组件（重写，零 inline style）
  *
  * 吃 TAgentMessage（IR），按 user / assistant 分发到 @tagent/ui 原语。
- * user 消息：Message(user) + UserMessageContent（可折叠）
- * assistant 消息：Message(assistant) + MessageHeader + ContentBlockView
- * error：Badge(destructive)
- *
- * 双核统一：kscc 核经主进程转译成 IR，Pi 核未来也转 IR，渲染层一套。
+ * user：顶部用户铭牌+时间 · 气泡 · 底部复制
+ * assistant：模型铭牌+时间 · 内容 · 底部复制
  */
 
-import { useState, useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { useAtomValue } from 'jotai'
 import type {
   TAgentMessage,
   TAgentToolResultBlock,
   TAgentTextBlock,
 } from '@tagent/shared'
+import { DEFAULT_USER_NAME } from '@tagent/shared'
 
 import {
   Badge,
@@ -30,15 +29,25 @@ import { ChevronDown } from 'lucide-react'
 
 import { cn } from '../../lib/utils'
 import { formatMessageTime } from '../../lib/time-utils'
+import { userProfileAtom } from '../../atoms/user-profile'
 import { ContentBlockView } from './ContentBlockView'
 import { ToolResultView } from './ToolResultView'
 import { summarizeFirstText } from './subagent-ui-model'
+import { MessageCopyButton } from './MessageCopyButton'
+import { MessageRefillButton } from './MessageRefillButton'
 
 // ===== 主组件 =====
 
-export function MessageView({ message }: { message: TAgentMessage }): React.ReactElement {
+export function MessageView({
+  message,
+  onRefillToInput,
+}: {
+  message: TAgentMessage
+  /** 用户消息：填入输入框以便改写重发 */
+  onRefillToInput?: (text: string) => void
+}): React.ReactElement {
   if (message.type === 'user') {
-    return <UserView message={message} />
+    return <UserView message={message} onRefillToInput={onRefillToInput} />
   }
   return <AssistantView message={message} />
 }
@@ -47,21 +56,40 @@ export function MessageView({ message }: { message: TAgentMessage }): React.Reac
 
 function UserView({
   message,
+  onRefillToInput,
 }: {
   message: Extract<TAgentMessage, { type: 'user' }>
+  onRefillToInput?: (text: string) => void
 }): React.ReactElement {
-  // 分离 text 块和 tool_result 块
+  const profile = useAtomValue(userProfileAtom)
+  const userName = (profile.userName || DEFAULT_USER_NAME).trim() || DEFAULT_USER_NAME
+
   const textBlocks = message.content.filter(
-    (b): b is TAgentTextBlock => b.type === 'text'
+    (b): b is TAgentTextBlock => b.type === 'text',
   )
   const toolResultBlocks = message.content.filter(
-    (b): b is TAgentToolResultBlock => b.type === 'tool_result'
+    (b): b is TAgentToolResultBlock => b.type === 'tool_result',
   )
+  const plainText = textBlocks.map((b) => b.text).join('\n')
+  const showChrome = textBlocks.length > 0
 
   return (
     <Message from="user">
+      {/* 顶部：时间 + 用户铭牌（右对齐） */}
+      {showChrome ? (
+        <div className="agent-user-title-row">
+          {message.createdAt ? (
+            <span className="agent-user-title-row__time">
+              {formatMessageTime(message.createdAt)}
+            </span>
+          ) : null}
+          <div className="agent-user-title" title={userName}>
+            {userName}
+          </div>
+        </div>
+      ) : null}
+
       <MessageContent>
-        {/* 附件展示 */}
         {message.attachments?.length ? (
           <MessageAttachments
             attachments={message.attachments}
@@ -71,21 +99,21 @@ function UserView({
             }}
           />
         ) : null}
-        {/* text 块拼接传给 UserMessageContent（超4行自动折叠） */}
         {textBlocks.length > 0 && (
-          <UserMessageContent>
-            {textBlocks.map((b) => b.text).join('\n')}
-          </UserMessageContent>
+          <UserMessageContent>{plainText}</UserMessageContent>
         )}
-        {/* tool_result 块独立渲染 */}
         {toolResultBlocks.map((b) => (
           <ToolResultView key={b.toolUseId} block={b} />
         ))}
       </MessageContent>
-      {/* 时间条：气泡外下方，仅 text 消息 + 有 createdAt 时显示 */}
-      {textBlocks.length > 0 && message.createdAt ? (
+
+      {/* 底部：填入输入框 + 复制（仅图标，hover tooltip） */}
+      {showChrome && plainText.trim() ? (
         <div className="agent-user-toolbar">
-          <span className="agent-user-toolbar__time">{formatMessageTime(message.createdAt)}</span>
+          {onRefillToInput ? (
+            <MessageRefillButton text={plainText} onRefill={onRefillToInput} />
+          ) : null}
+          <MessageCopyButton text={plainText} />
         </div>
       ) : null}
     </Message>
@@ -100,11 +128,19 @@ function AssistantView({
   message: Extract<TAgentMessage, { type: 'assistant' }>
 }): React.ReactElement {
   const isSubagent = !!message.parentToolUseId
-  // 子代理输出默认折叠：折叠头 = 「子代理 · 点击展开」+ 一行摘要（首段 text 截断）
   const [open, setOpen] = useState(false)
   const summary = useMemo(
     () => (isSubagent ? summarizeFirstText(message) : ''),
     [message, isSubagent],
+  )
+
+  const plainText = useMemo(
+    () =>
+      message.content
+        .filter((b): b is TAgentTextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('\n'),
+    [message.content],
   )
 
   if (isSubagent) {
@@ -123,7 +159,9 @@ function AssistantView({
               · {open ? '点击折叠' : '点击展开'}
             </span>
             {!open && summary && (
-              <span className="min-w-0 flex-1 truncate text-muted-foreground/70">· {summary}</span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground/70">
+                · {summary}
+              </span>
             )}
             <ChevronDown
               className={cn(
@@ -133,64 +171,89 @@ function AssistantView({
             />
           </CollapsibleTrigger>
 
-          {/* 展开后保留左边框样式（对齐旧版子代理输出区） */}
           <CollapsibleContent>
-            {message.modelId && (
-              <div className="agent-turn-title mb-2.5 mt-2">
-                {message.modelId}
+            {(message.modelId || message.createdAt) && (
+              <div className="agent-turn-title-row mb-2.5 mt-2">
+                {message.modelId ? (
+                  <div className="agent-turn-title">{message.modelId}</div>
+                ) : null}
                 {message.createdAt ? (
-                  <>
-                    {' · '}
-                    <span className="agent-turn-title__time">{formatMessageTime(message.createdAt)}</span>
-                  </>
+                  <span className="agent-turn-title-row__time">
+                    {formatMessageTime(message.createdAt)}
+                  </span>
                 ) : null}
               </div>
             )}
             <MessageContent className="border-l-2 border-primary/20 pl-3">
-              {/* 错误状态 */}
               {message.error && (
                 <Badge variant="destructive" className="mb-2 text-xs">
                   {message.error.message}
                 </Badge>
               )}
-              {/* content blocks 渲染 */}
               {message.content.map((block, i) => (
                 <ContentBlockView key={i} block={block} />
               ))}
             </MessageContent>
+            {plainText.trim() ? (
+              <div className="agent-answer-toolbar">
+                <MessageCopyButton text={plainText} />
+              </div>
+            ) : null}
           </CollapsibleContent>
         </Collapsible>
       </Message>
     )
   }
 
-  // 主 Agent 输出：不折叠，原样渲染
+  // 班组完成通知：系统条，不进用户气泡、也不当普通助手轮
+  const isCrewNotice =
+    message.modelId === '班组通知' || plainText.trimStart().startsWith('【班组完成】')
+
+  if (isCrewNotice) {
+    return (
+      <div className="agent-crew-notice" role="status">
+        <div className="agent-crew-notice__head">
+          <span className="agent-crew-notice__badge">班组</span>
+          {message.createdAt ? (
+            <span className="agent-crew-notice__time">
+              {formatMessageTime(message.createdAt)}
+            </span>
+          ) : null}
+        </div>
+        <div className="agent-crew-notice__body whitespace-pre-wrap break-words">{plainText}</div>
+      </div>
+    )
+  }
+
   return (
     <Message from="assistant">
-      {/* 模型名胶囊（9px 玻璃胶囊，对齐 TAgent_General，无头像）+ 时间 */}
-      {message.modelId && (
-        <div className="agent-turn-title mb-2.5">
-          {message.modelId}
+      {(message.modelId || message.createdAt) && (
+        <div className="agent-turn-title-row mb-2.5">
+          {message.modelId ? (
+            <div className="agent-turn-title">{message.modelId}</div>
+          ) : null}
           {message.createdAt ? (
-            <>
-              {' · '}
-              <span className="agent-turn-title__time">{formatMessageTime(message.createdAt)}</span>
-            </>
+            <span className="agent-turn-title-row__time">
+              {formatMessageTime(message.createdAt)}
+            </span>
           ) : null}
         </div>
       )}
       <MessageContent>
-        {/* 错误状态 */}
         {message.error && (
           <Badge variant="destructive" className="mb-2 text-xs">
             {message.error.message}
           </Badge>
         )}
-        {/* content blocks 渲染 */}
         {message.content.map((block, i) => (
           <ContentBlockView key={i} block={block} />
         ))}
       </MessageContent>
+      {plainText.trim() ? (
+        <div className="agent-answer-toolbar">
+          <MessageCopyButton text={plainText} />
+        </div>
+      ) : null}
     </Message>
   )
 }

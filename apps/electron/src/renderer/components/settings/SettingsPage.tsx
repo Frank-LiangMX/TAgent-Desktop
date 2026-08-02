@@ -38,6 +38,10 @@ import {
   userProfileAtom,
   saveUserProfileAtom,
 } from '../../atoms/user-profile'
+import {
+  notificationPrefsAtom,
+  setNotificationPrefsAtom,
+} from '../../atoms/notification-prefs'
 import { ChannelsSettings } from './ChannelsSettings'
 import appiconLight from '../../assets/tagent-appicon-light.png'
 import appiconDark from '../../assets/tagent-appicon-dark.png'
@@ -512,9 +516,12 @@ function GeneralSettings(): JSX.Element {
     }
   }, [nameInput, userProfile.userName, saveUserProfile])
 
+  const notifPrefs = useAtomValue(notificationPrefsAtom)
+  const setNotifPrefs = useSetAtom(setNotificationPrefsAtom)
+
   return (
     <div className="settings-page">
-      <SettingsPageIntro title="通用" description="称呼与偏好" />
+      <SettingsPageIntro title="通用" description="称呼与通知偏好" />
 
       <SettingsSection title="档案">
         <SettingsCard>
@@ -535,7 +542,178 @@ function GeneralSettings(): JSX.Element {
           />
         </SettingsCard>
       </SettingsSection>
+
+      <SettingsSection title="通知">
+        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+          三类通道可独立开关。进度类推荐用顶栏；需要操作时用面板悬浮；离开窗口时用系统通知。
+        </p>
+        <div className="notif-pref-grid">
+          <NotificationPrefCard
+            title="顶栏滚动"
+            description="窗口标题栏中央滚动提示，不挡主内容"
+            checked={notifPrefs.titlebarTicker}
+            onCheckedChange={(v) => setNotifPrefs({ titlebarTicker: v })}
+            diagram="titlebar"
+          />
+          <NotificationPrefCard
+            title="系统通知"
+            description="操作系统气泡；最小化或切走窗口仍能看到"
+            checked={notifPrefs.systemDesktop}
+            onCheckedChange={(v) => setNotifPrefs({ systemDesktop: v })}
+            diagram="system"
+          />
+          <NotificationPrefCard
+            title="面板悬浮"
+            description="窗口内 Toast，适合「记住 / 不记」等要点一下的提示"
+            checked={notifPrefs.panelToast}
+            onCheckedChange={(v) => setNotifPrefs({ panelToast: v })}
+            diagram="toast"
+          />
+        </div>
+      </SettingsSection>
     </div>
+  )
+}
+
+/** 通知偏好卡片：开关 + 几何图示 + HTML 图注（避免 SVG 中文贴边） */
+function NotificationPrefCard({
+  title,
+  description,
+  checked,
+  onCheckedChange,
+  diagram,
+}: {
+  title: string
+  description: string
+  checked: boolean
+  onCheckedChange: (v: boolean) => void
+  diagram: 'titlebar' | 'system' | 'toast'
+}): JSX.Element {
+  /* 短图注：三列窄卡里长句会贴边换行 */
+  const caption =
+    diagram === 'titlebar'
+      ? checked
+        ? '顶栏中央滚动提示'
+        : '顶栏不显示状态'
+      : diagram === 'system'
+        ? checked
+          ? '系统角弹出气泡'
+          : '不弹系统气泡'
+        : checked
+          ? '窗口内居中 Toast'
+          : '不显示面板 Toast'
+
+  return (
+    <SettingsCard
+      className={cn('notif-pref-card', !checked && 'notif-pref-card--off')}
+      divided={false}
+    >
+      <div className="notif-pref-card__inner">
+        <div className="notif-pref-card__head">
+          <div className="min-w-0 flex-1">
+            <div className="settings-field-label">{title}</div>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{description}</p>
+          </div>
+          <Switch
+            size="sm"
+            checked={checked}
+            onCheckedChange={onCheckedChange}
+            aria-label={title}
+          />
+        </div>
+        <div className="notif-pref-diagram" aria-hidden>
+          {diagram === 'titlebar' ? <NotifDiagramTitlebar active={checked} /> : null}
+          {diagram === 'system' ? <NotifDiagramSystem active={checked} /> : null}
+          {diagram === 'toast' ? <NotifDiagramToast active={checked} /> : null}
+          <p className={cn('notif-pref-caption', checked && 'notif-pref-caption--on')}>
+            {caption}
+          </p>
+        </div>
+      </div>
+    </SettingsCard>
+  )
+}
+
+/** 纯几何示意：高亮顶栏胶囊，不写 SVG 中文；viewBox 内四周留白 */
+function NotifDiagramTitlebar({ active }: { active: boolean }): JSX.Element {
+  return (
+    <svg viewBox="0 0 240 110" className="notif-pref-svg" preserveAspectRatio="xMidYMid meet">
+      {/* 窗口：相对 viewBox 四周约 20px 留白 */}
+      <rect x="20" y="16" width="200" height="78" rx="10" className="npd-window" />
+      <path
+        d="M20 26c0-5.5 4.5-10 10-10h180c5.5 0 10 4.5 10 10v10H20V26z"
+        className="npd-chrome"
+      />
+      <rect x="32" y="20" width="14" height="6" rx="2" className="npd-muted" />
+      <rect x="188" y="20" width="8" height="6" rx="1.5" className="npd-muted" />
+      <rect x="200" y="20" width="8" height="6" rx="1.5" className="npd-muted" />
+      {/* 顶栏通知胶囊 */}
+      <rect
+        x="58"
+        y="18"
+        width="124"
+        height="10"
+        rx="5"
+        className={active ? 'npd-accent' : 'npd-muted'}
+      />
+      {active ? (
+        <>
+          <rect x="66" y="21" width="46" height="4" rx="2" className="npd-accent-bar" />
+          <rect x="118" y="21" width="26" height="4" rx="2" className="npd-accent-bar" />
+        </>
+      ) : null}
+      <rect x="32" y="46" width="80" height="36" rx="6" className="npd-panel" />
+      <rect x="128" y="46" width="80" height="36" rx="6" className="npd-panel" />
+    </svg>
+  )
+}
+
+function NotifDiagramSystem({ active }: { active: boolean }): JSX.Element {
+  return (
+    <svg viewBox="0 0 240 110" className="notif-pref-svg" preserveAspectRatio="xMidYMid meet">
+      <rect x="20" y="16" width="200" height="78" rx="10" className="npd-window" />
+      <rect x="32" y="40" width="108" height="40" rx="6" className="npd-panel" />
+      {/* 系统气泡：窗口右内侧，不贴窗框 */}
+      <rect
+        x="148"
+        y="28"
+        width="60"
+        height="38"
+        rx="8"
+        className={active ? 'npd-accent-fill' : 'npd-muted'}
+      />
+      {active ? (
+        <>
+          <rect x="158" y="38" width="34" height="5" rx="2.5" className="npd-accent-bar" />
+          <rect x="158" y="48" width="22" height="4" rx="2" className="npd-accent-bar" />
+        </>
+      ) : null}
+    </svg>
+  )
+}
+
+function NotifDiagramToast({ active }: { active: boolean }): JSX.Element {
+  return (
+    <svg viewBox="0 0 240 110" className="notif-pref-svg" preserveAspectRatio="xMidYMid meet">
+      <rect x="20" y="16" width="200" height="78" rx="10" className="npd-window" />
+      <rect x="32" y="54" width="176" height="28" rx="6" className="npd-panel" />
+      {/* 居中 Toast */}
+      <rect
+        x="58"
+        y="28"
+        width="124"
+        height="32"
+        rx="8"
+        className={active ? 'npd-accent-fill' : 'npd-muted'}
+      />
+      {active ? (
+        <>
+          <rect x="72" y="38" width="50" height="5" rx="2.5" className="npd-accent-bar" />
+          <rect x="130" y="36" width="20" height="10" rx="3" className="npd-btn" />
+          <rect x="154" y="36" width="16" height="10" rx="3" className="npd-btn-ghost" />
+        </>
+      ) : null}
+    </svg>
   )
 }
 

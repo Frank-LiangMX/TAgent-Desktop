@@ -10,13 +10,18 @@
 import { ipcMain, type BrowserWindow } from 'electron'
 import {
   AGENT_IPC_CHANNELS,
+  CHAT_MODE_BLOCK_REASON,
+  buildWorkSwitchSuggestion,
   extractBashCommand,
   hasWriteStructure,
   isAutoModeAutoAllowTool,
+  isChatModeBlockedTool,
   isDangerousCommand,
   isWriteTool,
+  migrateExecutionMode,
 } from '@tagent/shared'
-import type { TAgentPermissionMode } from '@tagent/shared'
+import type { ExecutionMode, TAgentPermissionMode } from '@tagent/shared'
+import { getSessionMeta, updateSessionMeta } from '../agent/session-store'
 import {
   addToSessionWhitelist,
   clearSessionWhitelist,
@@ -87,6 +92,39 @@ function askRenderer(
   })
 }
 
+/**
+ * Chat 拦截写操作时 → 持久化建议 + 推渲染进程确认条
+ * 节流：同一会话 8s 内不重复刷条
+ */
+const lastWorkSuggestAt = new Map<string, number>()
+const WORK_SUGGEST_THROTTLE_MS = 8_000
+
+function emitWorkSwitchSuggestion(
+  win: BrowserWindow | null,
+  sessionId: string,
+  toolName: string,
+): void {
+  const now = Date.now()
+  const prevAt = lastWorkSuggestAt.get(sessionId) ?? 0
+  if (now - prevAt < WORK_SUGGEST_THROTTLE_MS) return
+  lastWorkSuggestAt.set(sessionId, now)
+
+  const suggestion = buildWorkSwitchSuggestion({
+    sessionId,
+    fromMode: 'chat',
+    trigger: 'chat-block',
+    toolName,
+  })
+  try {
+    if (getSessionMeta(sessionId)) {
+      updateSessionMeta(sessionId, { pendingExecutionModeSuggestion: suggestion })
+    }
+  } catch (err) {
+    console.warn('[权限] 写入 pendingExecutionModeSuggestion 失败:', err)
+  }
+  win?.webContents.send(AGENT_IPC_CHANNELS.EXECUTION_MODE_SUGGESTION, suggestion)
+}
+
 /** 判定单次工具权限（共享逻辑，两核用） */
 async function checkPermission(args: {
   win: () => BrowserWindow | null
@@ -95,10 +133,20 @@ async function checkPermission(args: {
   input: Record<string, unknown>
   cwd?: string
   permissionMode: TAgentPermissionMode
+  /** 协作形态；缺省按 legacy work 兼容旧会话 */
+  executionMode?: ExecutionMode
 }): Promise<{ allow: boolean; reason?: string }> {
   const { win, sessionId, toolName, input, cwd, permissionMode } = args
+  const executionMode = migrateExecutionMode(args.executionMode)
 
-  // bypass：全放行
+  // Chat：硬只读（在 bypass/白名单之前，防止「完全自动」穿透 Chat）
+  if (executionMode === 'chat' && isChatModeBlockedTool(toolName, input, cwd)) {
+    // 推建议条：须用户确认才切 Work（ADR-0005）
+    emitWorkSwitchSuggestion(win(), sessionId, toolName)
+    return { allow: false, reason: CHAT_MODE_BLOCK_REASON }
+  }
+
+  // bypass：Work 下全放行
   if (permissionMode === 'bypassPermissions') return { allow: true }
 
   // 会话白名单：「始终允许」后放行（危险/写结构 Bash 除外）
@@ -165,7 +213,12 @@ export class PermissionService {
    * kscc 核 canUseTool（Claude Agent SDK 签名）
    * 返回 { behavior: 'allow'|'deny', message? }
    */
-  createCanUseTool(sessionId: string, getMode: () => TAgentPermissionMode, cwd?: string) {
+  createCanUseTool(
+    sessionId: string,
+    getMode: () => TAgentPermissionMode,
+    cwd?: string,
+    getExecutionMode?: () => ExecutionMode,
+  ) {
     return async (
       toolName: string,
       input: Record<string, unknown>,
@@ -177,6 +230,7 @@ export class PermissionService {
         input,
         cwd,
         permissionMode: getMode(),
+        executionMode: getExecutionMode?.() ?? migrateExecutionMode(undefined),
       })
       return allow ? { behavior: 'allow' } : { behavior: 'deny', message: reason }
     }
@@ -187,7 +241,12 @@ export class PermissionService {
    * 返回 { block: true, reason } 阻止；undefined 则放行。
    * 入参优先用 validated `args`（schema 校验后），回退 toolCall.arguments。
    */
-  createBeforeToolCall(sessionId: string, getMode: () => TAgentPermissionMode, cwd?: string) {
+  createBeforeToolCall(
+    sessionId: string,
+    getMode: () => TAgentPermissionMode,
+    cwd?: string,
+    getExecutionMode?: () => ExecutionMode,
+  ) {
     return async (ctx: {
       toolCall: { name: string; arguments?: Record<string, unknown> }
       args?: unknown
@@ -200,6 +259,7 @@ export class PermissionService {
         input,
         cwd,
         permissionMode: getMode(),
+        executionMode: getExecutionMode?.() ?? migrateExecutionMode(undefined),
       })
       return allow ? undefined : { block: true, reason: reason ?? '权限拒绝' }
     }

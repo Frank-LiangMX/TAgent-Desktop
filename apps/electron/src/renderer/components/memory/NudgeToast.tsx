@@ -37,14 +37,16 @@ export function showNudgeToast(
     })
   }
 
-  // 其他类型显示选项
+  // 交互型：仍用 toast，但更扁、更短，减少挡内容
   return toast(nudge.userMessage, {
-    duration: 5000,
+    duration: 4500,
+    position: 'top-center',
+    className: 'status-nudge-toast',
     action: {
       label: '记住',
       onClick: async () => {
         await window.electronAPI.respondNudge(sessionId, nudge.id, 'accept', mode)
-        toast.success('已记录', { duration: 2000 })
+        toast.success('已记录', { duration: 1500, position: 'top-center' })
       },
     },
     cancel: {

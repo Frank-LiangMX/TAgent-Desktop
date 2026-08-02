@@ -2,7 +2,7 @@
  * Rail — 左导航轨图标内容（仅内容，外壳由 NavIsland 包 app-nav-rail）
  * 与 General FunctionalRail 一致：children 进 app-nav-rail-content。
  */
-import { Brain, ChatsCircle, PuzzlePiece } from '@phosphor-icons/react'
+import { Brain, ChatsCircle, PuzzlePiece, UsersThree } from '@phosphor-icons/react'
 import { useAtomValue } from 'jotai'
 import { AppTooltip } from '@tagent/ui'
 import { userProfileAtom } from '../../atoms/user-profile'
@@ -10,13 +10,14 @@ import { cn } from '../../lib/utils'
 
 const RAIL_ICON = { size: 18, weight: 'regular' as const }
 
-export type RailItem = 'chat' | 'plugins' | 'memory' | 'settings'
+export type RailItem = 'chat' | 'plugins' | 'memory' | 'roles' | 'settings'
 
 interface RailProps {
   active?: RailItem
   onChat?: () => void
   onPlugins?: () => void
   onMemory?: () => void
+  onRoles?: () => void
   onSettings?: () => void
 }
 
@@ -25,6 +26,7 @@ export function Rail({
   onChat,
   onPlugins,
   onMemory,
+  onRoles,
   onSettings,
 }: RailProps): JSX.Element {
   const userName = useAtomValue(userProfileAtom).userName
@@ -33,7 +35,7 @@ export function Rail({
 
   return (
     <>
-      {/* 上胶囊：会话 + 插件 + 记忆 */}
+      {/* 上胶囊：会话 + 插件 + 记忆 + 角色库 */}
       <div className="app-rail-island">
         <RailIcon
           railId="chat"
@@ -55,6 +57,13 @@ export function Rail({
           label="记忆"
           active={active === 'memory'}
           onClick={onMemory}
+        />
+        <RailIcon
+          railId="roles"
+          icon={<UsersThree {...RAIL_ICON} />}
+          label="角色库"
+          active={active === 'roles'}
+          onClick={onRoles}
         />
       </div>
       {/* 下胶囊：设置（用户名首字头像，对齐 TAgent_General rail-avatar-btn） */}

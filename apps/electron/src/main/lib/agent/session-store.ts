@@ -25,6 +25,7 @@ import {
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { AgentSessionMeta } from '@tagent/shared'
+import { DEFAULT_EXECUTION_MODE } from '@tagent/shared'
 import {
   getAgentSessionsIndexPath,
   getAgentSessionMessagesPath,
@@ -68,9 +69,23 @@ function writeIndex(index: AgentSessionsIndex): void {
   writeFileSync(getAgentSessionsIndexPath(), JSON.stringify(index, null, 2), 'utf8')
 }
 
-/** 读会话索引（全部，对外暴露纯数组） */
-export function listSessions(): AgentSessionMeta[] {
-  return readIndex().sessions
+/** 看板工人 / 隐藏会话：不进侧栏 */
+export function isHiddenSessionMeta(s: Pick<AgentSessionMeta, 'id' | 'hidden' | 'sourceKanbanTaskId' | 'parentBoardId'>): boolean {
+  if (s.hidden === true) return true
+  if (s.sourceKanbanTaskId) return true
+  if (s.parentBoardId) return true
+  if (typeof s.id === 'string' && s.id.startsWith('kw_')) return true
+  return false
+}
+
+/**
+ * 读会话索引。
+ * 默认排除看板工人等 hidden 会话，避免污染侧栏。
+ */
+export function listSessions(opts?: { includeHidden?: boolean }): AgentSessionMeta[] {
+  const all = readIndex().sessions
+  if (opts?.includeHidden) return all
+  return all.filter((s) => !isHiddenSessionMeta(s))
 }
 
 /** 获取单会话元数据 */
@@ -95,6 +110,8 @@ export function createSession(input: {
     id: input.id ?? randomUUID(),
     title: input.title ?? '新会话',
     mode: input.mode ?? 'general',
+    /** 新建会话默认 Chat（只读讨论）；旧会话无字段读时 migrate → work */
+    executionMode: DEFAULT_EXECUTION_MODE,
     channelId: input.channelId,
     modelId: input.modelId,
     workspaceId: input.workspaceId,

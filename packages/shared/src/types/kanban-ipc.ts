@@ -16,6 +16,8 @@ import type {
 export const KANBAN_IPC_CHANNELS = {
   /** 列出某看板下全部任务 */
   LIST_TASKS: 'kanban:list-tasks',
+  /** 获取单条任务 */
+  GET_TASK: 'kanban:get-task',
   /** 获取看板信息 */
   GET_BOARD: 'kanban:get-board',
   /** 列出所有看板（B4：全局看板视图，支持 mode 过滤） */

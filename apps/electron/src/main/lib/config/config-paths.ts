@@ -76,6 +76,16 @@ export function getChannelsPath(): string {
   return join(getConfigDir(), 'channels.json')
 }
 
+/** 角色库：~/.tagent[-dev]/agent-roles.json */
+export function getAgentRolesPath(): string {
+  return join(getConfigDir(), 'agent-roles.json')
+}
+
+/** 角色商店 catalog 本地缓存：~/.tagent[-dev]/role-store-catalog-cache.json */
+export function getRoleStoreCatalogPath(): string {
+  return join(getConfigDir(), 'role-store-catalog-cache.json')
+}
+
 /** 项目数据根目录：~/.tagent[-dev]/projects/ */
 export function getProjectsDir(): string {
   const dir = join(getConfigDir(), 'projects')

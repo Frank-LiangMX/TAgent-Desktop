@@ -79,6 +79,17 @@ export function isRealUserInput(message: TAgentUserMessage): boolean {
   )
 }
 
+/** 看板完成回流等系统通知（不当普通助手轮） */
+export function isCrewNoticeMessage(message: TAgentAssistantMessage): boolean {
+  if (message.modelId === '班组通知') return true
+  for (const b of message.content) {
+    if (b.type === 'text' && typeof (b as TAgentTextBlock).text === 'string') {
+      if ((b as TAgentTextBlock).text.trimStart().startsWith('【班组完成】')) return true
+    }
+  }
+  return false
+}
+
 /** 用户消息是否仅为 tool_result（合成回传，不应当作用户气泡） */
 export function isToolResultOnlyUser(message: TAgentUserMessage): boolean {
   const hasToolResult = message.content.some((b) => b.type === 'tool_result')
@@ -130,6 +141,13 @@ export function groupItemsIntoTurns(items: TurnSourceItem[]): SessionRenderTurn[
         flush()
         turns.push({ kind: 'standalone', key: item.key, item })
       }
+      continue
+    }
+
+    // 班组完成通知：独立系统条，禁止并入 assistant-turn（否则会进回答区）
+    if (msg?.type === 'assistant' && isCrewNoticeMessage(msg)) {
+      flush()
+      turns.push({ kind: 'standalone', key: item.key, item })
       continue
     }
 
@@ -297,23 +315,49 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
     }
   }
 
-  // 回答区用 useSmoothStream 逐字挤出（AssistantTurnView 喂 content=answerFull ?? streamingText，
-  // 单条时间线单调追加）。pi-ai done.message === delta 拼接 / kscc includePartialMessages 同源前缀，
-  // 故落盘 answerFull 必以 streamingText 为前缀 → useSmoothStream isAppend 成立，从已显示进度逐字
-  // 追到完整正文，不 purge 重建、不跳变。
-  // 落盘后保留 streamingText：让 needsTypewriter 仍为 true，useSmoothStream 继续逐字追完（流式
-  // 已停 → streamDone → /4 加速排空，但不一次性 dump）。
+  // 回答区用 useSmoothStream 逐字挤出。AssistantTurnView 用 resolveAnswerContent 合并
+  // answerFull / streamingText（取更长前缀），避免「落盘短于流式」时 content 回缩导致重复字。
+  // 落盘后若 stream 与 answer 同源，可清 stream，减少双源抖动。
   const streamText = streamingText?.trim() ?? ''
   const finalAnswers = answerJoined ? [answerJoined] : []
+
+  // 过程区 text 若与回答同源（前缀/相同），去掉，避免过程+回答双显「重复字」
+  const answerOverlay = (() => {
+    if (streamText && answerJoined) {
+      if (streamText.startsWith(answerJoined) || answerJoined.startsWith(streamText)) {
+        return streamText.length >= answerJoined.length ? streamText : answerJoined
+      }
+      return streamText
+    }
+    return streamText || answerJoined
+  })()
+  if (answerOverlay) {
+    for (let i = process.length - 1; i >= 0; i--) {
+      const p = process[i]
+      if (p?.type !== 'text') continue
+      const t = p.text.trim()
+      if (!t) continue
+      if (
+        t === answerOverlay ||
+        answerOverlay.startsWith(t) ||
+        answerOverlay.includes(t)
+      ) {
+        process.splice(i, 1)
+      }
+    }
+  }
+
+  // stream 已被完整 answer 覆盖时不再回传 stream（防 content 在两者间抖动）
+  const keepStream =
+    streamText.length > 0 &&
+    !(answerJoined && (answerJoined === streamText || answerJoined.startsWith(streamText)))
 
   return {
     modelId,
     process,
     answerTexts: finalAnswers,
     isStreaming: isStreaming && !answerJoined,
-    // 落盘后仍保留 streamingText：AssistantTurnView 的 needsTypewriter = isStreaming || streamingText，
-    // 保留它使打字机在落盘后继续追完；content 由 answerFull 优先（answerTexts[0]）。
-    streamingText: streamText.length > 0 ? streamText : undefined,
+    streamingText: keepStream ? streamText : undefined,
     // 思考已进 process，回答区不再单独带 streamingThinking
     streamingThinking: undefined,
   }

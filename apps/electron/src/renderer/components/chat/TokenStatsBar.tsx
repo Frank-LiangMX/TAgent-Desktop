@@ -26,6 +26,8 @@ interface TokenStatsBarProps {
   channelId?: string
   isCompacting?: boolean
   onCompact?: () => void
+  /** 窄宽：仅圆环 + 关键数字，隐藏中文标签与缓存细项 */
+  compact?: boolean
   className?: string
 }
 
@@ -55,6 +57,7 @@ export function TokenStatsBar({
   channelId,
   isCompacting,
   onCompact,
+  compact = false,
   className,
 }: TokenStatsBarProps): JSX.Element {
   const hasContext = (usage?.inputTokens ?? 0) > 0 || (usage?.cacheReadTokens ?? 0) > 0
@@ -67,14 +70,14 @@ export function TokenStatsBar({
       className={cn(
         'token-stats-bar',
         empty && 'token-stats-bar--empty',
+        compact && 'token-stats-bar--compact',
         className,
       )}
       aria-label="Token 与上下文占用"
     >
-      {/* 左侧：渠道余额（支持且可展示时左对齐排首位） */}
-      <ChannelBalanceBadge channelId={channelId} className="mr-auto" />
+      {/* 窄宽隐藏余额徽章（最占横向） */}
+      {!compact ? <ChannelBalanceBadge channelId={channelId} className="mr-auto" /> : null}
 
-      {/* 左侧：占用圆环（有 usage 才出；无数据时仍占位保持栏高） */}
       {hasContext && usage ? (
         <>
           <ContextUsageBadge
@@ -82,12 +85,14 @@ export function TokenStatsBar({
             isCompacting={isCompacting}
             onCompact={onCompact}
           />
-          {hasTotals && <div className="h-2.5 w-px shrink-0 bg-border/40" />}
+          {hasTotals && <div className="token-stats-bar__sep h-2.5 w-px shrink-0 bg-border/40" />}
         </>
       ) : (
-        <span className="text-[10px] text-muted-foreground/40">
-          {empty ? '发送消息后显示占用' : null}
-        </span>
+        !compact && (
+          <span className="text-[10px] text-muted-foreground/40">
+            {empty ? '发送消息后显示占用' : null}
+          </span>
+        )
       )}
 
       {hasTotals && (
@@ -96,26 +101,31 @@ export function TokenStatsBar({
             icon={<TrendingDown size={10} />}
             label="输入"
             value={formatTokens(totals.totalInput)}
+            compact={compact}
           />
           <StatItem
             icon={<TrendingUp size={10} />}
             label="输出"
             value={formatTokens(totals.totalOutput)}
+            compact={compact}
           />
-          {(totals.totalCacheRead > 0 || totals.totalCacheWrite > 0) && (
+          {!compact && (totals.totalCacheRead > 0 || totals.totalCacheWrite > 0) && (
             <>
               <div className="h-2.5 w-px shrink-0 bg-border/40" />
               <StatItem
                 icon={<Database size={10} />}
-                label="缓存读"
+                label="缓存"
                 value={formatHitRate(cacheHitRate)}
               />
             </>
           )}
           {totals.turnCount > 0 && (
             <>
-              <div className="h-2.5 w-px shrink-0 bg-border/40" />
-              <span className="tabular-nums text-muted-foreground/70">{totals.turnCount} 轮</span>
+              <div className="token-stats-bar__sep h-2.5 w-px shrink-0 bg-border/40" />
+              <span className="tabular-nums text-muted-foreground/70 whitespace-nowrap">
+                {totals.turnCount}
+                {compact ? '' : ' 轮'}
+              </span>
             </>
           )}
         </>
@@ -128,15 +138,20 @@ function StatItem({
   icon,
   label,
   value,
+  compact,
 }: {
   icon: React.ReactNode
   label: string
   value: string
+  compact?: boolean
 }): JSX.Element {
   return (
-    <div className="flex items-center gap-1 whitespace-nowrap">
+    <div
+      className="token-stats-item flex items-center gap-1 whitespace-nowrap"
+      title={compact ? `${label} ${value}` : undefined}
+    >
       <span className="opacity-70">{icon}</span>
-      <span className="text-muted-foreground/70">{label}</span>
+      {!compact ? <span className="token-stats-item__label text-muted-foreground/70">{label}</span> : null}
       <span className="font-medium tabular-nums text-muted-foreground">{value}</span>
     </div>
   )

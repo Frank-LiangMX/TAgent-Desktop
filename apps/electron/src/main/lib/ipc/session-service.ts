@@ -53,14 +53,26 @@ import { resolveWorkspaceForSession } from '../workspace/workspace-manager'
 import { getEnabledMcpServers } from '../mcp/mcp-store'
 import { PermissionService } from '../permission/permission-service'
 import { buildBuiltinSubagentDefinitions, buildSubagentDelegationPrompt } from '../agent/subagent-definitions'
-import type { TAgentPermissionMode } from '@tagent/shared'
+import { buildExecutionModePrompt } from '../agent/execution-mode-prompt'
+import {
+  buildPiKanbanTools,
+  injectKanbanMcpServer,
+} from '../kanban/kanban-agent-tools'
+import { listBoards, listTasksByBoard } from '../kanban/kanban-store'
+import type { ExecutionMode, TAgentPermissionMode } from '@tagent/shared'
 import {
   TAGENT_DEFAULT_PERMISSION_MODE,
   migratePermissionMode,
   DEFAULT_SUBAGENT_EAGERNESS,
   migrateSubagentEagerness,
   resolveSdkPermissionModeForTAgent,
+  migrateExecutionMode,
+  isExecutionModeChangeSource,
+  type ExecutionModeChangeSource,
+  parseMentions,
 } from '@tagent/shared'
+import { loadRoles, resolveRole } from '../role/agent-role-service'
+import { composeRoleSystemPrompt } from '../role/role-projection'
 
 interface SendMessageInput {
   sessionId: string
@@ -73,6 +85,11 @@ interface SendMessageInput {
   workspaceId?: string
   /** 附件（已持久化到磁盘的 FileAttachment） */
   attachments?: Array<{ id: string; filename: string; mediaType: string; localPath: string; size: number }>
+  /**
+   * Chat @ 提及的角色 id（按发言顺序）。
+   * 可不传：主进程会从 prompt 文本再 parse 一次。
+   */
+  mentionRoleIds?: string[]
 }
 
 export class SessionService {
@@ -217,6 +234,110 @@ export class SessionService {
         }
         return { ok: true }
       }
+    )
+
+    // 热切换 executionMode（Chat|Work）：仅用户源；Agent 工具不得调用
+    // @see docs/decisions/ADR-0005-user-owned-mode-switch.md
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.UPDATE_SESSION_EXECUTION_MODE,
+      async (
+        _e,
+        args: {
+          sessionId: string
+          mode: string
+          source?: string
+        },
+      ): Promise<{
+        ok: boolean
+        error?: string
+        mode?: ExecutionMode
+        backgroundCrew?: {
+          running: number
+          ready: number
+          pending: number
+          boardId?: string
+        }
+      }> => {
+        if (!args?.sessionId) return { ok: false, error: 'missing sessionId' }
+        if (!isExecutionModeChangeSource(args.source)) {
+          return {
+            ok: false,
+            error: 'executionMode 仅允许用户切换（source 须为 user 或 user-confirm-suggestion）',
+          }
+        }
+        const source: ExecutionModeChangeSource = args.source
+        if (args.mode !== 'chat' && args.mode !== 'work') {
+          return { ok: false, error: `非法 executionMode: ${String(args.mode)}` }
+        }
+        const next = args.mode as ExecutionMode
+        const meta = getSessionMeta(args.sessionId)
+        if (!meta) return { ok: false, error: '会话不存在' }
+        const prev = migrateExecutionMode(meta.executionMode)
+
+        // Work→Chat（或切到 chat）时：检测会话看板 / parentSession 看板是否仍有在途任务
+        const backgroundCrew =
+          next === 'chat'
+            ? (() => {
+                try {
+                  let boardId = meta.boardId
+                  if (!boardId) {
+                    boardId = listBoards({ status: 'active' }).find(
+                      (b) => b.parentSessionId === args.sessionId,
+                    )?.id
+                  }
+                  if (!boardId) return undefined
+                  const tasks = listTasksByBoard(boardId)
+                  const running = tasks.filter((t) => t.status === 'running').length
+                  const ready = tasks.filter((t) => t.status === 'ready').length
+                  const pending = tasks.filter((t) => t.status === 'pending').length
+                  if (running + ready + pending <= 0) return undefined
+                  return { running, ready, pending, boardId }
+                } catch {
+                  return undefined
+                }
+              })()
+            : undefined
+
+        if (prev === next) {
+          return { ok: true, mode: next, ...(backgroundCrew ? { backgroundCrew } : {}) }
+        }
+
+        const history = [...(meta.executionModeHistory ?? [])]
+        history.push({ at: Date.now(), from: prev, to: next, source })
+        // 只保留最近 20 条
+        const trimmed = history.length > 20 ? history.slice(-20) : history
+        updateSessionMeta(args.sessionId, {
+          executionMode: next,
+          executionModeHistory: trimmed,
+          // 确认/切换后清掉建议条
+          pendingExecutionModeSuggestion: null,
+        })
+        // 长驻进程在首条消息时锁定 MCP/systemPrompt；Chat↔Work 后须丢弃 kscc 进程，
+        // 下次发送 re-spawn 才会出现 kanban_*；Pi 核则在下次 query 热重建 Agent。
+        try {
+          this.runtimes
+            .get(args.sessionId)
+            ?.dropLiveProcessForConfigChange(`executionMode ${prev}→${next}`)
+        } catch (err) {
+          console.warn(`[会话 ${args.sessionId}] dropLiveProcess 失败:`, err)
+        }
+        console.log(`[会话 ${args.sessionId}] executionMode ${prev} → ${next} (${source})`)
+        return { ok: true, mode: next, ...(backgroundCrew ? { backgroundCrew } : {}) }
+      },
+    )
+
+    // 关闭形态切换建议条（不改 mode）
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.DISMISS_EXECUTION_MODE_SUGGESTION,
+      async (_e, args: { sessionId: string }): Promise<{ ok: boolean }> => {
+        if (!args?.sessionId) return { ok: false }
+        const meta = getSessionMeta(args.sessionId)
+        if (!meta) return { ok: false }
+        if (meta.pendingExecutionModeSuggestion) {
+          updateSessionMeta(args.sessionId, { pendingExecutionModeSuggestion: null })
+        }
+        return { ok: true }
+      },
     )
 
     ipcMain.handle(AGENT_IPC_CHANNELS.LIST_SESSIONS, async () => {
@@ -388,6 +509,33 @@ export class SessionService {
     )
     const normalizedInput: SendMessageInput = { ...input, channelId, model: modelId }
 
+    // Chat @：解析提及并写入 pendingMentionRoleIds（Work 默认不启用多角色乱 @）
+    const execMode = migrateExecutionMode(meta?.executionMode ?? getSessionMeta(input.sessionId)?.executionMode)
+    if (execMode === 'chat') {
+      try {
+        const roles = loadRoles()
+        const fromText = parseMentions(
+          input.prompt,
+          roles.map((r: { id: string; displayName: string }) => ({
+            id: r.id,
+            displayName: r.displayName,
+          })),
+        ).map((h) => h.roleId)
+        const fromInput = Array.isArray(input.mentionRoleIds)
+          ? input.mentionRoleIds.map(String).filter(Boolean)
+          : []
+        const ordered = [...fromInput]
+        for (const id of fromText) {
+          if (!ordered.includes(id)) ordered.push(id)
+        }
+        updateSessionMeta(input.sessionId, {
+          pendingMentionRoleIds: ordered.length > 0 ? ordered : undefined,
+        })
+      } catch (err) {
+        console.warn('[会话] 解析 @ 提及失败:', err)
+      }
+    }
+
     // 解析 workspaceId：优先用 input 传入，否则从已有 meta 读
     const workspaceId = input.workspaceId ?? meta?.workspaceId
 
@@ -480,8 +628,11 @@ export class SessionService {
           }
         },
         onTurnEnd: () => {
-          // 轮成功结束 → 清除可能的 error，落盘 idle（重启后仍为干净态）
-          updateSessionMeta(input.sessionId, { status: 'idle' })
+          // 轮成功结束 → 清除可能的 error，落盘 idle；清空 @ 待发言队列
+          updateSessionMeta(input.sessionId, {
+            status: 'idle',
+            pendingMentionRoleIds: [],
+          })
           this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
           // Phase 2.5：L4 recordSession + evidence sink
           this.recordSessionToMemory(input.sessionId, input.prompt)
@@ -493,7 +644,7 @@ export class SessionService {
         },
       })
 
-      await rt.sendMessage(this.buildQueryOptions(normalizedInput, channel, workspaceId))
+      await rt.sendMessage(await this.buildQueryOptions(normalizedInput, channel, workspaceId))
     } else {
       updateSessionMeta(input.sessionId, {
         channelId,
@@ -506,7 +657,10 @@ export class SessionService {
         message: { role: 'user', content: input.prompt },
         parent_tool_use_id: null,
       } as unknown as SDKUserMessageInput
-      await rt!.sendMessage(this.buildQueryOptions(normalizedInput, channel, workspaceId), userMessage)
+      await rt!.sendMessage(
+        await this.buildQueryOptions(normalizedInput, channel, workspaceId),
+        userMessage,
+      )
     }
   }
 
@@ -527,11 +681,11 @@ export class SessionService {
   }
 
   /** 构建 query 选项（按渠道 provider 选核） */
-  private buildQueryOptions(
+  private async buildQueryOptions(
     input: SendMessageInput,
     channel: Channel,
     workspaceId?: string
-  ): Parameters<AgentProviderAdapter['query']>[0] {
+  ): Promise<Parameters<AgentProviderAdapter['query']>[0]> {
     const model = this.resolveModel(channel, input.model)
 
     // 解析 workspace：始终按 session meta 反查（权限 cwd 必须用项目目录，不能靠 process.cwd()）
@@ -568,15 +722,41 @@ export class SessionService {
         memorySnapshot: { l0: snap.l0User, l1: snap.l1Project, l2: snap.l2Facts },
       })
       // KsccQueryOptions：canUseTool/mcpServers/permissionMode/allowDangerouslySkipPermissions
-      // canUseTool 透传 PermissionService.createCanUseTool（permissionMode 非硬编码）
+      // canUseTool 透传 PermissionService.createCanUseTool（permissionMode + executionMode 闭包读 meta）
       const canUseTool = this.permissionService
-        ? this.permissionService.createCanUseTool(input.sessionId, () => this.getPermissionMode(input.sessionId), cwd)
+        ? this.permissionService.createCanUseTool(
+            input.sessionId,
+            () => this.getPermissionMode(input.sessionId),
+            cwd,
+            () => this.getExecutionMode(input.sessionId),
+          )
         : undefined
+      const executionMode = this.getExecutionMode(input.sessionId)
+      // Work：注入看板 MCP（create/add/list）；Chat 不注入
+      const mcpServers: Record<string, unknown> = {
+        ...(Object.keys(enabledMcpServers).length > 0
+          ? (enabledMcpServers as Record<string, unknown>)
+          : {}),
+      }
+      if (executionMode === 'work') {
+        try {
+          await injectKanbanMcpServer(mcpServers, {
+            sessionId: input.sessionId,
+            channelId: channel.id,
+            agentCwd: cwd,
+            workspaceId: workspace?.slug,
+            toolMode: 'full',
+          })
+        } catch (err) {
+          console.warn('[会话] 注入看板 MCP 失败:', err)
+        }
+      }
       const opts: KsccQueryOptions = {
         sessionId: input.sessionId,
         prompt: input.prompt,
         model,
         cwd,
+        executionMode,
         sdkCliPath: ksccPath,
         env: { ...process.env } as Record<string, string | undefined>,
         maxTurns: 50,
@@ -590,9 +770,15 @@ export class SessionService {
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
-          // 子代理委派 + 富内容输出规范 + 记忆防线 + Frozen 快照（D1/D8）
+          // 执行形态 +（Work 才）子代理委派 + 看板工具说明 + 富内容 + 记忆
+          // Chat 下 Task/SubAgent/看板写 硬拦，不注入委派/看板工具
           append: [
-            buildSubagentDelegationPrompt(eagerness),
+            buildExecutionModePrompt(executionMode),
+            executionMode === 'work' ? buildSubagentDelegationPrompt(eagerness) : '',
+            executionMode === 'work'
+              ? '## 看板派工工具\nWork 模式可用：kanban_create_board、kanban_add_task、kanban_list_boards、kanban_list_tasks。长任务拆成看板任务并指定 roleId；调度器会派 headless 工人。'
+              : '',
+            this.buildMentionPromptAppend(input.sessionId, executionMode),
             buildRichContentSystemPrompt(),
             mem.managementRules,
             mem.memorySnapshotSection,
@@ -601,11 +787,9 @@ export class SessionService {
             .join('\n\n'),
         },
         persistSession: true,
-        // 工作区 MCP 配置
-        mcpServers: Object.keys(enabledMcpServers).length > 0 ? (enabledMcpServers as Record<string, unknown>) : undefined,
-        // 子代理定义（主 Agent 可调用 Agent/Task 工具派发子任务）
-        // kscc 核始终是 Claude 渠道，子代理用 haiku
-        agents: buildBuiltinSubagentDefinitions(true),
+        mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
+        // 子代理定义：仅 Work 注册（Chat 硬拦 Task，注册无意义）
+        agents: executionMode === 'work' ? buildBuiltinSubagentDefinitions(true) : undefined,
         // 权限钩子（bypass 模式不挂）
         ...(canUseTool ? { canUseTool } : {}),
         // 长驻首次 spawn 带 resume 续历史（SDK 读 JSONL 一次），之后靠内存
@@ -640,18 +824,49 @@ export class SessionService {
     }
     // beforeToolCall：pi-agent-core 签名，包 PermissionService.createBeforeToolCall
     const beforeToolCall = this.permissionService
-      ? this.permissionService.createBeforeToolCall(input.sessionId, () => this.getPermissionMode(input.sessionId), cwd)
+      ? this.permissionService.createBeforeToolCall(
+          input.sessionId,
+          () => this.getPermissionMode(input.sessionId),
+          cwd,
+          () => this.getExecutionMode(input.sessionId),
+        )
       : undefined
     const piMeta = getSessionMeta(input.sessionId)
+    // Pi 核 systemPrompt 为整体替换：注入执行形态段落（避免仅靠工具层无文案）
+    const piExecutionMode = this.getExecutionMode(input.sessionId)
+    const piExecutionPrompt = [
+      buildExecutionModePrompt(piExecutionMode),
+      piExecutionMode === 'work'
+        ? '## 看板派工工具\n可用 kanban_create_board / kanban_add_task / kanban_list_*。长任务拆任务并指定 roleId。'
+        : '',
+      this.buildMentionPromptAppend(input.sessionId, piExecutionMode),
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+    const kanbanExtra =
+      piExecutionMode === 'work'
+        ? buildPiKanbanTools({
+            sessionId: input.sessionId,
+            channelId: channel.id,
+            agentCwd: cwd,
+            workspaceId: workspace?.slug,
+            toolMode: 'full',
+          })
+        : []
     const opts = {
       sessionId: input.sessionId,
       prompt: input.prompt,
       model,
       cwd,
+      executionMode: piExecutionMode,
       // MCP 配置（无 server 时 pi-core 跳过）
       mcpConfig,
-      // 权限钩子（bypass 模式不挂）
+      // 权限钩子（含 Chat 硬拦；始终挂上以便 Chat 下 bypass 也无法写）
       ...(beforeToolCall ? { beforeToolCall } : {}),
+      // 执行形态 + Work 看板说明
+      systemPromptAppend: piExecutionPrompt,
+      // Work：看板 AgentTool
+      ...(kanbanExtra.length > 0 ? { extraTools: kanbanExtra } : {}),
       // Phase 2.2：记忆模式透传（Frozen 快照 / L-rag）
       sessionMode: (piMeta?.mode === 'ta' ? 'ta' : 'general') as MemoryMode,
       // Pi 核专属：渠道凭证 + provider，pi-ai streamFn 用
@@ -678,6 +893,47 @@ export class SessionService {
     return meta?.permissionMode
       ? migratePermissionMode(meta.permissionMode)
       : TAGENT_DEFAULT_PERMISSION_MODE
+  }
+
+  /** 读会话 executionMode（Chat|Work）；缺省 legacy work */
+  private getExecutionMode(sessionId: string): ExecutionMode {
+    const meta = getSessionMeta(sessionId)
+    return migrateExecutionMode(meta?.executionMode)
+  }
+
+  /**
+   * Chat @ 提及：把点名角色投影进 system prompt（顺序发言）。
+   * Work 下默认不注入（避免乱 @ 与派工打架）。
+   */
+  private buildMentionPromptAppend(sessionId: string, executionMode: ExecutionMode): string {
+    if (executionMode !== 'chat') return ''
+    const meta = getSessionMeta(sessionId)
+    const ids = meta?.pendingMentionRoleIds
+    if (!ids || ids.length === 0) return ''
+    try {
+      const blocks: string[] = [
+        '## Chat @ 点名发言',
+        '用户本轮用 @ 点名了下列岗位。请**按列表顺序**以各岗位视角依次回复（可分段标明角色名）。',
+        '规则：不创建看板、不写本地文件、不委派 SubAgent；只做讨论与方案。',
+        '',
+      ]
+      for (const roleId of ids) {
+        const role = resolveRole(roleId)
+        blocks.push(
+          composeRoleSystemPrompt(role, {
+            purpose: 'mention-turn',
+            maxRolePromptChars: 2400,
+            runtimeConstraints:
+              '本段仅讨论；禁止声称已改代码或已派工。用中文。',
+          }),
+        )
+        blocks.push('')
+      }
+      return blocks.join('\n')
+    } catch (err) {
+      console.warn('[会话] buildMentionPromptAppend 失败:', err)
+      return ''
+    }
   }
 
   /** kscc 路径：转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer，并双写 JSONL */

@@ -11,7 +11,10 @@ import { Type } from '@earendil-works/pi-ai'
 import type { AgentTool, AgentToolResult, Agent as AgentType } from '@earendil-works/pi-agent-core'
 import type { AssistantMessage, TextContent, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai'
 import type { PiAgentAdapterConfig } from './pi-agent-adapter'
-import { buildBuiltinSubagentDefinitions } from '../../agent/subagent-definitions'
+import {
+  buildBuiltinSubagentDefinitions,
+  resolveSubagentDefinition,
+} from '../../agent/subagent-definitions'
 
 // ESM-only 包延迟加载
 type PiCoreModule = typeof import('@tagent/pi-core')
@@ -21,35 +24,41 @@ type PiAgentCoreModule = typeof import('@earendil-works/pi-agent-core')
 const taskSchema = Type.Object({
   subagent_type: Type.String({
     description:
-      '子代理类型，必须是以下内置类型之一：explorer（只读探索代码库/搜索文件）、code-reviewer（代码修改后做质量审查）、researcher（调研技术方案/对比选项）。',
+      '子代理类型：explorer（只读探索）、code-reviewer（代码审查，角色库 reviewer 投影）、researcher（技术调研）；亦可使用角色库 id：reviewer、analyst、coder、generalist 等。',
   }),
   prompt: Type.String({ description: '子代理要执行的任务描述' }),
   description: Type.Optional(Type.String({ description: '任务简短描述（日志用）' })),
 })
 
-/** 子代理名容错：模型偶尔用 explore/general 等近名，归一到内置类型，避免直接报错中断任务 */
+/** 子代理名容错：近名归一 + 角色库 id 直通 */
 function resolveSubagentType(raw: string, available: string[]): string {
   if (available.includes(raw)) return raw
+  // 角色库 id 可能未进 available 快照但 resolveSubagentDefinition 能解析
+  if (resolveSubagentDefinition(raw, { claudeAvailable: false })) return raw
+
   const lower = raw.toLowerCase()
-  // explore / 探索 → explorer
   if (lower === 'explore' || lower === '探索' || lower.includes('explor')) {
     const hit = available.find((n) => n === 'explorer')
     if (hit) return hit
   }
-  // general / 通用 → 退回 explorer（通用只读探索最安全）
-  if (lower === 'general' || lower === '通用') {
+  if (lower === 'general' || lower === '通用' || lower === 'generalist') {
+    if (available.includes('generalist')) return 'generalist'
     const hit = available.find((n) => n === 'explorer')
     if (hit) return hit
   }
-  // 代码审查近名
   if (lower.includes('review') || lower.includes('审查')) {
-    const hit = available.find((n) => n === 'code-reviewer')
+    const hit = available.find((n) => n === 'code-reviewer' || n === 'reviewer')
     if (hit) return hit
   }
-  // 调研近名
   if (lower.includes('research') || lower.includes('调研')) {
     const hit = available.find((n) => n === 'researcher')
     if (hit) return hit
+  }
+  if (lower.includes('architect') || lower.includes('架构') || lower === 'analyst') {
+    if (available.includes('analyst')) return 'analyst'
+  }
+  if (lower.includes('coder') || lower.includes('后端') || lower.includes('implement')) {
+    if (available.includes('coder')) return 'coder'
   }
   return raw
 }
@@ -86,25 +95,32 @@ export function createTaskTool(
     executionMode: 'parallel',
     execute: async (_toolCallId, params, signal): Promise<AgentToolResult<TaskToolDetails>> => {
       const startTime = Date.now()
-      const builtinAgents = buildBuiltinSubagentDefinitions()
+      // Pi 非 Claude 渠道：子代理继承父模型（不写死 haiku）
+      const builtinAgents = buildBuiltinSubagentDefinitions(false)
       const subagentType = resolveSubagentType(params.subagent_type, Object.keys(builtinAgents))
 
-      // 查找子代理定义
-      const def = builtinAgents[subagentType]
-      if (!def) {
-        throw new Error(`未知的子代理类型: ${params.subagent_type}。可用类型: ${Object.keys(builtinAgents).join(', ')}`)
+      // 目录命中 或 角色库动态投影
+      const def =
+        builtinAgents[subagentType] ??
+        resolveSubagentDefinition(subagentType, { claudeAvailable: false })
+      if (!def?.prompt) {
+        throw new Error(
+          `未知的子代理类型: ${params.subagent_type}。可用: ${Object.keys(builtinAgents).join(', ')} 或角色库 id`,
+        )
       }
 
-      console.log(`[子代理 ${parentSessionId}] 启动 ${subagentType}: ${params.description ?? params.prompt.slice(0, 60)}`)
+      console.log(
+        `[子代理 ${parentSessionId}] 启动 ${subagentType}（角色投影）: ${params.description ?? params.prompt.slice(0, 60)}`,
+      )
 
-      // 创建子 Agent（限制 tools，自定义 systemPrompt）
+      // 创建子 Agent（限制 tools，自定义 systemPrompt；模型：角色池 > 渠道默认）
       const subTools = resolveSubagentTools(def.tools ?? [], piCore, cwd)
-      const subStreamFn = createSubagentStreamFn(channelConfig, piCore)
+      const subStreamFn = createSubagentStreamFn(channelConfig, piCore, def.model)
 
       const subAgent = new piAgentCore.Agent({
         initialState: {
           systemPrompt: def.prompt,
-          model: buildSubagentModel(channelConfig),
+          model: buildSubagentModel(channelConfig, def.model),
           thinkingLevel: 'off',
           tools: subTools,
           messages: [],
@@ -185,35 +201,37 @@ function resolveSubagentTools(
     .map((t) => (t.name === 'Bash' ? piCore.createBashTool(cwd) : t))
 }
 
-/** 为子 Agent 创建 streamFn（复用父 Agent 的渠道配置） */
+/** 为子 Agent 创建 streamFn（复用父 Agent 的渠道配置；可选角色 model 覆盖） */
 function createSubagentStreamFn(
   channelConfig: PiAgentAdapterConfig,
   piCore: PiCoreModule,
+  modelOverride?: string,
 ) {
   if (channelConfig.type === 'external') {
     return piCore.createHttpDirectStreamFn({
       provider: channelConfig.provider,
       apiKey: channelConfig.apiKey,
       baseUrl: channelConfig.baseUrl,
-      modelId: channelConfig.modelId,
+      modelId: modelOverride || channelConfig.modelId,
       thinkingEnabled: false,
     })
   }
   // kscc bare 模式：子 Agent 也用 kscc bare
   return piCore.createKsccBareStreamFn({
     ksccPath: channelConfig.ksccPath,
-    defaultModelId: channelConfig.defaultModelId,
+    defaultModelId: modelOverride || channelConfig.defaultModelId,
     tools: piCore.defaultToolDescriptors,
   } as never)
 }
 
-/** 构造子 Agent 占位 Model */
-function buildSubagentModel(channelConfig: PiAgentAdapterConfig) {
+/** 构造子 Agent 占位 Model（role.modelPool 首项可覆盖） */
+function buildSubagentModel(channelConfig: PiAgentAdapterConfig, modelOverride?: string) {
   const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
   if (channelConfig.type === 'external') {
+    const id = modelOverride || channelConfig.modelId
     return {
-      id: channelConfig.modelId,
-      name: channelConfig.modelId,
+      id,
+      name: id,
       api: resolveApiForProvider(channelConfig.provider) as 'anthropic-messages' | 'openai-completions' | 'openai-responses' | 'google-generative-ai',
       provider: channelConfig.provider,
       baseUrl: channelConfig.baseUrl ?? '',
@@ -224,9 +242,10 @@ function buildSubagentModel(channelConfig: PiAgentAdapterConfig) {
       maxTokens: 8_192,
     }
   }
+  const id = modelOverride || channelConfig.defaultModelId || 'glm-5.2'
   return {
-    id: channelConfig.defaultModelId ?? 'glm-5.2',
-    name: channelConfig.defaultModelId ?? 'glm-5.2',
+    id,
+    name: id,
     api: 'openai-completions' as 'openai-completions',
     provider: 'kscc',
     baseUrl: '',

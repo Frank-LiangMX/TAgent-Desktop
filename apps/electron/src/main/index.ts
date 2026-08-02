@@ -190,7 +190,7 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // 禁用默认应用菜单（Windows 全局 Edit 快捷键抢焦点问题）
   Menu.setApplicationMenu(null)
 
@@ -250,6 +250,25 @@ app.whenReady().then(() => {
   UserProfileService.create()
   BalanceService.create()
   MemoryService.create()
+  // 角色库 IPC（seed DEFAULT_ROLES + CRUD + 商店）
+  const { registerAgentRoleIpcHandlers } = await import('./lib/role/agent-role-ipc')
+  registerAgentRoleIpcHandlers()
+  // 看板 IPC + 调度器（Work 守卫、resolveForWorker、stub 工人状态机）
+  const { registerKanbanIpc } = await import('./lib/kanban/kanban-ipc')
+  registerKanbanIpc()
+  const { bootstrapKanban } = await import('./lib/kanban/kanban-bootstrap')
+  bootstrapKanban(() => mainWindow)
+  // 通知偏好 IPC（通用设置 ↔ 主进程系统通知）
+  const {
+    loadNotificationPrefs,
+    saveNotificationPrefs,
+  } = await import('./lib/notification-prefs')
+  ipcMain.handle('notification-prefs:get', () => loadNotificationPrefs())
+  ipcMain.handle(
+    'notification-prefs:set',
+    (_e, prefs: Partial<ReturnType<typeof loadNotificationPrefs>>) =>
+      saveNotificationPrefs(prefs ?? {}),
+  )
   permissionService = PermissionService.create(() => mainWindow)
   sessionService = SessionService.create(() => mainWindow, permissionService)
   WorkspaceService.create(

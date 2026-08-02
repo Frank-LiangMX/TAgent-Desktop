@@ -8,7 +8,15 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import type { StickToBottomContext } from 'use-stick-to-bottom'
-import type { TAgentDesktopStreamPayload, TAgentMessage, TAgentPermissionMode, SubagentEagerness, ReasoningEffort } from '@tagent/shared'
+import type {
+  TAgentDesktopStreamPayload,
+  TAgentMessage,
+  TAgentPermissionMode,
+  SubagentEagerness,
+  ReasoningEffort,
+  ExecutionMode,
+} from '@tagent/shared'
+import { migrateExecutionMode, DEFAULT_EXECUTION_MODE, parseMentions } from '@tagent/shared'
 import {
   resolveChannelDefaultModelId,
   sdkMessageToIR,
@@ -38,6 +46,8 @@ import {
   AppTooltip,
 } from '@tagent/ui'
 import { ArrowUp, Square, Compass, Zap, Plus, SlidersHorizontal, Unlock } from 'lucide-react'
+import { UsersThree } from '@phosphor-icons/react'
+import { cn } from '../../lib/utils'
 import {
   COMPACTION_IN_PROGRESS_LABEL,
   getCompactBoundaryLabel,
@@ -60,6 +70,10 @@ import {
   type TaskCardEvent,
 } from './subagent-ui-model'
 import { PermissionBanner } from '../permission/PermissionBanner'
+import { ExecutionModeSuggestionBanner } from './ExecutionModeSuggestionBanner'
+import { ExecutionModeToggle } from './ExecutionModeToggle'
+import { ReasoningEffortPicker } from './ReasoningEffortPicker'
+import { KanbanCrewPanel } from './KanbanCrewPanel'
 import { MessageQueue } from './MessageQueue'
 import { ComposerUnderlay } from './ComposerUnderlay'
 import { ScrollPositionManager } from '../shell/ScrollPositionManager'
@@ -142,6 +156,37 @@ export function Chat({
   const [sentCoreKind, setSentCoreKind] = useState<ChannelCoreKind | null>(null)
   /** 会话当前权限模式（默认 auto；切会话 key 重建后重置。运行中切换即时生效） */
   const [permissionMode, setPermissionMode] = useState<TAgentPermissionMode>(TAGENT_DEFAULT_PERMISSION_MODE)
+  /**
+   * 协作形态 Chat|Work（默认 chat；旧会话无字段回显 work）
+   * 仅用户可切换（含点确认建议）
+   */
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>(DEFAULT_EXECUTION_MODE)
+  /** 挂起的形态切换建议（Chat 硬拦 / meta 恢复） */
+  const [pendingModeSuggestion, setPendingModeSuggestion] = useState<
+    import('@tagent/shared').ExecutionModeSuggestion | null
+  >(null)
+  /** 会话绑定的看板（建板后写入 meta.boardId） */
+  const [sessionBoardId, setSessionBoardId] = useState<string | null>(null)
+  /** 右侧班组面板（有板才有入口） */
+  const [crewPanelOpen, setCrewPanelOpen] = useState(false)
+  const [hasCrewBoards, setHasCrewBoards] = useState(false)
+  /** 对话列变窄时启用紧凑输入底栏（右栏展开 / 窗口窄） */
+  const [composerCompact, setComposerCompact] = useState(false)
+  /** Chat @ 角色库短列表 */
+  const [mentionRoles, setMentionRoles] = useState<
+    Array<{ id: string; displayName: string; description?: string }>
+  >([])
+  /** 最近一轮 @ 的展示名（助手铭牌旁顺序条） */
+  const [liveMentionLabels, setLiveMentionLabels] = useState<string[]>([])
+  /**
+   * Work→Chat 后班组仍在后台执行时的轻提示条。
+   * setSessionExecutionMode 可带 backgroundCrew；也可客户端兜底数任务。
+   */
+  const [backgroundCrewBanner, setBackgroundCrewBanner] = useState<{
+    running: number
+    ready: number
+    pending: number
+  } | null>(null)
   /** 子代理委派积极性（默认 conservative；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 kscc 生效） */
   const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('conservative')
   /** 思考强度（默认 medium；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 SDK query 生效） */
@@ -208,6 +253,7 @@ export function Chat({
   const streamingRef = useRef<DisplayItem | null>(null)
   const chatInputRef = useRef<ChatInputHandle>(null)
   const composerClusterRef = useRef<HTMLDivElement>(null)
+  const bottomStackRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   /** 输入框聚焦时展开功能栏 */
   const [composerExpanded, setComposerExpanded] = useState(false)
@@ -312,6 +358,8 @@ export function Chat({
     itemIdxRef.current = 0
     setSubagentEagerness('conservative') // 切会话重置，下面异步回显持久化值
     setReasoningEffort(DEFAULT_REASONING_EFFORT) // 切会话重置，下面异步回显持久化值
+    setExecutionMode(DEFAULT_EXECUTION_MODE) // 切会话重置，下面异步回显持久化值
+    setBackgroundCrewBanner(null) // 切会话清掉后台班组提示
     // welcome 形态点提示词时暂存的文本：草稿态挂载后预填输入框并清空。
     // 只有刚 newSession 的草稿会带 pending；切到已有会话时它已被清空，不误填。
     if (pendingSuggestion) {
@@ -351,11 +399,25 @@ export function Chat({
           id: string
           subagentEagerness?: SubagentEagerness
           reasoningEffort?: ReasoningEffort
+          executionMode?: ExecutionMode
+          permissionMode?: TAgentPermissionMode
+          pendingExecutionModeSuggestion?: import('@tagent/shared').ExecutionModeSuggestion | null
+          boardId?: string
         }>
         const persisted = metas.find((m) => m.id === sessionId)
         if (persisted) {
           setSubagentEagerness(resolveEagerness(persisted))
           setReasoningEffort(migrateReasoningEffort(persisted.reasoningEffort))
+          // 旧会话无字段 → migrate 为 work，避免突然只读
+          setExecutionMode(migrateExecutionMode(persisted.executionMode))
+          if (persisted.permissionMode) {
+            setPermissionMode(persisted.permissionMode)
+          }
+          setPendingModeSuggestion(persisted.pendingExecutionModeSuggestion ?? null)
+          setSessionBoardId(persisted.boardId ?? null)
+        } else {
+          setPendingModeSuggestion(null)
+          setSessionBoardId(null)
         }
       } catch {
         /* 回显失败不影响主流程，沿用默认 */
@@ -386,9 +448,112 @@ export function Chat({
     }
   }, [sessionId])
 
-  // 点击输入框外部时折叠功能栏
+  // Chat 无功能栏：切回 Chat 时强制收起
   useEffect(() => {
-    if (!composerExpanded) return
+    if (executionMode === 'chat') setComposerExpanded(false)
+  }, [executionMode])
+
+  // Work 模式下不展示「后台班组」提示（用户已回到可派工形态）
+  useEffect(() => {
+    if (executionMode === 'work') setBackgroundCrewBanner(null)
+  }, [executionMode])
+
+  /**
+   * 看板全部完成 → 软刷新 panel 消息（回流摘要）+ 清后台班组条。
+   * 仅匹配 parentSessionId；运行中不打断流式。
+   */
+  useEffect(() => {
+    const off = window.electronAPI.onKanbanBoardCompleted?.((payload: unknown) => {
+      const p = payload as { parentSessionId?: string; boardId?: string }
+      const sid = sessionIdRef.current
+      const matchesParent = !!p?.parentSessionId && p.parentSessionId === sid
+      const matchesBoard =
+        !!p?.boardId && !!sessionBoardId && p.boardId === sessionBoardId
+      // 仅刷新与当前会话相关的看板完成
+      if (!matchesParent && !matchesBoard) return
+      setBackgroundCrewBanner(null)
+      if (streamingRef.current) return
+      void (async () => {
+        try {
+          const history = (await window.electronAPI.getMessages(sid)) as unknown[]
+          const ch = channels.find((c) => c.id === session.channelId)
+          const isKsccCore = ch ? getChannelCoreKind(ch) === 'kscc' : true
+          const irItems: DisplayItem[] = []
+          let idx = 0
+          for (const raw of history) {
+            const message = isKsccCore
+              ? sdkMessageToIR(raw as never).message
+              : isIRMessage(raw)
+                ? (raw as TAgentMessage)
+                : sdkMessageToIR(raw as never).message
+            if (message) {
+              irItems.push({ key: `h${idx++}`, message })
+            }
+          }
+          if (sessionIdRef.current !== sid) return
+          itemIdxRef.current = Math.max(itemIdxRef.current, irItems.length)
+          setItems(irItems)
+        } catch {
+          /* 回流刷新失败不影响主流程 */
+        }
+      })()
+    })
+    return () => {
+      off?.()
+    }
+  }, [session.channelId, sessionBoardId, channels])
+
+  /** 解析 Work→Chat 后是否展示后台班组条（优先 IPC 返回，缺则 listTasks 兜底） */
+  const applyBackgroundCrewFromModeSwitch = useCallback(
+    async (
+      mode: ExecutionMode,
+      res: {
+        backgroundCrew?: {
+          running: number
+          ready: number
+          pending: number
+          boardId?: string
+        }
+      },
+    ): Promise<void> => {
+      if (mode === 'work') {
+        setBackgroundCrewBanner(null)
+        return
+      }
+      let crew = res.backgroundCrew
+      if (!crew && sessionBoardId) {
+        try {
+          const t = (await window.electronAPI.kanbanListTasks?.(sessionBoardId)) as Array<{
+            status?: string
+          }>
+          if (Array.isArray(t)) {
+            const running = t.filter((x) => x.status === 'running').length
+            const ready = t.filter((x) => x.status === 'ready').length
+            const pending = t.filter((x) => x.status === 'pending').length
+            if (running + ready + pending > 0) {
+              crew = { running, ready, pending, boardId: sessionBoardId }
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      if (crew && crew.running + crew.ready + crew.pending > 0) {
+        setBackgroundCrewBanner({
+          running: crew.running,
+          ready: crew.ready,
+          pending: crew.pending,
+        })
+      } else {
+        setBackgroundCrewBanner(null)
+      }
+    },
+    [sessionBoardId],
+  )
+
+  // 点击输入框外部时折叠功能栏（仅 Work 展开时）
+  useEffect(() => {
+    if (!composerExpanded || executionMode !== 'work') return
     const handlePointerDown = (e: PointerEvent): void => {
       const cluster = composerClusterRef.current
       if (!cluster) return
@@ -401,25 +566,123 @@ export function Chat({
     }
     document.addEventListener('pointerdown', handlePointerDown, true)
     return () => document.removeEventListener('pointerdown', handlePointerDown, true)
-  }, [composerExpanded])
+  }, [composerExpanded, executionMode])
 
-  // 功能栏展开时抬高底部预留（scroll button + 渐隐区跟随上移，避免被遮 / 边界突兀）
-  useEffect(() => {
+  // 动态测量底部 UI 实际顶部 → --session-composer-top（下箭头 bottom 锚定）
+  // 必须以 Conversation 底边为基准（按钮定位上下文），不能只量 root：
+  // 有图片附件时输入玻璃变高，若变量滞后，箭头会停在旧高度并被 z-20 底栏盖住。
+  const updateComposerTop = useCallback((): void => {
     const root = rootRef.current
-    if (!root) return
-    const UNDERLAY_H = 42 + 5 // 功能栏高 + margin
-    if (composerExpanded) {
-      const base = parseFloat(getComputedStyle(root).getPropertyValue('--session-composer-top')) || 140
-      root.style.setProperty('--session-composer-top', `${base + UNDERLAY_H}px`)
-      root.style.setProperty('--session-bottom-reserve', `${(parseFloat(getComputedStyle(root).getPropertyValue('--session-bottom-reserve')) || 140) + UNDERLAY_H}px`)
-    } else {
-      // 还原：减回 UNDERLAY_H（若之前被加过）
-      const cur = parseFloat(getComputedStyle(root).getPropertyValue('--session-composer-top')) || 140
-      root.style.setProperty('--session-composer-top', `${Math.max(140, cur - UNDERLAY_H)}px`)
-      const curRes = parseFloat(getComputedStyle(root).getPropertyValue('--session-bottom-reserve')) || 140
-      root.style.setProperty('--session-bottom-reserve', `${Math.max(140, curRes - UNDERLAY_H)}px`)
+    const stack = bottomStackRef.current
+    if (!root || !stack) return
+    // Conversation 是 absolute inset-0 的滚动容器，scroll 按钮 relative 于它
+    const conversationEl =
+      (root.querySelector('[role="log"]') as HTMLElement | null) ?? root
+    const convBottom = conversationEl.getBoundingClientRect().bottom
+    const stackTop = stack.getBoundingClientRect().top
+    const dist = Math.max(0, Math.round(convBottom - stackTop))
+    root.style.setProperty('--session-composer-top', `${dist}px`)
+  }, [])
+
+  /** 布局变化后多帧校正（附件 DOM 插入、图片解码、功能栏动画） */
+  const scheduleComposerTopUpdate = useCallback((): (() => void) => {
+    updateComposerTop()
+    const raf1 = requestAnimationFrame(() => {
+      updateComposerTop()
+      requestAnimationFrame(updateComposerTop)
+    })
+    const t1 = window.setTimeout(updateComposerTop, 50)
+    const t2 = window.setTimeout(updateComposerTop, 200)
+    return () => {
+      cancelAnimationFrame(raf1)
+      clearTimeout(t1)
+      clearTimeout(t2)
     }
-  }, [composerExpanded])
+  }, [updateComposerTop])
+
+  useEffect(() => {
+    const stack = bottomStackRef.current
+    const composer = composerClusterRef.current
+    if (!stack || !composer) return
+
+    // RO：box 尺寸变化（功能栏/token/多行输入/附件撑高）
+    const ro = new ResizeObserver(() => {
+      updateComposerTop()
+    })
+    ro.observe(stack)
+    ro.observe(composer)
+    // MutationObserver：附件队列/横幅/预览卡片增删
+    const mo = new MutationObserver(() => {
+      updateComposerTop()
+    })
+    mo.observe(stack, { childList: true, subtree: true, attributes: true })
+    const cancel = scheduleComposerTopUpdate()
+    // 会话页入场动画结束后再校一次
+    const t = window.setTimeout(updateComposerTop, 500)
+
+    return () => {
+      ro.disconnect()
+      mo.disconnect()
+      cancel()
+      clearTimeout(t)
+    }
+  }, [updateComposerTop, scheduleComposerTopUpdate])
+
+  // 功能栏 / 附件 / 模式：显式重测（不依赖 RO 是否丢帧）
+  useEffect(() => {
+    return scheduleComposerTopUpdate()
+  }, [
+    composerExpanded,
+    pendingAttachments.length,
+    executionMode,
+    messageQueue.length,
+    scheduleComposerTopUpdate,
+  ])
+
+  // 班组条展开/折叠：强制多帧重测（列表 max-height 变化时 RO 偶发滞后 → 下箭头压在列表上）
+  useEffect(() => {
+    const onRemeasure = (): void => {
+      scheduleComposerTopUpdate()
+    }
+    window.addEventListener('tagent:composer-top-remeasure', onRemeasure)
+    return () => window.removeEventListener('tagent:composer-top-remeasure', onRemeasure)
+  }, [scheduleComposerTopUpdate])
+
+  // 对话列宽度：右栏打开或窗口变窄 → 紧凑输入栏（图标优先，防文字叠压）
+  useEffect(() => {
+    const el = rootRef.current
+    if (!el || typeof ResizeObserver === 'undefined') {
+      setComposerCompact(crewPanelOpen)
+      return
+    }
+    const measure = (): void => {
+      const w = el.getBoundingClientRect().width
+      // 约 560：再塞满模型名+token 标签就会叠；右栏打开通常 < 560
+      setComposerCompact(crewPanelOpen || w < 560)
+    }
+    measure()
+    const ro = new ResizeObserver(() => measure())
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [crewPanelOpen, sessionId])
+
+  // Chat @ 角色列表（B1）
+  useEffect(() => {
+    void (async () => {
+      try {
+        const roles = await window.electronAPI.listAgentRoles()
+        setMentionRoles(
+          (roles ?? []).map((r) => ({
+            id: r.id,
+            displayName: r.displayName,
+            description: r.description,
+          })),
+        )
+      } catch {
+        setMentionRoles([])
+      }
+    })()
+  }, [])
 
   // 虚拟化分批递增：未全挂时，idle 帧每批 +40 补齐旧消息（保近期，底部对话不受影响）
   useEffect(() => {
@@ -564,6 +827,8 @@ export function Chat({
         streamingRef.current = null
         setItems((prev) => purgeStreamingItems(prev))
         setRunning(false)
+        // @ 铭牌保留到本 turn 渲染完；短延迟后清，避免历史轮误挂
+        window.setTimeout(() => setLiveMentionLabels([]), 800)
         bumpRefresh()
       } else if (evt.type === 'memory_organizing') {
         // Phase 4/5：kscc 软重置 / 影子压缩 — 显示「正在整理记忆」
@@ -780,6 +1045,13 @@ export function Chat({
   const send = async (): Promise<void> => {
     const text = chatInputRef.current?.getText().trim()
     if (!text) return
+    // Chat @：记录本轮点名，助手铭牌旁展示顺序
+    if (executionMode === 'chat' && mentionRoles.length > 0) {
+      const hits = parseMentions(text, mentionRoles)
+      setLiveMentionLabels(hits.map((h) => h.displayName))
+    } else {
+      setLiveMentionLabels([])
+    }
     chatInputRef.current?.clear()
     if (running) {
       // 运行中 → 入队，等当前轮结束自动消费
@@ -889,6 +1161,7 @@ export function Chat({
       attachments={pendingAttachments}
       onAttachmentsChange={setPendingAttachments}
       onOpenFileDialog={handleOpenFileDialog}
+      mentionRoles={executionMode === 'chat' ? mentionRoles : undefined}
       footer={landingFooter}
     />
   )
@@ -906,7 +1179,16 @@ export function Chat({
   )
 
   return (
-    <div ref={rootRef} className="relative h-full min-h-0 session-body">
+    <div className="session-body flex h-full min-h-0">
+      {/* 左：对话 + 输入（测量锚点 rootRef 只包对话列，避免右栏影响下箭头） */}
+      <div
+        ref={rootRef}
+        className={cn(
+          'session-chat-col relative min-h-0 min-w-0 flex-1',
+          composerCompact && 'is-composer-compact',
+        )}
+        data-composer-density={composerCompact ? 'compact' : 'comfortable'}
+      >
       {items.length === 0 && !running ? (
         <NewConversationLanding
           composer={landingComposer}
@@ -916,7 +1198,7 @@ export function Chat({
         />
       ) : (
         <div className={`relative h-full min-h-0 chat-page-enter ${pageMounted ? 'is-mounted' : ''}`}>
-          {/* 消息区：全高；线程有 max-width 居中；底栏输入/token 铺满 main（贴侧栏与右缘 gutter） */}
+          {/* 消息区：全高；线程有 max-width 居中；底栏输入/token 铺满对话列 */}
           <Conversation
             className="absolute inset-0 min-h-0"
             contextRef={scrollContextRef}
@@ -941,7 +1223,17 @@ export function Chat({
                   turnIndex === visibleTurns.length - 1 &&
                   turn.kind === 'assistant-turn'
                 return (
-                  <TurnView key={turn.key} turn={turn} isLiveTurn={isLiveTurn} />
+                  <TurnView
+                    key={turn.key}
+                    turn={turn}
+                    isLiveTurn={isLiveTurn}
+                    onRefillToInput={pickSuggestion}
+                    mentionLabels={
+                      isLiveTurn && liveMentionLabels.length > 0
+                        ? liveMentionLabels
+                        : undefined
+                    }
+                  />
                 )
               })}
               {running &&
@@ -963,7 +1255,7 @@ export function Chat({
         stack 锚在 status；输入用 margin-bottom 抬到 band，token 不把输入顶上去。
         权限确认面板放在 composer 上方（stack 内、cluster 之前），从输入框上方伸出，靠文档流撑高。
       */}
-      <div className="session-bottom-stack absolute inset-x-0">
+      <div ref={bottomStackRef} className="session-bottom-stack absolute inset-x-0">
         {/* 底部统一模糊带：一块 backdrop-filter + 向下渐浓底色，覆盖「输入框顶→窗口底」
             整条底层，宽 = 输入框宽（gutter）。定位用 --session-composer-top，功能栏展开时
             该变量被抬高，背板顶自动上移、高度自动变大。输入框 / token 栏 / 功能栏都不再
@@ -971,26 +1263,150 @@ export function Chat({
             内最底（在 token(z1)/输入框(z2) 与 MessageQueue/PermissionBanner 之下）。 */}
         <div className="composer-blur-underlay" aria-hidden="true" />
         <MessageQueue queue={messageQueue} onRemove={removeQueueItem} onClear={clearQueue} />
+        {backgroundCrewBanner && executionMode === 'chat' ? (
+          <div
+            className="kanban-crew-bg-banner pointer-events-auto mx-3 mb-2 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] leading-snug text-foreground/90 shadow-sm backdrop-blur-md"
+            role="status"
+            aria-live="polite"
+          >
+            <span className="min-w-0 flex-1">
+              班组仍在后台执行（{backgroundCrewBanner.running} 个进行中 /{' '}
+              {backgroundCrewBanner.ready + backgroundCrewBanner.pending} 排队），Chat
+              模式不会杀工人
+            </span>
+            <button
+              type="button"
+              className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              onClick={() => {
+                setBackgroundCrewBanner(null)
+                setCrewPanelOpen(true)
+              }}
+              aria-label="打开班组面板"
+            >
+              查看班组
+            </button>
+            <button
+              type="button"
+              className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              onClick={() => setBackgroundCrewBanner(null)}
+              aria-label="关闭后台班组提示"
+            >
+              关闭
+            </button>
+          </div>
+        ) : null}
+        <ExecutionModeSuggestionBanner
+          sessionId={sessionId}
+          executionMode={executionMode}
+          initialSuggestion={pendingModeSuggestion}
+          onExecutionModeChange={async (m, source) => {
+            const prev = executionMode
+            setExecutionMode(m)
+            setPendingModeSuggestion(null)
+            const res = await window.electronAPI.setSessionExecutionMode(sessionId, m, source)
+            if (!res.ok) {
+              setExecutionMode(prev)
+              console.error('[Chat] setSessionExecutionMode (suggestion) failed:', res.error)
+            } else {
+              await applyBackgroundCrewFromModeSwitch(m, res)
+            }
+          }}
+        />
         <PermissionBanner sessionId={sessionId} />
         <div
           ref={composerClusterRef}
           className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''} ${composerExpanded ? 'is-composer-expanded' : ''}`}
         >
-          <div className="session-input-dock" data-permission-mode={permissionMode}>
+          <div
+            className="session-input-dock"
+            data-permission-mode={permissionMode}
+            data-execution-mode={executionMode}
+          >
             <ChatInput
               ref={chatInputRef}
               onSubmit={() => void send()}
-              placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
+              placeholder={
+                executionMode === 'chat'
+                  ? '输入消息… @ 点名角色（Enter 发送）'
+                  : '输入消息…（Enter 发送，Shift+Enter 换行）'
+              }
               onDraftChange={setHasDraft}
               attachments={pendingAttachments}
               onAttachmentsChange={setPendingAttachments}
               onOpenFileDialog={handleOpenFileDialog}
+              mentionRoles={executionMode === 'chat' ? mentionRoles : undefined}
               footer={
-                <div className="flex items-center justify-between px-2 pb-2 pt-1">
-                  <div className="flex items-center gap-1">
-                    {/* 权限角标：仅非默认模式（plan/bypass）显示，提示当前处于非常规权限。
-                        auto 不显示（默认安全态）。点击展开功能栏切换。 */}
-                    {permissionMode !== 'auto' && (
+                /* h-7 固定底栏；窄宽时 is-composer-compact 走图标优先方案 */
+                <div
+                  className={cn(
+                    'composer-footer-bar flex h-7 items-center justify-between gap-1 px-2 pb-2 pt-0.5',
+                    composerCompact && 'composer-footer-bar--compact',
+                  )}
+                >
+                  <div className="composer-footer-bar__left flex h-7 min-w-0 items-center gap-0.5">
+                    {/* 加号最左 */}
+                    <AppTooltip label="添加附件">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7 shrink-0 rounded-lg text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                        onClick={handleOpenFileDialog}
+                        aria-label="添加附件"
+                      >
+                        <Plus className="size-4" />
+                      </Button>
+                    </AppTooltip>
+                    {/* Chat | Work */}
+                    <ExecutionModeToggle
+                      value={executionMode}
+                      onChange={(m) => {
+                        void (async () => {
+                          const prev = executionMode
+                          setExecutionMode(m)
+                          setPendingModeSuggestion(null)
+                          const res = await window.electronAPI.setSessionExecutionMode(
+                            sessionId,
+                            m,
+                            'user',
+                          )
+                          if (!res.ok) {
+                            setExecutionMode(prev)
+                            console.error('[Chat] setSessionExecutionMode failed:', res.error)
+                          } else {
+                            void window.electronAPI.dismissExecutionModeSuggestion?.(sessionId)
+                            await applyBackgroundCrewFromModeSwitch(m, res)
+                            if (m === 'work') setCrewPanelOpen(true)
+                          }
+                        })()
+                      }}
+                    />
+                    {/* 班组：窄模式仅图标 */}
+                    {hasCrewBoards || sessionBoardId ? (
+                      <AppTooltip label={crewPanelOpen ? '收起班组面板' : '打开班组面板'}>
+                        <button
+                          type="button"
+                          className={cn(
+                            'composer-crew-btn inline-flex h-7 shrink-0 items-center justify-center rounded-lg transition-colors',
+                            composerCompact ? 'w-7 px-0' : 'gap-1 px-2',
+                            crewPanelOpen
+                              ? 'bg-primary/12 text-primary'
+                              : 'text-muted-foreground hover:bg-foreground/10 hover:text-foreground',
+                          )}
+                          onClick={() => setCrewPanelOpen((v) => !v)}
+                          aria-label={crewPanelOpen ? '收起班组面板' : '打开班组面板'}
+                          aria-pressed={crewPanelOpen}
+                        >
+                          <UsersThree className="size-3.5 shrink-0" weight="bold" />
+                          {!composerCompact ? (
+                            <span className="composer-crew-btn__label text-[11px] font-semibold">
+                              班组
+                            </span>
+                          ) : null}
+                        </button>
+                      </AppTooltip>
+                    ) : null}
+                    {/* Work 权限角标：窄模式隐藏文字 */}
+                    {executionMode === 'work' && permissionMode !== 'auto' ? (
                       <AppTooltip
                         label={`权限：${TAGENT_PERMISSION_MODE_CONFIG[permissionMode]?.label ?? permissionMode}`}
                       >
@@ -1005,37 +1421,42 @@ export function Chat({
                           ) : (
                             <Unlock className="composer-permission-chip__icon" aria-hidden />
                           )}
-                          <span className="max-w-[64px] truncate">
+                          <span className="composer-permission-chip__label max-w-[64px] truncate">
                             {TAGENT_PERMISSION_MODE_CONFIG[permissionMode]?.label ?? permissionMode}
                           </span>
                         </button>
                       </AppTooltip>
-                    )}
-                    <AppTooltip label="添加附件">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-7 rounded-lg text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                        onClick={handleOpenFileDialog}
-                        aria-label="添加附件"
+                    ) : null}
+                    {executionMode === 'work' ? (
+                      <AppTooltip
+                        label={
+                          composerExpanded ? '收起功能栏' : '展开功能栏（权限 / 子代理）'
+                        }
                       >
-                        <Plus className="size-4" />
-                      </Button>
-                    </AppTooltip>
-                    <AppTooltip label={composerExpanded ? '收起功能栏' : '展开功能栏（权限 / 子代理 / 思考强度）'}>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className={`size-7 rounded-lg transition-colors hover:bg-foreground/10 hover:text-foreground ${composerExpanded ? 'bg-foreground/10 text-foreground' : 'text-muted-foreground'}`}
-                        onClick={() => setComposerExpanded((v) => !v)}
-                        aria-label={composerExpanded ? '收起功能栏' : '展开功能栏'}
-                      >
-                        <SlidersHorizontal className="size-4" />
-                      </Button>
-                    </AppTooltip>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className={`size-7 shrink-0 rounded-lg transition-colors hover:bg-foreground/10 hover:text-foreground ${composerExpanded ? 'bg-foreground/10 text-foreground' : 'text-muted-foreground'}`}
+                          onClick={() => setComposerExpanded((v) => !v)}
+                          aria-label={composerExpanded ? '收起功能栏' : '展开功能栏'}
+                        >
+                          <SlidersHorizontal className="size-4" />
+                        </Button>
+                      </AppTooltip>
+                    ) : null}
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    {/* 模型选择器：放在发送键左侧 */}
+                  <div className="composer-footer-bar__right flex h-7 min-w-0 shrink items-center gap-0.5">
+                    <ReasoningEffortPicker
+                      value={reasoningEffort}
+                      onChange={(effort) => {
+                        void (async () => {
+                          setReasoningEffort(effort)
+                          await window.electronAPI.updateSessionMeta(sessionId, {
+                            reasoningEffort: effort,
+                          })
+                        })()
+                      }}
+                    />
                     <ModelSelector
                       selection={effectiveSelection}
                       lockedKind={lockedKind}
@@ -1130,28 +1551,23 @@ export function Chat({
               }
             />
           </div>
-          {/* 可折叠功能栏：聚焦输入框时展开 */}
-          <ComposerUnderlay
-            permissionMode={permissionMode}
-            onPermissionModeChange={async (m) => {
-              setPermissionMode(m)
-              await window.electronAPI.setSessionPermissionMode(sessionId, m)
-            }}
-            subagentEagerness={subagentEagerness}
-            onSubagentEagernessChange={async (level) => {
-              setSubagentEagerness(level)
-              await window.electronAPI.updateSessionMeta(sessionId, {
-                subagentEagerness: level,
-              })
-            }}
-            reasoningEffort={reasoningEffort}
-            onReasoningEffortChange={async (effort) => {
-              setReasoningEffort(effort)
-              await window.electronAPI.updateSessionMeta(sessionId, {
-                reasoningEffort: effort,
-              })
-            }}
-          />
+          {/* 仅 Work 且展开时挂载，避免 height:0 占位/边框导致切换时底栏跳动 */}
+          {executionMode === 'work' && composerExpanded ? (
+            <ComposerUnderlay
+              permissionMode={permissionMode}
+              onPermissionModeChange={async (m) => {
+                setPermissionMode(m)
+                await window.electronAPI.setSessionPermissionMode(sessionId, m)
+              }}
+              subagentEagerness={subagentEagerness}
+              onSubagentEagernessChange={async (level) => {
+                setSubagentEagerness(level)
+                await window.electronAPI.updateSessionMeta(sessionId, {
+                  subagentEagerness: level,
+                })
+              }}
+            />
+          ) : null}
         </div>
         {/* token 栏：cluster 外部，stack 最底，落在 band 与窗边之间；仅 Pi/external */}
         {showTokenBar && (
@@ -1161,11 +1577,34 @@ export function Chat({
             channelId={effectiveSelection?.channelId}
             isCompacting={isCompactingUi}
             onCompact={() => void compactContext()}
+            compact={composerCompact}
           />
         )}
       </div>
         </div>
       )}
+
+      {/* 右缘：班组面板关闭时的轻入口 */}
+      {!crewPanelOpen && (hasCrewBoards || sessionBoardId) ? (
+        <button
+          type="button"
+          className="kanban-crew-edge-tab"
+          onClick={() => setCrewPanelOpen(true)}
+          aria-label="打开班组面板"
+        >
+          <UsersThree className="size-3.5" weight="bold" />
+          <span>班组</span>
+        </button>
+      ) : null}
+      </div>
+      {/* 右栏：全高班组面板 */}
+      <KanbanCrewPanel
+        sessionId={sessionId}
+        boardId={sessionBoardId}
+        open={crewPanelOpen}
+        onOpenChange={setCrewPanelOpen}
+        onPresenceChange={setHasCrewBoards}
+      />
     </div>
   )
 }
@@ -1174,21 +1613,29 @@ export function Chat({
 function TurnView({
   turn,
   isLiveTurn = false,
+  onRefillToInput,
+  mentionLabels,
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
+  onRefillToInput?: (text: string) => void
+  mentionLabels?: string[]
 }): JSX.Element {
   if (turn.kind === 'user') {
     return (
       <div data-message-id={turn.key}>
-        <MessageView message={turn.message} />
+        <MessageView message={turn.message} onRefillToInput={onRefillToInput} />
       </div>
     )
   }
   if (turn.kind === 'assistant-turn') {
     return (
       <div data-message-id={turn.key}>
-        <AssistantTurnView turn={turn} isLiveTurn={isLiveTurn} />
+        <AssistantTurnView
+          turn={turn}
+          isLiveTurn={isLiveTurn}
+          mentionLabels={mentionLabels}
+        />
       </div>
     )
   }

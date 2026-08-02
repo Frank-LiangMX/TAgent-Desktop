@@ -58,6 +58,11 @@ export class SessionRuntime {
   private lastError: Error | undefined
   /** 累积的 kscc 子进程 stderr（喂给过长上下文识别） */
   private stderrBuffer = ''
+  /**
+   * 当前长驻进程绑定的执行形态指纹（chat|work|…）。
+   * Chat↔Work 切换后工具集/systemPrompt 会变，必须 drop 进程再 spawn，不能只 enqueue。
+   */
+  private spawnToolingFingerprint: string | undefined
 
   constructor(sessionId: string, adapter: AgentProviderAdapter) {
     this.sessionId = sessionId
@@ -67,6 +72,60 @@ export class SessionRuntime {
   /** 是否已有常驻进程（首条 vs 后续判断） */
   hasLiveProcess(): boolean {
     return this.loopRunning && this.adapter.hasActiveChannel?.(this.sessionId) === true
+  }
+
+  /** 从 queryOptions 提取工具/形态指纹（executionMode 优先，否则扫 kanban 注入痕迹） */
+  private static toolingFingerprint(
+    queryOptions: Parameters<AgentProviderAdapter['query']>[0],
+  ): string {
+    const o = queryOptions as {
+      executionMode?: string
+      mcpServers?: Record<string, unknown>
+      extraTools?: Array<{ name?: string }>
+      systemPrompt?: { append?: string } | string
+      systemPromptAppend?: string
+    }
+    if (o.executionMode === 'chat' || o.executionMode === 'work') {
+      return o.executionMode
+    }
+    const hasKanbanMcp = !!(o.mcpServers && 'kanban' in o.mcpServers)
+    const hasKanbanExtra = (o.extraTools ?? []).some((t) =>
+      String(t?.name ?? '').toLowerCase().includes('kanban'),
+    )
+    return hasKanbanMcp || hasKanbanExtra ? 'work' : 'chat'
+  }
+
+  /**
+   * 丢弃 **仍在跑** 的长驻进程（主要是 kscc），供 executionMode 热切换。
+   *
+   * - kscc：loop 长驻 + MCP/systemPrompt 在 spawn 时锁定 → 必须 abort，下次 re-spawn + resume
+   * - Pi：每 turn 后 loop 已退、Agent 仍在内存 → **不要 abort**（会丢 state.messages），
+   *   靠 PiAdapter 在下次 query 时按 toolingKey 热重建并保留消息
+   */
+  dropLiveProcessForConfigChange(reason = 'config-change'): void {
+    this.spawnToolingFingerprint = undefined
+    // 仅当事件循环仍在跑时杀进程（kscc 热切换场景）
+    if (!this.loopRunning || this.adapter.hasActiveChannel?.(this.sessionId) !== true) {
+      console.log(
+        `[会话 ${this.sessionId}] executionMode 配置变更（${reason}）：无长驻 loop，跳过 abort（Pi 将热重建工具）`,
+      )
+      return
+    }
+    console.log(`[会话 ${this.sessionId}] 丢弃长驻进程（${reason}），下次消息按新配置 spawn`)
+    // 标记用户主动停止，避免 runLoop 把 abort 当成崩溃恢复
+    this.userStopping = true
+    try {
+      this.adapter.abort(this.sessionId)
+    } catch (err) {
+      console.warn(`[会话 ${this.sessionId}] abort 长驻进程失败:`, err)
+    }
+    this.loopRunning = false
+    this.turnInFlight = false
+    // 保持 runtime 可复用：不要 userClosing
+    this.state = 'idle'
+    queueMicrotask(() => {
+      if (!this.loopRunning) this.userStopping = false
+    })
   }
 
   /** 注册流式回调 */
@@ -105,10 +164,40 @@ export class SessionRuntime {
     // 新一轮用户消息：清除上一轮的主动停止标记（本轮重新参与崩溃恢复判定）
     this.userStopping = false
 
+    const nextFp = SessionRuntime.toolingFingerprint(queryOptions)
+
+    // Chat↔Work 等导致工具集变化：丢弃旧进程，用新 queryOptions re-spawn（kscc 靠 resume 续历史）
+    if (
+      this.hasLiveProcess() &&
+      this.spawnToolingFingerprint &&
+      this.spawnToolingFingerprint !== nextFp
+    ) {
+      if (this.turnInFlight) {
+        throw new Error(
+          `[session ${this.sessionId}] 上一轮仍在跑，请结束后再切换执行形态后发送`,
+        )
+      }
+      console.log(
+        `[会话 ${this.sessionId}] 执行形态/工具集变更 ${this.spawnToolingFingerprint} → ${nextFp}，re-spawn`,
+      )
+      this.dropLiveProcessForConfigChange('executionMode-or-tools')
+      // 把本轮用户文本并入新 spawn 的 prompt
+      let prompt = queryOptions.prompt
+      if (userMessage) {
+        const c = userMessage.message?.content
+        if (typeof c === 'string' && c.trim()) prompt = c
+      }
+      this.lastInFlightPrompt = prompt
+      this.spawnToolingFingerprint = nextFp
+      await this.startLoop({ ...queryOptions, prompt })
+      return
+    }
+
     // 首次：spawn + 起持续循环
     if (!this.hasLiveProcess()) {
       // 记录在飞消息（崩溃恢复时重注入；result 后清空）
       this.lastInFlightPrompt = queryOptions.prompt
+      this.spawnToolingFingerprint = nextFp
       await this.startLoop(queryOptions)
       return
     }
@@ -215,10 +304,15 @@ export class SessionRuntime {
         }
         // 循环退出 = 进程退出（iterResult.done）/ abort
         this.loopRunning = false
-        // 用户主动关闭 / 停止 → 干净收尾，不恢复、不报错
-        if (this.userClosing || this.userStopping) {
-          this.userStopping = false
+        // 用户主动关闭 → 永久 closed
+        if (this.userClosing) {
           this.state = 'closed'
+          return
+        }
+        // 软停止 / 配置切换 abort：回 idle，runtime 可 re-spawn（勿 closed，否则 sendMessage 直接抛错）
+        if (this.userStopping) {
+          this.userStopping = false
+          this.state = 'idle'
           return
         }
         // 进程在 turn 进行中退出（无 result 收尾）→ 视为崩溃，尝试恢复
@@ -245,9 +339,13 @@ export class SessionRuntime {
       } catch (err) {
         // query generator 抛错
         this.loopRunning = false
-        if (this.userClosing || this.userStopping) {
-          this.userStopping = false
+        if (this.userClosing) {
           this.state = 'closed'
+          return
+        }
+        if (this.userStopping) {
+          this.userStopping = false
+          this.state = 'idle'
           return
         }
         const error = err instanceof Error ? err : new Error(String(err))

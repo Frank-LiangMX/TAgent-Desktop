@@ -443,7 +443,9 @@ export const UserMessageContent = React.memo(
       <div
         className={cn(
           'agent-user-bubble relative inline-block max-w-full px-3.5 py-2.5',
-          shouldCollapse && !isExpanded && 'pb-6',
+          // is-collapsed：给底部「展开」预留空间（勿用 pb-6，会被业务侧 padding 覆盖）
+          shouldCollapse && !isExpanded && 'is-collapsed',
+          shouldCollapse && isExpanded && 'is-expanded',
           className
         )}
         {...props}
@@ -451,7 +453,7 @@ export const UserMessageContent = React.memo(
         <div
           ref={contentRef}
           className={cn(
-            'overflow-hidden transition-[max-height] duration-200',
+            'agent-user-bubble__body overflow-hidden transition-[max-height] duration-200',
             '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
             shouldCollapse && !isExpanded && 'max-h-[6.5em]'
           )}
@@ -460,29 +462,29 @@ export const UserMessageContent = React.memo(
             {children}
           </MessageResponse>
         </div>
-        {shouldCollapse && (
+        {shouldCollapse ? (
           <button
             type="button"
             onClick={toggleExpand}
             className={cn(
-              'flex items-center gap-1 text-xs text-foreground/40 hover:text-foreground/70 transition-colors mt-1',
-              !isExpanded &&
-                'agent-user-bubble-fade absolute bottom-0 left-0 right-0 px-3.5 pb-2.5 pt-4'
+              'agent-user-bubble__expand',
+              !isExpanded && 'agent-user-bubble__expand--overlay',
             )}
+            aria-expanded={isExpanded}
           >
             {isExpanded ? (
               <>
-                <ChevronUp className="size-3" />
+                <ChevronUp className="size-3 shrink-0" />
                 <span>收起</span>
               </>
             ) : (
               <>
-                <ChevronDown className="size-3" />
+                <ChevronDown className="size-3 shrink-0" />
                 <span>展开全部</span>
               </>
             )}
           </button>
-        )}
+        ) : null}
       </div>
     )
   },
