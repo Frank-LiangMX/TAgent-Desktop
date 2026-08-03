@@ -107,107 +107,32 @@
   align-items: flex-end;
 }
 
-/* ===== tab 玻璃胶囊（对齐 app-workspace-tab：32px 高、72~128px 宽、11px 圆角）===== */
+/* ===== tab 容器：透明壳，视觉由 defaultTabComponent（app-workspace-tab 那套）提供 =====
+   用 defaultTabComponent=DockTab 后，.dv-tab 只做外层容器，里面渲染
+   app-workspace-tab-shell/app-workspace-tab/app-workspace-tab-close（app-shell.css 现成）。
+   所以 .dv-tab 自身透明、撑满、不自带任何胶囊样式，避免和 app-workspace-tab 双层叠加。 */
 .workspace-dock .dv-tab {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: stretch;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  overflow: visible;
+}
+/* 让 DockTab 填充 .dv-tab，app-workspace-tab-shell 控宽（72~128px） */
+.workspace-dock .dv-tab > .app-workspace-tab-shell {
+  flex: 0 1 128px;
   min-width: 72px;
   max-width: 128px;
-  flex: 0 1 128px;
-  height: 32px;
-  padding: 0 22px 0 10px; /* 右侧留关闭按钮位（对齐原 tab padding-right:22px）*/
-  border: 1px solid transparent;
-  border-radius: 11px !important;
-  background: transparent;
-  color: hsl(var(--muted-foreground) / 0.88);
-  font-size: 10px;
-  font-weight: 520;
-  letter-spacing: -0.01em;
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition:
-    color 160ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1)),
-    background-color 180ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1)),
-    border-color 180ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1));
 }
 
-.workspace-dock .dv-tab:hover {
-  color: hsl(var(--foreground));
-  background: color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
-}
-
-/* active tab：玻璃填充 + primary 文字（对齐 app-workspace-tab-active-plate）*/
-.workspace-dock .dv-tab.dv-active-tab {
-  border-color: rgb(var(--glass-rgb) / 0.5);
-  background:
-    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
-    rgb(var(--glass-rgb) / 0.48);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.5),
-    0 8px 18px -10px rgb(23 30 40 / 0.12);
-  color: hsl(var(--primary));
-}
-.dark .workspace-dock .dv-tab.dv-active-tab {
-  border-color: rgb(255 255 255 / 0.06);
-  background:
-    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 64%),
-    rgb(var(--glass-rgb) / 0.4);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
-}
-
-/* 去掉 abyss/其他主题给 active tab 加的 ::after 下划线 + border-bottom（避免横线切半感）*/
+/* 去掉 abyss 给 active/inactive tab 的 ::after 下划线 + ::before 分隔符（胶囊不靠线）*/
 .workspace-dock .dv-tab.dv-active-tab::after,
-.workspace-dock .dv-tab.dv-inactive-tab::after {
-  content: none;
-}
-.workspace-dock .dv-tab.dv-active-tab,
-.workspace-dock .dv-tab.dv-inactive-tab {
-  border-bottom: 1px solid transparent;
-}
-/* tab 间分隔符 ::before 也去掉（玻璃胶囊不靠分隔线）*/
+.workspace-dock .dv-tab.dv-inactive-tab::after,
 .workspace-dock .dv-tabs-container .dv-tab:not(:first-child)::before {
   content: none;
-}
-
-/* tab 内默认内容布局：标题弹性收缩 + 关闭按钮固定位 */
-.workspace-dock .dv-tab .dv-default-tab {
-  gap: 6px;
-}
-.workspace-dock .dv-tab .dv-default-tab .dv-default-tab-content {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* tab 关闭按钮（dv-default-tab-action 含 svg）：对齐原 app-workspace-tab-close
-   —— 默认隐藏，active 0.38，hover 1。原 TabBar 关闭按钮是「active 半显、hover 全显」。*/
-.workspace-dock .dv-tab .dv-default-tab-action,
-.workspace-dock .dv-tab .dv-svg {
-  color: hsl(var(--muted-foreground) / 0.62);
-  opacity: 0;
-  border-radius: 6px;
-  transition: color 150ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1)),
-    opacity 150ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1)),
-    background-color 150ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1));
-}
-/* active tab 关闭按钮半显（对齐原 [data-active] .app-workspace-tab-close { opacity:0.38 }）*/
-.workspace-dock .dv-tab.dv-active-tab .dv-default-tab-action,
-.workspace-dock .dv-tab.dv-active-tab .dv-svg {
-  opacity: 0.38;
-}
-/* hover 整个 tab → 全显 */
-.workspace-dock .dv-tab:hover .dv-default-tab-action,
-.workspace-dock .dv-tab:hover .dv-svg {
-  opacity: 1;
-}
-.workspace-dock .dv-tab .dv-default-tab-action:hover {
-  color: hsl(var(--foreground));
-  background: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
 }
 
 /* ===== 分隔条 sash ===== */

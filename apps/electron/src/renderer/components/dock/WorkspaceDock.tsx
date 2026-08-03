@@ -21,6 +21,7 @@ import 'dockview/dist/styles/dockview.css'
 import './dock.css'
 import { ChatPane } from './ChatPane'
 import { CrewPane } from './CrewPane'
+import { DockTab } from './DockTab'
 import { tabsAtom, activeTabIdAtom, closeTab, type TabItem } from '../../atoms/tabs'
 
 const DOCK_LAYOUT_KEY = 'tagent:dockLayout'
@@ -104,7 +105,7 @@ export function WorkspaceDock(): JSX.Element {
           id: tab.sessionId,
           title: tab.title || '会话',
           component: 'chat',
-          params: { sessionId: tab.sessionId },
+          params: { sessionId: tab.sessionId, paneType: 'chat' },
         })
       }
 
@@ -221,7 +222,7 @@ export function WorkspaceDock(): JSX.Element {
       id: crewId,
       title: `班组 · ${sessionTitle}`,
       component: 'crew',
-      params: { sessionId, sessionTitle },
+      params: { sessionId, sessionTitle, paneType: 'crew' },
       position: { direction: 'right', referencePanel: active },
     })
   }
@@ -231,6 +232,7 @@ export function WorkspaceDock(): JSX.Element {
       <DockviewReact
         onReady={handleReady}
         components={{ chat: ChatPane, crew: CrewPane }}
+        defaultTabComponent={DockTab}
         theme={dockTheme}
         onWillDrop={handleWillDropForEdgeSplit}
         className="workspace-dock__canvas"
