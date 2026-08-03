@@ -42,6 +42,7 @@ import {
   notificationPrefsAtom,
   setNotificationPrefsAtom,
 } from '../../atoms/notification-prefs'
+import { splitDockModeAtom } from '../../atoms/feature-flags'
 import { ChannelsSettings } from './ChannelsSettings'
 import appiconLight from '../../assets/tagent-appicon-light.png'
 import appiconDark from '../../assets/tagent-appicon-dark.png'
@@ -518,6 +519,8 @@ function GeneralSettings(): JSX.Element {
 
   const notifPrefs = useAtomValue(notificationPrefsAtom)
   const setNotifPrefs = useSetAtom(setNotificationPrefsAtom)
+  const splitDockMode = useAtomValue(splitDockModeAtom)
+  const setSplitDockMode = useSetAtom(splitDockModeAtom)
 
   return (
     <div className="settings-page">
@@ -570,6 +573,27 @@ function GeneralSettings(): JSX.Element {
             diagram="toast"
           />
         </div>
+      </SettingsSection>
+
+      <SettingsSection title="实验功能">
+        <SettingsCard>
+          <div className="settings-row">
+            <div className="settings-row-main min-w-0 flex-1">
+              <span className="settings-field-label">分屏工作台</span>
+              <div className="settings-row-bottom mt-1">
+                <span className="text-xs leading-relaxed text-muted-foreground">
+                  拖会话标签到主区边缘自动分屏，多会话同屏独立运行
+                </span>
+              </div>
+            </div>
+            <div className="settings-row-control shrink-0">
+              <Switch
+                checked={splitDockMode}
+                onCheckedChange={(v) => setSplitDockMode(v)}
+              />
+            </div>
+          </div>
+        </SettingsCard>
       </SettingsSection>
     </div>
   )

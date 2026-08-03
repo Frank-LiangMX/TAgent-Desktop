@@ -37,11 +37,13 @@ import { AppShell } from './components/shell/AppShell'
 import { Rail, type RailItem } from './components/shell/Rail'
 import { TabBar } from './components/shell/TabBar'
 import { SessionRouter } from './components/shell/SessionRouter'
+import { WorkspaceDock } from './components/dock/WorkspaceDock'
 import { Chat, type SessionMeta } from './components/chat/Chat'
 import { WelcomeStart } from './components/shell/WelcomeStart'
 import { NewConversationLanding } from './components/chat/NewConversationLanding'
 import { ProjectOnboarding } from './components/chat/ProjectOnboarding'
 import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
+import { splitDockModeAtom } from './atoms/feature-flags'
 import { pendingSuggestionAtom } from './atoms/pending-suggestion'
 import {
   makeStatusTickerItem,
@@ -372,6 +374,8 @@ export function App(): JSX.Element {
   const setTabs = useSetAtom(tabsAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
   const setPendingSuggestion = useSetAtom(pendingSuggestionAtom)
+  // 分屏工作台（实验）：on → 主区用 Dockview，拖会话 tab 到边缘自动分屏
+  const splitDockMode = useAtomValue(splitDockModeAtom)
   /** 草稿会话（无 tab 的新会话页）：点「新建会话」设置，发送首条消息时由 Chat 物化为 tab */
   const [draftSession, setDraftSession] = useState<SessionMeta | null>(null)
 
@@ -543,12 +547,16 @@ export function App(): JSX.Element {
             onBack={() => setDraftSession(null)}
           />
         ) : activeTab ? (
-          <div className="flex h-full flex-col">
-            {showTabBar && <TabBar />}
-            <div className="min-h-0 flex-1">
-              <SessionRouter />
+          splitDockMode ? (
+            <WorkspaceDock />
+          ) : (
+            <div className="flex h-full flex-col">
+              {showTabBar && <TabBar />}
+              <div className="min-h-0 flex-1">
+                <SessionRouter />
+              </div>
             </div>
-          </div>
+          )
         ) : (
           <NewConversationLanding
             composer={
