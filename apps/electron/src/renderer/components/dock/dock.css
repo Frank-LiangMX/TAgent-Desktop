@@ -1,0 +1,39 @@
+/*
+ * dock.css — Dockview 分屏工作台样式（实验）
+ *
+ * Dockview 自带基础样式由 dockview/dist/styles/dockview.css 提供（WorkspaceDock 已 import）。
+ * 本文件只做满高容器 + 最小视觉对齐（字体/边框跟 app 暗色玻璃风）。
+ */
+
+/* 宿主容器：满高，Dockview 画布铺满 */
+.workspace-dock {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.workspace-dock__canvas,
+.workspace-dock__canvas .dv-dockview {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* tab 字体对齐 app（玻璃胶囊感弱化，先可用） */
+.workspace-dock .dv-tabs-container .dv-tab {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 分隔条略细 */
+.workspace-dock .dv-resize-container .dv-resize-handle {
+  width: 4px;
+}
+
+/* 暗色：Dockview 默认偏浅，跟 dark 主题 */
+.dark .workspace-dock .dv-dockview {
+  background: transparent;
+}
+.dark .workspace-dock .dv-groupview {
+  background: color-mix(in srgb, rgb(var(--glass-rgb, 50 52 56)) 35%, transparent);
+}
