@@ -73,6 +73,13 @@ export interface TAgentAssistantMessage {
   error?: { message: string; code?: string }
   content: TAgentContentBlock[]
   usage?: TAgentUsage
+  /**
+   * 停止原因（Pi 核流式用）：有值表示该轮已完成（turn_end 最终消息），
+   * 无值表示仍在流式中（toolcall_end 等中间 sdk_message）。
+   * 渲染层据此区分流式/完成，清 streaming 标记（见 Chat.tsx Pi 核流式处理）。
+   * 与 SDKAssistantMessage.stop_reason 命名一致（snake_case）。
+   */
+  stop_reason?: string
 }
 
 // ===== 顶层联合（转录消息） =====

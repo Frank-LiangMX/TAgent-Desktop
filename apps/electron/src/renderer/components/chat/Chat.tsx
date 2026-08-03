@@ -7,6 +7,12 @@
  */
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
+import {
+  sessionRunMapAtom,
+  startSessionRunAtom,
+  stopSessionRunAtom,
+  adoptSessionRunAtom,
+} from '../../atoms/session-run-atoms'
 import type { StickToBottomContext } from 'use-stick-to-bottom'
 import type {
   TAgentDesktopStreamPayload,
@@ -54,6 +60,7 @@ import {
 } from '@tagent/shared'
 import { MessageView } from './MessageView'
 import { AssistantTurnView } from './AssistantTurnView'
+import { ComposerRunTimer } from './ComposerRunTimer'
 import {
   buildTurnPresentation,
   groupItemsIntoTurns,
@@ -155,7 +162,52 @@ export function Chat({
 }): JSX.Element {
   const sessionId = session.id
   const [items, setItems] = useState<DisplayItem[]>([])
-  const [running, setRunning] = useState(false)
+  /**
+   * 运行态（running / startedAt）走 per-session Jotai atom（session-run-atoms），
+   * 不用 local useState：草稿态与真实 tab 态是两个不同位置的 <Chat> 实例，切换时
+   * 草稿实例卸载会丢 local state；atom 按 sessionId 键跨实例存活，真实实例挂载时
+   * 由会话切换 effect 对照主进程 getSessionStatus 收养在跑的轮（保住草稿 startedAt）。
+   */
+  // 直接订阅稳定的 map atom（单例），再按 sessionId 取条目。不用 sessionRunAtom(id)
+  // 工厂（每渲染新建 atom 实例 → useAtomValue 订阅不稳定 → 可能触发更新循环）。
+  const sessionRunMap = useAtomValue(sessionRunMapAtom)
+  const runState = sessionRunMap[sessionId] ?? { running: false, startedAt: null }
+  const running = runState.running
+  const runStartedAt = runState.startedAt
+  // runStartedAt 同步到 ref：completeRun 闭包里取最新值，避免读到旧渲染的 startedAt
+  const runStartedAtRef = useRef<number | null>(runStartedAt)
+  runStartedAtRef.current = runStartedAt
+  // 最后一个 assistant-turn 的 key：完成时把全程耗时记到它名下（按 turn.key 查）
+  const lastAssistantTurnKeyRef = useRef<string | null>(null)
+  /** 完成耗时表：turnKey → 毫秒（发送→idle 全程）。完成后留存，供 AssistantTurnView 复制栏显示 */
+  const [completedDurations, setCompletedDurations] = useState<Record<string, number>>({})
+  const startSessionRun = useSetAtom(startSessionRunAtom)
+  const stopSessionRun = useSetAtom(stopSessionRunAtom)
+  const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
+  /** 开始一轮运行：写 atom 置 running 并记起始时间戳 */
+  const startRun = (): void => {
+    startSessionRun({ id: sessionId, startedAt: Date.now() })
+  }
+  /** 结束一轮运行（仅清 running；发送失败等无有效 turn 的路径用） */
+  const stopRun = (): void => {
+    stopSessionRun(sessionId)
+  }
+  /**
+   * 完成一轮运行：算发送→idle 全程耗时，记到最后一个 assistant-turn 名下，再清 running。
+   * 口径对齐 TAgent_General 的 _durationMs（queryStartedAt → persistSDKMessages），
+   * 覆盖思考期 + 所有工具轮，非 turn 内 assistant 间隔。
+   */
+  const completeRun = (): void => {
+    const startedAt = runStartedAtRef.current
+    if (startedAt != null) {
+      const durationMs = Math.max(0, Date.now() - startedAt)
+      const turnKey = lastAssistantTurnKeyRef.current
+      if (turnKey) {
+        setCompletedDurations((prev) => ({ ...prev, [turnKey]: durationMs }))
+      }
+    }
+    stopSessionRun(sessionId)
+  }
   /** 输入框是否有草稿（供发送/停止键同槽复用：运行中且有草稿→仍可追加发送，显示发送键；运行中无草稿→停止键） */
   const [hasDraft, setHasDraft] = useState(false)
   /** 运行中排队的消息（运行中发送→入队，运行结束→自动消费） */
@@ -385,7 +437,8 @@ export function Chat({
   useEffect(() => {
     sessionIdRef.current = sessionId
     setItems([])
-    setRunning(false)
+    // 运行态 reconcile 延后到下方 async：对照主进程 getSessionStatus 决定保 / 收养 / 清，
+    // 避免真实 Chat 挂载时无条件 stopRun 抹掉草稿实例 seed 的在跑计时（草稿→真实切换）。
     setHasDraft(false)
     setScrollReady(false)
     setVisibleCount(20) // 虚拟化：切会话重置首批 20
@@ -403,6 +456,21 @@ export function Chat({
       setPendingSuggestion(null)
     }
     void (async () => {
+      // 运行态 reconcile：草稿→真实切换时，草稿实例 startRun 已 seed atom(running=true)，
+      // 真实实例全新挂载需对照主进程真相收养，保住 startedAt 让计时/停止键/流式动画连续。
+      // runState 是挂载时刻闭包值（草稿 seed 的 running=true）；即便 IPC 竞态，atom 在跑就不清。
+      try {
+        const status = await window.electronAPI.getSessionStatus(sessionId)
+        if (status?.status === 'running') {
+          if (!runState.running) adoptSessionRun({ id: sessionId, startedAt: runState.startedAt ?? Date.now() })
+          // atom 已在跑（草稿 seed）→ 保留 startedAt，什么都不做
+        } else {
+          stopRun() // 主进程说没在跑 → 清（正常切到 idle 会话）
+        }
+      } catch {
+        // IPC 失败：保守按 atom 当前值，在跑就保留、否则清
+        if (!runState.running) stopRun()
+      }
       const history = (await window.electronAPI.getMessages(sessionId)) as unknown[]
       // 按核分流转译：kscc 会话落盘 SDKMessage → sdkMessageToIR；pi 会话落盘 TAgentMessage IR → 直读。
       // 旧 pi 会话可能仍是 SDKMessage 形态（有 message 包装），用 sdkMessageToIR 兜底。
@@ -919,7 +987,9 @@ export function Chat({
         )
         return purgeStreamingItems(cleaned)
       })
-      setRunning(false)
+      // result = 整个 run 真正 idle（turn_end 只是单个 SDK turn 结束，工具循环还会继续）。
+      // 用 completeRun 记发送→idle 全程耗时到最后 assistant-turn，再清 running。
+      completeRun()
       bumpRefresh()
     } else if (p.kind === 'stream_text_delta') {
       setItems((prev) => {
@@ -955,7 +1025,7 @@ export function Chat({
           )
           return purgeStreamingItems(cleaned)
         })
-        setRunning(false)
+        stopRun()
         // followMode：不再清 liveMentionLabels——铭牌代表当前 activeSpeaker，续聊仍由该角色接。
         // 用户在输入框 ✕ 清除 activeMentionRoleIds 时会一并清 liveMentionLabels。
         bumpRefresh()
@@ -997,7 +1067,7 @@ export function Chat({
             } as TAgentMessage,
           },
         ])
-        setRunning(false)
+        stopRun()
       } else if (evt.type === 'compacting') {
         setIsCompactingUi(true)
         setItems((prev) => [
@@ -1124,7 +1194,7 @@ export function Chat({
       }
       setPendingAttachments([])
     }
-    setRunning(true)
+    startRun()
     try {
       const res = await window.electronAPI.sendMessage({
         sessionId: sessionIdRef.current,
@@ -1141,7 +1211,7 @@ export function Chat({
       } as any)
       if (res && !res.ok) {
         alert(`发送失败：${res.error ?? '未知错误'}`)
-        setRunning(false)
+        stopRun()
       } else {
         const coreKind = getChannelCoreKind(channel)
         setSelectionOverride(selection)
@@ -1171,7 +1241,7 @@ export function Chat({
     } catch (err) {
       console.error('[Chat] sendMessage 异常:', err)
       alert(`发送异常：${err instanceof Error ? err.message : String(err)}`)
-      setRunning(false)
+      stopRun()
     }
   }
 
@@ -1405,6 +1475,8 @@ export function Chat({
                   running &&
                   turnIndex === visibleTurns.length - 1 &&
                   turn.kind === 'assistant-turn'
+                // 追踪最后一个 assistant-turn 的 key，供 completeRun 记完成耗时
+                if (turn.kind === 'assistant-turn') lastAssistantTurnKeyRef.current = turn.key
                 return (
                   <TurnView
                     key={turn.key}
@@ -1416,6 +1488,7 @@ export function Chat({
                         ? liveMentionLabels
                         : undefined
                     }
+                    completedDurationMs={completedDurations[turn.key]}
                   />
                 )
               })}
@@ -1500,6 +1573,7 @@ export function Chat({
           ref={composerClusterRef}
           className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''} ${composerExpanded ? 'is-composer-expanded' : ''}`}
         >
+          <ComposerRunTimer startedAt={runStartedAt} />
           <div
             className="session-input-dock"
             data-permission-mode={permissionMode}
@@ -1801,11 +1875,13 @@ function TurnView({
   isLiveTurn = false,
   onRefillToInput,
   mentionLabels,
+  completedDurationMs,
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
   onRefillToInput?: (text: string) => void
   mentionLabels?: string[]
+  completedDurationMs?: number
 }): JSX.Element {
   if (turn.kind === 'user') {
     return (
@@ -1821,6 +1897,7 @@ function TurnView({
           turn={turn}
           isLiveTurn={isLiveTurn}
           mentionLabels={mentionLabels}
+          completedDurationMs={completedDurationMs}
         />
       </div>
     )

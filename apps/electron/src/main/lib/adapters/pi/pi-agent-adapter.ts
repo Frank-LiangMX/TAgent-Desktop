@@ -931,6 +931,9 @@ function piAssistantToIR(msg: AssistantMessage, sessionId: string): TAgentMessag
     content,
     usage: msg.usage ? piUsageToIR(msg.usage) : undefined,
     error: isError ? { message: msg.errorMessage ?? '' } : undefined,
+    // turn_end 最终消息带 stopReason → 映射 stop_reason，渲染层据此清 streaming 标记。
+    // 流式中间 sdk_message（toolcall_end）不经本函数、无 stop_reason → 视为仍在流式。
+    stop_reason: msg.stopReason,
   }
 }
 
