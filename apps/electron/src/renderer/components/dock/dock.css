@@ -3,7 +3,9 @@
  *
  * Dockview 自带基础样式由 dockview/dist/styles/dockview.css 提供（WorkspaceDock 已 import）。
  * 本文件覆盖 abyss 主题的 tab/sash/drop 指示器，对齐 app-workspace-tab 的玻璃胶囊视觉：
- *   - tab：玻璃填充（--glass-rgb）+ 顶光 inset + 11px 圆角，active 用 primary 色
+ *   - 标签栏：顶对齐 sidebar（吃 --shell-band-inset-top 顶垫，但用 padding 不用 margin，
+ *     避免被 .dv-groupview 的 overflow:hidden 切掉圆角上半）+ 底 1px 分隔线
+ *   - tab：32px 高、72~128px 宽、11px 圆角、玻璃填充（--glass-rgb）+ 顶光 inset，active 用 primary 色
  *   - 分隔条 sash：细 + primary hover
  *   - drop 指示器：primary 色半透明填充
  *   - group 背景：transparent 露 app scene 玻璃底（与现有 Chat 透 scene 一致）
@@ -39,38 +41,93 @@
   --dv-inactivegroup-hiddenpanel-tab-color: hsl(var(--muted-foreground) / 0.55);
   --dv-separator-border: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
   --dv-tabs-and-actions-container-font-size: 11px;
-  --dv-tabs-and-actions-container-height: 32px;
+  --dv-tabs-and-actions-container-height: 44px; /* 16 顶垫 + 6+6 上下 pad + 32 胶囊高 */
   --dv-drag-over-background-color: hsl(var(--primary) / 0.12);
   --dv-drag-over-border-color: hsl(var(--primary) / 0.5);
   --dv-icon-hover-background-color: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
-  --dv-tab-font-size: 11px;
+  --dv-tab-font-size: 10px;
   --dv-border-radius: 11px;
-  --dv-tab-margin: 2px;
+  --dv-tab-margin: 0;
   /* sash 拖宽条 */
   --dv-active-sash-color: hsl(var(--primary) / 0.6);
   --dv-active-sash-transition-duration: 120ms;
 }
 
-/* ===== tab 玻璃胶囊（对齐 app-workspace-tab）===== */
-.workspace-dock .dv-tabs-container {
-  gap: 4px;
-  padding: 6px 6px 0;
+/* ===== group 容器：透明露 scene 玻璃底，圆角但不切标签圆角 ===== */
+/* .dv-groupview 默认 overflow:hidden 会把贴顶的 tab 圆角上半切掉。
+   这里让 groupview 自身不裁切（content-container 自己控制内容溢出），
+   这样标签栏的 16px 顶垫 + 胶囊圆角能完整显示。 */
+.workspace-dock .dv-groupview {
+  background: transparent;
+  overflow: visible;
+}
+.workspace-dock .dv-content-container,
+.workspace-dock .dv-content {
+  background: transparent;
+  /* 内容区自己裁切自己的滚动内容，不影响标签栏 */
+  overflow: auto;
+  min-height: 0;
 }
 
+/* group 外框：轻玻璃描边 + 圆角（对齐 session-composer-cluster 玻璃）。
+   只给外框圆角，不设 overflow，避免切标签圆角。 */
+.workspace-dock .dv-resize-container:has(> .dv-groupview) {
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
+  background: rgb(var(--glass-rgb) / 0.12);
+}
+.dark .workspace-dock .dv-resize-container:has(> .dv-groupview) {
+  border-color: rgb(255 255 255 / 0.05);
+  background: rgb(var(--glass-rgb) / 0.08);
+}
+
+/* ===== 标签栏容器：对齐 app-workspace-tab-strip ===== */
+/* Dockview 的 tabs-and-actions-container 等价原 TabBar 的 strip。
+   关键：顶对齐 sidebar 用 padding-top（不是 margin-top）——
+   margin-top 会被 .dv-groupview 的 overflow 区域吃掉/把胶囊推到被切位置；
+   padding-top 在容器内部撑开，胶囊完整显示且顶部与 sidebar「会话」标题带同高。
+   height 用固定值（= 顶垫 + 上下 pad + 胶囊高），让 Dockview 算得到正确布局高度。 */
+.workspace-dock .dv-tabs-and-actions-container {
+  box-sizing: border-box;
+  height: var(--dv-tabs-and-actions-container-height, 44px);
+  /* 顶垫 = sidebar 的 band-inset-top（16px），让标签顶与「会话 THREADS」带同高；
+     左右 = session-gutter（16px）对齐原 strip；底 6px 让胶囊下沿到分隔线有呼吸 */
+  padding: calc(var(--shell-band-inset-top, 16px)) var(--app-shell-session-gutter, 16px) 6px;
+  margin-top: 0; /* 覆盖任何继承的 margin，避免被 overflow 切 */
+  border-bottom: 1px solid var(--spatial-line, color-mix(in srgb, hsl(var(--foreground)) 8%, transparent));
+  background: transparent;
+  align-items: flex-end; /* 胶囊贴底（紧邻分隔线），顶垫在上 */
+}
+
+/* tabs 横向容器：不 overflow 切圆角，gap 对齐原 TabBar(4px)，贴底排列 */
+.workspace-dock .dv-tabs-container {
+  gap: 4px;
+  overflow: visible;
+  height: auto; /* 不撑满 44px，让 align-items:flex-end 把胶囊推到底 */
+  align-items: flex-end;
+}
+
+/* ===== tab 玻璃胶囊（对齐 app-workspace-tab：32px 高、72~128px 宽、11px 圆角）===== */
 .workspace-dock .dv-tab {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
-  padding: 0 10px;
+  min-width: 72px;
+  max-width: 128px;
+  flex: 0 1 128px;
+  height: 32px;
+  padding: 0 22px 0 10px; /* 右侧留关闭按钮位（对齐原 tab padding-right:22px）*/
   border: 1px solid transparent;
-  border-radius: 11px;
+  border-radius: 11px !important;
   background: transparent;
   color: hsl(var(--muted-foreground) / 0.88);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 520;
   letter-spacing: -0.01em;
   cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   transition:
     color 160ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1)),
     background-color 180ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1)),
@@ -82,13 +139,15 @@
   background: color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
 }
 
-/* active tab：玻璃填充 + primary 文字（对齐 app-workspace-tab[data-active]）*/
+/* active tab：玻璃填充 + primary 文字（对齐 app-workspace-tab-active-plate）*/
 .workspace-dock .dv-tab.dv-active-tab {
   border-color: rgb(var(--glass-rgb) / 0.5);
   background:
     radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
     rgb(var(--glass-rgb) / 0.48);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.5);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    0 8px 18px -10px rgb(23 30 40 / 0.12);
   color: hsl(var(--primary));
 }
 .dark .workspace-dock .dv-tab.dv-active-tab {
@@ -99,44 +158,56 @@
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
 }
 
-/* tab 关闭按钮（dv-default-tab-action 含 svg）：hover 才显 */
+/* 去掉 abyss/其他主题给 active tab 加的 ::after 下划线 + border-bottom（避免横线切半感）*/
+.workspace-dock .dv-tab.dv-active-tab::after,
+.workspace-dock .dv-tab.dv-inactive-tab::after {
+  content: none;
+}
+.workspace-dock .dv-tab.dv-active-tab,
+.workspace-dock .dv-tab.dv-inactive-tab {
+  border-bottom: 1px solid transparent;
+}
+/* tab 间分隔符 ::before 也去掉（玻璃胶囊不靠分隔线）*/
+.workspace-dock .dv-tabs-container .dv-tab:not(:first-child)::before {
+  content: none;
+}
+
+/* tab 内默认内容布局：标题弹性收缩 + 关闭按钮固定位 */
+.workspace-dock .dv-tab .dv-default-tab {
+  gap: 6px;
+}
+.workspace-dock .dv-tab .dv-default-tab .dv-default-tab-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* tab 关闭按钮（dv-default-tab-action 含 svg）：对齐原 app-workspace-tab-close
+   —— 默认隐藏，active 0.38，hover 1。原 TabBar 关闭按钮是「active 半显、hover 全显」。*/
 .workspace-dock .dv-tab .dv-default-tab-action,
 .workspace-dock .dv-tab .dv-svg {
-  color: hsl(var(--muted-foreground) / 0.6);
+  color: hsl(var(--muted-foreground) / 0.62);
   opacity: 0;
-  transition: opacity 140ms ease, color 140ms ease;
+  border-radius: 6px;
+  transition: color 150ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1)),
+    opacity 150ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1)),
+    background-color 150ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1));
 }
+/* active tab 关闭按钮半显（对齐原 [data-active] .app-workspace-tab-close { opacity:0.38 }）*/
+.workspace-dock .dv-tab.dv-active-tab .dv-default-tab-action,
+.workspace-dock .dv-tab.dv-active-tab .dv-svg {
+  opacity: 0.38;
+}
+/* hover 整个 tab → 全显 */
 .workspace-dock .dv-tab:hover .dv-default-tab-action,
 .workspace-dock .dv-tab:hover .dv-svg {
   opacity: 1;
 }
 .workspace-dock .dv-tab .dv-default-tab-action:hover {
   color: hsl(var(--foreground));
-  background: color-mix(in srgb, hsl(var(--foreground)) 10%, transparent);
-}
-
-/* ===== tabs 容器 + group 边框 ===== */
-.workspace-dock .dv-tabs-and-actions-container {
-  border-bottom: 1px solid var(--spatial-line, color-mix(in srgb, hsl(var(--foreground)) 8%, transparent));
-  background: transparent;
-}
-
-/* group 容器：透明露 scene 玻璃底 */
-.workspace-dock .dv-groupview,
-.workspace-dock .dv-content-container,
-.workspace-dock .dv-content {
-  background: transparent;
-}
-
-/* group 外框：轻玻璃描边 + 圆角（对齐 session-composer-cluster 玻璃）*/
-.workspace-dock .dv-resize-container:has(> .dv-groupview) {
-  border-radius: 12px;
-  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
-  background: rgb(var(--glass-rgb) / 0.12);
-}
-.dark .workspace-dock .dv-resize-container:has(> .dv-groupview) {
-  border-color: rgb(255 255 255 / 0.05);
-  background: rgb(var(--glass-rgb) / 0.08);
+  background: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
 }
 
 /* ===== 分隔条 sash ===== */
