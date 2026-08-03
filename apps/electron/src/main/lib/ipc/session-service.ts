@@ -788,6 +788,11 @@ export class SessionService {
           // 执行形态 +（Work 才）子代理委派 + 看板工具说明 + 富内容 + 记忆
           // Chat 下 Task/SubAgent/看板写 硬拦，不注入委派/看板工具
           append: [
+            // 身份对齐 Pi 内核：claude_code preset 开头那句「You are kscc, Owtffssent's
+            // official CLI」会让 agent 问候时自报家门（「我是 kscc…」）。Pi 核的
+            // DEFAULT_SYSTEM_PROMPT 无品牌身份句，只说「专业编程助手」。这里软覆盖：
+            // 不否定 preset 的工具能力设定，只约束回复时不自我介绍、不报 CLI 工具名/出品方。
+            '## 身份与自我介绍\n你是一个专业的编程助手，帮助用户完成软件开发任务。回复时不要自我介绍，也不要提及你所属的 CLI 工具名或出品方品牌；直接以助手姿态回答用户的问题。',
             buildExecutionModePrompt(executionMode),
             executionMode === 'work' ? buildSubagentDelegationPrompt(eagerness) : '',
             executionMode === 'work'
