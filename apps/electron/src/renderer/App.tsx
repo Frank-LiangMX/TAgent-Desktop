@@ -388,8 +388,25 @@ export function App(): JSX.Element {
 
   // 启动时同时加载渠道列表 + 工作区列表 + 用户档案
   useEffect(() => {
-    void Promise.all([loadChannels(), loadWorkspaces(), loadUserProfile()])
-  }, [loadChannels, loadWorkspaces, loadUserProfile])
+    void Promise.all([
+      loadChannels(),
+      loadWorkspaces(),
+      loadUserProfile(),
+      // 校验持久化的 tabs：主进程可能已删某些会话，去掉孤儿 tab + 修 activeTabId
+      (async () => {
+        try {
+          const sessions = (await window.electronAPI.listSessions()) as Array<{
+            id: string
+          }>
+          const liveIds = new Set(sessions.map((s) => s.id))
+          setTabs((prev) => prev.filter((t) => liveIds.has(t.sessionId)))
+          setActiveTabId((prev) => (prev && liveIds.has(prev) ? prev : null))
+        } catch {
+          /* 校验失败不影响启动 */
+        }
+      })(),
+    ])
+  }, [loadChannels, loadWorkspaces, loadUserProfile, setTabs, setActiveTabId])
 
   /** 开会话进 tab：已开激活，未开加 tab + 激活 */
   const openSession = (

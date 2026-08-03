@@ -3,9 +3,11 @@
  *
  * tabs：打开的会话列表；activeTabId：当前激活 tab。
  * 一个会话一个 tab（id = sessionId，简化）。切 tab 用 Chat key=sessionId 重建。
- * 不做：mode 分桶/preview/draft/LRU/持久化（先内存态）。
+ * 持久化：tabs/activeTabId 走 atomWithStorage（localStorage），重启恢复打开的 tab。
+ * 会话 meta 本身在主进程持久化（session-store），这里只存"哪些会话开着"的引用列表。
  */
 import { atom } from 'jotai'
+import { atomWithStorage } from 'jotai/utils'
 
 export interface TabItem {
   /** tab id（= sessionId，简化） */
@@ -22,11 +24,14 @@ export interface TabItem {
   modelId?: string
 }
 
-/** 打开的会话 tab 列表 */
-export const tabsAtom = atom<TabItem[]>([])
+/** 打开的会话 tab 列表（持久化到 localStorage，重启恢复） */
+export const tabsAtom = atomWithStorage<TabItem[]>('tagent:openTabs', [])
 
-/** 当前激活 tab id */
-export const activeTabIdAtom = atom<string | null>(null)
+/** 当前激活 tab id（持久化） */
+export const activeTabIdAtom = atomWithStorage<string | null>(
+  'tagent:activeTabId',
+  null,
+)
 
 /** 当前激活 tab 对象 */
 export const activeTabAtom = atom<TabItem | null>((get) => {

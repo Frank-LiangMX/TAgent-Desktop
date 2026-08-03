@@ -38,5 +38,5 @@ export function ChatPane(props: IDockviewPanelProps<ChatPaneParams>): JSX.Elemen
     channelId: tab.channelId,
   }
 
-  return <Chat key={sessionId} session={session} />
+  return <Chat key={sessionId} session={session} crewExternalized />
 }

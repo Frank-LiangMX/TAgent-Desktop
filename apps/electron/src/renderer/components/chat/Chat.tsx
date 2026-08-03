@@ -146,12 +146,18 @@ export function Chat({
   session,
   onDraftWorkspaceChange,
   onBack,
+  crewExternalized = false,
 }: {
   session: SessionMeta
   /** 草稿态（无 tab）改工作区：改 App 的 draftSession。已有 tab 时由 SessionRouter 不传 */
   onDraftWorkspaceChange?: (id: string) => void
   /** 草稿态返回欢迎页（丢弃草稿）；会话页/线程态由 SessionRouter 不传 */
   onBack?: () => void
+  /**
+   * 班组面板已外置到 Dockview 独立 pane（分屏模式）。true 时隐藏 Chat 内部班组面板
+   * 及其入口（footer 按钮 / edge-tab / Work 自动开），班组全走 dock 的 crew pane。
+   */
+  crewExternalized?: boolean
 }): JSX.Element {
   const sessionId = session.id
   const [items, setItems] = useState<DisplayItem[]>([])
@@ -1559,13 +1565,13 @@ export function Chat({
                           } else {
                             void window.electronAPI.dismissExecutionModeSuggestion?.(sessionId)
                             await applyBackgroundCrewFromModeSwitch(m, res)
-                            if (m === 'work') setCrewPanelOpen(true)
+                            if (m === 'work' && !crewExternalized) setCrewPanelOpen(true)
                           }
                         })()
                       }}
                     />
-                    {/* 班组：窄模式仅图标 */}
-                    {hasCrewBoards || sessionBoardId ? (
+                    {/* 班组：窄模式仅图标；分屏模式（crewExternalized）隐藏，班组走 dock */}
+                    {!crewExternalized && (hasCrewBoards || sessionBoardId) ? (
                       <AppTooltip label={crewPanelOpen ? '收起班组面板' : '打开班组面板'}>
                         <button
                           type="button"
@@ -1768,8 +1774,8 @@ export function Chat({
         </div>
       )}
 
-      {/* 右缘：班组面板关闭时的轻入口 */}
-      {!crewPanelOpen && (hasCrewBoards || sessionBoardId) ? (
+      {/* 右缘：班组面板关闭时的轻入口（分屏模式隐藏，班组走 dock） */}
+      {!crewExternalized && !crewPanelOpen && (hasCrewBoards || sessionBoardId) ? (
         <button
           type="button"
           className="kanban-crew-edge-tab"
@@ -1781,16 +1787,18 @@ export function Chat({
         </button>
       ) : null}
       </div>
-      {/* 右栏：全高班组面板 */}
-      <KanbanCrewPanel
-        sessionId={sessionId}
-        boardId={sessionBoardId}
-        open={crewPanelOpen}
-        onOpenChange={setCrewPanelOpen}
-        onPresenceChange={setHasCrewBoards}
-        width={crewPanelWidth}
-        onWidthChange={handleCrewPanelWidth}
-      />
+      {/* 右栏：全高班组面板（分屏模式不渲染，班组走 dock 的 crew pane） */}
+      {!crewExternalized ? (
+        <KanbanCrewPanel
+          sessionId={sessionId}
+          boardId={sessionBoardId}
+          open={crewPanelOpen}
+          onOpenChange={setCrewPanelOpen}
+          onPresenceChange={setHasCrewBoards}
+          width={crewPanelWidth}
+          onWidthChange={handleCrewPanelWidth}
+        />
+      ) : null}
     </div>
   )
 }

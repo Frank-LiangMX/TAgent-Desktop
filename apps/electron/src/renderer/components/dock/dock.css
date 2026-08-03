@@ -30,10 +30,24 @@
   width: 4px;
 }
 
-/* 暗色：Dockview 默认偏浅，跟 dark 主题 */
-.dark .workspace-dock .dv-dockview {
+/* 暗色：Dockview 默认 themeAbyss 的 group 背景是 #000c18 深蓝黑 → main 显黑。
+ * 覆盖 --dv-group-view-background-color 让 group 透明，露出 app scene 玻璃底，
+ * 与现有 Chat 在 session 页里透 scene 一致。 */
+.dark .workspace-dock .dv-dockview,
+.dark .workspace-dock .dv-groupview,
+.dark .workspace-dock .dv-content-container,
+.dark .workspace-dock .dv-groupview > .dv-content {
+  --dv-group-view-background-color: transparent;
   background: transparent;
 }
-.dark .workspace-dock .dv-groupview {
-  background: color-mix(in srgb, rgb(var(--glass-rgb, 50 52 56)) 35%, transparent);
+.dark .workspace-dock .dv-resize-container:has(> .dv-groupview) {
+  background: rgb(var(--glass-rgb, 50 52 56) / 0.35);
+}
+
+/* 浅色同理：透明露出 scene */
+.workspace-dock .dv-dockview,
+.workspace-dock .dv-groupview,
+.workspace-dock .dv-content-container {
+  --dv-group-view-background-color: transparent;
+  background: transparent;
 }
