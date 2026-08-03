@@ -3,8 +3,8 @@
  *
  * Dockview 自带基础样式由 dockview/dist/styles/dockview.css 提供（WorkspaceDock 已 import）。
  * 本文件覆盖 abyss 主题的 tab/sash/drop 指示器，对齐 app-workspace-tab 的玻璃胶囊视觉：
- *   - 标签栏：顶对齐 sidebar（吃 --shell-band-inset-top 顶垫，但用 padding 不用 margin，
- *     避免被 .dv-groupview 的 overflow:hidden 切掉圆角上半）+ 底 1px 分隔线
+ *   - 标签栏：对齐原 TabBar strip（band-inset-top + 6px 顶垫 / 6px 底垫 / 32 胶囊，
+ *     用 padding 代替 margin 避免 groupview overflow 切圆角）+ 底 1px 分隔线
  *   - tab：32px 高、72~128px 宽、11px 圆角、玻璃填充（--glass-rgb）+ 顶光 inset，active 用 primary 色
  *   - 分隔条 sash：细 + primary hover
  *   - drop 指示器：primary 色半透明填充
@@ -28,6 +28,7 @@
 
 /* ===== 覆盖 abyss 主题变量 → 玻璃胶囊 ===== */
 .workspace-dock .dv-dockview {
+  /* group/content 必须 transparent：会话区直透 scene 背景，勿用玻璃底填实 */
   --dv-group-view-background-color: transparent;
   --dv-tabs-and-actions-container-background-color: transparent;
   --dv-activegroup-visiblepanel-tab-background-color: transparent;
@@ -36,12 +37,16 @@
   --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
   --dv-tab-divider-color: transparent;
   --dv-activegroup-visiblepanel-tab-color: hsl(var(--primary));
-  --dv-activegroup-hiddenpanel-tab-color: hsl(var(--primary) / 0.7);
+  --dv-activegroup-hiddenpanel-tab-color: hsl(var(--muted-foreground) / 0.88);
   --dv-inactivegroup-visiblepanel-tab-color: hsl(var(--muted-foreground) / 0.88);
   --dv-inactivegroup-hiddenpanel-tab-color: hsl(var(--muted-foreground) / 0.55);
   --dv-separator-border: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
   --dv-tabs-and-actions-container-font-size: 11px;
-  --dv-tabs-and-actions-container-height: 44px; /* 16 顶垫 + 6+6 上下 pad + 32 胶囊高 */
+  /* 对齐原 .app-workspace-tab-strip：margin-top 16 + padding 6/6 + tab 32 + border 1
+     = 61；box-sizing:border-box 时 height 须含 border，否则胶囊被挤到 31px */
+  --dv-tabs-and-actions-container-height: calc(
+    var(--shell-band-inset-top, 16px) + 6px + 32px + 6px + 1px
+  );
   --dv-drag-over-background-color: hsl(var(--primary) / 0.12);
   --dv-drag-over-border-color: hsl(var(--primary) / 0.5);
   --dv-icon-hover-background-color: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
@@ -52,11 +57,16 @@
   --dv-active-sash-color: hsl(var(--primary) / 0.6);
   --dv-active-sash-transition-duration: 120ms;
 }
+/* dockview SVG（溢出箭头等）跟文字色，禁止默认黑填 */
+.workspace-dock .dv-svg {
+  fill: currentColor;
+  color: inherit;
+}
 
 /* ===== group 容器：透明露 scene 玻璃底，圆角但不切标签圆角 ===== */
 /* .dv-groupview 默认 overflow:hidden 会把贴顶的 tab 圆角上半切掉。
    这里让 groupview 自身不裁切（content-container 自己控制内容溢出），
-   这样标签栏的 16px 顶垫 + 胶囊圆角能完整显示。 */
+   这样标签栏的顶垫 + 胶囊圆角能完整显示。 */
 .workspace-dock .dv-groupview {
   background: transparent;
   overflow: visible;
@@ -69,63 +79,89 @@
   min-height: 0;
 }
 
-/* group 外框：轻玻璃描边 + 圆角（对齐 session-composer-cluster 玻璃）。
-   只给外框圆角，不设 overflow，避免切标签圆角。 */
+/* group 外框：不额外加背景/边框/圆角，让 pane 直接坐在 scene 上，
+   与会话面板（Chat 透 scene、无外框）一致。之前加的玻璃描边层会让内容少的
+   pane（如班组）显得突兀。group 间分隔由 sash 负责。 */
 .workspace-dock .dv-resize-container:has(> .dv-groupview) {
-  border-radius: 12px;
-  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
-  background: rgb(var(--glass-rgb) / 0.12);
-}
-.dark .workspace-dock .dv-resize-container:has(> .dv-groupview) {
-  border-color: rgb(255 255 255 / 0.05);
-  background: rgb(var(--glass-rgb) / 0.08);
+  border: 0;
+  background: transparent;
 }
 
 /* ===== 标签栏容器：对齐 app-workspace-tab-strip ===== */
 /* Dockview 的 tabs-and-actions-container 等价原 TabBar 的 strip。
-   关键：顶对齐 sidebar 用 padding-top（不是 margin-top）——
-   margin-top 会被 .dv-groupview 的 overflow 区域吃掉/把胶囊推到被切位置；
-   padding-top 在容器内部撑开，胶囊完整显示且顶部与 sidebar「会话」标题带同高。
-   height 用固定值（= 顶垫 + 上下 pad + 胶囊高），让 Dockview 算得到正确布局高度。 */
+   原 strip：margin-top: band-inset-top(16) + padding: 6px 四向 + tab 32 → 底部分隔线在 60px。
+   dock 用 padding-top 代替 margin-top（.dv-groupview 曾 overflow:hidden 会吃 margin），
+   故 padding-top = 16 + 6，与关闭分屏时分隔线同高。
+   height 跟 CSS 变量走固定值，让 Dockview 算得到正确布局高度（勿 height:auto 塌缩）。 */
 .workspace-dock .dv-tabs-and-actions-container {
   box-sizing: border-box;
-  height: var(--dv-tabs-and-actions-container-height, 44px);
-  /* 顶垫 = sidebar 的 band-inset-top（16px），让标签顶与「会话 THREADS」带同高；
-     左右 = session-gutter（16px）对齐原 strip；底 6px 让胶囊下沿到分隔线有呼吸 */
-  padding: calc(var(--shell-band-inset-top, 16px)) var(--app-shell-session-gutter, 16px) 6px;
+  height: var(--dv-tabs-and-actions-container-height);
+  /* 顶 = band-inset-top + 原 strip 的 6px 顶垫；左右 = session-gutter；底 6px 与原 strip 一致 */
+  padding: calc(var(--shell-band-inset-top, 16px) + 6px) var(--app-shell-session-gutter, 16px) 6px;
   margin-top: 0; /* 覆盖任何继承的 margin，避免被 overflow 切 */
   border-bottom: 1px solid var(--spatial-line, color-mix(in srgb, hsl(var(--foreground)) 8%, transparent));
   background: transparent;
-  align-items: flex-end; /* 胶囊贴底（紧邻分隔线），顶垫在上 */
+  align-items: center; /* 对齐原 strip，胶囊垂直居中于上下 6px pad */
+  flex-shrink: 0;
 }
 
-/* tabs 横向容器：不 overflow 切圆角，gap 对齐原 TabBar(4px)，贴底排列 */
+/* tabs 横向容器：对齐原 .app-workspace-tab-list
+   position:relative 供 active-plate 绝对定位；gap 4px；横向滚动藏滚动条 */
 .workspace-dock .dv-tabs-container {
+  position: relative;
   gap: 4px;
-  overflow: visible;
-  height: auto; /* 不撑满 44px，让 align-items:flex-end 把胶囊推到底 */
-  align-items: flex-end;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  height: 100%;
+  align-items: center;
+}
+.workspace-dock .dv-tabs-container::-webkit-scrollbar {
+  display: none;
+  height: 0;
+}
+/* 滑动底板在 dock 内也要在 tab 之下（app-shell 已 z-index:0；这里确保 tab 在上） */
+.workspace-dock .dv-tabs-container > .app-workspace-tab-active-plate {
+  z-index: 0;
 }
 
 /* ===== tab 容器：透明壳，视觉由 defaultTabComponent（app-workspace-tab 那套）提供 =====
-   用 defaultTabComponent=DockTab 后，.dv-tab 只做外层容器，里面渲染
-   app-workspace-tab-shell/app-workspace-tab/app-workspace-tab-close（app-shell.css 现成）。
-   所以 .dv-tab 自身透明、撑满、不自带任何胶囊样式，避免和 app-workspace-tab 双层叠加。 */
+   DOM：.dv-tab > .dv-react-part > .app-workspace-tab-shell > .app-workspace-tab
+   .dv-tab 只做尺寸壳（对齐原 .app-workspace-tab-shell 72~128 / 高 32），不自带胶囊样式。
+   注意：dockview 默认 .dv-tab 有 padding:0.25rem 0.5rem，必须清零。 */
 .workspace-dock .dv-tab {
+  position: relative;
+  z-index: 1; /* 盖在 active-plate 之上，对齐原 .app-workspace-tab-shell */
   display: flex;
   align-items: stretch;
-  padding: 0;
-  margin: 0;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  overflow: visible;
-}
-/* 让 DockTab 填充 .dv-tab，app-workspace-tab-shell 控宽（72~128px） */
-.workspace-dock .dv-tab > .app-workspace-tab-shell {
+  box-sizing: border-box;
   flex: 0 1 128px;
   min-width: 72px;
   max-width: 128px;
+  height: 32px;
+  padding: 0 !important; /* 覆盖 dockview 默认 0.25rem 0.5rem */
+  margin: 0;
+  border: 0;
+  border-radius: 11px;
+  background: transparent !important; /* 覆盖主题 active/inactive 背景色 */
+  color: inherit;
+  cursor: pointer;
+  overflow: visible;
+}
+/* React 挂载壳铺满 .dv-tab */
+.workspace-dock .dv-tab > .dv-react-part {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+}
+/* shell 铺满 react-part（宽度已由 .dv-tab 约束） */
+.workspace-dock .dv-tab .app-workspace-tab-shell {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  height: 100%;
 }
 
 /* 去掉 abyss 给 active/inactive tab 的 ::after 下划线 + ::before 分隔符（胶囊不靠线）*/
@@ -133,6 +169,177 @@
 .workspace-dock .dv-tab.dv-inactive-tab::after,
 .workspace-dock .dv-tabs-container .dv-tab:not(:first-child)::before {
   content: none;
+}
+/* 去掉 dockview 默认 focus outline（胶囊不需要方框） */
+.workspace-dock .dv-tab:focus::after,
+.workspace-dock .dv-tab:focus-within::after {
+  content: none;
+}
+
+/* active 态：与原 TabBar 一致 —— 胶囊本身透明，玻璃由滑动底板 active-plate 负责；
+   只改文字/图标 primary 色 + 关闭按钮半显。双通道：data-active（React）+ .dv-active-tab（CSS 即时）。 */
+.workspace-dock .app-workspace-tab-shell[data-active] .app-workspace-tab,
+.workspace-dock .dv-tab.dv-active-tab .app-workspace-tab {
+  color: hsl(var(--primary)) !important;
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+.workspace-dock .dv-tab.dv-active-tab .app-workspace-tab__icon,
+.workspace-dock .app-workspace-tab-shell[data-active] .app-workspace-tab__icon {
+  color: hsl(var(--primary)) !important;
+}
+.workspace-dock .dv-tab.dv-active-tab .app-workspace-tab-close {
+  opacity: 0.38;
+}
+.workspace-dock .dv-tab:hover .app-workspace-tab-close {
+  opacity: 1;
+}
+
+/* 关闭按钮默认不抢 DnD：HTML5 drop 落在子元素上若子元素不 preventDefault 会吞掉右半区落点，
+   导致只能插到标签左侧、无法插到末尾。平时 hover 再启用点击。 */
+.workspace-dock .app-workspace-tab-close {
+  pointer-events: none;
+}
+.workspace-dock .app-workspace-tab-shell:hover .app-workspace-tab-close,
+.workspace-dock .app-workspace-tab-shell:focus-within .app-workspace-tab-close,
+.workspace-dock .app-workspace-tab-close:focus-visible {
+  pointer-events: auto;
+}
+
+/* 标签栏右侧空白（void）：保证可点、可 drop 到「最后」 */
+.workspace-dock .dv-tabs-and-actions-container .dv-void-container {
+  min-width: 24px;
+  flex-grow: 1;
+  align-self: stretch;
+}
+
+/* ===== 标签溢出折叠：箭头按钮 + 展开列表（对齐 app 玻璃主题，禁 abyss 全黑）=====
+   折叠后右上角 › 按钮 + 点开的 .dv-tabs-overflow-container 列表。
+   列表挂在 .dv-popover-anchor（dockview 根内），须用显式色值，勿依赖 abyss 深色变量。 */
+.workspace-dock .dv-tabs-overflow-dropdown-root {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+.workspace-dock .dv-tabs-overflow-dropdown-default {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 24px;
+  min-width: 24px;
+  padding: 0 6px;
+  margin: 0;
+  border: 1px solid var(--spatial-line, color-mix(in srgb, hsl(var(--foreground)) 10%, transparent));
+  border-radius: 8px;
+  background: rgb(var(--glass-rgb) / 0.42);
+  color: hsl(var(--muted-foreground) / 0.9);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+.workspace-dock .dv-tabs-overflow-dropdown-default:hover {
+  color: hsl(var(--foreground));
+  background: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
+  border-color: color-mix(in srgb, hsl(var(--foreground)) 14%, transparent);
+}
+.workspace-dock .dv-tabs-overflow-dropdown-default > svg.dv-svg,
+.workspace-dock .dv-tabs-overflow-dropdown-default .dv-svg {
+  width: 10px;
+  height: 10px;
+  fill: currentColor;
+  color: inherit;
+  transform: rotate(90deg);
+}
+.workspace-dock .dv-tabs-overflow-dropdown-default > span {
+  padding-left: 2px;
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+}
+
+/* 展开菜单：显式玻璃底（勿动 --dv-group-view-background-color，那是会话透 scene 用的） */
+.workspace-dock .dv-tabs-overflow-container,
+.workspace-dock .dv-popover-anchor .dv-tabs-overflow-container {
+  min-width: 148px;
+  max-width: min(240px, 70vw);
+  padding: 4px;
+  border: 1px solid var(--spatial-line, color-mix(in srgb, hsl(var(--foreground)) 12%, transparent));
+  border-radius: 11px;
+  /* 必须写死背景，不能靠 group-view 变量（那是 transparent） */
+  background: rgb(var(--glass-rgb) / 0.94) !important;
+  box-shadow:
+    0 10px 28px -12px rgb(23 30 40 / 0.28),
+    inset 0 1px 0 rgb(255 255 255 / 0.45);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
+  backdrop-filter: blur(18px) saturate(1.12);
+  color: hsl(var(--foreground) / 0.9);
+  font-size: 11px;
+}
+.dark .workspace-dock .dv-tabs-overflow-container,
+.dark .workspace-dock .dv-popover-anchor .dv-tabs-overflow-container {
+  background: rgb(var(--glass-rgb) / 0.88);
+  border-color: rgb(255 255 255 / 0.08);
+  box-shadow:
+    0 12px 32px -10px rgb(0 0 0 / 0.45),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+.workspace-dock .dv-tabs-overflow-container .dv-tab,
+.workspace-dock .dv-popover-anchor .dv-tabs-overflow-container .dv-tab {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  max-width: none;
+  height: auto;
+  flex: none;
+  padding: 4px 8px !important;
+  margin: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent !important;
+  color: hsl(var(--foreground) / 0.88);
+  cursor: pointer;
+}
+.workspace-dock .dv-tabs-overflow-container .dv-tab:not(:last-child),
+.workspace-dock .dv-popover-anchor .dv-tabs-overflow-container .dv-tab:not(:last-child) {
+  border-bottom: 0;
+  margin-bottom: 1px;
+}
+.workspace-dock .dv-tabs-overflow-container .dv-tab:hover,
+.workspace-dock .dv-popover-anchor .dv-tabs-overflow-container .dv-tab:hover {
+  background: color-mix(in srgb, hsl(var(--foreground)) 7%, transparent) !important;
+  color: hsl(var(--foreground));
+}
+.workspace-dock .dv-tabs-overflow-container .dv-tab.dv-active-tab,
+.workspace-dock .dv-popover-anchor .dv-tabs-overflow-container .dv-tab.dv-active-tab {
+  background: color-mix(in srgb, hsl(var(--primary)) 12%, transparent) !important;
+  color: hsl(var(--primary));
+}
+/* 菜单内复用 app-workspace-tab 时压掉胶囊固定宽，铺满行 */
+.workspace-dock .dv-tabs-overflow-container .app-workspace-tab-shell,
+.workspace-dock .dv-popover-anchor .dv-tabs-overflow-container .app-workspace-tab-shell {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+  width: 100%;
+  height: auto;
+}
+.workspace-dock .dv-tabs-overflow-container .app-workspace-tab,
+.workspace-dock .dv-popover-anchor .dv-tabs-overflow-container .app-workspace-tab {
+  height: 26px;
+  padding-right: 10px;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  font-size: 11px;
+}
+.workspace-dock .dv-tabs-overflow-container .app-workspace-tab-close,
+.workspace-dock .dv-popover-anchor .dv-tabs-overflow-container .app-workspace-tab-close {
+  /* 溢出列表里不需要逐条关，避免误触；保留布局位可再开 */
+  display: none;
 }
 
 /* ===== 分隔条 sash ===== */
@@ -154,7 +361,10 @@
   background: hsl(var(--primary) / 0.5);
 }
 
-/* ===== drop 指示器（拖 tab 到边缘的分屏提示）===== */
+/* ===== drop 指示器 =====
+   content 边缘分屏：半透明块 + 描边
+   tab 换序：主题 dndTabIndicator:'line' → 贴 tab 边缘的 4px 竖条（selection-line），
+   不是 tab 内对半 fill。这里只给 line 上色，不改 geometry（位置/宽由 dockview 算）。 */
 .workspace-dock .dv-drop-target-anchor {
   border: 2px solid hsl(var(--primary) / 0.5);
   border-radius: 8px;
@@ -164,6 +374,17 @@
 .workspace-dock .dv-drop-target-selection {
   background: hsl(var(--primary) / 0.18);
   border-color: hsl(var(--primary) / 0.6);
+}
+
+/* tab 间插入竖线：实心 primary，圆角细条，像 Chrome / VS Code 标签栏 */
+.workspace-dock .dv-drop-target-selection.dv-drop-target-selection-line,
+.workspace-dock .dv-drop-target-selection.dv-drop-target-small-horizontal {
+  background: hsl(var(--primary)) !important;
+  border: 0 !important;
+  border-radius: 2px;
+  box-shadow:
+    0 0 0 1px hsl(var(--primary) / 0.35),
+    0 0 8px hsl(var(--primary) / 0.4);
 }
 
 /* ===== 开班组浮动按钮 ===== */

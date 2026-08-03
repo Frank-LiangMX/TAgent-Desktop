@@ -147,6 +147,7 @@ export function Chat({
   onDraftWorkspaceChange,
   onBack,
   crewExternalized = false,
+  onOpenCrew,
 }: {
   session: SessionMeta
   /** 草稿态（无 tab）改工作区：改 App 的 draftSession。已有 tab 时由 SessionRouter 不传 */
@@ -158,6 +159,8 @@ export function Chat({
    * 及其入口（footer 按钮 / edge-tab / Work 自动开），班组全走 dock 的 crew pane。
    */
   crewExternalized?: boolean
+  /** 分屏模式下，点 chat 内部班组按钮时开外部 crew pane（由 ChatPane 传入） */
+  onOpenCrew?: () => void
 }): JSX.Element {
   const sessionId = session.id
   const [items, setItems] = useState<DisplayItem[]>([])
@@ -1570,21 +1573,26 @@ export function Chat({
                         })()
                       }}
                     />
-                    {/* 班组：窄模式仅图标；分屏模式（crewExternalized）隐藏，班组走 dock */}
-                    {!crewExternalized && (hasCrewBoards || sessionBoardId) ? (
-                      <AppTooltip label={crewPanelOpen ? '收起班组面板' : '打开班组面板'}>
+                    {/* 班组：窄模式仅图标。
+                        分屏模式（crewExternalized）也保留按钮（绑定本会话），点击开外部 crew pane；
+                        非分屏模式点开关内部面板。按 hasCrewBoards/sessionBoardId 显隐（有/有过板才显）。 */}
+                    {hasCrewBoards || sessionBoardId ? (
+                      <AppTooltip label={crewExternalized ? '打开班组面板（分屏）' : crewPanelOpen ? '收起班组面板' : '打开班组面板'}>
                         <button
                           type="button"
                           className={cn(
                             'composer-crew-btn inline-flex h-7 shrink-0 items-center justify-center rounded-lg transition-colors',
                             composerCompact ? 'w-7 px-0' : 'gap-1 px-2',
-                            crewPanelOpen
+                            !crewExternalized && crewPanelOpen
                               ? 'bg-primary/12 text-primary'
                               : 'text-muted-foreground hover:bg-foreground/10 hover:text-foreground',
                           )}
-                          onClick={() => setCrewPanelOpen((v) => !v)}
-                          aria-label={crewPanelOpen ? '收起班组面板' : '打开班组面板'}
-                          aria-pressed={crewPanelOpen}
+                          onClick={() => {
+                            if (crewExternalized) onOpenCrew?.()
+                            else setCrewPanelOpen((v) => !v)
+                          }}
+                          aria-label={crewExternalized ? '打开班组面板' : crewPanelOpen ? '收起班组面板' : '打开班组面板'}
+                          aria-pressed={!crewExternalized ? crewPanelOpen : undefined}
                         >
                           <UsersThree className="size-3.5 shrink-0" weight="bold" />
                           {!composerCompact ? (

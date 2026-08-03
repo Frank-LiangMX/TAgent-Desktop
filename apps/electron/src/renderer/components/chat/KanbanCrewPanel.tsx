@@ -151,6 +151,8 @@ export interface KanbanCrewPanelProps {
   width?: number
   /** 拖拽手柄回调（已 clamp 由父组件负责） */
   onWidthChange?: (width: number) => void
+  /** 嵌入 Dockview pane 时 true：隐藏内部 X 关闭键（关走 Dockview tab ×） */
+  embedded?: boolean
 }
 
 export function KanbanCrewPanel({
@@ -161,6 +163,7 @@ export function KanbanCrewPanel({
   onPresenceChange,
   width,
   onWidthChange,
+  embedded = false,
 }: KanbanCrewPanelProps): JSX.Element | null {
   const [activeBoards, setActiveBoards] = useState<BoardRow[]>([])
   const [historyBoards, setHistoryBoards] = useState<BoardRow[]>([])
@@ -424,7 +427,7 @@ export function KanbanCrewPanel({
 
   return (
     <aside
-      className="kanban-crew-panel"
+      className={cn('kanban-crew-panel', embedded && 'is-embedded')}
       aria-label="班组面板"
       style={width ? { width: `${width}px`, flexBasis: `${width}px` } : undefined}
     >
@@ -444,27 +447,29 @@ export function KanbanCrewPanel({
 
       {/* 顶栏 */}
       <header className="kanban-crew-panel__header">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <UsersThree className="size-4 shrink-0 text-primary" weight="bold" />
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <UsersThree className="size-3.5 shrink-0 text-primary" weight="bold" />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-semibold tracking-tight text-foreground">
+            <div className="kanban-crew-panel__title">
               {detailTask ? detailTask.title : '班组'}
             </div>
             {!detailTask && board ? (
-              <div className="truncate text-[11px] text-muted-foreground">
+              <div className="kanban-crew-panel__subtitle">
                 {board.title || board.rootGoal || board.id}
               </div>
             ) : null}
           </div>
         </div>
-        <button
-          type="button"
-          className="kanban-crew-panel__icon-btn"
-          onClick={() => handleOpenChange(false)}
-          aria-label="关闭班组面板"
-        >
-          <X className="size-4" weight="bold" />
-        </button>
+        {embedded ? null : (
+          <button
+            type="button"
+            className="kanban-crew-panel__icon-btn"
+            onClick={() => handleOpenChange(false)}
+            aria-label="关闭班组面板"
+          >
+            <X className="size-3.5" weight="bold" />
+          </button>
+        )}
       </header>
 
       {/* 进行中 / 历史 */}
@@ -499,7 +504,7 @@ export function KanbanCrewPanel({
             className="kanban-crew-panel__back"
             onClick={() => setDetailTask(null)}
           >
-            <CaretLeft className="size-3.5" weight="bold" />
+            <CaretLeft className="size-3" weight="bold" />
             返回任务列表
           </button>
         </div>
@@ -555,7 +560,7 @@ export function KanbanCrewPanel({
           !board ? (
             <div className="kanban-crew-panel__empty">
               {isHistoryScope ? '本会话暂无已完成班组' : '暂无进行中的班组'}
-              <p className="mt-1 text-[11px] opacity-70">
+              <p className="kanban-crew-panel__empty-hint">
                 在 Work 模式下让助手建板并添加任务后，进度会出现在这里。
               </p>
             </div>
@@ -575,25 +580,21 @@ export function KanbanCrewPanel({
                       aria-hidden
                     />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium text-foreground/95">
-                        {t.title}
-                      </span>
-                      <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                      <span className="kanban-crew-panel__task-title">{t.title}</span>
+                      <span className="kanban-crew-panel__task-meta">
                         {STATUS_LABEL[t.status] ?? t.status}
                         {t.roleId ? ` · ${t.roleId}` : ''}
                       </span>
                       {t.resultSummary ? (
-                        <span className="mt-1 block line-clamp-2 text-[11.5px] leading-snug text-foreground/70">
+                        <span className="kanban-crew-panel__task-summary">
                           {t.resultSummary.replace(/\s+/g, ' ')}
                         </span>
                       ) : null}
                       {t.error ? (
-                        <span className="mt-1 block truncate text-[11px] text-destructive/90">
-                          {t.error}
-                        </span>
+                        <span className="kanban-crew-panel__task-error">{t.error}</span>
                       ) : null}
                     </span>
-                    <CaretRight className="size-3.5 shrink-0 opacity-40" />
+                    <CaretRight className="size-3 shrink-0 opacity-35" />
                   </button>
                 </li>
               ))}
@@ -602,29 +603,24 @@ export function KanbanCrewPanel({
         ) : (
           <div className="kanban-crew-panel__detail">
             <div className="kanban-crew-panel__detail-meta">
-              <span
-                className={cn(
-                  'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium',
-                  'bg-foreground/6 text-foreground/80',
-                )}
-              >
+              <span className="kanban-crew-panel__status-chip">
                 <span className={cn('size-1.5 rounded-full', statusDotClass(detailTask.status))} />
                 {STATUS_LABEL[detailTask.status] ?? detailTask.status}
               </span>
               {detailTask.roleId ? (
-                <span className="text-[11px] text-muted-foreground">{detailTask.roleId}</span>
+                <span className="kanban-crew-panel__task-meta">{detailTask.roleId}</span>
               ) : null}
               {detailTask.modelId ? (
-                <span className="font-mono text-[10px] text-muted-foreground">
+                <span className="kanban-crew-panel__task-meta font-mono opacity-80">
                   {detailTask.modelId}
                 </span>
               ) : null}
             </div>
 
             {(detailTask.startedAt || detailTask.finishedAt) && (
-              <div className="grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
+              <div className="grid grid-cols-2 gap-1.5">
                 {detailTask.startedAt ? (
-                  <div>
+                  <div className="kanban-crew-panel__task-meta">
                     开始{' '}
                     <span className="tabular-nums text-foreground/80">
                       {formatMessageTime(detailTask.startedAt)}
@@ -632,7 +628,7 @@ export function KanbanCrewPanel({
                   </div>
                 ) : null}
                 {detailTask.finishedAt ? (
-                  <div>
+                  <div className="kanban-crew-panel__task-meta">
                     结束{' '}
                     <span className="tabular-nums text-foreground/80">
                       {formatMessageTime(detailTask.finishedAt)}
@@ -661,7 +657,7 @@ export function KanbanCrewPanel({
             {detailTask.error ? (
               <section>
                 <h4 className="kanban-crew-panel__h text-destructive">错误</h4>
-                <p className="rounded-lg bg-destructive/10 px-2.5 py-2 text-[12px] text-destructive/95">
+                <p className="kanban-crew-panel__callout kanban-crew-panel__callout--danger">
                   {detailTask.error}
                 </p>
               </section>
@@ -672,7 +668,7 @@ export function KanbanCrewPanel({
                 <h4 className="kanban-crew-panel__h text-amber-700 dark:text-amber-400">
                   阻塞原因
                 </h4>
-                <p className="rounded-lg bg-amber-500/10 px-2.5 py-2 text-[12px]">
+                <p className="kanban-crew-panel__callout kanban-crew-panel__callout--warn">
                   {detailTask.blockedReason}
                 </p>
               </section>
@@ -681,9 +677,9 @@ export function KanbanCrewPanel({
             {progressLogs.length > 0 ? (
               <section>
                 <h4 className="kanban-crew-panel__h">进度日志</h4>
-                <ul className="space-y-2">
+                <ul className="space-y-1.5">
                   {progressLogs.map((log, i) => (
-                    <li key={`${log.ts}-${i}`} className="text-[12px] leading-snug">
+                    <li key={`${log.ts}-${i}`} className="kanban-crew-panel__body-text">
                       <span className="mr-1.5 tabular-nums text-muted-foreground/70">
                         {formatMessageTime(log.ts)}
                       </span>
@@ -698,7 +694,7 @@ export function KanbanCrewPanel({
               <h4 className="kanban-crew-panel__h">
                 工人输出
                 {workerLoading ? (
-                  <span className="ml-2 font-normal text-muted-foreground">加载中…</span>
+                  <span className="ml-1.5 font-normal text-muted-foreground">加载中…</span>
                 ) : null}
               </h4>
               {workerTranscript.length > 0 ? (
@@ -710,7 +706,7 @@ export function KanbanCrewPanel({
                   ))}
                 </div>
               ) : (
-                <p className="text-[12px] text-muted-foreground">
+                <p className="kanban-crew-panel__body-text">
                   {detailTask.status === 'running'
                     ? '执行中，输出将在此刷新（不进侧栏会话列表）。'
                     : detailTask.resultSummary
@@ -723,10 +719,10 @@ export function KanbanCrewPanel({
             {blackboard.length > 0 ? (
               <section>
                 <h4 className="kanban-crew-panel__h">交接备注</h4>
-                <ul className="space-y-2">
+                <ul className="space-y-1.5">
                   {blackboard.map((c, i) => (
-                    <li key={`${c.ts}-${i}`} className="rounded-lg bg-foreground/[0.04] px-2.5 py-2 text-[12px]">
-                      <div className="text-[11px] text-muted-foreground">
+                    <li key={`${c.ts}-${i}`} className="kanban-crew-panel__note">
+                      <div className="kanban-crew-panel__note-meta">
                         {c.author} · {formatMessageTime(c.ts)}
                       </div>
                       <div className="mt-0.5">{c.comment}</div>
@@ -739,7 +735,7 @@ export function KanbanCrewPanel({
             {blockedApprovals.length > 0 ? (
               <section>
                 <h4 className="kanban-crew-panel__h">自动拒绝的审批</h4>
-                <ul className="space-y-1 font-mono text-[11px] text-muted-foreground">
+                <ul className="space-y-0.5 font-mono text-[10px] text-muted-foreground">
                   {blockedApprovals.slice(-10).map((a, i) => (
                     <li key={i}>
                       {a.tool ?? 'tool'}
@@ -753,7 +749,7 @@ export function KanbanCrewPanel({
             {blockerIds.length > 0 ? (
               <section>
                 <h4 className="kanban-crew-panel__h">前置任务</h4>
-                <ul className="space-y-0.5 font-mono text-[11px] text-muted-foreground">
+                <ul className="space-y-0.5 font-mono text-[10px] text-muted-foreground">
                   {blockerIds.map((id) => (
                     <li key={id}>{taskTitleById.get(id) ?? id}</li>
                   ))}
@@ -762,12 +758,12 @@ export function KanbanCrewPanel({
             ) : null}
 
             {!isHistoryScope && (detailTask.status === 'blocked' || detailTask.status === 'failed') ? (
-              <div className="flex flex-wrap gap-2 pt-2">
+              <div className="flex flex-wrap gap-1.5 pt-1">
                 {detailTask.status === 'blocked' ? (
                   <button
                     type="button"
                     disabled={actionBusy}
-                    className="rounded-lg bg-amber-500/15 px-3 py-2 text-[12px] font-semibold text-amber-800 disabled:opacity-50 dark:text-amber-300"
+                    className="kanban-crew-panel__action kanban-crew-panel__action--warn"
                     onClick={() => void onUnblock()}
                   >
                     {actionBusy ? '处理中…' : '解除阻塞'}
@@ -777,7 +773,7 @@ export function KanbanCrewPanel({
                   <button
                     type="button"
                     disabled={actionBusy}
-                    className="rounded-lg bg-primary/15 px-3 py-2 text-[12px] font-semibold text-primary disabled:opacity-50"
+                    className="kanban-crew-panel__action kanban-crew-panel__action--primary"
                     onClick={() => void onRetry()}
                   >
                     {actionBusy ? '处理中…' : '重试'}

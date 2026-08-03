@@ -22,16 +22,22 @@ import './dock.css'
 import { ChatPane } from './ChatPane'
 import { CrewPane } from './CrewPane'
 import { DockTab } from './DockTab'
+import { mountDockActivePlates } from './dockActivePlate'
 import { tabsAtom, activeTabIdAtom, closeTab, type TabItem } from '../../atoms/tabs'
 
 const DOCK_LAYOUT_KEY = 'tagent:dockLayout'
 
 /**
- * Dockview 主题：默认 themeAbyss 的 dndOverlayMounting 走 'relative' → 根 drop target
- * 被禁用 → 拖 tab 到容器上下边缘有指示器但不分屏（只有 group 内 overlay）。
- * 显式设 'absolute' 启用根 drop target，四向（上下左右）边缘吸附分屏均生效。
+ * Dockview 主题：
+ * - dndOverlayMounting:'absolute'：启用根 drop target，四向边缘分屏
+ * - dndTabIndicator:'line'：换序指示器是 tab 边缘 4px 竖条（正常 tab 系统「插在中间」），
+ *   默认 'fill' 会在 tab 内对半高亮，体验像把 tab 切开
  */
-const dockTheme = { ...themeAbyss, dndOverlayMounting: 'absolute' } as const
+const dockTheme = {
+  ...themeAbyss,
+  dndOverlayMounting: 'absolute',
+  dndTabIndicator: 'line',
+} as const
 
 /** Position → Direction（用于 addGroup 在 referenceGroup 旁新建分屏 group） */
 const POS_TO_DIR: Record<Exclude<Position, 'center'>, 'above' | 'below' | 'left' | 'right'> = {
@@ -41,32 +47,94 @@ const POS_TO_DIR: Record<Exclude<Position, 'center'>, 'above' | 'below' | 'left'
   right: 'right',
 }
 
+/** WillDrop 上可能有的目标 group / 落点 tab（Dockview 类型略松） */
+type WillDropGroup = {
+  id: string
+  size: number
+  panels: ReadonlyArray<{ id: string }>
+}
+type WillDropPanel = { id: string }
+
 /**
- * 单 panel group 拖自己 tab 到 content 边缘时，Dockview 走 _doMoveGroupOrPanel 的
- * moveView(同位置) 分支 = no-op 不分屏。这里拦截 onWillDrop：preventDefault 后
- * addGroup({ referenceGroup, direction }) 在目标方向新建空 group，再把 panel
- * moveTo 过去 → 真正分屏。多 tab group（size>=2）不拦截，Dockview 原生能拆出单 tab。
+ * 解析标签栏插入下标。
+ * Dockview handleDropEvent：kind=tab 时 e.panel = panels[insertionIndex]（插到该下标前）；
+ * 插到末尾时 insertionIndex === size → e.panel 为 undefined。
+ * header_space / 无 panel → 末尾。
+ * 额外：若带 clientX 且落在「当前最后一枚 tab」右半，强制 append（防右半被 × 挡住时
+ * dock 仍把落点算成 last 本身）。
  */
-function handleWillDropForEdgeSplit(e: {
+function resolveTabInsertIndex(
+  e: {
+    kind: string
+    panel?: WillDropPanel
+    nativeEvent?: { clientX?: number; target?: EventTarget | null }
+  },
+  dest: WillDropGroup,
+): number {
+  if (e.kind === 'header_space' || !e.panel) return dest.size
+  const i = dest.panels.findIndex((p) => p.id === e.panel!.id)
+  if (i < 0) return dest.size
+
+  // 落在最后一枚 tab 上：用坐标判断左半=插到它前，右半=append 到末尾
+  if (i === dest.size - 1 && e.nativeEvent?.clientX != null) {
+    const t = e.nativeEvent.target
+    const tabEl =
+      t instanceof Element ? t.closest?.('.dv-tab') : null
+    if (tabEl) {
+      const rect = tabEl.getBoundingClientRect()
+      if (e.nativeEvent.clientX >= rect.left + rect.width / 2) {
+        return dest.size // 右半 → 插到最后
+      }
+    }
+  }
+  return i
+}
+
+/**
+ * 拖放策略：
+ * - tab / header_space（含跨分屏、同组换序、插到末尾）→ 显式 moveTo
+ * - content 中心 → 禁止
+ * - content 边缘 → 分屏；单 tab 同源 no-op 时拦截后 addGroup+moveTo
+ */
+function handleWillDrop(e: {
   kind: string
   position: Position
-  group?: { id: string; size: number } | null
+  group?: WillDropGroup | null
+  panel?: WillDropPanel
+  nativeEvent?: { clientX?: number; target?: EventTarget | null }
   getData: () => { panelId: string | null; groupId: string } | undefined
   preventDefault: () => void
-  nativeEvent: { defaultPrevented: boolean }
   api: DockviewApi
 }): void {
-  if (e.kind !== 'content') return
-  if (e.position === 'center') return
-  const group = e.group
-  // 仅单 panel group 同源会 no-op；多 tab 让 Dockview 原生处理
-  if (!group || group.size !== 1) return
   const data = e.getData()
-  if (!data || !data.panelId) return
-  if (data.groupId !== group.id) return // 拖到别的 group 边缘，Dockview 原生能分
+  const dest = e.group
+
+  // —— 标签栏落点：一律显式 move（跨组并入 + 同组换序 + 插末尾）——
+  if ((e.kind === 'tab' || e.kind === 'header_space') && data?.panelId && dest) {
+    e.preventDefault()
+    const panel = e.api.getPanel(data.panelId)
+    if (!panel) return
+    // 拖到自己所在位置 no-op
+    if (data.groupId === dest.id && dest.panels.length === 1) return
+    const index = resolveTabInsertIndex(e, dest)
+    panel.api.moveTo({ group: dest as never, position: 'center', index })
+    return
+  }
+
+  // 禁止拖进消息区中部
+  if (e.kind === 'content' && e.position === 'center') {
+    e.preventDefault()
+    return
+  }
+
+  // 单 tab 同源边缘分屏（修复原生 moveView 同位置 no-op）
+  if (e.kind !== 'content') return
+  if (!dest || dest.size !== 1) return
+  if (!data?.panelId) return
+  if (data.groupId !== dest.id) return
   e.preventDefault()
   const dir = POS_TO_DIR[e.position as Exclude<Position, 'center'>]
-  const newGroup = e.api.addGroup({ referenceGroup: group.id, direction: dir })
+  const newGroup = e.api.addGroup({ referenceGroup: dest.id, direction: dir })
   const panel = e.api.getPanel(data.panelId)
   if (panel) panel.api.moveTo({ group: newGroup, position: 'center' })
 }
@@ -78,11 +146,20 @@ export function WorkspaceDock(): JSX.Element {
   const setActiveTabId = useSetAtom(activeTabIdAtom)
 
   const apiRef = useRef<DockviewApi | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
   const [apiReady, setApiReady] = useState(false)
   const isReconcilingRef = useRef(false)
   // activeTabId 闭包会过期（事件订阅 effect 只挂一次），用 ref 保最新值供 remove 回调用
   const activeTabIdRef = useRef<string | null>(activeTabId)
   activeTabIdRef.current = activeTabId
+
+  // 滑动玻璃底板：对齐原 TabBar active-plate（每个 group 的 tabs 容器各一块）
+  // 只在 api 就绪时挂载；后续 tab 增删/切换由 MutationObserver 跟
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root || !apiReady) return
+    return mountDockActivePlates(root)
+  }, [apiReady])
 
   // tabsAtom → api：增删 panel 与 tabs 对齐（api 就绪后 / tabs 变更都跑）
   useEffect(() => {
@@ -109,8 +186,9 @@ export function WorkspaceDock(): JSX.Element {
         })
       }
 
-      // 残留 panel（tabs 已无）→ 关闭（panel.api.close()）
+      // 残留 chat panel（tabs 已无）→ 关闭。crew pane（id 以 crew: 开头）由用户/dock 自管，不在此清。
       for (const orphanId of currentIds) {
+        if (orphanId.startsWith('crew:')) continue
         const orphan = api.getPanel(orphanId)
         if (orphan) orphan.api.close()
       }
@@ -125,8 +203,13 @@ export function WorkspaceDock(): JSX.Element {
     if (!api || !apiReady) return
 
     // 用户在 Dockview 关 panel → 同步 tabsAtom（非我们 reconcile 触发的）
+    // 注意：跨 group move 时原生可能先 remove 再 open；若 panel 仍在 api 里，
+    // 说明是搬迁不是关闭，切勿 closeTab（否则会把会话从 tabs 里删掉再被 reconcile 搞乱）。
     const dRemove = api.onDidRemovePanel((panel: IDockviewPanel) => {
       if (isReconcilingRef.current) return
+      if (panel.id.startsWith('crew:')) return
+      // 仍挂在 dock 上 = 跨组分屏搬迁，不是关 tab
+      if (api.getPanel(panel.id)) return
       const sessionId = panel.id
       setTabs((prev: TabItem[]) => {
         if (!prev.some((t) => t.sessionId === sessionId)) return prev
@@ -140,11 +223,14 @@ export function WorkspaceDock(): JSX.Element {
       })
     })
 
-    // Dockview 激活 panel → 软同步 activeTabIdAtom（侧栏高亮等用）
+    // Dockview 激活 panel → 软同步 activeTabIdAtom（侧栏高亮等用）。
+    // 仅 chat pane（id=sessionId）同步；crew pane（id=crew:xxx）激活不改 activeTabId，
+    // 否则 App 的 activeTab 查 tabs 找不到 → 误判无活跃 tab → 显示引导页盖住整个 dock。
     const dActive = api.onDidActivePanelChange((evt) => {
       if (isReconcilingRef.current) return
       const panel = (evt as { panel?: IDockviewPanel }).panel
-      if (panel) setActiveTabId(panel.id)
+      if (!panel || panel.id.startsWith('crew:')) return
+      setActiveTabId(panel.id)
     })
 
     // 根 drop target 的 canDisplayOverlay 对非 center 位置返回 onUnhandledDragOver 的 isAccepted，
@@ -154,6 +240,13 @@ export function WorkspaceDock(): JSX.Element {
     const dUnhandled = api.onUnhandledDragOver((evt) => {
       if (evt.target === 'edge' && evt.position !== 'center') {
         evt.accept()
+      }
+    })
+
+    // 禁止 content 中心 drop 指示器；标签栏（含跨分屏 tab / header_space）指示器保留
+    const dOverlay = api.onWillShowOverlay((evt) => {
+      if (evt.kind === 'content' && evt.position === 'center') {
+        evt.preventDefault()
       }
     })
 
@@ -177,6 +270,7 @@ export function WorkspaceDock(): JSX.Element {
       dRemove.dispose()
       dActive.dispose()
       dUnhandled.dispose()
+      dOverlay.dispose()
       dLayout.dispose()
       if (rafId != null) window.cancelAnimationFrame(rafId)
       // 卸载时最后存一次（关 flag / 切走）
@@ -203,50 +297,16 @@ export function WorkspaceDock(): JSX.Element {
     setApiReady(true) // 触发下面两个 effect 首次 reconcile（补 layout 没有的新 tab）+ 挂事件
   }
 
-  /** 开班组面板：绑定当前活跃会话，分屏到活跃 panel 右侧（选项 B：面板绑定会话） */
-  const openCrewForActive = (): void => {
-    const api = apiRef.current
-    if (!api) return
-    const active = api.activePanel
-    if (!active) return
-    const sessionId = active.id // chat panel id = sessionId
-    const sessionTitle = tabs.find((t) => t.sessionId === sessionId)?.title ?? sessionId
-    // 已有该会话的 crew pane 则聚焦，不重复开（保证一会话最多一个班组面板，标识不乱）
-    const crewId = `crew:${sessionId}`
-    const existing = api.getPanel(crewId)
-    if (existing) {
-      existing.api.setActive?.()
-      return
-    }
-    api.addPanel({
-      id: crewId,
-      title: `班组 · ${sessionTitle}`,
-      component: 'crew',
-      params: { sessionId, sessionTitle, paneType: 'crew' },
-      position: { direction: 'right', referencePanel: active },
-    })
-  }
-
   return (
-    <div className="workspace-dock h-full min-h-0">
+    <div ref={rootRef} className="workspace-dock h-full min-h-0">
       <DockviewReact
         onReady={handleReady}
         components={{ chat: ChatPane, crew: CrewPane }}
         defaultTabComponent={DockTab}
         theme={dockTheme}
-        onWillDrop={handleWillDropForEdgeSplit}
+        onWillDrop={handleWillDrop}
         className="workspace-dock__canvas"
       />
-      {/* 浮动开班组按钮（右上角）：开一个绑定当前活跃会话的 crew pane */}
-      <button
-        type="button"
-        className="workspace-dock__open-crew"
-        onClick={openCrewForActive}
-        aria-label="为当前会话开班组面板"
-        title="为当前会话开班组面板（可分屏）"
-      >
-        + 班组
-      </button>
     </div>
   )
 }

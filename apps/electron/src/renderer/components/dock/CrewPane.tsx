@@ -18,7 +18,7 @@ export function CrewPane(props: IDockviewPanelProps<CrewPaneParams>): JSX.Elemen
   const sessionId = props.params?.sessionId
   if (!sessionId) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      <div className="flex h-full items-center justify-center text-[11px] text-muted-foreground">
         未关联会话
       </div>
     )
@@ -30,6 +30,7 @@ export function CrewPane(props: IDockviewPanelProps<CrewPaneParams>): JSX.Elemen
       open={true}
       onOpenChange={() => {}}
       onPresenceChange={() => {}}
+      embedded
     />
   )
 }

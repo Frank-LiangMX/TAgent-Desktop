@@ -781,7 +781,8 @@
   transform: translateY(0);
 }
 
-/* ===== 班组右栏（主区对话 | 右栏全高，替代输入框上窄条） ===== */
+/* ===== 班组右栏（主区对话 | 右栏全高，替代输入框上窄条） =====
+   对齐会话页密度：字号 10–12px 档、spatial-line 描边、玻璃底、紧凑顶栏。 */
 .session-body {
   display: flex;
   min-height: 0;
@@ -798,26 +799,36 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  flex: 0 0 min(400px, 38vw);
-  width: min(400px, 38vw);
-  min-width: 280px;
-  max-width: 560px;
+  flex: 0 0 min(360px, 36vw);
+  width: min(360px, 36vw);
+  min-width: 260px;
+  max-width: 520px;
   height: 100%;
   min-height: 0;
-  border-left: 1px solid hsl(var(--border) / 0.65);
-  background:
-    linear-gradient(
-      165deg,
-      rgb(255 255 255 / 0.55),
-      rgb(var(--glass-rgb) / 0.42)
-    );
-  -webkit-backdrop-filter: blur(18px) saturate(1.08);
-  backdrop-filter: blur(18px) saturate(1.08);
+  /* 基线字号：与会话气泡 12px 同档，子元素用 rem 相对缩放 */
+  font-size: 12px;
+  line-height: 1.45;
+  color: hsl(var(--foreground) / 0.9);
+  border-left: 1px solid var(--spatial-line, hsl(var(--border) / 0.55));
+  background: rgb(var(--glass-rgb) / 0.28);
+  -webkit-backdrop-filter: blur(16px) saturate(1.1);
+  backdrop-filter: blur(16px) saturate(1.1);
   z-index: 15;
 }
 .dark .kanban-crew-panel {
-  background: rgb(var(--glass-rgb) / 0.5);
-  border-left-color: rgb(255 255 255 / 0.08);
+  background: rgb(var(--glass-rgb) / 0.22);
+  border-left-color: rgb(255 255 255 / 0.06);
+}
+/* Dock 分屏嵌入：铺满 pane，无左侧分隔（group 已有外框） */
+.kanban-crew-panel.is-embedded {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  border-left: 0;
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 /* 左缘拖拽调宽手柄 */
@@ -879,86 +890,127 @@
   background: hsl(var(--foreground) / 0.08);
 }
 
+/* 顶栏：对齐会话区 chrome 密度（约 36–40px 高，10–11px 字） */
 .kanban-crew-panel__header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
-  min-height: 48px;
-  padding: 10px 12px 8px 14px;
-  border-bottom: 1px solid hsl(var(--border) / 0.5);
+  min-height: 36px;
+  padding: 6px 10px 6px 12px;
+  border-bottom: 1px solid var(--spatial-line, hsl(var(--border) / 0.45));
+}
+.kanban-crew-panel__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: hsl(var(--foreground));
+  line-height: 1.3;
+}
+.kanban-crew-panel__subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 1px;
+  font-size: 10px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground) / 0.88);
+  line-height: 1.3;
 }
 .kanban-crew-panel__icon-btn {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   background: transparent;
-  color: hsl(var(--muted-foreground));
+  color: hsl(var(--muted-foreground) / 0.8);
   cursor: pointer;
+  transition: color 140ms ease, background 140ms ease;
 }
 .kanban-crew-panel__icon-btn:hover {
   background: hsl(var(--foreground) / 0.06);
   color: hsl(var(--foreground));
 }
 
+/* 进行中 / 历史：对齐 workspace-tab 胶囊，略小 */
 .kanban-crew-panel__tabs {
   display: flex;
   gap: 4px;
   flex-shrink: 0;
-  padding: 8px 12px 0;
+  padding: 6px 10px 0;
 }
 .kanban-crew-panel__tab {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 10px;
-  border: 0;
-  border-radius: 8px;
+  gap: 4px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
   background: transparent;
-  font-size: 12px;
-  font-weight: 600;
-  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+  font-weight: 560;
+  letter-spacing: -0.01em;
+  color: hsl(var(--muted-foreground) / 0.88);
   cursor: pointer;
+  transition:
+    color 140ms ease,
+    background 140ms ease,
+    border-color 140ms ease;
 }
 .kanban-crew-panel__tab:hover:not(:disabled) {
   color: hsl(var(--foreground));
-  background: hsl(var(--foreground) / 0.05);
+  background: color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
 }
 .kanban-crew-panel__tab.is-active {
-  color: hsl(var(--foreground));
-  background: hsl(var(--foreground) / 0.08);
+  color: hsl(var(--primary));
+  border-color: rgb(var(--glass-rgb) / 0.45);
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
+    rgb(var(--glass-rgb) / 0.42);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.45);
+}
+.dark .kanban-crew-panel__tab.is-active {
+  border-color: rgb(255 255 255 / 0.06);
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 64%),
+    rgb(var(--glass-rgb) / 0.36);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
 }
 .kanban-crew-panel__tab:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 .kanban-crew-panel__tab-count {
-  min-width: 1.1rem;
-  padding: 0 5px;
+  min-width: 1rem;
+  padding: 0 4px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 650;
+  line-height: 1.4;
   background: hsl(var(--foreground) / 0.08);
   font-variant-numeric: tabular-nums;
 }
 
 .kanban-crew-panel__subhead {
   flex-shrink: 0;
-  padding: 8px 12px 0;
+  padding: 6px 10px 0;
 }
 .kanban-crew-panel__back {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   border: 0;
   background: transparent;
-  padding: 4px 2px;
-  font-size: 12px;
-  font-weight: 600;
-  color: hsl(var(--muted-foreground));
+  padding: 2px 0;
+  font-size: 10px;
+  font-weight: 560;
+  color: hsl(var(--muted-foreground) / 0.9);
   cursor: pointer;
 }
 .kanban-crew-panel__back:hover {
@@ -967,38 +1019,44 @@
 
 .kanban-crew-panel__boards {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
   overflow-x: auto;
-  padding: 8px 12px 0;
+  padding: 6px 10px 0;
+  scrollbar-width: none;
+}
+.kanban-crew-panel__boards::-webkit-scrollbar {
+  display: none;
 }
 .kanban-crew-panel__board-chip {
   flex-shrink: 0;
-  padding: 4px 10px;
-  border: 1px solid hsl(var(--border) / 0.55);
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--spatial-line, hsl(var(--border) / 0.5));
   border-radius: 999px;
   background: transparent;
-  font-size: 11px;
-  font-weight: 550;
-  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+  font-weight: 520;
+  color: hsl(var(--muted-foreground) / 0.9);
   cursor: pointer;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
 }
 .kanban-crew-panel__board-chip.is-active {
-  border-color: hsl(var(--primary) / 0.35);
-  background: hsl(var(--primary) / 0.12);
+  border-color: hsl(var(--primary) / 0.32);
+  background: hsl(var(--primary) / 0.1);
   color: hsl(var(--primary));
 }
 
 .kanban-crew-panel__stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 4px 10px;
   flex-shrink: 0;
-  padding: 8px 14px;
-  font-size: 11px;
-  color: hsl(var(--muted-foreground));
+  padding: 6px 12px 7px;
+  font-size: 10px;
+  color: hsl(var(--muted-foreground) / 0.9);
   font-variant-numeric: tabular-nums;
-  border-bottom: 1px solid hsl(var(--border) / 0.4);
+  border-bottom: 1px solid var(--spatial-line, hsl(var(--border) / 0.4));
 }
 
 .kanban-crew-panel__body {
@@ -1011,95 +1069,225 @@
 .kanban-crew-panel__list {
   list-style: none;
   margin: 0;
-  padding: 8px;
+  padding: 6px 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   overflow-y: auto;
   flex: 1;
 }
+/* 任务行：对齐 .session-row 玻璃会话项，不再做大卡片 */
 .kanban-crew-panel__task {
   display: flex;
   width: 100%;
   align-items: flex-start;
-  gap: 10px;
-  padding: 10px 10px;
-  border: 0;
-  border-radius: 12px;
+  gap: 8px;
+  min-height: 0;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-radius: 11px;
   background: transparent;
   text-align: left;
   cursor: pointer;
   color: inherit;
-  transition: background 0.12s ease;
+  transition:
+    color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 .kanban-crew-panel__task:hover {
-  background: hsl(var(--foreground) / 0.05);
+  background-color: color-mix(in srgb, hsl(var(--primary)) 7%, hsl(var(--background)));
+  border-color: color-mix(in srgb, hsl(var(--primary)) 16%, transparent);
+}
+.kanban-crew-panel__task:active {
+  transform: none;
+}
+.dark .kanban-crew-panel__task:hover {
+  background-color: color-mix(in srgb, hsl(var(--primary)) 12%, hsl(var(--background)));
+  border-color: color-mix(in srgb, hsl(var(--primary)) 22%, transparent);
+}
+.kanban-crew-panel__task-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 560;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  color: hsl(var(--foreground) / 0.92);
+}
+.kanban-crew-panel__task-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: hsl(var(--muted-foreground) / 0.88);
+}
+.kanban-crew-panel__task-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: hsl(var(--foreground) / 0.62);
+}
+.kanban-crew-panel__task-error {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 3px;
+  font-size: 10px;
+  color: hsl(var(--destructive) / 0.9);
 }
 .kanban-crew-panel__dot {
-  margin-top: 5px;
-  width: 8px;
-  height: 8px;
+  margin-top: 4px;
+  width: 6px;
+  height: 6px;
   border-radius: 999px;
   flex-shrink: 0;
 }
 .kanban-crew-panel__empty {
-  padding: 28px 18px;
-  font-size: 12px;
+  padding: 20px 14px;
+  font-size: 11px;
   line-height: 1.5;
-  color: hsl(var(--muted-foreground));
+  color: hsl(var(--muted-foreground) / 0.9);
+}
+.kanban-crew-panel__empty-hint {
+  margin: 4px 0 0;
+  font-size: 10px;
+  line-height: 1.45;
+  opacity: 0.72;
 }
 
 .kanban-crew-panel__detail {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 12px 14px 20px;
+  padding: 8px 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
 }
 .kanban-crew-panel__detail-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+}
+.kanban-crew-panel__status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: hsl(var(--foreground) / 0.06);
+  font-size: 10px;
+  font-weight: 560;
+  color: hsl(var(--foreground) / 0.82);
 }
 .kanban-crew-panel__h {
-  margin: 0 0 6px;
-  font-size: 11px;
-  font-weight: 650;
+  margin: 0 0 4px;
+  font-size: 10px;
+  font-weight: 620;
   letter-spacing: 0.02em;
-  color: hsl(var(--muted-foreground));
+  color: hsl(var(--muted-foreground) / 0.9);
 }
 .kanban-crew-panel__pre {
   margin: 0;
-  max-height: 160px;
+  max-height: 140px;
   overflow: auto;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: hsl(var(--foreground) / 0.04);
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--spatial-line, hsl(var(--border) / 0.4));
+  background: rgb(var(--glass-rgb) / 0.22);
   font-family: inherit;
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: 11px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-  color: hsl(var(--foreground) / 0.9);
+  color: hsl(var(--foreground) / 0.88);
 }
 .kanban-crew-panel__pre--result {
-  max-height: 220px;
-  border: 1px solid hsl(var(--primary) / 0.18);
+  max-height: 180px;
+  border-color: hsl(var(--primary) / 0.18);
   background: hsl(var(--primary) / 0.06);
 }
 .kanban-crew-panel__transcript {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-height: min(40vh, 320px);
+  gap: 8px;
+  max-height: min(36vh, 280px);
   overflow-y: auto;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid hsl(var(--border) / 0.5);
-  background: hsl(var(--foreground) / 0.03);
-  font-size: 12px;
-  line-height: 1.6;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--spatial-line, hsl(var(--border) / 0.45));
+  background: rgb(var(--glass-rgb) / 0.16);
+  font-size: 11px;
+  line-height: 1.55;
+  color: hsl(var(--foreground) / 0.86);
+}
+.kanban-crew-panel__body-text {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground) / 0.92);
+}
+.kanban-crew-panel__callout {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.kanban-crew-panel__callout--danger {
+  background: hsl(var(--destructive) / 0.1);
+  color: hsl(var(--destructive) / 0.95);
+}
+.kanban-crew-panel__callout--warn {
+  background: hsl(38 92% 50% / 0.1);
   color: hsl(var(--foreground) / 0.88);
+}
+.kanban-crew-panel__note {
+  border-radius: 8px;
+  background: hsl(var(--foreground) / 0.04);
+  padding: 7px 9px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.kanban-crew-panel__note-meta {
+  font-size: 10px;
+  color: hsl(var(--muted-foreground) / 0.88);
+}
+.kanban-crew-panel__action {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 140ms ease;
+}
+.kanban-crew-panel__action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.kanban-crew-panel__action--warn {
+  background: hsl(38 92% 50% / 0.14);
+  color: hsl(32 80% 32%);
+}
+.dark .kanban-crew-panel__action--warn {
+  color: hsl(40 90% 72%);
+}
+.kanban-crew-panel__action--primary {
+  background: hsl(var(--primary) / 0.14);
+  color: hsl(var(--primary));
 }
 
 /* 右缘轻入口（面板关闭时） */
@@ -1111,19 +1299,19 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 14px 7px;
-  border: 1px solid hsl(var(--border) / 0.6);
+  gap: 6px;
+  padding: 12px 6px;
+  border: 1px solid var(--spatial-line, hsl(var(--border) / 0.55));
   border-right: 0;
-  border-radius: 12px 0 0 12px;
-  background: rgb(var(--glass-rgb) / 0.78);
-  color: hsl(var(--muted-foreground));
-  font-size: 11px;
-  font-weight: 650;
+  border-radius: 11px 0 0 11px;
+  background: rgb(var(--glass-rgb) / 0.72);
+  color: hsl(var(--muted-foreground) / 0.9);
+  font-size: 10px;
+  font-weight: 620;
   cursor: pointer;
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
-  box-shadow: -4px 0 16px rgb(0 0 0 / 0.05);
+  box-shadow: -4px 0 14px rgb(0 0 0 / 0.04);
   transition:
     color 0.15s ease,
     background 0.15s ease;
