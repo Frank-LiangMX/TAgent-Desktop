@@ -37,3 +37,11 @@ release-notes/__generated/
 
 # kscc plan 文件目录（.claude 产物，不进库）
 .context/
+
+# mimo-ai 工具运行产物目录（自带 .gitignore 排除 node_modules 等，整体忽略）
+.mimicode/
+.mimicode/**
+# 显式补齐 mimo 自带 gitignore 故意保留、但不属于本项目的 3 项
+.mimicode/distill/
+.mimicode/dream_inspect.py
+.mimicode/skills/
