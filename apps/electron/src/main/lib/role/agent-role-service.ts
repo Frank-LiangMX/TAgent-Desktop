@@ -53,7 +53,8 @@ export function loadRoles(): AgentRoleProfile[] {
       if (builtin.systemPrompt !== r.systemPrompt) {
         needsUpdate = true
         console.log(`[角色库] 内置角色已更新: ${r.id}`)
-        return { ...builtin }
+        // 内置 prompt 更新走整体替换（既有行为），仅额外保留用户的 pin 标记
+        return { ...builtin, pinned: r.pinned === true }
       }
 
       // 曾 seed 的 kscc 模型列表 → 空池（渠道默认）；用户自配其他池保留
@@ -129,6 +130,7 @@ export function saveRole(role: AgentRoleProfile): AgentRoleProfile[] {
         ? role.maxConcurrentPerModel
         : 2,
     fallbackToChannelDefault: role.fallbackToChannelDefault !== false,
+    pinned: role.pinned === true,
   }
   const roles = loadRoles()
   const idx = roles.findIndex((r) => r.id === normalized.id)

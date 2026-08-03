@@ -30,9 +30,9 @@
 
 | 项 | DoD | 状态（2026-08-03） |
 | --- | --- | --- |
-| B1 可 @ 的 pin 角色列表 | 非全库 | ⚠️ 输入 `@` 弹出角色库列表（暂全量，pin 子集待做）`MentionPicker` |
+| B1 可 @ 的 pin 角色列表 | 非全库 | ✅ `AgentRoleProfile.pinned` + RolesPage 📌 开关；`MentionPicker` 无 query 显 pin 子集（无 pin 回退全量）、有 query 全库过滤 pin 优先；`parseMentions` 仍用全库 |
 | B2 铭牌气泡 + 顺序发言 | | ⚠️ 本轮 chip `@A → @B` + system 注入角色投影顺序发言；非真多进程 |
-| B3 followMode（可选） | | 未做 |
+| B3 followMode（可选） | | ✅ activeSpeaker 对话跟随：`@` 设置/切换，续聊无 `@` 仍由该角色接（`pendingMentionRoleIds` 持久、turn_end 不清空）；输入框顶部「正在与 @角色 对话 ✕」指示，✕ 走 `CLEAR_MENTION_FOLLOW` |
 | B4 建议切 Work 确认条 | 点确认才变 mode | ✅ Chat 硬拦推建议条；确认 `user-confirm-suggestion` |
 
 ### Phase C — 角色库服务 + SubAgent 收敛
@@ -72,10 +72,10 @@
 
 ### Phase F — 布局
 
-| 项 | DoD |
-| --- | --- |
-| F1 右栏 + 可拖分栏 | |
-| F2（可选）mosaic 工作台模式 | 不拆 AppShell |
+| 项 | DoD | 状态（2026-08-03） |
+| --- | --- | --- |
+| F1 右栏 + 可拖分栏 | | ✅ `KanbanCrewPanel` 左缘拖拽手柄（pointer capture），宽度 `localStorage` 持久化、clamp 280–560；轻量 split，未做 mosaic |
+| F2（可选）mosaic 工作台模式 | 不拆 AppShell | 未做（等功能稳态） |
 
 ---
 
@@ -152,3 +152,4 @@ Scenario: kscc MoA 组班
 | --- | --- |
 | 2026-08-02 | 初版阶段划分 |
 | 2026-08-03 | D 右栏面板 + 工人结果/回流修边；B1/B2 基础；交接见 [09-handoff-2026-08-03](./09-handoff-2026-08-03.md) |
+| 2026-08-03 | P1 补完：B1 pin 子集 ✅、B3 activeSpeaker followMode ✅、F1 右栏可拖宽 ✅、删 KanbanCrewStrip。已实现待运行验收，typecheck + 86 项单测通过 |

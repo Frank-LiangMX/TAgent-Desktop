@@ -147,6 +147,10 @@ export interface KanbanCrewPanelProps {
   onOpenChange: (open: boolean) => void
   /** 是否有任意板（给外部 edge/按钮显示用） */
   onPresenceChange?: (hasBoards: boolean) => void
+  /** 面板宽度（px，可拖宽；不传则用 CSS 默认） */
+  width?: number
+  /** 拖拽手柄回调（已 clamp 由父组件负责） */
+  onWidthChange?: (width: number) => void
 }
 
 export function KanbanCrewPanel({
@@ -155,6 +159,8 @@ export function KanbanCrewPanel({
   open,
   onOpenChange,
   onPresenceChange,
+  width,
+  onWidthChange,
 }: KanbanCrewPanelProps): JSX.Element | null {
   const [activeBoards, setActiveBoards] = useState<BoardRow[]>([])
   const [historyBoards, setHistoryBoards] = useState<BoardRow[]>([])
@@ -165,6 +171,43 @@ export function KanbanCrewPanel({
   const [actionBusy, setActionBusy] = useState(false)
   const [workerTranscript, setWorkerTranscript] = useState<string[]>([])
   const [workerLoading, setWorkerLoading] = useState(false)
+
+  /** 左缘拖拽调宽（pointer capture，拖出面板外仍生效） */
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const onResizeStart = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!onWidthChange) return
+      e.preventDefault()
+      const parent = e.currentTarget.parentElement
+      dragRef.current = {
+        startX: e.clientX,
+        startWidth: parent?.getBoundingClientRect().width ?? width ?? 380,
+      }
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId)
+      } catch {
+        /* ignore */
+      }
+    },
+    [onWidthChange, width],
+  )
+  const onResizeMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const d = dragRef.current
+      if (!d || !onWidthChange) return
+      // 左缘向左拖 → 面板变宽
+      onWidthChange(d.startWidth + (d.startX - e.clientX))
+    },
+    [onWidthChange],
+  )
+  const onResizeEnd = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      /* ignore */
+    }
+  }, [])
 
   const reload = useCallback(async () => {
     try {
@@ -380,7 +423,25 @@ export function KanbanCrewPanel({
   }
 
   return (
-    <aside className="kanban-crew-panel" aria-label="班组面板">
+    <aside
+      className="kanban-crew-panel"
+      aria-label="班组面板"
+      style={width ? { width: `${width}px`, flexBasis: `${width}px` } : undefined}
+    >
+      {/* 左缘拖拽调宽手柄 */}
+      {onWidthChange ? (
+        <div
+          className="kanban-crew-panel__resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖动调整班组面板宽度"
+          onPointerDown={onResizeStart}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeEnd}
+          onPointerCancel={onResizeEnd}
+        />
+      ) : null}
+
       {/* 顶栏 */}
       <header className="kanban-crew-panel__header">
         <div className="flex min-w-0 flex-1 items-center gap-2">

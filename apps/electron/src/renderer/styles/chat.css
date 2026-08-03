@@ -795,12 +795,13 @@
 }
 
 .kanban-crew-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 0 0 min(400px, 38vw);
   width: min(400px, 38vw);
-  min-width: 300px;
-  max-width: 480px;
+  min-width: 280px;
+  max-width: 560px;
   height: 100%;
   min-height: 0;
   border-left: 1px solid hsl(var(--border) / 0.65);
@@ -817,6 +818,65 @@
 .dark .kanban-crew-panel {
   background: rgb(var(--glass-rgb) / 0.5);
   border-left-color: rgb(255 255 255 / 0.08);
+}
+
+/* 左缘拖拽调宽手柄 */
+.kanban-crew-panel__resizer {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 7px;
+  height: 100%;
+  z-index: 16;
+  cursor: col-resize;
+  touch-action: none;
+  border-radius: 3px;
+}
+.kanban-crew-panel__resizer:hover,
+.kanban-crew-panel__resizer:active {
+  background: hsl(var(--primary) / 0.25);
+}
+
+/* Chat 输入框顶部：activeSpeaker 对话跟随指示条（参考主流 IM「当前对话对象」） */
+.active-speaker-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 5px 12px 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  line-height: 1.4;
+}
+.active-speaker-bar__label {
+  color: hsl(var(--muted-foreground));
+}
+.active-speaker-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  font-weight: 600;
+  font-size: 11px;
+}
+.active-speaker-clear {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.active-speaker-clear:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.08);
 }
 
 .kanban-crew-panel__header {

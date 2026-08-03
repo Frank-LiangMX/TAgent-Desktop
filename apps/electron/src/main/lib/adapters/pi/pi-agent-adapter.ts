@@ -897,13 +897,13 @@ function makeCompactBoundaryEvent(opts: {
 // ② usage 字段名(input→inputTokens …) ③ stream error 兜底 ④ compact 控制事件。
 
 /** Pi Usage → IR TAgentUsage（字段名映射） */
-function piUsageToIR(u: Usage): TAgentUsage {
+function piUsageToIR(u?: Usage): TAgentUsage {
   return {
-    inputTokens: Number(u.input ?? 0),
-    outputTokens: Number(u.output ?? 0),
-    cacheReadTokens: Number(u.cacheRead ?? 0),
-    cacheCreationTokens: Number(u.cacheWrite ?? 0),
-    costUsd: typeof u.cost?.total === 'number' ? u.cost.total : undefined,
+    inputTokens: Number(u?.input ?? 0),
+    outputTokens: Number(u?.output ?? 0),
+    cacheReadTokens: Number(u?.cacheRead ?? 0),
+    cacheCreationTokens: Number(u?.cacheWrite ?? 0),
+    costUsd: typeof u?.cost?.total === 'number' ? u.cost.total : undefined,
   }
 }
 
@@ -1010,7 +1010,7 @@ function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktopStreamP
           const cacheWrite = ir.cacheCreationTokens ?? 0
           // 占用口径：优先 provider totalTokens；否则 input+cache（与 statusline 一致）
           const contextUsed =
-            typeof u.totalTokens === 'number' && u.totalTokens > 0 ? u.totalTokens : inTok + cacheRead + cacheWrite
+            typeof u?.totalTokens === 'number' && u.totalTokens > 0 ? u.totalTokens : inTok + cacheRead + cacheWrite
           usage = {
             inputTokens: contextUsed,
             outputTokens: ir.outputTokens,

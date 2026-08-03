@@ -1847,6 +1847,8 @@ export const AGENT_IPC_CHANNELS = {
   TOGGLE_ARCHIVE: 'agent:toggle-archive',
   /** 查会话生命状态（组合 runtimes 内存 turnInFlight + meta.error + meta.archived） */
   GET_SESSION_STATUS: 'agent:get-session-status',
+  /** 清除 Chat @ 对话跟随（activeSpeaker；清空 pendingMentionRoleIds 回默认总助） */
+  CLEAR_MENTION_FOLLOW: 'agent:clear-mention-follow',
   /** 搜索会话消息内容 */
   SEARCH_MESSAGES: 'agent:search-messages',
   /** 搜索指定工作区可引用的 Agent 会话 */

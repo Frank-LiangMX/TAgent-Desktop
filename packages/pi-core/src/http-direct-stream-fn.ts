@@ -12,6 +12,8 @@
  */
 
 import type { StreamFn } from "@earendil-works/pi-agent-core";
+import { createProvider } from '@earendil-works/pi-ai';
+import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 import type {
   Api,
   AssistantMessageEventStream,
@@ -154,7 +156,18 @@ function resolveProvider(providerName: string): Provider<Api> {
     case "custom":
     default:
       // OpenAI 兼容协议（含 zhipu/doubao/qwen/custom 及未知）
-      return openaiProvider() as Provider<Api>;
+      return createProvider({
+        id: providerName,
+        name: providerName,
+        auth: {
+          apiKey: {
+            name: providerName,
+            resolve: async () => ({ auth: {} }),
+          },
+        },
+        models: [],
+        api: openAICompletionsApi(),
+      }) as Provider<Api>;
   }
 }
 

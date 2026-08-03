@@ -1,14 +1,18 @@
 /**
  * Chat @ 角色选择器（Phase B1）
- * 输入 @ 后弹出可 pin 的角色短列表（当前 = 角色库全量，后续可缩 pin）。
+ * 无 query 时只显示已 pin 子集（B1：非全库）；有 query 时全库过滤、pin 优先。
+ * 过滤逻辑与 ChatInput 键盘选择共用 filterMentionRoles，保证选中项一致。
  */
 import { useEffect, useMemo, useState } from 'react'
+import { filterMentionRoles } from '@tagent/shared'
 import { cn } from '../../lib/utils'
 
 export interface MentionRoleOption {
   id: string
   displayName: string
   description?: string
+  /** 置顶到 @ 快捷列表（RolesPage 勾选写入角色库） */
+  pinned?: boolean
 }
 
 interface MentionPickerProps {
@@ -30,18 +34,10 @@ export function MentionPicker({
   onActiveIndexChange,
   className,
 }: MentionPickerProps): JSX.Element | null {
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return roles.slice(0, 12)
-    return roles
-      .filter(
-        (r) =>
-          r.id.toLowerCase().includes(q) ||
-          r.displayName.toLowerCase().includes(q) ||
-          (r.description ?? '').toLowerCase().includes(q),
-      )
-      .slice(0, 12)
-  }, [query, roles])
+  const filtered = useMemo(
+    () => filterMentionRoles(roles, query),
+    [query, roles],
+  )
 
   useEffect(() => {
     if (activeIndex >= filtered.length) {

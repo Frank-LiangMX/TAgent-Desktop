@@ -13,6 +13,7 @@ import {
   CircleNotch,
   CheckCircle,
   UsersThree,
+  PushPin,
 } from '@phosphor-icons/react'
 import {
   Button,
@@ -143,6 +144,24 @@ export function RolesPage(): JSX.Element {
 
   const closeDetail = (open: boolean) => {
     if (!open) setDetailRole(null)
+  }
+
+  /** 置顶/取消置顶到 Chat @ 快捷列表（B1 pin 子集）。仅写本地 pinned 标记，不动其余字段。 */
+  const togglePin = async (role: AgentRoleProfile) => {
+    setBusy(true)
+    try {
+      const list = await window.electronAPI.saveAgentRole({
+        role: { ...role, pinned: !role.pinned },
+      })
+      setRoles(list)
+      setDetailRole((prev) =>
+        prev && prev.id === role.id ? list.find((r) => r.id === role.id) ?? prev : prev,
+      )
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
   }
 
   const onReset = async () => {
@@ -313,8 +332,9 @@ export function RolesPage(): JSX.Element {
             <ul className="roles-card-grid">
               {filteredRoles.map((r) => {
                 const builtin = BUILTIN_IDS.has(r.id)
+                const pinned = r.pinned === true
                 return (
-                  <li key={r.id}>
+                  <li key={r.id} className="relative">
                     <button
                       type="button"
                       className="roles-card"
@@ -329,6 +349,7 @@ export function RolesPage(): JSX.Element {
                           <div className="roles-card__meta">
                             <span className="roles-badge">{builtin ? '内置' : '自定义'}</span>
                             <span className="roles-badge">{permissionLabel(r.permissionMode)}</span>
+                            {pinned ? <span className="roles-badge roles-badge--pin">已置顶</span> : null}
                           </div>
                         </div>
                       </div>
@@ -337,6 +358,24 @@ export function RolesPage(): JSX.Element {
                         <span className="truncate">{modelPoolLabel(r.modelPool)}</span>
                         <span className="roles-card__foot-hint">查看详情</span>
                       </div>
+                    </button>
+                    {/* 置顶到 @ 快捷列表：放在卡片按钮之外（避免 button 嵌 button），右上角浮层 */}
+                    <button
+                      type="button"
+                      className={cn(
+                        'roles-card__pin',
+                        pinned && 'roles-card__pin--active',
+                      )}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void togglePin(r)
+                      }}
+                      disabled={busy}
+                      aria-label={pinned ? '取消置顶' : '置顶到 @ 快捷列表'}
+                      aria-pressed={pinned}
+                      title={pinned ? '已置顶到 Chat @ 快捷列表（点击取消）' : '置顶到 Chat @ 快捷列表'}
+                    >
+                      <PushPin weight={pinned ? 'fill' : 'regular'} aria-hidden />
                     </button>
                   </li>
                 )

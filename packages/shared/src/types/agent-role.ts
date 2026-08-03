@@ -38,6 +38,12 @@ export interface AgentRoleProfile {
   /** 模型池全满时是否回退到渠道默认模型（默认 true） */
   fallbackToChannelDefault: boolean
   /**
+   * 是否置顶到 Chat @ 点名快捷列表（B1 pin 子集）。
+   * 纯 UI 标记，不影响 worker 派工 / modelPool；未置顶角色仍可手动 @（解析走全库）。
+   * 默认未置顶（undefined / false）。
+   */
+  pinned?: boolean
+  /**
    * 角色默认渠道 ID（可选，2026-07-04 跨渠道分配用）
    *
    * - 未指定 → 继承看板渠道（kscc 看板用 kscc 模型，外部看板轮询外部渠道）

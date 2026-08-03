@@ -14,6 +14,7 @@ import {
   useEffect,
 } from 'react'
 import { Paperclip } from 'lucide-react'
+import { filterMentionRoles } from '@tagent/shared'
 import { AttachmentPreviewItem } from '@tagent/ui'
 import { shouldConvertTextToAttachment, createTextAttachment } from '../../lib/clipboard-text-attachment'
 import { MentionPicker, type MentionRoleOption } from './MentionPicker'
@@ -51,6 +52,10 @@ interface ChatInputProps {
    * Chat 模式由父组件传入；Work 传空。
    */
   mentionRoles?: MentionRoleOption[]
+  /**
+   * 输入框顶部条（如 Chat 的 activeSpeaker「正在与 @角色 对话」指示），渲染在玻璃壳内最上方。
+   */
+  topBar?: React.ReactNode
 }
 
 export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
@@ -63,6 +68,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     onAttachmentsChange,
     onOpenFileDialog,
     mentionRoles,
+    topBar,
   }, ref) {
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const [isDragOver, setIsDragOver] = useState(false)
@@ -169,16 +175,8 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
           }
           if (e.key === 'Enter' || e.key === 'Tab') {
             e.preventDefault()
-            // 由 MentionPicker 的 filtered 逻辑：父用 activeIndex，此处简化：用 query 过滤后取 active
-            const q = mentionQuery.trim().toLowerCase()
-            const filtered = (mentionRoles ?? [])
-              .filter(
-                (r) =>
-                  !q ||
-                  r.id.toLowerCase().includes(q) ||
-                  r.displayName.toLowerCase().includes(q),
-              )
-              .slice(0, 12)
+            // 与 MentionPicker 共用 filterMentionRoles，保证上下键选中即下拉高亮项
+            const filtered = filterMentionRoles(mentionRoles ?? [], mentionQuery)
             const role = filtered[Math.min(mentionActive, filtered.length - 1)]
             if (role) insertMention(role)
             return
@@ -306,6 +304,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         <div
           className={`chat-input-glass relative ${isDragOver ? 'ring-2 ring-dashed ring-primary/40' : ''}`}
         >
+          {topBar}
           {/* 附件预览区 */}
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-2 px-3 pt-2.5 pb-1.5">

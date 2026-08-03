@@ -141,6 +141,9 @@ const electronAPI = {
   togglePin: (id: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.TOGGLE_PIN, id) as Promise<unknown>,
   /** 切换会话归档 */
   toggleArchive: (id: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.TOGGLE_ARCHIVE, id) as Promise<unknown>,
+  /** 清除 Chat @ 对话跟随（activeSpeaker 回默认总助） */
+  clearMentionFollow: (id: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.CLEAR_MENTION_FOLLOW, id) as Promise<unknown>,
   /** 查会话生命状态（runtimes 内存 + meta 组合；running 不落盘） */
   getSessionStatus: (id: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_SESSION_STATUS, id) as Promise<{

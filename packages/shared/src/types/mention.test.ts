@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { parseMentions } from './mention'
+import { parseMentions, filterMentionRoles } from './mention'
 
 const roles = [
   { id: 'analyst', displayName: '软件架构师' },
@@ -21,5 +21,29 @@ describe('parseMentions', () => {
 
   test('无 @ 返回空', () => {
     expect(parseMentions('普通消息', roles)).toEqual([])
+  })
+})
+
+describe('filterMentionRoles', () => {
+  const withPin = [
+    { id: 'analyst', displayName: '软件架构师', pinned: true },
+    { id: 'coder', displayName: '务实工程师' },
+    { id: 'reviewer', displayName: '严格评审', pinned: true },
+  ]
+
+  test('无 query 且有 pin：只显示 pin 子集', () => {
+    const ids = filterMentionRoles(withPin, '').map((r) => r.id)
+    expect(ids).toEqual(['analyst', 'reviewer'])
+  })
+
+  test('无 query 且无 pin：回退全量', () => {
+    const ids = filterMentionRoles(roles, '').map((r) => r.id)
+    expect(ids).toEqual(['analyst', 'coder', 'reviewer'])
+  })
+
+  test('有 query：全库过滤，pin 项排前', () => {
+    const ids = filterMentionRoles(withPin, '师').map((r) => r.id)
+    // 软件架构师(pin) 与 务实工程师 均含「师」，pin 的 analyst 在前
+    expect(ids).toEqual(['analyst', 'coder'])
   })
 })

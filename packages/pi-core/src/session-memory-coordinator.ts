@@ -110,14 +110,32 @@ function injectPrefixMessages(
   prefixBlocks: Array<{ role: 'user' | 'assistant'; text: string }>,
 ): AgentMessage[] {
   if (prefixBlocks.length === 0) return messages
-  const prefix = prefixBlocks.map(
-    (b) =>
-      ({
-        role: b.role,
-        content: b.text,
+  const prefix = prefixBlocks.map((b): AgentMessage => {
+    if (b.role === 'assistant') {
+      return {
+        role: 'assistant',
+        content: [{ type: 'text', text: b.text }],
+        api: 'openai-completions',
+        provider: 'tagent-memory',
+        model: 'memory-prefix',
+        stopReason: 'stop',
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
         timestamp: Date.now(),
-      }) as AgentMessage,
-  )
+      }
+    }
+    return {
+      role: 'user',
+      content: b.text,
+      timestamp: Date.now(),
+    }
+  })
   return [...prefix, ...messages]
 }
 

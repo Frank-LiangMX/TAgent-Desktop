@@ -31,4 +31,20 @@ describe('SessionMemoryCoordinator state', () => {
     expect(c.state.lmidChain).toHaveLength(1)
     expect(c.state.lastRagHits[0]?.source).toBe('L4:x')
   })
+
+  it('creates Pi-valid assistant messages for injected RAG context', async () => {
+    const c = new SessionMemoryCoordinator('rag-usage')
+    const result = await c.reconcile({
+      messages: [{ role: 'user', content: 'question', timestamp: 1 }],
+      contextWindow: 100_000,
+      settings: { enabled: true, reserveTokens: 20_000, keepRecentTokens: 20_000 },
+      models: {} as never,
+      model: {} as never,
+      retrieveRag: async () => [{ source: 'test', text: 'remember this' }],
+    })
+
+    const injected = result.messages.find((message) => message.role === 'assistant')
+    expect(injected).toBeDefined()
+    expect(injected && 'usage' in injected ? injected.usage?.totalTokens : undefined).toBe(0)
+  })
 })

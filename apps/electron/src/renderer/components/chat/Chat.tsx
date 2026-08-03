@@ -45,7 +45,7 @@ import {
   Button,
   AppTooltip,
 } from '@tagent/ui'
-import { ArrowUp, Square, Compass, Zap, Plus, SlidersHorizontal, Unlock } from 'lucide-react'
+import { ArrowUp, Square, Compass, Zap, Plus, SlidersHorizontal, Unlock, X } from 'lucide-react'
 import { UsersThree } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import {
@@ -125,6 +125,23 @@ interface DisplayItem {
 
 /** 新会话页提示词默认值见 NewConversationLanding（welcome / compose 两形态共用） */
 
+/** 右栏班组面板宽度（可拖宽，localStorage 持久化；clamp 280–560） */
+const CREW_PANEL_WIDTH_KEY = 'tagent:crewPanelWidth'
+const CREW_PANEL_WIDTH_MIN = 280
+const CREW_PANEL_WIDTH_MAX = 560
+const CREW_PANEL_WIDTH_DEFAULT = 380
+function loadCrewPanelWidth(): number {
+  try {
+    const n = Number(localStorage.getItem(CREW_PANEL_WIDTH_KEY))
+    if (Number.isFinite(n) && n > 0) {
+      return Math.min(CREW_PANEL_WIDTH_MAX, Math.max(CREW_PANEL_WIDTH_MIN, n))
+    }
+  } catch {
+    /* localStorage 不可用时走默认 */
+  }
+  return CREW_PANEL_WIDTH_DEFAULT
+}
+
 export function Chat({
   session,
   onDraftWorkspaceChange,
@@ -170,6 +187,18 @@ export function Chat({
   /** 右侧班组面板（有板才有入口） */
   const [crewPanelOpen, setCrewPanelOpen] = useState(false)
   const [hasCrewBoards, setHasCrewBoards] = useState(false)
+  /** 右栏宽度（可拖宽，持久化） */
+  const [crewPanelWidth, setCrewPanelWidth] = useState<number>(loadCrewPanelWidth)
+  const handleCrewPanelWidth = useCallback((w: number) => {
+    setCrewPanelWidth(Math.min(CREW_PANEL_WIDTH_MAX, Math.max(CREW_PANEL_WIDTH_MIN, Math.round(w))))
+  }, [])
+  useEffect(() => {
+    try {
+      localStorage.setItem(CREW_PANEL_WIDTH_KEY, String(crewPanelWidth))
+    } catch {
+      /* ignore */
+    }
+  }, [crewPanelWidth])
   /** 对话列变窄时启用紧凑输入底栏（右栏展开 / 窗口窄） */
   const [composerCompact, setComposerCompact] = useState(false)
   /** Chat @ 角色库短列表 */
@@ -178,6 +207,12 @@ export function Chat({
   >([])
   /** 最近一轮 @ 的展示名（助手铭牌旁顺序条） */
   const [liveMentionLabels, setLiveMentionLabels] = useState<string[]>([])
+  /**
+   * 当前对话跟随的角色（activeSpeaker / followMode）：
+   * @ 设置/切换；无 @ 时保持上一轮（连续追问同一角色）；✕ 清空回默认总助。
+   * 与主进程 pendingMentionRoleIds 对齐（主进程权威注入，本地用于输入框指示与铭牌）。
+   */
+  const [activeMentionRoleIds, setActiveMentionRoleIds] = useState<string[]>([])
   /**
    * Work→Chat 后班组仍在后台执行时的轻提示条。
    * setSessionExecutionMode 可带 backgroundCrew；也可客户端兜底数任务。
@@ -403,6 +438,7 @@ export function Chat({
           permissionMode?: TAgentPermissionMode
           pendingExecutionModeSuggestion?: import('@tagent/shared').ExecutionModeSuggestion | null
           boardId?: string
+          pendingMentionRoleIds?: string[]
         }>
         const persisted = metas.find((m) => m.id === sessionId)
         if (persisted) {
@@ -415,9 +451,14 @@ export function Chat({
           }
           setPendingModeSuggestion(persisted.pendingExecutionModeSuggestion ?? null)
           setSessionBoardId(persisted.boardId ?? null)
+          // 回显对话跟随的 activeSpeaker（followMode 持久化）
+          setActiveMentionRoleIds(
+            Array.isArray(persisted.pendingMentionRoleIds) ? persisted.pendingMentionRoleIds : [],
+          )
         } else {
           setPendingModeSuggestion(null)
           setSessionBoardId(null)
+          setActiveMentionRoleIds([])
         }
       } catch {
         /* 回显失败不影响主流程，沿用默认 */
@@ -676,6 +717,7 @@ export function Chat({
             id: r.id,
             displayName: r.displayName,
             description: r.description,
+            pinned: r.pinned === true,
           })),
         )
       } catch {
@@ -683,6 +725,50 @@ export function Chat({
       }
     })()
   }, [])
+
+  // roleId → 展示名（activeSpeaker 指示条 / 跟随铭牌用）
+  const roleNameById = useMemo(
+    () => new Map(mentionRoles.map((r) => [r.id, r.displayName] as const)),
+    [mentionRoles],
+  )
+
+  /** ✕ 清除对话跟随：本地清空 + 主进程 pendingMentionRoleIds 置空（回默认总助） */
+  const clearActiveMention = useCallback(async () => {
+    setActiveMentionRoleIds([])
+    setLiveMentionLabels([])
+    try {
+      await window.electronAPI.clearMentionFollow(sessionId)
+    } catch {
+      /* ignore */
+    }
+  }, [sessionId])
+
+  /**
+   * Chat 输入框顶部的 activeSpeaker 指示条（参考主流 IM「当前对话对象」）：
+   * @ 某角色后显示「正在与 @角色 对话」，续聊下一轮保持；✕ 结束跟随回默认总助。
+   */
+  const activeMentionBar =
+    executionMode === 'chat' && activeMentionRoleIds.length > 0 ? (
+      <div className="active-speaker-bar" role="status" aria-live="polite">
+        <UsersThree className="size-3.5 shrink-0 text-primary" weight="fill" aria-hidden />
+        <span className="active-speaker-bar__label">正在与</span>
+        {activeMentionRoleIds.map((id) => (
+          <span key={id} className="active-speaker-chip">
+            @{roleNameById.get(id) ?? id}
+          </span>
+        ))}
+        <span className="active-speaker-bar__label">对话</span>
+        <button
+          type="button"
+          className="active-speaker-clear"
+          onClick={() => void clearActiveMention()}
+          aria-label="结束跟随，回到默认助手"
+          title="结束跟随，回到默认助手"
+        >
+          <X className="size-3" aria-hidden />
+        </button>
+      </div>
+    ) : null
 
   // 虚拟化分批递增：未全挂时，idle 帧每批 +40 补齐旧消息（保近期，底部对话不受影响）
   useEffect(() => {
@@ -787,6 +873,37 @@ export function Chat({
               : it,
           )
         }
+        // Pi 核流式：每个 sdk_message 都是完整累积的 assistant message（无 stop_reason 表示仍在流式）。
+        // 必须就地更新最后一个 assistant item，否则每次 chunk append 新 item →
+        // 同一 turn 内出现 N 个递增长度的 assistant text → buildTurnPresentation 收集到重复文字。
+        // 标记 streaming: true 让 turn model 把它当流式 turn（isStreaming）→ 打字机 + 过程区展开生效。
+        const isPiStreamingAssistant =
+          p.message.type === 'assistant' && !p.message.stop_reason
+        if (isPiStreamingAssistant) {
+          const lastIdx = prev.length - 1
+          const last = prev[lastIdx]
+          if (last?.message?.type === 'assistant') {
+            // 同一个 turn 的连续 assistant 流式 chunk → 原地替换 content，标记 streaming
+            // （保留 key，useSmoothStream 平滑续接；stop_reason 到来后再标 streaming:false）
+            return prev.map((it, i) =>
+              i === lastIdx
+                ? { ...it, message: p.message, streaming: true, streamingText: undefined, streamingThinking: undefined }
+                : it,
+            )
+          }
+        }
+        // Pi 核完成（有 stop_reason）→ 落盘最终 message：清 streaming 标记
+        if (p.message.type === 'assistant' && p.message.stop_reason) {
+          const lastIdx = prev.length - 1
+          const last = prev[lastIdx]
+          if (last?.message?.type === 'assistant' && last.streaming) {
+            return prev.map((it, i) =>
+              i === lastIdx
+                ? { ...it, message: p.message, streaming: false, streamingText: undefined, streamingThinking: undefined }
+                : it,
+            )
+          }
+        }
         return [
           ...purgeStreamingItems(prev),
           { key: `m${itemIdxRef.current++}`, message: p.message },
@@ -795,7 +912,13 @@ export function Chat({
     } else if (p.kind === 'result') {
       if (p.usage) applyUsage(p.usage)
       streamingRef.current = null
-      setItems((prev) => purgeStreamingItems(prev))
+      // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
+      setItems((prev) => {
+        const cleaned = prev.map((it) =>
+          it.streaming ? { ...it, streaming: false, streamingText: undefined, streamingThinking: undefined } : it,
+        )
+        return purgeStreamingItems(cleaned)
+      })
       setRunning(false)
       bumpRefresh()
     } else if (p.kind === 'stream_text_delta') {
@@ -825,10 +948,16 @@ export function Chat({
       }
       if (evt.type === 'turn_end') {
         streamingRef.current = null
-        setItems((prev) => purgeStreamingItems(prev))
+        // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
+        setItems((prev) => {
+          const cleaned = prev.map((it) =>
+            it.streaming ? { ...it, streaming: false, streamingText: undefined, streamingThinking: undefined } : it,
+          )
+          return purgeStreamingItems(cleaned)
+        })
         setRunning(false)
-        // @ 铭牌保留到本 turn 渲染完；短延迟后清，避免历史轮误挂
-        window.setTimeout(() => setLiveMentionLabels([]), 800)
+        // followMode：不再清 liveMentionLabels——铭牌代表当前 activeSpeaker，续聊仍由该角色接。
+        // 用户在输入框 ✕ 清除 activeMentionRoleIds 时会一并清 liveMentionLabels。
         bumpRefresh()
       } else if (evt.type === 'memory_organizing') {
         // Phase 4/5：kscc 软重置 / 影子压缩 — 显示「正在整理记忆」
@@ -1004,6 +1133,11 @@ export function Chat({
         model: selection.modelId,
         workspaceId: session.workspaceId,
         ...(savedAttachments.length ? { attachments: savedAttachments } : {}),
+        mentionRoleIds:
+          executionMode === 'chat' && mentionRoles.length > 0
+            ? parseMentions(text, mentionRoles).map((h) => h.roleId)
+            : undefined,
+        executionMode,
       } as any)
       if (res && !res.ok) {
         alert(`发送失败：${res.error ?? '未知错误'}`)
@@ -1045,10 +1179,20 @@ export function Chat({
   const send = async (): Promise<void> => {
     const text = chatInputRef.current?.getText().trim()
     if (!text) return
-    // Chat @：记录本轮点名，助手铭牌旁展示顺序
+    // Chat @：本轮有 @ → 切换 activeSpeaker；无 @ → 保持上一个（follow）。铭牌按 effective 角色展示。
     if (executionMode === 'chat' && mentionRoles.length > 0) {
       const hits = parseMentions(text, mentionRoles)
-      setLiveMentionLabels(hits.map((h) => h.displayName))
+      if (hits.length > 0) {
+        setActiveMentionRoleIds(hits.map((h) => h.roleId))
+        setLiveMentionLabels(hits.map((h) => h.displayName))
+      } else {
+        // follow：本轮未 @，沿用当前 activeSpeaker 的铭牌（无则空 → 默认总助）
+        setLiveMentionLabels(
+          activeMentionRoleIds
+            .map((id) => roleNameById.get(id))
+            .filter((v): v is string => Boolean(v)),
+        )
+      }
     } else {
       setLiveMentionLabels([])
     }
@@ -1127,10 +1271,34 @@ export function Chat({
     setPendingAttachments((prev) => [...prev, ...newAttachments])
   }, [])
 
-  /** 新会话页底部工具栏：模型（左）+ 发送钮（右；草稿态 running 恒 false，无停止钮）。
+  /** 新会话页底部工具栏：模式切换（左）+ 模型（中）+ 发送/停止钮（右）。
    *  工作区选择已移到输入框下方的独立容器（见 workspaceSlot），不再挤在 footer。 */
   const landingFooter = (
     <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1">
+      {/* Chat | Work 切换（草稿会话仅改本地状态，首条发送时主进程创建 meta 会带上） */}
+      <ExecutionModeToggle
+        value={executionMode}
+        onChange={(m) => {
+          setExecutionMode(m)
+          setPendingModeSuggestion(null)
+          // 非草稿会话才同步主进程 meta（草稿会话尚未有 meta，IPC 会失败；首条发送时创建 meta 会带上本地 mode）
+          if (!onDraftWorkspaceChange) {
+            void (async () => {
+              const res = await window.electronAPI.setSessionExecutionMode(
+                sessionId,
+                m,
+                'user',
+              )
+              if (!res.ok) {
+                console.warn('[Chat] setSessionExecutionMode failed:', res.error)
+              } else {
+                void window.electronAPI.dismissExecutionModeSuggestion?.(sessionId)
+                await applyBackgroundCrewFromModeSwitch(m, res)
+              }
+            })()
+          }
+        }}
+      />
       <ModelSelector
         selection={effectiveSelection}
         lockedKind={null}
@@ -1139,16 +1307,30 @@ export function Chat({
           setSelectedModelSelection(nextSelection)
         }}
       />
-      <Button
-        variant={hasDraft ? 'default' : 'ghost'}
-        size="icon"
-        className="size-9 rounded-full"
-        disabled={!hasDraft}
-        onClick={() => void send()}
-        aria-label="发送"
-      >
-        <ArrowUp className="size-5" />
-      </Button>
+      {running ? (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-9 rounded-full text-destructive hover:bg-destructive/10"
+          onClick={() => {
+            void window.electronAPI.stopAgent(sessionIdRef.current)
+          }}
+          aria-label="停止"
+        >
+          <Square className="size-4" fill="currentColor" />
+        </Button>
+      ) : (
+        <Button
+          variant={hasDraft ? 'default' : 'ghost'}
+          size="icon"
+          className="size-9 rounded-full"
+          disabled={!hasDraft}
+          onClick={() => void send()}
+          aria-label="发送"
+        >
+          <ArrowUp className="size-5" />
+        </Button>
+      )}
     </div>
   )
 
@@ -1162,6 +1344,7 @@ export function Chat({
       onAttachmentsChange={setPendingAttachments}
       onOpenFileDialog={handleOpenFileDialog}
       mentionRoles={executionMode === 'chat' ? mentionRoles : undefined}
+      topBar={activeMentionBar}
       footer={landingFooter}
     />
   )
@@ -1335,6 +1518,7 @@ export function Chat({
               onAttachmentsChange={setPendingAttachments}
               onOpenFileDialog={handleOpenFileDialog}
               mentionRoles={executionMode === 'chat' ? mentionRoles : undefined}
+              topBar={activeMentionBar}
               footer={
                 /* h-7 固定底栏；窄宽时 is-composer-compact 走图标优先方案 */
                 <div
@@ -1604,6 +1788,8 @@ export function Chat({
         open={crewPanelOpen}
         onOpenChange={setCrewPanelOpen}
         onPresenceChange={setHasCrewBoards}
+        width={crewPanelWidth}
+        onWidthChange={handleCrewPanelWidth}
       />
     </div>
   )

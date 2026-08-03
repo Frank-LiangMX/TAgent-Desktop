@@ -115,7 +115,7 @@ export class AssistantMessageBuilder {
   }
 
   /** 填充 usage（来自 result 事件） */
-  setUsage(usage: Partial<Usage>): void {
+  setUsage(usage: Partial<Usage> = {}): void {
     this.usage = {
       input: usage.input ?? 0,
       output: usage.output ?? 0,

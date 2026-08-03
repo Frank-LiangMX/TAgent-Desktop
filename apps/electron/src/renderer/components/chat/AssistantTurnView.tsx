@@ -103,7 +103,8 @@ export function AssistantTurnView({
     <div className="agent-turn flex flex-col gap-3">
       {(presentation.modelId || statusLabel || (mentionLabels && mentionLabels.length > 0)) && (
         <div className="agent-turn-title-row flex-wrap">
-          {presentation.modelId ? (
+          {/* 有 @ 角色铭牌时不重复显示 modelId（避免两个铭牌并列）；否则正常显示模型名 */}
+          {presentation.modelId && !(mentionLabels && mentionLabels.length > 0) ? (
             <div className="agent-turn-title">{presentation.modelId}</div>
           ) : null}
           {mentionLabels && mentionLabels.length > 0 ? (

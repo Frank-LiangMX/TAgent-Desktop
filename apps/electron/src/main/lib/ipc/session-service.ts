@@ -67,6 +67,8 @@ import {
   migrateSubagentEagerness,
   resolveSdkPermissionModeForTAgent,
   migrateExecutionMode,
+  LEGACY_EXECUTION_MODE,
+  DEFAULT_EXECUTION_MODE,
   isExecutionModeChangeSource,
   type ExecutionModeChangeSource,
   parseMentions,
@@ -90,6 +92,11 @@ interface SendMessageInput {
    * 可不传：主进程会从 prompt 文本再 parse 一次。
    */
   mentionRoleIds?: string[]
+  /**
+   * 渲染层本地的 executionMode（草稿会话首条时传入，主进程创建 meta 时带上）。
+   * 非草稿会话已有 meta，此字段忽略。
+   */
+  executionMode?: ExecutionMode
 }
 
 export class SessionService {
@@ -406,6 +413,11 @@ export class SessionService {
       return this.getStatus(id)
     })
 
+    // 清除 Chat @ 对话跟随（activeSpeaker；回默认总助）。pendingMentionRoleIds 置 undefined。
+    ipcMain.handle(AGENT_IPC_CHANNELS.CLEAR_MENTION_FOLLOW, async (_e, id: string) => {
+      return updateSessionMeta(id, { pendingMentionRoleIds: undefined })
+    })
+
     // 手动压缩会话上下文（Pi 核；kscc 暂不支持返回 reason）
     ipcMain.handle(
       AGENT_IPC_CHANNELS.COMPACT_SESSION,
@@ -528,9 +540,10 @@ export class SessionService {
         for (const id of fromText) {
           if (!ordered.includes(id)) ordered.push(id)
         }
-        updateSessionMeta(input.sessionId, {
-          pendingMentionRoleIds: ordered.length > 0 ? ordered : undefined,
-        })
+        // followMode：有 @ → 切换/设置 activeSpeaker；无 @ → 保留上一轮的 pendingMentionRoleIds（连续追问同一角色）
+        if (ordered.length > 0) {
+          updateSessionMeta(input.sessionId, { pendingMentionRoleIds: ordered })
+        }
       } catch (err) {
         console.warn('[会话] 解析 @ 提及失败:', err)
       }
@@ -605,6 +618,7 @@ export class SessionService {
           modelId,
           workspaceId,
           turnCount: 1,
+          executionMode: input.executionMode,
         })
         console.log(`[会话 ${input.sessionId}] 已创建会话元数据，运行内核=${adapterKind}，workspaceId=${workspaceId ?? '(无)'}`)
       } else {
@@ -628,10 +642,11 @@ export class SessionService {
           }
         },
         onTurnEnd: () => {
-          // 轮成功结束 → 清除可能的 error，落盘 idle；清空 @ 待发言队列
+          // 轮成功结束 → 清除可能的 error，落盘 idle。
+          // 注意：不再清空 pendingMentionRoleIds —— 它现在是持久的 activeSpeaker（followMode），
+          // 连续追问同一角色时下一轮无 @ 仍由该角色接；用户在输入框 ✕ 清除走 CLEAR_MENTION_FOLLOW。
           updateSessionMeta(input.sessionId, {
             status: 'idle',
-            pendingMentionRoleIds: [],
           })
           this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
           // Phase 2.5：L4 recordSession + evidence sink
@@ -895,10 +910,14 @@ export class SessionService {
       : TAGENT_DEFAULT_PERMISSION_MODE
   }
 
-  /** 读会话 executionMode（Chat|Work）；缺省 legacy work */
+  /** 读会话 executionMode（Chat|Work）；缺省按新会话默认 chat（非 legacy work） */
   private getExecutionMode(sessionId: string): ExecutionMode {
     const meta = getSessionMeta(sessionId)
-    return migrateExecutionMode(meta?.executionMode)
+    return migrateExecutionMode(
+      meta?.executionMode,
+      // 有 meta 但缺字段 → 旧会话回退 work；无 meta → 新会话默认 chat
+      meta ? LEGACY_EXECUTION_MODE : DEFAULT_EXECUTION_MODE,
+    )
   }
 
   /**

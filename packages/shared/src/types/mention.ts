@@ -64,3 +64,42 @@ export function parseMentions(
 
   return hits.sort((a, b) => a.index - b.index)
 }
+
+/** @ 选择器使用的角色引用（含 pin 标记） */
+export interface MentionRoleRef {
+  id: string
+  displayName: string
+  description?: string
+  /** 是否置顶到 @ 快捷列表（B1 pin 子集） */
+  pinned?: boolean
+}
+
+/**
+ * @ 角色过滤：MentionPicker 下拉与 ChatInput 键盘选择共用，保证选中项一致。
+ *
+ * - 无 query：默认只显示**已 pin 子集**（B1：非全库）；无任何 pin 时回退全量，避免空列表。
+ * - 有 query：在全库里按 id/displayName/description 过滤，pin 项排前。
+ * - 结果截断到 limit（默认 12）。
+ *
+ * 注意：parseMentions 仍用全库解析，未 pin 的角色手动 @ 仍可命中。
+ */
+export function filterMentionRoles<R extends MentionRoleRef>(
+  roles: R[],
+  query: string,
+  limit = 12,
+): R[] {
+  const q = query.trim().toLowerCase()
+  if (!q) {
+    const pinned = roles.filter((r) => r.pinned)
+    const base = pinned.length > 0 ? pinned : roles
+    return base.slice(0, limit)
+  }
+  const matched = roles.filter(
+    (r) =>
+      r.id.toLowerCase().includes(q) ||
+      r.displayName.toLowerCase().includes(q) ||
+      (r.description ?? '').toLowerCase().includes(q),
+  )
+  matched.sort((a, b) => Number(b.pinned === true) - Number(a.pinned === true))
+  return matched.slice(0, limit)
+}

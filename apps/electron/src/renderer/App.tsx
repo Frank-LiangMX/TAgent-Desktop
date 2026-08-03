@@ -104,6 +104,8 @@ declare global {
       }) => Promise<unknown>
       togglePin: (id: string) => Promise<unknown>
       toggleArchive: (id: string) => Promise<unknown>
+      /** 清除 Chat @ 对话跟随（activeSpeaker 回默认总助） */
+      clearMentionFollow: (id: string) => Promise<unknown>
       /** 查会话生命状态（runtimes 内存 + meta 组合；running 不落盘） */
       getSessionStatus: (id: string) => Promise<{ status: 'idle' | 'running' | 'error'; archived: boolean }>
       // 窗口控制（自定义 WindowControls 用）

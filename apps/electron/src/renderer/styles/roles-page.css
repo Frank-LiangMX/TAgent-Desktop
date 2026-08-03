@@ -241,6 +241,50 @@
   color: hsl(var(--muted-foreground));
 }
 
+/* 置顶到 @ 快捷列表的角标 */
+.roles-badge--pin {
+  border-color: hsl(var(--primary) / 0.5);
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  font-weight: 600;
+}
+
+/* 卡片右上角置顶开关（与卡片按钮同级，避免 button 嵌 button） */
+.roles-card__pin {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid hsl(var(--border) / 0.9);
+  border-radius: 9px;
+  background: hsl(var(--background) / 0.85);
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+.roles-card__pin:hover {
+  color: hsl(var(--primary));
+  border-color: hsl(var(--primary) / 0.5);
+  background: hsl(var(--primary) / 0.1);
+}
+.roles-card__pin--active {
+  color: hsl(var(--primary));
+  border-color: hsl(var(--primary) / 0.55);
+  background: hsl(var(--primary) / 0.14);
+}
+.roles-card__pin:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .roles-card__desc {
   margin: 0;
   flex: 1;
