@@ -1,12 +1,17 @@
 /*
- * dock.css — Dockview 分屏工作台样式（实验）
+ * dock.css — Dockview 分屏工作台样式（贴 app 玻璃滑动底板风）
  *
  * Dockview 自带基础样式由 dockview/dist/styles/dockview.css 提供（WorkspaceDock 已 import）。
- * 本文件只做满高容器 + 最小视觉对齐（字体/边框跟 app 暗色玻璃风）。
+ * 本文件覆盖 abyss 主题的 tab/sash/drop 指示器，对齐 app-workspace-tab 的玻璃胶囊视觉：
+ *   - tab：玻璃填充（--glass-rgb）+ 顶光 inset + 11px 圆角，active 用 primary 色
+ *   - 分隔条 sash：细 + primary hover
+ *   - drop 指示器：primary 色半透明填充
+ *   - group 背景：transparent 露 app scene 玻璃底（与现有 Chat 透 scene 一致）
  */
 
-/* 宿主容器：满高，Dockview 画布铺满 */
+/* 宿主容器：满高，Dockview 画布铺满；relative 供浮动开班组按钮定位 */
 .workspace-dock {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -19,35 +24,178 @@
   min-height: 0;
 }
 
-/* tab 字体对齐 app（玻璃胶囊感弱化，先可用） */
-.workspace-dock .dv-tabs-container .dv-tab {
-  font-size: 11px;
-  font-weight: 500;
-}
-
-/* 分隔条略细 */
-.workspace-dock .dv-resize-container .dv-resize-handle {
-  width: 4px;
-}
-
-/* 暗色：Dockview 默认 themeAbyss 的 group 背景是 #000c18 深蓝黑 → main 显黑。
- * 覆盖 --dv-group-view-background-color 让 group 透明，露出 app scene 玻璃底，
- * 与现有 Chat 在 session 页里透 scene 一致。 */
-.dark .workspace-dock .dv-dockview,
-.dark .workspace-dock .dv-groupview,
-.dark .workspace-dock .dv-content-container,
-.dark .workspace-dock .dv-groupview > .dv-content {
+/* ===== 覆盖 abyss 主题变量 → 玻璃胶囊 ===== */
+.workspace-dock .dv-dockview {
   --dv-group-view-background-color: transparent;
+  --dv-tabs-and-actions-container-background-color: transparent;
+  --dv-activegroup-visiblepanel-tab-background-color: transparent;
+  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
+  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-tab-divider-color: transparent;
+  --dv-activegroup-visiblepanel-tab-color: hsl(var(--primary));
+  --dv-activegroup-hiddenpanel-tab-color: hsl(var(--primary) / 0.7);
+  --dv-inactivegroup-visiblepanel-tab-color: hsl(var(--muted-foreground) / 0.88);
+  --dv-inactivegroup-hiddenpanel-tab-color: hsl(var(--muted-foreground) / 0.55);
+  --dv-separator-border: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
+  --dv-tabs-and-actions-container-font-size: 11px;
+  --dv-tabs-and-actions-container-height: 32px;
+  --dv-drag-over-background-color: hsl(var(--primary) / 0.12);
+  --dv-drag-over-border-color: hsl(var(--primary) / 0.5);
+  --dv-icon-hover-background-color: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
+  --dv-tab-font-size: 11px;
+  --dv-border-radius: 11px;
+  --dv-tab-margin: 2px;
+  /* sash 拖宽条 */
+  --dv-active-sash-color: hsl(var(--primary) / 0.6);
+  --dv-active-sash-transition-duration: 120ms;
+}
+
+/* ===== tab 玻璃胶囊（对齐 app-workspace-tab）===== */
+.workspace-dock .dv-tabs-container {
+  gap: 4px;
+  padding: 6px 6px 0;
+}
+
+.workspace-dock .dv-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 11px;
   background: transparent;
+  color: hsl(var(--muted-foreground) / 0.88);
+  font-size: 11px;
+  font-weight: 520;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition:
+    color 160ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1)),
+    background-color 180ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1)),
+    border-color 180ms var(--app-shell-motion, cubic-bezier(0.16, 1, 0.3, 1));
+}
+
+.workspace-dock .dv-tab:hover {
+  color: hsl(var(--foreground));
+  background: color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
+}
+
+/* active tab：玻璃填充 + primary 文字（对齐 app-workspace-tab[data-active]）*/
+.workspace-dock .dv-tab.dv-active-tab {
+  border-color: rgb(var(--glass-rgb) / 0.5);
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
+    rgb(var(--glass-rgb) / 0.48);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.5);
+  color: hsl(var(--primary));
+}
+.dark .workspace-dock .dv-tab.dv-active-tab {
+  border-color: rgb(255 255 255 / 0.06);
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 64%),
+    rgb(var(--glass-rgb) / 0.4);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+/* tab 关闭按钮（dv-default-tab-action 含 svg）：hover 才显 */
+.workspace-dock .dv-tab .dv-default-tab-action,
+.workspace-dock .dv-tab .dv-svg {
+  color: hsl(var(--muted-foreground) / 0.6);
+  opacity: 0;
+  transition: opacity 140ms ease, color 140ms ease;
+}
+.workspace-dock .dv-tab:hover .dv-default-tab-action,
+.workspace-dock .dv-tab:hover .dv-svg {
+  opacity: 1;
+}
+.workspace-dock .dv-tab .dv-default-tab-action:hover {
+  color: hsl(var(--foreground));
+  background: color-mix(in srgb, hsl(var(--foreground)) 10%, transparent);
+}
+
+/* ===== tabs 容器 + group 边框 ===== */
+.workspace-dock .dv-tabs-and-actions-container {
+  border-bottom: 1px solid var(--spatial-line, color-mix(in srgb, hsl(var(--foreground)) 8%, transparent));
+  background: transparent;
+}
+
+/* group 容器：透明露 scene 玻璃底 */
+.workspace-dock .dv-groupview,
+.workspace-dock .dv-content-container,
+.workspace-dock .dv-content {
+  background: transparent;
+}
+
+/* group 外框：轻玻璃描边 + 圆角（对齐 session-composer-cluster 玻璃）*/
+.workspace-dock .dv-resize-container:has(> .dv-groupview) {
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
+  background: rgb(var(--glass-rgb) / 0.12);
 }
 .dark .workspace-dock .dv-resize-container:has(> .dv-groupview) {
-  background: rgb(var(--glass-rgb, 50 52 56) / 0.35);
+  border-color: rgb(255 255 255 / 0.05);
+  background: rgb(var(--glass-rgb) / 0.08);
 }
 
-/* 浅色同理：透明露出 scene */
-.workspace-dock .dv-dockview,
-.workspace-dock .dv-groupview,
-.workspace-dock .dv-content-container {
-  --dv-group-view-background-color: transparent;
+/* ===== 分隔条 sash ===== */
+.workspace-dock .dv-sash {
   background: transparent;
+  border: 0;
+}
+.workspace-dock .dv-sash::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
+  opacity: 0;
+  transition: opacity var(--dv-active-sash-transition-duration, 120ms) ease;
+}
+.workspace-dock .dv-sash:hover::after,
+.workspace-dock .dv-sash.dv-sash-active::after {
+  opacity: 1;
+  background: hsl(var(--primary) / 0.5);
+}
+
+/* ===== drop 指示器（拖 tab 到边缘的分屏提示）===== */
+.workspace-dock .dv-drop-target-anchor {
+  border: 2px solid hsl(var(--primary) / 0.5);
+  border-radius: 8px;
+  background: hsl(var(--primary) / 0.1);
+  transition: opacity 120ms ease;
+}
+.workspace-dock .dv-drop-target-selection {
+  background: hsl(var(--primary) / 0.18);
+  border-color: hsl(var(--primary) / 0.6);
+}
+
+/* ===== 开班组浮动按钮 ===== */
+.workspace-dock__open-crew {
+  position: absolute;
+  top: 6px;
+  right: 10px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 10%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, hsl(var(--card)) 55%, transparent);
+  color: hsl(var(--muted-foreground) / 0.88);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  transition: color 140ms ease, background 140ms ease;
+}
+.workspace-dock__open-crew:hover {
+  color: hsl(var(--foreground));
+  background: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
+}
+.dark .workspace-dock__open-crew {
+  background: color-mix(in srgb, rgb(var(--glass-rgb, 50 52 56)) 55%, transparent);
+  border-color: rgb(255 255 255 / 0.08);
 }
