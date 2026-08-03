@@ -32,12 +32,15 @@ interface AssistantTurnViewProps {
   isLiveTurn?: boolean
   /** Chat @ 本轮点名角色展示名（顺序） */
   mentionLabels?: string[]
+  /** 完成耗时（毫秒，发送→idle 全程；仅完成后由 Chat 传入）。复制栏显示「完成 Xs」 */
+  completedDurationMs?: number
 }
 
 export function AssistantTurnView({
   turn,
   isLiveTurn = false,
   mentionLabels,
+  completedDurationMs,
 }: AssistantTurnViewProps): JSX.Element {
   const subagentItems = turn.items.filter(
     (it) => it.message?.type === 'assistant' && it.message.parentToolUseId,
@@ -81,6 +84,10 @@ export function AssistantTurnView({
     }
     return turnCreatedAt
   }, [mainItems, turnCreatedAt])
+
+  // 完成耗时由 Chat 传入（发送→idle 全程，覆盖思考期 + 工具轮），不在此按 assistant
+  // createdAt 自算（流式 assistant 可能无 createdAt → 有时不显示；且口径是 turn 内非全程）。
+  const completionMs = !isLiveTurn && completedDurationMs ? completedDurationMs : 0
 
   // live 且尚无 createdAt：用首次进入 live 的时刻（结束后 ref 保留，不重置）
   const liveStartRef = useRef<number | null>(null)
@@ -151,9 +158,14 @@ export function AssistantTurnView({
               ) : null}
             </MessageContent>
           </Message>
-          {copyText ? (
+          {copyText || completionMs > 0 ? (
             <div className="agent-answer-toolbar">
-              <MessageCopyButton text={copyText} />
+              {copyText ? <MessageCopyButton text={copyText} /> : null}
+              {completionMs > 0 ? (
+                <span className="agent-answer-time">
+                  完成 {formatElapsedDuration(completionMs)}
+                </span>
+              ) : null}
             </div>
           ) : null}
         </div>

@@ -781,6 +781,41 @@
   transform: translateY(0);
 }
 
+/*
+ * landing → 主会话页分层错峰入场：消息区先、输入框后，对齐 NewConversationLanding
+ * 逐件搭起的线性节奏（EASE = 0.16,1,0.3,1）。不加 blur（Electron 下 motion filter 不稳）。
+ * 外层 .chat-page-enter 仍负责整体淡入上滑；内层两块各自再微错峰，过渡更有层次。
+ */
+.chat-page-enter .tagent-thread {
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: 0.05s;
+}
+.chat-page-enter .session-composer-cluster {
+  opacity: 0;
+  transform: translateY(10px);
+  transition:
+    opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: 0.18s;
+}
+.chat-page-enter.is-mounted .tagent-thread,
+.chat-page-enter.is-mounted .session-composer-cluster {
+  opacity: 1;
+  transform: translateY(0);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-page-enter,
+  .chat-page-enter .tagent-thread,
+  .chat-page-enter .session-composer-cluster {
+    transition: none;
+    transform: none;
+  }
+}
+
 /* ===== 班组右栏（主区对话 | 右栏全高，替代输入框上窄条） =====
    对齐会话页密度：字号 10–12px 档、spatial-line 描边、玻璃底、紧凑顶栏。 */
 .session-body {
@@ -888,6 +923,51 @@
 .active-speaker-clear:hover {
   color: hsl(var(--foreground));
   background: hsl(var(--foreground) / 0.08);
+}
+
+/*
+ * Composer 运行计时 pill：发送即开始（覆盖思考期），完成/切会话/出错清零。
+ * 挂在 .session-composer-cluster 内、输入框正上方（cluster 为 flex-column），
+ * 跟随输入框位置变化；复用 @keyframes agent-thinking-pulse（上方已定义）。
+ */
+.composer-run-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin: 0 0 4px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, hsl(var(--primary)) 22%, transparent);
+  background: color-mix(in srgb, hsl(var(--primary)) 8%, transparent);
+  color: hsl(var(--primary) / 0.9);
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.composer-run-timer__dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: hsl(var(--primary) / 0.85);
+  animation: agent-thinking-pulse 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-run-timer__dot {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
+/* 回答底部复制栏的完成耗时 */
+.agent-answer-time {
+  margin-left: 6px;
+  font-size: 10.5px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--muted-foreground) / 0.6);
 }
 
 /* 顶栏：对齐会话区 chrome 密度（约 36–40px 高，10–11px 字） */
