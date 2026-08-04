@@ -8,6 +8,7 @@ import { join, extname } from 'node:path'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { getConfigDir } from './config/config-paths'
+import { rmSyncRobust } from './fs-robust'
 
 /** 附件根目录：~/.tagent[-dev]/attachments/ */
 function getAttachmentsDir(): string {
@@ -93,7 +94,6 @@ export function deleteAttachment(localPath: string): void {
 export function deleteSessionAttachments(sessionId: string): void {
   const dir = join(getAttachmentsDir(), sessionId)
   if (existsSync(dir)) {
-    const { readdirSync, rmSync } = require('node:fs') as typeof import('node:fs')
-    rmSync(dir, { recursive: true, force: true })
+    rmSyncRobust(dir, { recursive: true, force: true })
   }
 }

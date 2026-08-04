@@ -45,3 +45,6 @@ release-notes/__generated/
 .mimicode/distill/
 .mimicode/dream_inspect.py
 .mimicode/skills/
+
+# mimo-ai 工具产物（skills/distill 等）
+.mimocode/

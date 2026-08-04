@@ -21,7 +21,14 @@ function fileName(path: string): string {
 
 export function DiffView({ code }: DiffViewProps): React.ReactElement | null {
   const parsed = React.useMemo(() => parseUnifiedDiff(code), [code])
-  if (!parsed) return null
+  if (!parsed) {
+    // 解析失败（流式半截 / diff 格式不合法）→ 提示而非空白
+    return (
+      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+        diff 内容无效（解析失败，可能不完整）
+      </div>
+    )
+  }
 
   const { add, del } = countDiffChanges(parsed.hunks)
   const title = `${fileName(parsed.newPath || parsed.oldPath)} · +${add} −${del}`

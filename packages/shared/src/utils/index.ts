@@ -55,6 +55,7 @@ export {
 } from './thinking-signature-error'
 export {
   classifySessionError,
+  classifyUserFacingError,
   isPromptTooLongMessage,
   isPromptTooLongResult,
   extractResultErrors,
@@ -65,6 +66,8 @@ export {
 export type {
   SessionErrorKind,
   ClassifySessionErrorInput,
+  UserFacingError,
+  UserFacingErrorCode,
 } from './session-error-classify'
 
 // kscc 核消息转译（SDKMessage → TAgentMessage IR，主进程 + renderer 共用）

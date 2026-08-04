@@ -116,16 +116,21 @@ body {
 *::-webkit-scrollbar {
   width: 6px;
   height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
 }
 *::-webkit-scrollbar-track {
   background: transparent;
 }
 *::-webkit-scrollbar-thumb {
+  border: 1px solid transparent;
+  border-radius: 999px;
   background-color: hsl(var(--muted-foreground) / 0.3);
-  border-radius: 3px;
+  background-clip: padding-box;
 }
 *::-webkit-scrollbar-thumb:hover {
   background-color: hsl(var(--muted-foreground) / 0.5);
+  background-clip: padding-box;
 }
 * {
   scrollbar-width: thin;
@@ -159,6 +164,8 @@ body {
 .scrollbar-thin > *::-webkit-scrollbar {
   width: 6px;
   height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
 }
 .scrollbar-thin::-webkit-scrollbar-track,
 .scrollbar-thin > *::-webkit-scrollbar-track {
@@ -166,20 +173,23 @@ body {
 }
 .scrollbar-thin::-webkit-scrollbar-thumb,
 .scrollbar-thin > *::-webkit-scrollbar-thumb {
+  border: 1px solid transparent;
+  border-radius: 999px;
   background-color: hsl(var(--muted-foreground) / 0.3);
-  border-radius: 3px;
+  background-clip: padding-box;
 }
 .scrollbar-thin::-webkit-scrollbar-thumb:hover,
 .scrollbar-thin > *::-webkit-scrollbar-thumb:hover {
   background-color: hsl(var(--muted-foreground) / 0.5);
+  background-clip: padding-box;
 }
-.scrollbar-thin::-webkit-scrollbar-button,
-.scrollbar-thin > *::-webkit-scrollbar-button {
-  display: none !important;
-  width: 0 !important;
-  height: 0 !important;
-}
-/* 隐藏 webkit 滚动条上下箭头按钮（只要 thumb）——对齐 TAgent_General globals.css:2469-2495 全套选择器 */
+/*
+ * 去箭头：Electron 39 / 旧 Chromium 自定义滚动条仍渲染默认上下箭头 button，
+ * 须 scrollbar 本体 appearance:none + button 全套归零双管齐下（见上 *::-webkit-scrollbar）。
+ * Kun 用 Electron 43 / 新 Chromium 自定义模式默认不渲染 button，无需此段；
+ * 本项目 Electron 39 必须显式去除。若 appearance:none 加本段后仍见箭头，
+ * 根治 = 升级 Electron 至 43（对齐 Kun），CSS 对该旧版 button 控制有限。
+ */
 ::-webkit-scrollbar-button,
 *::-webkit-scrollbar-button,
 *:focus::-webkit-scrollbar-button,
@@ -192,14 +202,15 @@ body {
 ::-webkit-scrollbar-button:horizontal:end:increment,
 ::-webkit-scrollbar-button:single-button,
 ::-webkit-scrollbar-button:double-button,
-::-webkit-scrollbar-button:corner-present,
-.scrollbar-none::-webkit-scrollbar-button,
-.scrollbar-none > *::-webkit-scrollbar-button {
+::-webkit-scrollbar-button:corner-present {
   display: none !important;
   width: 0 !important;
   height: 0 !important;
   -webkit-appearance: none !important;
   appearance: none !important;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* 窗口控制按钮（对齐 TAgent_General WindowControls） */
@@ -249,4 +260,11 @@ body {
 .titlebar-no-drag * {
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+/* 关闭 tailwind typography 给 inline code 加的反引号伪元素（`` `code` `` 的引号感）。
+ * 1.0（MarkdownInlineCode 显式样式）无此问题；我们行内 code 走 prose 默认会显示反引号。 */
+.prose :where(code):not(:where([class~="not-prose"]))::before,
+.prose :where(code):not(:where([class~="not-prose"]))::after {
+  content: none;
 }

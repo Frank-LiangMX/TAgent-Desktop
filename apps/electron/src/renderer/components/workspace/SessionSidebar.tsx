@@ -43,6 +43,7 @@ import {
   setSessionArchivedAtom,
   type SessionStatus,
 } from '../../atoms/session-status-atoms'
+import { tabsAtom } from '../../atoms/tabs'
 
 interface SessionMeta {
   id: string
@@ -155,6 +156,12 @@ export function SessionSidebar({
   const setStatus = useSetAtom(setSessionStatusAtom)
   const setArchived = useSetAtom(setSessionArchivedAtom)
 
+  // 已打开的会话（tabsAtom 是「哪些会话开着」的真相源，分屏 dock 也由它驱动）。
+  // 打开中的会话不可删除：主进程删 meta 后 tabsAtom 仍保留该 tab → 留下孤儿 tab，
+  // 重启时启动校验才会清理。故在入口禁用删除，需先关闭标签页/分屏再删。
+  const openTabs = useAtomValue(tabsAtom)
+  const openSessionIds = new Set(openTabs.map((t) => t.sessionId))
+
   const refresh = useCallback(async (): Promise<void> => {
     const list = (await window.electronAPI.listSessions()) as SessionMeta[] | undefined
     const arr = (Array.isArray(list) ? list : []).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
@@ -191,6 +198,8 @@ export function SessionSidebar({
 
   const requestDeleteSession = (id: string, e: React.MouseEvent): void => {
     e.stopPropagation()
+    // 已打开的会话不可删除（菜单项已禁用，此处为防御）
+    if (openSessionIds.has(id)) return
     const target = sessions.find((session) => session.id === id)
     if (target) setDeleteSessionTarget(target)
   }
@@ -198,6 +207,9 @@ export function SessionSidebar({
   const deleteSession = async (): Promise<void> => {
     if (!deleteSessionTarget) return
     const target = deleteSessionTarget
+    if (openSessionIds.has(target.id)) {
+      throw new Error('该会话已打开，请先关闭标签页后再删除')
+    }
     try {
       await window.electronAPI.deleteSession(target.id)
       setSessions((prev) => prev.filter((session) => session.id !== target.id))
@@ -248,6 +260,13 @@ export function SessionSidebar({
   }
 
   const deleteWorkspace = async (workspace: AgentWorkspace): Promise<void> => {
+    // 工作区内有会话已打开时不可删除（菜单项已禁用，此处为防御）
+    const openInWorkspace = sessions.filter(
+      (session) => session.workspaceId === workspace.id && openSessionIds.has(session.id),
+    )
+    if (openInWorkspace.length > 0) {
+      throw new Error(`工作区内有 ${openInWorkspace.length} 个会话已打开，请先关闭标签页后再删除工作区`)
+    }
     try {
       await window.electronAPI.deleteWorkspace(workspace.id)
       const remaining = await window.electronAPI.listWorkspaces()
@@ -442,6 +461,10 @@ export function SessionSidebar({
           const isExpanded = effectiveExpandedGroups.has(group.id)
           const hasSessions = group.sessions.length > 0
           const isManagedWorkspace = Boolean(group.workspace)
+          // 工作区内已打开的会话数（含归档行；删除工作区会级联删全部会话）
+          const groupOpenSessionCount = sessions.filter(
+            (session) => session.workspaceId === group.id && openSessionIds.has(session.id),
+          ).length
           const groupHeaderContent = (
             <>
               {hasSessions ? (
@@ -555,18 +578,29 @@ export function SessionSidebar({
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-32 p-1 text-xs">
                       <DropdownMenuItem
+                        disabled={groupOpenSessionCount > 0}
                         onClick={() => setDeleteWorkspaceTarget(group.workspace!)}
-                        className="rounded-lg px-2 py-1 text-xs text-red-500 focus:text-red-500"
+                        className={cn(
+                          'rounded-lg px-2 py-1 text-xs',
+                          groupOpenSessionCount > 0
+                            ? 'text-muted-foreground'
+                            : 'text-red-500 focus:text-red-500',
+                        )}
                       >
                         <Trash size={13} weight="regular" /> 删除工作区
                       </DropdownMenuItem>
+                      {groupOpenSessionCount > 0 && (
+                        <div className="px-2 pb-0.5 pt-1 text-[10px] leading-tight text-muted-foreground/70">
+                          {groupOpenSessionCount} 个会话已打开，需先关闭
+                        </div>
+                      )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 )}
               </div>
 
               <div className="rows">
-                {renderBuckets(group.sessions, statusOf, activeSessionId, editingId, editingTitle, onSelect, requestDeleteSession, startRename, commitRename, togglePin, onArchiveToggle, setEditingTitle, () => setEditingId(null))}
+                {renderBuckets(group.sessions, statusOf, openSessionIds, activeSessionId, editingId, editingTitle, onSelect, requestDeleteSession, startRename, commitRename, togglePin, onArchiveToggle, setEditingTitle, () => setEditingId(null))}
               </div>
             </div>
           )
@@ -593,6 +627,7 @@ export function SessionSidebar({
                   session={s}
                   status="idle"
                   archived
+                  isOpen={openSessionIds.has(s.id)}
                   active={s.id === activeSessionId}
                   editing={editingId === s.id}
                   editingTitle={editingTitle}
@@ -640,6 +675,7 @@ export function SessionSidebar({
 function renderBuckets(
   sessions: SessionMeta[],
   statusOf: (s: SessionMeta) => SessionStatus,
+  openSessionIds: Set<string>,
   activeSessionId: string | null,
   editingId: string | null,
   editingTitle: string,
@@ -670,6 +706,7 @@ function renderBuckets(
                   key={s.id}
                   session={s}
                   status={statusOf(s)}
+                  isOpen={openSessionIds.has(s.id)}
                   active={s.id === activeSessionId}
                   editing={editingId === s.id}
                   editingTitle={editingTitle}
@@ -697,6 +734,7 @@ function SessionRow({
   status,
   active,
   archived,
+  isOpen,
   editing,
   editingTitle,
   onSelect,
@@ -712,6 +750,8 @@ function SessionRow({
   status: SessionStatus
   active: boolean
   archived?: boolean
+  /** 该会话是否已打开为标签页/分屏（已打开时禁止删除，需先关闭） */
+  isOpen: boolean
   editing: boolean
   editingTitle: string
   onSelect: (s: SessionMeta) => void
@@ -794,9 +834,21 @@ function SessionRow({
           <DropdownMenuItem onClick={(e) => void onArchiveToggle(s, e)} className="rounded-lg px-2 py-1 text-xs">
             <Archive size={13} weight="regular" /> {archived ? '取消归档' : '归档'}
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={(e) => onDelete(s.id, e)} className="rounded-lg px-2 py-1 text-xs text-red-500 focus:text-red-500">
-            <Trash size={13} weight="regular" /> 删除
+          <DropdownMenuItem
+            disabled={isOpen}
+            onClick={(e) => onDelete(s.id, e)}
+            className={cn(
+              'rounded-lg px-2 py-1 text-xs',
+              isOpen ? 'text-muted-foreground' : 'text-red-500 focus:text-red-500',
+            )}
+          >
+            <Trash size={13} weight="regular" /> {isOpen ? '删除（已打开）' : '删除'}
           </DropdownMenuItem>
+          {isOpen && (
+            <div className="px-2 pb-0.5 pt-1 text-[10px] leading-tight text-muted-foreground/70">
+              请先关闭该会话的标签页
+            </div>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </motion.div>

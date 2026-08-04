@@ -71,6 +71,12 @@ const electronAPI = {
   /** 打开系统文件选择器 */
   openFileDialog: () =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.OPEN_FILE_DIALOG),
+  /** 用系统默认程序打开文件（相对路径按会话工作区解析） */
+  openPath: (input: { sessionId: string; path: string }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.OPEN_PATH, input),
+  /** 解析路径是否存在（文件 chip 存在性检查），返回存在的绝对路径或 null */
+  resolveFile: (input: { sessionId: string; path: string; bases?: string[] }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.RESOLVE_FILE, input),
   /** 销毁会话（杀进程 + 删元数据/JSONL） */
   deleteSession: (sessionId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_SESSION, sessionId),

@@ -58,15 +58,14 @@ export function DataTableView({ code, spreadsheet = false }: DataTableViewProps)
   const [groupIndex, setGroupIndex] = React.useState(-1)
   const [collapsed, setCollapsed] = React.useState<Set<string>>(() => new Set())
 
-  if (!normalized) return null
-
-  const { columns, columnDefs, rows } = normalized
-  const hasGroupBy = normalized !== null && groupIndex >= 0 && groupIndex < columns.length
+  const hasGroupBy =
+    normalized !== null && groupIndex >= 0 && groupIndex < normalized.columns.length
 
   // 搜索 + 过滤
   const filtered = React.useMemo(() => {
+    if (!normalized) return []
     const term = query.trim().toLocaleLowerCase()
-    return rows.filter((row) => {
+    return normalized.rows.filter((row) => {
       if (term && !row.some((value) => String(value ?? '').toLocaleLowerCase().includes(term))) return false
       return Object.entries(filters).every(
         ([index, value]) =>
@@ -74,7 +73,7 @@ export function DataTableView({ code, spreadsheet = false }: DataTableViewProps)
           String(row[Number(index)] ?? '').toLocaleLowerCase().includes(value.trim().toLocaleLowerCase()),
       )
     })
-  }, [rows, query, filters])
+  }, [normalized, query, filters])
 
   // 排序
   const visibleRows = React.useMemo(() => {
@@ -91,14 +90,26 @@ export function DataTableView({ code, spreadsheet = false }: DataTableViewProps)
   }, [filtered, sort])
 
   const groupData = React.useMemo(() => {
-    if (!hasGroupBy) return null
+    if (!normalized || !hasGroupBy) return null
     const groups = new Map<string, DataValue[][]>()
     for (const row of visibleRows) {
       const key = String(row[groupIndex] ?? '—')
       groups.set(key, [...(groups.get(key) ?? []), row])
     }
     return [...groups.entries()]
-  }, [hasGroupBy, groupIndex, visibleRows])
+  }, [normalized, hasGroupBy, groupIndex, visibleRows])
+
+  // 围栏内容非法/未闭合（流式半截或模型输出坏 JSON）→ 提示而非空白。必须在所有 hooks 之后 return，
+  // 否则 hook 顺序在「有数据 / 无数据」渲染间变化，React 报 Rendered more hooks。
+  if (!normalized) {
+    return (
+      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+        表格数据无效（JSON 解析失败，内容可能不完整）
+      </div>
+    )
+  }
+
+  const { columns, columnDefs, rows } = normalized
 
   const handleSort = (index: number): void => {
     setSort((current) =>

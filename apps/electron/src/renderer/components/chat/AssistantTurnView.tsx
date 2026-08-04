@@ -14,11 +14,14 @@ import {
   useSmoothStream,
 } from '@tagent/ui'
 import { ProcessGroupView } from './ProcessGroupView'
+import { SubagentEntryCard } from './SubagentEntryCard'
 import {
   buildTurnPresentation,
+  groupSubagentItems,
   type SessionRenderTurn,
 } from './session-turn-model'
-import { MessageView } from './MessageView'
+import type { TaskCardState } from './subagent-ui-model'
+import type { TurnDuration } from '@tagent/shared'
 import { MessageCopyButton } from './MessageCopyButton'
 import {
   formatElapsedDuration,
@@ -32,19 +35,23 @@ interface AssistantTurnViewProps {
   isLiveTurn?: boolean
   /** Chat @ 本轮点名角色展示名（顺序） */
   mentionLabels?: string[]
-  /** 完成耗时（毫秒，发送→idle 全程；仅完成后由 Chat 传入）。复制栏显示「完成 Xs」 */
-  completedDurationMs?: number
+  /** 完成耗时（发送→idle 全程 + 结束方式；仅结束后由 Chat 传入）。复制栏/标题行显示耗时 */
+  completedDuration?: TurnDuration
+  /** 子代理任务卡片 lookup：parentToolUseId → taskCard（由 Chat 从 items 构造，供入口卡片状态） */
+  subagentCards?: Map<string, TaskCardState>
+  /** 打开子代理独立会话页面（Chat 层切换） */
+  onOpenSubagent: (parentToolUseId: string) => void
 }
 
 export function AssistantTurnView({
   turn,
   isLiveTurn = false,
   mentionLabels,
-  completedDurationMs,
+  completedDuration,
+  subagentCards,
+  onOpenSubagent,
 }: AssistantTurnViewProps): JSX.Element {
-  const subagentItems = turn.items.filter(
-    (it) => it.message?.type === 'assistant' && it.message.parentToolUseId,
-  )
+  const subagentGroups = groupSubagentItems(turn.items)
   const mainItems = turn.items.filter(
     (it) => !(it.message?.type === 'assistant' && it.message.parentToolUseId),
   )
@@ -85,9 +92,11 @@ export function AssistantTurnView({
     return turnCreatedAt
   }, [mainItems, turnCreatedAt])
 
-  // 完成耗时由 Chat 传入（发送→idle 全程，覆盖思考期 + 工具轮），不在此按 assistant
-  // createdAt 自算（流式 assistant 可能无 createdAt → 有时不显示；且口径是 turn 内非全程）。
-  const completionMs = !isLiveTurn && completedDurationMs ? completedDurationMs : 0
+  // 完成/中断耗时：正常完成显示「完成 Xs」（复制栏）；用户停止/出错在标题行显示「停止/出错 Xs」
+  const completionMs = !isLiveTurn && completedDuration ? completedDuration.ms : 0
+  const endedBy = completedDuration?.endedBy
+  const completionLabel =
+    endedBy === 'stopped' ? '停止' : endedBy === 'error' ? '出错' : '完成'
 
   // live 且尚无 createdAt：用首次进入 live 的时刻（结束后 ref 保留，不重置）
   const liveStartRef = useRef<number | null>(null)
@@ -99,9 +108,11 @@ export function AssistantTurnView({
 
   const statusLabel = isLiveTurn
     ? `运行 ${formatElapsedDuration(elapsedMs)}`
-    : turnFinishedAt
-      ? formatMessageTime(turnFinishedAt)
-      : ''
+    : completionMs > 0 && endedBy !== 'complete'
+      ? `${completionLabel} ${formatElapsedDuration(completionMs)}`
+      : turnFinishedAt
+        ? formatMessageTime(turnFinishedAt)
+        : ''
 
   // 复制用最终全文（优先落盘 answer；流式中用已显示内容）
   const copyText = (answerFull || displayedContent || content).trim()
@@ -139,20 +150,29 @@ export function AssistantTurnView({
         </div>
       )}
 
-      {subagentItems.map((it) =>
-        it.message ? (
-          <div key={it.key}>
-            <MessageView message={it.message} />
-          </div>
-        ) : null,
-      )}
+      {subagentGroups.map((group) => {
+        const parentToolUseId = group[0]?.message?.parentToolUseId
+        if (!parentToolUseId) return null
+        return (
+          <SubagentEntryCard
+            key={parentToolUseId}
+            items={group}
+            card={subagentCards?.get(parentToolUseId)}
+            isLive={processLive}
+            onOpen={() => onOpenSubagent(parentToolUseId)}
+          />
+        )
+      })}
 
       {showAnswerShell && (
         <div className="agent-answer-block">
           <Message from="assistant">
             <MessageContent>
               {displayedContent.trim() ? (
-                <MessageResponse>{displayedContent}</MessageResponse>
+                // 流式中直接渲染 markdown（逐字累积的文本喂给 MessageResponse）：
+                // 纯文本过渡会让用户看到满屏原始 markdown 源码、完成后才突然切换，跳变明显。
+                // streaming 标记让未闭合的富内容围栏（datatable/mermaid）显示占位而非原始 ```。
+                <MessageResponse streaming={needsTypewriter}>{displayedContent}</MessageResponse>
               ) : processLive ? (
                 <MessageLoading />
               ) : null}
@@ -161,7 +181,7 @@ export function AssistantTurnView({
           {copyText || completionMs > 0 ? (
             <div className="agent-answer-toolbar">
               {copyText ? <MessageCopyButton text={copyText} /> : null}
-              {completionMs > 0 ? (
+              {completionMs > 0 && endedBy === 'complete' ? (
                 <span className="agent-answer-time">
                   完成 {formatElapsedDuration(completionMs)}
                 </span>

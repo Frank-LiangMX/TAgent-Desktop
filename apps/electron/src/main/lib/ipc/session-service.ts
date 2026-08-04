@@ -11,6 +11,8 @@
  * 会话绑定：首条消息锁定运行内核（KSCC / 外部）；同内核内渠道和模型可继续切换。
  */
 import { ipcMain, type BrowserWindow } from 'electron'
+import { readdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import type {
   AgentProviderAdapter,
   SDKMessage,
@@ -24,7 +26,7 @@ import { AGENT_IPC_CHANNELS, MEMORY_IPC_CHANNELS } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
 import { getAdapter, PiAgentAdapter, type ChannelKind } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
-import { buildRichContentSystemPrompt, sdkMessageToIR } from '@tagent/shared'
+import { buildRichContentSystemPrompt, classifyUserFacingError, sdkMessageToIR } from '@tagent/shared'
 import type { KsccQueryOptions } from '../adapters/claude/claude-agent-adapter'
 import {
   getSessionMeta,
@@ -51,7 +53,12 @@ import {
 import { ksccSoftReset } from '../agent/kscc-soft-reset'
 import { resolveWorkspaceForSession } from '../workspace/workspace-manager'
 import { getEnabledMcpServers } from '../mcp/mcp-store'
-import { PermissionService } from '../permission/permission-service'
+import {
+  PermissionService,
+  dismissModeSuggestion,
+  clearModeSuggestionDismissal,
+  setOnChatModeBlock,
+} from '../permission/permission-service'
 import { buildBuiltinSubagentDefinitions, buildSubagentDelegationPrompt } from '../agent/subagent-definitions'
 import { buildExecutionModePrompt } from '../agent/execution-mode-prompt'
 import {
@@ -99,6 +106,64 @@ interface SendMessageInput {
   executionMode?: ExecutionMode
 }
 
+// ===== 文件 chip 裸文件名查找（resolveFile 兜底） =====
+
+/** 文件名查找结果缓存（文件名小写 → 绝对路径 | null） */
+const fileNameSearchCache = new Map<string, { path: string | null; at: number }>()
+const FILE_SEARCH_TTL_MS = 60_000
+/** 跳过目录：依赖/产物/缓存，避免大海捞针 */
+const FILE_SEARCH_SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.bun-cache',
+  '.worktrees',
+  'dist',
+  'build',
+  'out',
+  '.next',
+  '.cache',
+  'coverage',
+  'target',
+  '.venv',
+  'venv',
+])
+/** 扫描文件数上限（超过放弃，防止超大项目阻塞主进程） */
+const FILE_SEARCH_MAX_FILES = 8000
+const FILE_SEARCH_MAX_DEPTH = 8
+
+/** 在根目录下按文件名递归查找（不区分大小写），返回绝对路径或 null */
+function findFileByName(root: string, fileName: string): string | null {
+  let scanned = 0
+  const walk = (dir: string, depth: number): string | null => {
+    if (depth > FILE_SEARCH_MAX_DEPTH || scanned > FILE_SEARCH_MAX_FILES) return null
+    let entries: string[] = []
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      return null
+    }
+    for (const entry of entries) {
+      if (scanned++ > FILE_SEARCH_MAX_FILES) return null
+      const full = join(dir, entry)
+      let isDir = false
+      try {
+        isDir = statSync(full).isDirectory()
+      } catch {
+        continue
+      }
+      if (isDir) {
+        if (FILE_SEARCH_SKIP_DIRS.has(entry)) continue
+        const hit = walk(full, depth + 1)
+        if (hit) return hit
+      } else if (entry.toLowerCase() === fileName.toLowerCase()) {
+        return full
+      }
+    }
+    return null
+  }
+  return walk(root, 0)
+}
+
 export class SessionService {
   private runtimes = new Map<string, SessionRuntime>()
   private constructor(
@@ -106,11 +171,27 @@ export class SessionService {
     private readonly permissionService: PermissionService | null,
   ) {}
 
+  /**
+   * Chat 模式拦截写操作：终止当前 run + 通知渲染层清运行态。
+   * 用户视角：「都在运行了还问我干啥」——被拦即停，等用户确认切 Work 后再继续。
+   */
+  private handleChatModeBlock(sessionId: string): void {
+    const rt = this.runtimes.get(sessionId)
+    if (rt) {
+      void rt.interrupt().catch(() => {})
+    }
+    // 清流式占位 + running 停止（turn_end 语义；interrupt 后 adapter 可能不再发事件，兜底）
+    this.sendPayload(sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
+  }
+
   static create(
     getWindow: () => BrowserWindow | null,
     permissionService: PermissionService | null = null,
   ): SessionService {
     const svc = new SessionService(getWindow, permissionService)
+    if (permissionService) {
+      setOnChatModeBlock((sessionId) => svc.handleChatModeBlock(sessionId))
+    }
     // Phase 4：软重置钩子
     ksccSoftReset.setHooks({
       abortSession: (sessionId) => {
@@ -152,7 +233,10 @@ export class SessionService {
         return { ok: true }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'session_error', message: msg } })
+        this.sendPayload(input.sessionId, {
+          kind: 'tagent_event',
+          event: { type: 'session_error', message: msg, error: classifyUserFacingError(msg) },
+        })
         return { ok: false, error: msg }
       }
     })
@@ -222,6 +306,85 @@ export class SessionService {
       }
       return { files }
     })
+
+    // 用系统默认程序打开文件（消息内文件 chip 点击）。相对路径基于会话工作区解析。
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.OPEN_PATH,
+      async (
+        _e,
+        input: { sessionId: string; path: string },
+      ): Promise<{ ok: boolean; error?: string }> => {
+        const { shell } = await import('electron')
+        const { isAbsolute, resolve, basename } = await import('node:path')
+        const { existsSync } = await import('node:fs')
+        const target = input.path.trim()
+        if (!target) return { ok: false, error: '路径为空' }
+        const workspace = resolveWorkspaceForSession(input.sessionId)
+        let abs = target
+        if (!isAbsolute(abs)) {
+          const base = workspace?.projectDirectory
+          if (!base) return { ok: false, error: '会话未绑定工作区，无法解析相对路径' }
+          abs = resolve(base, abs)
+        }
+        if (!existsSync(abs)) {
+          // 裸文件名（如 `Chat.tsx`）常规解析失败 → 项目内按文件名查找（与 resolveFile 同一兜底）
+          if (!isAbsolute(target) && workspace?.projectDirectory) {
+            const cacheKey = `${workspace.projectDirectory}\0${basename(target).toLowerCase()}`
+            const cached = fileNameSearchCache.get(cacheKey)
+            if (cached && Date.now() - cached.at < FILE_SEARCH_TTL_MS) {
+              abs = cached.path ?? abs
+            } else {
+              const found = findFileByName(workspace.projectDirectory, basename(target))
+              fileNameSearchCache.set(cacheKey, { path: found, at: Date.now() })
+              if (found) abs = found
+            }
+          }
+          if (!existsSync(abs)) return { ok: false, error: `文件不存在：${abs}` }
+        }
+        const err = await shell.openPath(abs)
+        return err ? { ok: false, error: err } : { ok: true }
+      }
+    )
+
+    // 解析文件路径是否存在（文件 chip 存在性检查）。候选 base 优先，无则回退会话工作区。
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.RESOLVE_FILE,
+      async (
+        _e,
+        input: { sessionId: string; path: string; bases?: string[] },
+      ): Promise<string | null> => {
+        const { isAbsolute, resolve, basename } = await import('node:path')
+        const { existsSync } = await import('node:fs')
+        const target = input.path.trim()
+        if (!target) return null
+        const candidates: string[] = []
+        const workspace = resolveWorkspaceForSession(input.sessionId)
+        if (isAbsolute(target)) {
+          candidates.push(target)
+        } else {
+          const bases = (input.bases ?? []).filter(Boolean)
+          for (const base of bases) candidates.push(resolve(base, target))
+          if (workspace?.projectDirectory) {
+            candidates.push(resolve(workspace.projectDirectory, target))
+          }
+        }
+        for (const abs of candidates) {
+          if (existsSync(abs)) return abs
+        }
+        // 兜底：裸文件名/短路径（如 `Chat.tsx`）常规解析失败 → 项目内按文件名递归查找。
+        // 排除依赖/产物目录、限深度与扫描量，结果带模块级缓存（文件名 → 绝对路径）。
+        if (!isAbsolute(target) && workspace?.projectDirectory) {
+          const fileName = basename(target)
+          const cacheKey = `${workspace.projectDirectory}\0${fileName.toLowerCase()}`
+          const cached = fileNameSearchCache.get(cacheKey)
+          if (cached && Date.now() - cached.at < FILE_SEARCH_TTL_MS) return cached.path
+          const found = findFileByName(workspace.projectDirectory, fileName)
+          fileNameSearchCache.set(cacheKey, { path: found, at: Date.now() })
+          if (found) return found
+        }
+        return null
+      }
+    )
 
     // 热切换会话权限模式：持久化 meta → 通知 runtime（kscc 走 SDK setPermissionMode；Pi 靠闭包读 meta）
     ipcMain.handle(
@@ -319,6 +482,14 @@ export class SessionService {
           // 确认/切换后清掉建议条
           pendingExecutionModeSuggestion: null,
         })
+        // 用户主动切换 = 新意图：解除 dismiss 抑制，之后被拦可再建议
+        clearModeSuggestionDismissal(args.sessionId)
+        // 运行中切换：先软中断当前 turn（用户决策优先，不留半截任务继续跑）
+        try {
+          await this.runtimes.get(args.sessionId)?.interrupt()
+        } catch (err) {
+          console.warn(`[会话 ${args.sessionId}] 切换 executionMode 前中断失败:`, err)
+        }
         // 长驻进程在首条消息时锁定 MCP/systemPrompt；Chat↔Work 后须丢弃 kscc 进程，
         // 下次发送 re-spawn 才会出现 kanban_*；Pi 核则在下次 query 热重建 Agent。
         try {
@@ -343,6 +514,8 @@ export class SessionService {
         if (meta.pendingExecutionModeSuggestion) {
           updateSessionMeta(args.sessionId, { pendingExecutionModeSuggestion: null })
         }
+        // 用户点「留在 Chat」→ 本会话不再自动推建议（防工具循环反复弹）
+        dismissModeSuggestion(args.sessionId)
         return { ok: true }
       },
     )
@@ -384,7 +557,15 @@ export class SessionService {
         _e,
         args: {
           id: string
-          patch: Pick<Partial<AgentSessionMeta>, 'title' | 'pinned' | 'archived' | 'subagentEagerness'>
+          patch: Pick<
+            Partial<AgentSessionMeta>,
+            | 'title'
+            | 'pinned'
+            | 'archived'
+            | 'subagentEagerness'
+            | 'reasoningEffort'
+            | 'turnDurations'
+          >
         }
       ) => {
         // 规范化 subagentEagerness（非法值回退默认），其余字段透传 updateSessionMeta 合并写
@@ -655,7 +836,11 @@ export class SessionService {
         onError: (err: Error) => {
           // 出错 → 落盘 error（重启保留，下轮成功回 idle）
           updateSessionMeta(input.sessionId, { status: 'error' })
-          this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'session_error', message: err.message } })
+          const msg = err.message
+          this.sendPayload(input.sessionId, {
+            kind: 'tagent_event',
+            event: { type: 'session_error', message: msg, error: classifyUserFacingError(msg) },
+          })
         },
       })
 

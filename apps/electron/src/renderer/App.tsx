@@ -78,6 +78,12 @@ declare global {
       listSessions: () => Promise<unknown[]>
       getMessages: (sessionId: string) => Promise<unknown[]>
       onStreamEvent: (cb: (payload: unknown) => void) => () => void
+      openPath: (input: { sessionId: string; path: string }) => Promise<{ ok: boolean; error?: string }>
+      resolveFile: (input: {
+        sessionId: string
+        path: string
+        bases?: string[]
+      }) => Promise<string | null>
       // 渠道
       listChannels: () => Promise<Channel[]>
       createChannel: (input: ChannelCreateInput) => Promise<Channel>
@@ -103,6 +109,8 @@ declare global {
         archived?: boolean
         subagentEagerness?: 'never' | 'conservative' | 'balanced' | 'aggressive'
         reasoningEffort?: 'low' | 'medium' | 'high' | 'max'
+        /** 各轮完成耗时（key = 该轮最后一条主线 assistant 消息 createdAt） */
+        turnDurations?: Record<string, number>
       }) => Promise<unknown>
       togglePin: (id: string) => Promise<unknown>
       toggleArchive: (id: string) => Promise<unknown>

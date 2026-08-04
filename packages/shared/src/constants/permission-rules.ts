@@ -65,7 +65,10 @@ export const DANGEROUS_COMMANDS: readonly string[] = [
   // A. 删除/破坏文件系统
   'rm',
   'rmdir',
+  'rd', // Windows cmd rmdir 别名
   'del', // Windows
+  'erase', // Windows cmd del 别名
+  'remove-item', // PowerShell 删除
   'unlink',
   'shred',
   'truncate',
@@ -81,6 +84,9 @@ export const DANGEROUS_COMMANDS: readonly string[] = [
   'chmod',
   'chown',
   'chgrp',
+  'set-content', // PowerShell 覆盖写入
+  'clear-content', // PowerShell 清空文件
+  'add-content', // PowerShell 追加写入
   'systemctl',
   'service',
   'launchctl', // macOS
@@ -94,6 +100,10 @@ export const DANGEROUS_COMMANDS: readonly string[] = [
   'wget',
   'aria2c',
   'fetch',
+  'invoke-webrequest', // PowerShell 下载
+  'iwr', // PowerShell 下载别名
+  'invoke-expression', // PowerShell 执行任意代码
+  'iex', // PowerShell Invoke-Expression 别名
   // D. 远程登录/传输
   'ssh',
   'scp',
@@ -106,6 +116,7 @@ export const DANGEROUS_COMMANDS: readonly string[] = [
   'killall',
   'pkill',
   'taskkill', // Windows
+  'stop-process', // PowerShell
   // F. 包管理卸载/破坏（只列卸载和安装二进制，不列安装依赖）
   'pip uninstall',
   'pip3 uninstall',
@@ -197,14 +208,32 @@ export function hasDangerousStructure(command: string): boolean {
  *
  * 用于 isWhitelisted：用户选过"总是允许 Bash"后，只对真正能绕过工具分类
  * 直接修改文件系统的结构重新询问，不再因中性结构（&&/|）反复弹窗。
+ *
+ * 误伤防护：
+ * - `>/dev/null`、`2>/dev/null`、`2>&1`、`/nul` 是丢弃/设备重定向，不算写文件
+ * - `$(...)` / 反引号内的命令替换：内部是危险命令才算（`$(rm -rf /)`），
+ *   只读用法（`wc -l $(find ...)`）不算——避免分析项目时的只读命令被拦
  */
 export function hasWriteStructure(command: string): boolean {
-  // 输出重定向（> / >>）— 可写文件
-  if (/>{1,2}/.test(command)) return true
+  // 输出/错误重定向到真实文件（>/dev/null、2>/dev/null、2>&1、1>&2、/nul 等无害目标不算）
+  const REDIRECT_RE = />+\s*(?:"([^"]*)"|'([^']*)'|(\S+))/g
+  let m: RegExpExecArray | null
+  while ((m = REDIRECT_RE.exec(command)) !== null) {
+    // 去掉结尾的 $() 闭合符 / 管道分隔等非目标字符（如 `2>/dev/null)`）。
+    // 注意保留 &（fd 重定向 `2>&1` 的 `&1` 是目标本身，去掉会误判为写文件）
+    const target = (m[1] ?? m[2] ?? m[3] ?? '').toLowerCase().replace(/[;|)]/g, '')
+    if (!target) continue
+    if (target === '/dev/null' || target === 'nul' || /^&\d+$/.test(target)) continue
+    return true
+  }
   // find -exec / -delete — 可执行任意命令 / 删除文件
   if (/(?:^|\s)-exec\b/.test(command) || /(?:^|\s)-delete\b/.test(command)) return true
-  // 子 shell / 命令替换（$(...) 和反引号）— 可执行任意命令
-  if (/\$\(/.test(command) || /`/.test(command)) return true
+  // 命令替换 / 反引号：内部含危险命令才算写结构（`wc -l $(find ...)` 只读用法不算）
+  const SUBST_RE = /\$\(([^)]*)\)|`([^`]*)`/g
+  while ((m = SUBST_RE.exec(command)) !== null) {
+    const inner = m[1] ?? m[2] ?? ''
+    if (inner && isDangerousCommand(inner)) return true
+  }
   return false
 }
 
@@ -234,7 +263,7 @@ export function isSafeBashCommand(command: string): boolean {
 }
 
 /**
- * 判断命令是否为危险命令
+ * 检测命令是否为危险命令
  *
  * 使用 token-based 前缀匹配：命令按空白分割为 tokens，
  * 检查前 N 个 token 是否与某条 DANGEROUS_COMMANDS 条目完全相等。
@@ -244,15 +273,40 @@ export function isSafeBashCommand(command: string): boolean {
  * - `rm` 不再误匹配 `rmdir`（rmdir 单独列出）
  * - `fetch` 不再误匹配 `git fetch`（第一个 token 是 git）
  * - `sc` 不再误匹配 `scala`、`scp` 等
+ *
+ * 防绕过：shell 启动器前缀（cmd /c、powershell -Command、bash -c、wsl）
+ * 会在首 token 匹配失败后剥离并递归检测，避免 `cmd /c del` 这类包裹绕过。
  */
 export function isDangerousCommand(command: string): boolean {
-  const tokens = command.trim().toLowerCase().split(/\s+/)
+  return isDangerousCommandInner(command.trim())
+}
+
+/** shell 启动器前缀：剥离后剩余命令继续递归检测危险（如 cmd /c del、powershell -Command "Remove-Item"） */
+const SHELL_PREFIX_PATTERNS: RegExp[] = [
+  /^cmd(?:\.exe)?\s+\/[dc]\s+(.+)$/i,
+  /^powershell(?:\.exe)?\s+(?:-[a-z]+\s+)*(?:-c|-command)\s+(.+)$/i,
+  /^(?:bash|sh|zsh|ksh)\s+-c\s+(.+)$/i,
+  /^wsl(?:\s+-[\w-]+)*\s+(.+)$/i,
+]
+
+function isDangerousCommandInner(trimmed: string): boolean {
+  if (!trimmed) return false
+  const tokens = trimmed.toLowerCase().split(/\s+/)
   if (tokens.length === 0 || tokens[0] === '') return false
-  return DANGEROUS_COMMANDS.some((dc) => {
+  const matched = DANGEROUS_COMMANDS.some((dc) => {
     const dcTokens = dc.toLowerCase().split(/\s+/)
     if (tokens.length < dcTokens.length) return false
     return dcTokens.every((t, i) => tokens[i] === t)
   })
+  if (matched) return true
+  // 剥 shell 启动器前缀递归（内容可能带引号包裹，先去掉首尾引号）
+  for (const pattern of SHELL_PREFIX_PATTERNS) {
+    const m = pattern.exec(trimmed)
+    if (!m || !m[1]) continue
+    const rest = m[1].trim().replace(/^['"]|['"]$/g, '')
+    if (rest && isDangerousCommandInner(rest)) return true
+  }
+  return false
 }
 
 /** 写操作工具名称 */
@@ -367,19 +421,26 @@ const PROJECT_LOCAL_READ_ONLY_BASH_PATTERNS: readonly RegExp[] = [
 /**
  * 判断路径 token 是否在 cwd 外
  *
- * - 绝对路径（Unix `/`、Windows 盘符 `C:`、家目录 `~`）→ 检查是否以 cwd 为前缀
+ * - 绝对路径（Unix `/`、Windows 盘符 `C:`、家目录 `~`、UNC `\\`）→ 检查是否以 cwd 为前缀
  * - 父目录路径（`..`）→ 视为 cwd 外（保守，避免越界）
  * - 相对路径（`./foo`、`foo.txt`）→ 视为 cwd 内
  */
-function isPathOutsideCwd(token: string, cwd: string): boolean {
+export function isPathOutsideCwd(token: string, cwd: string): boolean {
   // 去掉常见引号包裹
   const raw = token.replace(/^['"]|['"]$/g, '')
   if (!raw) return false
+  // 设备路径（/dev/null 等）不是文件系统路径，不算越界
+  if (raw.startsWith('/dev/')) return false
+  // Git Bash 风格盘符路径：/c/Users/... ≡ C:\Users\...（归一化后再比较）
+  const gitBashWin = raw.match(/^\/([a-zA-Z])\/(.+)$/)
   const isAbsolute =
-    raw.startsWith('/') || raw.startsWith('~') || /^[a-zA-Z]:[\\/]/.test(raw)
+    raw.startsWith('/') ||
+    raw.startsWith('~') ||
+    /^[a-zA-Z]:[\\/]/.test(raw) ||
+    raw.startsWith('\\\\') // UNC 网络共享路径
   if (!isAbsolute && !raw.startsWith('..')) return false
   const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/$/, '')
-  const normalizedToken = raw.replace(/\\/g, '/')
+  const normalizedToken = (gitBashWin ? `${gitBashWin[1]!.toUpperCase()}:/${gitBashWin[2]!}` : raw).replace(/\\/g, '/')
   // 以 cwd 为前缀（含等价）视为 cwd 内
   if (
     normalizedToken === normalizedCwd ||
@@ -503,7 +564,11 @@ export function isAutoModeAutoAllowTool(
         ? toolName[0]!.toUpperCase() + toolName.slice(1)
         : toolName
 
-  if (SAFE_TOOLS.includes(name) || SAFE_TOOLS.includes(toolName)) return true
+  if (SAFE_TOOLS.includes(name) || SAFE_TOOLS.includes(toolName)) {
+    // Read/Glob/Grep 等只读工具无条件放行（1.0/Proma 同款）：只读无破坏性，
+    // 对工作区外的读取也放行——信息泄露担忧不该牺牲「分析项目」的可用性。
+    return true
+  }
   if (AUTO_MODE_READ_ONLY_TOOLS.includes(name) || AUTO_MODE_READ_ONLY_TOOLS.includes(toolName)) {
     return true
   }

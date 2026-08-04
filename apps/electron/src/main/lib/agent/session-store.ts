@@ -20,10 +20,10 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
-  rmSync,
 } from 'node:fs'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { rmSyncRobust } from '../fs-robust'
 import type { AgentSessionMeta, ExecutionMode } from '@tagent/shared'
 import { DEFAULT_EXECUTION_MODE } from '@tagent/shared'
 import {
@@ -163,7 +163,7 @@ function deleteSessionFiles(meta: AgentSessionMeta): void {
   for (const msgPath of pathsToDelete) {
     if (existsSync(msgPath)) {
       try {
-        rmSync(msgPath, { force: true })
+        rmSyncRobust(msgPath, { force: true })
       } catch {
         /* 忽略 */
       }

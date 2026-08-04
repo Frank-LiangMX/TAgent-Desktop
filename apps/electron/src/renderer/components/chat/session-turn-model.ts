@@ -21,6 +21,7 @@ import type {
   TAgentToolResultBlock,
   TAgentToolUseBlock,
   TAgentUserMessage,
+  TurnDuration,
 } from '@tagent/shared'
 
 // ===== 输入侧 DisplayItem 最小形状（避免循环依赖 Chat.tsx） =====
@@ -72,8 +73,115 @@ export interface TurnPresentation {
   streamingThinking?: string
 }
 
-/** 用户消息是否为「真实输入」（有非空 text） */
+/**
+ * 将 turn 内子代理消息（assistant + parentToolUseId）按 parentToolUseId 分组，保持原始顺序。
+ *
+ * 一个子代理执行过程会产生多条带 parentToolUseId 的 assistant 消息（thinking / tool_use /
+ * 中间文本 / 最终结果）。渲染层不应逐条平铺，而应把同一子代理合并为一个折叠块：
+ * 默认收起一行摘要，点击展开才显示完整步骤。
+ */
+export function groupSubagentItems(items: TurnSourceItem[]): TurnSourceItem[][] {
+  const groups = new Map<string, TurnSourceItem[]>()
+  const order: string[] = []
+  for (const it of items) {
+    const m = it.message
+    if (m?.type === 'assistant' && m.parentToolUseId) {
+      const key = m.parentToolUseId
+      let group = groups.get(key)
+      if (!group) {
+        group = []
+        groups.set(key, group)
+        order.push(key)
+      }
+      group.push(it)
+    }
+  }
+  return order.map((k) => groups.get(k)!)
+}
+
+/**
+ * 从 items 中提取发起某子代理的 task tool_use 块。
+ *
+ * 主线程通过一条主线 assistant 消息里的 tool_use（name='task'，id=parentToolUseId）发起子代理；
+ * 其 input 即任务指令。子代理详情页用它渲染「任务指令」区。
+ */
+export function findSubagentTaskTool(
+  items: TurnSourceItem[],
+  parentToolUseId: string,
+): { name: string; input: Record<string, unknown> } | null {
+  for (const it of items) {
+    const m = it.message
+    if (m?.type !== 'assistant' || m.parentToolUseId) continue
+    for (const b of m.content) {
+      if (b.type === 'tool_use') {
+        const tu = b as TAgentToolUseBlock
+        if (tu.id === parentToolUseId) {
+          return { name: tu.name, input: tu.input ?? {} }
+        }
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * 过滤出某子代理（parentToolUseId）的全部消息，含 assistant（思考/工具/文本）
+ * 与 user（tool_result 合成回传），保持到达顺序。详情页用它渲染完整会话流。
+ */
+export function filterSubagentItems(
+  items: TurnSourceItem[],
+  parentToolUseId: string,
+): TurnSourceItem[] {
+  return items.filter((it) => {
+    const m = it.message
+    if (!m) return false
+    return m.parentToolUseId === parentToolUseId
+  })
+}
+
+/**
+ * 从持久化的 turnDurations（key = turn 最后一条主线 assistant 消息 createdAt）回填
+ * 当前渲染 key（turn-xxx）→ 完成耗时 的映射，供加载历史后恢复「完成/停止/出错 Xs」。
+ */
+export function backfillTurnDurations(
+  items: TurnSourceItem[],
+  persisted: Record<string, TurnDuration> | undefined,
+): Record<string, TurnDuration> {
+  const result: Record<string, TurnDuration> = {}
+  if (!persisted || Object.keys(persisted).length === 0) return result
+  const turns = groupItemsIntoTurns(items)
+  for (const t of turns) {
+    if (t.kind !== 'assistant-turn') continue
+    const createdAt = getTurnLastMainAssistantCreatedAt(t.items)
+    if (createdAt != null && persisted[createdAt] != null) {
+      result[t.key] = persisted[createdAt]!
+    }
+  }
+  return result
+}
+
+/** 取 items 中最后一条主线（无 parentToolUseId）assistant 消息的 createdAt（完整轮的稳定标识） */
+export function getLastMainAssistantCreatedAt(items: TurnSourceItem[]): number | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const m = items[i]?.message
+    if (m?.type === 'assistant' && !m.parentToolUseId && m.createdAt) return m.createdAt
+  }
+  return undefined
+}
+
+/** 取 turn 内最后一条主线（无 parentToolUseId）assistant 消息的 createdAt */
+function getTurnLastMainAssistantCreatedAt(items: TurnSourceItem[]): number | undefined {
+  return getLastMainAssistantCreatedAt(items)
+}
+
+/** 用户消息是否为「真实输入」（有非空 text）。
+ *
+ * 带 parentToolUseId 的 user 消息一律不算真实输入：SDK 委派子代理时会把
+ * 「发给子代理的任务指令」作为一条 user 消息（text + parent_tool_use_id +
+ * subagent_type）流入主线程流，这类消息是合成委派消息，不应渲染为用户气泡。
+ * 真实用户输入由主进程构造时 parentToolUseId 恒为 null。 */
 export function isRealUserInput(message: TAgentUserMessage): boolean {
+  if (message.parentToolUseId) return false
   return message.content.some(
     (b) => b.type === 'text' && typeof (b as TAgentTextBlock).text === 'string' && (b as TAgentTextBlock).text.trim().length > 0,
   )
@@ -124,8 +232,9 @@ export function groupItemsIntoTurns(items: TurnSourceItem[]): SessionRenderTurn[
       if (isRealUserInput(msg)) {
         flush()
         turns.push({ kind: 'user', key: item.key, message: msg })
-      } else if (isToolResultOnlyUser(msg)) {
-        // tool_result → 归入当前 assistant-turn
+      } else if (isToolResultOnlyUser(msg) || msg.parentToolUseId) {
+        // tool_result 回传 / 子代理委派消息（合成 user，text+parentToolUseId）→ 归入当前 assistant-turn。
+        // 委派消息绝不渲染为独立用户气泡（主进程构造的真实用户输入 parentToolUseId 恒为 null）。
         if (!current) {
           current = {
             kind: 'assistant-turn',
@@ -337,11 +446,8 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
       if (p?.type !== 'text') continue
       const t = p.text.trim()
       if (!t) continue
-      if (
-        t === answerOverlay ||
-        answerOverlay.startsWith(t) ||
-        answerOverlay.includes(t)
-      ) {
+      // 只去「前缀/相同」的重复（流式段落续写），不用 includes 误伤工具间隙的独立中间文段
+      if (t === answerOverlay || answerOverlay.startsWith(t)) {
         process.splice(i, 1)
       }
     }
@@ -363,18 +469,20 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
   }
 }
 
-/** 去掉完全相同或被更长段包含的前缀重复（流式分段落盘常见） */
+/** 去掉完全相同或被更长段「前缀」包含的重复（流式分段落盘常见）。
+ *  不用 includes/任意子串匹配：语义独立的中间文段（如 "Let me check"）可能是
+ *  最终回答 "After I check, …" 的子串，误删会导致回答不完整。 */
 export function dedupeAnswerTexts(texts: string[]): string[] {
   const cleaned = texts.map((t) => t.trim()).filter(Boolean)
   if (cleaned.length <= 1) return cleaned
 
   const result: string[] = []
   for (const t of cleaned) {
-    // 若已被已有更长文本包含，跳过
-    if (result.some((r) => r === t || r.includes(t))) continue
-    // 若当前更长且包含某条旧的，替换掉旧的
+    // 若已被已有文本以「前缀」包含，跳过
+    if (result.some((r) => r === t || r.startsWith(t))) continue
+    // 若当前更长且以某条旧的为前缀，替换掉旧的
     for (let i = result.length - 1; i >= 0; i--) {
-      if (t.includes(result[i]!) && t !== result[i]) {
+      if (t.startsWith(result[i]!) && t !== result[i]) {
         result.splice(i, 1)
       }
     }

@@ -9,7 +9,7 @@
  * 不引 electron，纯 node fs/path，可在 vitest 中直接测（与 mcp-store/workspace-manager 同风格）。
  * 逻辑参考 TAgent_General agent-workspace-manager.installStore*，精简移殖，UI 不在此处。
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   BUILTIN_MCP_CATALOG,
@@ -26,6 +26,7 @@ import {
   type PluginStoreSkillInstallSpec,
 } from '@tagent/shared'
 import { getProjectDir } from '../config/config-paths'
+import { rmSyncRobust } from '../fs-robust'
 import { getMcpConfig, saveMcpConfig } from '../mcp/mcp-store'
 
 /** plugins-installed.json 文件名（工作区内） */
@@ -249,7 +250,7 @@ export function uninstallStoreBundle(
     const skillDir = join(getProjectSkillsDir(slug), skillSlug)
     if (!existsSync(skillDir)) continue
     try {
-      rmSync(skillDir, { recursive: true, force: true })
+      rmSyncRobust(skillDir, { recursive: true, force: true })
       removedSkills.push(skillSlug)
     } catch (error) {
       errors.push(`Skill ${skillSlug}: ${error instanceof Error ? error.message : String(error)}`)

@@ -35,6 +35,19 @@ interface FilePathChipProps {
   FileIcon?: React.ComponentType<{ name: string; isDirectory?: boolean; size?: number }>
 }
 
+/** MessageResponse 内 FilePathChip 的注入上下文（应用层 Provider 提供 IPC 回调） */
+export interface MessageFilePathContextValue {
+  basePath?: string
+  basePaths?: string[]
+  onResolveFile?: (path: string, bases?: string[]) => Promise<string | null>
+  onOpenFile?: (filePath: string, options?: { basePaths?: string[] }) => void
+  getSessionId?: () => string | null
+  FileIcon?: React.ComponentType<{ name: string; isDirectory?: boolean; size?: number }>
+}
+
+export const MessageFilePathContext = React.createContext<MessageFilePathContextValue>({})
+export const MessageFilePathProvider = MessageFilePathContext.Provider
+
 export function FilePathChip({
   filePath,
   basePath,

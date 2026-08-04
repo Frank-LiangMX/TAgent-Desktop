@@ -38,6 +38,39 @@ export interface PermissionRequest {
   dangerous: boolean
 }
 
+/**
+ * 工具必需参数映射（兼容 pi-core 的 path/oldText 与 kscc SDK 的 file_path/old_string 两套命名）。
+ * 任一字段组内有一个 key 非空即视为已提供。
+ */
+const TOOL_REQUIRED_PARAMS: Record<string, string[][]> = {
+  Write: [['path', 'file_path'], ['content']],
+  Edit: [['path', 'file_path'], ['oldText', 'old_string'], ['newText', 'new_string']],
+  Bash: [['command', 'cmd', 'script', 'code']],
+  Read: [['path', 'file_path']],
+  Glob: [['pattern']],
+  Grep: [['pattern']],
+}
+
+/**
+ * 返回缺失的必需参数字段组（用于引导模型重试，对齐 Proma agent-tool-input-validator）。
+ */
+function findMissingRequiredParams(
+  toolName: string,
+  input: Record<string, unknown>,
+): string[] {
+  const groups = TOOL_REQUIRED_PARAMS[toolName]
+  if (!groups) return []
+  const missing: string[] = []
+  for (const group of groups) {
+    const provided = group.some((key) => {
+      const v = input[key]
+      return v !== undefined && v !== null && v !== ''
+    })
+    if (!provided) missing.push(group.join('/'))
+  }
+  return missing
+}
+
 /** pending 请求：等 renderer 响应 */
 interface Pending {
   resolve: (behavior: 'allow' | 'deny') => void
@@ -95,15 +128,38 @@ function askRenderer(
 /**
  * Chat 拦截写操作时 → 持久化建议 + 推渲染进程确认条
  * 节流：同一会话 8s 内不重复刷条
+ * dismiss 抑制：用户点过「留在 Chat」后，本会话不再自动推（尊重用户决策，
+ * 避免工具循环反复拦截时一直弹「建议切 Work」）；用户主动切换模式时清除抑制。
  */
 const lastWorkSuggestAt = new Map<string, number>()
 const WORK_SUGGEST_THROTTLE_MS = 8_000
+const dismissedSuggestionSessions = new Set<string>()
+
+/** 用户 dismiss 模式建议（DISMISS IPC 调） */
+export function dismissModeSuggestion(sessionId: string): void {
+  dismissedSuggestionSessions.add(sessionId)
+}
+
+/** 用户主动切换 executionMode 时清除抑制（新意图，之后可再建议） */
+export function clearModeSuggestionDismissal(sessionId: string): void {
+  dismissedSuggestionSessions.delete(sessionId)
+}
+
+/**
+ * Chat 模式拦截写操作时的终止回调（SessionService 注入）：
+ * 终止当前 run 等用户确认切 Work，而非 deny 后让模型继续跑。
+ */
+let chatModeBlockHandler: ((sessionId: string) => void) | undefined
+export function setOnChatModeBlock(handler: ((sessionId: string) => void) | undefined): void {
+  chatModeBlockHandler = handler
+}
 
 function emitWorkSwitchSuggestion(
   win: BrowserWindow | null,
   sessionId: string,
   toolName: string,
 ): void {
+  if (dismissedSuggestionSessions.has(sessionId)) return
   const now = Date.now()
   const prevAt = lastWorkSuggestAt.get(sessionId) ?? 0
   if (now - prevAt < WORK_SUGGEST_THROTTLE_MS) return
@@ -139,9 +195,20 @@ async function checkPermission(args: {
   const { win, sessionId, toolName, input, cwd, permissionMode } = args
   const executionMode = migrateExecutionMode(args.executionMode)
 
+  // 必需参数缺失 → 直接 deny + 引导模型补全重试（不弹窗；弹窗会打断且模型无法响应）
+  const missingParams = findMissingRequiredParams(toolName, input)
+  if (missingParams.length > 0) {
+    return {
+      allow: false,
+      reason: `工具 ${toolName} 缺少必需参数（${missingParams.join('、')}），请补全参数后重试`,
+    }
+  }
+
   // Chat：硬只读（在 bypass/白名单之前，防止「完全自动」穿透 Chat）
   if (executionMode === 'chat' && isChatModeBlockedTool(toolName, input, cwd)) {
-    // 推建议条：须用户确认才切 Work（ADR-0005）
+    // 终止当前 run + 推建议条：须用户确认才切 Work（ADR-0005）。
+    // 被拦即停，而不是 deny 后让模型继续跑（用户视角「都在运行了还问我干啥」）。
+    chatModeBlockHandler?.(sessionId)
     emitWorkSwitchSuggestion(win(), sessionId, toolName)
     return { allow: false, reason: CHAT_MODE_BLOCK_REASON }
   }
@@ -169,6 +236,10 @@ async function checkPermission(args: {
     isDangerousCommand(command) ||
     (isBash && hasWriteStructure(command)) ||
     isWriteTool(toolName, input)
+  // 弹窗日志：抓「分析项目还弹窗」的具体命令（排查用，定位后移除）
+  console.warn(
+    `[权限] 需用户确认 ${toolName}${dangerous ? '（危险/写）' : ''}${command ? `: ${command.slice(0, 150)}` : ''} cwd=${cwd ?? '(无)'}`,
+  )
   const req: PermissionRequest = {
     id: nextId(),
     sessionId,

@@ -111,3 +111,124 @@ export const PROMPT_TOO_LONG_ERROR_MESSAGE =
 export function formatPromptTooLongError(): string {
   return `${PROMPT_TOO_LONG_ERROR_TITLE}：${PROMPT_TOO_LONG_ERROR_MESSAGE}`
 }
+
+// ===== 用户可见错误分类（session_error 友好化） =====
+
+/** 面向用户的错误类别码 */
+export type UserFacingErrorCode =
+  | 'prompt_too_long'
+  | 'auth'
+  | 'model_unavailable'
+  | 'channel_disabled'
+  | 'kscc_missing'
+  | 'rate_limited'
+  | 'billing'
+  | 'network'
+  | 'permission_denied'
+  | 'unknown'
+
+/** 用户可见错误（渲染层展示 title + message + retryable + 建议动作） */
+export interface UserFacingError {
+  code: UserFacingErrorCode
+  title: string
+  message: string
+  /** 是否可重试（限流/网络可重试；账单/模型不可用不可重试） */
+  retryable: boolean
+  /** 建议动作（渲染层据此展示提示/按钮） */
+  action?: 'settings' | 'switch_model' | 'compact' | 'none'
+}
+
+/** 错误文案 → 用户可见分类（正则匹配，按顺序，首中即止；未知走 unknown 保留原文） */
+const USER_FACING_CLASSIFIERS: ReadonlyArray<{
+  code: UserFacingErrorCode
+  title: string
+  pattern: RegExp
+  retryable: boolean
+  action?: UserFacingError['action']
+}> = [
+  {
+    code: 'auth',
+    title: '渠道认证失败',
+    pattern: /api[- ]?key|authentication|未设置或解密失败|认证失败|登录失败|invalid.*token|unauthorized|401/i,
+    retryable: true,
+    action: 'settings',
+  },
+  {
+    code: 'billing',
+    title: '账户余额不足',
+    pattern: /billing|insufficient|余额不足|账单|欠费|402|billing_error/i,
+    retryable: false,
+    action: 'settings',
+  },
+  {
+    code: 'rate_limited',
+    title: '请求过于频繁',
+    pattern: /rate[- ]?limit|429|请求过于频繁|限流|too many requests/i,
+    retryable: true,
+  },
+  {
+    code: 'model_unavailable',
+    title: '模型不可用',
+    pattern: /model[_ ]?not[_ ]?found|invalid[_ ]?model|模型「[^」]+」不属于|模型「[^」]+」已停用|模型不存在|模型不可用/i,
+    retryable: false,
+    action: 'switch_model',
+  },
+  {
+    code: 'channel_disabled',
+    title: '渠道已停用',
+    pattern: /渠道「[^」]+」已停用|channel.*disabled/i,
+    retryable: false,
+    action: 'settings',
+  },
+  {
+    code: 'kscc_missing',
+    title: 'kscc 未安装',
+    pattern: /未检测到 kscc 命令|kscc.*not found|无法找到 kscc/i,
+    retryable: false,
+  },
+  {
+    code: 'network',
+    title: '网络连接失败',
+    pattern: /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed|socket hang|连接失败|网络错误|连接被拒绝|超时|timeout/i,
+    retryable: true,
+  },
+  {
+    code: 'permission_denied',
+    title: '权限被拒绝',
+    pattern: /用户拒绝|权限拒绝|permission denied|deny/i,
+    retryable: true,
+  },
+]
+
+/**
+ * 把一条错误文案分类为用户可见错误。
+ * 过长上下文优先复用 isPromptTooLongMessage 的识别（多形态匹配），其余走模式表。
+ */
+export function classifyUserFacingError(message: string): UserFacingError {
+  const text = message.trim()
+  if (!text) return { code: 'unknown', title: '运行出错', message: text, retryable: false }
+
+  if (isPromptTooLongMessage(text)) {
+    return {
+      code: 'prompt_too_long',
+      title: PROMPT_TOO_LONG_ERROR_TITLE,
+      message: PROMPT_TOO_LONG_ERROR_MESSAGE,
+      retryable: false,
+      action: 'compact',
+    }
+  }
+
+  for (const classifier of USER_FACING_CLASSIFIERS) {
+    if (classifier.pattern.test(text)) {
+      return {
+        code: classifier.code,
+        title: classifier.title,
+        message: text,
+        retryable: classifier.retryable,
+        action: classifier.action,
+      }
+    }
+  }
+
+  return { code: 'unknown', title: '运行出错', message: text, retryable: false }
+}

@@ -23,11 +23,14 @@ import {
   TooltipTrigger,
   CodeBlock,
   ImageLightbox,
+  FilePathChip,
+  MessageFilePathContext,
 } from '@tagent/ui'
 import { ChevronDown, ChevronUp, Paperclip, Download, MessageSquareText } from 'lucide-react'
 import * as React from 'react'
 import Markdown, { defaultUrlTransform } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
+import { isAbsoluteFilePath, isRelativeFilePath } from '@tagent/shared'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 
@@ -314,6 +317,9 @@ export const MessageResponse = React.memo(
       [streaming, children]
     )
 
+    /** 文件 chip 注入上下文（应用层 Provider；未注入 onOpenFile 时不启用识别） */
+    const filePathCtx = React.useContext(MessageFilePathContext)
+
     const components = React.useMemo(
       () => ({
         a: ({
@@ -343,7 +349,38 @@ export const MessageResponse = React.memo(
         pre: ({ children: preChildren }: { children?: React.ReactNode }) => <>{preChildren}</>,
         code: ({ className: codeClassName, children: codeChildren }: { className?: string; children?: React.ReactNode }) => {
           const langMatch = /language-(\S+)/.exec(codeClassName || '')
-          if (!langMatch) return <code className={codeClassName}>{codeChildren}</code>
+          if (!langMatch) {
+            // 行内代码：识别为文件路径且应用层注入了打开回调 → 渲染可点击 chip
+            const text = String(codeChildren ?? '').trim()
+            if (
+              filePathCtx.onOpenFile &&
+              text &&
+              (isAbsoluteFilePath(text) || isRelativeFilePath(text))
+            ) {
+              return (
+                <FilePathChip
+                  filePath={text}
+                  basePath={filePathCtx.basePath}
+                  basePaths={filePathCtx.basePaths}
+                  onResolveFile={filePathCtx.onResolveFile}
+                  onOpenFile={filePathCtx.onOpenFile}
+                  getSessionId={filePathCtx.getSessionId}
+                  FileIcon={filePathCtx.FileIcon}
+                />
+              )
+            }
+            // 行内代码显式样式：圆角 + 浅底 + 等宽（不依赖 prose 默认，避免反引号伪元素观感）
+            return (
+              <code
+                className={cn(
+                  'rounded bg-foreground/10 px-[0.35em] py-[0.15em] font-mono text-[0.875em]',
+                  codeClassName,
+                )}
+              >
+                {codeChildren}
+              </code>
+            )
+          }
 
           const language = langMatch[1]!.toLowerCase()
           const code = String(codeChildren ?? '').replace(/\n$/, '')
@@ -367,7 +404,7 @@ export const MessageResponse = React.memo(
           return fallback
         },
       }),
-      [onOpenExternal, streaming, unclosedLanguage]
+      [onOpenExternal, streaming, unclosedLanguage, filePathCtx]
     )
 
     const normalizedContent = React.useMemo(() => {

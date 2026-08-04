@@ -319,23 +319,9 @@
   color: hsl(var(--foreground) / 0.88);
 }
 
+/* 运行中标题：静态高亮（去掉渐变流动动画，避免持续视觉干扰/跳变） */
 .agent-process-group__live {
-  background: linear-gradient(
-    90deg,
-    hsl(var(--muted-foreground) / 0.55) 0%,
-    hsl(var(--foreground) / 0.75) 45%,
-    hsl(var(--muted-foreground) / 0.55) 90%
-  );
-  background-size: 200% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: agent-process-shine 1.6s ease-in-out infinite;
-}
-
-@keyframes agent-process-shine {
-  0% { background-position: 100% 0; }
-  100% { background-position: -100% 0; }
+  color: hsl(var(--foreground) / 0.85);
 }
 
 .agent-process-group__body {
@@ -487,6 +473,12 @@
   line-height: 1.55;
   color: hsl(var(--muted-foreground) / 0.88);
   scrollbar-width: thin;
+}
+
+/* 完成态内容驱动折叠：超 4 行收成预览（无时间驱动/动画跳变） */
+.agent-thinking-row__body.is-collapsed {
+  max-height: 6.2em;
+  overflow: hidden;
 }
 
 /*
@@ -819,6 +811,7 @@
 /* ===== 班组右栏（主区对话 | 右栏全高，替代输入框上窄条） =====
    对齐会话页密度：字号 10–12px 档、spatial-line 描边、玻璃底、紧凑顶栏。 */
 .session-body {
+  position: relative;
   display: flex;
   min-height: 0;
   height: 100%;
@@ -1469,4 +1462,292 @@
   line-height: 1.65;
   color: hsl(var(--foreground) / 0.88);
   font-weight: 500;
+}
+
+/* ===== SubagentEntryCard — 子代理入口卡片 =====
+ * 主会话不显示子代理过程（对齐 Cursor Codex），只留一行入口卡片：
+ * 摘要 + 状态 + 步数 + 「查看 →」。点击切换到子代理独立会话页面。 */
+.subagent-entry-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, hsl(var(--muted-foreground)) 14%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, hsl(var(--foreground)) 2.5%, transparent);
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.subagent-entry-card:hover {
+  border-color: color-mix(in srgb, hsl(var(--primary)) 30%, transparent);
+  background: color-mix(in srgb, hsl(var(--primary)) 4%, transparent);
+}
+.subagent-entry-card__dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.4);
+}
+.subagent-entry-card.is-running .subagent-entry-card__dot {
+  background: hsl(var(--primary) / 0.8);
+  animation: agent-process-shine 1.6s ease-in-out infinite;
+}
+.subagent-entry-card.is-failed .subagent-entry-card__dot {
+  background: hsl(var(--destructive));
+}
+.subagent-entry-card__title {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: hsl(var(--foreground) / 0.78);
+}
+.subagent-entry-card__status {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: hsl(var(--muted-foreground) / 0.85);
+  background: color-mix(in srgb, hsl(var(--muted-foreground)) 10%, transparent);
+}
+.subagent-entry-card.is-running .subagent-entry-card__status {
+  color: hsl(var(--primary));
+  background: color-mix(in srgb, hsl(var(--primary)) 12%, transparent);
+}
+.subagent-entry-card.is-failed .subagent-entry-card__status {
+  color: hsl(var(--destructive));
+  background: color-mix(in srgb, hsl(var(--destructive)) 10%, transparent);
+}
+.subagent-entry-card__count {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: hsl(var(--muted-foreground) / 0.55);
+  border: 1px solid hsl(var(--muted-foreground) / 0.2);
+}
+.subagent-entry-card__summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground) / 0.78);
+}
+.subagent-entry-card__open {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: hsl(var(--primary));
+  opacity: 0;
+  transform: translateX(-2px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.subagent-entry-card:hover .subagent-entry-card__open {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* ===== SubagentDetailView — 子代理独立会话页面 ===== */
+.subagent-detail-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  background: hsl(var(--background));
+}
+.subagent-detail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.subagent-detail__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: color-mix(in srgb, hsl(var(--background)) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+.subagent-detail__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.subagent-detail__back:hover {
+  color: hsl(var(--foreground));
+  border-color: hsl(var(--muted-foreground) / 0.4);
+}
+.subagent-detail__title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.subagent-detail__model-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 18px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: hsl(var(--muted-foreground) / 0.8);
+  background: color-mix(in srgb, hsl(var(--muted-foreground)) 9%, transparent);
+}
+.subagent-detail__title-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: hsl(var(--primary) / 0.6);
+}
+.subagent-detail__title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: hsl(var(--foreground) / 0.9);
+}
+.subagent-detail__status {
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 18px;
+  padding: 0 8px;
+  border-radius: 999px;
+}
+.subagent-detail__status.is-running {
+  color: hsl(var(--primary));
+  background: color-mix(in srgb, hsl(var(--primary)) 12%, transparent);
+}
+.subagent-detail__status.is-completed {
+  color: hsl(var(--foreground) / 0.75);
+  background: color-mix(in srgb, hsl(var(--foreground)) 7%, transparent);
+}
+.subagent-detail__status.is-failed {
+  color: hsl(var(--destructive));
+  background: color-mix(in srgb, hsl(var(--destructive)) 10%, transparent);
+}
+.subagent-detail__status.is-stopped {
+  color: hsl(var(--muted-foreground) / 0.8);
+  background: color-mix(in srgb, hsl(var(--muted-foreground)) 10%, transparent);
+}
+.subagent-detail__actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.subagent-detail__copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.subagent-detail__copy:hover {
+  color: hsl(var(--foreground));
+}
+.subagent-detail__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px 32px;
+}
+.subagent-detail__prompt {
+  border: 1px solid color-mix(in srgb, hsl(var(--primary)) 22%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, hsl(var(--primary)) 3%, transparent);
+  padding: 10px 12px;
+  margin-bottom: 16px;
+}
+.subagent-detail__prompt-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: hsl(var(--primary) / 0.8);
+  margin-bottom: 6px;
+}
+.subagent-detail__prompt-text {
+  font-size: 13px;
+  line-height: 1.7;
+  color: hsl(var(--foreground) / 0.85);
+}
+.subagent-detail__prompt-json {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: hsl(var(--background) / 0.6);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: hsl(var(--muted-foreground) / 0.85);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.subagent-detail__stream {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.subagent-detail__empty {
+  padding: 24px 0;
+  text-align: center;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground) / 0.6);
+}
+.subagent-detail__msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.subagent-detail__msg-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 12px;
+  border-left: 2px solid color-mix(in srgb, hsl(var(--primary)) 18%, transparent);
+  font-size: 13px;
+  line-height: 1.7;
+  color: hsl(var(--foreground) / 0.88);
+}
+.subagent-detail__tool {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.subagent-detail__tool-result {
+  min-width: 0;
+  padding-left: 4px;
 }

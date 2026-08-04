@@ -914,6 +914,15 @@ export function migrateSubagentEagerness(value: string | undefined): SubagentEag
  * 存储在 ~/.tagent/agent-sessions.json 中，
  * 类似 ConversationMeta，独立存储。
  */
+/** 一轮运行的结束方式：正常完成 / 用户停止 / 出错 */
+export type TurnEndKind = 'complete' | 'stopped' | 'error'
+
+/** 一轮运行的完成耗时（毫秒）+ 结束方式 */
+export interface TurnDuration {
+  ms: number
+  endedBy: TurnEndKind
+}
+
 export interface AgentSessionMeta {
   /** 会话唯一标识 */
   id: string
@@ -960,6 +969,12 @@ export interface AgentSessionMeta {
   forkSourceSdkSessionId?: string
   /** 回退后的 resume 截断点：下次发消息时传给 SDK resumeSessionAt（消费后清除） */
   resumeAtMessageUuid?: string
+  /**
+   * 各轮完成耗时：key = 该轮最后一条主线 assistant 消息的 createdAt（稳定标识），
+   * value = 发送→idle 全程耗时 + 结束方式（完成/停止/出错）。渲染层在 completeRun /
+   * 用户停止 / 出错时写入，加载历史后回填到对应 turn，重开应用/会话后仍能显示。
+   */
+  turnDurations?: Record<string, TurnDuration>
   /**
    * 软重置影子 B 的 SDK session id（压缩生成后填）。
    * Phase 4 消费；Phase 1.3 仅备位字段。
@@ -2025,6 +2040,10 @@ export const AGENT_IPC_CHANNELS = {
   READ_ATTACHMENT: 'agent:read-attachment',
   /** 打开系统文件选择器 */
   OPEN_FILE_DIALOG: 'agent:open-file-dialog',
+  /** 用系统默认程序打开文件（消息内文件 chip 点击；相对路径按会话工作区解析） */
+  OPEN_PATH: 'agent:open-path',
+  /** 解析相对/绝对路径是否存在（文件 chip 存在性检查；相对路径按候选 base 或会话工作区解析） */
+  RESOLVE_FILE: 'agent:resolve-file',
 
   // 标题自动生成通知（主进程 → 渲染进程推送）
   /** 标题已更新（首次对话完成后自动生成） */

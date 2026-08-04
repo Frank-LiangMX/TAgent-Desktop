@@ -21,11 +21,23 @@ import 'dockview/dist/styles/dockview.css'
 import './dock.css'
 import { ChatPane } from './ChatPane'
 import { CrewPane } from './CrewPane'
+import { FilePreviewPane } from './FilePreviewPane'
 import { DockTab } from './DockTab'
 import { mountDockActivePlates } from './dockActivePlate'
 import { tabsAtom, activeTabIdAtom, closeTab, type TabItem } from '../../atoms/tabs'
+import { filePreviewRequestAtom } from '../../atoms/file-preview'
 
 const DOCK_LAYOUT_KEY = 'tagent:dockLayout'
+
+/**
+ * 非会话 pane 的 id 前缀：crew（班组）、file-preview（文件预览）。
+ * 这类 pane 激活/关闭都不得同步 tabsAtom/activeTabIdAtom——
+ * 否则 App 的 activeTab 查 tabs 找不到 → 误判无活跃 tab → 显示引导页盖住整个 dock。
+ */
+const NON_SESSION_PANE_PREFIXES = ['crew:', 'file-preview:'] as const
+function isNonSessionPane(id: string): boolean {
+  return NON_SESSION_PANE_PREFIXES.some((prefix) => id.startsWith(prefix))
+}
 
 /**
  * Dockview 主题：
@@ -144,6 +156,7 @@ export function WorkspaceDock(): JSX.Element {
   const activeTabId = useAtomValue(activeTabIdAtom)
   const setTabs = useSetAtom(tabsAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
+  const filePreviewReq = useAtomValue(filePreviewRequestAtom)
 
   const apiRef = useRef<DockviewApi | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -186,9 +199,9 @@ export function WorkspaceDock(): JSX.Element {
         })
       }
 
-      // 残留 chat panel（tabs 已无）→ 关闭。crew pane（id 以 crew: 开头）由用户/dock 自管，不在此清。
+      // 残留 chat panel（tabs 已无）→ 关闭。crew/file-preview pane 由用户/dock 自管，不在此清。
       for (const orphanId of currentIds) {
-        if (orphanId.startsWith('crew:')) continue
+        if (isNonSessionPane(orphanId)) continue
         const orphan = api.getPanel(orphanId)
         if (orphan) orphan.api.close()
       }
@@ -201,13 +214,12 @@ export function WorkspaceDock(): JSX.Element {
   useEffect(() => {
     const api = apiRef.current
     if (!api || !apiReady) return
-
     // 用户在 Dockview 关 panel → 同步 tabsAtom（非我们 reconcile 触发的）
     // 注意：跨 group move 时原生可能先 remove 再 open；若 panel 仍在 api 里，
     // 说明是搬迁不是关闭，切勿 closeTab（否则会把会话从 tabs 里删掉再被 reconcile 搞乱）。
     const dRemove = api.onDidRemovePanel((panel: IDockviewPanel) => {
       if (isReconcilingRef.current) return
-      if (panel.id.startsWith('crew:')) return
+      if (isNonSessionPane(panel.id)) return
       // 仍挂在 dock 上 = 跨组分屏搬迁，不是关 tab
       if (api.getPanel(panel.id)) return
       const sessionId = panel.id
@@ -229,7 +241,7 @@ export function WorkspaceDock(): JSX.Element {
     const dActive = api.onDidActivePanelChange((evt) => {
       if (isReconcilingRef.current) return
       const panel = (evt as { panel?: IDockviewPanel }).panel
-      if (!panel || panel.id.startsWith('crew:')) return
+      if (!panel || isNonSessionPane(panel.id)) return
       setActiveTabId(panel.id)
     })
 
@@ -282,6 +294,29 @@ export function WorkspaceDock(): JSX.Element {
     }
   }, [apiReady, setTabs, setActiveTabId])
 
+  // 文件预览请求 → 在 chat 面板右侧分屏开/聚焦预览 pane（同会话复用，内容由 atom 驱动刷新）
+  useEffect(() => {
+    const api = apiRef.current
+    if (!api || !apiReady || !filePreviewReq) return
+    const { sessionId, path, title } = filePreviewReq
+    const paneId = `file-preview:${sessionId}`
+    const fileName = title ?? path.split(/[\\/]/).pop() ?? path
+    const existing = api.getPanel(paneId)
+    if (existing) {
+      existing.setTitle?.(`预览 · ${fileName}`)
+      existing.api.setActive?.()
+      return
+    }
+    const chatPanel = api.getPanel(sessionId)
+    api.addPanel({
+      id: paneId,
+      title: `预览 · ${fileName}`,
+      component: 'file-preview',
+      params: { sessionId },
+      ...(chatPanel ? { position: { direction: 'right', referencePanel: chatPanel } } : {}),
+    })
+  }, [apiReady, filePreviewReq])
+
   const handleReady = (e: { api: DockviewApi }): void => {
     apiRef.current = e.api
     // 恢复持久化的分屏布局（含 crew pane 的 sessionId 关联，GroupviewPanelState.params 保留）
@@ -301,7 +336,7 @@ export function WorkspaceDock(): JSX.Element {
     <div ref={rootRef} className="workspace-dock h-full min-h-0">
       <DockviewReact
         onReady={handleReady}
-        components={{ chat: ChatPane, crew: CrewPane }}
+        components={{ chat: ChatPane, crew: CrewPane, 'file-preview': FilePreviewPane }}
         defaultTabComponent={DockTab}
         theme={dockTheme}
         onWillDrop={handleWillDrop}

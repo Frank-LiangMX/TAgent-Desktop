@@ -113,7 +113,14 @@ function JsonContainer({ name, value, depth }: JsonNodeProps): React.ReactElemen
 
 export function JsonTree({ code }: JsonTreeProps): React.ReactElement | null {
   const value = React.useMemo(() => parse(code), [code])
-  if (value === null) return null
+  if (value === null) {
+    // 解析失败（流式半截 / 模型输出坏 JSON）→ 提示而非空白（RichBlockBoundary 只捕 throw 不捕 null）
+    return (
+      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+        JSON 内容无效（解析失败，可能不完整）
+      </div>
+    )
+  }
 
   const isContainer = Array.isArray(value) || (typeof value === 'object' && value !== null)
 

@@ -397,11 +397,22 @@ describe('hasWriteStructure（写文件/执行任意命令的结构）', () => {
   test('find -delete → true', () => {
     expect(hasWriteStructure('find . -name "*.tmp" -delete')).toBe(true)
   })
-  test('命令替换 $() → true', () => {
-    expect(hasWriteStructure('echo $(whoami)')).toBe(true)
+  test('命令替换 $() 内危险命令 → true', () => {
+    expect(hasWriteStructure('echo $(rm -rf /tmp/x)')).toBe(true)
+    expect(hasWriteStructure('cat $(curl -s https://example.com)')).toBe(true)
   })
-  test('反引号命令替换 → true', () => {
-    expect(hasWriteStructure('echo `whoami`')).toBe(true)
+  test('命令替换 $() 内只读命令 → false（分析项目常见，如 wc -l $(find ...)）', () => {
+    expect(hasWriteStructure('wc -l $(find . -name "*.ts")')).toBe(false)
+    expect(hasWriteStructure('echo $(whoami)')).toBe(false)
+  })
+  test('反引号命令替换：内危险 → true / 内只读 → false', () => {
+    expect(hasWriteStructure('echo `rm -rf /tmp/x`')).toBe(true)
+    expect(hasWriteStructure('echo `whoami`')).toBe(false)
+  })
+  test('无害重定向：>/dev/null、2>/dev/null、2>&1 → false', () => {
+    expect(hasWriteStructure('ls -la > /dev/null')).toBe(false)
+    expect(hasWriteStructure('grep x src 2>/dev/null')).toBe(false)
+    expect(hasWriteStructure('npm ls 2>&1 | head')).toBe(false)
   })
 
   // 中性结构：不写文件、不执行任意命令，不再拦截白名单

@@ -18,9 +18,9 @@ import {
   openSync,
   readFileSync,
   renameSync,
-  rmSync,
   writeFileSync,
 } from 'node:fs'
+import { rmSyncRobust } from './fs-robust'
 
 /** 三步原子写。失败时清理临时文件并尝试回滚备份。 */
 export function writeJsonAtomic(filePath: string, data: unknown): void {
@@ -40,7 +40,7 @@ export function writeJsonAtomic(filePath: string, data: unknown): void {
     // 2) 备份旧文件（Windows rename 不覆盖已存在目标，先清旧备份）
     if (existsSync(filePath)) {
       try {
-        rmSync(bakPath, { force: true })
+        rmSyncRobust(bakPath, { force: true })
       } catch {
         /* 旧备份删不掉不致命 */
       }
@@ -51,7 +51,7 @@ export function writeJsonAtomic(filePath: string, data: unknown): void {
     renameSync(tmpPath, filePath)
   } catch (error) {
     try {
-      rmSync(tmpPath, { force: true })
+      rmSyncRobust(tmpPath, { force: true })
     } catch {
       /* ignore */
     }

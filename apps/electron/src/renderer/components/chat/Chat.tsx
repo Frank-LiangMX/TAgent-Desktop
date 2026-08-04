@@ -21,6 +21,8 @@ import type {
   SubagentEagerness,
   ReasoningEffort,
   ExecutionMode,
+  AgentSessionMeta,
+  TurnDuration,
 } from '@tagent/shared'
 import { migrateExecutionMode, DEFAULT_EXECUTION_MODE, parseMentions } from '@tagent/shared'
 import {
@@ -50,6 +52,7 @@ import {
   ReasoningContent,
   Button,
   AppTooltip,
+  MessageFilePathProvider,
 } from '@tagent/ui'
 import { ArrowUp, Square, Compass, Zap, Plus, SlidersHorizontal, Unlock, X } from 'lucide-react'
 import { UsersThree } from '@phosphor-icons/react'
@@ -60,9 +63,12 @@ import {
 } from '@tagent/shared'
 import { MessageView } from './MessageView'
 import { AssistantTurnView } from './AssistantTurnView'
+import { SubagentDetailView } from './SubagentDetailView'
 import { ComposerRunTimer } from './ComposerRunTimer'
 import {
   buildTurnPresentation,
+  backfillTurnDurations,
+  getLastMainAssistantCreatedAt,
   groupItemsIntoTurns,
   isRealUserInput,
 } from './session-turn-model'
@@ -76,6 +82,7 @@ import {
   type TaskCardState,
   type TaskCardEvent,
 } from './subagent-ui-model'
+import { filePreviewRequestAtom } from '../../atoms/file-preview'
 import { PermissionBanner } from '../permission/PermissionBanner'
 import { ExecutionModeSuggestionBanner } from './ExecutionModeSuggestionBanner'
 import { ExecutionModeToggle } from './ExecutionModeToggle'
@@ -137,6 +144,12 @@ const CREW_PANEL_WIDTH_KEY = 'tagent:crewPanelWidth'
 const CREW_PANEL_WIDTH_MIN = 280
 const CREW_PANEL_WIDTH_MAX = 560
 const CREW_PANEL_WIDTH_DEFAULT = 380
+/**
+ * turn_end 延迟停止宽限期（ms）：kscc/pi 多工具循环中每个 SDK turn 结束都发 turn_end，
+ * 若立即 stopRun → running=false → 过程区（思考链）2.5s 后收起、下一轮 delta 又来再展开，
+ * 视觉反复跳动。宽限期内有新流式事件 → 保持 running；真正结束由 result → completeRun 兜底。
+ */
+const RUN_STOP_GRACE_MS = 3000
 function loadCrewPanelWidth(): number {
   try {
     const n = Number(localStorage.getItem(CREW_PANEL_WIDTH_KEY))
@@ -186,35 +199,92 @@ export function Chat({
   // runStartedAt 同步到 ref：completeRun 闭包里取最新值，避免读到旧渲染的 startedAt
   const runStartedAtRef = useRef<number | null>(runStartedAt)
   runStartedAtRef.current = runStartedAt
+  // 全程起点持久化：每轮 result 的 completeRun→stopSessionRun 会把 atom startedAt 清 null，
+  // 工具循环中 adopt 恢复 running 时用它保计时连续（新发送时 startRun 覆盖）
+  const runStartedAtPersistRef = useRef<number | null>(runStartedAt)
+  // running 同步到 ref：handlePayload 是首渲染闭包（onStreamEvent effect 空依赖），用 ref 取最新
+  const runningRef = useRef(running)
+  runningRef.current = running
+  // turn_end 延迟停止定时器（见 RUN_STOP_GRACE_MS 注释）
+  const pendingStopTimerRef = useRef<number | null>(null)
+  const clearPendingStop = useCallback(() => {
+    if (pendingStopTimerRef.current != null) {
+      window.clearTimeout(pendingStopTimerRef.current)
+      pendingStopTimerRef.current = null
+    }
+  }, [])
+  const scheduleRunStop = useCallback(() => {
+    clearPendingStop()
+    pendingStopTimerRef.current = window.setTimeout(() => {
+      pendingStopTimerRef.current = null
+      stopSessionRun(sessionId)
+    }, RUN_STOP_GRACE_MS)
+  }, [clearPendingStop, sessionId])
   // 最后一个 assistant-turn 的 key：完成时把全程耗时记到它名下（按 turn.key 查）
   const lastAssistantTurnKeyRef = useRef<string | null>(null)
-  /** 完成耗时表：turnKey → 毫秒（发送→idle 全程）。完成后留存，供 AssistantTurnView 复制栏显示 */
-  const [completedDurations, setCompletedDurations] = useState<Record<string, number>>({})
+  /** 会话 meta 快照（加载时设置）：completeRun 持久化 turnDurations 时合并旧值 */
+  const metaRef = useRef<Partial<AgentSessionMeta> | null>(null)
+  /** 完成耗时表：turnKey → 耗时 + 结束方式（完成/停止/出错）。留存后供 AssistantTurnView 显示 */
+  const [completedDurations, setCompletedDurations] = useState<Record<string, TurnDuration>>({})
   const startSessionRun = useSetAtom(startSessionRunAtom)
   const stopSessionRun = useSetAtom(stopSessionRunAtom)
   const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
   /** 开始一轮运行：写 atom 置 running 并记起始时间戳 */
   const startRun = (): void => {
-    startSessionRun({ id: sessionId, startedAt: Date.now() })
+    clearPendingStop()
+    const now = Date.now()
+    runStartedAtPersistRef.current = now
+    startSessionRun({ id: sessionId, startedAt: now })
   }
   /** 结束一轮运行（仅清 running；发送失败等无有效 turn 的路径用） */
   const stopRun = (): void => {
     stopSessionRun(sessionId)
   }
   /**
-   * 完成一轮运行：算发送→idle 全程耗时，记到最后一个 assistant-turn 名下，再清 running。
+   * 用户主动停止：本地同步清 running + 起点。
+   * 否则 stopAgent 后飞行中的 stray delta 到达时 handlePayload 会用 persistRef 的旧时间戳
+   * adopt 复活 running → 停止键卡死 / 计时复活。
+   */
+  const userStopRun = (): void => {
+    clearPendingStop()
+    recordCompletion('stopped')
+    runStartedAtPersistRef.current = null
+    stopRun()
+  }
+  /**
+   * 记录一轮运行耗时（发送→idle/停止/出错全程）到最后一个 assistant-turn，并持久化到 meta。
+   * endedBy：complete（正常 result）/ stopped（用户停止）/ error（session_error）。
    * 口径对齐 TAgent_General 的 _durationMs（queryStartedAt → persistSDKMessages），
    * 覆盖思考期 + 所有工具轮，非 turn 内 assistant 间隔。
    */
-  const completeRun = (): void => {
+  const recordCompletion = (endedBy: TurnDuration['endedBy']): void => {
     const startedAt = runStartedAtRef.current
-    if (startedAt != null) {
-      const durationMs = Math.max(0, Date.now() - startedAt)
-      const turnKey = lastAssistantTurnKeyRef.current
-      if (turnKey) {
-        setCompletedDurations((prev) => ({ ...prev, [turnKey]: durationMs }))
+    if (startedAt == null) return
+    const durationMs = Math.max(0, Date.now() - startedAt)
+    const turnKey = lastAssistantTurnKeyRef.current
+    if (!turnKey) return
+    const dur: TurnDuration = { ms: durationMs, endedBy }
+    setCompletedDurations((prev) => ({ ...prev, [turnKey]: dur }))
+    // 持久化：最后一条主线 assistant 消息 createdAt 作稳定 key，写入 meta，重开回填
+    const createdAt = getLastMainAssistantCreatedAt(items)
+    if (createdAt != null) {
+      const prevDurations = metaRef.current?.turnDurations ?? {}
+      const nextDurations = { ...prevDurations, [createdAt]: dur }
+      // 本地同步合并，避免连续两轮完成时旧值丢失
+      metaRef.current = {
+        ...(metaRef.current ?? {}),
+        turnDurations: nextDurations,
       }
+      void window.electronAPI
+        .updateSessionMeta(sessionId, { turnDurations: nextDurations })
+        .catch(() => {})
     }
+  }
+  /**
+   * 完成一轮运行：算发送→idle 全程耗时，记到最后一个 assistant-turn 名下，再清 running。
+   */
+  const completeRun = (): void => {
+    recordCompletion('complete')
     stopSessionRun(sessionId)
   }
   /** 输入框是否有草稿（供发送/停止键同槽复用：运行中且有草稿→仍可追加发送，显示发送键；运行中无草稿→停止键） */
@@ -227,6 +297,30 @@ export function Chat({
   }>>([])
   /** 历史加载完成的标志：false 时 Conversation resize=instant（无动画）+ ScrollPositionManager 恢复位置 */
   const [scrollReady, setScrollReady] = useState(false)
+  /**
+   * 流式结束过渡：result/turn_end 瞬间（流式占位 → 落盘消息，高度切换）切 resize=instant，
+   * 150ms 后回 smooth——防止高度变化触发平滑滚动动画（对齐 1.0/Proma 的 needsInstant 机制）。
+   */
+  const [streamTransitioning, setStreamTransitioning] = useState(false)
+  const streamTransitionTimerRef = useRef<number | null>(null)
+  const beginStreamTransition = useCallback(() => {
+    setStreamTransitioning(true)
+    if (streamTransitionTimerRef.current != null) {
+      window.clearTimeout(streamTransitionTimerRef.current)
+    }
+    streamTransitionTimerRef.current = window.setTimeout(() => {
+      streamTransitionTimerRef.current = null
+      setStreamTransitioning(false)
+    }, 150)
+  }, [])
+  useEffect(() => {
+    return () => {
+      if (streamTransitionTimerRef.current != null) {
+        window.clearTimeout(streamTransitionTimerRef.current)
+        streamTransitionTimerRef.current = null
+      }
+    }
+  }, [])
   /** 虚拟化：当前挂载的消息条数（从尾部切）。20 首 batch，idle 帧递增 40/批，全挂完置 Infinity。
    * 保近期：底部对话区永远全量渲染，旧的渐进补齐，超长会话不卡。 */
   const [visibleCount, setVisibleCount] = useState<number>(20)
@@ -285,9 +379,20 @@ export function Chat({
   } | null>(null)
   /** 子代理委派积极性（默认 conservative；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 kscc 生效） */
   const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('conservative')
+  /** 当前打开的子代理详情（parentToolUseId），非空时全屏切换显示独立会话页 */
+  const [subagentDetail, setSubagentDetail] = useState<string | null>(null)
   /** 思考强度（默认 medium；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 SDK query 生效） */
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(DEFAULT_REASONING_EFFORT)
-  /** 会话页入场动画：mount 后一帧加 is-mounted class 触发 CSS transition */
+  /** 子代理任务卡片 lookup：parentToolUseId → taskCard（taskCard.toolUseId 即发起它的主线 tool_use id） */
+  const subagentCards = useMemo(() => {
+    const map = new Map<string, TaskCardState>()
+    for (const it of items) {
+      if (it.taskCard?.toolUseId) map.set(it.taskCard.toolUseId, it.taskCard)
+    }
+    return map
+  }, [items])
+
+  // 会话页入场动画：mount 后一帧加 is-mounted class 触发 CSS transition */
   const [pageMounted, setPageMounted] = useState(false)
   useEffect(() => {
     const raf = requestAnimationFrame(() => setPageMounted(true))
@@ -516,9 +621,17 @@ export function Chat({
           pendingExecutionModeSuggestion?: import('@tagent/shared').ExecutionModeSuggestion | null
           boardId?: string
           pendingMentionRoleIds?: string[]
+          turnDurations?: Record<string, TurnDuration>
         }>
         const persisted = metas.find((m) => m.id === sessionId)
         if (persisted) {
+          // 记录 meta 快照（completeRun 持久化 turnDurations 时合并旧值）
+          metaRef.current = persisted
+          // 回填持久化的完成耗时：createdAt 稳定 key → 当前渲染 turn key
+          const backfilled = backfillTurnDurations(irItems, persisted.turnDurations)
+          if (Object.keys(backfilled).length > 0) {
+            setCompletedDurations((prev) => ({ ...prev, ...backfilled }))
+          }
           setSubagentEagerness(resolveEagerness(persisted))
           setReasoningEffort(migrateReasoningEffort(persisted.reasoningEffort))
           // 旧会话无字段 → migrate 为 work，避免突然只读
@@ -877,7 +990,14 @@ export function Chat({
       if (env.sessionId !== sessionIdRef.current) return
       handlePayload(env.payload)
     })
-    return off
+    return () => {
+      off?.()
+      clearPendingStop()
+      if (thinkingFlushRafRef.current != null) {
+        cancelAnimationFrame(thinkingFlushRafRef.current)
+        thinkingFlushRafRef.current = null
+      }
+    }
   }, [])
 
   /**
@@ -928,7 +1048,39 @@ export function Chat({
     return prev.map((it) => (it.key === existing.key ? next : it))
   }
 
+  // thinking delta 的 rAF 合并缓冲：同一帧内多次 delta 只 flush 一次（渲染频率从"每事件"降到"每帧"）
+  const pendingThinkingRef = useRef('')
+  const thinkingFlushRafRef = useRef<number | null>(null)
+  const flushThinkingDelta = useCallback((): void => {
+    thinkingFlushRafRef.current = null
+    const delta = pendingThinkingRef.current
+    pendingThinkingRef.current = ''
+    if (!delta) return
+    setItems((prev) => {
+      const cur = streamingRef.current
+      // 流式项已被落盘就地升级（streamingRef 已清空）→ 思考全文已在 message，丢弃尾部缓冲
+      if (!cur || !prev.some((it) => it.key === cur.key)) return prev
+      const prevThink = cur.streamingThinking ?? ''
+      return upsertStreamItem(prev, { streamingThinking: prevThink + delta })
+    })
+  }, [])
+
   const handlePayload = (p: TAgentDesktopStreamPayload): void => {
+    // run 仍在进行：取消 turn_end 的延迟停止；流式/落盘事件恢复 running
+    // （保过程区展开、停止键在位；adopt 沿用原 startedAt，不重置计时）
+    clearPendingStop()
+    if (
+      p.kind === 'stream_text_delta' ||
+      p.kind === 'stream_thinking_delta' ||
+      p.kind === 'sdk_message'
+    ) {
+      if (!runningRef.current) {
+        adoptSessionRun({
+          id: sessionId,
+          startedAt: runStartedAtPersistRef.current ?? runStartedAtRef.current ?? Date.now(),
+        })
+      }
+    }
     if (p.kind === 'sdk_message') {
       // 先记下流式占位 key（下面要清 streamingRef），用于就地升级占位、保留打字机起点
       const streamingKey = streamingRef.current?.key
@@ -998,6 +1150,8 @@ export function Chat({
       })
       // result = 整个 run 真正 idle（turn_end 只是单个 SDK turn 结束，工具循环还会继续）。
       // 用 completeRun 记发送→idle 全程耗时到最后 assistant-turn，再清 running。
+      clearPendingStop()
+      beginStreamTransition()
       completeRun()
       bumpRefresh()
     } else if (p.kind === 'stream_text_delta') {
@@ -1008,12 +1162,21 @@ export function Chat({
         return upsertStreamItem(prev, { streamingText: prevText + p.text })
       })
     } else if (p.kind === 'stream_thinking_delta') {
-      setItems((prev) => {
-        const cur = streamingRef.current
-        const prevThink =
-          cur && prev.some((it) => it.key === cur.key) ? (cur.streamingThinking ?? '') : ''
-        return upsertStreamItem(prev, { streamingThinking: prevThink + p.text })
-      })
+      // Pi message_start 的空占位：立即立起流式项（思考行/加载态先出现），不经 rAF
+      if (p.text === '') {
+        setItems((prev) => {
+          const cur = streamingRef.current
+          const prevThink =
+            cur && prev.some((it) => it.key === cur.key) ? (cur.streamingThinking ?? '') : ''
+          return upsertStreamItem(prev, { streamingThinking: prevThink })
+        })
+        return
+      }
+      // 非空 delta 按帧合并（Pi 每 token 一事件），避免高频 setItems 全量重建 turn
+      pendingThinkingRef.current += p.text
+      if (thinkingFlushRafRef.current == null) {
+        thinkingFlushRafRef.current = requestAnimationFrame(flushThinkingDelta)
+      }
     } else if (p.kind === 'tagent_event') {
       const evt = p.event as {
         type: string
@@ -1034,7 +1197,11 @@ export function Chat({
           )
           return purgeStreamingItems(cleaned)
         })
-        stopRun()
+        // 工具循环中 turn_end 只是单轮结束：延迟停止，宽限期内有下一轮 delta → 保持 running
+        // （过程区/思考链不闪断收起）；宽限期到且无后续 → 真正停止
+        scheduleRunStop()
+        // 流式占位→落盘消息的高度切换：瞬间切 instant resize 防滚动动画闪动
+        beginStreamTransition()
         // followMode：不再清 liveMentionLabels——铭牌代表当前 activeSpeaker，续聊仍由该角色接。
         // 用户在输入框 ✕ 清除 activeMentionRoleIds 时会一并清 liveMentionLabels。
         bumpRefresh()
@@ -1066,16 +1233,22 @@ export function Chat({
           })
         }
       } else if (evt.type === 'session_error') {
+        // 主进程已按分类表转译（classifyUserFacingError）：友好标题 + 原文 + 可重试标记
+        const userError = (evt as { error?: { title?: string; retryable?: boolean } }).error
+        const title = userError?.title ?? '错误'
+        const detail = `${title}：${evt.message ?? ''}${userError?.retryable ? '（可重试）' : ''}`
         setItems((prev) => [
           ...prev,
           {
             key: `e${itemIdxRef.current++}`,
             message: {
               type: 'assistant',
-              content: [{ type: 'text', text: `[错误] ${evt.message ?? ''}` }],
+              content: [{ type: 'text', text: detail }],
             } as TAgentMessage,
           },
         ])
+        clearPendingStop()
+        recordCompletion('error')
         stopRun()
       } else if (evt.type === 'compacting') {
         setIsCompactingUi(true)
@@ -1392,6 +1565,7 @@ export function Chat({
           size="icon"
           className="size-9 rounded-full text-destructive hover:bg-destructive/10"
           onClick={() => {
+            userStopRun()
             void window.electronAPI.stopAgent(sessionIdRef.current)
           }}
           aria-label="停止"
@@ -1440,7 +1614,35 @@ export function Chat({
     </div>
   )
 
+  // 消息内文件 chip 的注入上下文：打开/存在性检查走主进程 IPC；
+  // 存在性结果（含 null）短期缓存，避免流式逐帧重建 chip 时每帧打 IPC
+  const setFilePreviewRequest = useSetAtom(filePreviewRequestAtom)
+  const filePathProviderValue = useMemo(() => {
+    const negCache = new Map<string, { value: string | null; at: number }>()
+    const NEG_TTL = 10_000
+    return {
+      // 点击文件 chip → 右侧分屏打开应用内预览（dock 监听 filePreviewRequestAtom 开 pane）
+      onOpenFile: (path: string): void => {
+        setFilePreviewRequest({ sessionId: sessionIdRef.current, path })
+      },
+      onResolveFile: async (path: string, bases?: string[]): Promise<string | null> => {
+        const key = `${path}\0${(bases ?? []).join('\0')}`
+        const hit = negCache.get(key)
+        if (hit && Date.now() - hit.at < NEG_TTL) return hit.value
+        const resolved = await window.electronAPI.resolveFile({
+          sessionId: sessionIdRef.current,
+          path,
+          bases,
+        })
+        negCache.set(key, { value: resolved, at: Date.now() })
+        return resolved
+      },
+      getSessionId: () => sessionIdRef.current,
+    }
+  }, [])
+
   return (
+    <MessageFilePathProvider value={filePathProviderValue}>
     <div className="session-body flex h-full min-h-0">
       {/* 左：对话 + 输入（测量锚点 rootRef 只包对话列，避免右栏影响下箭头） */}
       <div
@@ -1464,7 +1666,9 @@ export function Chat({
           <Conversation
             className="absolute inset-0 min-h-0"
             contextRef={scrollContextRef}
-            resize={effectiveScrollReady ? 'smooth' : 'instant'}
+            resize={
+              effectiveScrollReady && !streamTransitioning ? 'smooth' : 'instant'
+            }
           >
             <ConversationContent className="session-conversation-pad px-4 pt-2 pb-44">
               <div className="tagent-thread">
@@ -1497,7 +1701,9 @@ export function Chat({
                         ? liveMentionLabels
                         : undefined
                     }
-                    completedDurationMs={completedDurations[turn.key]}
+                    completedDuration={completedDurations[turn.key]}
+                    subagentCards={subagentCards}
+                    onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
                   />
                 )
               })}
@@ -1751,6 +1957,7 @@ export function Chat({
                         className="size-9 rounded-full text-destructive hover:bg-destructive/10"
                         onClick={() => {
                           setMessageQueue([])
+                          userStopRun()
                           window.electronAPI.stopAgent(sessionIdRef.current)
                         }}
                         aria-label="停止"
@@ -1785,6 +1992,7 @@ export function Chat({
                               if (!text || !effectiveSelection) return
                               chatInputRef.current?.clear()
                               setMessageQueue([])
+                              userStopRun()
                               void (async () => {
                                 await window.electronAPI.stopAgent(sessionIdRef.current)
                                 await sendQueued({ text, selection: effectiveSelection })
@@ -1881,7 +2089,20 @@ export function Chat({
           onWidthChange={handleCrewPanelWidth}
         />
       ) : null}
+
+      {/* 子代理独立会话页面：从入口卡片全屏切换（覆盖整个 Chat 区域，返回回主会话） */}
+      {subagentDetail && (
+        <div className="subagent-detail-overlay">
+          <SubagentDetailView
+            items={items}
+            parentToolUseId={subagentDetail}
+            card={subagentCards.get(subagentDetail)}
+            onBack={() => setSubagentDetail(null)}
+          />
+        </div>
+      )}
     </div>
+    </MessageFilePathProvider>
   )
 }
 
@@ -1891,13 +2112,17 @@ function TurnView({
   isLiveTurn = false,
   onRefillToInput,
   mentionLabels,
-  completedDurationMs,
+  completedDuration,
+  subagentCards,
+  onOpenSubagent,
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
   onRefillToInput?: (text: string) => void
   mentionLabels?: string[]
-  completedDurationMs?: number
+  completedDuration?: TurnDuration
+  subagentCards?: Map<string, TaskCardState>
+  onOpenSubagent?: (parentToolUseId: string) => void
 }): JSX.Element {
   if (turn.kind === 'user') {
     return (
@@ -1913,7 +2138,9 @@ function TurnView({
           turn={turn}
           isLiveTurn={isLiveTurn}
           mentionLabels={mentionLabels}
-          completedDurationMs={completedDurationMs}
+          completedDuration={completedDuration}
+          subagentCards={subagentCards}
+          onOpenSubagent={onOpenSubagent ?? (() => {})}
         />
       </div>
     )

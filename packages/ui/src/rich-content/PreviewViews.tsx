@@ -110,7 +110,7 @@ function ErrorHint({ message }: { message: string }): React.ReactElement {
 export function HtmlPreviewView({ code }: { code: string }): React.ReactElement | null {
   const spec = React.useMemo(() => parsePreviewSpec(code), [code])
   const { state, result, error } = useSource(spec)
-  if (!spec) return null
+  if (!spec) return <ErrorHint message="预览参数无效（spec 解析失败）" />
 
   return (
     <RichFrame title={spec.title || 'HTML preview'} copyValue={code} fullscreen fullscreenTitle={spec.title || 'HTML preview'}>
@@ -135,7 +135,7 @@ export function HtmlPreviewView({ code }: { code: string }): React.ReactElement 
 export function ImagePreviewView({ code }: { code: string }): React.ReactElement | null {
   const spec = React.useMemo(() => parsePreviewSpec(code), [code])
   const { state, result, error } = useSource(spec)
-  if (!spec) return null
+  if (!spec) return <ErrorHint message="预览参数无效（spec 解析失败）" />
 
   return (
     <RichFrame title={spec.title || spec.label || 'Image'} copyValue={code} fullscreen fullscreenTitle={spec.title || 'Image'}>
@@ -188,7 +188,7 @@ export function PdfPreviewView({ code }: { code: string }): React.ReactElement |
     }
   }, [state, result])
 
-  if (!spec) return null
+  if (!spec) return <ErrorHint message="预览参数无效（spec 解析失败）" />
 
   let body: React.ReactElement
   if (state === 'loading') body = <LoadingHint />
@@ -258,7 +258,7 @@ export function MarkdownPreviewView({ code }: { code: string }): React.ReactElem
     }
   }, [])
 
-  if (!spec) return null
+  if (!spec) return <ErrorHint message="预览参数无效（spec 解析失败）" />
 
   let body: React.ReactElement
   if (state === 'loading') body = <LoadingHint />

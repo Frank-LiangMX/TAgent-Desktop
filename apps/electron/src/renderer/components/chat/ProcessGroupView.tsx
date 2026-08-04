@@ -5,7 +5,7 @@
  * - **结束后**：自动收成一行摘要（用户未手动展开则收起）
  * - 不是「只显示步数」的黑盒
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useLayoutEffect, useEffect, useMemo, useRef, useState } from 'react'
 import { CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
 import {
   Collapsible,
@@ -13,6 +13,7 @@ import {
   CollapsibleTrigger,
   CopyButton,
   ScrollArea,
+  useSmoothStream,
 } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 import type { ProcessEntry } from './session-turn-model'
@@ -49,12 +50,8 @@ export function ProcessGroupView({
       wasLiveRef.current = true
       return
     }
-    if (wasLiveRef.current && !userToggledRef.current) {
-      // 会话整体结束后给 2.5s 缓冲再收起，让用户能看清最后一段思考/工具
-      const t = window.setTimeout(() => setExpanded(false), 2500)
-      wasLiveRef.current = false
-      return () => window.clearTimeout(t)
-    }
+    // 结束后不再时间驱动自动收起（2.5s 定时收起在工具循环中反复触发 = 跳变）。
+    // 思考行内部自己做「内容驱动折叠」（超阈值收成预览），过程区保持展开由用户手动收起。
     wasLiveRef.current = false
   }, [live])
 
@@ -189,20 +186,45 @@ export function ProcessGroupView({
 }
 
 /** 思考行：运行中直接展开正文（对齐 General live thinking） */
-function ThinkingActivityRow({
+const ThinkingActivityRow = memo(function ThinkingActivityRow({
   thinking,
   isLive,
 }: {
   thinking: string
   isLive: boolean
 }): JSX.Element {
+  // live 时逐字平滑挤出（对齐 1.0/Proma：thinking 独立 useSmoothStream）。
+  // 源是 rAF 节流后的整块 delta，逐字后视觉丝滑；非 live 时 content 固定直接显示。
+  const { displayedContent } = useSmoothStream({
+    content: thinking,
+    isStreaming: isLive,
+  })
+
+  // live 强制展开；非 live 由内容高度驱动（超阈值折叠成预览，无时间驱动/动画跳变）
   const [open, setOpen] = useState(isLive)
   useEffect(() => {
     if (isLive) setOpen(true)
   }, [isLive])
 
-  const preview = thinking.trim().replace(/\s+/g, ' ')
-  const short = preview.length > 72 ? `${preview.slice(0, 72)}…` : preview
+  // 内容驱动折叠：非 live 时检测正文是否超过阈值（约 4 行）。
+  // body 常驻渲染、折叠用 CSS max-height 控制，保证 useLayoutEffect 总能测量到元素。
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const stickToLatestRef = useRef(true)
+  useLayoutEffect(() => {
+    const el = bodyRef.current
+    if (isLive || !el) return
+    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20
+    // 超阈值 → 默认折叠成预览（用户点开后可展开；thinking 不变时 effect 不重跑，展开保持）
+    if (el.scrollHeight > lineHeight * 4 + 8) setOpen(false)
+  }, [displayedContent, isLive])
+
+  // live 时正文跟随最新：新内容追加后滚到底；用户滚离底部（想从头读）时暂停跟随
+  useEffect(() => {
+    if (!isLive) return
+    const el = bodyRef.current
+    if (!el || !stickToLatestRef.current) return
+    el.scrollTop = el.scrollHeight
+  }, [displayedContent, isLive])
 
   return (
     <div className={cn('agent-thinking-row', isLive && 'is-live')}>
@@ -213,11 +235,6 @@ function ThinkingActivityRow({
       >
         <span className="agent-thinking-row__badge">思考</span>
         {isLive && <span className="agent-thinking-row__dot" aria-hidden />}
-        {!open && (
-          <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground/65">
-            {short || '…'}
-          </span>
-        )}
         {open && isLive && (
           <span className="text-[11px] text-muted-foreground/45">进行中</span>
         )}
@@ -229,16 +246,23 @@ function ThinkingActivityRow({
           )}
         />
       </button>
-      {open && (
-        <div className="agent-thinking-row__body">
-          {thinking.trim() || (isLive ? '…' : '')}
-        </div>
-      )}
+      <div
+        ref={bodyRef}
+        className={cn('agent-thinking-row__body', !open && 'is-collapsed')}
+        onScroll={(e) => {
+          const el = e.currentTarget
+          // 距底 < 24px 视为"在底部"：在底 → 继续跟随最新；滚上去读 → 停止跟随
+          stickToLatestRef.current =
+            el.scrollHeight - el.scrollTop - el.clientHeight < 24
+        }}
+      >
+        {displayedContent.trim() || (isLive ? '…' : '')}
+      </div>
     </div>
   )
-}
+})
 
-function ToolActivityRow({
+const ToolActivityRow = memo(function ToolActivityRow({
   tool,
   result,
   isStreaming,
@@ -355,4 +379,4 @@ function ToolActivityRow({
       )}
     </div>
   )
-}
+})

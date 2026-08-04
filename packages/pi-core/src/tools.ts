@@ -121,8 +121,8 @@ export const bashTool: AgentTool<typeof bashSchema, BashToolDetails> = {
     const MAX = 8000;
     let out = result.stdout;
     let err = result.stderr;
-    if (out.length > MAX) out = out.slice(0, MAX) + `\n... (截断，共 ${out.length} 字符)`;
-    if (err.length > MAX) err = err.slice(0, MAX) + `\n... (截断，共 ${err.length} 字符)`;
+    if (out.length > MAX) out = truncateOutput(out, MAX);
+    if (err.length > MAX) err = truncateOutput(err, MAX);
     const text = `[exit ${result.exitCode}]\nstdout:\n${out}\nstderr:\n${err}`;
     // 非零退出也当成功返回（让模型看到错误信息自己处理），只有命令根本跑不了才 throw
     if (result.exitCode === -1) {
@@ -151,8 +151,8 @@ export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashTo
       const MAX = 8000;
       let out = result.stdout;
       let err = result.stderr;
-      if (out.length > MAX) out = out.slice(0, MAX) + `\n... (截断，共 ${out.length} 字符)`;
-      if (err.length > MAX) err = err.slice(0, MAX) + `\n... (截断，共 ${err.length} 字符)`;
+      if (out.length > MAX) out = truncateOutput(out, MAX);
+      if (err.length > MAX) err = truncateOutput(err, MAX);
       const text = `[exit ${result.exitCode}]\nstdout:\n${out}\nstderr:\n${err}`;
       if (result.exitCode === -1) {
         throw new Error(`命令执行失败：${err}`);
@@ -165,37 +165,97 @@ export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashTo
   };
 }
 
+/**
+ * Windows 命令净化：去掉命令末尾的 `| more` 分页段。
+ * cmd 的 more.com 会把 UTF-8 输出按控制台代码页（GBK）重编码 → 中文乱码，
+ * 且满屏后暂停等待按键（管道下无按键 → 挂起直到超时被杀）。
+ * 工具本身会截断过长的输出，分页无意义，直接去掉。
+ */
+function normalizeCommandForWindows(command: string): string {
+  if (process.platform !== "win32") return command;
+  return command.replace(/\s*\|\s*more(?:\s+[^\s|]*)?\s*$/i, "");
+}
+
+/** 截断长输出：保留头尾（头部 70% + 尾部 30%），避免尾部错误信息/目标文件被整体丢掉 */
+function truncateOutput(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const head = Math.floor(max * 0.7);
+  const tail = max - head;
+  const omitted = text.length - max;
+  return `${text.slice(0, head)}\n… [中段 ${omitted} 字符已省略，共 ${text.length} 字符] …\n${text.slice(-tail)}`;
+}
+
+/**
+ * 解码子进程输出：优先 UTF-8 严格解码（fatal），失败回退 GBK。
+ * 中文 Windows（代码页 936）下 dir/type/findstr/git log 等命令输出 GBK，
+ * 默认 Buffer.toString() 按 UTF-8 硬解会产生乱码。
+ */
+function decodeOutput(buf: Buffer): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buf);
+  } catch {
+    try {
+      // Node/Bun 的 Encoding 类型未收录 gbk（WHATWG 标准编码，运行时 ICU 支持）
+      return new TextDecoder("gbk" as never).decode(buf);
+    } catch {
+      return buf.toString("utf8");
+    }
+  }
+}
+
+/** Windows 下杀掉整个进程树（shell:true 的 cmd.exe 会再 spawn 命令进程，只杀父进程会留孤儿） */
+function killProcessTree(child: ReturnType<typeof spawn>): void {
+  try {
+    if (process.platform === "win32" && child.pid) {
+      spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      return;
+    }
+    child.kill("SIGKILL");
+  } catch {
+    try { child.kill("SIGKILL"); } catch { /* 忽略 */ }
+  }
+}
+
 function runShell(command: string, timeoutMs: number, cwd: string): Promise<BashToolDetails> {
   return new Promise((resolve) => {
-    const child = spawn(command, {
+    const child = spawn(normalizeCommandForWindows(command), {
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
       cwd,
     });
-    let stdout = "";
-    let stderr = "";
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
     let settled = false;
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        try { child.kill("SIGKILL"); } catch { /* 忽略 */ }
-        resolve({ exitCode: -1, stdout, stderr: stderr + `\n[超时 ${timeoutMs}ms 被杀]` });
+        killProcessTree(child);
+        const stderr = decodeOutput(Buffer.concat(stderrChunks)) + `\n[超时 ${timeoutMs}ms 被杀]`;
+        resolve({ exitCode: -1, stdout: decodeOutput(Buffer.concat(stdoutChunks)), stderr });
       }
     }, timeoutMs);
-    child.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
-    child.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+    child.stdout?.on("data", (d: Buffer) => { stdoutChunks.push(Buffer.from(d)); });
+    child.stderr?.on("data", (d: Buffer) => { stderrChunks.push(Buffer.from(d)); });
     child.on("exit", (code) => {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        resolve({ exitCode: code ?? 0, stdout, stderr });
+        resolve({
+          exitCode: code ?? 0,
+          stdout: decodeOutput(Buffer.concat(stdoutChunks)),
+          stderr: decodeOutput(Buffer.concat(stderrChunks)),
+        });
       }
     });
     child.on("error", (err) => {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        resolve({ exitCode: -1, stdout, stderr: stderr + `\n${err.message}` });
+        resolve({
+          exitCode: -1,
+          stdout: decodeOutput(Buffer.concat(stdoutChunks)),
+          stderr: decodeOutput(Buffer.concat(stderrChunks)) + `\n${err.message}`,
+        });
       }
     });
   });
