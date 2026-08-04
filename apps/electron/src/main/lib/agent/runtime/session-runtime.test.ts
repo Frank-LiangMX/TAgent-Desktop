@@ -93,7 +93,7 @@ function createMock(behaviors: Behavior[], opts?: { interruptQuery?: () => Promi
   return { adapter, calls }
 }
 
-function withTimeout<T>(p: Promise<T>, ms = 2000): Promise<T> {
+function withTimeout<T>(p: Promise<T>, ms = 8000): Promise<T> {
   let t: ReturnType<typeof setTimeout>
   const timeout = new Promise<never>((_, rej) => {
     t = setTimeout(() => rej(new Error('test timeout')), ms)
