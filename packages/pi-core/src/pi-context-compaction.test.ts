@@ -224,7 +224,7 @@ describe('maybeCompactMessages force', () => {
         stopReason: 'stop',
       },
       { role: 'user' as const, content: [{ type: 'text' as const, text: 'recent' }], timestamp: 3 },
-    ] as never
+    ] as unknown as AgentMessage[]
     const model = { id: 't', contextWindow: 100_000 } as never
     // mock models that returns a summary
     const models = {
