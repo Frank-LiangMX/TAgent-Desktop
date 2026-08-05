@@ -102,6 +102,17 @@ function resolveToolInput(
   return {}
 }
 
+/** 权限等待用户确认的超时（超时自动 deny + 推 PERMISSION_RESOLVED 清横幅） */
+const PERMISSION_TIMEOUT_MS = 120_000
+
+/** 通知渲染层某权限请求已决（超时 deny / 用户 respond 共用） */
+function emitPermissionResolved(
+  win: BrowserWindow | null,
+  payload: { reqId: string; sessionId: string; behavior: 'allow' | 'deny' },
+): void {
+  win?.webContents.send(AGENT_IPC_CHANNELS.PERMISSION_RESOLVED, payload)
+}
+
 /** 发权限请求给 renderer 弹框，返回 Promise<allow|deny> */
 function askRenderer(
   win: BrowserWindow | null,
@@ -115,13 +126,18 @@ function askRenderer(
       input: req.input,
     })
     win?.webContents.send(AGENT_IPC_CHANNELS.PERMISSION_REQUEST, req)
-    // 超时自动 deny（30s）
+    // 超时自动 deny + 通知渲染清横幅
     setTimeout(() => {
       if (pending.has(req.id)) {
         pending.delete(req.id)
+        emitPermissionResolved(win, {
+          reqId: req.id,
+          sessionId: req.sessionId,
+          behavior: 'deny',
+        })
         resolve('deny')
       }
-    }, 30_000)
+    }, PERMISSION_TIMEOUT_MS)
   })
 }
 
@@ -236,10 +252,6 @@ async function checkPermission(args: {
     isDangerousCommand(command) ||
     (isBash && hasWriteStructure(command)) ||
     isWriteTool(toolName, input)
-  // 弹窗日志：抓「分析项目还弹窗」的具体命令（排查用，定位后移除）
-  console.warn(
-    `[权限] 需用户确认 ${toolName}${dangerous ? '（危险/写）' : ''}${command ? `: ${command.slice(0, 150)}` : ''} cwd=${cwd ?? '(无)'}`,
-  )
   const req: PermissionRequest = {
     id: nextId(),
     sessionId,
@@ -269,12 +281,18 @@ export class PermissionService {
         args: { reqId: string; behavior: 'allow' | 'deny'; remember?: boolean },
       ) => {
         const p = pending.get(args.reqId)
+        // pending 已无（超时 / 重复点击）→ 静默忽略，不报错
         if (!p) return
         pending.delete(args.reqId)
         // 始终允许 → 会话级工具白名单（Bash 整类，非单条 command）
         if (args.behavior === 'allow' && args.remember) {
           addToSessionWhitelist(p.sessionId, p.toolName, p.input)
         }
+        emitPermissionResolved(this.getWindow(), {
+          reqId: args.reqId,
+          sessionId: p.sessionId,
+          behavior: args.behavior,
+        })
         p.resolve(args.behavior)
       },
     )
@@ -282,7 +300,11 @@ export class PermissionService {
 
   /**
    * kscc 核 canUseTool（Claude Agent SDK 签名）
-   * 返回 { behavior: 'allow'|'deny', message? }
+   *
+   * allow 必须带 updatedInput（SDK Zod 联合类型运行时校验：缺字段整次权限失败，
+   * 表现成「Tool permission request failed: ZodError…」——用户以为一直权限不通）。
+   * 对齐 TAgent_General agent-orchestrator：{ behavior:'allow', updatedInput: input }。
+   * deny 的 message 必填 string。
    */
   createCanUseTool(
     sessionId: string,
@@ -293,7 +315,10 @@ export class PermissionService {
     return async (
       toolName: string,
       input: Record<string, unknown>,
-    ): Promise<{ behavior: 'allow' | 'deny'; message?: string }> => {
+    ): Promise<
+      | { behavior: 'allow'; updatedInput: Record<string, unknown> }
+      | { behavior: 'deny'; message: string }
+    > => {
       const { allow, reason } = await checkPermission({
         win: this.getWindow,
         sessionId,
@@ -303,7 +328,10 @@ export class PermissionService {
         permissionMode: getMode(),
         executionMode: getExecutionMode?.() ?? migrateExecutionMode(undefined),
       })
-      return allow ? { behavior: 'allow' } : { behavior: 'deny', message: reason }
+      if (allow) {
+        return { behavior: 'allow', updatedInput: input }
+      }
+      return { behavior: 'deny', message: reason ?? '权限拒绝' }
     }
   }
 

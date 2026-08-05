@@ -102,7 +102,8 @@ export function closeTab(
  * 首条消息发送时把草稿会话物化为真实 tab（append + 激活）。
  *
  * 与 openTab 的区别：草稿态（无 tab）才追加；已存在则只升级绑定字段 + 激活，
- * 不覆盖 title。对齐 codex：新会话页不占 tab，发送后才生成 tab。
+ * 不覆盖 title（调用方应传入与主进程一致的标题，如 prompt 前 20 字）。
+ * 对齐 codex：新会话页不占 tab，发送后才生成 tab。
  */
 export function materializeTab(
   tabs: TabItem[],

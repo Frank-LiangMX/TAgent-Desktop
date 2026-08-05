@@ -61,8 +61,10 @@ import {
 import {
   workspacesAtom,
   loadWorkspacesAtom,
+  lastActiveWorkspaceIdAtom,
 } from './atoms/workspace-atoms'
 import { useGlobalSessionRunSync } from './hooks/useGlobalSessionRunSync'
+import { useGlobalPermissionSync } from './hooks/useGlobalPermissionSync'
 
 declare global {
   interface Window {
@@ -75,6 +77,10 @@ declare global {
         workspaceId?: string
       }) => Promise<{ ok: boolean; error?: string }>
       stopAgent: (sessionId: string) => Promise<{ ok: boolean }>
+      steerAgent: (
+        sessionId: string,
+        message: string,
+      ) => Promise<{ ok: boolean; mode?: 'live' | 'pending_next_turn'; error?: string }>
       deleteSession: (sessionId: string) => Promise<{ ok: boolean }>
       listSessions: () => Promise<unknown[]>
       getMessages: (sessionId: string) => Promise<unknown[]>
@@ -145,6 +151,8 @@ declare global {
       uninstallStoreBundle: (slug: string, bundleId: string) => Promise<{ ok: boolean; removedMcps: string[]; removedSkills: string[]; errors: string[] }>
       // 权限审批
       onPermissionRequest: (cb: (req: unknown) => void) => () => void
+      /** 主进程超时 deny / 用户 respond 后推送，渲染层按 reqId 出队 */
+      onPermissionResolved: (cb: (payload: unknown) => void) => () => void
       respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) => void
       // 热切换会话权限模式
       setSessionPermissionMode: (sessionId: string, mode: string) => Promise<{ ok: boolean; error?: string }>
@@ -320,6 +328,8 @@ export function App(): JSX.Element {
 
   // 全局运行计时 atom 同步（离开会话仍消费 result/delta，切回不丢计时）
   useGlobalSessionRunSync()
+  // 全局权限队列同步（REQUEST 入队 / RESOLVED 出队，切会话不丢横幅）
+  useGlobalPermissionSync()
 
   // Phase 2：全局 Nudge → 按设置：顶栏 ticker / 面板 toast
   useEffect(() => {
@@ -383,8 +393,10 @@ export function App(): JSX.Element {
   const tabs = useAtomValue(tabsAtom)
   const activeTabId = useAtomValue(activeTabIdAtom)
   const activeTab = useAtomValue(activeTabAtom)
+  const lastActiveWorkspaceId = useAtomValue(lastActiveWorkspaceIdAtom)
   const setTabs = useSetAtom(tabsAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
+  const setLastActiveWorkspaceId = useSetAtom(lastActiveWorkspaceIdAtom)
   const setPendingSuggestion = useSetAtom(pendingSuggestionAtom)
   // 分屏工作台（实验）：on → 主区用 Dockview，拖会话 tab 到边缘自动分屏
   const splitDockMode = useAtomValue(splitDockModeAtom)
@@ -420,6 +432,13 @@ export function App(): JSX.Element {
     ])
   }, [loadChannels, loadWorkspaces, loadUserProfile, setTabs, setActiveTabId])
 
+  // tab 切换（包括 TabBar / Dockview 内切换）就是工作区被激活，跨重启记住它。
+  useEffect(() => {
+    if (activeTab?.workspaceId) {
+      setLastActiveWorkspaceId(activeTab.workspaceId)
+    }
+  }, [activeTab?.workspaceId, setLastActiveWorkspaceId])
+
   /** 开会话进 tab：已开激活，未开加 tab + 激活 */
   const openSession = (
     sessionId: string,
@@ -428,6 +447,7 @@ export function App(): JSX.Element {
     channelId?: string,
     modelId?: string,
   ): void => {
+    if (workspaceId) setLastActiveWorkspaceId(workspaceId)
     // 函数式更新：避免闭包 tabs 过期覆盖并发 openTab
     setTabs((prev) => {
       const { tabs: next, activeTabId: nextActive } = openTab(
@@ -449,6 +469,7 @@ export function App(): JSX.Element {
     if (!workspace) return
 
     await loadWorkspaces()
+    setLastActiveWorkspaceId(workspace.id)
     if (startSession) {
       // 注册工作区后开新会话：进入草稿（无 tab），发送首条消息才物化为 tab
       setDraftSession({ id: 'session-' + Date.now(), title: '新会话', workspaceId: workspace.id })
@@ -463,13 +484,15 @@ export function App(): JSX.Element {
     }
     // 已在草稿页（未发送）→ 复用，不另开（避免丢弃已输入内容）
     if (draftSession && !activeTab) return
-    // 默认绑最近工作区（侧栏按 recency 排序，workspaces[0] 即最近）；
-    // 工作区可在新会话页的选择器里再改，发送首条消息时主进程才落盘绑定。
-    const workspace = workspaceId
-      ? workspaces.find((item) => item.id === workspaceId) ?? workspaces[0]
-      : workspaces[0]
+    // 默认绑定最近真正激活过的工作区。工作区列表本身不保证按活跃时间排序，
+    // 因此不能把 workspaces[0] 当作“最近”。当前 tab 是持久化值尚未回填时的兜底。
+    const preferredWorkspaceId =
+      workspaceId ?? lastActiveWorkspaceId ?? activeTab?.workspaceId
+    const workspace =
+      workspaces.find((item) => item.id === preferredWorkspaceId) ?? workspaces[0]
     // workspaces.length===0 已 early return，此处 workspace 必存在；兜底给 TS
     if (!workspace) return
+    setLastActiveWorkspaceId(workspace.id)
     // 进入草稿（无 tab）：发送首条消息时主进程建持久 meta + 绑定渠道 + 绑定 workspace
     // 草稿以 overlay 覆盖当前页（tab 激活态保持），返回键关掉蒙版回原页
     setDraftSession({ id: 'session-' + Date.now(), title: '新会话', workspaceId: workspace.id })
@@ -481,16 +504,25 @@ export function App(): JSX.Element {
     const activeBelongsToWorkspace =
       activeIndex >= 0 && tabs[activeIndex]?.workspaceId === workspaceId
     const remaining = tabs.filter((tab) => tab.workspaceId !== workspaceId)
+    const rightNeighbor = tabs
+      .slice(activeIndex + 1)
+      .find((tab) => tab.workspaceId !== workspaceId)
+    const leftNeighbor = tabs
+      .slice(0, activeIndex)
+      .reverse()
+      .find((tab) => tab.workspaceId !== workspaceId)
+
+    if (lastActiveWorkspaceId === workspaceId) {
+      const nextWorkspaceId =
+        rightNeighbor?.workspaceId ??
+        leftNeighbor?.workspaceId ??
+        workspaces.find((workspace) => workspace.id !== workspaceId)?.id ??
+        null
+      setLastActiveWorkspaceId(nextWorkspaceId)
+    }
 
     setTabs(remaining)
     if (activeBelongsToWorkspace) {
-      const rightNeighbor = tabs
-        .slice(activeIndex + 1)
-        .find((tab) => tab.workspaceId !== workspaceId)
-      const leftNeighbor = tabs
-        .slice(0, activeIndex)
-        .reverse()
-        .find((tab) => tab.workspaceId !== workspaceId)
       setActiveTabId(rightNeighbor?.id ?? leftNeighbor?.id ?? null)
     }
   }
@@ -573,9 +605,10 @@ export function App(): JSX.Element {
           <Chat
             key={draftSession.id}
             session={draftSession}
-            onDraftWorkspaceChange={(id) =>
+            onDraftWorkspaceChange={(id) => {
+              setLastActiveWorkspaceId(id)
               setDraftSession((prev) => (prev ? { ...prev, workspaceId: id } : prev))
-            }
+            }}
             onBack={() => setDraftSession(null)}
           />
         ) : activeTab ? (

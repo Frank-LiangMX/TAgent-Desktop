@@ -35,19 +35,29 @@ import { ToolResultView } from './ToolResultView'
 import { summarizeFirstText } from './subagent-ui-model'
 import { MessageCopyButton } from './MessageCopyButton'
 import { MessageRefillButton } from './MessageRefillButton'
+import { MentionText } from './MentionText'
 
 // ===== 主组件 =====
 
 export function MessageView({
   message,
   onRefillToInput,
+  mentionRoles,
 }: {
   message: TAgentMessage
   /** 用户消息：填入输入框以便改写重发 */
   onRefillToInput?: (text: string) => void
+  /** 用于把 @角色 渲染成圆角芯片（与发送解析一致） */
+  mentionRoles?: Array<{ id: string; displayName: string }>
 }): React.ReactElement {
   if (message.type === 'user') {
-    return <UserView message={message} onRefillToInput={onRefillToInput} />
+    return (
+      <UserView
+        message={message}
+        onRefillToInput={onRefillToInput}
+        mentionRoles={mentionRoles}
+      />
+    )
   }
   return <AssistantView message={message} />
 }
@@ -57,9 +67,11 @@ export function MessageView({
 function UserView({
   message,
   onRefillToInput,
+  mentionRoles,
 }: {
   message: Extract<TAgentMessage, { type: 'user' }>
   onRefillToInput?: (text: string) => void
+  mentionRoles?: Array<{ id: string; displayName: string }>
 }): React.ReactElement {
   const profile = useAtomValue(userProfileAtom)
   const userName = (profile.userName || DEFAULT_USER_NAME).trim() || DEFAULT_USER_NAME
@@ -100,7 +112,9 @@ function UserView({
           />
         ) : null}
         {textBlocks.length > 0 && (
-          <UserMessageContent>{plainText}</UserMessageContent>
+          <UserMessageContent contentKey={plainText}>
+            <MentionText text={plainText} roles={mentionRoles} />
+          </UserMessageContent>
         )}
         {toolResultBlocks.map((b) => (
           <ToolResultView key={b.toolUseId} block={b} />

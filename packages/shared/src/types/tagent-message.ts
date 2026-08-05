@@ -64,6 +64,13 @@ export interface TAgentUsage {
 
 export interface TAgentAssistantMessage {
   type: 'assistant'
+  /**
+   * 稳定消息标识（流式 delta / 中间 sdk_message / 最终落盘共用）。
+   * - kscc：来自 SDK `uuid`
+   * - Pi：由 adapter 按 partial.timestamp 派生（同 turn 不变）
+   * 渲染层同 uuid 就地更新 DisplayItem，避免重试/多 chunk 叠字或双卡片。
+   * 旧消息可无此字段。
+   */
   uuid?: string
   parentToolUseId?: string | null
   sessionId?: string
@@ -87,9 +94,28 @@ export type TAgentMessage = TAgentUserMessage | TAgentAssistantMessage
 
 // ===== 控制事件（非转录，独立通道，对应 AgentStreamPayload 的其他 kind） =====
 export type TAgentControlEvent =
-  | { kind: 'result'; subtype?: string; usage?: TAgentUsage; totalCostUsd?: number }
-  | { kind: 'stream_text_delta'; text: string; parentToolUseId?: string }
-  | { kind: 'stream_thinking_delta'; text: string; parentToolUseId?: string }
+  | {
+      kind: 'result'
+      subtype?: string
+      usage?: TAgentUsage
+      totalCostUsd?: number
+      /** 执行错误文案（error_during_execution 等）；session-runtime 过长检测读此字段 */
+      errors?: string[]
+    }
+  | {
+      kind: 'stream_text_delta'
+      text: string
+      parentToolUseId?: string
+      /** 与最终 assistant.uuid 对齐，供渲染层绑定同一流式占位 */
+      uuid?: string
+    }
+  | {
+      kind: 'stream_thinking_delta'
+      text: string
+      parentToolUseId?: string
+      /** 与最终 assistant.uuid 对齐，供渲染层绑定同一流式占位 */
+      uuid?: string
+    }
   | { kind: 'call_stats'; stats: Record<string, number> }
   | { kind: 'tagent_event'; event: { type: string; [key: string]: unknown } }
 

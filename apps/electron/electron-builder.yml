@@ -1,3 +1,12 @@
+# 默认 = 内网 / 双核包（含 @anthropic-ai/claude-agent-sdk 与 win32 原生 claude.exe）
+# 本地：cd apps/electron && bun run package:win
+#   （会先 rebuild:native，与 CI release.yml 对齐）
+#
+# 对外版（排除 kscc 核原生 SDK）：
+#   bun run package:win:external
+#   → TAGENT_EXTERNAL=1 构建 main + electron-builder.external.yml
+# 切勿默认破坏 dev：开发态 bun run dev 不设 TAGENT_EXTERNAL，双核仍可用。
+
 appId: com.tagent.desktop
 productName: TAgent
 

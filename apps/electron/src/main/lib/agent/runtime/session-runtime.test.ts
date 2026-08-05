@@ -244,6 +244,33 @@ describe('SessionRuntime 过长上下文降级', () => {
   })
 })
 
+describe('SessionRuntime steerMessage', () => {
+  it('无 live process 时返回 noop（不静默假装注入）', async () => {
+    const { adapter } = createMock([{ kind: 'ok' }])
+    const rt = new SessionRuntime('s-steer', adapter)
+    // 尚未 sendMessage → 无 loop
+    expect(await rt.steerMessage('redirect')).toBe('noop')
+  })
+
+  it('有 live process 时走 sendQueuedMessage 返回 live', async () => {
+    let queued: unknown
+    const { adapter } = createMock([{ kind: 'crashAfterSignal', signal: new Promise(() => {}) }])
+    ;(adapter as { sendQueuedMessage: (id: string, m: unknown) => Promise<void> }).sendQueuedMessage =
+      async (_id, m) => {
+        queued = m
+      }
+    const rt = new SessionRuntime('s-steer-live', adapter)
+    const messages: SDKMessage[] = []
+    rt.setCallbacks({ onMessage: (m) => messages.push(m) })
+    // crashAfterSignal 永不 resolve → loop 保持 live
+    void rt.sendMessage({ sessionId: 's-steer-live', prompt: 'hi' } as QueryInput)
+    await waitFor(() => messages.length > 0)
+    expect(rt.hasLiveProcess()).toBe(true)
+    expect(await rt.steerMessage('nudge')).toBe('live')
+    expect(queued).toMatchObject({ message: { role: 'user', content: 'nudge' } })
+  })
+})
+
 describe('SessionRuntime 用户主动 stop', () => {
   it('用户 interrupt 后进程退出 → 不恢复、不报错', async () => {
     let triggerCrash!: () => void

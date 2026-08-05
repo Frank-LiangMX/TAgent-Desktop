@@ -44,14 +44,34 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/+$/, '')
 }
 
-function buildTestUrl(baseUrl: string, provider: ProviderType): string | null {
+/**
+ * Google generateContent 探测 URL。
+ * 与 packages/core google-adapter 对齐：`{base}/v1beta/models/{model}:generateContent`。
+ * base 已带 /v1beta 或 /v1 时不再重复追加。
+ */
+function buildGoogleGenerateContentUrl(baseUrl: string, modelId: string): string {
+  const url = normalizeBaseUrl(baseUrl)
+  const model = modelId.replace(/^models\//, '') || 'gemini-2.0-flash'
+  if (/\/v1beta$/i.test(url) || /\/v1$/i.test(url)) {
+    return `${url}/models/${model}:generateContent`
+  }
+  return `${url}/v1beta/models/${model}:generateContent`
+}
+
+function buildTestUrl(
+  baseUrl: string,
+  provider: ProviderType,
+  modelId?: string,
+): string | null {
   const url = normalizeBaseUrl(baseUrl)
   if (!url) return null
   if (isAnthropicProtocol(provider)) {
     return /\/v1$/i.test(url) ? `${url}/messages` : `${url}/v1/messages`
   }
   if (isOpenAICompatible(provider)) return `${url}/chat/completions`
-  if (isGoogle(provider)) return `${url}/models`
+  if (isGoogle(provider)) {
+    return buildGoogleGenerateContentUrl(url, modelId ?? 'gemini-2.0-flash')
+  }
   return null
 }
 
@@ -110,7 +130,11 @@ function buildTestBody(modelId: string | undefined, provider: ProviderType): unk
     }
   }
   if (isGoogle(provider)) {
-    return null
+    // 最小 generateContent 探测：与 google-adapter TitleRequest 同形
+    return {
+      contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+      generationConfig: { maxOutputTokens: 1 },
+    }
   }
   return null
 }
@@ -178,36 +202,24 @@ export async function testChannelConnection(
     return { success: false, message: 'API Key 未设置' }
   }
 
-  const url = buildTestUrl(channel.baseUrl, channel.provider)
+  const modelId = pickTestModel(channel)
+  const url = buildTestUrl(channel.baseUrl, channel.provider, modelId)
   if (!url) {
     return { success: false, message: `不支持的 Provider 类型: ${channel.provider}` }
   }
 
-  const modelId = pickTestModel(channel)
   const headers = buildHeaders(decryptedApiKey, channel.provider)
   const body = buildTestBody(modelId, channel.provider)
+  // Google 鉴权走 query key；其余走 header
+  const requestUrl = isGoogle(channel.provider)
+    ? `${url}?key=${encodeURIComponent(decryptedApiKey)}`
+    : url
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 15000)
 
   try {
-    if (isGoogle(channel.provider)) {
-      const resp = await fetch(`${url}?key=${encodeURIComponent(decryptedApiKey)}`, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: { 'Content-Type': 'application/json' },
-      })
-      if (resp.ok) {
-        return { success: true, message: `连接成功（${resp.status}）` }
-      }
-      const errText = await resp.text().catch(() => '')
-      return {
-        success: false,
-        message: `连接失败（${resp.status}）${errText ? `: ${errText.slice(0, 200)}` : ''}`,
-      }
-    }
-
-    const resp = await fetch(url, {
+    const resp = await fetch(requestUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
@@ -218,6 +230,7 @@ export async function testChannelConnection(
       return { success: true, message: `连接成功（${resp.status}）` }
     }
 
+    // 400/404：服务可达但模型/请求体问题（与 OpenAI/Anthropic 探测一致）
     if (resp.status === 400 || resp.status === 404) {
       const errText = await resp.text().catch(() => '')
       let msg = `模型不可用（${resp.status}）`

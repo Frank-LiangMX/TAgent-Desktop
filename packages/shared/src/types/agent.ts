@@ -1011,12 +1011,12 @@ export interface AgentSessionMeta {
   completedButUnconfirmed?: boolean
   /** 最后一次流式执行是否被用户主动中断 */
   stoppedByUser?: boolean
-  /** 该会话当前的权限模式（持久化到磁盘，重启后恢复）。未设置时新会话默认 auto */
+  /** 该会话当前的权限模式（持久化到磁盘，重启后恢复）。未设置时新会话默认 bypassPermissions */
   permissionMode?: TAgentPermissionMode
   /**
    * 协作/执行形态（Chat 只读讨论 | Work 真干活）。
    * 与 permissionMode 分层：Plan/自动/完全自动仅在 work 下约束写操作。
-   * 未设置时 migrate 回退 work（兼容旧会话）；新建会话应显式写 chat。
+   * 未设置时 migrate 回退 work（兼容旧会话）；新建会话默认 work（DEFAULT_EXECUTION_MODE）。
    * @see docs/decisions/ADR-0003-execution-mode-chat-work.md
    */
   executionMode?: ExecutionMode
@@ -1710,7 +1710,8 @@ export const TAGENT_PERMISSION_MODES = ['auto', 'bypassPermissions', 'plan'] as 
 
 export type TAgentPermissionMode = (typeof TAGENT_PERMISSION_MODES)[number]
 
-export const TAGENT_DEFAULT_PERMISSION_MODE: TAgentPermissionMode = 'auto'
+/** 新建会话默认：完全自动（对齐 Proma 开箱写文件，不打扰） */
+export const TAGENT_DEFAULT_PERMISSION_MODE: TAgentPermissionMode = 'bypassPermissions'
 
 export interface TAgentPermissionModeConfig {
   /** 对应 Claude Agent SDK 的 permissionMode */
@@ -1745,7 +1746,7 @@ export function isTAgentPermissionMode(mode: string): mode is TAgentPermissionMo
   return (TAGENT_PERMISSION_MODES as readonly string[]).includes(mode)
 }
 
-/** 规范化权限模式：不匹配当前三种模式时统一回到默认自动审批 */
+/** 规范化权限模式：不匹配当前三种模式时统一回到默认（bypassPermissions） */
 export function migratePermissionMode(mode: string): TAgentPermissionMode {
   if (isTAgentPermissionMode(mode)) return mode
   return TAGENT_DEFAULT_PERMISSION_MODE
@@ -2060,6 +2061,11 @@ export const AGENT_IPC_CHANNELS = {
   PERMISSION_REQUEST: 'agent:permission:request',
   /** 权限响应（渲染进程 → 主进程） */
   PERMISSION_RESPOND: 'agent:permission:respond',
+  /**
+   * 权限已决（主进程 → 渲染进程）：超时自动 deny 与用户 respond 后都发，
+   * 渲染层按 reqId 出队，避免 banner 卡死 / 按钮空操作。
+   */
+  PERMISSION_RESOLVED: 'agent:permission:resolved',
   /** 热切换指定会话的权限模式（运行中生效，不广播到其他会话） */
   UPDATE_SESSION_PERMISSION_MODE: 'agent:update-session-permission-mode',
   /**

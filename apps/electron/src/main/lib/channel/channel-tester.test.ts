@@ -80,21 +80,67 @@ describe('testChannelConnection protocol requests', () => {
     })
   })
 
-  test('uses a Google GET request with an encoded query key', async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ models: [] }))
+  test('uses Google generateContent POST with encoded query key (not bare GET /models)', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [{ content: { parts: [{ text: 'ok' }] } }],
+      }),
+    )
     vi.stubGlobal('fetch', fetchMock)
 
     const result = await testChannelConnection(channel('google'), 'key with symbols/+')
 
     expect(result.success).toBe(true)
+    expect(result.message).toContain('连接成功')
     const [url, init] = fetchMock.mock.calls[0]!
+    // 默认 baseUrl 带 /v1/ → 走 v1beta 规范化：.../v1/models/{id}:generateContent
+    // channel() 默认 baseUrl 是 https://provider.example/v1/
     expect(url).toBe(
-      'https://provider.example/v1/models?key=key%20with%20symbols%2F%2B',
+      'https://provider.example/v1/models/preferred-model:generateContent?key=key%20with%20symbols%2F%2B',
     )
     expect(init).toMatchObject({
-      method: 'GET',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     })
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+      generationConfig: { maxOutputTokens: 1 },
+    })
+  })
+
+  test('Google with bare generativelanguage base appends /v1beta/models/...:generateContent', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await testChannelConnection(
+      channel('google', {
+        baseUrl: 'https://generativelanguage.googleapis.com',
+        defaultModelId: 'gemini-2.0-flash',
+      }),
+      'secret-key',
+    )
+
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=secret-key',
+    )
+    expect(init?.method).toBe('POST')
+  })
+
+  test('Google auth failure returns explicit error (not fake success)', async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response('API key not valid', { status: 403 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await testChannelConnection(
+      channel('google', { baseUrl: 'https://generativelanguage.googleapis.com' }),
+      'bad-key',
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('403')
+    expect(result.message).toContain('API key not valid')
   })
 })
 

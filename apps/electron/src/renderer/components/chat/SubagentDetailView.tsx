@@ -1,17 +1,15 @@
 /**
- * SubagentDetailView — 子代理独立会话页面（完整会话模式渲染）
+ * SubagentDetailView — 子代理独立会话页面
  *
- * 从主会话入口（SubagentEntryCard）进入后全屏切换到此页。像 Cursor Codex 一样，
- * 子代理的完整过程**不占用主会话聊天区**，而是作为独立页面查看：
- *
- * - 顶部栏：返回主会话 + 子代理标题 + 模型 + 状态（对齐主会话 turn 头部：chrome 只出现一次）
- * - 任务指令区：主线程发起该子代理的 task tool_use.input
- * - 正文：按到达顺序渲染子代理的思考 / 工具调用（含入参与输出）/ 文本 / 错误，
- *   复用与主会话相同的 ContentBlockView + ToolResultView，无逐条消息 chrome，
- *   实时跟随 items 更新（含流式）
+ * 从主会话入口（SubagentEntryCard）进入后全屏切换到此页：
+ * - 顶部栏：返回 + 标题 + 模型 + 状态（chrome 只一次）
+ * - 任务指令区：默认折叠，只显示一行摘要
+ * - 过程区：复用主会话 ProcessGroupView（默认收成一行摘要，不整页展开思考/工具）
+ * - 回答区：末尾交付文本
  */
-import { memo, useMemo } from 'react'
-import { ArrowLeft, Copy } from 'lucide-react'
+import { memo, useMemo, useState } from 'react'
+import { ArrowLeft, CaretRight, Copy } from '@phosphor-icons/react'
+import { Message, MessageContent, MessageResponse } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 import {
   formatElapsedDuration,
@@ -20,18 +18,14 @@ import {
 } from '../../lib/time-utils'
 import type { TurnSourceItem } from './session-turn-model'
 import {
+  buildTurnPresentation,
   findSubagentTaskTool,
   filterSubagentItems,
 } from './session-turn-model'
 import { summarizeFirstText } from './subagent-ui-model'
 import type { TaskCardState } from './subagent-ui-model'
-import type {
-  TAgentContentBlock,
-  TAgentMessage,
-  TAgentToolResultBlock,
-} from '@tagent/shared'
-import { ContentBlockView } from './ContentBlockView'
-import { ToolResultView } from './ToolResultView'
+import type { TAgentContentBlock, TAgentMessage } from '@tagent/shared'
+import { ProcessGroupView } from './ProcessGroupView'
 
 interface SubagentDetailViewProps {
   /** Chat 全部显示项（实时，含流式） */
@@ -124,7 +118,7 @@ export function SubagentDetailView({
       ? formatMessageTime(finishedAt)
       : statusMeta.text
 
-  // 复制全文：所有 assistant 消息的 text 拼起来
+  // 复制全文：优先交付回答，否则拼所有 assistant text
   const fullText = useMemo(() => {
     return subagentItems
       .map((it) => {
@@ -139,12 +133,42 @@ export function SubagentDetailView({
       .join('\n\n')
   }, [subagentItems])
 
+  /**
+   * 与主会话同一套过程/回答拆分。
+   * buildTurnPresentation 会跳过 parentToolUseId 消息，故展示前先剥掉 parent 标记。
+   */
+  const presentation = useMemo(() => {
+    const normalized: TurnSourceItem[] = subagentItems.map((it) => {
+      const m = it.message
+      if (!m || (m.type !== 'assistant' && m.type !== 'user')) return it
+      if (!m.parentToolUseId) return it
+      return {
+        ...it,
+        message: { ...m, parentToolUseId: null } as TAgentMessage,
+      }
+    })
+    return buildTurnPresentation(
+      {
+        kind: 'assistant-turn',
+        key: `sub-${parentToolUseId}`,
+        items: normalized,
+        isStreaming: isRunning,
+        modelId,
+      },
+      // 运行中过程一条路展开摘要行；结束后收成一行，不默认摊开思考/工具全文
+      { isLiveTurn: isRunning },
+    )
+  }, [subagentItems, parentToolUseId, isRunning, modelId])
+
+  const answerText = presentation.answerTexts.join('\n\n').trim()
+  const copyText = (answerText || fullText).trim()
+
   return (
     <div className="subagent-detail">
       {/* 顶部栏 */}
       <div className="subagent-detail__header">
         <button type="button" className="subagent-detail__back" onClick={onBack}>
-          <ArrowLeft size={14} />
+          <ArrowLeft size={14} weight="bold" />
           返回主会话
         </button>
         <div className="subagent-detail__title-wrap">
@@ -156,107 +180,52 @@ export function SubagentDetailView({
           </span>
         </div>
         <div className="subagent-detail__actions">
-          {fullText.trim() && (
-            <CopyDetailButton text={fullText} />
-          )}
+          {copyText && <CopyDetailButton text={copyText} />}
         </div>
       </div>
 
       <div className="subagent-detail__body">
-        {/* 任务指令区 */}
         {taskTool && <TaskPromptBlock taskTool={taskTool} />}
 
-        {/* 完整会话流 */}
         <div className="subagent-detail__stream">
           {subagentItems.length === 0 && (
             <div className="subagent-detail__empty">子代理尚未产生消息…</div>
           )}
-          {renderSubagentStream(subagentItems)}
+
+          {presentation.process.length > 0 && (
+            <div className="agent-turn-process">
+              {/* 子代理详情：过程默认收成一行，不自动摊开全部思考/工具 */}
+              <ProcessGroupView
+                process={presentation.process}
+                isLive={isRunning}
+                autoExpandWhenLive={false}
+              />
+            </div>
+          )}
+
+          {answerText ? (
+            <div className="agent-answer-block subagent-detail__answer">
+              <Message from="assistant">
+                <MessageContent>
+                  <MessageResponse>{answerText}</MessageResponse>
+                </MessageContent>
+              </Message>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
   )
 }
 
-/** 渲染子代理完整消息流：assistant 块直接渲染，tool_result 配对到工具下。
- *  对齐主会话 turn：无逐条消息 chrome（模型/时间已在顶部一次）。 */
-function renderSubagentStream(items: TurnSourceItem[]): JSX.Element[] {
-  const resultById = new Map<string, { content: unknown; isError: boolean }>()
-  const out: JSX.Element[] = []
-
-  items.forEach((it) => {
-    const m = it.message
-    if (!m) return
-
-    if (m.type === 'user') {
-      // tool_result 合成回传：收集配对，实际渲染挂在对应 assistant tool_use 下
-      for (const b of m.content) {
-        if (b.type === 'tool_result') {
-          const rb = b as { type: 'tool_result'; toolUseId: string; content: unknown; isError?: boolean }
-          resultById.set(rb.toolUseId, {
-            content: rb.content,
-            isError: Boolean(rb.isError),
-          })
-        }
-      }
-      return
-    }
-
-    if (m.type === 'assistant') {
-      const body = m.content.map((block, i) => {
-        if (block.type === 'tool_use') {
-          const tu = block as {
-            type: 'tool_use'
-            id: string
-            name: string
-            input: Record<string, unknown>
-          }
-          const result = resultById.get(tu.id)
-          return (
-            <div key={`${it.key}-b${i}`} className="subagent-detail__tool">
-              <ContentBlockView block={block as TAgentContentBlock} />
-              {result && (
-                <div className="subagent-detail__tool-result">
-                  <ToolResultView
-                    block={{
-                      type: 'tool_result',
-                      toolUseId: tu.id,
-                      content: result.content,
-                      isError: result.isError,
-                    } as TAgentToolResultBlock}
-                  />
-                </div>
-              )}
-            </div>
-          )
-        }
-        return <ContentBlockView key={`${it.key}-b${i}`} block={block as TAgentContentBlock} />
-      })
-
-      out.push(
-        <div key={it.key} className="subagent-detail__msg">
-          <div className="subagent-detail__msg-content">
-            {m.error && (
-              <div className="mb-1 text-xs text-destructive">{m.error.message}</div>
-            )}
-            {body}
-          </div>
-        </div>,
-      )
-    }
-  })
-
-  return out
-}
-
-/** 任务指令块：渲染发起子代理的 task 工具入参 */
+/** 任务指令：默认折叠为一行，点开才看全文 / 其余 JSON */
 function TaskPromptBlock({
   taskTool,
 }: {
   taskTool: { name: string; input: Record<string, unknown> }
 }): JSX.Element {
+  const [open, setOpen] = useState(false)
   const input = taskTool.input ?? {}
-  // 优先把描述性字段做成人话，其余字段 JSON 展示
   const descFields = ['description', 'prompt', 'query', 'task']
   const descValues = descFields
     .map((f) => (typeof input[f] === 'string' ? (input[f] as string).trim() : ''))
@@ -265,19 +234,42 @@ function TaskPromptBlock({
   for (const [k, v] of Object.entries(input)) {
     if (!descFields.includes(k)) rest[k] = v
   }
+  const summary = (descValues[0] ?? '查看任务指令').replace(/\s+/g, ' ')
+  const summaryLine = summary.length > 96 ? `${summary.slice(0, 96)}…` : summary
 
   return (
-    <div className="subagent-detail__prompt">
-      <div className="subagent-detail__prompt-label">任务指令</div>
-      {descValues.length > 0 && (
-        <div className="subagent-detail__prompt-text whitespace-pre-wrap break-words">
-          {descValues.join('\n\n')}
+    <div className={cn('subagent-detail__prompt', open && 'is-open')}>
+      <button
+        type="button"
+        className="subagent-detail__prompt-toggle"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <CaretRight
+          size={12}
+          weight="bold"
+          className={cn(
+            'shrink-0 text-muted-foreground/45 transition-transform duration-150',
+            open && 'rotate-90',
+          )}
+        />
+        <span className="subagent-detail__prompt-label">任务指令</span>
+        {!open && (
+          <span className="subagent-detail__prompt-summary">{summaryLine}</span>
+        )}
+      </button>
+      {open && (
+        <div className="subagent-detail__prompt-body">
+          {descValues.length > 0 && (
+            <div className="subagent-detail__prompt-text whitespace-pre-wrap break-words">
+              {descValues.join('\n\n')}
+            </div>
+          )}
+          {Object.keys(rest).length > 0 && (
+            <pre className="subagent-detail__prompt-json">
+              {JSON.stringify(rest, null, 2)}
+            </pre>
+          )}
         </div>
-      )}
-      {Object.keys(rest).length > 0 && (
-        <pre className="subagent-detail__prompt-json">
-          {JSON.stringify(rest, null, 2)}
-        </pre>
       )}
     </div>
   )

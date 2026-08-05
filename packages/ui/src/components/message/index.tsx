@@ -350,6 +350,17 @@ export const MessageResponse = React.memo(
         code: ({ className: codeClassName, children: codeChildren }: { className?: string; children?: React.ReactNode }) => {
           const langMatch = /language-(\S+)/.exec(codeClassName || '')
           if (!langMatch) {
+            // 无语言标注的围栏块（```\n...\n```）也没有 language- 类，但它是块级的：
+            // mdast→hast 只给块级 code 追加尾换行，据此与行内代码区分。
+            // 不能放它落到行内分支——pre 已被拆掉，块级内容会失去 white-space:pre，
+            // 目录树 / 表格这类靠空白对齐的内容会挤成一坨。
+            if (String(codeChildren ?? '').includes('\n')) {
+              return (
+                <CodeBlock>
+                  <code className={codeClassName}>{codeChildren}</code>
+                </CodeBlock>
+              )
+            }
             // 行内代码：识别为文件路径且应用层注入了打开回调 → 渲染可点击 chip
             const text = String(codeChildren ?? '').trim()
             if (
@@ -369,11 +380,13 @@ export const MessageResponse = React.memo(
                 />
               )
             }
-            // 行内代码显式样式：圆角 + 浅底 + 等宽（不依赖 prose 默认，避免反引号伪元素观感）
+            // 行内代码显式样式：等宽 + 极浅底（不依赖 prose 默认，避免反引号伪元素观感）。
+            // 技术文本里一段能出现十几个行内代码，底色一重整段就成了色块阵；
+            // 等宽字形本身已足够区分，底色只做轻微成组提示。
             return (
               <code
                 className={cn(
-                  'rounded bg-foreground/10 px-[0.35em] py-[0.15em] font-mono text-[0.875em]',
+                  'rounded-[3px] bg-foreground/[0.05] px-[0.25em] py-[0.05em] font-mono text-[0.92em]',
                   codeClassName,
                 )}
               >
@@ -414,14 +427,16 @@ export const MessageResponse = React.memo(
     return (
       <div
         className={cn(
-          'prose dark:prose-invert max-w-none text-[length:var(--md-preview-font-size,12px)]',
-          'prose-p:my-1.5 prose-p:leading-[1.6] prose-li:leading-[1.6] prose-pre:my-0 prose-hr:my-3',
-          // 标题压到接近正文，避免信息流里 h1/h2 像海报标题
-          'prose-headings:my-2 prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-foreground',
-          'prose-h1:text-[14px] prose-h1:leading-snug',
-          'prose-h2:text-[13px] prose-h2:leading-snug',
-          'prose-h3:text-[12.5px] prose-h3:leading-snug',
-          'prose-h4:text-[12px] prose-h4:leading-snug',
+          'prose dark:prose-invert max-w-none text-[length:var(--md-preview-font-size,13px)]',
+          'prose-p:my-2 prose-p:leading-[1.65] prose-li:leading-[1.65] prose-pre:my-0 prose-hr:my-4',
+          'prose-ul:my-2 prose-ol:my-2 prose-li:my-1',
+          // 标题不做海报字号，但上间距必须明显大于段间距——分节感全靠这个留白，
+          // 否则长回答会糊成一根连续的灰柱子。
+          'prose-headings:mt-5 prose-headings:mb-2 prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-foreground',
+          'prose-h1:text-[16.5px] prose-h1:leading-snug',
+          'prose-h2:text-[15px] prose-h2:leading-snug',
+          'prose-h3:text-[13.5px] prose-h3:leading-snug',
+          'prose-h4:text-[13px] prose-h4:leading-snug',
           '[&_.code-block-wrapper+.code-block-wrapper]:mt-4',
           '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
           className
@@ -450,19 +465,27 @@ export const MessageResponse = React.memo(
 const COLLAPSE_LINE_THRESHOLD = 4
 
 interface UserMessageContentProps extends HTMLAttributes<HTMLDivElement> {
-  children: string
+  /**
+   * 正文：string 走 markdown；ReactNode 原样渲染（如 @ 芯片）。
+   * 折叠高度测量依赖 contentKey（未传则用 string children）。
+   */
+  children: React.ReactNode
+  /** 内容变化时重新测量折叠（ReactNode 时请传文本） */
+  contentKey?: string
 }
 
 /** 用户消息内容组件，超过 4 行时默认折叠 */
 export const UserMessageContent = React.memo(
   function UserMessageContent({
     children,
+    contentKey,
     className,
     ...props
   }: UserMessageContentProps): React.ReactElement {
     const [isExpanded, setIsExpanded] = React.useState(false)
     const [shouldCollapse, setShouldCollapse] = React.useState(false)
     const contentRef = React.useRef<HTMLDivElement>(null)
+    const measureKey = contentKey ?? (typeof children === 'string' ? children : '')
 
     React.useEffect(() => {
       if (!contentRef.current) return
@@ -470,7 +493,7 @@ export const UserMessageContent = React.memo(
       const lineHeight = parseFloat(getComputedStyle(element).lineHeight)
       const maxHeight = lineHeight * COLLAPSE_LINE_THRESHOLD
       setShouldCollapse(element.scrollHeight > maxHeight + 10)
-    }, [children])
+    }, [measureKey])
 
     const toggleExpand = React.useCallback(() => {
       setIsExpanded((prev) => !prev)
@@ -495,9 +518,15 @@ export const UserMessageContent = React.memo(
             shouldCollapse && !isExpanded && 'max-h-[6.5em]'
           )}
         >
-          <MessageResponse className="prose-p:my-0.5 prose-headings:my-1.5">
-            {children}
-          </MessageResponse>
+          {typeof children === 'string' ? (
+            <MessageResponse className="prose-p:my-0.5 prose-headings:my-1.5">
+              {children}
+            </MessageResponse>
+          ) : (
+            <div className="agent-user-bubble__rich text-[13.5px] leading-[1.55] whitespace-pre-wrap break-words">
+              {children}
+            </div>
+          )}
         </div>
         {shouldCollapse ? (
           <button
@@ -525,7 +554,10 @@ export const UserMessageContent = React.memo(
       </div>
     )
   },
-  (prevProps, nextProps) => prevProps.children === nextProps.children
+  (prevProps, nextProps) =>
+    prevProps.children === nextProps.children &&
+    prevProps.contentKey === nextProps.contentKey &&
+    prevProps.className === nextProps.className,
 )
 
 // ===== MessageAttachments 消息附件展示 =====

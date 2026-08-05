@@ -1,10 +1,13 @@
 /**
- * 思考强度 — 常驻输入区 compact pill + 滑杆 popover
- * （从功能栏迁出，Chat/Work 均可用）
+ * 思考强度滑杆 —— 四档横向滑杆 + 粒子场
+ *
+ * 粒子数量与飘动速度跟着档位走：档位越高粒子越多、飘得越快，
+ * 让「更快 → 更深」这段连续感在视觉上成立（分段按钮给不了这个）。
+ *
+ * 原先内嵌在 ReasoningEffortPicker 里，思考强度并入模型选择器后独立成模块。
+ * 样式见 app-shell.css 的 .reasoning-slider-*。
  */
-import { useCallback, useRef, useState } from 'react'
-import { Brain } from 'lucide-react'
-import { AppTooltip, Popover, PopoverTrigger, PopoverContent } from '@tagent/ui'
+import { useCallback, useRef } from 'react'
 import type { ReasoningEffort } from '@tagent/shared'
 import { cn } from '../../lib/utils'
 
@@ -15,12 +18,12 @@ export const REASONING_LABELS: Record<ReasoningEffort, string> = {
   max: '极限',
 }
 
-const REASONING_ORDER = ['low', 'medium', 'high', 'max'] as const
+export const REASONING_ORDER = ['low', 'medium', 'high', 'max'] as const
 
 const THUMB_HALF = 8
 
 function effortPosition(effort: ReasoningEffort): number {
-  const idx = Math.max(0, REASONING_ORDER.indexOf(effort))
+  const idx = Math.max(0, REASONING_ORDER.indexOf(effort as (typeof REASONING_ORDER)[number]))
   return idx / (REASONING_ORDER.length - 1)
 }
 
@@ -54,17 +57,16 @@ const PARTICLES = [
   { x: '75%', y: '72%', size: '2px', delay: '-3.9s', dur: '4.0s', dx: '6px', dy: '-4px' },
 ] as const
 
-function ReasoningSlider({
-  value,
-  onChange,
-}: {
+export interface ReasoningSliderProps {
   value: ReasoningEffort
   onChange: (effort: ReasoningEffort) => void
-}): JSX.Element {
+}
+
+export function ReasoningSlider({ value, onChange }: ReasoningSliderProps): JSX.Element {
   const railRef = useRef<HTMLDivElement>(null)
   const dragPointerRef = useRef<number | null>(null)
   const position = effortPosition(value)
-  const index = REASONING_ORDER.indexOf(value)
+  const index = REASONING_ORDER.indexOf(value as (typeof REASONING_ORDER)[number])
   const particleCount = Math.round(PARTICLES.length * position)
   const speedFactor = 1 + position * 0.6
 
@@ -116,7 +118,7 @@ function ReasoningSlider({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>): void => {
-      const curIdx = REASONING_ORDER.indexOf(value)
+      const curIdx = REASONING_ORDER.indexOf(value as (typeof REASONING_ORDER)[number])
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
         const next = REASONING_ORDER[Math.max(0, curIdx - 1)]
@@ -202,55 +204,5 @@ function ReasoningSlider({
         ))}
       </div>
     </div>
-  )
-}
-
-export interface ReasoningEffortPickerProps {
-  value: ReasoningEffort
-  onChange: (effort: ReasoningEffort) => void
-  className?: string
-}
-
-export function ReasoningEffortPicker({
-  value,
-  onChange,
-  className,
-}: ReasoningEffortPickerProps): JSX.Element {
-  const [open, setOpen] = useState(false)
-  const label = REASONING_LABELS[value] ?? value
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <AppTooltip label={`思考强度：${label}（点按调节）`} side="top">
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className={cn(
-              'reasoning-effort-picker',
-              open && 'reasoning-effort-picker--open',
-              className,
-            )}
-            aria-label={`思考强度：${label}`}
-          >
-            <Brain className="reasoning-effort-picker__icon" aria-hidden strokeWidth={2} />
-            <span className="reasoning-effort-picker__label">{label}</span>
-          </button>
-        </PopoverTrigger>
-      </AppTooltip>
-      <PopoverContent
-        side="top"
-        align="end"
-        sideOffset={8}
-        className="agent-toolbar-popover w-auto min-w-[200px] p-2"
-        onOpenAutoFocus={(e) => e.preventDefault()}
-      >
-        <div className="mb-1.5 px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-          思考强度
-        </div>
-        <div className="w-48 px-0.5 py-1">
-          <ReasoningSlider value={value} onChange={onChange} />
-        </div>
-      </PopoverContent>
-    </Popover>
   )
 }

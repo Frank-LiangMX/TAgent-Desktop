@@ -362,6 +362,14 @@ export function WorkspaceDock(): JSX.Element {
         defaultTabComponent={DockTab}
         theme={dockTheme}
         onWillDrop={handleWillDrop}
+        /**
+         * 必须 always：默认的 onlyWhenVisible 会把非激活面板的 DOM 从文档里摘掉
+         * （content.ts 的 element.remove()），浏览器随之丢掉布局盒，scrollTop 归零，
+         * 切回来就落到底部。always 让面板常驻文档、仅用 visibility:hidden 隐藏，
+         * 布局盒还在，滚动位置由浏览器天然保住。
+         * React 树本来就一直挂着（dockview-react 不卸载），故此项不增加 JS 开销。
+         */
+        defaultRenderer="always"
         className="workspace-dock__canvas"
       />
     </div>

@@ -893,12 +893,18 @@
 .active-speaker-chip {
   display: inline-flex;
   align-items: center;
-  padding: 1px 7px;
-  border-radius: 999px;
+  padding: 2px 9px;
+  border-radius: 8px;
+  border: 1px solid hsl(var(--primary) / 0.28);
   background: hsl(var(--primary) / 0.12);
   color: hsl(var(--primary));
   font-weight: 600;
   font-size: 11px;
+  line-height: 1.35;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .active-speaker-clear {
   display: inline-grid;
@@ -1419,7 +1425,86 @@
   font-feature-settings: 'tnum' 1;
 }
 
-/* Chat @ 点名顺序条（铭牌旁） */
+/* 会话错误条：session_error 独立 UI（标题/详情/复制/关闭/重试） */
+.session-error-banner__detail {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* Chat @ 点名：圆角矩形芯片（消息正文 / 铭牌 / 选择器共用） */
+.mention-text {
+  display: inline;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mention-text__plain {
+  white-space: pre-wrap;
+}
+.mention-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  margin: 0 1px;
+  padding: 1px 8px;
+  border-radius: 8px;
+  border: 1px solid hsl(var(--primary) / 0.28);
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  font-size: 0.92em;
+  font-weight: 600;
+  line-height: 1.45;
+  vertical-align: baseline;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 用户气泡内：稍实一点，压在玻璃底上更清晰 */
+.agent-user-bubble .mention-chip {
+  border-color: hsl(var(--primary) / 0.32);
+  background: hsl(var(--primary) / 0.14);
+  font-size: 12.5px;
+  line-height: 1.5;
+  border-radius: 8px;
+  padding: 0 7px;
+}
+.mention-chip--picker {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 8px;
+}
+
+/* 本轮 @ 顺序：多个独立芯片 + 箭头 */
+.agent-turn-mention-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: min(320px, 70%);
+  min-height: 22px;
+}
+.agent-turn-mention-list__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.agent-turn-mention-list__arrow {
+  flex: none;
+  color: hsl(var(--muted-foreground) / 0.55);
+  font-size: 10px;
+}
+.agent-turn-mention-list .mention-chip {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  max-width: 140px;
+}
+/* 兼容旧 class（若别处仍引用） */
 .agent-turn-mention-chip {
   display: inline-flex;
   align-items: center;
@@ -1702,16 +1787,44 @@
   border: 1px solid color-mix(in srgb, hsl(var(--primary)) 22%, transparent);
   border-radius: 12px;
   background: color-mix(in srgb, hsl(var(--primary)) 3%, transparent);
-  padding: 10px 12px;
+  padding: 4px 8px;
   margin-bottom: 16px;
 }
+.subagent-detail__prompt-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 4px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+.subagent-detail__prompt-toggle:hover {
+  color: hsl(var(--foreground));
+}
 .subagent-detail__prompt-label {
+  flex-shrink: 0;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: hsl(var(--primary) / 0.8);
-  margin-bottom: 6px;
+}
+.subagent-detail__prompt-summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground) / 0.75);
+}
+.subagent-detail__prompt-body {
+  padding: 2px 4px 8px 22px;
 }
 .subagent-detail__prompt-text {
   font-size: 13px;
@@ -1740,30 +1853,6 @@
   font-size: 12px;
   color: hsl(var(--muted-foreground) / 0.6);
 }
-.subagent-detail__msg {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.subagent-detail__answer {
   min-width: 0;
-}
-.subagent-detail__msg-content {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  padding-left: 12px;
-  border-left: 2px solid color-mix(in srgb, hsl(var(--primary)) 18%, transparent);
-  font-size: 13px;
-  line-height: 1.7;
-  color: hsl(var(--foreground) / 0.88);
-}
-.subagent-detail__tool {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-.subagent-detail__tool-result {
-  min-width: 0;
-  padding-left: 4px;
 }

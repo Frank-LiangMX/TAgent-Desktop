@@ -103,6 +103,14 @@
   padding-right: var(--app-shell-session-gutter, 16px);
 }
 
+/* 会话错误条与输入同宽 */
+.session-error-banner {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  margin-inline: 0;
+}
+
 /* 输入 dock：margin-bottom 使输入框底贴 band（有 token 时扣掉 token 高） */
 .session-input-dock {
   margin-bottom: max(
@@ -311,46 +319,6 @@
   background: hsl(var(--foreground) / 0.08);
 }
 
-/* 思考强度 — 输入区 compact pill */
-.reasoning-effort-picker {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 26px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: hsl(var(--muted-foreground));
-  font-size: 11.5px;
-  font-weight: 550;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    background-color 140ms ease,
-    color 140ms ease;
-}
-
-.reasoning-effort-picker:hover,
-.reasoning-effort-picker--open {
-  color: hsl(var(--foreground));
-  background: hsl(var(--foreground) / 0.08);
-}
-
-.reasoning-effort-picker__icon {
-  width: 13px;
-  height: 13px;
-  flex-shrink: 0;
-  color: hsl(var(--primary));
-}
-
-.reasoning-effort-picker__label {
-  max-width: 48px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* ===== 思考强度滑杆（ReasoningSlider） — 粗条 + 扫光能量 + 粒子动画 ===== */
 .reasoning-slider {
   display: flex;
@@ -364,7 +332,7 @@
   display: flex;
   justify-content: space-between;
   color: hsl(var(--muted-foreground) / 0.6);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 520;
   line-height: 1;
 }
@@ -624,7 +592,7 @@
   justify-content: space-between;
   padding: 0 4px;
   color: hsl(var(--muted-foreground) / 0.5);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 520;
   line-height: 1;
 }
@@ -731,11 +699,41 @@
     box-shadow 220ms var(--app-shell-motion);
 }
 
-/* 输入区：12px / 1.55 / 最小 52px */
-.app-shell-content-stage .chat-input-glass textarea {
+/* 输入区：12px / 1.55 / 最小 52px（textarea 旧路径 + contentEditable 芯片路径） */
+.app-shell-content-stage .chat-input-glass textarea,
+.app-shell-content-stage .chat-input-glass .composer-editor {
   font-size: 12px;
   line-height: 1.55;
   min-height: 52px;
+  color: hsl(var(--foreground));
+  overflow-y: auto;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+/* contentEditable 空态占位 */
+.app-shell-content-stage .chat-input-glass .composer-editor.is-empty:before {
+  content: attr(data-placeholder);
+  color: hsl(var(--muted-foreground) / 0.6);
+  pointer-events: none;
+  float: left;
+  height: 0;
+}
+/* 输入框内 @ 芯片：不可编辑、圆角矩形 */
+.app-shell-content-stage .chat-input-glass .mention-chip--composer {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 2px;
+  padding: 1px 8px;
+  border-radius: 8px;
+  border: 1px solid hsl(var(--primary) / 0.3);
+  background: hsl(var(--primary) / 0.14);
+  color: hsl(var(--primary));
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  vertical-align: baseline;
+  user-select: all;
+  cursor: default;
 }
 
 /* 光学折射层：顶光 + scene-a，不盖内容 */
@@ -849,24 +847,17 @@
 .is-composer-compact .composer-crew-btn__label {
   display: none;
 }
-.is-composer-compact .composer-permission-chip__label {
+/* 运行模式 pill 窄宽退化为纯图标（compact 由 RunModeSelector 直接不渲染文字，
+   这里只兜住 caret 与内边距） */
+.is-composer-compact .composer-run-mode {
+  padding-inline: 5px;
+  gap: 2px;
+}
+.is-composer-compact .composer-run-mode__caret {
   display: none;
 }
-.is-composer-compact .composer-permission-chip {
-  width: 22px;
-  padding-inline: 0;
-  justify-content: center;
-  gap: 0;
-}
-.is-composer-compact .reasoning-effort-picker__label {
+.is-composer-compact .model-selector__effort {
   display: none;
-}
-.is-composer-compact .reasoning-effort-picker {
-  width: 28px;
-  min-width: 28px;
-  padding-inline: 0;
-  justify-content: center;
-  gap: 0;
 }
 .is-composer-compact .composer-footer-bar__right button[aria-label='选择模型'] {
   max-width: 88px !important;
@@ -883,11 +874,6 @@
 /* 窄宽时隐藏模型触发器上的 chevron，再省 12px */
 .is-composer-compact .composer-footer-bar__right button[aria-label='选择模型'] > svg:last-child {
   display: none;
-}
-.is-composer-compact .execution-mode-switch__btn {
-  padding-inline: 6px;
-  font-size: 10px;
-  min-width: 0;
 }
 .is-composer-compact .composer-footer-bar {
   gap: 2px;
@@ -924,61 +910,139 @@
   justify-content: center;
 }
 
-.composer-permission-chip {
+/* ===== 运行模式单入口（Chat|Work + 权限档 + 子代理） ===== */
+
+.composer-run-mode {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   height: 22px;
   max-height: 22px;
   padding: 0 7px;
   border-radius: 999px;
-  font-size: 10px;
-  font-weight: 550;
+  font-size: 11px;
   letter-spacing: -0.01em;
   line-height: 1;
   border: 1px solid transparent;
   box-sizing: border-box;
-  transition: background-color 160ms var(--app-shell-motion), border-color 160ms var(--app-shell-motion), color 160ms var(--app-shell-motion);
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: background-color 160ms var(--app-shell-motion),
+    border-color 160ms var(--app-shell-motion), color 160ms var(--app-shell-motion);
 }
-.composer-permission-chip__icon {
+.composer-run-mode:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.composer-run-mode:focus-visible {
+  outline: 2px solid hsl(var(--primary) / 0.5);
+  outline-offset: 1px;
+}
+.composer-run-mode__icon {
   width: 12px;
   height: 12px;
   flex-shrink: 0;
 }
+.composer-run-mode__text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+.composer-run-mode__mode {
+  font-weight: 650;
+}
+/* 权限档：同一 pill 内的次级文本，靠字重/透明度分层，不再另起一个角标 */
+.composer-run-mode__detail {
+  font-size: 10px;
+  font-weight: 500;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+.composer-run-mode__detail::before {
+  content: '·';
+  margin-right: 4px;
+  opacity: 0.6;
+}
+.composer-run-mode__caret {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  opacity: 0.55;
+}
 
-/* auto：自动审批 —— 中性绿（默认安全） */
-.composer-permission-chip--auto {
+/* Chat —— 主色（只读讨论） */
+.composer-run-mode--chat {
+  color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.1);
+  border-color: hsl(var(--primary) / 0.22);
+}
+/* Work 按权限档换色：绿=默认安全 / 紫=克制规划 / 橙=放权激进 */
+.composer-run-mode--auto {
   color: hsl(142 60% 32%);
   background: hsl(142 60% 42% / 0.1);
   border-color: hsl(142 60% 42% / 0.25);
 }
-/* plan：计划模式 —— 紫（克制规划） */
-.composer-permission-chip--plan {
+.composer-run-mode--plan {
   color: hsl(245 60% 50%);
   background: hsl(245 60% 55% / 0.1);
   border-color: hsl(245 60% 55% / 0.25);
 }
-/* bypassPermissions：完全自动 —— 橙（放权激进） */
-.composer-permission-chip--bypassPermissions {
+.composer-run-mode--bypassPermissions {
   color: hsl(28 80% 48%);
   background: hsl(28 80% 55% / 0.1);
   border-color: hsl(28 80% 55% / 0.28);
 }
 
-.dark .composer-permission-chip--auto {
+.composer-run-mode:hover:not(:disabled),
+.composer-run-mode--open {
+  filter: brightness(1.04);
+  border-color: currentColor;
+}
+
+.dark .composer-run-mode--auto {
   color: hsl(142 55% 62%);
   background: hsl(142 55% 50% / 0.14);
   border-color: hsl(142 55% 50% / 0.3);
 }
-.dark .composer-permission-chip--plan {
+.dark .composer-run-mode--plan {
   color: hsl(245 70% 72%);
   background: hsl(245 70% 60% / 0.16);
   border-color: hsl(245 70% 60% / 0.32);
 }
-.dark .composer-permission-chip--bypassPermissions {
+.dark .composer-run-mode--bypassPermissions {
   color: hsl(28 85% 65%);
   background: hsl(28 85% 55% / 0.16);
   border-color: hsl(28 85% 55% / 0.34);
+}
+
+/* 分段选择器（子代理委派 / 思考强度共用） */
+.composer-eagerness-seg {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: hsl(var(--foreground) / 0.05);
+}
+.composer-eagerness-seg__btn {
+  height: 22px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 550;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  transition: background-color 140ms var(--app-shell-motion),
+    color 140ms var(--app-shell-motion);
+}
+.composer-eagerness-seg__btn:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.06);
+}
+.composer-eagerness-seg__btn--active {
+  color: hsl(var(--primary));
+  background: hsl(var(--background));
+  box-shadow: 0 1px 2px hsl(var(--foreground) / 0.08);
 }
 
 /* ===== 浮岛布局（对齐 TAgent_General AppShell 视觉，flex 行布局 + 玻璃浮岛） =====

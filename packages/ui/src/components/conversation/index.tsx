@@ -45,7 +45,11 @@ export function ConversationContent({
 }: ConversationContentProps): React.ReactElement {
   return (
     <StickToBottom.Content
-      scrollClassName="scrollbar-none will-change-scroll-position"
+      // overflow-y-auto 必须显式给：StickToBottom 只在挂载时探一次 getComputedStyle，
+      // 测到 overflow:visible 才注入 overflow:auto。Dockview 默认 onlyWhenVisible
+      // 会把非可见面板的 DOM 从文档摘掉，此时探测拿不到样式 → 容器永远不可滚动，
+      // 且该 effect 空依赖不会重跑。自己声明就与挂载时机彻底解耦。
+      scrollClassName="scrollbar-none will-change-scroll-position overflow-y-auto"
       className={cn('selectable-content flex flex-col gap-1 py-4 px-8', className)}
       {...props}
     />

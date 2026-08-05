@@ -57,11 +57,20 @@ const electronAPI = {
   /** 发消息（首次 spawn + 起循环，后续 enqueue 复用；按 channelId 绑核） */
   sendMessage: (input: SendMessageInput) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.SEND_MESSAGE, input),
-  /** 停止当前轮（软中断，保进程） */
+  /** 停止当前轮（软中断；主进程另推 turn_end 清 running） */
   stopAgent: (sessionId: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.STOP_AGENT, sessionId),
-  /** 引导 Agent（不中断当前轮，在下一轮边界注入用户消息） */
+  /**
+   * 引导 Agent（不中断当前轮）。
+   * 返回 `{ ok, mode: 'live' | 'pending_next_turn' }`：
+   * - live：kscc 长驻 enqueue
+   * - pending_next_turn：Pi 等降级，本轮结束后自动发送
+   */
   steerAgent: (sessionId: string, message: string) =>
-    ipcRenderer.invoke(AGENT_IPC_CHANNELS.STEER_AGENT, sessionId, message),
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.STEER_AGENT, sessionId, message) as Promise<{
+      ok: boolean
+      mode?: 'live' | 'pending_next_turn'
+      error?: string
+    }>,
   /** 保存附件到磁盘 */
   saveAttachment: (input: { sessionId: string; filename: string; mediaType: string; data: string }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.SAVE_ATTACHMENT, input),
@@ -193,11 +202,17 @@ const electronAPI = {
   /** 卸载整合包（移除 manifest 记录 + 仍匹配商店形态的 MCP + 记录的 Skill 目录） */
   uninstallStoreBundle: (slug: string, bundleId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UNINSTALL_STORE_BUNDLE, { slug, bundleId }) as Promise<{ ok: boolean; removedMcps: string[]; removedSkills: string[]; errors: string[] }>,
-  // 权限审批（主进程推请求 / renderer 回响应）
+  // 权限审批（主进程推请求 / 已决回听 / renderer 回响应）
   onPermissionRequest: (cb: (req: unknown) => void) => {
     const handler = (_e: unknown, req: unknown): void => cb(req)
     ipcRenderer.on(AGENT_IPC_CHANNELS.PERMISSION_REQUEST, handler)
     return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.PERMISSION_REQUEST, handler)
+  },
+  /** 主进程超时 deny 或用户 respond 后推送，渲染层按 reqId 出队 */
+  onPermissionResolved: (cb: (payload: unknown) => void) => {
+    const handler = (_e: unknown, payload: unknown): void => cb(payload)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.PERMISSION_RESOLVED, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.PERMISSION_RESOLVED, handler)
   },
   respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) =>
     ipcRenderer.send(AGENT_IPC_CHANNELS.PERMISSION_RESPOND, { reqId, behavior, remember }),

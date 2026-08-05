@@ -1,52 +1,61 @@
 /**
  * PermissionBanner — 工具权限确认面板
  *
- * 主进程推 PERMISSION_REQUEST 时显示。放在底栏栈内、composer 上方（从输入框上方伸出），
- * 靠文档流撑高底栏（非绝对浮窗），不挡输入框、不与滚动到底部按钮争位。
+ * 主进程推 PERMISSION_REQUEST 时入全局 per-session FIFO（jotai）；
+ * PERMISSION_RESOLVED（超时 deny / 用户 respond）出队，横幅与主进程一致。
+ * 放在底栏栈内、composer 上方（从输入框上方伸出），靠文档流撑高底栏。
+ * 显示当前请求；若同会话还有排队则显示 (+N)。
  * 允许 / 拒绝 / 始终允许（remember=true：本会话按工具名白名单；Bash 整类放行，危险/写结构仍会再问）。
  */
-import { useState, useEffect } from 'react'
+import { useMemo } from 'react'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { motion, AnimatePresence } from 'motion/react'
 import { ShieldWarning, Check, X } from '@phosphor-icons/react'
 import { AppTooltip } from '@tagent/ui'
 import { cn } from '../../lib/utils'
+import {
+  pendingPermissionMapAtom,
+  resolvePermissionAtom,
+  type PermissionReq,
+} from '../../atoms/permission-atoms'
 
-interface PermissionReq {
-  id: string
-  sessionId: string
-  toolName: string
-  input: Record<string, unknown>
-  dangerous: boolean
+function summarizePermissionInput(req: PermissionReq): string {
+  if (req.toolName === 'Bash') {
+    return (req.input.command as string) ?? (req.input.cmd as string) ?? ''
+  }
+  if (req.toolName === 'Write' || req.toolName === 'Edit') {
+    // kscc: file_path；pi-core: path
+    return (
+      (req.input.file_path as string) ??
+      (req.input.path as string) ??
+      ''
+    )
+  }
+  return JSON.stringify(req.input ?? {}).slice(0, 80)
 }
 
 export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Element {
-  const [req, setReq] = useState<PermissionReq | null>(null)
-
-  useEffect(() => {
-    const off = window.electronAPI.onPermissionRequest((r) => {
-      const pr = r as PermissionReq
-      // 只显示当前会话的请求
-      if (pr.sessionId === sessionId) setReq(pr)
-    })
-    return off
-  }, [sessionId])
+  // 订阅稳定 map atom（单例），再按 sessionId 取队列；勿用工厂 atom(sessionId) 每 render 新建
+  const map = useAtomValue(pendingPermissionMapAtom)
+  const queue = useMemo(() => map[sessionId] ?? [], [map, sessionId])
+  const resolveLocal = useSetAtom(resolvePermissionAtom)
+  const req = queue[0] ?? null
+  const queuedExtra = Math.max(0, queue.length - 1)
 
   const respond = (behavior: 'allow' | 'deny', remember = false): void => {
-    if (req) window.electronAPI.respondToPermission(req.id, behavior, remember)
-    setReq(null)
+    if (!req) return
+    // 乐观出队；主进程 pending 已无（超时）时 respond 静默忽略；RESOLVED 再来幂等
+    resolveLocal({ reqId: req.id, sessionId: req.sessionId })
+    window.electronAPI.respondToPermission(req.id, behavior, remember)
   }
 
-  const command =
-    req?.toolName === 'Bash'
-      ? (req.input.command as string) ?? ''
-      : req?.toolName === 'Write' || req?.toolName === 'Edit'
-        ? (req.input.file_path as string) ?? ''
-        : JSON.stringify(req?.input ?? {}).slice(0, 80)
+  const command = req ? summarizePermissionInput(req) : ''
 
   return (
     <AnimatePresence>
       {req && (
         <motion.div
+          key={req.id}
           initial={{ opacity: 0, y: 16, height: 0 }}
           animate={{ opacity: 1, y: 0, height: 'auto' }}
           exit={{ opacity: 0, y: 16, height: 0 }}
@@ -75,6 +84,14 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
                     危险
                   </span>
                 )}
+                {queuedExtra > 0 && (
+                  <span
+                    className="rounded bg-foreground/10 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                    title={`另有 ${queuedExtra} 条待确认`}
+                  >
+                    (+{queuedExtra})
+                  </span>
+                )}
               </div>
               <code className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
                 {command}
@@ -82,6 +99,7 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               <button
+                type="button"
                 onClick={() => respond('deny')}
                 className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
                 aria-label="拒绝"
@@ -98,6 +116,7 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
                 multiline
               >
                 <button
+                  type="button"
                   onClick={() => respond('allow', true)}
                   className="rounded-lg px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
                 >
@@ -105,6 +124,7 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
                 </button>
               </AppTooltip>
               <button
+                type="button"
                 onClick={() => respond('allow')}
                 className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-colors hover:bg-primary/90"
                 aria-label="允许"

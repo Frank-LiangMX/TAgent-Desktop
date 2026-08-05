@@ -1,13 +1,18 @@
 /**
- * 会话生命周期管理（长驻模式核心）
+ * 会话生命周期管理（双核：kscc 真长驻 / Pi 每轮重建 loop）
  *
- * 2026-07-25 长驻改造：会话 = 进程，常驻直到退出。
  * 见 docs/plans/2026-07-25-longlived-event-loop-rewrite-design.md §3。
  *
- * 一个会话一个 SessionRuntime，绑一个 kscc 进程。
- * - 首次消息：spawn kscc（带 resume，读一次历史）+ 起持续事件循环
- * - 后续消息：复用进程，enqueue 新消息
+ * **kscc 核**（真长驻）：
+ * - 首次消息：spawn kscc + 起持续事件循环
+ * - 后续消息：复用进程，enqueue 新消息；result 后 loop **不退**
  * - 会话关闭：destroy → 杀进程
+ *
+ * **Pi 核**（每 turn 后 loop 关闭，Agent 对象仍可在 adapter 内存）：
+ * - 每轮 result 后 `loopRunning=false`、`state='closed'`，`hasLiveProcess()` 变 false
+ * - 下一轮 sendMessage 走 isFirst 重建 SessionRuntime + 重走 `query()`（Pi 自管 state.messages）
+ * - **不要**把 Pi 当成「进程级长驻」：steer/enqueue 的 live 路径对 Pi 基本不可用，
+ *   由 session-service 降级为 pending_next_turn（本轮结束后自动发）
  *
  * 2026-07-29 Round 4 会话可靠性：
  * - 崩溃恢复：子进程异常退出 / channel 断连（非用户主动 stop）→ 自动 re-spawn + resumeSessionId
@@ -227,10 +232,13 @@ export class SessionRuntime {
   }
 
   /**
-   * 持续事件循环：遍历 adapter.query 流，result 后不退，等下条。
+   * 事件循环：遍历 adapter.query 流。
    *
-   * 外层 while 仅在「可恢复的崩溃」时再转一圈（re-spawn + resume）；正常长驻路径
-   * 一直在内层 for-await 里跑，不会回到外层。
+   * - **kscc**：result 后 for-await 不结束，等 channel 下条 enqueue（真长驻）
+   * - **Pi**：每 turn prompt 结束后 generator done → for-await 退出 → state=closed
+   *   （Agent 仍可在 PiAdapter.sessions 里；下一轮 re-query 复用 entry）
+   *
+   * 外层 while 仅在「可恢复的崩溃」时再转一圈（re-spawn + resume）。
    */
   private async runLoop(
     initialQueryOptions: Parameters<AgentProviderAdapter['query']>[0]
@@ -295,14 +303,15 @@ export class SessionRuntime {
               })
               return
             }
-            // 每轮 result：标记轮结束，发 turnEnd 信号（UI 知道这轮完）
-            // 循环不退，等下条 enqueue 触发新轮
+            // 每轮 result：清 turnInFlight + onTurnEnd（→ IPC turn_end / pending steer flush）
+            // kscc：for-await 不因 result 结束，继续等下条 enqueue
+            // Pi：generator 在 prompt 结束后 done，下面 for-await 退出 → 干净关闭
             this.turnInFlight = false
             this.lastInFlightPrompt = undefined
             this.onTurnEnd?.()
           }
         }
-        // 循环退出 = 进程退出（iterResult.done）/ abort
+        // 循环退出 = 进程退出（iterResult.done）/ abort / Pi 每 turn 正常收尾
         this.loopRunning = false
         // 用户主动关闭 → 永久 closed
         if (this.userClosing) {
@@ -316,7 +325,7 @@ export class SessionRuntime {
           return
         }
         // 进程在 turn 进行中退出（无 result 收尾）→ 视为崩溃，尝试恢复
-        // 注意：Pi 核每个 turn 正常 result 后 generator 也会退出，此时 turnInFlight=false，
+        // Pi 核每个 turn 正常 result 后 generator 也会退出，此时 turnInFlight=false，
         // 走 else 干净关闭（下一轮 sendMessage 自然 re-spawn），不会被误判为崩溃。
         if (this.turnInFlight) {
           // stderr 已命中过长上下文 → 降级提示，不当崩溃恢复
@@ -332,7 +341,7 @@ export class SessionRuntime {
           }
           crashed = true
         } else {
-          // turn 已正常结束后的退出（Pi 每 turn / kscc 干净退出）→ 关闭，下一轮重建
+          // turn 已正常结束后的退出（Pi 每 turn 常态；kscc 极少见干净退出）→ 关闭，下一轮重建
           this.state = 'closed'
           return
         }
@@ -441,21 +450,36 @@ export class SessionRuntime {
     } as Parameters<AgentProviderAdapter['query']>[0]
   }
 
-  /** 软中断当前 turn（保进程） */
+  /**
+   * 软中断当前 turn。
+   *
+   * - 置 `userStopping`：本轮异常退出不触发自动恢复
+   * - 清 `turnInFlight`：主进程侧栏 getSessionStatus 立刻 idle
+   * - **不**调 `onTurnEnd`：UI 的 turn_end / running 清理由 session-service STOP_AGENT
+   *   显式推（及渲染层 `userStopRun` 硬停）负责，避免与后续 result→onTurnEnd 双写混乱。
+   * - kscc：SDK interrupt 保进程；Pi：agent.abort 软停，Agent 实例可保留在 adapter Map
+   */
   async interrupt(): Promise<void> {
-    // 用户主动 stop：本轮若异常退出不触发自动恢复
     this.userStopping = true
     await this.adapter.interruptQuery?.(this.sessionId)
     this.turnInFlight = false
   }
 
-  /** 引导 Agent：不中断当前轮，在下一轮边界注入用户消息（Pi steer / kscc enqueue） */
-  async steerMessage(message: string): Promise<void> {
-    if (!this.hasLiveProcess()) return
+  /**
+   * 引导：仅在 **loop 仍存活** 时向 adapter 注入（kscc 长驻 enqueue 主路径）。
+   *
+   * - 有 live process → `sendQueuedMessage`，返回 `'live'`
+   * - 无 live process（Pi 每轮 result 后常态）→ 返回 `'noop'`，**不静默假装成功**；
+   *   调用方（session-service STEER_AGENT）须降级为 pending_next_turn
+   */
+  async steerMessage(message: string): Promise<'live' | 'noop'> {
+    if (!this.hasLiveProcess()) return 'noop'
+    if (!this.adapter.sendQueuedMessage) return 'noop'
     const steerInput = {
       message: { role: 'user' as const, content: message },
     }
-    await this.adapter.sendQueuedMessage?.(this.sessionId, steerInput as any)
+    await this.adapter.sendQueuedMessage(this.sessionId, steerInput as any)
+    return 'live'
   }
 
   /** 热切换活跃会话的权限模式（kscc 走 SDK setPermissionMode；Pi 靠 beforeToolCall 闭包读 meta，无需重建） */

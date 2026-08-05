@@ -22,7 +22,15 @@ export {
   type AnthropicStreamEvent,
   type ParsedLine,
 } from "./kscc-ndjson-parser.ts";
-export { spawnKsccBare, type KsccBareSpawnOptions, type KsccBareProcess } from "./kscc-spawn.ts";
+export {
+  spawnKsccBare,
+  resolveKsccSpawnInvocation,
+  isWindowsBatchFile,
+  quoteCmdArg,
+  type KsccBareSpawnOptions,
+  type KsccBareProcess,
+  type ResolvedSpawnInvocation,
+} from "./kscc-spawn.ts";
 
 // M2：antml 协议 + 工具 + 权限
 export {

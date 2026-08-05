@@ -20,6 +20,8 @@ interface SubagentEntryCardProps {
   items: TurnSourceItem[]
   /** 子代理任务卡片状态（task_started/progress/notification，无则 undefined） */
   card?: TaskCardState
+  /** 主线 launcher tool_use（Agent/task）input，用于任务描述 */
+  launcher?: { name: string; input: Record<string, unknown> } | null
   /** 当前会话仍在跑且本块属于最新一轮 */
   isLive?: boolean
   /** 点击入口：打开子代理独立会话页面 */
@@ -33,15 +35,28 @@ const STATUS_TEXT: Record<TaskCardState['status'], string> = {
   stopped: '已停止',
 }
 
+function launcherSummary(launcher?: { name: string; input: Record<string, unknown> } | null): string {
+  if (!launcher?.input) return ''
+  const desc = launcher.input.description ?? launcher.input.prompt
+  if (typeof desc === 'string' && desc.trim()) {
+    const t = desc.trim().replace(/\s+/g, ' ')
+    return t.length > 140 ? `${t.slice(0, 140)}…` : t
+  }
+  return ''
+}
+
 export function SubagentEntryCard({
   items,
   card,
+  launcher,
   isLive = false,
   onOpen,
 }: SubagentEntryCardProps): JSX.Element | null {
-  // 摘要：优先任务卡片描述，否则首条消息首段文本
+  // 摘要：任务卡描述 > launcher input > 子代理首条文本
   const summary = useMemo(() => {
     if (card?.description) return card.description
+    const fromLauncher = launcherSummary(launcher)
+    if (fromLauncher) return fromLauncher
     for (const it of items) {
       const m = it.message
       if (m?.type === 'assistant') {
@@ -50,11 +65,18 @@ export function SubagentEntryCard({
       }
     }
     return '子代理任务'
-  }, [card?.description, items])
+  }, [card?.description, launcher, items])
 
   const messageCount = items.filter((it) => it.message?.type === 'assistant').length
-  const status: TaskCardState['status'] = card?.status ?? (isLive ? 'running' : 'completed')
-  const statusText = card ? STATUS_TEXT[card.status] : isLive ? '运行中' : '已完成'
+  // 尚无子代理消息、无收口卡、会话 live → 运行中；仅有 launcher 且会话已结束 → 已完成
+  const status: TaskCardState['status'] =
+    card?.status ??
+    (messageCount === 0 && isLive
+      ? 'running'
+      : isLive && messageCount > 0 && !card
+        ? 'running'
+        : 'completed')
+  const statusText = card ? STATUS_TEXT[card.status] : STATUS_TEXT[status]
 
   return (
     <button
