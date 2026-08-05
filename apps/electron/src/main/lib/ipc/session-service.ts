@@ -55,7 +55,7 @@ import {
 } from '../memory'
 import { ksccSoftReset } from '../agent/kscc-soft-reset'
 import { resolveWorkspaceForSession } from '../workspace/workspace-manager'
-import { findFileByName } from './file-search'
+import { findFileByNameCached } from './file-search'
 import { getEnabledMcpServers } from '../mcp/mcp-store'
 import {
   PermissionService,
@@ -109,12 +109,6 @@ interface SendMessageInput {
    */
   executionMode?: ExecutionMode
 }
-
-// ===== 文件 chip 裸文件名查找（resolveFile 兜底，扫描实现见 ./file-search） =====
-
-/** 文件名查找结果缓存（文件名小写 → 绝对路径 | null） */
-const fileNameSearchCache = new Map<string, { path: string | null; at: number }>()
-const FILE_SEARCH_TTL_MS = 60_000
 
 export class SessionService {
   private runtimes = new Map<string, SessionRuntime>()
@@ -393,15 +387,8 @@ export class SessionService {
         if (!existsSync(abs)) {
           // 裸文件名（如 `Chat.tsx`）常规解析失败 → 项目内按文件名查找（与 resolveFile 同一兜底）
           if (!isAbsolute(target) && workspace?.projectDirectory) {
-            const cacheKey = `${workspace.projectDirectory}\0${basename(target).toLowerCase()}`
-            const cached = fileNameSearchCache.get(cacheKey)
-            if (cached && Date.now() - cached.at < FILE_SEARCH_TTL_MS) {
-              abs = cached.path ?? abs
-            } else {
-              const found = findFileByName(workspace.projectDirectory, basename(target))
-              fileNameSearchCache.set(cacheKey, { path: found, at: Date.now() })
-              if (found) abs = found
-            }
+            const found = findFileByNameCached(workspace.projectDirectory, basename(target))
+            if (found) abs = found
           }
           if (!existsSync(abs)) return { ok: false, error: `文件不存在：${abs}` }
         }
@@ -423,10 +410,10 @@ export class SessionService {
         if (!target) return null
         const candidates: string[] = []
         const workspace = resolveWorkspaceForSession(input.sessionId)
+        const bases = (input.bases ?? []).filter(Boolean)
         if (isAbsolute(target)) {
           candidates.push(target)
         } else {
-          const bases = (input.bases ?? []).filter(Boolean)
           for (const base of bases) candidates.push(resolve(base, target))
           if (workspace?.projectDirectory) {
             candidates.push(resolve(workspace.projectDirectory, target))
@@ -436,14 +423,11 @@ export class SessionService {
           if (existsSync(abs)) return abs
         }
         // 兜底：裸文件名/短路径（如 `Chat.tsx`）常规解析失败 → 项目内按文件名递归查找。
-        // 排除依赖/产物目录、限深度与扫描量，结果带模块级缓存（文件名 → 绝对路径）。
-        if (!isAbsolute(target) && workspace?.projectDirectory) {
-          const fileName = basename(target)
-          const cacheKey = `${workspace.projectDirectory}\0${fileName.toLowerCase()}`
-          const cached = fileNameSearchCache.get(cacheKey)
-          if (cached && Date.now() - cached.at < FILE_SEARCH_TTL_MS) return cached.path
-          const found = findFileByName(workspace.projectDirectory, fileName)
-          fileNameSearchCache.set(cacheKey, { path: found, at: Date.now() })
+        // 排除依赖/产物目录、限深度与扫描量，命中结果带模块级缓存（见 file-search）。
+        // 草稿会话还没落 meta，反查不到 workspace，此时用渲染层注入的 base 当扫描根。
+        const searchRoot = workspace?.projectDirectory ?? bases[0]
+        if (!isAbsolute(target) && searchRoot) {
+          const found = findFileByNameCached(searchRoot, basename(target))
           if (found) return found
         }
         return null

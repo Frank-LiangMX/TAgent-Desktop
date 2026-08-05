@@ -74,6 +74,11 @@ import {
   groupItemsIntoTurns,
   isRealUserInput,
 } from './session-turn-model'
+import {
+  applyThinkingDelta,
+  purgeStreamingItems,
+  upsertStreamItem as upsertStreamItemModel,
+} from './stream-item-model'
 import { ChatInput, type ChatInputHandle } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
 import { WorkspaceSelector } from './WorkspaceSelector'
@@ -104,7 +109,7 @@ import {
   type ModelSelection,
 } from '../../atoms/model-selection'
 import { tabsAtom, activeTabIdAtom, materializeTab } from '../../atoms/tabs'
-import { loadWorkspacesAtom } from '../../atoms/workspace-atoms'
+import { loadWorkspacesAtom, workspacesAtom } from '../../atoms/workspace-atoms'
 import { pendingSuggestionAtom } from '../../atoms/pending-suggestion'
 import {
   makeStatusTickerItem,
@@ -1026,73 +1031,17 @@ export function Chat({
   ): DisplayItem =>
     existing ? { ...existing, taskCard: card } : { key: `task${itemIdxRef.current++}`, taskCard: card }
 
-  /**
-   * 清掉纯流式占位（无 message / 任务卡 / 压缩行）。
-   * 落盘 sdk_message 后必须 purge，否则会与最终正文叠成双份。
-   */
-  const purgeStreamingItems = (prev: DisplayItem[]): DisplayItem[] =>
-    prev.filter((it) => Boolean(it.message || it.taskCard || it.compactStatus))
-
+  /** 包装 stream-item-model.upsertStreamItem，同步 streamingRef / itemIdxRef */
   const upsertStreamItem = (
     prev: DisplayItem[],
     patch: Partial<Pick<DisplayItem, 'streamingText' | 'streamingThinking' | 'streamUuid'>>,
   ): DisplayItem[] => {
-    const uuid = patch.streamUuid
-
-    // 优先按 uuid 命中已有项（含中间 sdk_message 升级后仍在列表中的 assistant）
-    if (uuid) {
-      const byUuid = prev.find(
-        (it) =>
-          it.streamUuid === uuid ||
-          (it.message?.type === 'assistant' && it.message.uuid === uuid),
-      )
-      if (byUuid) {
-        const next: DisplayItem = {
-          ...byUuid,
-          streaming: true,
-          streamUuid: uuid,
-          streamingText:
-            patch.streamingText !== undefined ? patch.streamingText : byUuid.streamingText,
-          streamingThinking:
-            patch.streamingThinking !== undefined
-              ? patch.streamingThinking
-              : byUuid.streamingThinking,
-        }
-        streamingRef.current = next
-        return prev.map((it) => (it.key === byUuid.key ? next : it))
-      }
-    }
-
-    const base = purgeStreamingItems(prev)
-    const existing = streamingRef.current
-    const inList = existing ? prev.some((it) => it.key === existing.key && it.streaming) : false
-    // 已有流式项但 uuid 不同 → 新 assistant 消息，不复用旧占位
-    const uuidMismatch =
-      Boolean(uuid) && Boolean(existing?.streamUuid) && existing!.streamUuid !== uuid
-    if (!inList || !existing || uuidMismatch) {
-      const created: DisplayItem = {
-        key: `s${itemIdxRef.current++}`,
-        streaming: true,
-        streamUuid: uuid,
-        streamingText: patch.streamingText ?? '',
-        streamingThinking: patch.streamingThinking ?? '',
-      }
-      streamingRef.current = created
-      return [...base, created]
-    }
-    const next: DisplayItem = {
-      ...existing,
-      streaming: true,
-      streamUuid: uuid ?? existing.streamUuid,
-      streamingText:
-        patch.streamingText !== undefined ? patch.streamingText : existing.streamingText,
-      streamingThinking:
-        patch.streamingThinking !== undefined
-          ? patch.streamingThinking
-          : existing.streamingThinking,
-    }
-    streamingRef.current = next
-    return prev.map((it) => (it.key === existing.key ? next : it))
+    const result = upsertStreamItemModel(prev, patch, {
+      currentStreaming: streamingRef.current,
+      allocKey: () => `s${itemIdxRef.current++}`,
+    })
+    streamingRef.current = result.streamingItem
+    return result.items
   }
 
   // thinking delta 的 rAF 合并缓冲：同一帧内多次 delta 只 flush 一次（渲染频率从"每事件"降到"每帧"）
@@ -1108,23 +1057,13 @@ export function Chat({
     // 不清 pendingThinkingUuidRef：后续同 turn 帧可继续用
     if (!delta) return
     setItems((prev) => {
-      const cur = streamingRef.current
-      // 优先 uuid 命中；否则要求 streamingRef 仍在列表
-      const bound =
-        (uuid &&
-          prev.find(
-            (it) =>
-              it.streamUuid === uuid ||
-              (it.message?.type === 'assistant' && it.message.uuid === uuid),
-          )) ||
-        (cur && prev.some((it) => it.key === cur.key) ? cur : undefined)
-      // 流式项已被落盘就地升级且无 uuid 可绑 → 思考全文已在 message，丢弃尾部缓冲
-      if (!bound) return prev
-      const prevThink = bound.streamingThinking ?? ''
-      return upsertStreamItem(prev, {
-        streamingThinking: prevThink + delta,
-        streamUuid: uuid,
+      // 绑不到不代表该丢：kscc thinking 先于正文、无空占位时必须新建（见 applyThinkingDelta）
+      const result = applyThinkingDelta(prev, delta, uuid, {
+        currentStreaming: streamingRef.current,
+        allocKey: () => `s${itemIdxRef.current++}`,
       })
+      streamingRef.current = result.streamingItem
+      return result.items
     })
   }, [])
 
@@ -1195,6 +1134,10 @@ export function Chat({
       const streamingKey = streamingRef.current?.key
       const streamingUuid = streamingRef.current?.streamUuid
       streamingRef.current = null
+      // 落盘消息已含本段完整 thinking：丢掉同帧未 flush 的尾部缓冲，否则会重复追加。
+      // 这是丢弃缓冲的唯一正确时机——放在 flush 里按「绑不到就丢」会误杀整段 kscc 思考。
+      pendingThinkingRef.current = ''
+      pendingThinkingUuidRef.current = undefined
       // assistant.usage 更新底栏（Pi）；kscc 圆环不展示，但状态可写无害
       if (p.message.type === 'assistant' && p.message.usage) {
         applyUsage(p.message.usage)
@@ -1833,32 +1776,40 @@ export function Chat({
     </div>
   )
 
-  // 消息内文件 chip 的注入上下文：打开/存在性检查走主进程 IPC；
-  // 存在性结果（含 null）短期缓存，避免流式逐帧重建 chip 时每帧打 IPC
+  // 消息内文件 chip 的注入上下文：打开/存在性检查走主进程 IPC。
   const setFilePreviewRequest = useSetAtom(filePreviewRequestAtom)
+  const workspaces = useAtomValue(workspacesAtom)
+  /** 会话工作区的项目绝对目录：chip 解析相对路径的 base。草稿会话主进程反查不到 workspace，只能靠这里注入。 */
+  const workspaceDirectory =
+    workspaces.find((w) => w.id === session.workspaceId)?.projectDirectory ?? null
+  // 只缓存命中：null 多半是「Agent 刚说要建、文件还没落盘」，缓存下来会把 chip 锁死成「文件不存在」
+  const resolveHitCacheRef = useRef(new Map<string, { path: string; at: number }>())
+  // 依赖只挂 workspaceDirectory（字符串）：context value 每变一次，下游所有 chip 都会重跑解析
   const filePathProviderValue = useMemo(() => {
-    const negCache = new Map<string, { value: string | null; at: number }>()
-    const NEG_TTL = 10_000
+    const HIT_TTL = 10_000
+    const hitCache = resolveHitCacheRef.current
     return {
+      basePaths: workspaceDirectory ? [workspaceDirectory] : undefined,
       // 点击文件 chip → 右侧分屏打开应用内预览（dock 监听 filePreviewRequestAtom 开 pane）
       onOpenFile: (path: string): void => {
         setFilePreviewRequest({ sessionId: sessionIdRef.current, path })
       },
       onResolveFile: async (path: string, bases?: string[]): Promise<string | null> => {
         const key = `${path}\0${(bases ?? []).join('\0')}`
-        const hit = negCache.get(key)
-        if (hit && Date.now() - hit.at < NEG_TTL) return hit.value
+        const hit = hitCache.get(key)
+        if (hit && Date.now() - hit.at < HIT_TTL) return hit.path
         const resolved = await window.electronAPI.resolveFile({
           sessionId: sessionIdRef.current,
           path,
           bases,
         })
-        negCache.set(key, { value: resolved, at: Date.now() })
+        if (resolved) hitCache.set(key, { path: resolved, at: Date.now() })
+        else hitCache.delete(key)
         return resolved
       },
       getSessionId: () => sessionIdRef.current,
     }
-  }, [])
+  }, [workspaceDirectory, setFilePreviewRequest])
 
   return (
     <MessageFilePathProvider value={filePathProviderValue}>

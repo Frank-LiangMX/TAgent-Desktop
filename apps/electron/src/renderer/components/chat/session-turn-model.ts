@@ -442,7 +442,13 @@ export function buildTurnPresentation(
   }
 
   // 末尾连续 text 作为交付回答。
-  // 整轮 live 时一律不拆：中间文案留在过程区一条路上往下排，避免抽到回答区再跳回来。
+  //
+  // 运行中同样要拆。曾经用 !isLiveTurn 一刀切留在过程区，代价是：正文落盘那一刻
+  // streamingText 被清空、回答区瞬间变空，同一段文字改以 80 字截断的灰字出现在
+  // 过程区，并被后续条目顶走——整轮跑完才排版出 Markdown。
+  //
+  // 「说一句再调工具」的中间文案由 hasOpenTools 兜住：工具还没回结果就说明本段
+  // 不是交付，文字留在过程区；工具全部有结果后的尾部文字才是回答。
   const trailingTextStart = getTrailingTextStart(allBlocks.map((x) => x.block))
   const hasOpenTools = allBlocks.some(
     ({ block }) =>
@@ -450,11 +456,7 @@ export function buildTurnPresentation(
       !resultById.has((block as TAgentToolUseBlock).id),
   )
   const splitAnswer =
-    trailingTextStart !== null &&
-    trailingTextStart > 0 &&
-    !isLiveTurn &&
-    !isStreaming &&
-    !hasOpenTools
+    trailingTextStart !== null && trailingTextStart > 0 && !hasOpenTools
 
   const processEnd = splitAnswer ? trailingTextStart! : allBlocks.length
 
