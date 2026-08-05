@@ -10,10 +10,12 @@ import {
   PROCESS_TEXT_PREVIEW_MAX_CHARS,
   THINKING_PREVIEW_MAX_CHARS,
   THINKING_PREVIEW_MAX_LINES,
+  buildProcessGroupHeaderLabel,
   buildProcessTextPreview,
   buildThinkingPreview,
   findLastProcessKey,
   planProcessGroupCollapse,
+  projectConciseProcess,
   shouldCollapseProcessText,
   shouldCollapseThinking,
 } from './process-group-model'
@@ -52,12 +54,56 @@ describe('planProcessGroupCollapse', () => {
     ).toBe('keep')
   })
 
-  it('调用方关闭自动展开（子代理详情页）时运行中不展开', () => {
+  it('子代理详情页(autoExpandWhenLive=false)运行中未手动展开 → 强制收起（默认只一行摘要）', () => {
     expect(
       planProcessGroupCollapse({
         live: true,
         wasLive: true,
         userToggled: false,
+        autoExpandWhenLive: false,
+      }),
+    ).toBe('collapse')
+  })
+
+  it('子代理详情页运行中用户已手动展开 → keep', () => {
+    expect(
+      planProcessGroupCollapse({
+        live: true,
+        wasLive: true,
+        userToggled: true,
+        autoExpandWhenLive: false,
+      }),
+    ).toBe('keep')
+  })
+
+  it('子代理详情页 live→idle 不进倒计时（折叠态无 3-2-1 闪）→ 直接收起', () => {
+    expect(
+      planProcessGroupCollapse({
+        live: false,
+        wasLive: true,
+        userToggled: false,
+        autoExpandWhenLive: false,
+      }),
+    ).toBe('collapse')
+  })
+
+  it('子代理详情页历史轮挂载（非本轮结束）直接收起', () => {
+    expect(
+      planProcessGroupCollapse({
+        live: false,
+        wasLive: false,
+        userToggled: false,
+        autoExpandWhenLive: false,
+      }),
+    ).toBe('collapse')
+  })
+
+  it('子代理详情页用户手动展开过 → live→idle 保持（keep）', () => {
+    expect(
+      planProcessGroupCollapse({
+        live: false,
+        wasLive: true,
+        userToggled: true,
         autoExpandWhenLive: false,
       }),
     ).toBe('keep')
@@ -164,5 +210,148 @@ describe('findLastProcessKey', () => {
 
   it('没有该类型时返回 null', () => {
     expect(findLastProcessKey([], 'thinking')).toBeNull()
+  })
+})
+
+describe('buildProcessGroupHeaderLabel', () => {
+  const base = {
+    liveHint: null as string | null,
+    toolCount: 0,
+    thinkingCount: 0,
+    toolsDone: 0,
+    fallbackLabel: '执行过程',
+    thinkingDurationSec: undefined as number | undefined,
+  }
+
+  it('live：提示 + 工具进度', () => {
+    expect(
+      buildProcessGroupHeaderLabel({
+        ...base,
+        live: true,
+        liveHint: '正在思考…',
+        toolCount: 2,
+        toolsDone: 1,
+        displayMode: 'full',
+      }),
+    ).toBe('正在思考… · 1/2')
+  })
+
+  it('full idle：步数 + 思考段数', () => {
+    expect(
+      buildProcessGroupHeaderLabel({
+        ...base,
+        live: false,
+        toolCount: 3,
+        thinkingCount: 2,
+        displayMode: 'full',
+      }),
+    ).toBe('已执行 3 步 · 含 2 段思考')
+  })
+
+  it('concise idle：Cursor 风格「思考了 N 秒」', () => {
+    expect(
+      buildProcessGroupHeaderLabel({
+        ...base,
+        live: false,
+        thinkingCount: 1,
+        thinkingDurationSec: 12,
+        displayMode: 'concise',
+      }),
+    ).toBe('思考了 12 秒')
+  })
+
+  it('concise idle：思考 + 工具', () => {
+    expect(
+      buildProcessGroupHeaderLabel({
+        ...base,
+        live: false,
+        thinkingCount: 1,
+        toolCount: 4,
+        thinkingDurationSec: 8,
+        displayMode: 'concise',
+      }),
+    ).toBe('思考了 8 秒 · 4 步')
+  })
+
+  it('concise idle：无思考仅工具', () => {
+    expect(
+      buildProcessGroupHeaderLabel({
+        ...base,
+        live: false,
+        toolCount: 2,
+        displayMode: 'concise',
+      }),
+    ).toBe('已执行 2 步')
+  })
+
+  it('concise idle：有思考但无时长 → 思考了几秒', () => {
+    expect(
+      buildProcessGroupHeaderLabel({
+        ...base,
+        live: false,
+        thinkingCount: 1,
+        displayMode: 'concise',
+      }),
+    ).toBe('思考了几秒')
+  })
+})
+
+describe('projectConciseProcess', () => {
+  it('所有 thinking 合并成一块（拼接文本），tool/text 保序', () => {
+    const process: ProcessEntry[] = [
+      { type: 'thinking', key: 'think-0', thinking: '先读文件' },
+      { type: 'tool', key: 'tool-0', tool: { type: 'tool_use', id: 't0', name: 'Read', input: {} } },
+      { type: 'thinking', key: 'think-1', thinking: '再想一下' },
+      { type: 'tool', key: 'tool-1', tool: { type: 'tool_use', id: 't1', name: 'Edit', input: {} } },
+      { type: 'text', key: 'text-0', text: '中间正文' },
+    ]
+    const out = projectConciseProcess(process)
+    const thinks = out.filter((p) => p.type === 'thinking')
+    expect(thinks).toHaveLength(1)
+    expect(thinks[0]?.type === 'thinking' && thinks[0].thinking).toBe('先读文件\n\n再想一下')
+    expect(thinks[0]?.type === 'thinking' && thinks[0].key).toBe('concise-thinking-merged')
+    // 非 thinking 条目保序
+    expect(out.map((p) => p.type)).toEqual(['thinking', 'tool', 'tool', 'text'])
+  })
+
+  it('无 thinking 时保序返回（仅 tool/text）', () => {
+    const process: ProcessEntry[] = [
+      { type: 'tool', key: 'tool-0', tool: { type: 'tool_use', id: 't0', name: 'Read', input: {} } },
+      { type: 'text', key: 'text-0', text: '中间正文' },
+    ]
+    const out = projectConciseProcess(process)
+    expect(out.map((p) => p.type)).toEqual(['tool', 'text'])
+  })
+
+  it('空 thinking 段被丢弃，不污染合并块', () => {
+    const process: ProcessEntry[] = [
+      { type: 'thinking', key: 'think-0', thinking: '有内容' },
+      { type: 'thinking', key: 'think-1', thinking: '   ' },
+    ]
+    const out = projectConciseProcess(process)
+    const thinks = out.filter((p) => p.type === 'thinking')
+    expect(thinks).toHaveLength(1)
+    expect(thinks[0]?.type === 'thinking' && thinks[0].thinking).toBe('有内容')
+  })
+
+  it('仅 thinking 时合并为单块', () => {
+    const process: ProcessEntry[] = [
+      { type: 'thinking', key: 'think-0', thinking: '一段' },
+      { type: 'thinking', key: 'think-1', thinking: '二段' },
+    ]
+    const out = projectConciseProcess(process)
+    expect(out).toHaveLength(1)
+    expect(out[0]?.type === 'thinking' && out[0].thinking).toBe('一段\n\n二段')
+  })
+
+  it('投影幂等：再投影一次结果不变', () => {
+    const process: ProcessEntry[] = [
+      { type: 'thinking', key: 'think-0', thinking: '一段' },
+      { type: 'tool', key: 'tool-0', tool: { type: 'tool_use', id: 't0', name: 'Read', input: {} } },
+      { type: 'thinking', key: 'think-1', thinking: '二段' },
+    ]
+    expect(projectConciseProcess(projectConciseProcess(process))).toEqual(
+      projectConciseProcess(process),
+    )
   })
 })

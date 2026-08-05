@@ -2,10 +2,11 @@
  * AssistantTurnView — 一轮助手主线（对齐 General 的 turn 分层）
  *
  * - 模型铭牌 ×1 + 运行中计时 / 完成后时间
- * - 过程区：运行中始终展开
+ * - 过程区：full / concise live 均打开（concise 靠思考紧凑预览 + 工具短句做轻量）；idle 收起摘要
  * - 回答区 + 底部复制
  */
 import { useMemo, useRef } from 'react'
+import { useAtomValue } from 'jotai'
 import {
   Message,
   MessageContent,
@@ -21,6 +22,7 @@ import {
   findSubagentTaskTool,
   listSubagentEntryIds,
   type SessionRenderTurn,
+  type TurnStreamState,
 } from './session-turn-model'
 import type { TaskCardState } from './subagent-ui-model'
 import type { TurnDuration } from '@tagent/shared'
@@ -31,11 +33,14 @@ import {
   useLiveElapsedMs,
 } from '../../lib/time-utils'
 import { MentionChip } from './MentionText'
+import { chatProcessDisplayModeAtom } from '../../atoms/chat-display-prefs'
 
 interface AssistantTurnViewProps {
   turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>
   /** 当前会话仍在跑且本 turn 是最新一轮（含工具间隙） */
   isLiveTurn?: boolean
+  /** 会话级流式缓冲（live 轮 delta 累积，不绑 DisplayItem） */
+  streamState?: TurnStreamState
   /** Chat @ 本轮点名角色展示名（顺序） */
   mentionLabels?: string[]
   /** 完成耗时（发送→idle 全程 + 结束方式；仅结束后由 Chat 传入）。复制栏/标题行显示耗时 */
@@ -49,6 +54,7 @@ interface AssistantTurnViewProps {
 export function AssistantTurnView({
   turn,
   isLiveTurn = false,
+  streamState,
   mentionLabels,
   completedDuration,
   subagentCards,
@@ -64,13 +70,24 @@ export function AssistantTurnView({
     if (m.parentToolUseId) return false
     return true
   })
+  // 过程展示模式：透传给 buildTurnPresentation（W1 后不影响拆分时机）与 ProcessGroupView（行密度）
+  const processDisplayMode = useAtomValue(chatProcessDisplayModeAtom)
   // 拆分由 buildTurnPresentation 按 Proma 契约决定：live 未可拆时不喂回答壳
   const presentation = buildTurnPresentation(
     { ...turn, items: mainItems },
-    { isLiveTurn },
+    {
+      isLiveTurn,
+      streamState: isLiveTurn ? streamState : undefined,
+      displayMode: processDisplayMode,
+    },
   )
 
   const processLive = isLiveTurn
+
+  // W1.4：本轮曾经 live 即记 true（用于打字机尾段防闪）。历史轮挂载时 isLiveTurn 恒 false，
+  // 不会置位——避免历史答案被误当流式重新逐字。
+  const wasLiveRef = useRef(false)
+  if (isLiveTurn) wasLiveRef.current = true
 
   // 回答正文：流式与落盘取「更长且互为前缀」的那份，避免 answerFull 抢先导致
   // useSmoothStream 回退/重入队 → 画面上出现重复字（完成后又正常）。
@@ -78,15 +95,21 @@ export function AssistantTurnView({
   const answerFull = presentation.answerTexts[0] ?? ''
   const streamText = presentation.streamingText ?? ''
   const content = resolveAnswerContent(answerFull, streamText)
-  // 仅在「文本仍在增长或打字机未追上」时开流式；整轮 isLiveTurn（含纯工具间隙）不必强开
+  // 仅在「文本仍在增长或打字机未追上」时开流式；整轮 isLiveTurn（含纯工具间隙）不必强开。
+  // W1.4：外置后即便 idle 把 isStreaming 翻 false，只要 content 仍长于已显示内容，
+  // 继续把 isStreaming 视作 true 喂 useSmoothStream——走 rAF 逐字排空，而非非流式分支
+  // 一次性 setDisplayedContent(content) 把剩余正文整段砸出 → 闪现。
+  const displayedLenRef = useRef(0)
   const needsTypewriter =
     presentation.isStreaming ||
     Boolean(streamText) ||
-    (isLiveTurn && Boolean(content) && Boolean(streamText || presentation.isStreaming))
+    (isLiveTurn && Boolean(content) && Boolean(streamText || presentation.isStreaming)) ||
+    (wasLiveRef.current && content.length > displayedLenRef.current)
   const { displayedContent } = useSmoothStream({
     content,
     isStreaming: needsTypewriter,
   })
+  displayedLenRef.current = displayedContent.length
 
   // 有过程块且尚无交付 text 时不展示空回答壳（避免 MessageLoading 与过程区抢镜闪一下）
   const showAnswerShell =
@@ -119,6 +142,13 @@ export function AssistantTurnView({
   }
   const startedAt = turnCreatedAt ?? liveStartRef.current ?? undefined
   const elapsedMs = useLiveElapsedMs(startedAt, isLiveTurn)
+
+  // concise 标题用：live 取当前已过秒；完成后优先 completedDuration
+  const thinkingDurationSec = isLiveTurn
+    ? Math.floor(elapsedMs / 1000)
+    : completedDuration
+      ? Math.max(1, Math.round(completedDuration.ms / 1000))
+      : undefined
 
   const statusLabel = isLiveTurn
     ? `运行 ${formatElapsedDuration(elapsedMs)}`
@@ -169,7 +199,15 @@ export function AssistantTurnView({
 
       {presentation.process.length > 0 && (
         <div className="agent-turn-process">
-          <ProcessGroupView process={presentation.process} isLive={processLive} />
+          <ProcessGroupView
+            process={presentation.process}
+            isLive={processLive}
+            // W2：concise 与 full 都让 live 过程区打开——concise 靠行密度（思考紧凑预览、
+            // 工具短句）做轻量，而非把过程藏成一行（agent-live-activity 早退已删）。
+            autoExpandWhenLive
+            displayMode={processDisplayMode}
+            thinkingDurationSec={thinkingDurationSec}
+          />
         </div>
       )}
 
