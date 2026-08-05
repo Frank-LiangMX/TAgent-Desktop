@@ -351,10 +351,34 @@ export function groupItemsIntoTurns(items: TurnSourceItem[]): SessionRenderTurn[
 }
 
 /**
+ * 尾部 text 之前的 tool_use 是否全部已有 result。
+ * 没有任何 tool_use 时返回 false——避免 streaming/live 时「thinking + text」被提前外置，
+ * 随后 tool 一来又跳回过程区（闪空）。对齐 Proma/General `areToolsBeforeIndexCompleted`。
+ */
+export function areToolsBeforeIndexCompleted(
+  blocks: TAgentContentBlock[],
+  endIndex: number,
+  completedToolResultIds: ReadonlySet<string>,
+): boolean {
+  let hasToolUse = false
+  for (let index = 0; index < endIndex; index++) {
+    const block = blocks[index]
+    if (block?.type !== 'tool_use') continue
+    hasToolUse = true
+    if (!completedToolResultIds.has((block as TAgentToolUseBlock).id)) return false
+  }
+  return hasToolUse
+}
+
+/**
  * 从 turn 源 items 构建展示：过程组 + 最终回答 + 流式
  *
- * @param options.isLiveTurn 整轮仍在跑（含工具间隙）。为 true 时不把末尾 text 拆进回答区，
- *   避免「过程区出现一段字 → 下一拍抽到回答区」的跳变。
+ * 拆分契约（对齐 Proma/General `buildAssistantTurnRenderItems`）：
+ * - live/streaming 且已有过程块（thinking/tool）时：仅当尾部 text 之前存在 tool_use
+ *   且全部已有 result，才外置到回答区；否则整轮留在过程组（含 streamingText）。
+ * - 历史轮或无过程块：按尾部连续 text 外置（纯 text 直接进回答）。
+ *
+ * @param options.isLiveTurn 整轮仍在跑（含工具间隙）
  */
 export function buildTurnPresentation(
   turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>,
@@ -441,22 +465,27 @@ export function buildTurnPresentation(
     })
   }
 
-  // 末尾连续 text 作为交付回答。
-  //
-  // 运行中同样要拆。曾经用 !isLiveTurn 一刀切留在过程区，代价是：正文落盘那一刻
-  // streamingText 被清空、回答区瞬间变空，同一段文字改以 80 字截断的灰字出现在
-  // 过程区，并被后续条目顶走——整轮跑完才排版出 Markdown。
-  //
-  // 「说一句再调工具」的中间文案由 hasOpenTools 兜住：工具还没回结果就说明本段
-  // 不是交付，文字留在过程区；工具全部有结果后的尾部文字才是回答。
-  const trailingTextStart = getTrailingTextStart(allBlocks.map((x) => x.block))
-  const hasOpenTools = allBlocks.some(
-    ({ block }) =>
-      block.type === 'tool_use' &&
-      !resultById.has((block as TAgentToolUseBlock).id),
-  )
+  // 末尾连续 text 作为交付回答（条件拆分，禁止两个极端）：
+  // - live 一律不拆 → R2：正文变过程区灰字，完成后才 Markdown
+  // - 仅 !hasOpenTools 就拆 → thinking+text 提前进回答，tool 一来跳回（闪空）
+  const blockList = allBlocks.map((x) => x.block)
+  const trailingTextStart = getTrailingTextStart(blockList)
+  // 流式思考尚未落盘时也算过程块，否则 streamingText 会旁路进回答壳
+  const hasProcessBlock =
+    blockList.some((b) => b.type === 'tool_use' || b.type === 'thinking') ||
+    Boolean((isStreaming || isLiveTurn) && streamingThinking?.trim())
+  const completedIds = new Set(resultById.keys())
+  const canSplitStreamingFinal =
+    trailingTextStart !== null &&
+    trailingTextStart > 0 &&
+    areToolsBeforeIndexCompleted(blockList, trailingTextStart, completedIds)
+  const isActive = isStreaming || isLiveTurn
+  // live/streaming + 有过程块：必须工具前置完成才拆；否则整轮留过程组
+  // 历史 / 无过程块：经典尾部外置（纯 text 走下方「全 text 当回答」分支）
   const splitAnswer =
-    trailingTextStart !== null && trailingTextStart > 0 && !hasOpenTools
+    trailingTextStart !== null &&
+    trailingTextStart > 0 &&
+    (isActive && hasProcessBlock ? canSplitStreamingFinal : true)
 
   const processEnd = splitAnswer ? trailingTextStart! : allBlocks.length
 
@@ -531,14 +560,41 @@ export function buildTurnPresentation(
     }
   }
 
+  const streamText = streamingText?.trim() ?? ''
+
+  // live/streaming 且未达拆分条件：streamingText 只进过程区，禁止旁路喂回答壳（防闪空）
+  const holdStreamInProcess = isActive && hasProcessBlock && !splitAnswer
+  if (holdStreamInProcess && streamText) {
+    const lastTextIdx = (() => {
+      for (let i = process.length - 1; i >= 0; i--) {
+        if (process[i]?.type === 'text') return i
+      }
+      return -1
+    })()
+    if (lastTextIdx >= 0) {
+      const last = process[lastTextIdx] as Extract<ProcessEntry, { type: 'text' }>
+      if (
+        !last.text.trim() ||
+        streamText.startsWith(last.text.trim()) ||
+        last.text.trim().startsWith(streamText) ||
+        last.key === 'stream-text'
+      ) {
+        process[lastTextIdx] = { type: 'text', key: last.key, text: streamText }
+      } else {
+        process.push({ type: 'text', key: 'stream-text', text: streamText })
+      }
+    } else {
+      process.push({ type: 'text', key: 'stream-text', text: streamText })
+    }
+  }
+
   // 回答区用 useSmoothStream 逐字挤出。AssistantTurnView 用 resolveAnswerContent 合并
   // answerFull / streamingText（取更长前缀），避免「落盘短于流式」时 content 回缩导致重复字。
-  // 落盘后若 stream 与 answer 同源，可清 stream，减少双源抖动。
-  const streamText = streamingText?.trim() ?? ''
   const finalAnswers = answerJoined ? [answerJoined] : []
 
   // 过程区 text 若与回答同源（前缀/相同），去掉，避免过程+回答双显「重复字」
   const answerOverlay = (() => {
+    if (holdStreamInProcess) return '' // 流式正文故意在过程区，不剥
     if (streamText && answerJoined) {
       if (streamText.startsWith(answerJoined) || answerJoined.startsWith(streamText)) {
         return streamText.length >= answerJoined.length ? streamText : answerJoined
@@ -561,7 +617,9 @@ export function buildTurnPresentation(
   }
 
   // stream 已被完整 answer 覆盖时不再回传 stream（防 content 在两者间抖动）
+  // holdStreamInProcess 时也不回传——回答区不应吃这段
   const keepStream =
+    !holdStreamInProcess &&
     streamText.length > 0 &&
     !(answerJoined && (answerJoined === streamText || answerJoined.startsWith(streamText)))
 
@@ -569,7 +627,7 @@ export function buildTurnPresentation(
     modelId,
     process,
     answerTexts: finalAnswers,
-    isStreaming: isStreaming && !answerJoined,
+    isStreaming: isStreaming && !answerJoined && !holdStreamInProcess,
     streamingText: keepStream ? streamText : undefined,
     // 思考已进 process，回答区不再单独带 streamingThinking
     streamingThinking: undefined,

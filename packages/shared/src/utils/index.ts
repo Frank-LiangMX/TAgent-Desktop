@@ -83,3 +83,6 @@ export {
   buildRichContentSystemPrompt,
 } from './rich-output-validate'
 export type { RichOutputIssue } from './rich-output-validate'
+
+// 主会话输出风格（kscc / Pi 双核共用沟通红线）
+export { buildOutputStylePrompt } from './output-style-prompt'

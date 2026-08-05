@@ -29,7 +29,12 @@ import { AGENT_IPC_CHANNELS, MEMORY_IPC_CHANNELS } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
 import { getAdapter, PiAgentAdapter, type ChannelKind } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
-import { buildRichContentSystemPrompt, classifyUserFacingError, sdkMessageToIR } from '@tagent/shared'
+import {
+  buildOutputStylePrompt,
+  buildRichContentSystemPrompt,
+  classifyUserFacingError,
+  sdkMessageToIR,
+} from '@tagent/shared'
 import type { KsccQueryOptions } from '../adapters/claude/claude-agent-adapter'
 import {
   getSessionMeta,
@@ -1029,6 +1034,8 @@ export class SessionService {
             // DEFAULT_SYSTEM_PROMPT 无品牌身份句，只说「专业编程助手」。这里软覆盖：
             // 不否定 preset 的工具能力设定，只约束回复时不自我介绍、不报 CLI 工具名/出品方。
             '## 身份与自我介绍\n你是一个专业的编程助手，帮助用户完成软件开发任务。回复时不要自我介绍，也不要提及你所属的 CLI 工具名或出品方品牌；直接以助手姿态回答用户的问题。',
+            // W8：输出风格沟通红线（与 Pi 核 buildOutputStylePrompt 同文）
+            buildOutputStylePrompt(),
             buildExecutionModePrompt(executionMode),
             executionMode === 'work' ? buildSubagentDelegationPrompt(eagerness) : '',
             executionMode === 'work'

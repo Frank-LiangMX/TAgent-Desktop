@@ -396,10 +396,6 @@
   background: color-mix(in srgb, hsl(var(--foreground)) 2%, transparent);
 }
 
-.agent-tool-row--muted {
-  padding: 2px 8px 2px 22px;
-}
-
 .agent-tool-row--thinking {
   padding: 2px 4px 2px 6px;
 }
@@ -463,22 +459,64 @@
   }
 }
 
+/* 展开态：挂 Markdown，容器只负责限高与滚动 */
 .agent-thinking-row__body {
   margin-top: 6px;
   max-height: min(28vh, 220px);
   overflow-y: auto;
+  word-break: break-word;
+  scrollbar-width: thin;
+}
+
+/* 折叠态：纯文本预览（不解析 Markdown，live 变长也不触发重解析） */
+.agent-thinking-row__preview {
+  margin-top: 6px;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12.5px;
   line-height: 1.55;
-  color: hsl(var(--muted-foreground) / 0.88);
+  color: hsl(var(--muted-foreground) / 0.7);
+}
+
+/* 过程内中间文本：未交付到回答区的正文，弱样式但内容完整 */
+.agent-process-text {
+  min-width: 0;
+  margin: 2px 0 6px;
+  padding: 4px 8px;
+  border-left: 2px solid color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
+}
+
+.agent-process-text.is-live {
+  border-left-color: color-mix(in srgb, hsl(var(--primary)) 35%, transparent);
+}
+
+.agent-process-text__body {
+  max-height: min(40vh, 320px);
+  overflow-y: auto;
+  word-break: break-word;
   scrollbar-width: thin;
 }
 
-/* 完成态内容驱动折叠：超 4 行收成预览（无时间驱动/动画跳变） */
-.agent-thinking-row__body.is-collapsed {
-  max-height: 6.2em;
+.agent-process-text__preview {
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground) / 0.6);
+}
+
+.agent-process-text__toggle {
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--muted-foreground) / 0.5);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-process-text__toggle:hover {
+  color: hsl(var(--muted-foreground));
 }
 
 /*
@@ -1571,10 +1609,10 @@
 .subagent-entry-card {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
   min-width: 0;
-  padding: 6px 8px;
+  padding: 8px 10px;
   border: 1px solid color-mix(in srgb, hsl(var(--muted-foreground)) 14%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, hsl(var(--foreground)) 2.5%, transparent);
@@ -1593,6 +1631,8 @@
   height: 6px;
   border-radius: 999px;
   background: hsl(var(--muted-foreground) / 0.4);
+  align-self: flex-start;
+  margin-top: 6px;
 }
 .subagent-entry-card.is-running .subagent-entry-card__dot {
   background: hsl(var(--primary) / 0.8);
@@ -1600,6 +1640,19 @@
 }
 .subagent-entry-card.is-failed .subagent-entry-card__dot {
   background: hsl(var(--destructive));
+}
+.subagent-entry-card__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.subagent-entry-card__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 .subagent-entry-card__title {
   flex-shrink: 0;
@@ -1624,6 +1677,15 @@
   color: hsl(var(--destructive));
   background: color-mix(in srgb, hsl(var(--destructive)) 10%, transparent);
 }
+.subagent-entry-card__tool {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground) / 0.7);
+}
 .subagent-entry-card__count {
   flex-shrink: 0;
   font-size: 10px;
@@ -1634,13 +1696,20 @@
   border: 1px solid hsl(var(--muted-foreground) / 0.2);
 }
 .subagent-entry-card__summary {
-  min-width: 0;
-  flex: 1;
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: hsl(var(--muted-foreground) / 0.78);
+  color: hsl(var(--foreground) / 0.72);
+}
+.subagent-entry-card__progress {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground) / 0.75);
 }
 .subagent-entry-card__open {
   flex-shrink: 0;

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
+import { buildOutputStylePrompt } from './output-style-prompt'
 import {
+  buildRichContentSystemPrompt,
   buildRichOutputFixPrompt,
   isRichFenceLanguage,
   unclosedFenceLanguage,
@@ -71,5 +73,15 @@ describe('buildRichOutputFixPrompt', () => {
     expect(prompt).toContain('富内容格式有问题')
     expect(prompt).toContain('JSON 围栏内容无法解析')
     expect(prompt).toContain('重新输出')
+  })
+})
+
+describe('W8 output style + rich content gate', () => {
+  it('buildOutputStylePrompt 含输出风格标题', () => {
+    expect(buildOutputStylePrompt()).toContain('输出风格')
+  })
+
+  it('buildRichContentSystemPrompt 含按需门槛', () => {
+    expect(buildRichContentSystemPrompt()).toContain('按需')
   })
 })

@@ -64,7 +64,7 @@ export function AssistantTurnView({
     if (m.parentToolUseId) return false
     return true
   })
-  // isLiveTurn：整轮工具循环未结束时过程/回答不拆分，过程区 key 稳定一条路往下排
+  // 拆分由 buildTurnPresentation 按 Proma 契约决定：live 未可拆时不喂回答壳
   const presentation = buildTurnPresentation(
     { ...turn, items: mainItems },
     { isLiveTurn },
@@ -74,6 +74,7 @@ export function AssistantTurnView({
 
   // 回答正文：流式与落盘取「更长且互为前缀」的那份，避免 answerFull 抢先导致
   // useSmoothStream 回退/重入队 → 画面上出现重复字（完成后又正常）。
+  // presentation.streamingText 在「未可拆」时已为 undefined（正文留过程区）。
   const answerFull = presentation.answerTexts[0] ?? ''
   const streamText = presentation.streamingText ?? ''
   const content = resolveAnswerContent(answerFull, streamText)
@@ -81,13 +82,13 @@ export function AssistantTurnView({
   const needsTypewriter =
     presentation.isStreaming ||
     Boolean(streamText) ||
-    // 落盘后仍保留 streamText 时，让 rAF 把队列追完（session-turn-model 约定）
     (isLiveTurn && Boolean(content) && Boolean(streamText || presentation.isStreaming))
   const { displayedContent } = useSmoothStream({
     content,
     isStreaming: needsTypewriter,
   })
 
+  // 有过程块且尚无交付 text 时不展示空回答壳（避免 MessageLoading 与过程区抢镜闪一下）
   const showAnswerShell =
     Boolean(content.trim()) ||
     (processLive && presentation.process.length === 0 && !content)

@@ -5,11 +5,11 @@
  * 子 Agent 执行 → 收集结果 → 返回 tool_result 给主 Agent。
  *
  * 子 Agent 是独立的 Pi Agent 实例（内存，无进程），执行完成后销毁。
- * 不需要 IPC/渲染层参与：结果直接作为 tool_result 返回。
+ * 进度通过 onTaskEvent 推送 task_started / task_progress / task_notification，
+ * 供主会话入口卡展示；完整 token 流仍不进主时间线（Checkpoint 2 W6）。
  */
 import { Type } from '@earendil-works/pi-ai'
-import type { AgentTool, AgentToolResult, Agent as AgentType } from '@earendil-works/pi-agent-core'
-import type { AssistantMessage, TextContent, ToolCall, ToolResultMessage } from '@earendil-works/pi-ai'
+import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core'
 import type { PiAgentAdapterConfig } from './pi-agent-adapter'
 import {
   buildBuiltinSubagentDefinitions,
@@ -29,6 +29,36 @@ const taskSchema = Type.Object({
   prompt: Type.String({ description: '子代理要执行的任务描述' }),
   description: Type.Optional(Type.String({ description: '任务简短描述（日志用）' })),
 })
+
+/**
+ * 子代理生命周期事件（与 AgentEvent 中 task_* 同形；走 tagent_event 通道）。
+ * 不用 Extract&lt;TAgentEvent&gt;——TAgentEvent 不含这三类。
+ */
+export type SubagentTaskLifecycleEvent =
+  | {
+      type: 'task_started'
+      taskId: string
+      toolUseId?: string
+      description: string
+      taskType?: string
+    }
+  | {
+      type: 'task_progress'
+      toolUseId: string
+      taskId?: string
+      description?: string
+      lastToolName?: string
+    }
+  | {
+      type: 'task_notification'
+      taskId: string
+      toolUseId?: string
+      status: 'completed' | 'failed' | 'stopped'
+      summary: string
+    }
+
+/** 子代理生命周期事件回调（推到父会话流，供入口卡 reduceTaskEvent） */
+export type SubagentTaskEventSink = (event: SubagentTaskLifecycleEvent) => void
 
 /** 子代理名容错：近名归一 + 角色库 id 直通 */
 function resolveSubagentType(raw: string, available: string[]): string {
@@ -89,6 +119,7 @@ export type SubagentBeforeToolCall = (ctx: {
  * @param piCore - 已加载的 pi-core 模块
  * @param piAgentCore - 已加载的 pi-agent-core 模块
  * @param beforeToolCall - 父会话权限钩子（危险命令 + Chat 只读等）；缺省时退化为 pi-core 危险命令拦截
+ * @param onTaskEvent - 进度事件出口（入口卡）；缺省则静默（仅 tool_result）
  */
 export function createTaskTool(
   parentSessionId: string,
@@ -97,6 +128,7 @@ export function createTaskTool(
   piCore: PiCoreModule,
   piAgentCore: PiAgentCoreModule,
   beforeToolCall?: SubagentBeforeToolCall,
+  onTaskEvent?: SubagentTaskEventSink,
 ): AgentTool<typeof taskSchema, TaskToolDetails> {
   // 优先挂父会话 beforeToolCall（含 Chat 硬只读 / plan / 弹窗确认）。
   // 缺口：创建路径若拿不到 PermissionService，仅用 checkToolPermission——
@@ -123,6 +155,8 @@ export function createTaskTool(
     executionMode: 'parallel',
     execute: async (_toolCallId, params, signal): Promise<AgentToolResult<TaskToolDetails>> => {
       const startTime = Date.now()
+      const toolUseId = _toolCallId
+      const taskId = _toolCallId
       // Pi 非 Claude 渠道：子代理继承父模型（不写死 haiku）
       const builtinAgents = buildBuiltinSubagentDefinitions(false)
       const subagentType = resolveSubagentType(params.subagent_type, Object.keys(builtinAgents))
@@ -137,9 +171,21 @@ export function createTaskTool(
         )
       }
 
+      const description =
+        (typeof params.description === 'string' && params.description.trim()) ||
+        params.prompt.slice(0, 60)
+
       console.log(
-        `[子代理 ${parentSessionId}] 启动 ${subagentType}（角色投影）: ${params.description ?? params.prompt.slice(0, 60)}`,
+        `[子代理 ${parentSessionId}] 启动 ${subagentType}（角色投影）: ${description}`,
       )
+
+      onTaskEvent?.({
+        type: 'task_started',
+        taskId,
+        toolUseId,
+        description,
+        taskType: subagentType,
+      })
 
       // 创建子 Agent（限制 tools，自定义 systemPrompt；模型：角色池 > 渠道默认）
       // 挂 beforeToolCall：与主会话同权限（至少危险命令 + Chat 只读）
@@ -162,6 +208,7 @@ export function createTaskTool(
       // 收集子 Agent 的文本输出
       const textChunks: string[] = []
       let toolCallCount = 0
+      let failed = false
 
       const unsubscribe = subAgent.subscribe(async (event) => {
         if (event.type === 'message_update') {
@@ -171,6 +218,16 @@ export function createTaskTool(
           }
         } else if (event.type === 'tool_execution_start') {
           toolCallCount++
+          const toolName =
+            typeof (event as { toolName?: string }).toolName === 'string'
+              ? (event as { toolName: string }).toolName
+              : 'tool'
+          onTaskEvent?.({
+            type: 'task_progress',
+            toolUseId,
+            taskId,
+            lastToolName: toolName,
+          })
         }
       })
 
@@ -187,6 +244,7 @@ export function createTaskTool(
         // 等待 Agent 空闲（确保所有工具执行完成）
         await subAgent.waitForIdle()
       } catch (err) {
+        failed = true
         const msg = err instanceof Error ? err.message : String(err)
         textChunks.push(`\n[子代理执行失败] ${msg}`)
         console.error(`[子代理 ${parentSessionId}] ${subagentType} 执行失败:`, msg)
@@ -201,6 +259,27 @@ export function createTaskTool(
       const truncated = resultText.length > 12000
         ? resultText.slice(0, 12000) + `\n... (截断，共 ${resultText.length} 字符)`
         : resultText
+
+      const aborted = Boolean(signal?.aborted)
+      const status: 'completed' | 'failed' | 'stopped' = aborted
+        ? 'stopped'
+        : failed
+          ? 'failed'
+          : 'completed'
+      const summary =
+        status === 'completed'
+          ? `${toolCallCount} 次工具 · ${Math.round(durationMs / 1000)}s`
+          : status === 'failed'
+            ? '执行失败'
+            : '已停止'
+
+      onTaskEvent?.({
+        type: 'task_notification',
+        taskId,
+        toolUseId,
+        status,
+        summary,
+      })
 
       console.log(`[子代理 ${parentSessionId}] ${subagentType} 完成: ${toolCallCount} 次工具调用, ${durationMs}ms, ${resultText.length} 字符`)
 

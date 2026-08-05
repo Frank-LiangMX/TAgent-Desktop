@@ -44,9 +44,17 @@ R1/R2/R3 同源：**流式内容被塞进了 `items` 数组，与消息共用生
 
 这样 R1（无需绑定，不会丢）、R3（无 per-delta key，不重挂）自然消失。
 
-### 3.2 尾部正文即回答（修 R2）
+### 3.2 尾部正文即回答（条件拆分，修闪空）
 
-`buildTurnPresentation` 拆分规则改为：**尾部连续 text 一律进回答区，与是否 live 无关**；仅当其后仍有未闭合工具时才留在过程区。
+**纠正（Checkpoint 2）**：不得「尾部 text 一律进回答、与 live 无关」。
+
+对齐 Proma/General `buildAssistantTurnRenderItems`：
+
+- live/streaming 且已有过程块（thinking/tool）时：仅当尾部 text 之前存在 tool_use **且**全部已有 result，才外置到回答区。
+- 否则整轮（含 streamingText）留在过程组——禁止「thinking+text 进回答 → tool 来了跳回过程」的闪空。
+- 历史轮或无过程块：按尾部连续 text 外置；纯 text 直接进回答。
+
+详见 `01-CHECKPOINT2-SPEC.md` §1–§2。
 
 ### 3.3 文件路径解析（修 R4）
 
@@ -61,8 +69,8 @@ R1/R2/R3 同源：**流式内容被塞进了 `items` 数组，与消息共用生
 
 1. 给定一串 KSCC 形态的 `stream_thinking_delta`（无空占位、先于正文到达），思考文本逐条累积可见，无丢弃。
 2. 给定 partial `uuid` **每条都不同**的 delta 序列，turn key 与 DisplayItem key 保持稳定。
-3. 一轮含「thinking → tool → text」时，text 在 live 期间即出现在回答区，不被截断进过程区。
-4. 完整 assistant 消息落盘的那一帧，回答区文本不为空（无闪空）。
+3. 一轮含「thinking → tool(已齐) → text」时，text 在 live 期间即出现在回答区；「thinking → text（尚无 tool）」时 text **不得**提前进回答区。
+4. 完整 assistant 消息落盘的那一帧，已可拆的回答区文本不为空（无闪空）；未可拆时正文留过程区亦不闪空。
 5. `findFileByName` 在本仓库规模下能命中深层源文件；未命中不写缓存。
 
 工程性：
