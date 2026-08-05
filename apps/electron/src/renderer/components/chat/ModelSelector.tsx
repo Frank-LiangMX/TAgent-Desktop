@@ -9,7 +9,7 @@
  * session-list-row / session-glass-chip，不搬 General 的 token 体系。
  */
 import { useMemo, useState } from 'react'
-import { useAtomValue } from 'jotai'
+import { useAtom, useAtomValue } from 'jotai'
 import { ChevronDown, Cpu, HelpCircle, Network, ShieldCheck, TriangleAlert } from 'lucide-react'
 import {
   AppTooltip,
@@ -20,6 +20,8 @@ import {
   MenuPopoverGroup,
   MenuPopoverSectionLabel,
   MenuPopoverSeparator,
+  SegmentedTabs,
+  SegmentedTabsItem,
 } from '@tagent/ui'
 import { type Channel, type ReasoningEffort, PROVIDER_LABELS } from '@tagent/shared'
 import { cn } from '../../lib/utils'
@@ -30,10 +32,19 @@ import {
   type ModelSelection,
 } from '../../atoms/model-selection'
 import { getModelLogo, getChannelLogo } from '../../lib/model-logo'
+import {
+  chatProcessDisplayModeAtom,
+  type ChatProcessDisplayMode,
+} from '../../atoms/chat-display-prefs'
 import { ReasoningSlider, REASONING_LABELS } from './ReasoningSlider'
 
 /** 默认档，触发器上不回显（安全默认不占视觉带宽） */
 const REASONING_DEFAULT: ReasoningEffort = 'medium'
+
+const PROCESS_DISPLAY_LABELS: Record<ChatProcessDisplayMode, string> = {
+  full: '完整',
+  concise: '简洁',
+}
 
 interface ModelSelectorProps {
   selection: ModelSelection | null
@@ -56,6 +67,7 @@ export function ModelSelector({
   onReasoningEffortChange,
 }: ModelSelectorProps): JSX.Element {
   const channels = useAtomValue(channelsAtom)
+  const [processDisplayMode, setProcessDisplayMode] = useAtom(chatProcessDisplayModeAtom)
   const [open, setOpen] = useState(false)
   const activeChannel = channels.find((channel) => channel.id === selection?.channelId)
   const activeModel = activeChannel?.models.find((model) => model.id === selection?.modelId)
@@ -165,6 +177,12 @@ export function ModelSelector({
               {REASONING_LABELS[reasoningEffort]}
             </span>
           ) : null}
+          {/* 简洁模式非默认才回显，与思考强度 chip 同风格 */}
+          {processDisplayMode === 'concise' ? (
+            <span className="model-selector__effort shrink-0 text-[10.5px] font-medium text-primary/80">
+              {PROCESS_DISPLAY_LABELS.concise}
+            </span>
+          ) : null}
           <ChevronDown className="size-3 shrink-0 opacity-70" />
         </button>
       </PopoverTrigger>
@@ -216,6 +234,35 @@ export function ModelSelector({
             <ReasoningSlider value={reasoningEffort} onChange={onReasoningEffortChange} />
           </div>
         ) : null}
+
+        {/* 过程展示：与思考强度同区，全局偏好，不随会话切换 */}
+        <div className="px-3.5 pb-3">
+          <div className="mb-2 flex items-center gap-1">
+            <span className="text-[11px] font-medium text-muted-foreground">过程展示</span>
+            <AppTooltip
+              label="完整＝实时展开思考链；简洁＝一行摘要，点开再看过程（类似 Cursor）。对所有会话生效。"
+              side="top"
+              multiline
+            >
+              <button
+                type="button"
+                className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-foreground/10 hover:text-foreground"
+                aria-label="过程展示说明"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <HelpCircle className="size-3.5" />
+              </button>
+            </AppTooltip>
+          </div>
+          <SegmentedTabs
+            className="settings-segmented w-full"
+            value={processDisplayMode}
+            onValueChange={(v) => setProcessDisplayMode(v as ChatProcessDisplayMode)}
+          >
+            <SegmentedTabsItem value="full">完整过程</SegmentedTabsItem>
+            <SegmentedTabsItem value="concise">简洁</SegmentedTabsItem>
+          </SegmentedTabs>
+        </div>
 
         {/* 分隔线 */}
         <MenuPopoverSeparator />

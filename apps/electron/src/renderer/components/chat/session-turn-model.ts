@@ -358,31 +358,36 @@ export function groupItemsIntoTurns(items: TurnSourceItem[]): SessionRenderTurn[
 }
 
 /**
- * 尾部 text 之前的 tool_use 是否全部已有 result。
- * 没有任何 tool_use 时返回 false——避免 streaming/live 时「thinking + text」被提前外置，
- * 随后 tool 一来又跳回过程区（闪空）。对齐 Proma/General `areToolsBeforeIndexCompleted`。
+ * 尾部 text 之前是否已无「未完成」的 tool_use。
+ *
+ * - 有未完成 tool → false（正文先留过程区，防工具结果来前回跳）
+ * - 无 tool，或 tool 全部已有 result → true（允许外置）
+ *
+ * 产品点（对齐用户对 Proma 的手感）：thinking 结束后的交付正文应进**回答区**
+ * Markdown 流式，而不是先进过程/思考区、等 idle 再砸进回答壳。
+ * 「无 tool 时也允许外置」与旧 Proma 保守策略不同——旧策略会把 thinking+text
+ * 整段摁在过程区到回合结束，造成「最终输出被当成思考」的观感。
  */
 export function areToolsBeforeIndexCompleted(
   blocks: TAgentContentBlock[],
   endIndex: number,
   completedToolResultIds: ReadonlySet<string>,
 ): boolean {
-  let hasToolUse = false
   for (let index = 0; index < endIndex; index++) {
     const block = blocks[index]
     if (block?.type !== 'tool_use') continue
-    hasToolUse = true
     if (!completedToolResultIds.has((block as TAgentToolUseBlock).id)) return false
   }
-  return hasToolUse
+  return true
 }
 
 /**
  * 从 turn 源 items 构建展示：过程组 + 最终回答 + 流式
  *
- * 拆分契约（对齐 Proma/General `buildAssistantTurnRenderItems`）：
- * - live/streaming 且已有过程块（thinking/tool）时：仅当尾部 text 之前存在 tool_use
- *   且全部已有 result，才外置到回答区；否则整轮留在过程组（含 streamingText）。
+ * 拆分契约：
+ * - live/streaming 且有过程块：尾部 text 之前无未完成 tool → 外置到回答区流式；
+ *   有未完成 tool → 整轮（含 streamingText）留过程组。
+ * - 无未完成 tool 时，streamingText 也不再 hold 进过程区（避免交付正文进思考/过程 UI）。
  * - 历史轮或无过程块：按尾部连续 text 外置（纯 text 直接进回答）。
  *
  * @param options.isLiveTurn 整轮仍在跑（含工具间隙）
@@ -393,7 +398,11 @@ export function buildTurnPresentation(
   options?: {
     isLiveTurn?: boolean
     streamState?: TurnStreamState
-    /** 过程展示模式（W1：仅作透传，**不影响拆分时机**——concise 与 full 拆分一致）。 */
+    /**
+     * 过程展示模式：
+     * - full：尾部 text 外置到回答壳（现网）
+     * - concise：全部 text 留在 process，供 Cursor 式时间线穿插叙事（answerTexts=[]）
+     */
     displayMode?: ProcessDisplayMode
   },
 ): TurnPresentation {
@@ -406,6 +415,7 @@ export function buildTurnPresentation(
   let modelId = turn.modelId
   const isLiveTurn = options?.isLiveTurn === true
   const externalStream = options?.streamState
+  const isConcise = options?.displayMode === 'concise'
 
   // 先收集 tool_result；落盘 item 上的 streaming 字段仅作 Pi 兼容兜底
   for (const item of turn.items) {
@@ -498,9 +508,9 @@ export function buildTurnPresentation(
     streamingText = undefined
   }
 
-  // 末尾连续 text 作为交付回答（条件拆分，禁止两个极端）：
-  // - live 一律不拆 → R2：正文变过程区灰字，完成后才 Markdown
-  // - 仅 !hasOpenTools 就拆 → thinking+text 提前进回答，tool 一来跳回（闪空）
+  // 末尾连续 text 作为交付回答：
+  // - 前置无未完成 tool → 外置到回答区（含纯 thinking+text，正文不进思考 UI）
+  // - 仍有未完成 tool → 留过程组，防工具结果来前回跳
   const blockList = allBlocks.map((x) => x.block)
   const trailingTextStart = getTrailingTextStart(blockList)
   // 流式思考尚未落盘时也算过程块，否则 streamingText 会旁路进回答壳
@@ -513,11 +523,10 @@ export function buildTurnPresentation(
     trailingTextStart > 0 &&
     areToolsBeforeIndexCompleted(blockList, trailingTextStart, completedIds)
   const isActive = isStreaming || isLiveTurn
-  // 拆分时机与 Proma 一致，**不受 displayMode 影响**（W1）：live/streaming + 有过程块时，
-  // 必须尾部 text 之前的工具全部有 result 才外置；否则整轮留过程组。
-  // 历史 / 无过程块：经典尾部外置（纯 text 走下方「全 text 当回答」分支）。
-  // concise 与 full 在相同输入下拆分结果一致——回答壳同样流式逐字。
+  // full：live + 过程块时看 canSplitStreamingFinal；否则经典尾部外置。
+  // concise：永不外置——text 全留 process，由 timeline 投影为 narrative。
   const splitAnswer =
+    !isConcise &&
     trailingTextStart !== null &&
     trailingTextStart > 0 &&
     (isActive && hasProcessBlock ? canSplitStreamingFinal : true)
@@ -556,8 +565,13 @@ export function buildTurnPresentation(
     }
   }
 
-  // 纯过程 turn 且无 answer：若全部是 text 且无工具，当回答
-  if (answerTexts.length === 0 && process.length > 0 && !process.some((p) => p.type === 'tool' || p.type === 'thinking')) {
+  // full：纯 text 无工具/思考 → 当回答壳。concise：留 process 作 narrative。
+  if (
+    !isConcise &&
+    answerTexts.length === 0 &&
+    process.length > 0 &&
+    !process.some((p) => p.type === 'tool' || p.type === 'thinking')
+  ) {
     for (const p of process) {
       if (p.type === 'text') answerTexts.push(p.text)
     }
@@ -597,8 +611,16 @@ export function buildTurnPresentation(
 
   const streamText = streamingText?.trim() ?? ''
 
-  // live/streaming 且未达拆分条件：streamingText 只进过程区，禁止旁路喂回答壳（防闪空）
-  const holdStreamInProcess = isActive && hasProcessBlock && !splitAnswer
+  // full：仅未完成工具时 hold streamingText 在过程区；否则走回答壳。
+  // concise：live 流式正文一律写入 process text（timeline narrative）。
+  const hasIncompleteTools = !areToolsBeforeIndexCompleted(
+    blockList,
+    blockList.length,
+    completedIds,
+  )
+  const holdStreamInProcess = isConcise
+    ? Boolean(isActive && streamText)
+    : isActive && hasProcessBlock && !splitAnswer && hasIncompleteTools
   if (holdStreamInProcess && streamText) {
     const lastTextIdx = (() => {
       for (let i = process.length - 1; i >= 0; i--) {
@@ -652,8 +674,9 @@ export function buildTurnPresentation(
   }
 
   // stream 已被完整 answer 覆盖时不再回传 stream（防 content 在两者间抖动）
-  // holdStreamInProcess 时也不回传——回答区不应吃这段
+  // holdStreamInProcess / concise 时也不回传——回答区或 timeline 从 process 读
   const keepStream =
+    !isConcise &&
     !holdStreamInProcess &&
     streamText.length > 0 &&
     !(answerJoined && (answerJoined === streamText || answerJoined.startsWith(streamText)))
@@ -661,8 +684,10 @@ export function buildTurnPresentation(
   return {
     modelId,
     process,
-    answerTexts: finalAnswers,
-    isStreaming: isStreaming && !answerJoined && !holdStreamInProcess,
+    answerTexts: isConcise ? [] : finalAnswers,
+    isStreaming: isConcise
+      ? false
+      : isStreaming && !answerJoined && !holdStreamInProcess,
     streamingText: keepStream ? streamText : undefined,
     // 思考已进 process，回答区不再单独带 streamingThinking
     streamingThinking: undefined,
