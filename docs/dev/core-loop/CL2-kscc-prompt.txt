@@ -1,0 +1,18 @@
+你是 TAgent-Desktop 实现工程师。工作目录：C:\Users\loumi\Desktop\AI\TAgent-Desktop
+
+严格按 brief 实现，不得扩大范围：
+- docs/dev/core-loop/CL2-idle-watchdog-brief.md
+- docs/dev/core-loop/00-SPEC.md（CL2）
+
+目标：停止或断流后，UI 的 running / 计时 pill / 停止键必须收敛到 idle。
+
+要求：
+1. 渲染层：无流式事件超过 N 秒（建议 15–30s，常量）且主进程会话为 idle → 调用现有 stopSessionRun / 清 streaming 路径
+2. STOP 后已有 turn_end 保持；看门狗是兜底不是替代
+3. 有可测纯函数（超时判定），避免只能手测
+4. 参考 docs/dev/usability-audit/03-renderer-ux-state.md idle reconcile
+5. CL1 已落地 streamState：少动 Chat.tsx 流式核心，优先改 useGlobalSessionRunSync / session run atoms
+6. 跑相关 typecheck + vitest，修到绿
+7. 不要 git commit / push
+
+完成后用简短中文列出：改动文件、N 秒取值、测试结果、已知风险。

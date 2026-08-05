@@ -6,19 +6,23 @@
  *
  * 本 hook 在 App 根挂载一次：
  * - PERMISSION_REQUEST → 入 per-session FIFO atom
- * - PERMISSION_RESOLVED → 按 reqId 出队（超时 deny / 用户 respond 都清横幅）
+ * - PERMISSION_RESOLVED → 按 reqId 出队；超时 deny 推 SessionErrorBanner
  */
 import { useEffect } from 'react'
 import { useSetAtom } from 'jotai'
 import {
   enqueuePermissionAtom,
   resolvePermissionAtom,
+  buildPermissionTimeoutSessionError,
   type PermissionReq,
+  type PermissionResolvedPayload,
 } from '../atoms/permission-atoms'
+import { setSessionErrorAtom } from '../atoms/session-error-atoms'
 
 export function useGlobalPermissionSync(): void {
   const enqueue = useSetAtom(enqueuePermissionAtom)
   const resolve = useSetAtom(resolvePermissionAtom)
+  const setSessionError = useSetAtom(setSessionErrorAtom)
 
   useEffect(() => {
     const offRequest = window.electronAPI.onPermissionRequest((raw: unknown) => {
@@ -27,13 +31,19 @@ export function useGlobalPermissionSync(): void {
       enqueue(pr)
     })
     const offResolved = window.electronAPI.onPermissionResolved?.((raw: unknown) => {
-      const p = raw as { reqId?: string; sessionId?: string }
+      const p = raw as PermissionResolvedPayload
       if (!p?.reqId) return
       resolve({ reqId: p.reqId, sessionId: p.sessionId })
+      if (p.behavior === 'deny' && p.reason === 'timeout' && p.sessionId) {
+        setSessionError({
+          sessionId: p.sessionId,
+          error: buildPermissionTimeoutSessionError(p.toolName),
+        })
+      }
     })
     return () => {
       offRequest?.()
       offResolved?.()
     }
-  }, [enqueue, resolve])
+  }, [enqueue, resolve, setSessionError])
 }

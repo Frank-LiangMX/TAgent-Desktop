@@ -89,6 +89,26 @@ npx vitest run packages/pi-core/src/session-memory-coordinator.test.ts \
 
 ---
 
-## 5. 子代理派工（延续）
+## 5. 子代理派工（总监调度）
 
-P0: mimo `deepseek/deepseek-v4-flash` · P1: MiniMax · P2: opencode free · kscc 过 12 点可恢复 · codex 极省
+> 主 Cursor agent = **总监**：写规格 / 拆工作流 / **用本地 CLI 派工** / 交叉验收。不亲自落地大改。  
+> 实现必须走本机 `kscc` / `grok` / `mimo`（见 `.cursor/rules/delegate-subagents.mdc`）。  
+> **禁止**用 Cursor Task + composer 顶替本地额度干活。
+
+### 渠道额度（按成本调度）
+
+| 优先级 | 渠道 | 约束 | 适合 |
+|--------|------|------|------|
+| 省着用 | mimo `deepseek/deepseek-v4-flash` | **计费**，用多花多 | 窄 brief、单测、机械改动；禁止无 brief 空转 |
+| 主力额度 | **kscc** | 月额约 **3000 元** | 核心契约实现、对照 Proma/General、验收回归 |
+| 频次限 | **MiniMax** | **每 5 小时 400 次**；多模态 | 截图/视觉验收、UI 走查、轻量并行探查 |
+| 补位 | **grok**（本地有） | 替代原 codex 位 | 探索/对照/草稿实现；不占 kscc 月额 |
+| 不用 | codex | 本地无 | — |
+
+### 调度原则
+
+1. 先写 `docs/dev/**` 规格（根因、契约、验收、本轮不做），再派工。
+2. 探索/对照优先 grok 或 MiniMax；真正改核/消闪空契约用 kscc。
+3. mimo 只吃「范围极清、可单测验收」的小包，避免计费空烧。
+4. 缺错误原文不重写运行核（见 `streaming-rework/01-CHECKPOINT2-SPEC` W7）。
+5. 每个工作流单独 commit；不擅自 push。

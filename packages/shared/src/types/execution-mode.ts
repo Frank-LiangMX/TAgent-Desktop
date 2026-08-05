@@ -10,6 +10,8 @@
  * @see docs/decisions/ADR-0005-user-owned-mode-switch.md
  */
 
+import { CHAT_MODE_BLOCK_USER_MESSAGE } from '../constants/permission-rules'
+
 /** 协作大模式 */
 export type ExecutionMode = 'chat' | 'work'
 
@@ -111,7 +113,7 @@ export function buildWorkSwitchSuggestion(args: {
     at: Date.now(),
     reason:
       args.reason?.trim() ||
-      `当前需要修改代码或执行有副作用的操作。Chat 下不能改本地文件。${toolHint}`.trim(),
+      `${CHAT_MODE_BLOCK_USER_MESSAGE}${toolHint ? ` ${toolHint}` : ''}`.trim(),
   }
 }
 

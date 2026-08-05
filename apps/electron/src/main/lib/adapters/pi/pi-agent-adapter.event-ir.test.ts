@@ -17,6 +17,7 @@ import {
   dropTrailingFailedAssistants,
   isRetryablePiTurnError,
   mapPiStopReasonToResult,
+  piAssistantToIR,
   piEventToIR,
   piTurnRetryDelayMs,
   PI_TURN_RETRY_BASE_DELAY_MS,
@@ -105,7 +106,7 @@ describe('piEventToIR 终态收束', () => {
     expect(out.every((p) => p.kind !== 'result')).toBe(true)
   })
 
-  it('同 turn 的 stream delta / turn_end 共用 assistant.uuid', () => {
+  it('同 turn 的 message_update 不再产 stream_text_delta（单真源走 partial content[]）', () => {
     const ts = 1_700_000_000_000
     const assistant = makeAssistant({ stopReason: 'stop', text: 'hello' })
     assistant.timestamp = ts
@@ -122,9 +123,8 @@ describe('piEventToIR 终态收束', () => {
       } as AgentEvent,
       'sess-1',
     )
-    expect(deltaOut).toEqual([
-      { kind: 'stream_text_delta', text: 'hel', uuid: `pi-sess-1-${ts}` },
-    ])
+    // text_delta 不再旁路；subscribe 路径用 schedulePartial 推 sdk_message
+    expect(deltaOut).toEqual([])
 
     const endOut = piEventToIR(
       {
@@ -244,7 +244,7 @@ describe('工具双发修复（toolcall_end / tool_execution_start / turn_end）
     expect(out).toEqual([])
   })
 
-  it('tool_execution_start 推进行中 tool_use（无 stop_reason）', () => {
+  it('tool_execution_start 不再推孤儿 tool_use（S1：tool_use 已在 partial content[]）', () => {
     const out = piEventToIR(
       {
         type: 'tool_execution_start',
@@ -254,17 +254,9 @@ describe('工具双发修复（toolcall_end / tool_execution_start / turn_end）
       } as AgentEvent,
       'sess-1',
     )
-    expect(out).toHaveLength(1)
-    expect(out[0]).toMatchObject({
-      kind: 'sdk_message',
-      message: {
-        type: 'assistant',
-        content: [{ type: 'tool_use', id: 'tc-1', name: 'Read', input: { path: 'a.ts' } }],
-      },
-    })
-    if (out[0]?.kind === 'sdk_message' && out[0].message.type === 'assistant') {
-      expect(out[0].message.stop_reason).toBeUndefined()
-    }
+    // 单真源流式：工具卡片由 message_update 的 partial content[] 就地展示，
+    // 终态完整 assistant+tool_result 仍由 turn_end 产出。禁止无 thinking 的孤儿覆盖。
+    expect(out).toEqual([])
   })
 
   it('turn_end 仍推 tool_use + tool_result（终态唯一完整卡片）', () => {
@@ -372,5 +364,52 @@ describe('dropTrailingFailedAssistants', () => {
       makeAssistant({ stopReason: 'stop', text: 'done' }),
     ]
     expect(dropTrailingFailedAssistants(msgs)).toHaveLength(2)
+  })
+})
+
+describe('piAssistantToIR partial/final（S1 单真源流式）', () => {
+  const ts = 1_700_000_000_000
+
+  function makeThinkingAssistant(thinking: string, stopReason: AssistantMessage['stopReason'] = 'stop'): AssistantMessage {
+    const a = makeAssistant({ stopReason, text: '答' })
+    a.timestamp = ts
+    a.content = [
+      { type: 'thinking', thinking },
+      { type: 'text', text: '答' },
+    ] as AssistantMessage['content']
+    return a
+  }
+
+  it('partial：带 _partial、无 stop_reason、thinking 在 content[]', () => {
+    const ir = piAssistantToIR(makeThinkingAssistant('完整思考'), 'sess-1', { partial: true })
+    expect(ir.type).toBe('assistant')
+    if (ir.type === 'assistant') {
+      expect(ir._partial).toBe(true)
+      expect(ir.stop_reason).toBeUndefined()
+      expect(ir.uuid).toBe(`pi-sess-1-${ts}`)
+      const think = ir.content.find((b) => b.type === 'thinking')
+      expect(think && think.type === 'thinking' ? think.thinking : '').toBe('完整思考')
+      // partial 不带 usage / error（避免落盘与底栏抖动）
+      expect(ir.usage).toBeUndefined()
+      expect(ir.error).toBeUndefined()
+    }
+  })
+
+  it('final：无 _partial、带 stop_reason、thinking 仍在 content[]', () => {
+    const ir = piAssistantToIR(makeThinkingAssistant('完整思考'), 'sess-1')
+    expect(ir.type).toBe('assistant')
+    if (ir.type === 'assistant') {
+      expect(ir._partial).toBeUndefined()
+      expect(ir.stop_reason).toBe('stop')
+      expect(ir.uuid).toBe(`pi-sess-1-${ts}`)
+      const think = ir.content.find((b) => b.type === 'thinking')
+      expect(think && think.type === 'thinking' ? think.thinking : '').toBe('完整思考')
+    }
+  })
+
+  it('partial 与 final 共用同一 uuid（原地 upsert 基础）', () => {
+    const partial = piAssistantToIR(makeThinkingAssistant('想'), 'sess-1', { partial: true })
+    const final = piAssistantToIR(makeThinkingAssistant('想'), 'sess-1')
+    expect((partial as { uuid?: string }).uuid).toBe((final as { uuid?: string }).uuid)
   })
 })

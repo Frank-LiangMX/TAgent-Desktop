@@ -32,6 +32,7 @@ import { resolveKsccPath } from '../adapters/claude/kscc-path'
 import {
   buildOutputStylePrompt,
   buildRichContentSystemPrompt,
+  buildChatModeBlockUserError,
   classifyUserFacingError,
   sdkMessageToIR,
 } from '@tagent/shared'
@@ -194,7 +195,7 @@ export class SessionService {
    * Chat 模式拦截写操作：终止当前 run + 通知渲染层清运行态。
    * 用户视角：「都在运行了还问我干啥」——被拦即停，等用户确认切 Work 后再继续。
    */
-  private handleChatModeBlock(sessionId: string): void {
+  private handleChatModeBlock(sessionId: string, toolName: string): void {
     // 先清 pending，再 interrupt（与 STOP_AGENT 同序，防 onTurnEnd 误 flush）
     this.clearPendingSteer(sessionId)
     const rt = this.runtimes.get(sessionId)
@@ -203,6 +204,16 @@ export class SessionService {
     }
     // 清流式占位 + running 停止（turn_end 语义；interrupt 后 adapter 可能不再发事件，兜底）
     this.sendPayload(sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
+    // 用户可见引导：SessionErrorBanner（非 assistant 气泡里的工具失败原文）
+    const userError = buildChatModeBlockUserError(toolName)
+    this.sendPayload(sessionId, {
+      kind: 'tagent_event',
+      event: {
+        type: 'session_error',
+        message: userError.message,
+        error: userError,
+      },
+    })
   }
 
   static create(
@@ -211,7 +222,7 @@ export class SessionService {
   ): SessionService {
     const svc = new SessionService(getWindow, permissionService)
     if (permissionService) {
-      setOnChatModeBlock((sessionId) => svc.handleChatModeBlock(sessionId))
+      setOnChatModeBlock((sessionId, toolName) => svc.handleChatModeBlock(sessionId, toolName))
     }
     // Phase 4：软重置钩子
     ksccSoftReset.setHooks({
@@ -1242,14 +1253,21 @@ export class SessionService {
   }
 
   /** pi 路径：已是 IR（TAgentDesktopStreamPayload），落盘面板 IR + 推 IPC，不经 sdkMessageToIR。
-   *  完整消息（sdk_message）落盘 IR；控制事件（result/stream_*_delta/tagent_event）不落盘。 */
+   *  完整消息（sdk_message）落盘 IR；控制事件（result/stream_*_delta/tagent_event）不落盘。
+   *  单真源流式（S1）：partial assistant（`_partial`）只推渲染层原地 upsert，**不落盘**——
+   *  落盘只留 final（同 uuid 替换 partial），避免 partial 堆积污染历史 / L-rag。 */
   private handlePiStreamPayload(sessionId: string, workspaceId: string | undefined, p: TAgentDesktopStreamPayload): void {
     if (p.kind === 'sdk_message') {
-      ;(p.message as any).createdAt = (p.message as any).createdAt ?? Date.now()
-      try {
-        appendPanelMessages(workspaceId, sessionId, [p.message])
-      } catch (err) {
-        console.warn('[session-service] appendPanelMessages failed (pi):', err)
+      const msg = p.message
+      ;(msg as any).createdAt = (msg as any).createdAt ?? Date.now()
+      const isPartial =
+        msg.type === 'assistant' && (msg as { _partial?: boolean })._partial === true
+      if (!isPartial) {
+        try {
+          appendPanelMessages(workspaceId, sessionId, [msg])
+        } catch (err) {
+          console.warn('[session-service] appendPanelMessages failed (pi):', err)
+        }
       }
       this.sendPayload(sessionId, p)
     } else {

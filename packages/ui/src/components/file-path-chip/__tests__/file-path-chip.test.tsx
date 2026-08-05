@@ -8,6 +8,7 @@ import { FilePathChip, clearFilePathMissingCache } from '../index'
 /**
  * 回归：流式期间同一条消息会反复重挂载，chip 曾在 resolved / broken 之间来回跳，
  * 用户看到的现象就是「文件不存在」一闪一闪。这里锁住状态迁移只能单向收敛。
+ * 流式中禁止写 broken（回答区逐字输出会提前挂 chip，文件常尚未落盘）。
  */
 
 const BASES = ['/repo']
@@ -15,10 +16,16 @@ const BASES = ['/repo']
 function renderChip(
   filePath: string,
   onResolveFile: (path: string, bases?: string[]) => Promise<string | null>,
+  opts?: { streaming?: boolean },
 ): ReturnType<typeof render> {
   return render(
     <TooltipProvider>
-      <FilePathChip filePath={filePath} basePaths={BASES} onResolveFile={onResolveFile} />
+      <FilePathChip
+        filePath={filePath}
+        basePaths={BASES}
+        onResolveFile={onResolveFile}
+        streaming={opts?.streaming}
+      />
     </TooltipProvider>,
   )
 }
@@ -34,10 +41,10 @@ async function flush(): Promise<void> {
   })
 }
 
-/** 越过「首次未命中后的复查延迟」 */
-async function passRecheckDelay(): Promise<void> {
+/** 越过非流式加长复查（400+1200+2500） */
+async function passPostStreamRechecks(): Promise<void> {
   await act(async () => {
-    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(5000)
   })
 }
 
@@ -52,7 +59,7 @@ afterEach(() => {
 })
 
 describe('FilePathChip 存在性状态', () => {
-  test('首次未命中不判定 broken，复查仍未命中才判定', async () => {
+  test('首次未命中不判定 broken，多次复查仍未命中才判定', async () => {
     const onResolveFile = vi.fn().mockResolvedValue(null)
 
     renderChip('src/missing.ts', onResolveFile)
@@ -61,10 +68,10 @@ describe('FilePathChip 存在性状态', () => {
     expect(status()).toBe('checking')
     expect(onResolveFile).toHaveBeenCalledTimes(1)
 
-    await passRecheckDelay()
+    await passPostStreamRechecks()
 
     expect(status()).toBe('broken')
-    expect(onResolveFile).toHaveBeenCalledTimes(2)
+    expect(onResolveFile.mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 
   test('文件在复查时才落盘：直接收敛到 resolved，全程不闪 broken', async () => {
@@ -78,7 +85,9 @@ describe('FilePathChip 存在性状态', () => {
 
     expect(status()).toBe('checking')
 
-    await passRecheckDelay()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
 
     expect(status()).toBe('resolved')
   })
@@ -103,7 +112,7 @@ describe('FilePathChip 存在性状态', () => {
 
     const view = renderChip('src/gone.ts', onResolveFile)
     await flush()
-    await passRecheckDelay()
+    await passPostStreamRechecks()
     expect(status()).toBe('broken')
 
     view.unmount()
@@ -117,13 +126,57 @@ describe('FilePathChip 存在性状态', () => {
 
     const view = renderChip('src/pending.ts', onResolveFile)
     await flush()
-    await passRecheckDelay()
+    await passPostStreamRechecks()
     expect(status()).toBe('broken')
 
     view.unmount()
     onResolveFile.mockResolvedValue('/repo/src/pending.ts')
     renderChip('src/pending.ts', onResolveFile)
     await flush()
+
+    expect(status()).toBe('resolved')
+  })
+
+  test('流式中多次未命中也不标 broken（不写负缓存）', async () => {
+    const onResolveFile = vi.fn().mockResolvedValue(null)
+
+    renderChip('src/streaming.ts', onResolveFile, { streaming: true })
+    await flush()
+    expect(status()).toBe('checking')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8000)
+    })
+
+    expect(status()).not.toBe('broken')
+    expect(status()).toBe('checking')
+  })
+
+  test('流式结束且文件已落盘 → 最终裁决为 resolved', async () => {
+    const onResolveFile = vi.fn().mockResolvedValue(null)
+
+    const view = renderChip('src/appear.ts', onResolveFile, { streaming: true })
+    await flush()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(status()).not.toBe('broken')
+
+    onResolveFile.mockResolvedValue('/repo/src/appear.ts')
+    view.rerender(
+      <TooltipProvider>
+        <FilePathChip
+          filePath="src/appear.ts"
+          basePaths={BASES}
+          onResolveFile={onResolveFile}
+          streaming={false}
+        />
+      </TooltipProvider>,
+    )
+    await flush()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500)
+    })
 
     expect(status()).toBe('resolved')
   })

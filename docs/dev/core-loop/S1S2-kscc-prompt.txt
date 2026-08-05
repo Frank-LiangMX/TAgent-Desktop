@@ -1,0 +1,17 @@
+你是 TAgent-Desktop 实现工程师。工作目录：C:\Users\loumi\Desktop\AI\TAgent-Desktop
+
+严格按规格实现「单真源流式」可跑一版：
+- docs/dev/core-loop/S1S2-single-source-brief.md
+- docs/dev/core-loop/STREAM-SKELETON-AUDIT.md
+
+主抄 Proma：同 uuid partial assistant 原地 upsert，thinking 在 content[]。
+辅 Reasonix：思考只折叠不删。
+
+先做 S1（pi-agent-adapter）再 S2（Chat/session-turn-model）。
+跑 typecheck + 相关 vitest，修到绿。不要 git commit / push。
+
+可对照只读：
+C:\Users\loumi\Desktop\AI\Proma\apps\electron\src\main\lib\adapters\pi-agent-adapter.ts
+C:\Users\loumi\Desktop\AI\Proma\apps\electron\src\renderer\hooks\useGlobalAgentListeners.ts
+
+完成后用中文简短列出：改了哪些文件、怎么验收、已知风险。

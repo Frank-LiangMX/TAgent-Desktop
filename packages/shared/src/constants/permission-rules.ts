@@ -7,6 +7,9 @@ import type { TAgentPermissionMode } from '../types/agent'
  * 用于智能模式下的自动允许/询问判断。
  */
 
+/** 权限确认弹窗等待超时（毫秒）；超时主进程自动 deny */
+export const PERMISSION_TIMEOUT_MS = 120_000
+
 /** 始终安全的工具（免询问）— 读文件/搜索/信息查询，不写盘 */
 export const SAFE_TOOLS: readonly string[] = [
   'Read', // 文件读取（项目内读操作默认放行）
@@ -633,9 +636,15 @@ export function isChatModeBlockedTool(
   return true
 }
 
-/** Chat 拦截时的用户/模型可见原因 */
-export const CHAT_MODE_BLOCK_REASON =
-  '当前为 Chat 模式：只读讨论，不能改本地文件、执行有副作用命令或派看板工人。请切换到 Work 后再试。'
+/** Chat 硬拦：用户可见标题（SessionErrorBanner / 建议条） */
+export const CHAT_MODE_BLOCK_USER_TITLE = '讨论模式（Chat）不能写入'
+
+/** Chat 硬拦：用户可见正文（须含「切 Work」与切换入口提示） */
+export const CHAT_MODE_BLOCK_USER_MESSAGE =
+  '当前为讨论模式（Chat），写入/改文件请切换到 Work。可在输入框左下角「Chat | Work」切换，或点下方建议条确认。'
+
+/** Chat 拦截时返回给模型的 deny 原因（与 UI 文案同源，便于 result 分类） */
+export const CHAT_MODE_BLOCK_REASON = CHAT_MODE_BLOCK_USER_MESSAGE
 
 /**
  * TAgent 权限模式 → 传给 Claude Agent SDK 的 permissionMode

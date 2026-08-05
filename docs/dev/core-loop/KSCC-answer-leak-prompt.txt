@@ -1,0 +1,9 @@
+﻿只读诊断（禁止改文件）。TAgent-Desktop 用户反馈：简洁模式（chatProcessDisplayMode=concise）下，运行中内容又输出到最终回答区。
+
+查：
+- apps/electron/src/renderer/components/chat/AssistantTurnView.tsx
+- session-turn-model.ts 的 buildTurnPresentation / canSplitAnswer / answerTexts
+- ProcessGroupView 的 concise/autoExpandWhenLive
+- streamState / partial / splitAnswer 时机
+
+输出：根因（文件:行）、是否由 concise 引起、最小修复点。中文。

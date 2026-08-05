@@ -4,15 +4,22 @@ import {
   isAutoModeAutoAllowTool,
   isChatModeBlockedTool,
   CHAT_MODE_BLOCK_REASON,
+  CHAT_MODE_BLOCK_USER_MESSAGE,
+  CHAT_MODE_BLOCK_USER_TITLE,
   isDangerousCommand,
   isProjectLocalReadOnlyBash,
   isProjectScopedNonDestructiveBash,
   hasWriteStructure,
   requiresAutoModeConfirmation,
   resolveSdkPermissionModeForTAgent,
+  PERMISSION_TIMEOUT_MS,
 } from './permission-rules'
 
 describe('resolveSdkPermissionModeForTAgent', () => {
+  test('PERMISSION_TIMEOUT_MS is 120 seconds', () => {
+    expect(PERMISSION_TIMEOUT_MS).toBe(120_000)
+  })
+
   test('auto 映射为 default，由 TAgent canUseTool 审批', () => {
     expect(resolveSdkPermissionModeForTAgent('auto')).toBe('default')
   })
@@ -211,9 +218,12 @@ describe('isChatModeBlockedTool（Chat 硬拦）', () => {
     expect(isChatModeBlockedTool('Task', { prompt: 'x' }, cwd)).toBe(true)
   })
 
-  test('拦截原因文案非空', () => {
+  test('拦截原因文案含 Chat 与切 Work 引导', () => {
     expect(CHAT_MODE_BLOCK_REASON.length).toBeGreaterThan(10)
-    expect(CHAT_MODE_BLOCK_REASON).toMatch(/Chat/)
+    expect(CHAT_MODE_BLOCK_REASON).toMatch(/讨论模式（Chat）/)
+    expect(CHAT_MODE_BLOCK_REASON).toMatch(/切换到 Work/)
+    expect(CHAT_MODE_BLOCK_USER_TITLE).toMatch(/Chat/)
+    expect(CHAT_MODE_BLOCK_USER_MESSAGE).toMatch(/Chat \| Work/)
   })
 })
 

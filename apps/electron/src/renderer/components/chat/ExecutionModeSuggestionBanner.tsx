@@ -115,7 +115,7 @@ export function ExecutionModeSuggestionBanner({
               />
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-semibold text-foreground">
-                  {toWork ? '建议切换到 Work' : '建议回到 Chat'}
+                  {toWork ? '需要切换到 Work 才能写入' : '建议回到 Chat'}
                 </div>
                 <p className="mt-0.5 text-[12px] leading-snug text-muted-foreground">
                   {suggestion.reason}

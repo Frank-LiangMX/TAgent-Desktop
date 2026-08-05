@@ -56,6 +56,8 @@ export {
 export {
   classifySessionError,
   classifyUserFacingError,
+  isChatModeBlockMessage,
+  buildChatModeBlockUserError,
   isPromptTooLongMessage,
   isPromptTooLongResult,
   extractResultErrors,
@@ -86,3 +88,9 @@ export type { RichOutputIssue } from './rich-output-validate'
 
 // 主会话输出风格（kscc / Pi 双核共用沟通红线）
 export { buildOutputStylePrompt } from './output-style-prompt'
+
+// idle / 断流看门狗纯函数（超时判定）
+export {
+  IDLE_WATCHDOG_TIMEOUT_MS,
+  shouldForceIdle,
+} from './idle-watchdog'

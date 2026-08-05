@@ -1,0 +1,8 @@
+﻿只读调研。对照 DeepSeek-Reasonix、Kun、Proma、hermes-agent（均在 C:\Users\loumi\Desktop\AI\ 下）的「过程/思考/工具」UI：它们在 live 与结束后默认如何展示？是否逐条渲染每个 thinking + 每个 tool？还是一行 Working/Thought for Ns + 可展开？
+
+请读实际组件（Message.tsx / activity / tool row 等），给出：
+1. 各项目默认 UI 模式（一句话 + 关键路径:行）
+2. 共同点：真正「简洁」长什么样
+3. 给 TAgent-Desktop 的 concise 模式产品契约建议（不要只折叠 ProcessGroupView）
+
+禁止改任何文件。最终用中文结构化输出。

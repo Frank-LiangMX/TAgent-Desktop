@@ -87,6 +87,14 @@ export interface TAgentAssistantMessage {
    * 与 SDKAssistantMessage.stop_reason 命名一致（snake_case）。
    */
   stop_reason?: string
+  /**
+   * 流式中间态标记（对齐 Proma `_partial`）。
+   * - true：流式 partial，thinking/text/tool_use 在 content[] 原地累积，**不落盘**；
+   *   渲染层按 uuid 原地 upsert，被同 uuid 的 final（无 _partial）替换。
+   * - 缺省/false：终态/落盘消息。
+   * 见 docs/dev/core-loop/S1S2-single-source-brief.md（单真源流式）。
+   */
+  _partial?: boolean
 }
 
 // ===== 顶层联合（转录消息） =====

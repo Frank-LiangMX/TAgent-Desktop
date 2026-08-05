@@ -2064,6 +2064,7 @@ export const AGENT_IPC_CHANNELS = {
   /**
    * 权限已决（主进程 → 渲染进程）：超时自动 deny 与用户 respond 后都发，
    * 渲染层按 reqId 出队，避免 banner 卡死 / 按钮空操作。
+   * payload: { reqId, sessionId, behavior, reason?: 'timeout'|'user', toolName? }
    */
   PERMISSION_RESOLVED: 'agent:permission:resolved',
   /** 热切换指定会话的权限模式（运行中生效，不广播到其他会话） */

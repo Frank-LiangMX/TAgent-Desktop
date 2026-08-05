@@ -19,6 +19,7 @@ import {
   isDangerousCommand,
   isWriteTool,
   migrateExecutionMode,
+  PERMISSION_TIMEOUT_MS,
 } from '@tagent/shared'
 import type { ExecutionMode, TAgentPermissionMode } from '@tagent/shared'
 import { getSessionMeta, updateSessionMeta } from '../agent/session-store'
@@ -36,6 +37,8 @@ export interface PermissionRequest {
   input: Record<string, unknown>
   /** 是否危险命令（renderer 红色警示） */
   dangerous: boolean
+  /** 主进程发出请求的时间戳（renderer 倒计时对齐） */
+  requestedAt: number
 }
 
 /**
@@ -102,13 +105,16 @@ function resolveToolInput(
   return {}
 }
 
-/** 权限等待用户确认的超时（超时自动 deny + 推 PERMISSION_RESOLVED 清横幅） */
-const PERMISSION_TIMEOUT_MS = 120_000
-
 /** 通知渲染层某权限请求已决（超时 deny / 用户 respond 共用） */
 function emitPermissionResolved(
   win: BrowserWindow | null,
-  payload: { reqId: string; sessionId: string; behavior: 'allow' | 'deny' },
+  payload: {
+    reqId: string
+    sessionId: string
+    behavior: 'allow' | 'deny'
+    reason?: 'timeout' | 'user'
+    toolName?: string
+  },
 ): void {
   win?.webContents.send(AGENT_IPC_CHANNELS.PERMISSION_RESOLVED, payload)
 }
@@ -134,6 +140,8 @@ function askRenderer(
           reqId: req.id,
           sessionId: req.sessionId,
           behavior: 'deny',
+          reason: 'timeout',
+          toolName: req.toolName,
         })
         resolve('deny')
       }
@@ -165,8 +173,10 @@ export function clearModeSuggestionDismissal(sessionId: string): void {
  * Chat 模式拦截写操作时的终止回调（SessionService 注入）：
  * 终止当前 run 等用户确认切 Work，而非 deny 后让模型继续跑。
  */
-let chatModeBlockHandler: ((sessionId: string) => void) | undefined
-export function setOnChatModeBlock(handler: ((sessionId: string) => void) | undefined): void {
+let chatModeBlockHandler: ((sessionId: string, toolName: string) => void) | undefined
+export function setOnChatModeBlock(
+  handler: ((sessionId: string, toolName: string) => void) | undefined,
+): void {
   chatModeBlockHandler = handler
 }
 
@@ -224,7 +234,7 @@ async function checkPermission(args: {
   if (executionMode === 'chat' && isChatModeBlockedTool(toolName, input, cwd)) {
     // 终止当前 run + 推建议条：须用户确认才切 Work（ADR-0005）。
     // 被拦即停，而不是 deny 后让模型继续跑（用户视角「都在运行了还问我干啥」）。
-    chatModeBlockHandler?.(sessionId)
+    chatModeBlockHandler?.(sessionId, toolName)
     emitWorkSwitchSuggestion(win(), sessionId, toolName)
     return { allow: false, reason: CHAT_MODE_BLOCK_REASON }
   }
@@ -258,6 +268,7 @@ async function checkPermission(args: {
     toolName,
     input,
     dangerous,
+    requestedAt: Date.now(),
   }
   const behavior = await askRenderer(win(), req)
   return { allow: behavior === 'allow', reason: behavior === 'deny' ? '用户拒绝' : undefined }
@@ -292,6 +303,8 @@ export class PermissionService {
           reqId: args.reqId,
           sessionId: p.sessionId,
           behavior: args.behavior,
+          reason: 'user',
+          toolName: p.toolName,
         })
         p.resolve(args.behavior)
       },

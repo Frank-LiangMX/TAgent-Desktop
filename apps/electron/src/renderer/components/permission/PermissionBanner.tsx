@@ -7,15 +7,17 @@
  * 显示当前请求；若同会话还有排队则显示 (+N)。
  * 允许 / 拒绝 / 始终允许（remember=true：本会话按工具名白名单；Bash 整类放行，危险/写结构仍会再问）。
  */
-import { useMemo } from 'react'
+import { useMemo, useEffect, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { motion, AnimatePresence } from 'motion/react'
-import { ShieldWarning, Check, X } from '@phosphor-icons/react'
+import { ShieldWarning, Check, X, Clock } from '@phosphor-icons/react'
 import { AppTooltip } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 import {
   pendingPermissionMapAtom,
   resolvePermissionAtom,
+  getPermissionRemainingMs,
+  formatPermissionCountdown,
   type PermissionReq,
 } from '../../atoms/permission-atoms'
 
@@ -41,6 +43,24 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
   const resolveLocal = useSetAtom(resolvePermissionAtom)
   const req = queue[0] ?? null
   const queuedExtra = Math.max(0, queue.length - 1)
+
+  const [remainingMs, setRemainingMs] = useState(() =>
+    req ? getPermissionRemainingMs(req) : 0,
+  )
+
+  useEffect(() => {
+    if (!req) {
+      setRemainingMs(0)
+      return
+    }
+    const tick = (): void => setRemainingMs(getPermissionRemainingMs(req))
+    tick()
+    const id = window.setInterval(tick, 1000)
+    return () => window.clearInterval(id)
+  }, [req?.id, req?.requestedAt])
+
+  const countdownLabel = req ? formatPermissionCountdown(remainingMs) : ''
+  const countdownUrgent = remainingMs > 0 && remainingMs <= 30_000
 
   const respond = (behavior: 'allow' | 'deny', remember = false): void => {
     if (!req) return
@@ -96,6 +116,19 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
               <code className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
                 {command}
               </code>
+              <div
+                className={cn(
+                  'mt-1 flex items-center gap-1 text-[10px]',
+                  countdownUrgent ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground',
+                )}
+                title="未确认将自动拒绝"
+              >
+                <Clock size={12} weight="regular" aria-hidden />
+                <span>{countdownLabel}</span>
+                {countdownUrgent && remainingMs > 0 ? (
+                  <span className="text-[10px]">· 即将超时</span>
+                ) : null}
+              </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               <button

@@ -1,14 +1,101 @@
 /**
- * 流式占位项的纯逻辑（从 Chat.tsx 抽出，便于单测）。
+ * 会话级流式状态（与 DisplayItem 分离）。
  *
- * 覆盖两处回归：
- * - uuid 每条 delta 都变时，纯占位必须续用同一 key（防整轮重挂）
- * - thinking 先于占位到达时必须新建项并累积（防 kscc 思考被吞）
+ * delta 只累加 streamState，永不因 delta 创建/修改 items。
+ * 段边界由 Chat 按消息内容选择性清理：tool-only 中间态保留 thinking；
+ * turn_end / result / 含 thinking 的终态消息才清空。
  */
 
 import type { TAgentMessage } from '@tagent/shared'
 
-/** DisplayItem 的流式相关最小形状（避免循环依赖 Chat.tsx） */
+/** 会话级流式缓冲：正文 + 思考 */
+export interface SessionStreamState {
+  text: string
+  thinking: string
+}
+
+export const EMPTY_STREAM_STATE: SessionStreamState = { text: '', thinking: '' }
+
+export function hasStreamContent(state: SessionStreamState): boolean {
+  return Boolean(state.text || state.thinking)
+}
+
+export function applyTextDelta(state: SessionStreamState, delta: string): SessionStreamState {
+  if (!delta) return state
+  return { ...state, text: state.text + delta }
+}
+
+export function applyThinkingDeltaToState(
+  state: SessionStreamState,
+  delta: string,
+): SessionStreamState {
+  if (!delta) return state
+  return { ...state, thinking: state.thinking + delta }
+}
+
+export function clearSessionStreamState(): SessionStreamState {
+  return EMPTY_STREAM_STATE
+}
+
+/** sdk_message 内容块最小形状（避免拉满 IR 类型） */
+export interface StreamClearMessageLike {
+  type?: string
+  stop_reason?: string | null
+  content?: ReadonlyArray<{
+    type: string
+    thinking?: string
+    text?: string
+    id?: string
+    name?: string
+    input?: unknown
+  }>
+}
+
+/**
+ * 是否应清空 streamState.thinking。
+ *
+ * 仅 tool_use 的中间态（Pi tool_execution_start）**不得**清——
+ * 思考还只在 streamState，清了就「出完即消失」。
+ * 等消息已带非空 thinking，或回合真正结束（stop_reason）再清。
+ */
+export function shouldClearStreamThinking(msg: StreamClearMessageLike): boolean {
+  if (msg.type !== 'assistant') return true
+  if (msg.stop_reason) return true
+  const blocks = msg.content ?? []
+  return blocks.some(
+    (b) => b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim().length > 0,
+  )
+}
+
+/**
+ * 是否应清空 streamState.text。
+ * 对称：仅工具中间态保留已流出的正文；消息已带 text 或终态再清。
+ */
+export function shouldClearStreamText(msg: StreamClearMessageLike): boolean {
+  if (msg.type !== 'assistant') return true
+  if (msg.stop_reason) return true
+  const blocks = msg.content ?? []
+  return blocks.some(
+    (b) => b.type === 'text' && typeof b.text === 'string' && b.text.trim().length > 0,
+  )
+}
+
+/** 按消息内容选择性清理 streamState（禁止 tool-only 中间态把思考打没） */
+export function applySdkMessageToStreamState(
+  state: SessionStreamState,
+  msg: StreamClearMessageLike,
+): SessionStreamState {
+  const clearThinking = shouldClearStreamThinking(msg)
+  const clearText = shouldClearStreamText(msg)
+  if (!clearThinking && !clearText) return state
+  if (clearThinking && clearText) return EMPTY_STREAM_STATE
+  return {
+    text: clearText ? '' : state.text,
+    thinking: clearThinking ? '' : state.thinking,
+  }
+}
+
+/** DisplayItem 的流式相关最小形状（Pi 落盘路径清理纯占位） */
 export interface StreamItemLike {
   key: string
   message?: TAgentMessage
@@ -21,135 +108,117 @@ export interface StreamItemLike {
   compactTrigger?: 'auto' | 'manual'
 }
 
-export type StreamItemPatch = Partial<
-  Pick<StreamItemLike, 'streamingText' | 'streamingThinking' | 'streamUuid'>
->
-
-export interface UpsertStreamContext<T extends StreamItemLike> {
-  /** 当前活跃的流式占位（对应 Chat.streamingRef） */
-  currentStreaming: T | null
-  /** 新建占位时分配稳定 key */
-  allocKey: () => string
-}
-
-export interface UpsertStreamResult<T extends StreamItemLike> {
-  items: T[]
-  streamingItem: T
-}
-
 /** 清掉纯流式占位（无 message / 任务卡 / 压缩行） */
 export function purgeStreamingItems<T extends StreamItemLike>(prev: T[]): T[] {
   return prev.filter((it) => Boolean(it.message || it.taskCard || it.compactStatus))
 }
 
 /**
- * 就地更新或新建流式占位。
+ * 单真源流式（S2.1）：把一条 sdk_message assistant/user 按 **uuid 原地 upsert** 进 items。
  *
- * 关键边界由 sdk_message / turn_end 显式给出；纯占位（尚无落盘 message）
- * 不因 uuid 变化新建——SDK 常给每条 partial 发新 uuid。
+ * - 同 uuid：就地替换（partial→final 同 uuid 一条），不新增、不覆盖上一轮已完成 assistant。
+ * - final（有 stop_reason 且非 `_partial`）**不被**后续 partial 覆盖（竞态保护，对齐 Proma）。
+ * - 无 uuid 的 tool-only 中间态：按 tool_use id 就地更新，否则追加（禁止覆盖上一轮已完成 assistant）。
+ * - 终态（有 stop_reason）落入最后一个 streaming assistant；都没有则 append（并清纯占位）。
+ *
+ * 与 Chat 的 streamState 清理分离：本函数只管 items 真源，streamState 由 Chat 按内容选择性清。
+ * 见 docs/dev/core-loop/S1S2-single-source-brief.md。
  */
-export function upsertStreamItem<T extends StreamItemLike>(
+export function applySdkMessageToItems<T extends StreamItemLike>(
   prev: T[],
-  patch: StreamItemPatch,
-  ctx: UpsertStreamContext<T>,
-): UpsertStreamResult<T> {
-  const uuid = patch.streamUuid
+  message: TAgentMessage,
+  allocKey: () => string,
+): T[] {
+  const msg = message
+  const msgUuid = msg.type === 'assistant' || msg.type === 'user' ? msg.uuid : undefined
+  const stopReason = msg.type === 'assistant' ? msg.stop_reason : undefined
+  const stillStreaming = msg.type === 'assistant' && !stopReason
+  const incomingPartial = msg.type === 'assistant' && msg._partial === true
 
-  // 优先按 uuid 命中已有项（含中间 sdk_message 升级后仍在列表中的 assistant）
-  if (uuid) {
-    const byUuid = prev.find(
+  const applyMsg = (it: T): T => ({
+    ...it,
+    message: msg,
+    streamUuid: msgUuid ?? it.streamUuid,
+    streaming: stillStreaming,
+    streamingText: undefined,
+    streamingThinking: undefined,
+  })
+
+  // 1) 同 uuid 就地更新（partial→final / partial→partial）
+  if (msgUuid) {
+    const uuidIdx = prev.findIndex(
       (it) =>
-        it.streamUuid === uuid ||
-        (it.message?.type === 'assistant' && it.message.uuid === uuid),
+        it.streamUuid === msgUuid ||
+        (it.message?.type === 'assistant' && it.message.uuid === msgUuid) ||
+        (it.message?.type === 'user' && it.message.uuid === msgUuid),
     )
-    if (byUuid) {
-      const next = {
-        ...byUuid,
-        streaming: true,
-        streamUuid: uuid,
-        streamingText:
-          patch.streamingText !== undefined ? patch.streamingText : byUuid.streamingText,
-        streamingThinking:
-          patch.streamingThinking !== undefined
-            ? patch.streamingThinking
-            : byUuid.streamingThinking,
-      } as T
-      return {
-        items: prev.map((it) => (it.key === byUuid.key ? next : it)),
-        streamingItem: next,
+    if (uuidIdx >= 0) {
+      const existing = prev[uuidIdx]
+      const existingIsFinal =
+        existing?.message?.type === 'assistant' &&
+        Boolean(existing.message.stop_reason) &&
+        existing.message._partial !== true
+      // S2.1：final 不被迟到的 partial 覆盖（避免终态退回流式）
+      if (existingIsFinal && incomingPartial) {
+        return prev
       }
+      return prev.map((it, i) => (i === uuidIdx ? applyMsg(it) : it))
     }
   }
 
-  const base = purgeStreamingItems(prev)
-  const existing = ctx.currentStreaming
-  const inList = existing ? prev.some((it) => it.key === existing.key && it.streaming) : false
-  // partial 的 uuid 不是稳定的段标识：SDK 给每条 stream_event 都发新 uuid，
-  // 拿它判段会每 token 换一次 item key → turn key 跟着变 → 整轮子树重挂，
-  // useSmoothStream 每次重挂都以全文初始化，打字机直接失效。
-  // 段边界由 sdk_message / turn_end 显式给出，纯占位（尚无落盘 message）一律续用。
-  const uuidMismatch =
-    Boolean(uuid) &&
-    Boolean(existing?.streamUuid) &&
-    existing!.streamUuid !== uuid &&
-    Boolean(existing!.message)
-  if (!inList || !existing || uuidMismatch) {
-    const created = {
-      key: ctx.allocKey(),
-      streaming: true,
-      streamUuid: uuid,
-      streamingText: patch.streamingText ?? '',
-      streamingThinking: patch.streamingThinking ?? '',
-    } as T
-    return { items: [...base, created], streamingItem: created }
+  // 2) 仍在流式：无 uuid 的 tool-only 中间态应追加/就地更新，禁止覆盖上一轮已完成 assistant
+  if (stillStreaming) {
+    const lastIdx = prev.length - 1
+    const last = prev[lastIdx]
+    const onlyTools =
+      msg.type === 'assistant' &&
+      Array.isArray(msg.content) &&
+      msg.content.length > 0 &&
+      msg.content.every((b) => b.type === 'tool_use')
+    if (onlyTools) {
+      const toolBlock = msg.content.find((b) => b.type === 'tool_use')
+      const toolId =
+        toolBlock && typeof toolBlock === 'object' && 'id' in toolBlock
+          ? String((toolBlock as { id: string }).id)
+          : null
+      if (toolId) {
+        const toolIdx = prev.findIndex(
+          (it) =>
+            it.message?.type === 'assistant' &&
+            Array.isArray(it.message.content) &&
+            it.message.content.some(
+              (b) =>
+                b.type === 'tool_use' &&
+                typeof b === 'object' &&
+                'id' in b &&
+                String((b as { id: string }).id) === toolId,
+            ),
+        )
+        if (toolIdx >= 0) {
+          return prev.map((it, i) => (i === toolIdx ? applyMsg(it) : it))
+        }
+      }
+      return [
+        ...prev,
+        { key: allocKey(), message: msg, streamUuid: msgUuid, streaming: true } as T,
+      ]
+    }
+    if (last?.message?.type === 'assistant' && last.streaming) {
+      return prev.map((it, i) => (i === lastIdx ? applyMsg(it) : it))
+    }
   }
-  const next = {
-    ...existing,
-    streaming: true,
-    streamUuid: uuid ?? existing.streamUuid,
-    streamingText:
-      patch.streamingText !== undefined ? patch.streamingText : existing.streamingText,
-    streamingThinking:
-      patch.streamingThinking !== undefined
-        ? patch.streamingThinking
-        : existing.streamingThinking,
-  } as T
-  return {
-    items: prev.map((it) => (it.key === existing.key ? next : it)),
-    streamingItem: next,
-  }
-}
 
-/**
- * 将一段 thinking delta 绑到现有流式项，或在列表为空时新建占位并累积。
- *
- * kscc 的 thinking 先于正文到达，且不发空占位（只有 Pi 的 message_start 发）；
- * 绑不到时必须新建，否则整轮思考都被吞掉。
- */
-export function applyThinkingDelta<T extends StreamItemLike>(
-  prev: T[],
-  delta: string,
-  uuid: string | undefined,
-  ctx: UpsertStreamContext<T>,
-): UpsertStreamResult<T> {
-  const cur = ctx.currentStreaming
-  const bound =
-    (uuid &&
-      prev.find(
-        (it) =>
-          it.streamUuid === uuid ||
-          (it.message?.type === 'assistant' && it.message.uuid === uuid),
-      )) ||
-    (cur && prev.some((it) => it.key === cur.key) ? cur : undefined)
-  // 绑不到不代表该丢：必须新建（见上方注释）。已落盘尾部缓冲由调用方在
-  // sdk_message 落盘时清空 pending，不靠这里丢弃。
-  const prevThink = bound?.streamingThinking ?? ''
-  return upsertStreamItem(
-    prev,
-    {
-      streamingThinking: prevThink + delta,
-      streamUuid: uuid,
-    },
-    ctx,
-  )
+  // 3) Pi 核完成（有 stop_reason）→ 落盘最终 message：清 streaming 标记
+  if (msg.type === 'assistant' && stopReason) {
+    const lastIdx = prev.length - 1
+    const last = prev[lastIdx]
+    if (last?.message?.type === 'assistant' && last.streaming) {
+      return prev.map((it, i) => (i === lastIdx ? applyMsg(it) : it))
+    }
+  }
+
+  return [
+    ...purgeStreamingItems(prev),
+    { key: allocKey(), message: msg, streamUuid: msgUuid, streaming: stillStreaming } as T,
+  ]
 }

@@ -161,6 +161,27 @@ export function useSmoothStream({
           rafRef.current = requestAnimationFrame(renderLoop)
         }
       }
+    } else if (
+      // 短暂回缩（双源竞态 / 未合并快照）：忽略，避免打字机重置到开头抽搐
+      newContent.length > 0 &&
+      prevContent.startsWith(newContent)
+    ) {
+      return
+    } else if (
+      // 快照跳到已显示内容之后：按「已显示」为基追加，不整段重置
+      displayedRef.current.length > 0 &&
+      newContent.startsWith(displayedRef.current)
+    ) {
+      const delta = newContent.slice(displayedRef.current.length)
+      chunkQueueRef.current = []
+      if (delta) {
+        chunkQueueRef.current.push(...segmentText(delta))
+        if (!rafRef.current) {
+          rafRef.current = requestAnimationFrame(renderLoop)
+        }
+      }
+      prevContentRef.current = newContent
+      return
     } else {
       // 内容重置（用户重新发送等场景）
       chunkQueueRef.current = []
