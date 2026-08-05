@@ -60,8 +60,9 @@ describe('buildConciseTimeline', () => {
     const segs = buildConciseTimeline(process)
     expect(segs).toHaveLength(1)
     expect(segs[0]).toMatchObject({ kind: 'tool_cluster', family: 'explore' })
-    if (segs[0]!.kind === 'tool_cluster') {
-      expect(segs[0].tools).toHaveLength(3)
+    const seg0 = segs[0]!
+    if (seg0.kind === 'tool_cluster') {
+      expect(seg0.tools).toHaveLength(3)
     }
   })
 
@@ -137,8 +138,9 @@ describe('buildConciseTimeline', () => {
     ]
     const segs = buildConciseTimeline(process)
     expect(segs.map((s) => s.kind)).toEqual(['tool_cluster'])
-    if (segs[0]!.kind === 'tool_cluster') {
-      expect(segs[0].tools).toHaveLength(3)
+    const seg0 = segs[0]!
+    if (seg0.kind === 'tool_cluster') {
+      expect(seg0.tools).toHaveLength(3)
     }
   })
 
@@ -169,9 +171,10 @@ describe('buildConciseTimeline', () => {
     const segs = buildConciseTimeline(process)
     expect(segs).toHaveLength(2)
     expect(segs[0]).toMatchObject({ kind: 'thinking' })
-    if (segs[0]!.kind === 'thinking') {
-      expect(segs[0].thinking).toContain('一步')
-      expect(segs[0].thinking).toContain('二步')
+    const seg0 = segs[0]!
+    if (seg0.kind === 'thinking') {
+      expect(seg0.thinking).toContain('一步')
+      expect(seg0.thinking).toContain('二步')
     }
   })
 
