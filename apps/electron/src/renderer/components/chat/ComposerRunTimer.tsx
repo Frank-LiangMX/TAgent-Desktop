@@ -1,10 +1,10 @@
 /**
  * ComposerRunTimer — 输入框上方的运行计时 pill
  *
- * 发送即开始（Chat.tsx 在 startRun 时同步写 runStartedAt），覆盖"思考期无产出"
- * 阶段；完成/切会话/出错清零（runStartedAt=null → 返回 null 不渲染）。
- * 挂在 session-composer-cluster 内、输入框正上方，跟随输入框位置变化。
- * 复用 useLiveElapsedMs / formatElapsedDuration，不新增 formatter / atom。
+ * 发送即开始（Chat startRun / 全局 stream sync 写 startedAt），覆盖思考期无产出。
+ * startedAt 有值即显示（含 turn_end 软停后的工具间隙）；硬停（result/error/用户停）才清 null。
+ * 绝对定位浮在输入框上方：不撑高 bottom-stack，避免整行 blur underlay 上扩；
+ * pill 自身带玻璃底（如下箭头），只遮挡 pill 区域下的滚动内容。
  */
 import { useLiveElapsedMs, formatElapsedDuration } from '../../lib/time-utils'
 

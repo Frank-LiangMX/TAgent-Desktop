@@ -210,6 +210,28 @@ export function WorkspaceDock(): JSX.Element {
     }
   }, [tabs, apiReady])
 
+  // activeTabIdAtom → api：侧栏/外部改激活 tab 时，Dockview 同步 setActive。
+  // 原先只有 onDidActivePanelChange → atom（dock→侧栏），缺 atom→dock，
+  // 导致侧栏点会话只改高亮、主区仍停在旧 panel。
+  useEffect(() => {
+    const api = apiRef.current
+    if (!api || !apiReady || !activeTabId) return
+    if (isNonSessionPane(activeTabId)) return
+    const panel = api.getPanel(activeTabId)
+    if (!panel) return
+    // 已是激活 panel 则跳过，避免与 onDidActivePanelChange 来回刷
+    if (panel.api.isActive) return
+    isReconcilingRef.current = true
+    try {
+      panel.api.setActive?.()
+    } finally {
+      // 下一 macrotask 再放行：setActive 的 change 事件常同步/微任务派发
+      queueMicrotask(() => {
+        isReconcilingRef.current = false
+      })
+    }
+  }, [activeTabId, apiReady, tabs])
+
   // 事件订阅：api 就绪时挂，卸载时清（onReady 回调返回值会被 Dockview 忽略，故用 effect）
   useEffect(() => {
     const api = apiRef.current

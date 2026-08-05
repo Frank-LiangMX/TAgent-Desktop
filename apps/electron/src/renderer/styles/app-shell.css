@@ -81,6 +81,7 @@
  * 不再 max-width:680 居中卡死。
  */
 .session-composer-cluster {
+  position: relative; /* 供 .composer-run-timer 绝对定位锚点 */
   display: flex;
   flex-direction: column;
   box-sizing: border-box;

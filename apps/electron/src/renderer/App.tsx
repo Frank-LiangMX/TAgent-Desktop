@@ -62,6 +62,7 @@ import {
   workspacesAtom,
   loadWorkspacesAtom,
 } from './atoms/workspace-atoms'
+import { useGlobalSessionRunSync } from './hooks/useGlobalSessionRunSync'
 
 declare global {
   interface Window {
@@ -317,6 +318,9 @@ export function App(): JSX.Element {
     syncNotificationPrefsToMain()
   }, [])
 
+  // 全局运行计时 atom 同步（离开会话仍消费 result/delta，切回不丢计时）
+  useGlobalSessionRunSync()
+
   // Phase 2：全局 Nudge → 按设置：顶栏 ticker / 面板 toast
   useEffect(() => {
     return window.electronAPI.onNudgeEvent((payload: unknown) => {
@@ -424,16 +428,19 @@ export function App(): JSX.Element {
     channelId?: string,
     modelId?: string,
   ): void => {
-    const { tabs: next, activeTabId: nextActive } = openTab(
-      tabs,
-      sessionId,
-      title,
-      workspaceId,
-      channelId,
-      modelId,
-    )
-    setTabs(next)
-    setActiveTabId(nextActive)
+    // 函数式更新：避免闭包 tabs 过期覆盖并发 openTab
+    setTabs((prev) => {
+      const { tabs: next, activeTabId: nextActive } = openTab(
+        prev,
+        sessionId,
+        title,
+        workspaceId,
+        channelId,
+        modelId,
+      )
+      setActiveTabId(nextActive)
+      return next
+    })
   }
 
   /** 打开项目目录并注册为工作区；从新建会话入口调用时直接绑定新会话 */

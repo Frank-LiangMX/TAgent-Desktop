@@ -6,11 +6,12 @@
  * 模型：首条消息只绑定运行内核（KSCC / 外部），同内核内渠道与模型可继续切换。
  */
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { useAtomValue, useSetAtom } from 'jotai'
+import { getDefaultStore, useAtomValue, useSetAtom } from 'jotai'
 import {
   sessionRunMapAtom,
   startSessionRunAtom,
   stopSessionRunAtom,
+  softStopSessionRunAtom,
   adoptSessionRunAtom,
 } from '../../atoms/session-run-atoms'
 import type { StickToBottomContext } from 'use-stick-to-bottom'
@@ -205,6 +206,16 @@ export function Chat({
   // running 同步到 ref：handlePayload 是首渲染闭包（onStreamEvent effect 空依赖），用 ref 取最新
   const runningRef = useRef(running)
   runningRef.current = running
+  // 最后一个 assistant-turn 的 key：完成时把全程耗时记到它名下（按 turn.key 查）
+  const lastAssistantTurnKeyRef = useRef<string | null>(null)
+  /** 会话 meta 快照（加载时设置）：completeRun 持久化 turnDurations 时合并旧值 */
+  const metaRef = useRef<Partial<AgentSessionMeta> | null>(null)
+  /** 完成耗时表：turnKey → 耗时 + 结束方式（完成/停止/出错）。留存后供 AssistantTurnView 显示 */
+  const [completedDurations, setCompletedDurations] = useState<Record<string, TurnDuration>>({})
+  const startSessionRun = useSetAtom(startSessionRunAtom)
+  const stopSessionRun = useSetAtom(stopSessionRunAtom)
+  const softStopSessionRun = useSetAtom(softStopSessionRunAtom)
+  const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
   // turn_end 延迟停止定时器（见 RUN_STOP_GRACE_MS 注释）
   const pendingStopTimerRef = useRef<number | null>(null)
   const clearPendingStop = useCallback(() => {
@@ -217,18 +228,10 @@ export function Chat({
     clearPendingStop()
     pendingStopTimerRef.current = window.setTimeout(() => {
       pendingStopTimerRef.current = null
-      stopSessionRun(sessionId)
+      // 软停：过程区可收起，但保留 startedAt 记忆；下一 delta adopt 续计时不重置
+      softStopSessionRun(sessionId)
     }, RUN_STOP_GRACE_MS)
-  }, [clearPendingStop, sessionId])
-  // 最后一个 assistant-turn 的 key：完成时把全程耗时记到它名下（按 turn.key 查）
-  const lastAssistantTurnKeyRef = useRef<string | null>(null)
-  /** 会话 meta 快照（加载时设置）：completeRun 持久化 turnDurations 时合并旧值 */
-  const metaRef = useRef<Partial<AgentSessionMeta> | null>(null)
-  /** 完成耗时表：turnKey → 耗时 + 结束方式（完成/停止/出错）。留存后供 AssistantTurnView 显示 */
-  const [completedDurations, setCompletedDurations] = useState<Record<string, TurnDuration>>({})
-  const startSessionRun = useSetAtom(startSessionRunAtom)
-  const stopSessionRun = useSetAtom(stopSessionRunAtom)
-  const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
+  }, [clearPendingStop, sessionId, softStopSessionRun])
   /** 开始一轮运行：写 atom 置 running 并记起始时间戳 */
   const startRun = (): void => {
     clearPendingStop()
@@ -236,13 +239,13 @@ export function Chat({
     runStartedAtPersistRef.current = now
     startSessionRun({ id: sessionId, startedAt: now })
   }
-  /** 结束一轮运行（仅清 running；发送失败等无有效 turn 的路径用） */
+  /** 硬停一轮（清 running + 起点记忆；发送失败 / result / error / 用户停止） */
   const stopRun = (): void => {
     stopSessionRun(sessionId)
   }
   /**
-   * 用户主动停止：本地同步清 running + 起点。
-   * 否则 stopAgent 后飞行中的 stray delta 到达时 handlePayload 会用 persistRef 的旧时间戳
+   * 用户主动停止：本地同步硬清 running + 起点记忆。
+   * 否则 stopAgent 后飞行中的 stray delta 到达时 handlePayload 会用旧时间戳
    * adopt 复活 running → 停止键卡死 / 计时复活。
    */
   const userStopRun = (): void => {
@@ -551,8 +554,7 @@ export function Chat({
   useEffect(() => {
     sessionIdRef.current = sessionId
     setItems([])
-    // 运行态 reconcile 延后到下方 async：对照主进程 getSessionStatus 决定保 / 收养 / 清，
-    // 避免真实 Chat 挂载时无条件 stopRun 抹掉草稿实例 seed 的在跑计时（草稿→真实切换）。
+    // 运行态：不在此 stopRun（见下方 async reconcile 注释）。
     setHasDraft(false)
     setScrollReady(false)
     setVisibleCount(20) // 虚拟化：切会话重置首批 20
@@ -569,23 +571,28 @@ export function Chat({
       chatInputRef.current?.focus()
       setPendingSuggestion(null)
     }
+    let cancelled = false
     void (async () => {
-      // 运行态 reconcile：草稿→真实切换时，草稿实例 startRun 已 seed atom(running=true)，
-      // 真实实例全新挂载需对照主进程真相收养，保住 startedAt 让计时/停止键/流式动画连续。
-      // runState 是挂载时刻闭包值（草稿 seed 的 running=true）；即便 IPC 竞态，atom 在跑就不清。
+      // 运行态 reconcile（对齐 General）：
+      // remount **绝不**因 getSessionStatus=idle 清 atom（切走再切回丢计时的根因）。
+      // 仅主进程仍在跑时 adopt；已有 startedAt 由 adoptSessionRun 内部保留。
+      // 注意：cancelled 只跳过 setState，不能在 getSessionStatus 后整段 return，
+      // 否则 StrictMode 双挂载 / 快切时历史永远不加载 → 主区像「没切换」。
       try {
         const status = await window.electronAPI.getSessionStatus(sessionId)
-        if (status?.status === 'running') {
-          if (!runState.running) adoptSessionRun({ id: sessionId, startedAt: runState.startedAt ?? Date.now() })
-          // atom 已在跑（草稿 seed）→ 保留 startedAt，什么都不做
-        } else {
-          stopRun() // 主进程说没在跑 → 清（正常切到 idle 会话）
+        if (!cancelled && status?.status === 'running') {
+          const latest = getDefaultStore().get(sessionRunMapAtom)[sessionId]
+          adoptSessionRun({
+            id: sessionId,
+            startedAt: latest?.startedAt ?? Date.now(),
+          })
         }
       } catch {
-        // IPC 失败：保守按 atom 当前值，在跑就保留、否则清
-        if (!runState.running) stopRun()
+        // IPC 失败：保留 atom 现状
       }
+      if (cancelled) return
       const history = (await window.electronAPI.getMessages(sessionId)) as unknown[]
+      if (cancelled) return
       // 按核分流转译：kscc 会话落盘 SDKMessage → sdkMessageToIR；pi 会话落盘 TAgentMessage IR → 直读。
       // 旧 pi 会话可能仍是 SDKMessage 形态（有 message 包装），用 sdkMessageToIR 兜底。
       const isKsccCore = sessionChannel ? getChannelCoreKind(sessionChannel) === 'kscc' : true
@@ -600,6 +607,7 @@ export function Chat({
           irItems.push({ key: `h${itemIdxRef.current++}`, message })
         }
       }
+      if (cancelled) return
       setItems(irItems)
       // 从历史 assistant.usage 回填底栏（最近一条有 usage 的 assistant）
       for (let i = irItems.length - 1; i >= 0; i--) {
@@ -623,6 +631,7 @@ export function Chat({
           pendingMentionRoleIds?: string[]
           turnDurations?: Record<string, TurnDuration>
         }>
+        if (cancelled) return
         const persisted = metas.find((m) => m.id === sessionId)
         if (persisted) {
           // 记录 meta 快照（completeRun 持久化 turnDurations 时合并旧值）
@@ -654,6 +663,9 @@ export function Chat({
         /* 回显失败不影响主流程，沿用默认 */
       }
     })()
+    return () => {
+      cancelled = true
+    }
   }, [sessionId])
 
   // main 会话滚动时关闭滚动内容自身的 backdrop-filter，避免 GPU 合成滞后产生拖影。

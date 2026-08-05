@@ -919,25 +919,41 @@
 }
 
 /*
- * Composer 运行计时 pill：发送即开始（覆盖思考期），完成/切会话/出错清零。
- * 挂在 .session-composer-cluster 内、输入框正上方（cluster 为 flex-column），
- * 跟随输入框位置变化；复用 @keyframes agent-thinking-pulse（上方已定义）。
+ * Composer 运行计时 pill：发送即开始，完成/出错/用户停止清零。
+ * 绝对定位浮在 .session-composer-cluster 顶缘之上——不参与文档流、不撑高
+ * bottom-stack，因此 .composer-blur-underlay 不会为整行上扩模糊带。
+ * pill 自身玻璃底（对齐 .conversation-scroll-btn），只遮挡 pill 区域。
  */
 .composer-run-timer {
+  position: absolute;
+  left: var(--app-shell-session-gutter, 16px);
+  bottom: 100%;
+  z-index: 25;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  align-self: flex-start;
-  margin: 0 0 4px;
-  padding: 2px 10px;
+  margin: 0 0 6px;
+  padding: 3px 10px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, hsl(var(--primary)) 22%, transparent);
-  background: color-mix(in srgb, hsl(var(--primary)) 8%, transparent);
-  color: hsl(var(--primary) / 0.9);
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  background: rgb(var(--glass-rgb) / 0.72);
+  color: hsl(var(--primary) / 0.95);
   font-size: 11px;
   line-height: 1.4;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  box-shadow:
+    0 6px 16px -6px rgb(23 30 40 / 0.14),
+    inset 0 1px 0 rgb(255 255 255 / 0.45);
+  -webkit-backdrop-filter: blur(12px) saturate(1.06);
+  backdrop-filter: blur(12px) saturate(1.06);
+  pointer-events: none;
+}
+.dark .composer-run-timer {
+  border-color: rgb(var(--glass-rgb) / 0.35);
+  box-shadow:
+    0 6px 16px -6px rgb(0 0 0 / 0.35),
+    inset 0 1px 0 rgb(255 255 255 / 0.08);
 }
 .composer-run-timer__dot {
   width: 6px;
