@@ -12,7 +12,7 @@ import type { ProcessEntry } from './session-turn-model'
  * live 结束到倒计时开始之间的静置时间。
  * 工具循环里 live 可能瞬时抖到 false，静置期内一旦回到 live，定时器被清掉，不会误收。
  */
-export const PROCESS_GROUP_AUTO_COLLAPSE_SETTLE_MS = 900
+export const PROCESS_GROUP_AUTO_COLLAPSE_SETTLE_MS = 2500
 /** 倒计时秒数（对齐 Proma/General） */
 export const PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS = 3
 
@@ -49,10 +49,14 @@ export function planProcessGroupCollapse(
   const userToggled = live && !wasLive ? false : input.userToggled
 
   if (live) {
-    if (userToggled || !autoExpandWhenLive) return 'keep'
+    // 简洁 / 子代理：未手动展开时强制收起（勿用 keep——从 full 切过来会残留 expanded）
+    if (!autoExpandWhenLive) return userToggled ? 'keep' : 'collapse'
+    if (userToggled) return 'keep'
     return 'expand'
   }
   if (userToggled) return 'keep'
+  // 简洁模式：body 本就默认收起，live→idle 不要倒计时
+  if (!autoExpandWhenLive) return 'collapse'
   return wasLive ? 'countdown' : 'collapse'
 }
 
@@ -128,3 +132,100 @@ export function findLastProcessKey(
   }
   return null
 }
+
+// ===== 简洁模式投影 =====
+
+/**
+ * 简洁模式过程投影（W2）：把所有 thinking 条目合并成**一个**思考块（拼接文本），
+ * tool / text 条目保序保留。数据层 ProcessEntry[] 单真源不动——这里只产出
+ * 「投影后」的渲染序列，供 ProcessGroupView 在 concise 展开 body 时渲染。
+ *
+ * - thinking：拼接所有非空思考文本（`\n\n` 分段），置于首个 thinking 出现位置；
+ *   其余 thinking 条目折叠进这一块，避免「每段思考各占一行」。
+ * - tool：原样保留（短句短语 + 默认不展 JSON 由 ProcessGroupView 行为保证）。
+ * - text：原样保留（弱样式 / 折叠预览由 ProcessTextRow 处理，不抢回答区）。
+ */
+export function projectConciseProcess(process: ProcessEntry[]): ProcessEntry[] {
+  const thinkingTexts: string[] = []
+  for (const p of process) {
+    if (p.type === 'thinking' && p.thinking.trim()) thinkingTexts.push(p.thinking.trim())
+  }
+  const merged = thinkingTexts.length > 0 ? thinkingTexts.join('\n\n') : ''
+  const result: ProcessEntry[] = []
+  let mergedEmitted = false
+  for (const p of process) {
+    if (p.type === 'thinking') {
+      if (!mergedEmitted && merged) {
+        result.push({ type: 'thinking', key: 'concise-thinking-merged', thinking: merged })
+        mergedEmitted = true
+      }
+      continue
+    }
+    result.push(p)
+  }
+  return result
+}
+
+// ===== 过程组标题 =====
+
+export type ProcessDisplayMode = 'full' | 'concise'
+
+export interface ProcessGroupHeaderInput {
+  live: boolean
+  /** 运行中一行提示（工具短语 / 思考截断）；非 live 可忽略 */
+  liveHint: string | null
+  toolCount: number
+  thinkingCount: number
+  /** 已完成的工具数（live 进度） */
+  toolsDone: number
+  /** 兜底 label（summarizeProcess.label） */
+  fallbackLabel: string
+  displayMode: ProcessDisplayMode
+  /**
+   * 思考时长（秒）。concise idle 用「思考了 N 秒」；
+   * undefined 时退回「思考了几秒」或步数文案。
+   */
+  thinkingDurationSec?: number
+}
+
+/** 过程组折叠标题：full 用步数摘要；concise idle 对齐 Cursor「思考了 N 秒」 */
+export function buildProcessGroupHeaderLabel(input: ProcessGroupHeaderInput): string {
+  const {
+    live,
+    liveHint,
+    toolCount,
+    thinkingCount,
+    toolsDone,
+    fallbackLabel,
+    displayMode,
+    thinkingDurationSec,
+  } = input
+
+  if (live) {
+    const steps = toolCount > 0 ? `${toolsDone}/${toolCount}` : null
+    if (liveHint && steps) return `${liveHint} · ${steps}`
+    if (liveHint) return liveHint
+    return '正在思考与执行…'
+  }
+
+  if (displayMode === 'concise') {
+    const thought =
+      thinkingCount > 0
+        ? thinkingDurationSec != null && thinkingDurationSec > 0
+          ? `思考了 ${thinkingDurationSec} 秒`
+          : '思考了几秒'
+        : null
+    if (thought && toolCount > 0) return `${thought} · ${toolCount} 步`
+    if (thought) return thought
+    if (toolCount > 0) return `已执行 ${toolCount} 步`
+    return fallbackLabel
+  }
+
+  if (toolCount > 0 && thinkingCount > 0) {
+    return `已执行 ${toolCount} 步 · 含 ${thinkingCount} 段思考`
+  }
+  if (toolCount > 0) return `已执行 ${toolCount} 步`
+  if (thinkingCount > 0) return `思考 ${thinkingCount} 段`
+  return fallbackLabel
+}
+

@@ -1,9 +1,9 @@
 /**
- * ProcessGroupView — Agent 过程区（对齐 General）
+ * ProcessGroupView — Agent 过程区
  *
- * - **运行中（isLive）**：会话区直接展开，看见思考内容 + 工具语义行
- * - **结束后**：静置 + 3 秒倒计时自动收成一行摘要（用户手动 toggle 过则不收）
- * - 思考/中间文本：展开挂 Markdown，折叠只挂纯文本预览
+ * - **完整模式**：运行中展开思考全文 + 工具行；结束后静置收起
+ * - **简洁模式**：运行中过程区打开——思考默认紧凑预览（可点开全文）、工具短句行；
+ *   idle 后收成一行摘要（countdown/collapse）。live 同样逐步可见，不再只藏一行。
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
@@ -22,12 +22,15 @@ import { summarizeProcess } from './session-turn-model'
 import {
   PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS,
   PROCESS_GROUP_AUTO_COLLAPSE_SETTLE_MS,
+  buildProcessGroupHeaderLabel,
   buildProcessTextPreview,
   buildThinkingPreview,
   findLastProcessKey,
   planProcessGroupCollapse,
+  projectConciseProcess,
   shouldCollapseProcessText,
   shouldCollapseThinking,
+  type ProcessDisplayMode,
 } from './process-group-model'
 import { getToolPhrase, summarizeToolResult } from './tool-phrase'
 import type { TAgentToolResultBlock, TAgentToolUseBlock } from '@tagent/shared'
@@ -50,10 +53,14 @@ interface ProcessGroupViewProps {
   /** @deprecated 使用 isLive */
   isStreaming?: boolean
   /**
-   * 运行中是否自动展开过程区。默认 true（主会话要看见实时思考/工具）。
+   * 运行中是否自动展开过程区。默认 true（主会话——full 与 concise 都要看见实时过程）。
    * 子代理详情页传 false：默认只显示一行摘要，点开再看步骤，避免思考/工具全文铺满。
    */
   autoExpandWhenLive?: boolean
+  /** 展示模式：完整 / Cursor 简洁标题。默认 full。 */
+  displayMode?: ProcessDisplayMode
+  /** 思考时长（秒），concise idle 标题「思考了 N 秒」 */
+  thinkingDurationSec?: number
 }
 
 export function ProcessGroupView({
@@ -61,6 +68,8 @@ export function ProcessGroupView({
   isLive,
   isStreaming = false,
   autoExpandWhenLive = true,
+  displayMode = 'full',
+  thinkingDurationSec,
 }: ProcessGroupViewProps): JSX.Element | null {
   const live = isLive ?? isStreaming
   const summary = summarizeProcess(process)
@@ -142,28 +151,32 @@ export function ProcessGroupView({
   }, [live, process])
 
   const headerLabel = useMemo(() => {
-    if (live) {
-      const done = process.filter((p) => p.type === 'tool' && p.result).length
-      const total = summary.toolCount
-      const steps = total > 0 ? `${done}/${total}` : null
-      if (liveHint && steps) return `${liveHint} · ${steps}`
-      if (liveHint) return liveHint
-      return '正在思考与执行…'
-    }
-    if (summary.toolCount > 0 && summary.thinkingCount > 0) {
-      return `已执行 ${summary.toolCount} 步 · 含 ${summary.thinkingCount} 段思考`
-    }
-    if (summary.toolCount > 0) return `已执行 ${summary.toolCount} 步`
-    if (summary.thinkingCount > 0) return `思考 ${summary.thinkingCount} 段`
-    return summary.label
-  }, [live, process, summary, liveHint])
+    const toolsDone = process.filter((p) => p.type === 'tool' && p.result).length
+    return buildProcessGroupHeaderLabel({
+      live,
+      liveHint,
+      toolCount: summary.toolCount,
+      thinkingCount: summary.thinkingCount,
+      toolsDone,
+      fallbackLabel: summary.label,
+      displayMode,
+      thinkingDurationSec,
+    })
+  }, [live, liveHint, process, summary, displayMode, thinkingDurationSec])
 
   const showBody = expanded
 
+  // 简洁模式投影：所有 thinking 合并成一块（拼接文本），tool/text 保序。
+  // full 直接用原 process（零回归）。liveHint / header 计数仍用原 process。
+  const bodyProcess = useMemo(
+    () => (displayMode === 'concise' ? projectConciseProcess(process) : process),
+    [process, displayMode],
+  )
+
   // holdOpen 只认「当前正在写的段」：历史思考/文本按各自内容长度决定折叠，
   // 不再整轮 live 期间全部强制展开。
-  const lastThinkingKey = useMemo(() => findLastProcessKey(process, 'thinking'), [process])
-  const lastTextKey = useMemo(() => findLastProcessKey(process, 'text'), [process])
+  const lastThinkingKey = useMemo(() => findLastProcessKey(bodyProcess, 'thinking'), [bodyProcess])
+  const lastTextKey = useMemo(() => findLastProcessKey(bodyProcess, 'text'), [bodyProcess])
 
   // 空过程组不渲染。早退必须在所有 hook 之后，否则 0→非 0 时 hook 数量变化会崩
   if (process.length === 0) return null
@@ -206,13 +219,14 @@ export function ProcessGroupView({
 
       {showBody && (
         <div className="agent-process-group__body">
-          {process.map((entry) => {
+          {bodyProcess.map((entry) => {
             if (entry.type === 'thinking') {
               return (
                 <ThinkingActivityRow
                   key={entry.key}
                   thinking={entry.thinking}
                   isLive={live && entry.key === lastThinkingKey}
+                  displayMode={displayMode}
                 />
               )
             }
@@ -263,10 +277,13 @@ export function ProcessGroupView({
 const ThinkingActivityRow = memo(function ThinkingActivityRow({
   thinking,
   isLive,
+  displayMode = 'full',
 }: {
   thinking: string
   /** 本段是当前正在写的思考（整轮 live 时只有最后一段为真） */
   isLive: boolean
+  /** 过程展示模式：concise 时思考默认紧凑预览（不铺全文 Markdown），可点开看全文 */
+  displayMode?: ProcessDisplayMode
 }): JSX.Element {
   // live 时逐字平滑挤出（对齐 1.0/Proma：thinking 独立 useSmoothStream）。
   // 源是 rAF 节流后的整块 delta，逐字后视觉丝滑；非 live 时 content 固定直接显示。
@@ -278,9 +295,10 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
 
   // 静态阈值判定「够长才值得折」：不读 DOM，live 每帧变长也不触发测量与高度抖动
   const collapsible = useMemo(() => shouldCollapseThinking(thinking), [thinking])
-  // null = 未手动 override；live 段默认展开，历史段够长则默认收成预览
+  // null = 未手动 override；full：live 段默认展开、历史段够长则收成预览；
+  // concise：一律默认紧凑预览（不铺全文 Markdown），live 当前段只更新预览——用户可点开看全文
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
-  const open = userExpanded ?? (isLive || !collapsible)
+  const open = userExpanded ?? (displayMode === 'concise' ? false : isLive || !collapsible)
 
   // live 时正文跟随最新：新内容追加后滚到底；用户滚离底部（想从头读）时暂停跟随
   const bodyRef = useRef<HTMLDivElement>(null)

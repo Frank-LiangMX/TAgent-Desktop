@@ -23,6 +23,7 @@ import type {
   TAgentUserMessage,
   TurnDuration,
 } from '@tagent/shared'
+import type { ProcessDisplayMode } from './process-group-model'
 
 // ===== 输入侧 DisplayItem 最小形状（避免循环依赖 Chat.tsx） =====
 
@@ -71,6 +72,12 @@ export interface TurnPresentation {
   isStreaming: boolean
   streamingText?: string
   streamingThinking?: string
+}
+
+/** 会话级流式缓冲（与 DisplayItem 分离，由 Chat 传入 live 轮） */
+export interface TurnStreamState {
+  text: string
+  thinking: string
 }
 
 /**
@@ -379,10 +386,16 @@ export function areToolsBeforeIndexCompleted(
  * - 历史轮或无过程块：按尾部连续 text 外置（纯 text 直接进回答）。
  *
  * @param options.isLiveTurn 整轮仍在跑（含工具间隙）
+ * @param options.streamState live 轮正文/思考（delta 累积，不绑 item uuid）
  */
 export function buildTurnPresentation(
   turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>,
-  options?: { isLiveTurn?: boolean },
+  options?: {
+    isLiveTurn?: boolean
+    streamState?: TurnStreamState
+    /** 过程展示模式（W1：仅作透传，**不影响拆分时机**——concise 与 full 拆分一致）。 */
+    displayMode?: ProcessDisplayMode
+  },
 ): TurnPresentation {
   const process: ProcessEntry[] = []
   const answerTexts: string[] = []
@@ -392,8 +405,9 @@ export function buildTurnPresentation(
   let isStreaming = turn.isStreaming
   let modelId = turn.modelId
   const isLiveTurn = options?.isLiveTurn === true
+  const externalStream = options?.streamState
 
-  // 先收集 tool_result；流式文本只取「仍在 streaming 的占位项」的最新一份（勿拼接多份）
+  // 先收集 tool_result；落盘 item 上的 streaming 字段仅作 Pi 兼容兜底
   for (const item of turn.items) {
     if (item.message?.type === 'user') {
       // 子代理合成 user（委派指令 / 子代理 tool_result）不参与主线 result 绑定
@@ -424,20 +438,29 @@ export function buildTurnPresentation(
     }
   }
 
+  // live 轮：会话级 streamState 为权威来源（delta 不绑 DisplayItem）
+  if (isLiveTurn && externalStream) {
+    streamingText = externalStream.text ? externalStream.text : undefined
+    streamingThinking = externalStream.thinking ? externalStream.thinking : undefined
+    if (externalStream.text || externalStream.thinking) {
+      isStreaming = true
+    }
+  }
+
   // 按顺序收集主线 assistant 内容块（子代理 parentToolUseId 不进主过程组）
   // Agent/task launcher 也不进过程组——改由 SubagentEntryCard 独占展示。
   // pi 内核 toolcall_end 与 turn_end 都产含 tool_use 的 assistant（同 id），需按 tool_use id 去重。
-  // **稳定 key**：tool 用 `tool-${id}`、thinking 用出现序 `think-${n}`，禁止绑 item.key——
-  // 占位 item 升级/替换时 item.key 变会导致 React 整行 remount → 过程区跳变。
+  // **稳定 key**（S2.4）：tool 用 `tool-${id}`；thinking/text/blk 用「消息 uuid + 块在 content[] 中的下标」。
+  //   - partial→final 原地 upsert（S1）uuid 不变，Pi 顺序追加 → blockIndex 不变 → 同一段思考 key 稳定，不随列表重编 remount。
+  //   - 旧消息无 uuid 时回退 item.key（uuid upsert 亦保 key 不变）。
   const allBlocks: Array<{ block: TAgentContentBlock; key: string }> = []
   const toolUseSeen = new Map<string, { block: TAgentToolUseBlock; key: string; rich: boolean }>()
-  let thinkingSeq = 0
-  let textSeq = 0
   for (const item of turn.items) {
     if (item.message?.type !== 'assistant') continue
     if (item.message.parentToolUseId) continue
     const rich = item.message.content.some((b) => b.type === 'thinking' || b.type === 'text')
-    item.message.content.forEach((block) => {
+    const ownerKey = item.message.uuid ?? item.key
+    item.message.content.forEach((block, blockIndex) => {
       if (block.type === 'tool_use') {
         const tu = block as TAgentToolUseBlock
         // 子代理入口：过程区完全不渲染（含超长 tool_result）
@@ -456,13 +479,23 @@ export function buildTurnPresentation(
         toolUseSeen.set(tu.id, { block: tu, key: stableKey, rich })
         allBlocks.push({ block, key: stableKey })
       } else if (block.type === 'thinking') {
-        allBlocks.push({ block, key: `think-${thinkingSeq++}` })
+        allBlocks.push({ block, key: `think-${ownerKey}-${blockIndex}` })
       } else if (block.type === 'text') {
-        allBlocks.push({ block, key: `text-${textSeq++}` })
+        allBlocks.push({ block, key: `text-${ownerKey}-${blockIndex}` })
       } else {
-        allBlocks.push({ block, key: `blk-${allBlocks.length}` })
+        allBlocks.push({ block, key: `blk-${ownerKey}-${blockIndex}` })
       }
     })
+  }
+
+  // 单真源（S2.2）：消息 content 已带「非空」thinking / text 块时以消息为准——
+  // streamState 仅作「尚无 partial」的短暂兜底。正文若再被 streamState 覆盖，
+  // 会与 50ms partial 快照来回抢长度 → useSmoothStream 非追加重置 → 前几行抽搐。
+  if (allBlocks.some((x) => x.block.type === 'thinking' && (x.block as TAgentThinkingBlock).thinking.trim())) {
+    streamingThinking = undefined
+  }
+  if (allBlocks.some((x) => x.block.type === 'text' && (x.block as TAgentTextBlock).text.trim())) {
+    streamingText = undefined
   }
 
   // 末尾连续 text 作为交付回答（条件拆分，禁止两个极端）：
@@ -480,8 +513,10 @@ export function buildTurnPresentation(
     trailingTextStart > 0 &&
     areToolsBeforeIndexCompleted(blockList, trailingTextStart, completedIds)
   const isActive = isStreaming || isLiveTurn
-  // live/streaming + 有过程块：必须工具前置完成才拆；否则整轮留过程组
-  // 历史 / 无过程块：经典尾部外置（纯 text 走下方「全 text 当回答」分支）
+  // 拆分时机与 Proma 一致，**不受 displayMode 影响**（W1）：live/streaming + 有过程块时，
+  // 必须尾部 text 之前的工具全部有 result 才外置；否则整轮留过程组。
+  // 历史 / 无过程块：经典尾部外置（纯 text 走下方「全 text 当回答」分支）。
+  // concise 与 full 在相同输入下拆分结果一致——回答壳同样流式逐字。
   const splitAnswer =
     trailingTextStart !== null &&
     trailingTextStart > 0 &&
