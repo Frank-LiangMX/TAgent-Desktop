@@ -24,16 +24,17 @@ import type {
   ExecutionMode,
   AgentSessionMeta,
   TurnDuration,
+  UserFacingError,
 } from '@tagent/shared'
 import { migrateExecutionMode, DEFAULT_EXECUTION_MODE, parseMentions } from '@tagent/shared'
 import {
   resolveChannelDefaultModelId,
   sdkMessageToIR,
   TAGENT_DEFAULT_PERMISSION_MODE,
-  TAGENT_PERMISSION_MODE_CONFIG,
   DEFAULT_REASONING_EFFORT,
   DEFAULT_CONTEXT_WINDOW,
   migrateReasoningEffort,
+  migratePermissionMode,
   type TAgentUsage,
 } from '@tagent/shared'
 import { type ContextUsageSnapshotView } from './ContextUsageBadge'
@@ -55,7 +56,7 @@ import {
   AppTooltip,
   MessageFilePathProvider,
 } from '@tagent/ui'
-import { ArrowUp, Square, Compass, Zap, Plus, SlidersHorizontal, Unlock, X } from 'lucide-react'
+import { ArrowUp, Square, Compass, Zap, Plus, X } from 'lucide-react'
 import { UsersThree } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import {
@@ -86,11 +87,11 @@ import {
 import { filePreviewRequestAtom } from '../../atoms/file-preview'
 import { PermissionBanner } from '../permission/PermissionBanner'
 import { ExecutionModeSuggestionBanner } from './ExecutionModeSuggestionBanner'
-import { ExecutionModeToggle } from './ExecutionModeToggle'
-import { ReasoningEffortPicker } from './ReasoningEffortPicker'
+import { SessionErrorBanner } from './SessionErrorBanner'
+import { setSessionErrorAtom } from '../../atoms/session-error-atoms'
+import { RunModeSelector } from './RunModeSelector'
 import { KanbanCrewPanel } from './KanbanCrewPanel'
 import { MessageQueue } from './MessageQueue'
-import { ComposerUnderlay } from './ComposerUnderlay'
 import { ScrollPositionManager } from '../shell/ScrollPositionManager'
 import {
   channelsAtom,
@@ -105,6 +106,10 @@ import {
 import { tabsAtom, activeTabIdAtom, materializeTab } from '../../atoms/tabs'
 import { loadWorkspacesAtom } from '../../atoms/workspace-atoms'
 import { pendingSuggestionAtom } from '../../atoms/pending-suggestion'
+import {
+  makeStatusTickerItem,
+  pushStatusTickerAtom,
+} from '../../atoms/status-ticker'
 
 export interface SessionMeta {
   id: string
@@ -129,6 +134,11 @@ interface DisplayItem {
   streamingText?: string
   /** 流式 thinking 累积 */
   streamingThinking?: string
+  /**
+   * 流式占位绑定的 assistant.uuid（与 IR / stream_*_delta.uuid 对齐）。
+   * 同 uuid 就地更新，避免重试/多 chunk 双卡片。
+   */
+  streamUuid?: string
   /** 是否流式中 */
   streaming?: boolean
   /** 子代理任务卡片（task_started/progress/notification 状态机，独立小卡片） */
@@ -185,6 +195,10 @@ export function Chat({
 }): JSX.Element {
   const sessionId = session.id
   const [items, setItems] = useState<DisplayItem[]>([])
+  // items 同步到 ref：recordCompletion 经 handlePayload 触发（onStreamEvent effect 空依赖
+  // → 首渲染闭包），直接读 items 永远拿到初始空数组，耗时就落不了盘。
+  const itemsRef = useRef(items)
+  itemsRef.current = items
   /**
    * 运行态（running / startedAt）走 per-session Jotai atom（session-run-atoms），
    * 不用 local useState：草稿态与真实 tab 态是两个不同位置的 <Chat> 实例，切换时
@@ -216,6 +230,7 @@ export function Chat({
   const stopSessionRun = useSetAtom(stopSessionRunAtom)
   const softStopSessionRun = useSetAtom(softStopSessionRunAtom)
   const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
+  const pushTicker = useSetAtom(pushStatusTickerAtom)
   // turn_end 延迟停止定时器（见 RUN_STOP_GRACE_MS 注释）
   const pendingStopTimerRef = useRef<number | null>(null)
   const clearPendingStop = useCallback(() => {
@@ -244,9 +259,9 @@ export function Chat({
     stopSessionRun(sessionId)
   }
   /**
-   * 用户主动停止：本地同步硬清 running + 起点记忆。
-   * 否则 stopAgent 后飞行中的 stray delta 到达时 handlePayload 会用旧时间戳
-   * adopt 复活 running → 停止键卡死 / 计时复活。
+   * 用户主动停止：渲染层硬清 running + 起点记忆（与主进程 STOP_AGENT 双保险）。
+   * 主进程：interrupt + meta idle + 显式 turn_end（不依赖 Pi abort 是否再推 result）。
+   * 否则 stopAgent 后 stray delta 到达时 handlePayload 会用旧时间戳 adopt 复活 running。
    */
   const userStopRun = (): void => {
     clearPendingStop()
@@ -269,7 +284,7 @@ export function Chat({
     const dur: TurnDuration = { ms: durationMs, endedBy }
     setCompletedDurations((prev) => ({ ...prev, [turnKey]: dur }))
     // 持久化：最后一条主线 assistant 消息 createdAt 作稳定 key，写入 meta，重开回填
-    const createdAt = getLastMainAssistantCreatedAt(items)
+    const createdAt = getLastMainAssistantCreatedAt(itemsRef.current)
     if (createdAt != null) {
       const prevDurations = metaRef.current?.turnDurations ?? {}
       const nextDurations = { ...prevDurations, [createdAt]: dur }
@@ -329,10 +344,10 @@ export function Chat({
   const [visibleCount, setVisibleCount] = useState<number>(20)
   const [selectionOverride, setSelectionOverride] = useState<ModelSelection | null>(null)
   const [sentCoreKind, setSentCoreKind] = useState<ChannelCoreKind | null>(null)
-  /** 会话当前权限模式（默认 auto；切会话 key 重建后重置。运行中切换即时生效） */
+  /** 会话当前权限模式（默认 bypassPermissions；切会话 key 重建后重置。运行中切换即时生效） */
   const [permissionMode, setPermissionMode] = useState<TAgentPermissionMode>(TAGENT_DEFAULT_PERMISSION_MODE)
   /**
-   * 协作形态 Chat|Work（默认 chat；旧会话无字段回显 work）
+   * 协作形态 Chat|Work（默认 work；旧会话无字段回显 work）
    * 仅用户可切换（含点确认建议）
    */
   const [executionMode, setExecutionMode] = useState<ExecutionMode>(DEFAULT_EXECUTION_MODE)
@@ -459,8 +474,6 @@ export function Chat({
   const composerClusterRef = useRef<HTMLDivElement>(null)
   const bottomStackRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
-  /** 输入框聚焦时展开功能栏 */
-  const [composerExpanded, setComposerExpanded] = useState(false)
 
   const channels = useAtomValue(channelsAtom)
   const tabs = useAtomValue(tabsAtom)
@@ -472,6 +485,7 @@ export function Chat({
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
   const pendingSuggestion = useAtomValue(pendingSuggestionAtom)
   const setPendingSuggestion = useSetAtom(pendingSuggestionAtom)
+  const setSessionError = useSetAtom(setSessionErrorAtom)
 
   /**
    * ScrollMinimap 刻度：一轮对话一刻度。
@@ -563,6 +577,7 @@ export function Chat({
     setSubagentEagerness('conservative') // 切会话重置，下面异步回显持久化值
     setReasoningEffort(DEFAULT_REASONING_EFFORT) // 切会话重置，下面异步回显持久化值
     setExecutionMode(DEFAULT_EXECUTION_MODE) // 切会话重置，下面异步回显持久化值
+    setPermissionMode(TAGENT_DEFAULT_PERMISSION_MODE) // 切会话重置，下面异步回显持久化值
     setBackgroundCrewBanner(null) // 切会话清掉后台班组提示
     // welcome 形态点提示词时暂存的文本：草稿态挂载后预填输入框并清空。
     // 只有刚 newSession 的草稿会带 pending；切到已有会话时它已被清空，不误填。
@@ -573,19 +588,29 @@ export function Chat({
     }
     let cancelled = false
     void (async () => {
-      // 运行态 reconcile（对齐 General）：
-      // remount **绝不**因 getSessionStatus=idle 清 atom（切走再切回丢计时的根因）。
-      // 仅主进程仍在跑时 adopt；已有 startedAt 由 adoptSessionRun 内部保留。
+      // 运行态 reconcile（以主进程 getSessionStatus 为准）：
+      // - running → adopt，保留已有 startedAt（软停后仍 turnInFlight 的合法态靠此续上）
+      // - idle/error 且 atom 仍 running 或 startedAt 残留 → hard stop，避免计时/停止键卡死
       // 注意：cancelled 只跳过 setState，不能在 getSessionStatus 后整段 return，
       // 否则 StrictMode 双挂载 / 快切时历史永远不加载 → 主区像「没切换」。
       try {
         const status = await window.electronAPI.getSessionStatus(sessionId)
-        if (!cancelled && status?.status === 'running') {
-          const latest = getDefaultStore().get(sessionRunMapAtom)[sessionId]
-          adoptSessionRun({
-            id: sessionId,
-            startedAt: latest?.startedAt ?? Date.now(),
-          })
+        if (!cancelled) {
+          if (status?.status === 'running') {
+            const latest = getDefaultStore().get(sessionRunMapAtom)[sessionId]
+            adoptSessionRun({
+              id: sessionId,
+              startedAt: latest?.startedAt ?? Date.now(),
+            })
+          } else if (status?.status === 'idle' || status?.status === 'error') {
+            // 主进程已空闲/出错：atom 仍 running 或 startedAt 残留 → 硬清（软停合法态
+            // 若主进程仍 turnInFlight 会走上面 running 分支，不会被误杀）
+            const latest = getDefaultStore().get(sessionRunMapAtom)[sessionId]
+            if (latest?.running || latest?.startedAt != null) {
+              runStartedAtPersistRef.current = null
+              stopSessionRun(sessionId)
+            }
+          }
         }
       } catch {
         // IPC 失败：保留 atom 现状
@@ -645,9 +670,11 @@ export function Chat({
           setReasoningEffort(migrateReasoningEffort(persisted.reasoningEffort))
           // 旧会话无字段 → migrate 为 work，避免突然只读
           setExecutionMode(migrateExecutionMode(persisted.executionMode))
-          if (persisted.permissionMode) {
-            setPermissionMode(persisted.permissionMode)
-          }
+          setPermissionMode(
+            persisted.permissionMode
+              ? migratePermissionMode(persisted.permissionMode)
+              : TAGENT_DEFAULT_PERMISSION_MODE,
+          )
           setPendingModeSuggestion(persisted.pendingExecutionModeSuggestion ?? null)
           setSessionBoardId(persisted.boardId ?? null)
           // 回显对话跟随的 activeSpeaker（followMode 持久化）
@@ -690,11 +717,6 @@ export function Chat({
       scrollEl.classList.remove('is-scrolling')
     }
   }, [sessionId])
-
-  // Chat 无功能栏：切回 Chat 时强制收起
-  useEffect(() => {
-    if (executionMode === 'chat') setComposerExpanded(false)
-  }, [executionMode])
 
   // Work 模式下不展示「后台班组」提示（用户已回到可派工形态）
   useEffect(() => {
@@ -794,23 +816,6 @@ export function Chat({
     [sessionBoardId],
   )
 
-  // 点击输入框外部时折叠功能栏（仅 Work 展开时）
-  useEffect(() => {
-    if (!composerExpanded || executionMode !== 'work') return
-    const handlePointerDown = (e: PointerEvent): void => {
-      const cluster = composerClusterRef.current
-      if (!cluster) return
-      const target = e.target as HTMLElement
-      // 点击在 composer 内部 → 不折叠
-      if (cluster.contains(target)) return
-      // 点击在 Radix popover 内 → 不折叠
-      if (target.closest('[data-radix-popper-content-wrapper]')) return
-      setComposerExpanded(false)
-    }
-    document.addEventListener('pointerdown', handlePointerDown, true)
-    return () => document.removeEventListener('pointerdown', handlePointerDown, true)
-  }, [composerExpanded, executionMode])
-
   // 动态测量底部 UI 实际顶部 → --session-composer-top（下箭头 bottom 锚定）
   // 必须以 Conversation 底边为基准（按钮定位上下文），不能只量 root：
   // 有图片附件时输入玻璃变高，若变量滞后，箭头会停在旧高度并被 z-20 底栏盖住。
@@ -871,11 +876,10 @@ export function Chat({
     }
   }, [updateComposerTop, scheduleComposerTopUpdate])
 
-  // 功能栏 / 附件 / 模式：显式重测（不依赖 RO 是否丢帧）
+  // 附件 / 模式：显式重测（不依赖 RO 是否丢帧）
   useEffect(() => {
     return scheduleComposerTopUpdate()
   }, [
-    composerExpanded,
     pendingAttachments.length,
     executionMode,
     messageQueue.length,
@@ -1031,15 +1035,45 @@ export function Chat({
 
   const upsertStreamItem = (
     prev: DisplayItem[],
-    patch: Partial<Pick<DisplayItem, 'streamingText' | 'streamingThinking'>>,
+    patch: Partial<Pick<DisplayItem, 'streamingText' | 'streamingThinking' | 'streamUuid'>>,
   ): DisplayItem[] => {
+    const uuid = patch.streamUuid
+
+    // 优先按 uuid 命中已有项（含中间 sdk_message 升级后仍在列表中的 assistant）
+    if (uuid) {
+      const byUuid = prev.find(
+        (it) =>
+          it.streamUuid === uuid ||
+          (it.message?.type === 'assistant' && it.message.uuid === uuid),
+      )
+      if (byUuid) {
+        const next: DisplayItem = {
+          ...byUuid,
+          streaming: true,
+          streamUuid: uuid,
+          streamingText:
+            patch.streamingText !== undefined ? patch.streamingText : byUuid.streamingText,
+          streamingThinking:
+            patch.streamingThinking !== undefined
+              ? patch.streamingThinking
+              : byUuid.streamingThinking,
+        }
+        streamingRef.current = next
+        return prev.map((it) => (it.key === byUuid.key ? next : it))
+      }
+    }
+
     const base = purgeStreamingItems(prev)
     const existing = streamingRef.current
     const inList = existing ? prev.some((it) => it.key === existing.key && it.streaming) : false
-    if (!inList || !existing) {
+    // 已有流式项但 uuid 不同 → 新 assistant 消息，不复用旧占位
+    const uuidMismatch =
+      Boolean(uuid) && Boolean(existing?.streamUuid) && existing!.streamUuid !== uuid
+    if (!inList || !existing || uuidMismatch) {
       const created: DisplayItem = {
         key: `s${itemIdxRef.current++}`,
         streaming: true,
+        streamUuid: uuid,
         streamingText: patch.streamingText ?? '',
         streamingThinking: patch.streamingThinking ?? '',
       }
@@ -1049,6 +1083,7 @@ export function Chat({
     const next: DisplayItem = {
       ...existing,
       streaming: true,
+      streamUuid: uuid ?? existing.streamUuid,
       streamingText:
         patch.streamingText !== undefined ? patch.streamingText : existing.streamingText,
       streamingThinking:
@@ -1062,18 +1097,34 @@ export function Chat({
 
   // thinking delta 的 rAF 合并缓冲：同一帧内多次 delta 只 flush 一次（渲染频率从"每事件"降到"每帧"）
   const pendingThinkingRef = useRef('')
+  /** 与 pendingThinkingRef 对应的 assistant.uuid（同帧合并时保留最新） */
+  const pendingThinkingUuidRef = useRef<string | undefined>(undefined)
   const thinkingFlushRafRef = useRef<number | null>(null)
   const flushThinkingDelta = useCallback((): void => {
     thinkingFlushRafRef.current = null
     const delta = pendingThinkingRef.current
+    const uuid = pendingThinkingUuidRef.current
     pendingThinkingRef.current = ''
+    // 不清 pendingThinkingUuidRef：后续同 turn 帧可继续用
     if (!delta) return
     setItems((prev) => {
       const cur = streamingRef.current
-      // 流式项已被落盘就地升级（streamingRef 已清空）→ 思考全文已在 message，丢弃尾部缓冲
-      if (!cur || !prev.some((it) => it.key === cur.key)) return prev
-      const prevThink = cur.streamingThinking ?? ''
-      return upsertStreamItem(prev, { streamingThinking: prevThink + delta })
+      // 优先 uuid 命中；否则要求 streamingRef 仍在列表
+      const bound =
+        (uuid &&
+          prev.find(
+            (it) =>
+              it.streamUuid === uuid ||
+              (it.message?.type === 'assistant' && it.message.uuid === uuid),
+          )) ||
+        (cur && prev.some((it) => it.key === cur.key) ? cur : undefined)
+      // 流式项已被落盘就地升级且无 uuid 可绑 → 思考全文已在 message，丢弃尾部缓冲
+      if (!bound) return prev
+      const prevThink = bound.streamingThinking ?? ''
+      return upsertStreamItem(prev, {
+        streamingThinking: prevThink + delta,
+        streamUuid: uuid,
+      })
     })
   }, [])
 
@@ -1094,65 +1145,135 @@ export function Chat({
       }
     }
     if (p.kind === 'sdk_message') {
+      // 子代理落盘消息：只静默 append（供入口卡进度 + 详情页），不碰主线 streaming 占位、
+      // 不升级主线打字机、不刷底栏 usage。避免子代理一出就污染主会话。
+      const parentedMsg =
+        (p.message.type === 'assistant' || p.message.type === 'user') &&
+        Boolean(p.message.parentToolUseId)
+      if (parentedMsg) {
+        const msgUuid =
+          p.message.type === 'assistant' || p.message.type === 'user'
+            ? p.message.uuid
+            : undefined
+        setItems((prev) => {
+          if (msgUuid) {
+            const uuidIdx = prev.findIndex(
+              (it) =>
+                it.streamUuid === msgUuid ||
+                (it.message?.type === 'assistant' && it.message.uuid === msgUuid) ||
+                (it.message?.type === 'user' && it.message.uuid === msgUuid),
+            )
+            if (uuidIdx >= 0) {
+              return prev.map((it, i) =>
+                i === uuidIdx
+                  ? {
+                      ...it,
+                      message: p.message,
+                      streamUuid: msgUuid ?? it.streamUuid,
+                      streaming: false,
+                      streamingText: undefined,
+                      streamingThinking: undefined,
+                    }
+                  : it,
+              )
+            }
+          }
+          return [
+            ...prev,
+            {
+              key: `m${itemIdxRef.current++}`,
+              message: p.message,
+              streamUuid: msgUuid,
+              streaming: false,
+            },
+          ]
+        })
+        return
+      }
+
       // 先记下流式占位 key（下面要清 streamingRef），用于就地升级占位、保留打字机起点
       const streamingKey = streamingRef.current?.key
+      const streamingUuid = streamingRef.current?.streamUuid
       streamingRef.current = null
       // assistant.usage 更新底栏（Pi）；kscc 圆环不展示，但状态可写无害
       if (p.message.type === 'assistant' && p.message.usage) {
         applyUsage(p.message.usage)
       }
+      const msgUuid =
+        p.message.type === 'assistant' || p.message.type === 'user' ? p.message.uuid : undefined
       // 落盘消息：若当前有流式占位，就地升级它为落盘 message 项。
       // 关键：清掉 streamingText（打字机续接靠 useSmoothStream 内部 prevContentRef，不靠保留 streamingText）。
       // 保留 streamingText 会导致多轮工具时旧轮的 streamingText 残留、buildTurnPresentation 误收集 → 重复文字。
       // useSmoothStream 实例在 turn 生命周期内存活（turn key 稳定），content 从 streamingText 切到 answerText，
       // 同源前缀则 isAppend 逐字追完，不重挂不跳变。无流式占位（历史回放/纯落盘）则 append 新项。
+      // 优先 message.uuid / streamUuid 命中，避免连接重试或多 chunk 时 last-item 启发式误 append 双卡片。
       setItems((prev) => {
-        if (streamingKey != null && prev.some((it) => it.key === streamingKey && it.streaming)) {
-          return prev.map((it) =>
-            it.key === streamingKey
-              ? { ...it, message: p.message, streaming: false, streamingText: undefined, streamingThinking: undefined }
-              : it,
+        const stopReason =
+          p.message.type === 'assistant' ? p.message.stop_reason : undefined
+        const stillStreaming = p.message.type === 'assistant' && !stopReason
+        const applyMsg = (it: DisplayItem): DisplayItem => ({
+          ...it,
+          message: p.message,
+          streamUuid: msgUuid ?? it.streamUuid,
+          streaming: stillStreaming,
+          streamingText: undefined,
+          streamingThinking: undefined,
+        })
+
+        // 1) 同 uuid 就地更新（流式占位 / 已落盘中间态 / 最终态）
+        if (msgUuid) {
+          const uuidIdx = prev.findIndex(
+            (it) =>
+              it.streamUuid === msgUuid ||
+              (it.message?.type === 'assistant' && it.message.uuid === msgUuid) ||
+              (it.message?.type === 'user' && it.message.uuid === msgUuid),
           )
+          if (uuidIdx >= 0) {
+            return prev.map((it, i) => (i === uuidIdx ? applyMsg(it) : it))
+          }
         }
-        // Pi 核流式：每个 sdk_message 都是完整累积的 assistant message（无 stop_reason 表示仍在流式）。
-        // 必须就地更新最后一个 assistant item，否则每次 chunk append 新 item →
-        // 同一 turn 内出现 N 个递增长度的 assistant text → buildTurnPresentation 收集到重复文字。
-        // 标记 streaming: true 让 turn model 把它当流式 turn（isStreaming）→ 打字机 + 过程区展开生效。
-        const isPiStreamingAssistant =
-          p.message.type === 'assistant' && !p.message.stop_reason
-        if (isPiStreamingAssistant) {
+
+        // 2) 当前流式占位（streamingRef key；uuid 未对齐时的兼容路径）
+        if (streamingKey != null && prev.some((it) => it.key === streamingKey && it.streaming)) {
+          // 若占位已有不同 streamUuid，说明是另一条 assistant，勿误升级
+          const placeholder = prev.find((it) => it.key === streamingKey)
+          const placeholderUuid = placeholder?.streamUuid ?? streamingUuid
+          if (!msgUuid || !placeholderUuid || placeholderUuid === msgUuid) {
+            return prev.map((it) => (it.key === streamingKey ? applyMsg(it) : it))
+          }
+        }
+
+        // 3) Pi 核流式：无 stop_reason 时就地更新最后一个 assistant（无 uuid 的旧路径兜底）
+        // 必须就地更新，否则每次 chunk append 新 item → 同一 turn 内 N 个递增长度 assistant → 叠字。
+        if (stillStreaming) {
           const lastIdx = prev.length - 1
           const last = prev[lastIdx]
           if (last?.message?.type === 'assistant') {
-            // 同一个 turn 的连续 assistant 流式 chunk → 原地替换 content，标记 streaming
-            // （保留 key，useSmoothStream 平滑续接；stop_reason 到来后再标 streaming:false）
-            return prev.map((it, i) =>
-              i === lastIdx
-                ? { ...it, message: p.message, streaming: true, streamingText: undefined, streamingThinking: undefined }
-                : it,
-            )
+            return prev.map((it, i) => (i === lastIdx ? applyMsg(it) : it))
           }
         }
-        // Pi 核完成（有 stop_reason）→ 落盘最终 message：清 streaming 标记
-        if (p.message.type === 'assistant' && p.message.stop_reason) {
+        // 4) Pi 核完成（有 stop_reason）→ 落盘最终 message：清 streaming 标记
+        if (p.message.type === 'assistant' && stopReason) {
           const lastIdx = prev.length - 1
           const last = prev[lastIdx]
           if (last?.message?.type === 'assistant' && last.streaming) {
-            return prev.map((it, i) =>
-              i === lastIdx
-                ? { ...it, message: p.message, streaming: false, streamingText: undefined, streamingThinking: undefined }
-                : it,
-            )
+            return prev.map((it, i) => (i === lastIdx ? applyMsg(it) : it))
           }
         }
         return [
           ...purgeStreamingItems(prev),
-          { key: `m${itemIdxRef.current++}`, message: p.message },
+          {
+            key: `m${itemIdxRef.current++}`,
+            message: p.message,
+            streamUuid: msgUuid,
+            streaming: stillStreaming,
+          },
         ]
       })
     } else if (p.kind === 'result') {
       if (p.usage) applyUsage(p.usage)
       streamingRef.current = null
+      pendingThinkingUuidRef.current = undefined
       // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
       setItems((prev) => {
         const cleaned = prev.map((it) =>
@@ -1167,25 +1288,52 @@ export function Chat({
       completeRun()
       bumpRefresh()
     } else if (p.kind === 'stream_text_delta') {
+      // 子代理流式正文不进主会话（详情页靠落盘 parentToolUseId 消息回放）
+      if (p.parentToolUseId) return
       setItems((prev) => {
         const cur = streamingRef.current
-        const prevText =
-          cur && prev.some((it) => it.key === cur.key) ? (cur.streamingText ?? '') : ''
-        return upsertStreamItem(prev, { streamingText: prevText + p.text })
+        // 同 uuid 时从已绑定项续接；否则从当前 streamingRef 续接
+        const bound =
+          (p.uuid &&
+            prev.find(
+              (it) =>
+                it.streamUuid === p.uuid ||
+                (it.message?.type === 'assistant' && it.message.uuid === p.uuid),
+            )) ||
+          (cur && prev.some((it) => it.key === cur.key) ? cur : undefined)
+        const prevText = bound?.streamingText ?? ''
+        return upsertStreamItem(prev, {
+          streamingText: prevText + p.text,
+          streamUuid: p.uuid,
+        })
       })
     } else if (p.kind === 'stream_thinking_delta') {
+      // 子代理思考流不进主会话
+      if (p.parentToolUseId) return
       // Pi message_start 的空占位：立即立起流式项（思考行/加载态先出现），不经 rAF
       if (p.text === '') {
         setItems((prev) => {
           const cur = streamingRef.current
-          const prevThink =
-            cur && prev.some((it) => it.key === cur.key) ? (cur.streamingThinking ?? '') : ''
-          return upsertStreamItem(prev, { streamingThinking: prevThink })
+          const bound =
+            (p.uuid &&
+              prev.find(
+                (it) =>
+                  it.streamUuid === p.uuid ||
+                  (it.message?.type === 'assistant' && it.message.uuid === p.uuid),
+              )) ||
+            (cur && prev.some((it) => it.key === cur.key) ? cur : undefined)
+          const prevThink = bound?.streamingThinking ?? ''
+          return upsertStreamItem(prev, {
+            streamingThinking: prevThink,
+            streamUuid: p.uuid,
+          })
         })
         return
       }
       // 非空 delta 按帧合并（Pi 每 token 一事件），避免高频 setItems 全量重建 turn
+      // uuid 挂在 pending 上：flush 时一并写入 streamUuid
       pendingThinkingRef.current += p.text
+      if (p.uuid) pendingThinkingUuidRef.current = p.uuid
       if (thinkingFlushRafRef.current == null) {
         thinkingFlushRafRef.current = requestAnimationFrame(flushThinkingDelta)
       }
@@ -1202,6 +1350,7 @@ export function Chat({
       }
       if (evt.type === 'turn_end') {
         streamingRef.current = null
+        pendingThinkingUuidRef.current = undefined
         // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
         setItems((prev) => {
           const cleaned = prev.map((it) =>
@@ -1246,19 +1395,20 @@ export function Chat({
         }
       } else if (evt.type === 'session_error') {
         // 主进程已按分类表转译（classifyUserFacingError）：友好标题 + 原文 + 可重试标记
-        const userError = (evt as { error?: { title?: string; retryable?: boolean } }).error
-        const title = userError?.title ?? '错误'
-        const detail = `${title}：${evt.message ?? ''}${userError?.retryable ? '（可重试）' : ''}`
-        setItems((prev) => [
-          ...prev,
-          {
-            key: `e${itemIdxRef.current++}`,
-            message: {
-              type: 'assistant',
-              content: [{ type: 'text', text: detail }],
-            } as TAgentMessage,
+        // 独立错误条（非 assistant 气泡）：copy / dismiss / retryable→重试
+        const userError = (evt as { error?: UserFacingError }).error
+        const rawMessage = typeof evt.message === 'string' ? evt.message : ''
+        setSessionError({
+          sessionId: sessionIdRef.current,
+          error: {
+            title: userError?.title ?? '错误',
+            message: userError?.message || rawMessage,
+            retryable: userError?.retryable ?? false,
+            code: userError?.code,
+            action: userError?.action,
+            at: Date.now(),
           },
-        ])
+        })
         clearPendingStop()
         recordCompletion('error')
         stopRun()
@@ -1360,6 +1510,8 @@ export function Chat({
       alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
       return
     }
+    // 新发送/重试开始时收起错误条（若再失败会重新推 session_error）
+    setSessionError({ sessionId: sessionIdRef.current, error: null })
     const channel = channels.find((item) => item.id === selection.channelId)
     const model = channel?.models.find((item) => item.id === selection.modelId)
     if (!channel?.enabled || !model?.enabled) {
@@ -1411,12 +1563,14 @@ export function Chat({
         setSelectionOverride(selection)
         setSentCoreKind(coreKind)
         const sid = sessionIdRef.current
+        // 与主进程 createSession 对齐：首条 prompt 前 20 字作为标题（草稿仍是「新会话」）
+        const tabTitle = text.slice(0, 20) || session.title || '新会话'
         const exists = tabs.some((t) => t.sessionId === sid)
         if (!exists) {
           const { tabs: nextTabs, activeTabId } = materializeTab(
             tabs,
             sid,
-            session.title || '新会话',
+            tabTitle,
             session.workspaceId,
             selection.channelId,
             selection.modelId,
@@ -1426,7 +1580,12 @@ export function Chat({
         } else {
           setTabs((prev) => prev.map((tab) => (
             tab.sessionId === sid
-              ? { ...tab, channelId: selection.channelId, modelId: selection.modelId }
+              ? {
+                  ...tab,
+                  title: tab.title === '新会话' ? tabTitle : tab.title,
+                  channelId: selection.channelId,
+                  modelId: selection.modelId,
+                }
               : tab
           )))
         }
@@ -1438,6 +1597,33 @@ export function Chat({
       stopRun()
     }
   }
+
+  /**
+   * 取最后一条真实用户输入文案（错误条重试用）。
+   * 跳过 tool_result / 子代理合成 user；无则 null。
+   */
+  const getLastRealUserPrompt = useCallback((): string | null => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const msg = items[i]?.message
+      if (!msg || msg.type !== 'user') continue
+      if (!isRealUserInput(msg)) continue
+      const text = firstText(msg)?.trim()
+      if (text) return text
+    }
+    return null
+  }, [items])
+
+  /** 错误条「重试」：重发上一条真实用户输入（走现有 send 路径，无附件） */
+  const retryLastUserPrompt = useCallback(async (): Promise<void> => {
+    const text = getLastRealUserPrompt()
+    if (!text) return
+    if (!effectiveSelection) {
+      alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
+      return
+    }
+    if (running) return
+    await sendQueued({ text, selection: effectiveSelection })
+  }, [getLastRealUserPrompt, effectiveSelection, running])
 
   /** 用户发送：空闲→立即发；运行中→入队 */
   const send = async (): Promise<void> => {
@@ -1539,10 +1725,10 @@ export function Chat({
    *  工作区选择已移到输入框下方的独立容器（见 workspaceSlot），不再挤在 footer。 */
   const landingFooter = (
     <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1">
-      {/* Chat | Work 切换（草稿会话仅改本地状态，首条发送时主进程创建 meta 会带上） */}
-      <ExecutionModeToggle
-        value={executionMode}
-        onChange={(m) => {
+      {/* 运行模式（草稿会话仅改本地状态，首条发送时主进程创建 meta 会带上） */}
+      <RunModeSelector
+        executionMode={executionMode}
+        onExecutionModeChange={(m) => {
           setExecutionMode(m)
           setPendingModeSuggestion(null)
           // 非草稿会话才同步主进程 meta（草稿会话尚未有 meta，IPC 会失败；首条发送时创建 meta 会带上本地 mode）
@@ -1562,6 +1748,20 @@ export function Chat({
             })()
           }
         }}
+        permissionMode={permissionMode}
+        onPermissionModeChange={(m) => {
+          setPermissionMode(m)
+          if (!onDraftWorkspaceChange) {
+            void window.electronAPI.setSessionPermissionMode(sessionId, m)
+          }
+        }}
+        subagentEagerness={subagentEagerness}
+        onSubagentEagernessChange={(level) => {
+          setSubagentEagerness(level)
+          if (!onDraftWorkspaceChange) {
+            void window.electronAPI.updateSessionMeta(sessionId, { subagentEagerness: level })
+          }
+        }}
       />
       <ModelSelector
         selection={effectiveSelection}
@@ -1569,6 +1769,13 @@ export function Chat({
         onSelect={(nextSelection) => {
           setSelectionOverride(nextSelection)
           setSelectedModelSelection(nextSelection)
+        }}
+        reasoningEffort={reasoningEffort}
+        onReasoningEffortChange={(effort) => {
+          setReasoningEffort(effort)
+          if (!onDraftWorkspaceChange) {
+            void window.electronAPI.updateSessionMeta(sessionId, { reasoningEffort: effort })
+          }
         }}
       />
       {running ? (
@@ -1695,9 +1902,11 @@ export function Chat({
                 </div>
               )}
               {visibleTurns.map((turn, turnIndex) => {
-                // 整轮 Agent 仍在跑且是最新 turn → 过程区保持展开（含工具间隙，不只 stream delta）
+                // 最新 assistant-turn 且本轮未硬停：过程区「一条路」展开。
+                // 用 startedAt 而非仅 running——turn_end 软停会短暂 running=false，
+                // 若据此收过程/拆回答会整段跳变；硬停才清 startedAt。
                 const isLiveTurn =
-                  running &&
+                  (running || runStartedAt != null) &&
                   turnIndex === visibleTurns.length - 1 &&
                   turn.kind === 'assistant-turn'
                 // 追踪最后一个 assistant-turn 的 key，供 completeRun 记完成耗时
@@ -1713,6 +1922,7 @@ export function Chat({
                         ? liveMentionLabels
                         : undefined
                     }
+                    mentionRoles={mentionRoles}
                     completedDuration={completedDurations[turn.key]}
                     subagentCards={subagentCards}
                     onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
@@ -1795,10 +2005,15 @@ export function Chat({
             }
           }}
         />
+        <SessionErrorBanner
+          sessionId={sessionId}
+          canRetry={!running && Boolean(getLastRealUserPrompt()) && Boolean(effectiveSelection)}
+          onRetry={retryLastUserPrompt}
+        />
         <PermissionBanner sessionId={sessionId} />
         <div
           ref={composerClusterRef}
-          className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''} ${composerExpanded ? 'is-composer-expanded' : ''}`}
+          className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''}`}
         >
           <ComposerRunTimer startedAt={runStartedAt} />
           <div
@@ -1841,10 +2056,11 @@ export function Chat({
                         <Plus className="size-4" />
                       </Button>
                     </AppTooltip>
-                    {/* Chat | Work */}
-                    <ExecutionModeToggle
-                      value={executionMode}
-                      onChange={(m) => {
+                    {/* 运行模式：Chat|Work + 权限档 + 子代理，一个入口 */}
+                    <RunModeSelector
+                      compact={composerCompact}
+                      executionMode={executionMode}
+                      onExecutionModeChange={(m) => {
                         void (async () => {
                           const prev = executionMode
                           setExecutionMode(m)
@@ -1863,6 +2079,18 @@ export function Chat({
                             if (m === 'work' && !crewExternalized) setCrewPanelOpen(true)
                           }
                         })()
+                      }}
+                      permissionMode={permissionMode}
+                      onPermissionModeChange={(m) => {
+                        setPermissionMode(m)
+                        void window.electronAPI.setSessionPermissionMode(sessionId, m)
+                      }}
+                      subagentEagerness={subagentEagerness}
+                      onSubagentEagernessChange={(level) => {
+                        setSubagentEagerness(level)
+                        void window.electronAPI.updateSessionMeta(sessionId, {
+                          subagentEagerness: level,
+                        })
                       }}
                     />
                     {/* 班组：窄模式仅图标。
@@ -1895,64 +2123,21 @@ export function Chat({
                         </button>
                       </AppTooltip>
                     ) : null}
-                    {/* Work 权限角标：窄模式隐藏文字 */}
-                    {executionMode === 'work' && permissionMode !== 'auto' ? (
-                      <AppTooltip
-                        label={`权限：${TAGENT_PERMISSION_MODE_CONFIG[permissionMode]?.label ?? permissionMode}`}
-                      >
-                        <button
-                          type="button"
-                          className={`composer-permission-chip composer-permission-chip--${permissionMode}`}
-                          onClick={() => setComposerExpanded(true)}
-                          aria-label={`权限：${TAGENT_PERMISSION_MODE_CONFIG[permissionMode]?.label ?? permissionMode}（点击展开切换）`}
-                        >
-                          {permissionMode === 'plan' ? (
-                            <Compass className="composer-permission-chip__icon" aria-hidden />
-                          ) : (
-                            <Unlock className="composer-permission-chip__icon" aria-hidden />
-                          )}
-                          <span className="composer-permission-chip__label max-w-[64px] truncate">
-                            {TAGENT_PERMISSION_MODE_CONFIG[permissionMode]?.label ?? permissionMode}
-                          </span>
-                        </button>
-                      </AppTooltip>
-                    ) : null}
-                    {executionMode === 'work' ? (
-                      <AppTooltip
-                        label={
-                          composerExpanded ? '收起功能栏' : '展开功能栏（权限 / 子代理）'
-                        }
-                      >
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className={`size-7 shrink-0 rounded-lg transition-colors hover:bg-foreground/10 hover:text-foreground ${composerExpanded ? 'bg-foreground/10 text-foreground' : 'text-muted-foreground'}`}
-                          onClick={() => setComposerExpanded((v) => !v)}
-                          aria-label={composerExpanded ? '收起功能栏' : '展开功能栏'}
-                        >
-                          <SlidersHorizontal className="size-4" />
-                        </Button>
-                      </AppTooltip>
-                    ) : null}
                   </div>
                   <div className="composer-footer-bar__right flex h-7 min-w-0 shrink items-center gap-0.5">
-                    <ReasoningEffortPicker
-                      value={reasoningEffort}
-                      onChange={(effort) => {
-                        void (async () => {
-                          setReasoningEffort(effort)
-                          await window.electronAPI.updateSessionMeta(sessionId, {
-                            reasoningEffort: effort,
-                          })
-                        })()
-                      }}
-                    />
                     <ModelSelector
                       selection={effectiveSelection}
                       lockedKind={lockedKind}
                       onSelect={(nextSelection) => {
                         setSelectionOverride(nextSelection)
                         setSelectedModelSelection(nextSelection)
+                      }}
+                      reasoningEffort={reasoningEffort}
+                      onReasoningEffortChange={(effort) => {
+                        setReasoningEffort(effort)
+                        void window.electronAPI.updateSessionMeta(sessionId, {
+                          reasoningEffort: effort,
+                        })
                       }}
                     />
                     {/*
@@ -1978,7 +2163,7 @@ export function Chat({
                       </Button>
                     ) : running && hasDraft ? (
                       <div className="flex items-center gap-1">
-                        <AppTooltip label="引导：不中断当前轮，Agent 在下一轮看到此消息">
+                        <AppTooltip label="引导：不中断当前轮；本轮结束后 Agent 看到此消息（kscc 入队 / Pi 自动续发）">
                           <Button
                             variant="ghost"
                             size="icon"
@@ -1987,7 +2172,39 @@ export function Chat({
                               const text = chatInputRef.current?.getText().trim()
                               if (!text) return
                               chatInputRef.current?.clear()
-                              void (window.electronAPI as any).steerAgent(sessionIdRef.current, text)
+                              void (async () => {
+                                const res = await window.electronAPI.steerAgent(
+                                  sessionIdRef.current,
+                                  text,
+                                ) as { ok?: boolean; mode?: string; error?: string } | undefined
+                                if (!res?.ok) {
+                                  pushTicker(
+                                    makeStatusTickerItem(
+                                      `引导失败：${res?.error ?? '未知错误'}`,
+                                      'error',
+                                      5000,
+                                    ),
+                                  )
+                                  return
+                                }
+                                if (res.mode === 'pending_next_turn') {
+                                  pushTicker(
+                                    makeStatusTickerItem(
+                                      '已排队引导：本轮结束后自动发送',
+                                      'info',
+                                      4000,
+                                    ),
+                                  )
+                                } else if (res.mode === 'live') {
+                                  pushTicker(
+                                    makeStatusTickerItem(
+                                      '已注入引导：将在下一轮边界生效',
+                                      'info',
+                                      4000,
+                                    ),
+                                  )
+                                }
+                              })()
                             }}
                             aria-label="引导"
                           >
@@ -2043,23 +2260,6 @@ export function Chat({
               }
             />
           </div>
-          {/* 仅 Work 且展开时挂载，避免 height:0 占位/边框导致切换时底栏跳动 */}
-          {executionMode === 'work' && composerExpanded ? (
-            <ComposerUnderlay
-              permissionMode={permissionMode}
-              onPermissionModeChange={async (m) => {
-                setPermissionMode(m)
-                await window.electronAPI.setSessionPermissionMode(sessionId, m)
-              }}
-              subagentEagerness={subagentEagerness}
-              onSubagentEagernessChange={async (level) => {
-                setSubagentEagerness(level)
-                await window.electronAPI.updateSessionMeta(sessionId, {
-                  subagentEagerness: level,
-                })
-              }}
-            />
-          ) : null}
         </div>
         {/* token 栏：cluster 外部，stack 最底，落在 band 与窗边之间；仅 Pi/external */}
         {showTokenBar && (
@@ -2124,6 +2324,7 @@ function TurnView({
   isLiveTurn = false,
   onRefillToInput,
   mentionLabels,
+  mentionRoles,
   completedDuration,
   subagentCards,
   onOpenSubagent,
@@ -2132,6 +2333,7 @@ function TurnView({
   isLiveTurn?: boolean
   onRefillToInput?: (text: string) => void
   mentionLabels?: string[]
+  mentionRoles?: Array<{ id: string; displayName: string }>
   completedDuration?: TurnDuration
   subagentCards?: Map<string, TaskCardState>
   onOpenSubagent?: (parentToolUseId: string) => void
@@ -2139,7 +2341,11 @@ function TurnView({
   if (turn.kind === 'user') {
     return (
       <div data-message-id={turn.key}>
-        <MessageView message={turn.message} onRefillToInput={onRefillToInput} />
+        <MessageView
+          message={turn.message}
+          onRefillToInput={onRefillToInput}
+          mentionRoles={mentionRoles}
+        />
       </div>
     )
   }
@@ -2162,13 +2368,10 @@ function TurnView({
 
 /** 显示项渲染（standalone：压缩行 / 任务卡 / 兜底） */
 function ItemView({ item }: { item: DisplayItem }): JSX.Element {
-  // 子代理任务卡片（task_started/progress/notification 状态机，独立小卡片）
-  if (item.taskCard) {
-    return (
-      <div data-message-id={item.key}>
-        <TaskCardView card={item.taskCard} />
-      </div>
-    )
+  // 子代理 taskCard 已并入 assistant-turn + SubagentEntryCard，standalone 不再渲染第二张卡
+  // （历史兜底：若仍有孤立 taskCard，也静默跳过，避免双卡 + 拆 turn 铭牌污染）
+  if (item.taskCard && !item.message) {
+    return <></>
   }
 
   // 上下文压缩状态行

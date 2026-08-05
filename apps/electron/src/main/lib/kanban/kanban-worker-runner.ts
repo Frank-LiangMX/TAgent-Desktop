@@ -334,13 +334,17 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
     toolName: string,
     input: Record<string, unknown>,
     _options?: { mcpServers?: unknown },
-  ): Promise<{ behavior: 'allow' | 'deny'; message?: string }> => {
+  ): Promise<
+    | { behavior: 'allow'; updatedInput: Record<string, unknown> }
+    | { behavior: 'deny'; message: string }
+  > => {
     const block = isBlockedWorkerTool(toolName)
     if (block) {
       recordBlockedApproval(task.id, toolName, input, block)
       return { behavior: 'deny', message: block }
     }
-    return { behavior: 'allow' }
+    // SDK allow 必须带 updatedInput，否则 Zod 校验失败整次工具权限崩掉
+    return { behavior: 'allow', updatedInput: input }
   }
 
   const workerBeforeToolCall = async (ctx: {

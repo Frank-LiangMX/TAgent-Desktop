@@ -15,8 +15,8 @@ export type ExecutionMode = 'chat' | 'work'
 
 export const EXECUTION_MODES = ['chat', 'work'] as const
 
-/** 新建会话默认：Chat（安全优先） */
-export const DEFAULT_EXECUTION_MODE: ExecutionMode = 'chat'
+/** 新建会话默认：Work（开箱可写文件/干活，对齐发版可用性） */
+export const DEFAULT_EXECUTION_MODE: ExecutionMode = 'work'
 
 /**
  * 旧会话 meta 无字段时的回退：work

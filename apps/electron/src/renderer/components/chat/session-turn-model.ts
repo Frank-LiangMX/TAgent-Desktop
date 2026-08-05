@@ -74,11 +74,19 @@ export interface TurnPresentation {
 }
 
 /**
+ * 主线发起子代理的工具名（kscc 为 Agent，Pi/部分路径为 task/Task）。
+ * 这些 tool_use 只应变成入口卡片，不得进主过程组展开结果。
+ */
+export function isSubagentLauncherTool(name: string): boolean {
+  const n = name.toLowerCase()
+  return n === 'agent' || n === 'task'
+}
+
+/**
  * 将 turn 内子代理消息（assistant + parentToolUseId）按 parentToolUseId 分组，保持原始顺序。
  *
  * 一个子代理执行过程会产生多条带 parentToolUseId 的 assistant 消息（thinking / tool_use /
- * 中间文本 / 最终结果）。渲染层不应逐条平铺，而应把同一子代理合并为一个折叠块：
- * 默认收起一行摘要，点击展开才显示完整步骤。
+ * 中间文本 / 最终结果）。主会话只渲染入口卡片，详情页才平铺这些消息。
  */
 export function groupSubagentItems(items: TurnSourceItem[]): TurnSourceItem[][] {
   const groups = new Map<string, TurnSourceItem[]>()
@@ -100,9 +108,44 @@ export function groupSubagentItems(items: TurnSourceItem[]): TurnSourceItem[][] 
 }
 
 /**
- * 从 items 中提取发起某子代理的 task tool_use 块。
+ * 主会话应展示的子代理入口 id 列表（保序、去重）。
  *
- * 主线程通过一条主线 assistant 消息里的 tool_use（name='task'，id=parentToolUseId）发起子代理；
+ * 来源：
+ * 1. 主线 tool_use（Agent / task / Task）—— 一点就出卡，不必等子代理回消息
+ * 2. 带 parentToolUseId 的子代理 assistant（无 launcher 时的兜底）
+ * 3. taskCard.toolUseId（runtime 生命周期事件）
+ */
+export function listSubagentEntryIds(items: TurnSourceItem[]): string[] {
+  const order: string[] = []
+  const seen = new Set<string>()
+  const push = (id: string | null | undefined): void => {
+    if (!id || seen.has(id)) return
+    seen.add(id)
+    order.push(id)
+  }
+
+  for (const it of items) {
+    const m = it.message
+    if (m?.type === 'assistant' && !m.parentToolUseId) {
+      for (const b of m.content) {
+        if (b.type !== 'tool_use') continue
+        const tu = b as TAgentToolUseBlock
+        if (isSubagentLauncherTool(tu.name)) push(tu.id)
+      }
+    }
+    if (m?.type === 'assistant' && m.parentToolUseId) {
+      push(m.parentToolUseId)
+    }
+    const card = it.taskCard as { toolUseId?: string } | undefined
+    if (card?.toolUseId) push(card.toolUseId)
+  }
+  return order
+}
+
+/**
+ * 从 items 中提取发起某子代理的 launcher tool_use 块。
+ *
+ * 主线程通过主线 assistant 的 tool_use（name=Agent|task|Task，id=parentToolUseId）发起子代理；
  * 其 input 即任务指令。子代理详情页用它渲染「任务指令」区。
  */
 export function findSubagentTaskTool(
@@ -219,10 +262,27 @@ export function groupItemsIntoTurns(items: TurnSourceItem[]): SessionRenderTurn[
   }
 
   for (const item of items) {
-    // 压缩 / 任务卡：时间线独立占位
-    if (item.taskCard || item.compactStatus) {
+    // 压缩边界：时间线独立占位（会打断 turn）
+    if (item.compactStatus) {
       flush()
       turns.push({ kind: 'standalone', key: item.key, item })
+      continue
+    }
+
+    // 子代理 taskCard：并入当前 assistant-turn，禁止 flush 拆 turn
+    // （旧逻辑 standalone 会把一轮拆成多段，每段再刷一次模型铭牌）。
+    // 卡片状态由 Chat.subagentCards + SubagentEntryCard 消费，不在此独立渲染。
+    if (item.taskCard && !item.message && !item.streaming) {
+      if (!current) {
+        current = {
+          kind: 'assistant-turn',
+          key: `turn-${item.key}`,
+          items: [item],
+          isStreaming: false,
+        }
+      } else {
+        current.items.push(item)
+      }
       continue
     }
 
@@ -261,19 +321,22 @@ export function groupItemsIntoTurns(items: TurnSourceItem[]): SessionRenderTurn[
     }
 
     if (msg?.type === 'assistant' || item.streaming || item.streamingText || item.streamingThinking) {
+      // 铭牌只认主线 assistant（无 parentToolUseId）；子代理 modelId 不得污染主会话
+      const mainlineModel =
+        msg?.type === 'assistant' && !msg.parentToolUseId ? msg.modelId : undefined
       if (!current) {
         current = {
           kind: 'assistant-turn',
           key: `turn-${item.key}`,
           items: [item],
-          modelId: msg?.type === 'assistant' ? msg.modelId : undefined,
+          modelId: mainlineModel,
           isStreaming: Boolean(item.streaming),
         }
       } else {
         current.items.push(item)
         if (item.streaming) current.isStreaming = true
-        if (!current.modelId && msg?.type === 'assistant' && msg.modelId) {
-          current.modelId = msg.modelId
+        if (!current.modelId && mainlineModel) {
+          current.modelId = mainlineModel
         }
       }
       continue
@@ -287,8 +350,16 @@ export function groupItemsIntoTurns(items: TurnSourceItem[]): SessionRenderTurn[
   return turns
 }
 
-/** 从 turn 源 items 构建展示：过程组 + 最终回答 + 流式 */
-export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>): TurnPresentation {
+/**
+ * 从 turn 源 items 构建展示：过程组 + 最终回答 + 流式
+ *
+ * @param options.isLiveTurn 整轮仍在跑（含工具间隙）。为 true 时不把末尾 text 拆进回答区，
+ *   避免「过程区出现一段字 → 下一拍抽到回答区」的跳变。
+ */
+export function buildTurnPresentation(
+  turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>,
+  options?: { isLiveTurn?: boolean },
+): TurnPresentation {
   const process: ProcessEntry[] = []
   const answerTexts: string[] = []
   const resultById = new Map<string, TAgentToolResultBlock>()
@@ -296,16 +367,24 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
   let streamingThinking: string | undefined
   let isStreaming = turn.isStreaming
   let modelId = turn.modelId
+  const isLiveTurn = options?.isLiveTurn === true
 
   // 先收集 tool_result；流式文本只取「仍在 streaming 的占位项」的最新一份（勿拼接多份）
   for (const item of turn.items) {
     if (item.message?.type === 'user') {
+      // 子代理合成 user（委派指令 / 子代理 tool_result）不参与主线 result 绑定
+      if (item.message.parentToolUseId) continue
       for (const b of item.message.content) {
         if (b.type === 'tool_result') {
           const rb = b as TAgentToolResultBlock
+          // Agent/task 结果体积极大且已有入口卡，不进主过程区
           resultById.set(rb.toolUseId, rb)
         }
       }
+    }
+    // 子代理消息 / 带 parent 的流式占位：绝不污染主线 streaming 正文与铭牌
+    if (item.message?.type === 'assistant' && item.message.parentToolUseId) {
+      continue
     }
     if (item.streaming) {
       isStreaming = true
@@ -315,44 +394,55 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
     }
     // 落盘升级项（sdk_message 就地升级）已清 streamingText，不再收集——
     // 打字机续接靠 useSmoothStream 内部 prevContentRef，保留旧 streamingText 会导致多轮残留/重复文字。
-    if (!modelId && item.message?.type === 'assistant') {
+    // 铭牌只取主线 modelId
+    if (!modelId && item.message?.type === 'assistant' && !item.message.parentToolUseId) {
       modelId = item.message.modelId
     }
   }
 
   // 按顺序收集主线 assistant 内容块（子代理 parentToolUseId 不进主过程组）
-  // pi 内核 toolcall_end 与 turn_end 都产含 tool_use 的 assistant（同 id），需按 tool_use id 去重，
-  // 否则每个工具步骤显示两遍。去重策略：同 id 的 tool_use 只保留一条；优先保留来自「含 thinking/text
-  // 的完整消息」的那条（turn_end 产），丢弃 toolcall_end 的纯 tool_use 占位（modelId 通常为空）。
+  // Agent/task launcher 也不进过程组——改由 SubagentEntryCard 独占展示。
+  // pi 内核 toolcall_end 与 turn_end 都产含 tool_use 的 assistant（同 id），需按 tool_use id 去重。
+  // **稳定 key**：tool 用 `tool-${id}`、thinking 用出现序 `think-${n}`，禁止绑 item.key——
+  // 占位 item 升级/替换时 item.key 变会导致 React 整行 remount → 过程区跳变。
   const allBlocks: Array<{ block: TAgentContentBlock; key: string }> = []
   const toolUseSeen = new Map<string, { block: TAgentToolUseBlock; key: string; rich: boolean }>()
+  let thinkingSeq = 0
+  let textSeq = 0
   for (const item of turn.items) {
     if (item.message?.type !== 'assistant') continue
     if (item.message.parentToolUseId) continue
     const rich = item.message.content.some((b) => b.type === 'thinking' || b.type === 'text')
-    item.message.content.forEach((block, i) => {
+    item.message.content.forEach((block) => {
       if (block.type === 'tool_use') {
         const tu = block as TAgentToolUseBlock
+        // 子代理入口：过程区完全不渲染（含超长 tool_result）
+        if (isSubagentLauncherTool(tu.name)) return
+        const stableKey = `tool-${tu.id}`
         const prev = toolUseSeen.get(tu.id)
         if (prev) {
-          // 已有同 id：若当前消息更完整（rich）且旧的只是占位，替换；否则丢弃当前
+          // 已有同 id：若当前消息更完整（rich）且旧的只是占位，替换内容但**保留稳定 key**
           if (rich && !prev.rich) {
             const idx = allBlocks.findIndex((x) => x.key === prev.key)
-            if (idx >= 0) allBlocks[idx] = { block, key: `${item.key}-b${i}` }
-            toolUseSeen.set(tu.id, { block: tu, key: `${item.key}-b${i}`, rich })
+            if (idx >= 0) allBlocks[idx] = { block, key: prev.key }
+            toolUseSeen.set(tu.id, { block: tu, key: prev.key, rich })
           }
           return
         }
-        const key = `${item.key}-b${i}`
-        toolUseSeen.set(tu.id, { block: tu, key, rich })
-        allBlocks.push({ block, key })
+        toolUseSeen.set(tu.id, { block: tu, key: stableKey, rich })
+        allBlocks.push({ block, key: stableKey })
+      } else if (block.type === 'thinking') {
+        allBlocks.push({ block, key: `think-${thinkingSeq++}` })
+      } else if (block.type === 'text') {
+        allBlocks.push({ block, key: `text-${textSeq++}` })
       } else {
-        allBlocks.push({ block, key: `${item.key}-b${i}` })
+        allBlocks.push({ block, key: `blk-${allBlocks.length}` })
       }
     })
   }
 
-  // 末尾连续 text 作为交付回答（流式中若仍有未完成工具，暂全部进过程）
+  // 末尾连续 text 作为交付回答。
+  // 整轮 live 时一律不拆：中间文案留在过程区一条路上往下排，避免抽到回答区再跳回来。
   const trailingTextStart = getTrailingTextStart(allBlocks.map((x) => x.block))
   const hasOpenTools = allBlocks.some(
     ({ block }) =>
@@ -362,7 +452,9 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
   const splitAnswer =
     trailingTextStart !== null &&
     trailingTextStart > 0 &&
-    (!isStreaming || !hasOpenTools)
+    !isLiveTurn &&
+    !isStreaming &&
+    !hasOpenTools
 
   const processEnd = splitAnswer ? trailingTextStart! : allBlocks.length
 
@@ -410,17 +502,30 @@ export function buildTurnPresentation(turn: Extract<SessionRenderTurn, { kind: '
   const dedupedAnswers = dedupeAnswerTexts(answerTexts)
   const answerJoined = dedupedAnswers.join('\n\n').trim()
 
-  // 流式 thinking 并入过程区（不在回答区再开一块「思考了几秒」）
-  if (isStreaming && streamingThinking?.trim()) {
-    const already = process.some(
-      (p) => p.type === 'thinking' && p.thinking.trim() === streamingThinking.trim(),
-    )
-    if (!already) {
-      process.push({
-        type: 'thinking',
-        key: 'stream-thinking',
-        thinking: streamingThinking,
-      })
+  // 流式 thinking 并入过程区：优先续写最后一条 thinking（稳定 key），避免 stream→落盘 remount
+  if ((isStreaming || isLiveTurn) && streamingThinking?.trim()) {
+    const st = streamingThinking.trim()
+    const lastThinkIdx = (() => {
+      for (let i = process.length - 1; i >= 0; i--) {
+        if (process[i]?.type === 'thinking') return i
+      }
+      return -1
+    })()
+    if (lastThinkIdx >= 0) {
+      const last = process[lastThinkIdx] as Extract<ProcessEntry, { type: 'thinking' }>
+      // 同源续写 / 空→有：原地更新，key 不变
+      if (
+        !last.thinking.trim() ||
+        st.startsWith(last.thinking.trim()) ||
+        last.thinking.trim().startsWith(st) ||
+        last.key === 'stream-thinking'
+      ) {
+        process[lastThinkIdx] = { type: 'thinking', key: last.key, thinking: streamingThinking }
+      } else if (!process.some((p) => p.type === 'thinking' && p.thinking.trim() === st)) {
+        process.push({ type: 'thinking', key: 'stream-thinking', thinking: streamingThinking })
+      }
+    } else {
+      process.push({ type: 'thinking', key: 'stream-thinking', thinking: streamingThinking })
     }
   }
 

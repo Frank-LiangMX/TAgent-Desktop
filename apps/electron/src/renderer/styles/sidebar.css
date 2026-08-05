@@ -218,7 +218,8 @@
   background: rgb(var(--glass-rgb) / 0.34);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
-  transition: background 0.16s, border-color 0.16s, transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: background 0.16s, border-color 0.16s,
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .pin-chip:hover {
   background: rgb(var(--glass-rgb) / 0.52);
@@ -292,21 +293,28 @@
   padding-bottom: min(42vh, 280px);
 }
 
-/* ===== 工作区分组:只折叠,不套任何圆角/玻璃背景容器 =====
- * 会话行直接铺在侧栏上。背景样式与已归档无关,不要写在共用 .group 上。
+/*
+ * ===== 工作区 vs 会话：两层视觉语义 =====
+ * 工作区 = 分区标题（section label）：更克制、字重/色相像导航，不装成会话卡片
+ * 会话行 = 内容卡片：保留玻璃选中/hover（见下方 .row）
+ * 展开后会话略缩进 + 左侧细轨，读起来是「挂在这个工作区下」
  */
 .group {
   padding: 0 2px;
-  /* 明确禁止容器壳,防止以后再加回 */
-  margin: 0;
+  margin: 0 0 2px;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
+/* 工作区之间拉开：顶部分割线，避免和会话行粘成一坨 */
+.group.workspace-group + .group.workspace-group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--hairline);
+}
 .group.open {
-  /* 展开只表示列表可见,绝不加背景/描边/投影 */
-  margin: 0;
+  margin-bottom: 4px;
   padding: 0 2px;
   border: 0;
   border-radius: 0;
@@ -315,12 +323,11 @@
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-
 .workspace-group-head {
   position: relative;
   display: block;
   min-width: 0;
-  border-radius: 9px;
+  border-radius: 8px;
 }
 .workspace-group-head > .group-head {
   width: 100%;
@@ -387,6 +394,7 @@
 .workspace-drag-handle:hover {
   transform: translateY(-50%) scale(1.04);
 }
+/* hover 出拖柄/菜单时：只让位 caret 与数量角标；文件夹图标保持可见（分区身份） */
 .workspace-group-head:hover > .group-head .caret,
 .workspace-group-head:hover > .group-head .ws-badge,
 .workspace-group-head.is-dots-open > .group-head .caret,
@@ -431,26 +439,28 @@
   bottom: -1px;
 }
 
+/* 工作区头：分区标题语义——矮、偏 muted、不做成会话卡片 */
 .group-head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   width: 100%;
   box-sizing: border-box;
-  padding: 8px 10px 6px;
+  min-height: 32px;
+  padding: 5px 10px 5px 8px;
   border: 0;
   background: transparent;
   cursor: pointer;
   text-align: left;
-  border-radius: 9px;
+  border-radius: 8px;
   flex-wrap: wrap;
   transition: background 0.16s;
 }
 .group-head:hover {
-  background: rgb(var(--glass-rgb) / 0.28);
+  background: hsl(var(--foreground) / 0.04);
 }
 .workspace-group-head:hover > .group-head {
-  background: rgb(var(--glass-rgb) / 0.28);
+  background: hsl(var(--foreground) / 0.04);
 }
 .group-head:disabled {
   opacity: 1;
@@ -460,15 +470,15 @@
   background: transparent;
 }
 .workspace-group-head:hover > .group-head:disabled {
-  background: rgb(var(--glass-rgb) / 0.28);
+  background: hsl(var(--foreground) / 0.04);
 }
 .group-head:hover .caret {
-  color: hsl(var(--foreground) / 0.7);
+  color: hsl(var(--foreground) / 0.65);
 }
 .caret {
   width: 12px;
   flex: none;
-  color: hsl(var(--muted-foreground));
+  color: hsl(var(--muted-foreground) / 0.75);
   transition:
     transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1),
     color 0.16s,
@@ -482,29 +492,50 @@
 .group.open .caret {
   transform: rotate(90deg);
 }
+/* 工作区名：section label，与会话标题 12.5/500 拉开 */
 .gname {
-  font-size: 13px;
-  font-weight: 520;
-  color: hsl(var(--foreground));
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: hsl(var(--muted-foreground) / 0.92);
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group.open > .workspace-group-head .gname,
+.group.open > .group-head .gname {
+  color: hsl(var(--foreground) / 0.78);
 }
 .gname.muted {
-  color: hsl(var(--foreground) / 0.62);
+  color: hsl(var(--muted-foreground) / 0.7);
+  font-weight: 600;
+}
+/* 工作区小图标：强化「这是项目/工作区」而不是会话 */
+.ws-ico {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: hsl(var(--muted-foreground) / 0.7);
+  transition: opacity 0.16s ease, color 0.16s ease;
+}
+.group.open .ws-ico {
+  color: hsl(var(--primary) / 0.75);
 }
 .ws-badge {
   flex: none;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 6px;
+  min-width: 17px;
+  height: 16px;
+  padding: 0 5px;
   display: grid;
   place-items: center;
-  font-size: 10px;
+  font-size: 9.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: hsl(var(--muted-foreground) / 0.8);
-  background: hsl(var(--foreground) / 0.06);
-  border-radius: 6px;
+  color: hsl(var(--muted-foreground) / 0.72);
+  background: hsl(var(--foreground) / 0.05);
+  border-radius: 5px;
   transition: opacity 0.16s ease;
 }
 .group.has-stream .ws-badge {
@@ -513,7 +544,7 @@
 }
 .ws-sub {
   flex-basis: 100%;
-  margin: 3px 0 0 19px;
+  margin: 2px 0 0 32px; /* 对齐 caret+ico 后的文字列 */
   display: flex;
   align-items: center;
   gap: 6px;
@@ -542,28 +573,48 @@
   display: none;
 }
 
-/* 列表:只做 max-height 折叠,无背景容器 */
+/*
+ * 会话列表：挂在工作区下
+ * - 左侧 1px 轨 + 缩进 → 读作「属于该工作区」
+ * - 会话行本身仍是卡片（玻璃选中），与工作区标题语义相反
+ */
 .group > .rows {
   overflow: hidden;
   max-height: 2400px;
-  margin: 0;
-  padding: 2px 0;
+  margin: 0 0 2px 10px;
+  padding: 2px 0 4px 6px;
   border: 0;
+  border-left: 1px solid hsl(var(--muted-foreground) / 0.12);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
-  transition: max-height 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
+  transition:
+    max-height 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.2s ease,
+    border-color 0.2s ease;
+}
+.group.open > .rows {
+  border-left-color: hsl(var(--muted-foreground) / 0.16);
 }
 .group:not(.open) > .rows {
   max-height: 0;
+  margin-top: 0;
+  margin-bottom: 0;
   padding-top: 0;
   padding-bottom: 0;
   opacity: 0;
+  border-left-color: transparent;
+}
+/* 归档抽屉内的 rows 不缩进、不画轨（本身就是独立底栏） */
+.group-archived > .rows {
+  margin-left: 0;
+  padding-left: 0;
+  border-left: 0;
 }
 
-/* ===== 时间分段：弱标题，不形成第二层可折叠导航 ===== */
+/* ===== 时间分段：弱标题，缩进对齐会话列 ===== */
 .bucket-group .bucket-rows {
   overflow: visible;
 }
@@ -571,16 +622,16 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 9px 10px 3px 12px;
-  color: hsl(var(--muted-foreground) / 0.58);
+  margin: 8px 8px 2px 6px;
+  color: hsl(var(--muted-foreground) / 0.52);
   font-size: 9.5px;
   font-weight: 600;
-  letter-spacing: 0.025em;
+  letter-spacing: 0.03em;
   line-height: 16px;
   user-select: none;
 }
 .bucket-group:first-child .bucket-divider {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 .bucket-divider i {
   flex: 1;
@@ -621,7 +672,7 @@
 .light .row:hover {
   box-shadow: 0 4px 12px -6px rgb(48 59 76 / 0.16), inset 0 1px 0 rgb(255 255 255 / 0.4);
 }
-/* 选中态：行玻璃高光 + 稳定悬浮阴影，不增加额外方向标记。 */
+/* 选中态：行玻璃高光 + 稳定悬浮阴影（原 D 方案视觉，不砍） */
 .row.is-active {
   background: radial-gradient(
       120% 140% at 10% 0%,
@@ -709,7 +760,7 @@
   color: hsl(var(--muted-foreground) / 0.72);
 }
 
-/* 行首状态色点 */
+/* 行首状态色点：running 脉冲 / idle 空心圈 / error 红 / done 绿 */
 .stat-dot {
   flex: none;
   width: 8px;

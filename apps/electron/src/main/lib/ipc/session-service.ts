@@ -3,16 +3,19 @@
  *
  * 2.0 长驻改造核心。见 docs/plans/2026-07-25-longlived-event-loop-rewrite-design.md。
  * 职责：
- * - 创建/销毁 SessionRuntime（一个会话一个，绑进程）
- * - 注册 IPC handler（SEND_MESSAGE/STOP_TURN/DELETE_SESSION）
- * - 流式消息推给渲染进程（STREAM_MESSAGE/TURN_END/SESSION_ERROR）
+ * - 创建/销毁 SessionRuntime（一个会话一个）
+ * - 注册 IPC handler（SEND_MESSAGE/STOP_AGENT/STEER_AGENT/DELETE_SESSION）
+ * - 流式消息推给渲染进程（STREAM_EVENT / turn_end / session_error）
  * - 按 channelId 选核（kscc-internal→kscc 核，其余→Pi 核）+ 会话绑核（互斥）
  *
  * 会话绑定：首条消息锁定运行内核（KSCC / 外部）；同内核内渠道和模型可继续切换。
+ *
+ * stop / steer 双核差异（收口）：
+ * - **STOP**：interrupt + 显式 turn_end + meta idle（渲染层 userStopRun 硬停 running）
+ * - **STEER**：kscc 长驻 live enqueue；Pi（或无 live loop）→ pending_next_turn，
+ *   本轮 onTurnEnd 后 auto handleSend，避免静默无操作
  */
 import { ipcMain, type BrowserWindow } from 'electron'
-import { readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
 import type {
   AgentProviderAdapter,
   SDKMessage,
@@ -52,6 +55,7 @@ import {
 } from '../memory'
 import { ksccSoftReset } from '../agent/kscc-soft-reset'
 import { resolveWorkspaceForSession } from '../workspace/workspace-manager'
+import { findFileByName } from './file-search'
 import { getEnabledMcpServers } from '../mcp/mcp-store'
 import {
   PermissionService,
@@ -106,76 +110,94 @@ interface SendMessageInput {
   executionMode?: ExecutionMode
 }
 
-// ===== 文件 chip 裸文件名查找（resolveFile 兜底） =====
+// ===== 文件 chip 裸文件名查找（resolveFile 兜底，扫描实现见 ./file-search） =====
 
 /** 文件名查找结果缓存（文件名小写 → 绝对路径 | null） */
 const fileNameSearchCache = new Map<string, { path: string | null; at: number }>()
 const FILE_SEARCH_TTL_MS = 60_000
-/** 跳过目录：依赖/产物/缓存，避免大海捞针 */
-const FILE_SEARCH_SKIP_DIRS = new Set([
-  'node_modules',
-  '.git',
-  '.bun-cache',
-  '.worktrees',
-  'dist',
-  'build',
-  'out',
-  '.next',
-  '.cache',
-  'coverage',
-  'target',
-  '.venv',
-  'venv',
-])
-/** 扫描文件数上限（超过放弃，防止超大项目阻塞主进程） */
-const FILE_SEARCH_MAX_FILES = 8000
-const FILE_SEARCH_MAX_DEPTH = 8
-
-/** 在根目录下按文件名递归查找（不区分大小写），返回绝对路径或 null */
-function findFileByName(root: string, fileName: string): string | null {
-  let scanned = 0
-  const walk = (dir: string, depth: number): string | null => {
-    if (depth > FILE_SEARCH_MAX_DEPTH || scanned > FILE_SEARCH_MAX_FILES) return null
-    let entries: string[] = []
-    try {
-      entries = readdirSync(dir)
-    } catch {
-      return null
-    }
-    for (const entry of entries) {
-      if (scanned++ > FILE_SEARCH_MAX_FILES) return null
-      const full = join(dir, entry)
-      let isDir = false
-      try {
-        isDir = statSync(full).isDirectory()
-      } catch {
-        continue
-      }
-      if (isDir) {
-        if (FILE_SEARCH_SKIP_DIRS.has(entry)) continue
-        const hit = walk(full, depth + 1)
-        if (hit) return hit
-      } else if (entry.toLowerCase() === fileName.toLowerCase()) {
-        return full
-      }
-    }
-    return null
-  }
-  return walk(root, 0)
-}
 
 export class SessionService {
   private runtimes = new Map<string, SessionRuntime>()
+  /**
+   * Pi 等非长驻 loop：steer 降级队列。
+   * 本轮结束后（onTurnEnd）拼接为一条用户消息 auto handleSend。
+   * STOP / 删会话时丢弃，避免停后仍自动开跑。
+   */
+  private pendingSteerBySession = new Map<string, string[]>()
+
   private constructor(
     private readonly getWindow: () => BrowserWindow | null,
     private readonly permissionService: PermissionService | null,
   ) {}
+
+  /** 会话当前绑定的运行内核；无 meta/渠道时 null */
+  private resolveAdapterKindForSession(sessionId: string): ChannelKind | null {
+    const meta = getSessionMeta(sessionId)
+    if (!meta?.channelId) return null
+    const channel = getChannel(meta.channelId)
+    if (!channel) return null
+    return channel.provider === 'kscc-internal' ? 'kscc' : 'external'
+  }
+
+  /** 入队 steer 文本（Pi pending_next_turn） */
+  private enqueuePendingSteer(sessionId: string, text: string): void {
+    const list = this.pendingSteerBySession.get(sessionId) ?? []
+    list.push(text)
+    this.pendingSteerBySession.set(sessionId, list)
+  }
+
+  /** 丢弃 pending steer（STOP / 删会话） */
+  private clearPendingSteer(sessionId: string): void {
+    this.pendingSteerBySession.delete(sessionId)
+  }
+
+  /**
+   * 本轮正常结束后：若有 pending steer，自动作为下一轮用户消息发送。
+   * 仅 Pi 降级路径写入 pending；kscc live enqueue 不经此 Map。
+   */
+  private flushPendingSteer(sessionId: string): void {
+    const pending = this.pendingSteerBySession.get(sessionId)
+    if (!pending?.length) return
+    this.pendingSteerBySession.delete(sessionId)
+    const meta = getSessionMeta(sessionId)
+    if (!meta?.channelId) {
+      console.warn(`[session-service] pending steer 丢弃（无 meta）: ${sessionId}`)
+      return
+    }
+    const prompt = pending.join('\n\n')
+    console.log(
+      `[会话 ${sessionId}] pending steer → 自动下一轮（${pending.length} 条合并）`,
+    )
+    void this.handleSend({
+      sessionId,
+      prompt,
+      channelId: meta.channelId,
+      model: meta.modelId,
+      workspaceId: meta.workspaceId,
+    }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn(`[session-service] pending steer flush 失败: ${msg}`)
+      // 回填，避免静默丢；用户可再发或再点引导
+      const cur = this.pendingSteerBySession.get(sessionId) ?? []
+      this.pendingSteerBySession.set(sessionId, [...pending, ...cur])
+      this.sendPayload(sessionId, {
+        kind: 'tagent_event',
+        event: {
+          type: 'session_error',
+          message: `引导消息自动发送失败：${msg}`,
+          error: classifyUserFacingError(msg),
+        },
+      })
+    })
+  }
 
   /**
    * Chat 模式拦截写操作：终止当前 run + 通知渲染层清运行态。
    * 用户视角：「都在运行了还问我干啥」——被拦即停，等用户确认切 Work 后再继续。
    */
   private handleChatModeBlock(sessionId: string): void {
+    // 先清 pending，再 interrupt（与 STOP_AGENT 同序，防 onTurnEnd 误 flush）
+    this.clearPendingSteer(sessionId)
     const rt = this.runtimes.get(sessionId)
     if (rt) {
       void rt.interrupt().catch(() => {})
@@ -242,17 +264,59 @@ export class SessionService {
     })
 
     ipcMain.handle(AGENT_IPC_CHANNELS.STOP_AGENT, async (_e, sessionId: string) => {
+      // 先丢 pending steer，再 interrupt：abort 可能同步触发 result→onTurnEnd，
+      // 若先 interrupt 再 clear，会误 auto-send 用户刚想放弃的引导。
+      this.clearPendingSteer(sessionId)
       const rt = this.runtimes.get(sessionId)
       if (rt) await rt.interrupt()
+      // 软停兜底：interrupt 不调 onTurnEnd，且 Pi abort 不保证再推 result。
+      // 显式推 turn_end + meta idle → 侧栏 idle / 流式占位收（与 handleChatModeBlock 一致）。
+      // 渲染层另有 userStopRun 硬停 running+startedAt；后续 result→onTurnEnd 再发 turn_end 幂等可接受。
+      // 注意：此处 sendPayload(turn_end) **不**走 onTurnEnd 回调，故不会 flushPendingSteer。
+      try {
+        updateSessionMeta(sessionId, { status: 'idle' })
+      } catch {
+        /* meta 缺失时忽略 */
+      }
+      this.sendPayload(sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
       return { ok: true }
     })
 
-    ipcMain.handle(AGENT_IPC_CHANNELS.STEER_AGENT, async (_e, sessionId: string, message: string) => {
-      const rt = this.runtimes.get(sessionId)
-      if (!rt) return { ok: false, error: '会话不存在' }
-      await rt.steerMessage(message)
-      return { ok: true }
-    })
+    /**
+     * 引导 Agent（不中断当前轮）。
+     * - kscc + live loop → enqueue，mode:'live'
+     * - Pi / 无 live loop → pending_next_turn，本轮 onTurnEnd 后 auto 发送
+     * 绝不静默 {ok:true} 却无任何效果。
+     */
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.STEER_AGENT,
+      async (
+        _e,
+        sessionId: string,
+        message: string,
+      ): Promise<{ ok: boolean; mode?: 'live' | 'pending_next_turn'; error?: string }> => {
+        const text = typeof message === 'string' ? message.trim() : ''
+        if (!text) return { ok: false, error: '消息为空' }
+
+        const kind = this.resolveAdapterKindForSession(sessionId)
+        const rt = this.runtimes.get(sessionId)
+
+        // kscc 真长驻：loop 存活时 enqueue 到下一轮边界
+        if (kind === 'kscc' && rt?.hasLiveProcess()) {
+          const mode = await rt.steerMessage(text)
+          if (mode === 'live') return { ok: true, mode: 'live' }
+          // live 判定竞态失败 → 降级 pending
+        }
+
+        // Pi 核（或 kscc 已无 live）：下一轮注入，避免 agent.steer 静默失效
+        this.enqueuePendingSteer(sessionId, text)
+        // 若当前已不在跑（用户停后点引导 / 空闲误触），立刻 flush
+        if (!rt || !rt.isTurnInFlight()) {
+          this.flushPendingSteer(sessionId)
+        }
+        return { ok: true, mode: 'pending_next_turn' }
+      },
+    )
 
     // 附件管理
     ipcMain.handle(AGENT_IPC_CHANNELS.SAVE_ATTACHMENT, async (_e, input: {
@@ -539,6 +603,7 @@ export class SessionService {
         rt.destroy()
         this.runtimes.delete(sessionId)
       }
+      this.clearPendingSteer(sessionId)
       // 清会话权限白名单（「始终允许」状态）
       PermissionService.clearWhitelist(sessionId)
       deleteSessionMeta(sessionId)
@@ -832,6 +897,8 @@ export class SessionService {
           this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
           // Phase 2.5：L4 recordSession + evidence sink
           this.recordSessionToMemory(input.sessionId, input.prompt)
+          // Pi pending steer：本轮结束后自动开下一轮（kscc live enqueue 不经此路径）
+          this.flushPendingSteer(input.sessionId)
         },
         onError: (err: Error) => {
           // 出错 → 落盘 error（重启保留，下轮成功回 idle）
@@ -894,7 +961,7 @@ export class SessionService {
     const sanitizedPath = workspace?.slug ?? ''
     void workspaceId // 调用方仍传 workspaceId 用于落盘路径；cwd 以 session meta 为准
 
-    // 权限模式：会话 meta 持久化（默认 auto）
+    // 权限模式：会话 meta 持久化（默认 bypassPermissions）
     const metaForMode = getSessionMeta(input.sessionId)
     const permissionMode: TAgentPermissionMode = metaForMode?.permissionMode
       ? migratePermissionMode(metaForMode.permissionMode)
@@ -1100,12 +1167,12 @@ export class SessionService {
       : TAGENT_DEFAULT_PERMISSION_MODE
   }
 
-  /** 读会话 executionMode（Chat|Work）；缺省按新会话默认 chat（非 legacy work） */
+  /** 读会话 executionMode（Chat|Work）；缺省按新会话默认 work（与 DEFAULT_EXECUTION_MODE 一致） */
   private getExecutionMode(sessionId: string): ExecutionMode {
     const meta = getSessionMeta(sessionId)
     return migrateExecutionMode(
       meta?.executionMode,
-      // 有 meta 但缺字段 → 旧会话回退 work；无 meta → 新会话默认 chat
+      // 有 meta 但缺字段 → 旧会话回退 work；无 meta → 新会话默认 work
       meta ? LEGACY_EXECUTION_MODE : DEFAULT_EXECUTION_MODE,
     )
   }

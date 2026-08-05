@@ -127,6 +127,8 @@ export function sdkMessageToIR(
           kind: 'stream_text_delta',
           text: delta.text,
           parentToolUseId: (m.parent_tool_use_id as string | undefined) ?? undefined,
+          // 与最终 sdk_message.uuid 同源，渲染层可绑定同一流式占位
+          uuid: typeof m.uuid === 'string' ? m.uuid : undefined,
         },
       }
     }
@@ -136,6 +138,7 @@ export function sdkMessageToIR(
           kind: 'stream_thinking_delta',
           text: delta.thinking,
           parentToolUseId: (m.parent_tool_use_id as string | undefined) ?? undefined,
+          uuid: typeof m.uuid === 'string' ? m.uuid : undefined,
         },
       }
     }

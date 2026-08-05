@@ -157,20 +157,23 @@ export function FilePathChip({
           type="button"
           onClick={handleClick}
           className={cn(
-            'inline-flex items-center gap-1 rounded-md px-1.5 py-[2px] text-[12px] font-medium leading-[1.6]',
-            'cursor-pointer',
+            'inline-flex items-center gap-1 rounded-[3px] px-[0.25em] py-0 text-[0.92em] font-medium leading-[1.6]',
+            'cursor-pointer transition-colors',
             'align-baseline not-prose',
             'border',
+            // 常态只用主色文字，底色留给 hover：正文里连续出现多个路径时不再形成彩色块阵
             fileStatus === 'broken'
               ? 'border-dashed border-muted-foreground/30 text-muted-foreground opacity-50 hover:opacity-70 hover:bg-muted/20'
-              : 'border-transparent bg-primary/10 text-primary hover:bg-primary/20',
+              : 'border-transparent text-primary/90 hover:bg-primary/10 hover:text-primary',
             className
           )}
         >
           {IconComponent ? (
-            <IconComponent name={filename} isDirectory={false} size={14} />
+            <span className="inline-flex shrink-0 opacity-80">
+              <IconComponent name={filename} isDirectory={false} size={12} />
+            </span>
           ) : (
-            <span className="size-3.5 inline-flex items-center justify-center rounded bg-primary/20 text-primary text-[8px]">
+            <span className="size-3 inline-flex items-center justify-center rounded-[2px] bg-primary/15 text-primary text-[8px]">
               {filename.slice(0, 1).toUpperCase()}
             </span>
           )}

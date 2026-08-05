@@ -10,12 +10,70 @@
  * 这正是 bare 治 resume 长会话爆/慢根因的关键。
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/pi-ai";
 import { buildToolsSystemPromptSection, serializeAntmlResults, type ToolSchemaDescriptor } from "./antml-protocol.ts";
+
+// ============ Windows .cmd/.bat spawn 安全解析 ============
+
+/**
+ * 判断路径是否为 Windows 批处理（.cmd / .bat）。
+ * 仅按扩展名判断，不读盘。
+ */
+export function isWindowsBatchFile(filePath: string): boolean {
+  return /\.(cmd|bat)$/i.test(filePath);
+}
+
+/**
+ * 为 cmd.exe /c 命令行转义单个参数。
+ * 空串必须写成 ""，否则会被吞掉（如 --tools ""）。
+ */
+export function quoteCmdArg(arg: string): string {
+  if (arg.length === 0) return '""';
+  // 含空白或 cmd 元字符时双引号包裹；内部 " 加倍
+  if (/[\s"&<>|^()%!`]/.test(arg)) {
+    return `"${arg.replace(/"/g, '""')}"`;
+  }
+  return arg;
+}
+
+export interface ResolvedSpawnInvocation {
+  command: string;
+  args: string[];
+  /** 传给 spawn 的额外选项（如 windowsVerbatimArguments） */
+  options: Pick<SpawnOptions, "windowsVerbatimArguments">;
+}
+
+/**
+ * 解析实际 spawn 目标。
+ *
+ * Windows 上 Node 不经 shell 无法执行 .cmd/.bat（ENOENT / not a valid Win32 application）。
+ * 对批处理走 `cmd.exe /d /s /c "..."` + windowsVerbatimArguments，避免 shell:true
+ * 把临时路径（8.3 短名 / 反斜杠）解析坏；非 Windows 或非批处理原样直 spawn。
+ *
+ * @param platform 可注入，便于单测（默认 process.platform）
+ */
+export function resolveKsccSpawnInvocation(
+  ksccPath: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+): ResolvedSpawnInvocation {
+  if (platform === "win32" && isWindowsBatchFile(ksccPath)) {
+    // /d 禁用 AutoRun；/s 配合首尾引号剥离规则；/c 执行后退出
+    // 整行再包一层引号：/s 会剥掉最外层首尾 "，留下内部已正确引用的 command line
+    const inner = [quoteCmdArg(ksccPath), ...args.map(quoteCmdArg)].join(" ");
+    const cmdline = `"${inner}"`;
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      args: ["/d", "/s", "/c", cmdline],
+      options: { windowsVerbatimArguments: true },
+    };
+  }
+  return { command: ksccPath, args, options: {} };
+}
 
 /** extractToolResults 内部用的轻量结构 */
 interface AntmlResultLike {
@@ -107,11 +165,13 @@ export function spawnKsccBare(opts: KsccBareSpawnOptions): KsccBareProcess {
     "--input-format", "text",
   ];
 
-  const child = spawn(ksccPath, args, {
+  // Windows 上 .cmd/.bat 必须经 cmd.exe；非批处理 / 非 Windows 直 spawn。
+  // 不用 shell:true —— 那会把临时路径（8.3 短名 + 反斜杠）解析坏，
+  // 导致 --system-prompt-file 失效。改用 /d /s /c + windowsVerbatimArguments 保路径原样。
+  const invocation = resolveKsccSpawnInvocation(ksccPath, args);
+  const child = spawn(invocation.command, invocation.args, {
     stdio: ["pipe", "pipe", "pipe"],
-    // 不用 shell:true —— Windows 上 shell 会把临时路径（含 8.3 短名 LIANGM~1 + 反斜杠）
-    // 解析坏，导致 --system-prompt-file 参数失效，kscc 退回默认无工具 prompt。
-    // 直接 spawn kscc（.cmd）不经 shell，路径原样传递，工具 schema 正确注入。
+    ...invocation.options,
   });
 
   // 子进程退出后清理临时目录

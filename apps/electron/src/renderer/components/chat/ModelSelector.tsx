@@ -10,8 +10,9 @@
  */
 import { useMemo, useState } from 'react'
 import { useAtomValue } from 'jotai'
-import { ChevronDown, Cpu, Network, ShieldCheck, TriangleAlert } from 'lucide-react'
+import { ChevronDown, Cpu, HelpCircle, Network, ShieldCheck, TriangleAlert } from 'lucide-react'
 import {
+  AppTooltip,
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -20,7 +21,7 @@ import {
   MenuPopoverSectionLabel,
   MenuPopoverSeparator,
 } from '@tagent/ui'
-import { type Channel, PROVIDER_LABELS } from '@tagent/shared'
+import { type Channel, type ReasoningEffort, PROVIDER_LABELS } from '@tagent/shared'
 import { cn } from '../../lib/utils'
 import { channelsAtom } from '../../atoms/channel-atoms'
 import {
@@ -29,11 +30,17 @@ import {
   type ModelSelection,
 } from '../../atoms/model-selection'
 import { getModelLogo, getChannelLogo } from '../../lib/model-logo'
+import { ReasoningSlider, REASONING_LABELS } from './ReasoningSlider'
+
+/** 默认档，触发器上不回显（安全默认不占视觉带宽） */
+const REASONING_DEFAULT: ReasoningEffort = 'medium'
 
 interface ModelSelectorProps {
   selection: ModelSelection | null
   lockedKind: ChannelCoreKind | null
   onSelect: (selection: ModelSelection) => void
+  reasoningEffort?: ReasoningEffort
+  onReasoningEffortChange?: (effort: ReasoningEffort) => void
 }
 
 interface ChannelGroup {
@@ -45,6 +52,8 @@ export function ModelSelector({
   selection,
   lockedKind,
   onSelect,
+  reasoningEffort,
+  onReasoningEffortChange,
 }: ModelSelectorProps): JSX.Element {
   const channels = useAtomValue(channelsAtom)
   const [open, setOpen] = useState(false)
@@ -129,7 +138,7 @@ export function ModelSelector({
         <button
           type="button"
           className={cn(
-            'flex min-w-0 max-w-[150px] items-center gap-1.5 rounded-full px-2 py-1 text-xs transition-colors',
+            'flex min-w-0 max-w-[176px] items-center gap-1.5 rounded-full px-2 py-1 text-xs transition-colors',
             'text-muted-foreground hover:bg-foreground/10 hover:text-foreground',
             !activeAvailable && selection && 'text-destructive',
           )}
@@ -150,6 +159,12 @@ export function ModelSelector({
           <span className="min-w-0 truncate font-medium text-foreground/85">
             {activeModel?.name || selection?.modelId || '选择模型'}
           </span>
+          {/* 非默认档才回显，默认「均衡」保持触发器最短 */}
+          {reasoningEffort && reasoningEffort !== REASONING_DEFAULT ? (
+            <span className="model-selector__effort shrink-0 text-[10.5px] font-medium text-primary/80">
+              {REASONING_LABELS[reasoningEffort]}
+            </span>
+          ) : null}
           <ChevronDown className="size-3 shrink-0 opacity-70" />
         </button>
       </PopoverTrigger>
@@ -194,22 +209,37 @@ export function ModelSelector({
           </div>
         </div>
 
-        {/* 锁定提示（已绑定运行内核时） */}
-        {lockedKind && (
-          <div className="mx-3 mb-1 flex items-start gap-2 rounded-lg bg-primary/8 px-2.5 py-2 text-foreground/80">
-            <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-primary" />
-            <p className="text-[10.5px] leading-relaxed">
-              已锁定{lockedKind === 'kscc' ? '内网' : '外部'}运行时，此区域内的模型
-              {lockedKind === 'external' ? '和渠道' : ''}仍可随时切换。
-            </p>
+        {/* 思考强度：紧跟模型 header，不进下方滚动区，免得选完模型还得往回滚 */}
+        {reasoningEffort && onReasoningEffortChange ? (
+          <div className="px-3.5 pb-3">
+            <div className="mb-2 text-[11px] font-medium text-muted-foreground">思考强度</div>
+            <ReasoningSlider value={reasoningEffort} onChange={onReasoningEffortChange} />
           </div>
-        )}
+        ) : null}
 
         {/* 分隔线 */}
         <MenuPopoverSeparator />
 
-        <div className="px-3.5 pb-1 pt-2">
-          <div className="text-[11px] font-medium text-muted-foreground">可选模型</div>
+        <div className="flex items-center gap-1 px-3.5 pb-1 pt-2">
+          <span className="text-[11px] font-medium text-muted-foreground">可选模型</span>
+          {/* 锁定提示收成问号：这段解释一次读懂即可，常驻一整块太占弹层高度 */}
+          {lockedKind && (
+            <AppTooltip
+              label={`已锁定${lockedKind === 'kscc' ? '内网' : '外部'}运行时，此区域内的模型${
+                lockedKind === 'external' ? '和渠道' : ''
+              }仍可随时切换。`}
+              side="top"
+              multiline
+            >
+              <button
+                type="button"
+                className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-foreground/10 hover:text-foreground"
+                aria-label="为什么只有这些模型"
+              >
+                <HelpCircle className="size-3.5" />
+              </button>
+            </AppTooltip>
+          )}
         </div>
 
         {/* 分组列表 */}

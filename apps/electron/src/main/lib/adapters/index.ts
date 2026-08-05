@@ -2,9 +2,14 @@
  * 适配器选择（双核可拔插入口）
  *
  * 按渠道选核：kscc 内网渠道 → ClaudeAgentAdapter，外部渠道 → PiAgentAdapter。
- * 见 docs/plans/2026-07-25-2.0-architecture-decision-dual-core.md §1.5。
+ * 见 docs/plans/2026-07-25-2.0-architecture-decision-dual-core.md §1.5 / ADR-0001。
  *
- * 可拔插：对外版编译时排除 claude/ 目录（只用 Pi 核），内网版排除 pi/ 目录。
+ * 可拔插（构建期，不删源码）：
+ * - 默认 / 内网：静态引用 claude/，双核可用。
+ * - 对外：TAGENT_EXTERNAL=1 → build-main.mjs 将本文件对 claude/* 的 import
+ *   与 @anthropic-ai/claude-agent-sdk 解析到 scripts/stubs/kscc-external-stub.ts；
+ *   electron-builder.external.yml 再排除 node_modules 里的 claude-agent-sdk*。
+ * - 脚本：package:win（内网） / package:win:external（对外）
  *
  * 单例模式：每个 ChannelKind 缓存一个适配器实例。
  * PiAgentAdapter 内部用 Map<sessionId, Agent> 管理多 Agent 实例，

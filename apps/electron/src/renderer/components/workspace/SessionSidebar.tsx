@@ -13,6 +13,7 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { motion } from 'motion/react'
 import type { AgentWorkspace } from '@tagent/shared'
 import {
+  Folder,
   FolderOpen,
   CaretRight,
   ChatsCircle,
@@ -43,7 +44,7 @@ import {
   setSessionArchivedAtom,
   type SessionStatus,
 } from '../../atoms/session-status-atoms'
-import { tabsAtom } from '../../atoms/tabs'
+import { tabsAtom, activeTabIdAtom, closeTab } from '../../atoms/tabs'
 
 interface SessionMeta {
   id: string
@@ -157,9 +158,11 @@ export function SessionSidebar({
   const setArchived = useSetAtom(setSessionArchivedAtom)
 
   // 已打开的会话（tabsAtom 是「哪些会话开着」的真相源，分屏 dock 也由它驱动）。
-  // 打开中的会话不可删除：主进程删 meta 后 tabsAtom 仍保留该 tab → 留下孤儿 tab，
-  // 重启时启动校验才会清理。故在入口禁用删除，需先关闭标签页/分屏再删。
+  // 删除已打开会话时：先 closeTab 再调主进程 delete，避免孤儿 tab。
   const openTabs = useAtomValue(tabsAtom)
+  const activeTabId = useAtomValue(activeTabIdAtom)
+  const setTabs = useSetAtom(tabsAtom)
+  const setActiveTabId = useSetAtom(activeTabIdAtom)
   const openSessionIds = new Set(openTabs.map((t) => t.sessionId))
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -168,7 +171,19 @@ export function SessionSidebar({
     setSessions(arr)
     // 初始化/刷新状态表(meta 落盘值 + 批量 getSessionStatus 补 running)
     void initStatus(arr)
-  }, [initStatus])
+    // 已打开 tab 标题跟 meta 对齐（首条建会话 / 侧栏重命名后标签不丢标题）
+    const titleById = new Map(arr.map((s) => [s.id, s.title]))
+    setTabs((prev) => {
+      let changed = false
+      const next = prev.map((tab) => {
+        const title = titleById.get(tab.sessionId)
+        if (title == null || title === tab.title) return tab
+        changed = true
+        return { ...tab, title }
+      })
+      return changed ? next : prev
+    })
+  }, [initStatus, setTabs])
 
   useEffect(() => {
     void refresh()
@@ -182,6 +197,24 @@ export function SessionSidebar({
       if (firstGroupId) setExpandedGroups(new Set([firstGroupId]))
     }
   }, [sessions, workspaces])
+
+  /**
+   * 切到某会话时：仅「展开一次」其所在工作区（方便看到选中项）。
+   * 不要在 render 里每帧 force-add activeGroupId——那样用户永远折不掉当前工作区。
+   */
+  useEffect(() => {
+    if (!activeSessionId) return
+    const session = sessions.find((s) => s.id === activeSessionId && !s.archived)
+    if (!session) return
+    const groupId = session.workspaceId ?? '__unclassified__'
+    setExpandedGroups((prev) => {
+      if (prev.has(groupId)) return prev
+      const next = new Set(prev)
+      next.add(groupId)
+      storeSet(EXPANDED_GROUPS_KEY, next)
+      return next
+    })
+  }, [activeSessionId, sessions])
 
   // 订阅 onStreamEvent:turn_end → idle、session_error → error(只处理这两类,按 sessionId 更新)
   useEffect(() => {
@@ -198,8 +231,6 @@ export function SessionSidebar({
 
   const requestDeleteSession = (id: string, e: React.MouseEvent): void => {
     e.stopPropagation()
-    // 已打开的会话不可删除（菜单项已禁用，此处为防御）
-    if (openSessionIds.has(id)) return
     const target = sessions.find((session) => session.id === id)
     if (target) setDeleteSessionTarget(target)
   }
@@ -207,10 +238,17 @@ export function SessionSidebar({
   const deleteSession = async (): Promise<void> => {
     if (!deleteSessionTarget) return
     const target = deleteSessionTarget
-    if (openSessionIds.has(target.id)) {
-      throw new Error('该会话已打开，请先关闭标签页后再删除')
-    }
     try {
+      // 已打开：先关标签（含激活态切换到邻 tab），再删主进程 meta / runtime
+      if (openSessionIds.has(target.id)) {
+        const { tabs: nextTabs, activeTabId: nextActive } = closeTab(
+          openTabs,
+          activeTabId,
+          target.id,
+        )
+        setTabs(nextTabs)
+        setActiveTabId(nextActive)
+      }
       await window.electronAPI.deleteSession(target.id)
       setSessions((prev) => prev.filter((session) => session.id !== target.id))
       void refresh()
@@ -377,12 +415,10 @@ export function SessionSidebar({
   const visibleActiveSessions = activeSessions.filter(matchesQuery)
   const visibleArchivedSessions = archivedSessions.filter(matchesQuery)
   const groups = buildGroups(visibleActiveSessions, workspaces, statusOf)
-  const activeSession = activeSessions.find((session) => session.id === activeSessionId)
-  const activeGroupId = activeSession?.workspaceId ?? (activeSession ? '__unclassified__' : null)
+  // 搜索时全部展开便于扫结果；平时完全尊重用户折叠（含当前会话所在工作区）
   const effectiveExpandedGroups = normalizedQuery
     ? new Set(groups.map((group) => group.id))
-    : new Set(expandedGroups)
-  if (activeGroupId) effectiveExpandedGroups.add(activeGroupId)
+    : expandedGroups
 
   const archivedOpen = archivedExpanded || Boolean(normalizedQuery && visibleArchivedSessions.length)
   const deleteWorkspaceSessionCount = deleteWorkspaceTarget
@@ -472,6 +508,16 @@ export function SessionSidebar({
               ) : (
                 <span className="caret caret-placeholder" aria-hidden="true" />
               )}
+              {/* 文件夹：折叠 Folder / 展开 FolderOpen，与 caret 状态一致 */}
+              {isManagedWorkspace ? (
+                isExpanded ? (
+                  <FolderOpen size={14} weight="duotone" className="ws-ico" aria-hidden />
+                ) : (
+                  <Folder size={14} weight="duotone" className="ws-ico" aria-hidden />
+                )
+              ) : (
+                <ChatsCircle size={14} weight="duotone" className="ws-ico" aria-hidden />
+              )}
               <span className="gname">{group.name}</span>
               <span className="ws-badge">{group.sessions.length}</span>
               {(group.streamingCount > 0 || group.errorCount > 0) && (
@@ -487,7 +533,8 @@ export function SessionSidebar({
                         {group.streamingCount} 进行中
                         {group.errorCount > 0 && (
                           <>
-                            {' · '}<span className="err">{group.errorCount} 出错</span>
+                            {' · '}
+                            <span className="err">{group.errorCount} 出错</span>
                           </>
                         )}
                       </span>
@@ -651,7 +698,11 @@ export function SessionSidebar({
         onOpenChange={(open) => !open && setDeleteSessionTarget(null)}
         icon={<Trash size={15} weight="duotone" />}
         title={`删除“${deleteSessionTarget?.title ?? ''}”？`}
-        description="该会话的全部聊天记录将被永久删除，此操作无法撤销。"
+        description={
+          deleteSessionTarget && openSessionIds.has(deleteSessionTarget.id)
+            ? '该会话当前已打开，删除将同时关闭对应标签页，聊天记录将永久删除且无法撤销。'
+            : '该会话的全部聊天记录将被永久删除，此操作无法撤销。'
+        }
         confirmLabel="删除会话"
         onConfirm={deleteSession}
       />
@@ -750,7 +801,7 @@ function SessionRow({
   status: SessionStatus
   active: boolean
   archived?: boolean
-  /** 该会话是否已打开为标签页/分屏（已打开时禁止删除，需先关闭） */
+  /** 该会话是否已打开为标签页/分屏（删除时会一并关 tab） */
   isOpen: boolean
   editing: boolean
   editingTitle: string
@@ -776,11 +827,22 @@ function SessionRow({
       onClick={() => onSelect(s)}
       className={cn('row', active && 'is-active', archived && 'row-archived', dotsOpen && 'is-dots-open')}
     >
-      {/* 行首:归档行用小方块标记,否则状态色点 */}
+      {/* 行首:归档行用小方块标记,否则完整状态色点 stream/error/idle/done */}
       {archived ? (
         <span className="arch-mark" />
       ) : (
-        <span className={cn('stat-dot', status === 'running' ? 'stream' : status === 'error' ? 'error' : status === 'idle' ? 'idle' : 'done')} />
+        <span
+          className={cn(
+            'stat-dot',
+            status === 'running'
+              ? 'stream'
+              : status === 'error'
+                ? 'error'
+                : status === 'idle'
+                  ? 'idle'
+                  : 'done',
+          )}
+        />
       )}
       {/* pin 行首(置顶时) */}
       {s.pinned && !archived && <PushPin size={11} weight="fill" className="pin" />}
@@ -835,18 +897,14 @@ function SessionRow({
             <Archive size={13} weight="regular" /> {archived ? '取消归档' : '归档'}
           </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={isOpen}
             onClick={(e) => onDelete(s.id, e)}
-            className={cn(
-              'rounded-lg px-2 py-1 text-xs',
-              isOpen ? 'text-muted-foreground' : 'text-red-500 focus:text-red-500',
-            )}
+            className="rounded-lg px-2 py-1 text-xs text-red-500 focus:text-red-500"
           >
-            <Trash size={13} weight="regular" /> {isOpen ? '删除（已打开）' : '删除'}
+            <Trash size={13} weight="regular" /> 删除
           </DropdownMenuItem>
           {isOpen && (
             <div className="px-2 pb-0.5 pt-1 text-[10px] leading-tight text-muted-foreground/70">
-              请先关闭该会话的标签页
+              将同时关闭已打开的标签
             </div>
           )}
         </DropdownMenuContent>

@@ -24,8 +24,8 @@ import {
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { rmSyncRobust } from '../fs-robust'
-import type { AgentSessionMeta, ExecutionMode } from '@tagent/shared'
-import { DEFAULT_EXECUTION_MODE } from '@tagent/shared'
+import type { AgentSessionMeta, ExecutionMode, TAgentPermissionMode } from '@tagent/shared'
+import { DEFAULT_EXECUTION_MODE, TAGENT_DEFAULT_PERMISSION_MODE } from '@tagent/shared'
 import {
   getAgentSessionsIndexPath,
   getAgentSessionMessagesPath,
@@ -105,15 +105,19 @@ export function createSession(input: {
   mode?: 'general' | 'ta'
   /** 初始轮数（首条消息时传 1） */
   turnCount?: number
-  /** 初始执行形态（Chat|Work）；不传则 DEFAULT_EXECUTION_MODE ('chat') */
+  /** 初始执行形态（Chat|Work）；不传则 DEFAULT_EXECUTION_MODE ('work') */
   executionMode?: ExecutionMode
+  /** 初始权限模式；不传则 TAGENT_DEFAULT_PERMISSION_MODE ('bypassPermissions') */
+  permissionMode?: TAgentPermissionMode
 }): AgentSessionMeta {
   const meta: AgentSessionMeta = {
     id: input.id ?? randomUUID(),
     title: input.title ?? '新会话',
     mode: input.mode ?? 'general',
-    /** 新建会话默认 Chat（只读讨论）；旧会话无字段读时 migrate → work */
+    /** 新建会话默认 Work（开箱可干活）；旧会话无字段读时 migrate → work */
     executionMode: input.executionMode ?? DEFAULT_EXECUTION_MODE,
+    /** 新建会话默认完全自动（对齐 Proma） */
+    permissionMode: input.permissionMode ?? TAGENT_DEFAULT_PERMISSION_MODE,
     channelId: input.channelId,
     modelId: input.modelId,
     workspaceId: input.workspaceId,

@@ -4,16 +4,17 @@
  * 2.0 双核之一。见 docs/plans/2026-07-25-2.0-architecture-decision-dual-core.md §7.1。
  *
  * 跟 kscc 核的区别：
- * - 不 spawn 子进程（Pi Agent 在主进程内存，自带循环）
- * - 无长驻问题（Agent 对象天然常驻）
+ * - 不 spawn 子进程（Pi Agent 在主进程内存）
+ * - **Agent 对象**可跨轮保留在 `sessions` Map（state.messages 自管）；**但**
+ *   SessionRuntime 的事件 loop 每轮 result 后关闭（非 kscc 式长驻 query）
+ * - 多轮 = 下一轮重新 `query()` 复用 entry，不是 channel.enqueue 续跑
  * - 上下文 Pi 自管（state.messages），无 SDK resume cache
  * - Xfast/MoA 全活（Pi 管工具循环，可并行）
  *
  * 架构：
  * - PiAgentAdapter 单例管理 Map<sessionId, SessionEntry>，每个会话一个 Agent 实例
- * - query() 创建/复用 Agent，subscribe 监听 AgentEvent，转译成 SDKMessage 推给调用方
- * - AgentEvent → SDKMessage 转译逻辑在 piEventToSdkMessage()
- * - 外部渠道用 createHttpDirectStreamFn，kscc 渠道用 createKsccBareStreamFn
+ * - query() 创建/复用 Agent，subscribe 监听 AgentEvent，转译成 IR 推给调用方
+ * - 外部渠道用 createHttpDirectStreamFn，kscc bare 用 createKsccBareStreamFn
  *
  * 可拔插：内网版可排除本文件（只用 kscc 核）。
  */
@@ -148,6 +149,101 @@ export interface PiQueryOptions extends AgentQueryInput {
   beforeToolCall?: (ctx: { toolCall: { name: string; arguments: Record<string, unknown> } }) => Promise<{ block: true; reason: string } | undefined>
   /** 记忆模式（Phase 2.2 Frozen 快照 / Phase 3 L-rag） */
   sessionMode?: MemoryMode
+  /**
+   * 单轮工具循环上限（assistant 响应次数）。默认 {@link DEFAULT_PI_MAX_TURNS}。
+   * 超限产 error_max_turns 并结束本轮，防止死循环。
+   */
+  maxTurns?: number
+}
+
+// ===== 稳定性常量（turn 重试 / maxTurns）=====
+
+/** 单轮工具循环默认上限（与 kscc 核 session-service maxTurns:50 对齐） */
+export const DEFAULT_PI_MAX_TURNS = 50
+/** agent.prompt / 本轮执行失败时可重试次数（不含首次） */
+export const PI_TURN_MAX_RETRIES = 3
+/** 指数退避基数（ms）：1s → 2s → 4s */
+export const PI_TURN_RETRY_BASE_DELAY_MS = 1000
+
+/**
+ * 判断错误文案是否适合 turn 级重试。
+ * 可重试：网络、5xx、超时、429 限流类。
+ * 不可重试：鉴权、余额/配额、用户中止/拒绝。
+ */
+export function isRetryablePiTurnError(raw: string): boolean {
+  const msg = (raw || '').trim().toLowerCase()
+  if (!msg) return false
+
+  // 不可重试优先
+  if (
+    /unauthorized|invalid api key|authentication|api[_ -]?key|\b401\b|\b403\b|forbidden/.test(msg) ||
+    /insufficient.*(quota|credit|balance|fund)|payment required|billing|out of credit|余额不足|欠费|额度用尽/.test(
+      msg,
+    ) ||
+    /aborted|user rejected|user refused|permission denied by user|cancelled by user|canceled by user|用户取消|用户拒绝/.test(
+      msg,
+    )
+  ) {
+    return false
+  }
+
+  // 可重试：超时 / 网络 / 5xx / 限流
+  if (
+    /timeout|timed out|etimedout|econnreset|econnrefused|enotfound|network|fetch failed|socket|eai_again/.test(
+      msg,
+    ) ||
+    /\b50[0234]\b|bad gateway|service unavailable|gateway timeout|overloaded|temporarily unavailable|internal server error/.test(
+      msg,
+    ) ||
+    /\b429\b|rate limit|too many requests/.test(msg)
+  ) {
+    return true
+  }
+
+  return false
+}
+
+/** 指数退避延迟（attempt 从 0 起）：base * 2^attempt */
+export function piTurnRetryDelayMs(attempt: number, baseMs = PI_TURN_RETRY_BASE_DELAY_MS): number {
+  const a = Math.max(0, Math.floor(attempt))
+  return baseMs * 2 ** a
+}
+
+function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('aborted'))
+      return
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new Error('aborted'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/** 剥离 transcript 末尾的 error/aborted assistant，便于 continue() 续跑（不整会话清空、不重放工具） */
+export function dropTrailingFailedAssistants(messages: AgentMessage[]): AgentMessage[] {
+  const out = messages.slice()
+  while (out.length > 0) {
+    const last = out[out.length - 1]
+    if (
+      last &&
+      last.role === 'assistant' &&
+      ((last as AssistantMessage).stopReason === 'error' ||
+        (last as AssistantMessage).stopReason === 'aborted')
+    ) {
+      out.pop()
+      continue
+    }
+    break
+  }
+  return out
 }
 
 // ===== 会话状态 =====
@@ -180,6 +276,12 @@ interface SessionEntry {
   compaction?: SessionCompactionBundle
   /** transformContext 自动压缩时暂存的 system 事件，下一轮 query 流开头排出 */
   pendingSystemMessages: TAgentDesktopStreamPayload[]
+  /** 本轮 query 的工具循环上限 */
+  maxTurns: number
+  /** 本轮 query 已发生的 turn_start 次数 */
+  turnCount: number
+  /** 是否因 maxTurns 强制结束（result → error_max_turns） */
+  maxTurnsHit: boolean
 }
 
 /** 计算工具/执行形态指纹，供 Chat↔Work 热切换判断 */
@@ -233,6 +335,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       beforeToolCall,
       abortSignal,
       sessionMode,
+      maxTurns: maxTurnsOpt,
     } = input
 
     // 创建或复用 Agent 实例。
@@ -290,6 +393,11 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     }
 
     const { agent, controller } = entry
+    // 每轮 query 重置 maxTurns 计数（不跨用户回合累计）
+    entry.maxTurns =
+      typeof maxTurnsOpt === 'number' && maxTurnsOpt > 0 ? Math.floor(maxTurnsOpt) : DEFAULT_PI_MAX_TURNS
+    entry.turnCount = 0
+    entry.maxTurnsHit = false
 
     // 如果外部有 AbortSignal，联动到内部 controller
     if (abortSignal) {
@@ -335,11 +443,58 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       }
     }
 
+    // turn 级 retry gate：可重试错误暂扣终态，耗尽后再 flush（避免 UI 先报错再恢复）
+    // 用对象承载跨 subscribe / await 的可变状态，避免 TS 把 let 窄化成 never
+    const retryGate = {
+      retriesLeft: PI_TURN_MAX_RETRIES,
+      heldErrorAssistant: null as TAgentDesktopStreamPayload | null,
+      heldResult: null as TAgentControlEvent | null,
+      lastEndRetryableError: null as string | null,
+    }
+
+    const isAborted = () => controller.signal.aborted || !!abortSignal?.aborted
+
+    const flushHeldTerminal = () => {
+      if (retryGate.heldErrorAssistant) {
+        pushMessage(retryGate.heldErrorAssistant)
+        retryGate.heldErrorAssistant = null
+      }
+      if (retryGate.heldResult) {
+        pushMessage(retryGate.heldResult)
+        retryGate.heldResult = null
+      }
+    }
+
+    const remapResultIfMaxTurns = (p: TAgentControlEvent): TAgentControlEvent => {
+      if (!entry.maxTurnsHit || p.kind !== 'result') return p
+      return {
+        kind: 'result',
+        subtype: 'error_max_turns',
+        usage: p.usage,
+        totalCostUsd: p.totalCostUsd,
+        errors: [
+          `已达最大工具循环轮次（${entry.maxTurns}），本轮已停止，避免死循环。可新开一轮或精简任务后再试。`,
+        ],
+      }
+    }
+
     // 注册 Agent 事件监听
     let lastDeltaAt = 0
     let deltaCount = 0
     const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
       if (generatorDone) return
+
+      // maxTurns：计数 turn_start；超限软中止，禁止继续工具循环
+      if (event.type === 'turn_start') {
+        entry.turnCount += 1
+        if (entry.turnCount > entry.maxTurns) {
+          entry.maxTurnsHit = true
+          console.warn(
+            `[Pi 适配器 ${sessionId}] maxTurns=${entry.maxTurns} 超限（turn #${entry.turnCount}），abort`,
+          )
+          agent.abort()
+        }
+      }
 
       // 临时诊断：记录 text_delta/thinking_delta 的到达间隔（排查"一块一块"是端点攒批还是我们攒批）
       if (event.type === 'message_update') {
@@ -363,6 +518,62 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       try {
         const payloads = piEventToIR(event, sessionId)
         for (const p of payloads) {
+          // message_end 错误气泡：可重试时暂扣，避免 retry 中途闪错误
+          if (
+            event.type === 'message_end' &&
+            p.kind === 'sdk_message' &&
+            p.message.type === 'assistant' &&
+            p.message.error
+          ) {
+            const errText = p.message.error.message ?? ''
+            if (
+              !isAborted() &&
+              !entry.maxTurnsHit &&
+              retryGate.retriesLeft > 0 &&
+              isRetryablePiTurnError(errText)
+            ) {
+              retryGate.heldErrorAssistant = p
+              continue
+            }
+          }
+
+          // agent_end result：maxTurns 覆盖；可重试错误暂扣
+          if (event.type === 'agent_end' && p.kind === 'result') {
+            const remapped = remapResultIfMaxTurns(p)
+            if (entry.maxTurnsHit) {
+              retryGate.heldErrorAssistant = null
+              retryGate.heldResult = null
+              retryGate.lastEndRetryableError = null
+              pushMessage(remapped)
+              continue
+            }
+            const endMsgs = (event as { messages?: AgentMessage[] }).messages ?? []
+            let lastAssistant: AssistantMessage | undefined
+            for (let i = endMsgs.length - 1; i >= 0; i--) {
+              const m = endMsgs[i]
+              if (m && m.role === 'assistant') {
+                lastAssistant = m as AssistantMessage
+                break
+              }
+            }
+            const errText = (lastAssistant?.errorMessage ?? '').trim()
+            if (
+              lastAssistant?.stopReason === 'error' &&
+              !isAborted() &&
+              retryGate.retriesLeft > 0 &&
+              isRetryablePiTurnError(errText)
+            ) {
+              retryGate.lastEndRetryableError = errText || 'stream error'
+              retryGate.heldResult = remapped
+              continue
+            }
+            retryGate.lastEndRetryableError = null
+            retryGate.heldErrorAssistant = null
+            retryGate.heldResult = null
+            pushMessage(remapped)
+            continue
+          }
+
           pushMessage(p)
         }
       } catch (err) {
@@ -378,48 +589,136 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       for (const msg of pending) pushMessage(msg)
     }
 
-    // 启动对话（fire-and-forget，与 generator 并发）；过长时 force compact 再试一次
+    // 启动对话（fire-and-forget，与 generator 并发）
+    // - turn 级 retry：可重试错误指数退避最多 PI_TURN_MAX_RETRIES 次，保留 state.messages
+    // - 过长：force compact 后再试一次
     entry.isStreaming = true
     void (async () => {
-      const runPrompt = async (): Promise<void> => {
-        await agent.prompt(prompt)
-      }
-      try {
-        await runPrompt()
-      } catch (err: unknown) {
-        console.error(`[Pi 适配器 ${sessionId}] agent.prompt 抛错:`, err)
-        const errorMsg = err instanceof Error ? err.message : String(err)
-        if (isPromptTooLongMessage(errorMsg) && entry.compaction) {
-          console.log(`[pi-compaction] ${sessionId} 过长错误 → force compact 后重试一次`)
-          entry.isStreaming = false
-          const cr = await this.compactSession(sessionId, { force: true, trigger: 'auto' })
-          // compactSession 写入 pending；立即排出到当前流
-          while (entry.pendingSystemMessages.length > 0) {
-            pushMessage(entry.pendingSystemMessages.shift()!)
-          }
-          if (cr.compacted) {
-            try {
-              await runPrompt()
-              return
-            } catch (err2: unknown) {
-              const msg2 = err2 instanceof Error ? err2.message : String(err2)
-              pushMessage({
-                kind: 'result',
-                subtype: 'error_during_execution',
-                usage: { inputTokens: 0, outputTokens: 0 },
-                // errors 供 session-runtime 过长检测（见 runLoop 归一化）
-                errors: [msg2],
-              } as TAgentControlEvent)
-              return
-            }
-          }
-        }
+      const pushExecError = (errorMsg: string) => {
         pushMessage({
           kind: 'result',
           subtype: 'error_during_execution',
           usage: { inputTokens: 0, outputTokens: 0 },
           errors: [errorMsg],
         } as TAgentControlEvent)
+      }
+
+      const stripFailedAssistants = () => {
+        agent.state.messages = dropTrailingFailedAssistants([...agent.state.messages])
+      }
+
+      try {
+        let attempt = 0
+        while (true) {
+          retryGate.lastEndRetryableError = null
+          retryGate.heldErrorAssistant = null
+          retryGate.heldResult = null
+
+          try {
+            if (attempt === 0) {
+              await agent.prompt(prompt)
+            } else {
+              // 同 transcript 续跑：去掉末尾 error assistant，不重放已成功工具
+              stripFailedAssistants()
+              await agent.continue()
+            }
+          } catch (err: unknown) {
+            console.error(`[Pi 适配器 ${sessionId}] agent.prompt/continue 抛错:`, err)
+            const errorMsg = err instanceof Error ? err.message : String(err)
+
+            // 用户中止 / maxTurns abort：agent_end 通常已推 result，勿再叠 error result
+            if (isAborted() || /aborted/i.test(errorMsg)) {
+              flushHeldTerminal()
+              return
+            }
+
+            // 上下文过长：force compact 后重试一次（既有路径）
+            if (isPromptTooLongMessage(errorMsg) && entry.compaction) {
+              console.log(`[pi-compaction] ${sessionId} 过长错误 → force compact 后重试一次`)
+              entry.isStreaming = false
+              const cr = await this.compactSession(sessionId, { force: true, trigger: 'auto' })
+              while (entry.pendingSystemMessages.length > 0) {
+                pushMessage(entry.pendingSystemMessages.shift()!)
+              }
+              entry.isStreaming = true
+              if (cr.compacted) {
+                try {
+                  stripFailedAssistants()
+                  // compact 后可能仍有 user 消息在末尾；prompt 会再插一条 user，故用 continue
+                  const msgs = agent.state.messages
+                  const last = msgs[msgs.length - 1]
+                  if (last && (last.role === 'user' || last.role === 'toolResult')) {
+                    await agent.continue()
+                  } else {
+                    await agent.prompt(prompt)
+                  }
+                  // continue/prompt 成功则落入下方 retry 判定
+                } catch (err2: unknown) {
+                  const msg2 = err2 instanceof Error ? err2.message : String(err2)
+                  pushExecError(msg2)
+                  return
+                }
+              } else {
+                pushExecError(errorMsg)
+                return
+              }
+            } else if (
+              !entry.maxTurnsHit &&
+              attempt < PI_TURN_MAX_RETRIES &&
+              isRetryablePiTurnError(errorMsg)
+            ) {
+              const delay = piTurnRetryDelayMs(attempt)
+              console.log(
+                `[Pi 适配器 ${sessionId}] prompt 可重试错误，${delay}ms 后第 ${attempt + 1}/${PI_TURN_MAX_RETRIES} 次重试: ${errorMsg.slice(0, 120)}`,
+              )
+              retryGate.retriesLeft = Math.max(0, retryGate.retriesLeft - 1)
+              attempt++
+              try {
+                await sleepMs(delay, controller.signal)
+              } catch {
+                pushExecError(errorMsg)
+                return
+              }
+              stripFailedAssistants()
+              continue
+            } else {
+              pushExecError(errorMsg)
+              return
+            }
+          }
+
+          // stream 编码的 error（prompt 不抛）：subscribe 已暂扣 result
+          // 注：subscribe 在 await 期间写入 lastEndRetryableError；as 读出避免 TS 因循环头赋值 null 窄化
+          const streamErr = retryGate.lastEndRetryableError as string | null
+          if (
+            streamErr != null &&
+            streamErr.length > 0 &&
+            !entry.maxTurnsHit &&
+            !isAborted() &&
+            attempt < PI_TURN_MAX_RETRIES &&
+            isRetryablePiTurnError(streamErr)
+          ) {
+            const delay = piTurnRetryDelayMs(attempt)
+            console.log(
+              `[Pi 适配器 ${sessionId}] 流式错误可重试，${delay}ms 后第 ${attempt + 1}/${PI_TURN_MAX_RETRIES} 次续跑: ${streamErr.slice(0, 120)}`,
+            )
+            retryGate.retriesLeft = Math.max(0, retryGate.retriesLeft - 1)
+            attempt++
+            retryGate.heldErrorAssistant = null
+            retryGate.heldResult = null
+            try {
+              await sleepMs(delay, controller.signal)
+            } catch {
+              pushExecError(streamErr)
+              return
+            }
+            continue
+          }
+
+          // 不再重试：释放暂扣终态（若有）
+          flushHeldTerminal()
+          break
+        }
       } finally {
         entry.isStreaming = false
         generatorDone = true
@@ -542,14 +841,24 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     }
   }
 
-  /** 向活跃 Agent 注入消息（steer 模式，软中断后注入） */
+  /**
+   * 向活跃 Agent 注入消息（**次要路径**，勿当作 Pi 多轮主通道）。
+   *
+   * Pi 多轮主路径：SessionRuntime 每 turn 后 loop 关闭 → 下一轮重新 `query()`。
+   * 真·soft-steer / 长驻 enqueue 由 session-service 对 Pi 降级为 pending_next_turn
+   *（本轮结束后 auto handleSend），不依赖本方法。
+   *
+   * 本方法保留给：
+   * - 极端情况下 runtime 仍认为 hasLiveProcess 且调用方走 live steer
+   * - isStreaming 时 `agent.steer`（best-effort，当前 turn 内/边界消费，无 generator 监听则无效）
+   * - 非 streaming 时 fire-and-forget `prompt`（**无** query generator 订阅时事件会丢，仅保 messages）
+   */
   async sendQueuedMessage(sessionId: string, message: SDKUserMessageInput): Promise<void> {
     const entry = this.sessions.get(sessionId)
     if (!entry) {
       throw new Error(`[pi adapter] 无活跃会话可注入: ${sessionId}`)
     }
 
-    // 将 SDKUserMessage 转成 Pi 的 UserMessage 并 steer
     const content = typeof message.message?.content === 'string'
       ? message.message.content
       : ''
@@ -559,12 +868,11 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       timestamp: Date.now(),
     }
 
-    // 如果 Agent 正在流式输出，用 steer 注入（当前 turn 结束后消费）
-    // 否则用 prompt 启动新轮
     if (entry.isStreaming) {
+      // best-effort：依赖 pi-agent-core 在当前 prompt 生命周期内消费 steer
       entry.agent.steer(piUserMessage)
     } else {
-      // Agent 空闲，直接 prompt
+      // 无活跃 query generator 时事件不会进 SessionRuntime；仅推进 Agent 内部状态
       entry.isStreaming = true
       entry.agent.prompt(piUserMessage).finally(() => {
         entry!.isStreaming = false
@@ -572,11 +880,14 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     }
   }
 
-  /** 软中断当前 turn（agent.abort 保留 Agent 实例） */
+  /**
+   * 软中断当前 turn（`agent.abort`，**保留** Agent 实例与 state.messages）。
+   * 终态 turn_end / 清 running 由 session-service STOP_AGENT 显式推送兜底，
+   * 不依赖 abort 后 prompt 是否抛错。
+   */
   async interruptQuery(sessionId: string): Promise<void> {
     const entry = this.sessions.get(sessionId)
     if (!entry) return
-    // Pi Agent 的 abort 是软中断：停止当前 turn，但 Agent 对象保留
     entry.agent.abort()
   }
 
@@ -673,7 +984,15 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         : baseTools
 
     // 注册 task 工具（子代理）+ extraTools（看板等）
-    const taskTool = createTaskTool(sessionId, channelConfig, cwd ?? process.cwd(), piCore, piAgentCore)
+    // 把主会话 beforeToolCall 传给子 Agent，避免子代理裸奔（危险命令 / Chat 只读）
+    const taskTool = createTaskTool(
+      sessionId,
+      channelConfig,
+      cwd ?? process.cwd(),
+      piCore,
+      piAgentCore,
+      beforeToolCall,
+    )
     const agentTools = [...finalBaseTools, ...mcpTools, taskTool, ...(extraTools ?? [])]
 
     // 上下文自动压缩接线（TAgent 自研，仅外部渠道；kscc bare 暂不接线，见 plan §4.2）。
@@ -836,7 +1155,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       .filter(Boolean)
       .join('\n\n')
 
-    // 创建 Agent（挂 beforeToolCall 权限钩子 + 外部渠道的 transformContext 压缩钩子）
+    // 创建 Agent（挂 beforeToolCall 权限钩子 + maxTurns afterToolCall + 外部渠道 transformContext）
     const toolingKey = computeToolingKey(systemPromptAppend, extraTools)
     const agent = new piAgentCore.Agent({
       initialState: {
@@ -851,6 +1170,14 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       streamFn,
       toolExecution: 'sequential',
       ...(beforeToolCall ? { beforeToolCall } : {}),
+      // maxTurns 兜底：本轮工具批结束后若已达上限则 terminate，避免再开一轮 LLM
+      afterToolCall: async () => {
+        if (entryRef && entryRef.turnCount >= entryRef.maxTurns) {
+          entryRef.maxTurnsHit = true
+          return { terminate: true }
+        }
+        return undefined
+      },
       ...(transformContext ? { transformContext } : {}),
     } as never)
     agentRef = agent
@@ -862,6 +1189,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       toolingKey,
       compaction: compactionBundle,
       pendingSystemMessages: [],
+      maxTurns: DEFAULT_PI_MAX_TURNS,
+      turnCount: 0,
+      maxTurnsHit: false,
     }
     entryRef = entry
     return entry
@@ -920,19 +1250,31 @@ function piBlockToIR(block: AssistantMessage['content'][number]): TAgentContentB
   return { type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments }
 }
 
+/**
+ * 同一条 Pi assistant partial 的稳定 uuid（流式 delta / turn_end 共用）。
+ * 优先用 partial.timestamp（stream start 时写入且整段不变）；无则回退 session 级时间戳。
+ */
+function piAssistantUuid(msg: { timestamp?: number }, sessionId: string): string {
+  if (typeof msg.timestamp === 'number' && Number.isFinite(msg.timestamp)) {
+    return `pi-${sessionId}-${msg.timestamp}`
+  }
+  return `pi-${sessionId}-${Date.now()}`
+}
+
 /** Pi AssistantMessage → IR TAgentAssistantMessage */
 function piAssistantToIR(msg: AssistantMessage, sessionId: string): TAgentMessage {
   const content = msg.content.map(piBlockToIR)
   const isError = msg.stopReason === 'error'
   return {
     type: 'assistant',
+    uuid: piAssistantUuid(msg, sessionId),
     sessionId,
     modelId: msg.model,
     content,
     usage: msg.usage ? piUsageToIR(msg.usage) : undefined,
     error: isError ? { message: msg.errorMessage ?? '' } : undefined,
     // turn_end 最终消息带 stopReason → 映射 stop_reason，渲染层据此清 streaming 标记。
-    // 流式中间 sdk_message（toolcall_end）不经本函数、无 stop_reason → 视为仍在流式。
+    // 流式中间 sdk_message（tool_execution_start）不经本函数、无 stop_reason → 视为仍在流式。
     stop_reason: msg.stopReason,
   }
 }
@@ -957,22 +1299,29 @@ function piToolResultToIR(tr: ToolResultMessage, sessionId: string): TAgentMessa
   } as TAgentMessage
 }
 
-/** Pi AssistantMessageEvent → IR 流式 delta / 工具完成消息 */
+/**
+ * Pi AssistantMessageEvent → IR 流式 delta。
+ *
+ * toolcall_end **不再**单独推 tool_use sdk_message（避免与 turn_end 双发卡）。
+ * 进行中工具卡片由 tool_execution_start 推一次无 stop_reason 的 tool_use；
+ * 终态 tool_use+tool_result 由 turn_end 产出。
+ */
 function piStreamEventToIR(ev: AssistantMessageEvent, sessionId: string): TAgentDesktopStreamPayload | null {
+  // text/thinking 事件带 partial；uuid 与 turn_end 最终消息同源
+  const partial =
+    'partial' in ev && ev.partial && typeof ev.partial === 'object'
+      ? (ev.partial as { timestamp?: number })
+      : undefined
+  const uuid = partial ? piAssistantUuid(partial, sessionId) : undefined
+
   switch (ev.type) {
     case 'text_delta':
-      return { kind: 'stream_text_delta', text: ev.delta }
+      return { kind: 'stream_text_delta', text: ev.delta, uuid }
     case 'thinking_delta':
-      return { kind: 'stream_thinking_delta', text: ev.delta }
-    case 'toolcall_end': {
-      const tc = ev.toolCall
-      const message: TAgentMessage = {
-        type: 'assistant',
-        sessionId,
-        content: [{ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments }],
-      }
-      return { kind: 'sdk_message', message }
-    }
+      return { kind: 'stream_thinking_delta', text: ev.delta, uuid }
+    case 'toolcall_end':
+      // 故意不推 sdk_message：终态由 turn_end 统一产出，过程中由 tool_execution_start 展示
+      return null
     // toolcall_delta / done / error / start 类：不产流式 delta（done/error 由 turn_end/agent_end 处理）
     default:
       return null
@@ -980,9 +1329,36 @@ function piStreamEventToIR(ev: AssistantMessageEvent, sessionId: string): TAgent
 }
 
 /**
- * Pi AgentEvent → IR payload 数组（一个事件可产多条，如 turn_end 产 assistant + tool_result）
+ * 从最后一条 assistant 的 stopReason 推导 result.subtype。
+ * result 唯一出口在 agent_end；message_end 不再推 result（避免双 turn_end / 错误被当成功）。
+ *
+ * - error → error_during_execution + errors[]
+ * - length → max_tokens
+ * - stop / toolUse / aborted / 缺省 → success（aborted=用户软停，不当错误）
  */
-function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktopStreamPayload[] {
+export function mapPiStopReasonToResult(msg?: {
+  stopReason?: string
+  errorMessage?: string
+}): { subtype: string; errors?: string[] } {
+  const reason = msg?.stopReason
+  if (reason === 'error') {
+    const raw = (msg?.errorMessage ?? '').trim()
+    return {
+      subtype: 'error_during_execution',
+      errors: [raw || 'stream error'],
+    }
+  }
+  if (reason === 'length') {
+    return { subtype: 'max_tokens' }
+  }
+  return { subtype: 'success' }
+}
+
+/**
+ * Pi AgentEvent → IR payload 数组（一个事件可产多条，如 turn_end 产 assistant + tool_result）
+ * 导出供单测覆盖终态收束（agent_end subtype / message_end 不产 result）。
+ */
+export function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktopStreamPayload[] {
   const results: TAgentDesktopStreamPayload[] = []
 
   switch (event.type) {
@@ -993,8 +1369,30 @@ function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktopStreamP
       // 无转录 / 已在 turn_end 处理（tool_progress 渲染层不消费，直接略）
       break
 
+    case 'tool_execution_start': {
+      // 工具执行中展示：无 stop_reason 的 tool_use 卡片（过程区「进行中」）
+      // 终态完整 assistant（含 stop_reason）+ tool_result 仍由 turn_end 产出；渲染层按 tool_use id 去重合并。
+      results.push({
+        kind: 'sdk_message',
+        message: {
+          type: 'assistant',
+          sessionId,
+          content: [
+            {
+              type: 'tool_use',
+              id: event.toolCallId,
+              name: event.toolName,
+              input: (event.args ?? {}) as Record<string, unknown>,
+            },
+          ],
+        },
+      })
+      break
+    }
+
     case 'agent_end': {
-      // 从最后一条带 usage 的 assistant 汇总 result.usage（底栏 TokenStatsBar）
+      // result 唯一出口：从最后一条 assistant 的 stopReason 推 subtype，
+      // 并从最后一条带 usage 的 assistant 汇总 usage（底栏 TokenStatsBar）
       const endMsgs = event.messages ?? []
       let usage: TAgentUsage = {
         inputTokens: 0,
@@ -1003,9 +1401,16 @@ function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktopStreamP
         cacheCreationTokens: 0,
       }
       let totalCostUsd: number | undefined
+      let lastAssistant: { stopReason?: string; errorMessage?: string } | undefined
+      let usageFound = false
       for (let i = endMsgs.length - 1; i >= 0; i--) {
         const m = endMsgs[i]
-        if (m && m.role === 'assistant' && 'usage' in m && m.usage) {
+        if (!m || m.role !== 'assistant') continue
+        // stopReason 取时间上最后一条 assistant（含 error/aborted 空内容）
+        if (!lastAssistant) {
+          lastAssistant = m as { stopReason?: string; errorMessage?: string }
+        }
+        if (!usageFound && 'usage' in m && m.usage) {
           const u = m.usage as Usage
           const ir = piUsageToIR(u)
           const inTok = ir.inputTokens ?? 0
@@ -1022,10 +1427,19 @@ function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktopStreamP
             costUsd: ir.costUsd,
           }
           totalCostUsd = ir.costUsd
-          break
+          usageFound = true
         }
+        if (lastAssistant && usageFound) break
       }
-      results.push({ kind: 'result', subtype: 'success', usage, totalCostUsd })
+      const { subtype, errors } = mapPiStopReasonToResult(lastAssistant)
+      const resultPayload: TAgentControlEvent = {
+        kind: 'result',
+        subtype,
+        usage,
+        totalCostUsd,
+        ...(errors ? { errors } : {}),
+      }
+      results.push(resultPayload)
       break
     }
 
@@ -1046,7 +1460,11 @@ function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktopStreamP
       // 仅有 thinking block 时产一条空 thinking_delta 占位（流式起点，对齐旧逻辑）
       const msg = event.message
       if (msg.role === 'assistant' && msg.content.some((b) => b.type === 'thinking')) {
-        results.push({ kind: 'stream_thinking_delta', text: '' })
+        results.push({
+          kind: 'stream_thinking_delta',
+          text: '',
+          uuid: piAssistantUuid(msg as { timestamp?: number }, sessionId),
+        })
       }
       break
     }
@@ -1058,8 +1476,9 @@ function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktopStreamP
     }
 
     case 'message_end': {
-      // stream error 兜底：pi-agent-core 吞掉 stream error、走 message_end，错误藏在
-      // stopReason='error'+errorMessage。检测到就产一条可见错误 assistant + error result，否则"不报错但空白"。
+      // stream error 可见气泡：pi-agent-core 吞掉 stream error、走 message_end，错误藏在
+      // stopReason='error'+errorMessage。只推友好 assistant 文本，**不**推 result——
+      // result 一律由 agent_end 按 stopReason 产出，避免双 turn_end / 错误被当成功。
       const msg = event.message as { stopReason?: string; errorMessage?: string; role?: string }
       if (msg?.stopReason === 'error' && msg.errorMessage) {
         console.error(`[Pi 适配器 ${sessionId}] stream error 被 Agent 吞掉，已捕获: ${msg.errorMessage.slice(0, 120)}`)
@@ -1068,24 +1487,17 @@ function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktopStreamP
           kind: 'sdk_message',
           message: {
             type: 'assistant',
+            uuid: piAssistantUuid(msg as { timestamp?: number }, sessionId),
             sessionId,
             content: [{ type: 'text', text: errorText }],
             error: { message: msg.errorMessage },
             usage: { inputTokens: 0, outputTokens: 0 },
           },
         })
-        results.push({
-          kind: 'result',
-          subtype: 'error_during_execution',
-          usage: { inputTokens: 0, outputTokens: 0 },
-        })
       }
       break
     }
 
-    case 'tool_execution_start':
-      // 渲染层不消费 tool_progress（sdkMessageToIR 也丢弃），略。工具调用展示靠 turn_end 的 tool_use + tool_result。
-      break
   }
 
   return results

@@ -38,6 +38,8 @@
     --session-radius: 12px;
     /* 助手模型名胶囊字号 */
     --turn-title-size: 9px;
+    /* 会话 markdown 正文字号（MessageResponse 的 prose 基准，标题/行内代码按 em 派生） */
+    --md-preview-font-size: 13px;
     /* composer 聚焦态 accent（对齐 TAgent_General --spatial-accent-*，浅色） */
     --spatial-accent-soft: hsl(var(--primary) / 0.1);
     --spatial-accent-line: hsl(var(--primary) / 0.26);

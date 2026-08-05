@@ -11,7 +11,7 @@
  * 写入路径：
  * - Chat startRun：发送瞬间 seed（覆盖思考期无产出）
  * - useGlobalSessionRunSync：任意会话的流式事件 adopt / result·error hard-stop
- * - Chat remount：仅当主进程仍在跑而 atom 未记时 adopt；**绝不因 getSessionStatus=idle 清 atom**
+ * - Chat remount：主进程 running → adopt 保 startedAt；idle/error 且 atom 仍 running/startedAt 残留 → hard stop
  *
  * 软停 vs 硬停：
  * - softStop（turn_end 宽限期）：running=false，**保留 startedAt 记忆**，下一轮 delta adopt 续计时

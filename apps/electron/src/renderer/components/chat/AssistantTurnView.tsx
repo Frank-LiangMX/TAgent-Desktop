@@ -17,7 +17,9 @@ import { ProcessGroupView } from './ProcessGroupView'
 import { SubagentEntryCard } from './SubagentEntryCard'
 import {
   buildTurnPresentation,
-  groupSubagentItems,
+  filterSubagentItems,
+  findSubagentTaskTool,
+  listSubagentEntryIds,
   type SessionRenderTurn,
 } from './session-turn-model'
 import type { TaskCardState } from './subagent-ui-model'
@@ -28,6 +30,7 @@ import {
   formatMessageTime,
   useLiveElapsedMs,
 } from '../../lib/time-utils'
+import { MentionChip } from './MentionText'
 
 interface AssistantTurnViewProps {
   turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>
@@ -51,11 +54,21 @@ export function AssistantTurnView({
   subagentCards,
   onOpenSubagent,
 }: AssistantTurnViewProps): JSX.Element {
-  const subagentGroups = groupSubagentItems(turn.items)
-  const mainItems = turn.items.filter(
-    (it) => !(it.message?.type === 'assistant' && it.message.parentToolUseId),
+  // 主会话只留入口卡：按 launcher tool_use id / parentToolUseId 列入口，过程细节不进主时间线
+  const subagentEntryIds = listSubagentEntryIds(turn.items)
+  // 主线源：剔除子代理消息、委派合成 user、纯 taskCard（状态机只服务入口卡）
+  const mainItems = turn.items.filter((it) => {
+    if (it.taskCard && !it.message && !it.streaming) return false
+    const m = it.message
+    if (!m) return true
+    if (m.parentToolUseId) return false
+    return true
+  })
+  // isLiveTurn：整轮工具循环未结束时过程/回答不拆分，过程区 key 稳定一条路往下排
+  const presentation = buildTurnPresentation(
+    { ...turn, items: mainItems },
+    { isLiveTurn },
   )
-  const presentation = buildTurnPresentation({ ...turn, items: mainItems })
 
   const processLive = isLiveTurn
 
@@ -126,8 +139,17 @@ export function AssistantTurnView({
             <div className="agent-turn-title">{presentation.modelId}</div>
           ) : null}
           {mentionLabels && mentionLabels.length > 0 ? (
-            <div className="agent-turn-mention-chip" title="本轮 @ 点名顺序">
-              @{mentionLabels.join(' → @')}
+            <div className="agent-turn-mention-list" title="本轮 @ 点名顺序">
+              {mentionLabels.map((label, i) => (
+                <span key={`${label}-${i}`} className="agent-turn-mention-list__item">
+                  {i > 0 ? (
+                    <span className="agent-turn-mention-list__arrow" aria-hidden>
+                      →
+                    </span>
+                  ) : null}
+                  <MentionChip label={label} />
+                </span>
+              ))}
             </div>
           ) : null}
           {statusLabel ? (
@@ -150,14 +172,16 @@ export function AssistantTurnView({
         </div>
       )}
 
-      {subagentGroups.map((group) => {
-        const parentToolUseId = group[0]?.message?.parentToolUseId
-        if (!parentToolUseId) return null
+      {subagentEntryIds.map((parentToolUseId) => {
+        const group = filterSubagentItems(turn.items, parentToolUseId).filter(
+          (it) => it.message?.type === 'assistant',
+        )
         return (
           <SubagentEntryCard
             key={parentToolUseId}
             items={group}
             card={subagentCards?.get(parentToolUseId)}
+            launcher={findSubagentTaskTool(turn.items, parentToolUseId)}
             isLive={processLive}
             onOpen={() => onOpenSubagent(parentToolUseId)}
           />

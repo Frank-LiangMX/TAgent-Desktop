@@ -8,11 +8,14 @@
 import { describe, expect, it } from 'vitest'
 import type { TAgentMessage } from '@tagent/shared'
 import {
+  buildTurnPresentation,
   filterSubagentItems,
   findSubagentTaskTool,
   groupItemsIntoTurns,
   groupSubagentItems,
   isRealUserInput,
+  isSubagentLauncherTool,
+  listSubagentEntryIds,
   type TurnSourceItem,
 } from './session-turn-model'
 
@@ -182,8 +185,160 @@ describe('findSubagentTaskTool', () => {
     expect(tool?.input).toEqual({ description: '代码审查', prompt: '请审查变更' })
   })
 
+  it('finds Agent launcher by id', () => {
+    const launcher: TurnSourceItem = {
+      key: 'm1',
+      message: {
+        type: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call_agent1',
+            name: 'Agent',
+            input: { description: '探索 electron' },
+          },
+        ],
+      } as TAgentMessage,
+    }
+    expect(findSubagentTaskTool([launcher], 'call_agent1')?.name).toBe('Agent')
+  })
+
   it('ignores subagent messages and returns null when no matching launcher', () => {
     const items: TurnSourceItem[] = [subagentMessage('task-1', '步骤', 's1')]
     expect(findSubagentTaskTool(items, 'task-1')).toBeNull()
+  })
+})
+
+describe('isSubagentLauncherTool / listSubagentEntryIds', () => {
+  it('recognizes Agent and task names', () => {
+    expect(isSubagentLauncherTool('Agent')).toBe(true)
+    expect(isSubagentLauncherTool('task')).toBe(true)
+    expect(isSubagentLauncherTool('Task')).toBe(true)
+    expect(isSubagentLauncherTool('Read')).toBe(false)
+  })
+
+  it('lists entry ids from launcher even before parented messages', () => {
+    const items: TurnSourceItem[] = [
+      {
+        key: 'm1',
+        message: {
+          type: 'assistant',
+          modelId: 'glm-5.2',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_a',
+              name: 'Agent',
+              input: { description: '探索 A' },
+            },
+          ],
+        } as TAgentMessage,
+      },
+    ]
+    expect(listSubagentEntryIds(items)).toEqual(['call_a'])
+  })
+
+  it('dedupes launcher id and parented messages', () => {
+    const items: TurnSourceItem[] = [
+      {
+        key: 'm1',
+        message: {
+          type: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'call_a', name: 'Agent', input: {} },
+          ],
+        } as TAgentMessage,
+      },
+      subagentMessage('call_a', '步骤', 's1'),
+      subagentMessage('call_b', '无 launcher 兜底', 's2'),
+    ]
+    expect(listSubagentEntryIds(items)).toEqual(['call_a', 'call_b'])
+  })
+})
+
+describe('taskCard does not split assistant-turn / model badges', () => {
+  it('merges taskCard into current assistant-turn instead of standalone', () => {
+    const items: TurnSourceItem[] = [
+      mainMessage('主线开始', 'm1'),
+      {
+        key: 'task1',
+        taskCard: { taskId: 't1', toolUseId: 'call_a', status: 'running', description: '探索' },
+      },
+      subagentMessage('call_a', '子代理步骤', 's1'),
+      mainMessage('主线收尾', 'm2'),
+    ]
+    const turns = groupItemsIntoTurns(items)
+    expect(turns.filter((t) => t.kind === 'standalone')).toHaveLength(0)
+    expect(turns.filter((t) => t.kind === 'assistant-turn')).toHaveLength(1)
+    if (turns[0]?.kind === 'assistant-turn') {
+      expect(turns[0].items.map((it) => it.key)).toEqual(['m1', 'task1', 's1', 'm2'])
+      // 铭牌不取子代理 modelId
+      expect(turns[0].modelId).toBeUndefined()
+    }
+  })
+
+  it('mainline modelId is kept when present; subagent model ignored', () => {
+    const items: TurnSourceItem[] = [
+      {
+        key: 'm1',
+        message: {
+          type: 'assistant',
+          modelId: 'main-model',
+          content: [{ type: 'text', text: 'hi' }],
+        } as TAgentMessage,
+      },
+      {
+        key: 's1',
+        message: {
+          type: 'assistant',
+          modelId: 'sub-model',
+          parentToolUseId: 'call_a',
+          content: [{ type: 'text', text: 'sub' }],
+        } as TAgentMessage,
+      },
+    ]
+    const turns = groupItemsIntoTurns(items)
+    expect(turns).toHaveLength(1)
+    if (turns[0]?.kind === 'assistant-turn') {
+      expect(turns[0].modelId).toBe('main-model')
+    }
+  })
+})
+
+describe('buildTurnPresentation excludes Agent launcher from process', () => {
+  it('does not put Agent tool_use into process entries', () => {
+    const turn = {
+      kind: 'assistant-turn' as const,
+      key: 'turn-1',
+      isStreaming: false,
+      modelId: 'glm-5.2',
+      items: [
+        {
+          key: 'm1',
+          message: {
+            type: 'assistant',
+            modelId: 'glm-5.2',
+            content: [
+              { type: 'text', text: '先委派' },
+              {
+                type: 'tool_use',
+                id: 'call_a',
+                name: 'Agent',
+                input: { description: '探索' },
+              },
+              { type: 'tool_use', id: 'read_1', name: 'Read', input: { path: 'a.ts' } },
+            ],
+          } as TAgentMessage,
+        },
+        subagentMessage('call_a', '子代理正文不应进 process', 's1'),
+      ],
+    }
+    const pres = buildTurnPresentation(turn)
+    const toolNames = pres.process
+      .filter((e) => e.type === 'tool')
+      .map((e) => (e.type === 'tool' ? e.tool.name : ''))
+    expect(toolNames).toEqual(['Read'])
+    expect(toolNames).not.toContain('Agent')
+    expect(pres.modelId).toBe('glm-5.2')
   })
 })

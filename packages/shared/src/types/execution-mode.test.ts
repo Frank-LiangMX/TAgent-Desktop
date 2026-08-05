@@ -10,8 +10,8 @@ import {
 } from './execution-mode'
 
 describe('execution-mode', () => {
-  test('DEFAULT 为 chat，LEGACY 为 work', () => {
-    expect(DEFAULT_EXECUTION_MODE).toBe('chat')
+  test('DEFAULT 为 work，LEGACY 为 work', () => {
+    expect(DEFAULT_EXECUTION_MODE).toBe('work')
     expect(LEGACY_EXECUTION_MODE).toBe('work')
   })
 
@@ -34,8 +34,8 @@ describe('execution-mode', () => {
     expect(migrateExecutionMode('plan')).toBe('work')
   })
 
-  test('migrate：可指定新建默认 chat', () => {
-    expect(migrateExecutionMode(undefined, DEFAULT_EXECUTION_MODE)).toBe('chat')
+  test('migrate：可指定新建默认 work', () => {
+    expect(migrateExecutionMode(undefined, DEFAULT_EXECUTION_MODE)).toBe('work')
   })
 
   test('切换来源仅 user / user-confirm-suggestion', () => {

@@ -72,6 +72,15 @@ export interface TaskToolDetails {
 }
 
 /**
+ * 与主会话 beforeToolCall / PermissionService.createBeforeToolCall 兼容的钩子签名。
+ * arguments 标可选以兼容 pi-agent-core 入参；父会话钩子（required arguments）可直接传入。
+ */
+export type SubagentBeforeToolCall = (ctx: {
+  toolCall: { name: string; arguments: Record<string, unknown> }
+  args?: unknown
+}) => Promise<{ block: true; reason: string } | undefined>
+
+/**
  * 创建 task 工具实例
  *
  * @param parentSessionId - 父会话 ID（日志用）
@@ -79,6 +88,7 @@ export interface TaskToolDetails {
  * @param cwd - 工作目录
  * @param piCore - 已加载的 pi-core 模块
  * @param piAgentCore - 已加载的 pi-agent-core 模块
+ * @param beforeToolCall - 父会话权限钩子（危险命令 + Chat 只读等）；缺省时退化为 pi-core 危险命令拦截
  */
 export function createTaskTool(
   parentSessionId: string,
@@ -86,7 +96,25 @@ export function createTaskTool(
   cwd: string,
   piCore: PiCoreModule,
   piAgentCore: PiAgentCoreModule,
+  beforeToolCall?: SubagentBeforeToolCall,
 ): AgentTool<typeof taskSchema, TaskToolDetails> {
+  // 优先挂父会话 beforeToolCall（含 Chat 硬只读 / plan / 弹窗确认）。
+  // 缺口：创建路径若拿不到 PermissionService，仅用 checkToolPermission——
+  // 只拦 Bash 危险命令，不含 Chat 只读 / plan 写拒 / 白名单 / 弹窗。
+  const subBeforeToolCall: SubagentBeforeToolCall =
+    beforeToolCall ??
+    (async (ctx) => {
+      const input =
+        (ctx.args as Record<string, unknown> | undefined) ??
+        ctx.toolCall.arguments ??
+        {}
+      const result = piCore.checkToolPermission(ctx.toolCall.name, input, false)
+      if (result.block) {
+        return { block: true, reason: result.reason ?? '权限拒绝' }
+      }
+      return undefined
+    })
+
   return {
     name: 'task',
     label: 'task',
@@ -114,6 +142,7 @@ export function createTaskTool(
       )
 
       // 创建子 Agent（限制 tools，自定义 systemPrompt；模型：角色池 > 渠道默认）
+      // 挂 beforeToolCall：与主会话同权限（至少危险命令 + Chat 只读）
       const subTools = resolveSubagentTools(def.tools ?? [], piCore, cwd)
       const subStreamFn = createSubagentStreamFn(channelConfig, piCore, def.model)
 
@@ -127,6 +156,7 @@ export function createTaskTool(
         },
         streamFn: subStreamFn,
         toolExecution: 'sequential',
+        beforeToolCall: subBeforeToolCall,
       })
 
       // 收集子 Agent 的文本输出

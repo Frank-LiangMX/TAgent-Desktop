@@ -1,0 +1,20 @@
+# 对外版 electron-builder 配置
+# ────────────────────────────────────────────────────────────
+# 在默认 electron-builder.yml 之上排除 Claude Agent SDK 原生包
+# （含 claude.exe 的 claude-agent-sdk-win32-x64 等），落实 ADR-0001
+# 「kscc 可插拔：对外版不装」。
+#
+# 配套：
+#   - TAGENT_EXTERNAL=1 → build-main.mjs 用 stub 替换 adapters/claude
+#     与 @anthropic-ai/claude-agent-sdk（不进 main.cjs 的 require）
+#   - npm script: package:win:external
+#
+# 内网双核包请用默认 electron-builder.yml + package:win（勿设 TAGENT_EXTERNAL）
+# ────────────────────────────────────────────────────────────
+
+extends: electron-builder.yml
+
+files:
+  # 排除 Claude Agent SDK 及各平台 optional 原生包（体积 + 合规）
+  - '!node_modules/@anthropic-ai/claude-agent-sdk/**/*'
+  - '!node_modules/@anthropic-ai/claude-agent-sdk-*/**/*'

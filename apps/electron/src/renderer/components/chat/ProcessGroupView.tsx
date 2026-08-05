@@ -27,33 +27,39 @@ interface ProcessGroupViewProps {
   isLive?: boolean
   /** @deprecated 使用 isLive */
   isStreaming?: boolean
+  /**
+   * 运行中是否自动展开过程区。默认 true（主会话要看见实时思考/工具）。
+   * 子代理详情页传 false：默认只显示一行摘要，点开再看步骤，避免思考/工具全文铺满。
+   */
+  autoExpandWhenLive?: boolean
 }
 
 export function ProcessGroupView({
   process,
   isLive,
   isStreaming = false,
+  autoExpandWhenLive = true,
 }: ProcessGroupViewProps): JSX.Element | null {
   if (process.length === 0) return null
 
   const live = isLive ?? isStreaming
   const summary = summarizeProcess(process)
-  const [expanded, setExpanded] = useState(live)
+  const [expanded, setExpanded] = useState(autoExpandWhenLive ? live : false)
   const userToggledRef = useRef(false)
   const wasLiveRef = useRef(live)
 
   useEffect(() => {
     if (live) {
       if (!wasLiveRef.current) userToggledRef.current = false
-      // 运行中强制展开（除非用户刚手动收起）
-      if (!userToggledRef.current) setExpanded(true)
+      // 运行中自动展开（除非用户刚手动收起，或调用方关闭 autoExpandWhenLive）
+      if (!userToggledRef.current && autoExpandWhenLive) setExpanded(true)
       wasLiveRef.current = true
       return
     }
     // 结束后不再时间驱动自动收起（2.5s 定时收起在工具循环中反复触发 = 跳变）。
     // 思考行内部自己做「内容驱动折叠」（超阈值收成预览），过程区保持展开由用户手动收起。
     wasLiveRef.current = false
-  }, [live])
+  }, [live, autoExpandWhenLive])
 
   const liveHint = useMemo(() => {
     if (!live) return null
@@ -141,6 +147,8 @@ export function ProcessGroupView({
                   key={entry.key}
                   thinking={entry.thinking}
                   isLive={isCurrent}
+                  /** 整轮 live 时旧思考段也不自动折叠，避免「思考收起→工具出现」上下跳 */
+                  holdOpen={live}
                 />
               )
             }
@@ -189,9 +197,12 @@ export function ProcessGroupView({
 const ThinkingActivityRow = memo(function ThinkingActivityRow({
   thinking,
   isLive,
+  holdOpen = false,
 }: {
   thinking: string
   isLive: boolean
+  /** 整轮过程仍在跑：保持展开，不因「非当前思考段」自动折成预览 */
+  holdOpen?: boolean
 }): JSX.Element {
   // live 时逐字平滑挤出（对齐 1.0/Proma：thinking 独立 useSmoothStream）。
   // 源是 rAF 节流后的整块 delta，逐字后视觉丝滑；非 live 时 content 固定直接显示。
@@ -200,23 +211,22 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
     isStreaming: isLive,
   })
 
-  // live 强制展开；非 live 由内容高度驱动（超阈值折叠成预览，无时间驱动/动画跳变）
-  const [open, setOpen] = useState(isLive)
+  // 当前段 live 或整轮 holdOpen：强制展开；整轮结束后再内容驱动折叠
+  const forceOpen = isLive || holdOpen
+  const [open, setOpen] = useState(forceOpen)
   useEffect(() => {
-    if (isLive) setOpen(true)
-  }, [isLive])
+    if (forceOpen) setOpen(true)
+  }, [forceOpen])
 
-  // 内容驱动折叠：非 live 时检测正文是否超过阈值（约 4 行）。
-  // body 常驻渲染、折叠用 CSS max-height 控制，保证 useLayoutEffect 总能测量到元素。
+  // 内容驱动折叠：仅整轮结束后（!holdOpen && !isLive）超阈值才折预览
   const bodyRef = useRef<HTMLDivElement>(null)
   const stickToLatestRef = useRef(true)
   useLayoutEffect(() => {
     const el = bodyRef.current
-    if (isLive || !el) return
+    if (forceOpen || !el) return
     const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20
-    // 超阈值 → 默认折叠成预览（用户点开后可展开；thinking 不变时 effect 不重跑，展开保持）
     if (el.scrollHeight > lineHeight * 4 + 8) setOpen(false)
-  }, [displayedContent, isLive])
+  }, [displayedContent, forceOpen])
 
   // live 时正文跟随最新：新内容追加后滚到底；用户滚离底部（想从头读）时暂停跟随
   useEffect(() => {
@@ -256,7 +266,7 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
             el.scrollHeight - el.scrollTop - el.clientHeight < 24
         }}
       >
-        {displayedContent.trim() || (isLive ? '…' : '')}
+        {displayedContent.trim() || (isLive || holdOpen ? '…' : '')}
       </div>
     </div>
   )
