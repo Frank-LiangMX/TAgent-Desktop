@@ -1,8 +1,8 @@
 /**
  * buildTurnPresentation 条件拆分回归（Vitest）
  *
- * 对齐 Proma/General：streaming/live + 过程块时，禁止把「thinking + text」提前外置；
- * 仅当尾部 text 之前的 tool 全部有 result 才进回答区。
+ * - 有未完成 tool：尾部 text / streamingText 留过程区（防回跳）
+ * - 无未完成 tool（含纯 thinking+text）：交付正文进回答区 Markdown 流式，不进思考 UI
  */
 import { describe, expect, it } from 'vitest'
 import type { TAgentMessage } from '@tagent/shared'
@@ -65,14 +65,14 @@ function thinkingToolTextItems(opts?: { withResult?: boolean }): TurnSourceItem[
 }
 
 describe('areToolsBeforeIndexCompleted', () => {
-  it('无 tool_use 时返回 false（防 thinking+text 提前外置）', () => {
+  it('无 tool_use 时返回 true（允许 thinking+text 外置到回答区流式）', () => {
     expect(
       areToolsBeforeIndexCompleted(
         [{ type: 'thinking', thinking: 'x' }, { type: 'text', text: 'y' }],
         1,
         new Set(),
       ),
-    ).toBe(false)
+    ).toBe(true)
   })
 
   it('前置 tool 全部有 result 时返回 true', () => {
@@ -102,16 +102,15 @@ describe('areToolsBeforeIndexCompleted', () => {
   })
 })
 
-describe('buildTurnPresentation：条件拆分（对齐 Proma，防闪空）', () => {
-  it('streaming + 仅 thinking + 尾部 text → 整组 process，回答区空', () => {
-    // Proma 同款：工具可能稍后才出现，禁止提前外置
+describe('buildTurnPresentation：条件拆分（交付正文进回答区流式）', () => {
+  it('streaming + 仅 thinking + 尾部 text → text 进回答区，thinking 留过程（不进思考当答案）', () => {
     const turn = makeTurn(
       [
         {
           key: 'a1',
           message: assistantBlocks('test-model', [
             { type: 'thinking', thinking: '构思中' },
-            { type: 'text', text: '暂时的回答片段' },
+            { type: 'text', text: '交付回答片段' },
           ]),
         },
       ],
@@ -119,25 +118,22 @@ describe('buildTurnPresentation：条件拆分（对齐 Proma，防闪空）', (
     )
     const pres = buildTurnPresentation(turn, { isLiveTurn: true })
 
-    expect(pres.answerTexts).toEqual([])
-    expect(pres.streamingText).toBeUndefined()
+    expect(pres.answerTexts.join('')).toContain('交付回答片段')
     expect(pres.process.some((p) => p.type === 'thinking')).toBe(true)
-    expect(pres.process.some((p) => p.type === 'text' && p.text.includes('暂时的回答片段'))).toBe(
-      true,
-    )
+    expect(pres.process.some((p) => p.type === 'text')).toBe(false)
   })
 
-  it('live + 流式 thinking/text（streamState，尚未落盘）→ streamingText 进 process 不进回答', () => {
+  it('live + 流式 thinking/text（streamState）→ text 进回答壳，thinking 进过程', () => {
     const turn = makeTurn([], true)
     const pres = buildTurnPresentation(turn, {
       isLiveTurn: true,
-      streamState: { text: '闪一下就消失的正文', thinking: '还在想' },
+      streamState: { text: '正在写的正文', thinking: '还在想' },
     })
 
+    expect(pres.streamingText).toBe('正在写的正文')
     expect(pres.answerTexts).toEqual([])
-    expect(pres.streamingText).toBeUndefined()
     expect(pres.process.some((p) => p.type === 'thinking')).toBe(true)
-    expect(pres.process.some((p) => p.type === 'text' && p.text.includes('闪一下'))).toBe(true)
+    expect(pres.process.some((p) => p.type === 'text')).toBe(false)
   })
 
   it('isLiveTurn 且工具已有 result 时，尾部 text 进 answerTexts', () => {
@@ -331,77 +327,62 @@ describe('buildTurnPresentation：partial 单真源（S1，思考永驻 content[
   })
 })
 
-describe('buildTurnPresentation：concise 与 full 拆分一致（W1，displayMode 不影响拆分时机）', () => {
-  /** 同一 turn 在 full / concise 下拆分结果必须一致（W1 验收：concise 与 full 拆分一致） */
-  const assertSplitEqual = (
-    turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>,
-    opts: { isLiveTurn?: boolean; streamState?: { text: string; thinking: string } },
-  ): void => {
-    const full = buildTurnPresentation(turn, { ...opts, displayMode: 'full' })
-    const concise = buildTurnPresentation(turn, { ...opts, displayMode: 'concise' })
-    expect(concise.answerTexts).toEqual(full.answerTexts)
-    expect(concise.streamingText).toBe(full.streamingText)
-    expect(concise.isStreaming).toBe(full.isStreaming)
-    expect(concise.process.map((p) => p.type)).toEqual(full.process.map((p) => p.type))
-  }
-
-  it('concise + live + 工具已齐 + 尾部 text → 外置到回答区（与 full 一致，不再 hold）', () => {
-    // 旧 suppressLiveSplit 会 hold 到 idle；删除后 concise 与 full 同走 canSplitStreamingFinal → 外置
+describe('buildTurnPresentation：concise 时间线拆分（W3，text 留 process）', () => {
+  it('concise + live + 工具已齐 + 尾部 text → text 留 process，answerTexts 空', () => {
     const turn = makeTurn(thinkingToolTextItems({ withResult: true }), false)
-    const pres = buildTurnPresentation(turn, { isLiveTurn: true, displayMode: 'concise' })
+    const full = buildTurnPresentation(turn, { isLiveTurn: true, displayMode: 'full' })
+    const concise = buildTurnPresentation(turn, { isLiveTurn: true, displayMode: 'concise' })
 
-    expect(pres.answerTexts.join('')).toContain('这是交付给用户的最终回答。')
-    expect(pres.process.some((p) => p.type === 'text')).toBe(false)
-    expect(pres.process.some((p) => p.type === 'thinking')).toBe(true)
-    expect(pres.process.some((p) => p.type === 'tool')).toBe(true)
-    assertSplitEqual(turn, { isLiveTurn: true })
+    expect(full.answerTexts.join('')).toContain('这是交付给用户的最终回答。')
+    expect(concise.answerTexts).toEqual([])
+    expect(concise.process.some((p) => p.type === 'text')).toBe(true)
+    expect(concise.process.some((p) => p.type === 'thinking')).toBe(true)
+    expect(concise.process.some((p) => p.type === 'tool')).toBe(true)
   })
 
-  it('concise + live + 工具未齐 + 尾部 text → 留过程区（与 full 一致，canSplitStreamingFinal=false）', () => {
+  it('concise + live + 工具未齐 + 尾部 text → 留过程区', () => {
     const turn = makeTurn(thinkingToolTextItems({ withResult: false }), false)
-    const pres = buildTurnPresentation(turn, { isLiveTurn: true, displayMode: 'concise' })
+    const concise = buildTurnPresentation(turn, { isLiveTurn: true, displayMode: 'concise' })
 
-    expect(pres.answerTexts).toEqual([])
-    expect(pres.process.some((p) => p.type === 'text')).toBe(true)
-    assertSplitEqual(turn, { isLiveTurn: true })
+    expect(concise.answerTexts).toEqual([])
+    expect(concise.process.some((p) => p.type === 'text')).toBe(true)
   })
 
-  it('concise + live + streamState 正文 + 有过程块 → streamingText hold 在 process（与 full 一致）', () => {
+  it('concise + live + streamState 正文 + 仅 thinking → stream 写入 process text', () => {
     const turn = makeTurn(
       [{ key: 'a1', message: assistantBlocks('test-model', [{ type: 'thinking', thinking: '想' }]) }],
       true,
     )
     const opts = { isLiveTurn: true, streamState: { text: '正在写的正文', thinking: '' } }
-    const pres = buildTurnPresentation(turn, { ...opts, displayMode: 'concise' })
+    const concise = buildTurnPresentation(turn, { ...opts, displayMode: 'concise' })
 
-    expect(pres.answerTexts).toEqual([])
-    expect(pres.streamingText).toBeUndefined()
-    expect(pres.process.some((p) => p.type === 'text' && p.text.includes('正在写的正文'))).toBe(true)
-    assertSplitEqual(turn, opts)
+    expect(concise.streamingText).toBeUndefined()
+    expect(concise.answerTexts).toEqual([])
+    expect(concise.process.some((p) => p.type === 'text')).toBe(true)
+    const textEntry = concise.process.find((p) => p.type === 'text')
+    expect(textEntry && textEntry.type === 'text' ? textEntry.text : '').toContain('正在写的正文')
   })
 
-  it('concise + 非live + 尾部 text → 外置到 answerTexts（与 full 一致）', () => {
+  it('concise + 非live + 尾部 text → 留 process，不外置', () => {
     const turn = makeTurn(thinkingToolTextItems({ withResult: true }), false)
-    const pres = buildTurnPresentation(turn, { isLiveTurn: false, displayMode: 'concise' })
+    const concise = buildTurnPresentation(turn, { isLiveTurn: false, displayMode: 'concise' })
 
-    expect(pres.answerTexts.join('')).toContain('这是交付给用户的最终回答。')
-    expect(pres.process.some((p) => p.type === 'text')).toBe(false)
-    assertSplitEqual(turn, { isLiveTurn: false })
+    expect(concise.answerTexts).toEqual([])
+    expect(concise.process.some((p) => p.type === 'text')).toBe(true)
   })
 
-  it('concise + live + 无过程块(纯 text) → 进回答区（与 full 一致，无 process block 可 hold）', () => {
+  it('concise + live + 纯 text → 留 process 作 narrative', () => {
     const turn = makeTurn(
       [{ key: 'a1', message: assistantBlocks('test-model', [{ type: 'text', text: '你好' }]) }],
       false,
     )
-    const pres = buildTurnPresentation(turn, { isLiveTurn: true, displayMode: 'concise' })
+    const concise = buildTurnPresentation(turn, { isLiveTurn: true, displayMode: 'concise' })
 
-    expect(pres.answerTexts.join('')).toContain('你好')
-    expect(pres.process).toEqual([])
-    assertSplitEqual(turn, { isLiveTurn: true })
+    expect(concise.answerTexts).toEqual([])
+    expect(concise.process.some((p) => p.type === 'text')).toBe(true)
   })
 
-  it('full + live + 工具已齐 → 仍外置（回归，删除 suppressLiveSplit 不影响 full）', () => {
+  it('full + live + 工具已齐 → 仍外置（回归）', () => {
     const turn = makeTurn(thinkingToolTextItems({ withResult: true }), false)
     const pres = buildTurnPresentation(turn, { isLiveTurn: true, displayMode: 'full' })
 
