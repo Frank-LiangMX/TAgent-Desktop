@@ -184,10 +184,11 @@ export function buildRichOutputFixPrompt(issues: RichOutputIssue[], original: st
 
 // ===== systemPrompt 规范（预防） =====
 
-/** 双核 systemPrompt 追加的富内容输出规范 */
+/** 双核 systemPrompt 追加的富内容输出规范（按需，非默认） */
 export function buildRichContentSystemPrompt(): string {
   return [
-    '## 富内容输出规范',
+    '## 富内容输出规范（按需，非默认）',
+    '仅在用户需要可视化对比、流程图或可交互表时使用；普通说明用短段落；简单列表不要升级成 datatable；没有分支关系不要画 mermaid。',
     '回复中可使用以下代码围栏触发富内容渲染（否则按普通代码块展示）：',
     '',
     '- ```diff：代码差异（unified diff 格式）',
@@ -200,6 +201,6 @@ export function buildRichContentSystemPrompt(): string {
     '{"title":"资源清单","columns":["名称","类型","大小"],"rows":[["a.png","贴图",2048],["b.jpg","照片",1024]],"groupBy":"类型"}',
     '```',
     '',
-    '要求：围栏必须闭合；datatable/spreadsheet 的 JSON 必须合法；数据较多时优先用 datatable 而非散列表格。',
+    '要求：围栏必须闭合；datatable/spreadsheet 的 JSON 必须合法。',
   ].join('\n')
 }

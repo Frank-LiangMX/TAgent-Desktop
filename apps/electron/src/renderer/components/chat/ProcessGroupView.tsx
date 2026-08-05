@@ -2,24 +2,46 @@
  * ProcessGroupView — Agent 过程区（对齐 General）
  *
  * - **运行中（isLive）**：会话区直接展开，看见思考内容 + 工具语义行
- * - **结束后**：自动收成一行摘要（用户未手动展开则收起）
- * - 不是「只显示步数」的黑盒
+ * - **结束后**：静置 + 3 秒倒计时自动收成一行摘要（用户手动 toggle 过则不收）
+ * - 思考/中间文本：展开挂 Markdown，折叠只挂纯文本预览
  */
-import { memo, useLayoutEffect, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
   CopyButton,
+  MessageResponse,
   ScrollArea,
   useSmoothStream,
 } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 import type { ProcessEntry } from './session-turn-model'
 import { summarizeProcess } from './session-turn-model'
+import {
+  PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS,
+  PROCESS_GROUP_AUTO_COLLAPSE_SETTLE_MS,
+  buildProcessTextPreview,
+  buildThinkingPreview,
+  findLastProcessKey,
+  planProcessGroupCollapse,
+  shouldCollapseProcessText,
+  shouldCollapseThinking,
+} from './process-group-model'
 import { getToolPhrase, summarizeToolResult } from './tool-phrase'
 import type { TAgentToolResultBlock, TAgentToolUseBlock } from '@tagent/shared'
+
+/**
+ * 过程区 Markdown 弱样式：字号压小、正文继承外层弱色、段间距收紧。
+ * 用 `prose-*` 变体而非裸 CSS，保证能盖过 typography 插件的默认色。
+ */
+const PROCESS_MD_CLASS = cn(
+  'text-[12.5px] leading-[1.6] text-muted-foreground/85',
+  'prose-p:my-1 prose-p:text-current prose-li:my-0.5 prose-li:text-current',
+  'prose-headings:my-1.5 prose-headings:text-current prose-strong:text-current',
+  'prose-a:text-current prose-code:text-current prose-blockquote:text-current',
+)
 
 interface ProcessGroupViewProps {
   process: ProcessEntry[]
@@ -40,26 +62,65 @@ export function ProcessGroupView({
   isStreaming = false,
   autoExpandWhenLive = true,
 }: ProcessGroupViewProps): JSX.Element | null {
-  if (process.length === 0) return null
-
   const live = isLive ?? isStreaming
   const summary = summarizeProcess(process)
   const [expanded, setExpanded] = useState(autoExpandWhenLive ? live : false)
+  const [collapseCountdown, setCollapseCountdown] = useState<number | null>(null)
   const userToggledRef = useRef(false)
   const wasLiveRef = useRef(live)
+  const autoCollapseTimersRef = useRef<number[]>([])
+
+  const clearAutoCollapseTimers = useCallback(() => {
+    for (const timer of autoCollapseTimersRef.current) window.clearTimeout(timer)
+    autoCollapseTimersRef.current = []
+  }, [])
+
+  /** 用户插手（展开/收起）：放弃本轮自动收起 */
+  const markUserToggled = useCallback(() => {
+    userToggledRef.current = true
+    clearAutoCollapseTimers()
+    setCollapseCountdown(null)
+  }, [clearAutoCollapseTimers])
 
   useEffect(() => {
-    if (live) {
-      if (!wasLiveRef.current) userToggledRef.current = false
-      // 运行中自动展开（除非用户刚手动收起，或调用方关闭 autoExpandWhenLive）
-      if (!userToggledRef.current && autoExpandWhenLive) setExpanded(true)
-      wasLiveRef.current = true
+    clearAutoCollapseTimers()
+    const plan = planProcessGroupCollapse({
+      live,
+      wasLive: wasLiveRef.current,
+      userToggled: userToggledRef.current,
+      autoExpandWhenLive,
+    })
+    if (live && !wasLiveRef.current) userToggledRef.current = false
+    wasLiveRef.current = live
+
+    if (plan === 'expand') setExpanded(true)
+    if (plan === 'collapse') setExpanded(false)
+    if (plan !== 'countdown') {
+      setCollapseCountdown(null)
       return
     }
-    // 结束后不再时间驱动自动收起（2.5s 定时收起在工具循环中反复触发 = 跳变）。
-    // 思考行内部自己做「内容驱动折叠」（超阈值收成预览），过程区保持展开由用户手动收起。
-    wasLiveRef.current = false
-  }, [live, autoExpandWhenLive])
+
+    // 静置一会儿再开始倒计时：工具间隙的瞬时 idle 不会把正在看的过程收走
+    autoCollapseTimersRef.current.push(
+      window.setTimeout(() => {
+        setCollapseCountdown(PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS)
+        for (let second = PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS - 1; second >= 1; second--) {
+          const elapsed = (PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS - second) * 1000
+          autoCollapseTimersRef.current.push(
+            window.setTimeout(() => setCollapseCountdown(second), elapsed),
+          )
+        }
+        autoCollapseTimersRef.current.push(
+          window.setTimeout(() => {
+            setCollapseCountdown(null)
+            setExpanded(false)
+          }, PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS * 1000),
+        )
+      }, PROCESS_GROUP_AUTO_COLLAPSE_SETTLE_MS),
+    )
+
+    return clearAutoCollapseTimers
+  }, [live, autoExpandWhenLive, clearAutoCollapseTimers])
 
   const liveHint = useMemo(() => {
     if (!live) return null
@@ -99,12 +160,13 @@ export function ProcessGroupView({
 
   const showBody = expanded
 
-  const lastThinkingKey = useMemo(() => {
-    for (let i = process.length - 1; i >= 0; i--) {
-      if (process[i]?.type === 'thinking') return process[i]!.key
-    }
-    return null
-  }, [process])
+  // holdOpen 只认「当前正在写的段」：历史思考/文本按各自内容长度决定折叠，
+  // 不再整轮 live 期间全部强制展开。
+  const lastThinkingKey = useMemo(() => findLastProcessKey(process, 'thinking'), [process])
+  const lastTextKey = useMemo(() => findLastProcessKey(process, 'text'), [process])
+
+  // 空过程组不渲染。早退必须在所有 hook 之后，否则 0→非 0 时 hook 数量变化会崩
+  if (process.length === 0) return null
 
   return (
     <div className={cn('agent-process-group', live && 'is-live')}>
@@ -112,7 +174,7 @@ export function ProcessGroupView({
         type="button"
         className="agent-process-group__toggle"
         onClick={() => {
-          userToggledRef.current = true
+          markUserToggled()
           setExpanded((v) => !v)
         }}
       >
@@ -132,6 +194,11 @@ export function ProcessGroupView({
         >
           {headerLabel}
         </span>
+        {collapseCountdown !== null && (
+          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/45">
+            {collapseCountdown}s
+          </span>
+        )}
         {!showBody && !live && (summary.toolCount > 0 || summary.thinkingCount > 0) && (
           <span className="shrink-0 text-[11px] text-muted-foreground/40">查看过程</span>
         )}
@@ -141,14 +208,11 @@ export function ProcessGroupView({
         <div className="agent-process-group__body">
           {process.map((entry) => {
             if (entry.type === 'thinking') {
-              const isCurrent = live && entry.key === lastThinkingKey
               return (
                 <ThinkingActivityRow
                   key={entry.key}
                   thinking={entry.thinking}
-                  isLive={isCurrent}
-                  /** 整轮 live 时旧思考段也不自动折叠，避免「思考收起→工具出现」上下跳 */
-                  holdOpen={live}
+                  isLive={live && entry.key === lastThinkingKey}
                 />
               )
             }
@@ -163,14 +227,13 @@ export function ProcessGroupView({
               )
             }
             if (entry.type === 'text') {
-              const preview = entry.text.trim().replace(/\s+/g, ' ')
-              if (!preview) return null
+              if (!entry.text.trim()) return null
               return (
-                <div key={entry.key} className="agent-tool-row agent-tool-row--muted">
-                  <span className="truncate text-[12px] text-muted-foreground/55">
-                    {preview.length > 80 ? `${preview.slice(0, 80)}…` : preview}
-                  </span>
-                </div>
+                <ProcessTextRow
+                  key={entry.key}
+                  text={entry.text}
+                  isLive={live && entry.key === lastTextKey}
+                />
               )
             }
             return null
@@ -180,7 +243,7 @@ export function ProcessGroupView({
               type="button"
               className="agent-process-group__collapse"
               onClick={() => {
-                userToggledRef.current = true
+                markUserToggled()
                 setExpanded(false)
               }}
             >
@@ -193,16 +256,17 @@ export function ProcessGroupView({
   )
 }
 
-/** 思考行：运行中直接展开正文（对齐 General live thinking） */
+/**
+ * 思考行：正在写的那段直接展开看实时思考，其余按内容长度决定折叠。
+ * 展开挂 Markdown，折叠只挂纯文本预览——live 每帧变长时不会反复重解析 Markdown。
+ */
 const ThinkingActivityRow = memo(function ThinkingActivityRow({
   thinking,
   isLive,
-  holdOpen = false,
 }: {
   thinking: string
+  /** 本段是当前正在写的思考（整轮 live 时只有最后一段为真） */
   isLive: boolean
-  /** 整轮过程仍在跑：保持展开，不因「非当前思考段」自动折成预览 */
-  holdOpen?: boolean
 }): JSX.Element {
   // live 时逐字平滑挤出（对齐 1.0/Proma：thinking 独立 useSmoothStream）。
   // 源是 rAF 节流后的整块 delta，逐字后视觉丝滑；非 live 时 content 固定直接显示。
@@ -210,44 +274,34 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
     content: thinking,
     isStreaming: isLive,
   })
+  const text = displayedContent.trim()
 
-  // 当前段 live 或整轮 holdOpen：强制展开；整轮结束后再内容驱动折叠
-  const forceOpen = isLive || holdOpen
-  const [open, setOpen] = useState(forceOpen)
-  useEffect(() => {
-    if (forceOpen) setOpen(true)
-  }, [forceOpen])
-
-  // 内容驱动折叠：仅整轮结束后（!holdOpen && !isLive）超阈值才折预览
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const stickToLatestRef = useRef(true)
-  useLayoutEffect(() => {
-    const el = bodyRef.current
-    if (forceOpen || !el) return
-    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20
-    if (el.scrollHeight > lineHeight * 4 + 8) setOpen(false)
-  }, [displayedContent, forceOpen])
+  // 静态阈值判定「够长才值得折」：不读 DOM，live 每帧变长也不触发测量与高度抖动
+  const collapsible = useMemo(() => shouldCollapseThinking(thinking), [thinking])
+  // null = 未手动 override；live 段默认展开，历史段够长则默认收成预览
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
+  const open = userExpanded ?? (isLive || !collapsible)
 
   // live 时正文跟随最新：新内容追加后滚到底；用户滚离底部（想从头读）时暂停跟随
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const stickToLatestRef = useRef(true)
   useEffect(() => {
-    if (!isLive) return
+    if (!isLive || !open) return
     const el = bodyRef.current
     if (!el || !stickToLatestRef.current) return
     el.scrollTop = el.scrollHeight
-  }, [displayedContent, isLive])
+  }, [text, isLive, open])
 
   return (
     <div className={cn('agent-thinking-row', isLive && 'is-live')}>
       <button
         type="button"
         className="agent-thinking-row__head"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setUserExpanded(!open)}
       >
         <span className="agent-thinking-row__badge">思考</span>
         {isLive && <span className="agent-thinking-row__dot" aria-hidden />}
-        {open && isLive && (
-          <span className="text-[11px] text-muted-foreground/45">进行中</span>
-        )}
+        {isLive && <span className="text-[11px] text-muted-foreground/45">进行中</span>}
         <CaretRight
           size={11}
           className={cn(
@@ -256,18 +310,66 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
           )}
         />
       </button>
-      <div
-        ref={bodyRef}
-        className={cn('agent-thinking-row__body', !open && 'is-collapsed')}
-        onScroll={(e) => {
-          const el = e.currentTarget
-          // 距底 < 24px 视为"在底部"：在底 → 继续跟随最新；滚上去读 → 停止跟随
-          stickToLatestRef.current =
-            el.scrollHeight - el.scrollTop - el.clientHeight < 24
-        }}
-      >
-        {displayedContent.trim() || (isLive || holdOpen ? '…' : '')}
-      </div>
+      {open ? (
+        <div
+          ref={bodyRef}
+          className="agent-thinking-row__body"
+          onScroll={(e) => {
+            const el = e.currentTarget
+            // 距底 < 24px 视为"在底部"：在底 → 继续跟随最新；滚上去读 → 停止跟随
+            stickToLatestRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+          }}
+        >
+          <MessageResponse className={PROCESS_MD_CLASS} streaming={isLive}>
+            {text || (isLive ? '…' : '')}
+          </MessageResponse>
+        </div>
+      ) : (
+        <div className="agent-thinking-row__preview">{buildThinkingPreview(text)}</div>
+      )}
+    </div>
+  )
+})
+
+/**
+ * 过程内中间文本：未交付给回答区的正文（工具间隙的说明、live 期间的尾部 text）。
+ * 默认完整可读（Markdown + 弱样式），只有很长时才给一个折叠开关，折叠态才截断成预览行。
+ */
+const ProcessTextRow = memo(function ProcessTextRow({
+  text,
+  isLive,
+}: {
+  text: string
+  /** 本段是当前正在写的正文 */
+  isLive: boolean
+}): JSX.Element {
+  const { displayedContent } = useSmoothStream({ content: text, isStreaming: isLive })
+  const content = displayedContent.trim()
+
+  const collapsible = useMemo(() => shouldCollapseProcessText(text), [text])
+  const [userCollapsed, setUserCollapsed] = useState(false)
+  const open = !collapsible || !userCollapsed
+
+  return (
+    <div className={cn('agent-process-text', isLive && 'is-live')}>
+      {open ? (
+        <div className="agent-process-text__body">
+          <MessageResponse className={PROCESS_MD_CLASS} streaming={isLive}>
+            {content || (isLive ? '…' : '')}
+          </MessageResponse>
+        </div>
+      ) : (
+        <div className="agent-process-text__preview">{buildProcessTextPreview(content)}</div>
+      )}
+      {collapsible && (
+        <button
+          type="button"
+          className="agent-process-text__toggle"
+          onClick={() => setUserCollapsed((v) => !v)}
+        >
+          {open ? '收起这段' : '展开全文'}
+        </button>
+      )}
     </div>
   )
 })

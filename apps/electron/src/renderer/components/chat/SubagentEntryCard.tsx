@@ -1,12 +1,8 @@
 /**
- * SubagentEntryCard — 子代理入口卡片（主会话只留入口，不显示过程）
+ * SubagentEntryCard — 子代理入口卡片（主会话只留入口，过程细节进详情页）
  *
- * 对齐 Cursor Codex：子代理的完整过程**不渲染在主会话页面**，只显示一个紧凑
- * 入口卡片（任务摘要 + 状态 + 步骤数 + 「查看 →」）。点击后由 Chat 切换到
- * 子代理独立会话页面（SubagentDetailView）查看完整过程。
- *
- * 取代旧 SubagentTurnBlock（折叠展开过程）：折叠仍然会淹没聊天区，且用户
- * 明确要求子代理过程不进主会话。
+ * 运行中展示 progressText / lastToolName（来自 task_progress）；
+ * 收口后展示 summary（来自 task_notification）。完整过程仍不进主时间线。
  */
 import { memo, useMemo } from 'react'
 import { ArrowRight } from '@phosphor-icons/react'
@@ -77,6 +73,10 @@ export function SubagentEntryCard({
         ? 'running'
         : 'completed')
   const statusText = card ? STATUS_TEXT[card.status] : STATUS_TEXT[status]
+  const isRunning = status === 'running'
+  const progressLine = isRunning
+    ? card?.progressText || (card?.lastToolName ? `运行工具：${card.lastToolName}` : undefined)
+    : card?.summary
 
   return (
     <button
@@ -91,12 +91,22 @@ export function SubagentEntryCard({
       title="查看子代理完整过程"
     >
       <span className="subagent-entry-card__dot" aria-hidden />
-      <span className="subagent-entry-card__title">子代理</span>
-      <span className="subagent-entry-card__status">{statusText}</span>
-      {messageCount > 1 && (
-        <span className="subagent-entry-card__count">{messageCount} 步</span>
-      )}
-      <span className="subagent-entry-card__summary">{summary}</span>
+      <span className="subagent-entry-card__body">
+        <span className="subagent-entry-card__row">
+          <span className="subagent-entry-card__title">子代理</span>
+          <span className="subagent-entry-card__status">{statusText}</span>
+          {isRunning && card?.lastToolName ? (
+            <span className="subagent-entry-card__tool">· {card.lastToolName}</span>
+          ) : null}
+          {messageCount > 1 && (
+            <span className="subagent-entry-card__count">{messageCount} 步</span>
+          )}
+        </span>
+        <span className="subagent-entry-card__summary">{summary}</span>
+        {progressLine && progressLine !== summary ? (
+          <span className="subagent-entry-card__progress">{progressLine}</span>
+        ) : null}
+      </span>
       <span className="subagent-entry-card__open">
         查看
         <ArrowRight size={11} weight="bold" />

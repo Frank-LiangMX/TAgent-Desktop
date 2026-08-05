@@ -30,7 +30,11 @@ import type {
   TAgentControlEvent,
   TAgentDesktopStreamPayload,
 } from '@tagent/shared'
-import { buildRichContentSystemPrompt, isPromptTooLongMessage } from '@tagent/shared'
+import {
+  buildOutputStylePrompt,
+  buildRichContentSystemPrompt,
+  isPromptTooLongMessage,
+} from '@tagent/shared'
 import {
   buildMemoryPromptSections,
   memoryLayerService,
@@ -276,6 +280,11 @@ interface SessionEntry {
   compaction?: SessionCompactionBundle
   /** transformContext 自动压缩时暂存的 system 事件，下一轮 query 流开头排出 */
   pendingSystemMessages: TAgentDesktopStreamPayload[]
+  /**
+   * 当前 query 活跃时的直播推送（= pushMessage）。
+   * 子代理 task_* 等异步事件优先走这里；无活跃 query 时退回 pendingSystemMessages。
+   */
+  emitLive?: (p: TAgentDesktopStreamPayload) => void
   /** 本轮 query 的工具循环上限 */
   maxTurns: number
   /** 本轮 query 已发生的 turn_start 次数 */
@@ -593,6 +602,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     // - turn 级 retry：可重试错误指数退避最多 PI_TURN_MAX_RETRIES 次，保留 state.messages
     // - 过长：force compact 后再试一次
     entry.isStreaming = true
+    entry.emitLive = pushMessage
     void (async () => {
       const pushExecError = (errorMsg: string) => {
         pushMessage({
@@ -721,6 +731,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         }
       } finally {
         entry.isStreaming = false
+        entry.emitLive = undefined
         generatorDone = true
         wakeGenerator()
       }
@@ -985,6 +996,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
 
     // 注册 task 工具（子代理）+ extraTools（看板等）
     // 把主会话 beforeToolCall 传给子 Agent，避免子代理裸奔（危险命令 / Chat 只读）
+    // onTaskEvent：进度进入口卡；execute 时 entryRef 已就绪，优先 emitLive，否则暂存
     const taskTool = createTaskTool(
       sessionId,
       channelConfig,
@@ -992,6 +1004,14 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       piCore,
       piAgentCore,
       beforeToolCall,
+      (event) => {
+        const payload: TAgentDesktopStreamPayload = { kind: 'tagent_event', event }
+        if (entryRef?.emitLive) {
+          entryRef.emitLive(payload)
+        } else {
+          entryRef?.pendingSystemMessages.push(payload)
+        }
+      },
     )
     const agentTools = [...finalBaseTools, ...mcpTools, taskTool, ...(extraTools ?? [])]
 
@@ -1147,6 +1167,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     const baseSystem = systemPrompt ?? DEFAULT_SYSTEM_PROMPT
     const fullSystemPrompt = [
       baseSystem,
+      // W8：输出风格沟通红线（与 kscc append 中 buildOutputStylePrompt 同文）
+      buildOutputStylePrompt(),
       systemPromptAppend,
       buildRichContentSystemPrompt(),
       mem.managementRules,

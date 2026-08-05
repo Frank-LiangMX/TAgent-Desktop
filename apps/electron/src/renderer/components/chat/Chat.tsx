@@ -26,7 +26,7 @@ import type {
   TurnDuration,
   UserFacingError,
 } from '@tagent/shared'
-import { migrateExecutionMode, DEFAULT_EXECUTION_MODE, parseMentions } from '@tagent/shared'
+import { migrateExecutionMode, DEFAULT_EXECUTION_MODE, parseMentions, classifyUserFacingError } from '@tagent/shared'
 import {
   resolveChannelDefaultModelId,
   sdkMessageToIR,
@@ -1225,10 +1225,40 @@ export function Chat({
         return purgeStreamingItems(cleaned)
       })
       // result = 整个 run 真正 idle（turn_end 只是单个 SDK turn 结束，工具循环还会继续）。
-      // 用 completeRun 记发送→idle 全程耗时到最后 assistant-turn，再清 running。
       clearPendingStop()
       beginStreamTransition()
-      completeRun()
+
+      // error_* 以前几乎对 UI 透明（只吃 usage）；抬到 SessionErrorBanner，避免「气泡里有失败但无错误条」
+      const subtype = typeof p.subtype === 'string' ? p.subtype : ''
+      const isErrorResult = subtype.startsWith('error_')
+      const errorTexts = Array.isArray(p.errors)
+        ? p.errors.filter((e): e is string => typeof e === 'string' && e.trim().length > 0)
+        : []
+      if (isErrorResult || errorTexts.length > 0) {
+        const raw =
+          errorTexts.join('\n') ||
+          (subtype === 'error_max_turns'
+            ? '已达最大工具循环轮次'
+            : subtype === 'error_during_execution'
+              ? '执行过程中出错'
+              : subtype || '运行出错')
+        const userError = classifyUserFacingError(raw)
+        setSessionError({
+          sessionId: sessionIdRef.current,
+          error: {
+            title: userError.title,
+            message: userError.message || raw,
+            retryable: userError.retryable,
+            code: userError.code,
+            action: userError.action,
+            at: Date.now(),
+          },
+        })
+        recordCompletion('error')
+        stopRun()
+      } else {
+        completeRun()
+      }
       bumpRefresh()
     } else if (p.kind === 'stream_text_delta') {
       // 子代理流式正文不进主会话（详情页靠落盘 parentToolUseId 消息回放）
