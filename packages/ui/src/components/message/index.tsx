@@ -377,6 +377,7 @@ export const MessageResponse = React.memo(
                   onOpenFile={filePathCtx.onOpenFile}
                   getSessionId={filePathCtx.getSessionId}
                   FileIcon={filePathCtx.FileIcon}
+                  streaming={streaming}
                 />
               )
             }

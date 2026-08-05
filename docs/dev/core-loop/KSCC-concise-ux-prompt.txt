@@ -1,0 +1,14 @@
+﻿只读调研（禁止改任何文件）。对照下列仓库的「过程/思考/工具」UI：
+- C:\Users\loumi\Desktop\AI\DeepSeek-Reasonix
+- C:\Users\loumi\Desktop\AI\Kun
+- C:\Users\loumi\Desktop\AI\Proma
+- C:\Users\loumi\Desktop\AI\hermes-agent（若有相关 UI）
+
+它们在 live 与结束后默认如何展示？是否逐条渲染每个 thinking + 每个 tool？还是一行 Working/Thought for Ns + 可展开？
+
+读实际组件，输出：
+1. 各项目默认 UI（一句话 + 关键路径:行）
+2. 共同点：真正「简洁」长什么样
+3. 给 TAgent-Desktop concise 的产品契约（不要只折叠 ProcessGroupView）
+
+中文结构化输出。

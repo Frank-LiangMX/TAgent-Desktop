@@ -2,6 +2,9 @@ import { describe, expect, test } from 'vitest'
 
 import {
   classifySessionError,
+  classifyUserFacingError,
+  buildChatModeBlockUserError,
+  isChatModeBlockMessage,
   extractResultErrors,
   formatPromptTooLongError,
   isPromptTooLongMessage,
@@ -9,6 +12,7 @@ import {
   PROMPT_TOO_LONG_ERROR_MESSAGE,
   PROMPT_TOO_LONG_ERROR_TITLE,
 } from './session-error-classify'
+import { CHAT_MODE_BLOCK_REASON } from '../constants/permission-rules'
 
 describe('isPromptTooLongMessage', () => {
   test('matches Anthropic native "prompt is too long"', () => {
@@ -128,5 +132,28 @@ describe('formatPromptTooLongError', () => {
     expect(text).toContain(PROMPT_TOO_LONG_ERROR_TITLE)
     expect(text).toContain(PROMPT_TOO_LONG_ERROR_MESSAGE)
     expect(text.startsWith(`${PROMPT_TOO_LONG_ERROR_TITLE}：`)).toBe(true)
+  })
+})
+
+describe('chat mode block user-facing errors', () => {
+  test('isChatModeBlockMessage detects deny reason', () => {
+    expect(isChatModeBlockMessage(CHAT_MODE_BLOCK_REASON)).toBe(true)
+    expect(isChatModeBlockMessage('random network error')).toBe(false)
+  })
+
+  test('buildChatModeBlockUserError includes tool name and switch hint', () => {
+    const err = buildChatModeBlockUserError('Write')
+    expect(err.code).toBe('chat_mode_blocked')
+    expect(err.title).toMatch(/Chat/)
+    expect(err.message).toMatch(/切换到 Work/)
+    expect(err.message).toMatch(/Write/)
+    expect(err.retryable).toBe(false)
+    expect(err.action).toBe('switch_to_work')
+  })
+
+  test('classifyUserFacingError maps chat block reason', () => {
+    const err = classifyUserFacingError(CHAT_MODE_BLOCK_REASON)
+    expect(err.code).toBe('chat_mode_blocked')
+    expect(err.message).toMatch(/讨论模式（Chat）/)
   })
 })

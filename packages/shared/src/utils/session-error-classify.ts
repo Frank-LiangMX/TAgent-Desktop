@@ -10,6 +10,12 @@
  * （kscc 核进程崩 / Pi 核 Agent 抛错都可复用同一分类）。
  */
 
+import {
+  CHAT_MODE_BLOCK_REASON,
+  CHAT_MODE_BLOCK_USER_MESSAGE,
+  CHAT_MODE_BLOCK_USER_TITLE,
+} from '../constants/permission-rules'
+
 /** 错误分类结果（驱动 runtime 恢复/降级分流） */
 export type SessionErrorKind = 'user_stop' | 'prompt_too_long' | 'crash' | 'unknown'
 
@@ -125,6 +131,7 @@ export type UserFacingErrorCode =
   | 'billing'
   | 'network'
   | 'permission_denied'
+  | 'chat_mode_blocked'
   | 'unknown'
 
 /** 用户可见错误（渲染层展示 title + message + retryable + 建议动作） */
@@ -135,7 +142,31 @@ export interface UserFacingError {
   /** 是否可重试（限流/网络可重试；账单/模型不可用不可重试） */
   retryable: boolean
   /** 建议动作（渲染层据此展示提示/按钮） */
-  action?: 'settings' | 'switch_model' | 'compact' | 'none'
+  action?: 'settings' | 'switch_model' | 'compact' | 'switch_to_work' | 'none'
+}
+
+/** 是否为 Chat 模式硬拦相关文案（canUseTool deny / session_error / result.errors） */
+export function isChatModeBlockMessage(...texts: Array<string | null | undefined>): boolean {
+  const combined = texts.filter(Boolean).join('\n')
+  if (!combined) return false
+  if (combined.includes(CHAT_MODE_BLOCK_USER_MESSAGE) || combined.includes(CHAT_MODE_BLOCK_REASON)) {
+    return true
+  }
+  return /当前为讨论模式（Chat）|Chat 模式[：:].*只读|切换到 Work|切到 Work|chat[- ]mode.*block/i.test(
+    combined,
+  )
+}
+
+/** 构建 Chat 硬拦的用户可见错误（供主进程 session_error + 渲染层复用） */
+export function buildChatModeBlockUserError(toolName?: string): UserFacingError {
+  const toolHint = toolName?.trim() ? `（已拦截工具：${toolName}）` : ''
+  return {
+    code: 'chat_mode_blocked',
+    title: CHAT_MODE_BLOCK_USER_TITLE,
+    message: `${CHAT_MODE_BLOCK_USER_MESSAGE}${toolHint}`,
+    retryable: false,
+    action: 'switch_to_work',
+  }
 }
 
 /** 错误文案 → 用户可见分类（正则匹配，按顺序，首中即止；未知走 unknown 保留原文） */
@@ -207,6 +238,10 @@ const USER_FACING_CLASSIFIERS: ReadonlyArray<{
 export function classifyUserFacingError(message: string): UserFacingError {
   const text = message.trim()
   if (!text) return { code: 'unknown', title: '运行出错', message: text, retryable: false }
+
+  if (isChatModeBlockMessage(text)) {
+    return buildChatModeBlockUserError()
+  }
 
   if (isPromptTooLongMessage(text)) {
     return {

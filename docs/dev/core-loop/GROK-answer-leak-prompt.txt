@@ -1,0 +1,14 @@
+﻿只读诊断。用户反馈：简洁模式（chatProcessDisplayMode=concise）下，运行中内容又输出到最终回答区。
+
+查：
+- apps/electron/src/renderer/components/chat/AssistantTurnView.tsx
+- session-turn-model.ts 的 buildTurnPresentation / canSplitAnswer / answerTexts
+- ProcessGroupView 的 concise/autoExpandWhenLive（是否误伤数据）
+- streamState / partial / splitAnswer 时机
+
+回答：
+1. 根因（文件:行证据）
+2. 是否由 concise 引起，还是独立的 live 拆分 bug
+3. 最小修复点
+
+禁止改文件。中文输出。

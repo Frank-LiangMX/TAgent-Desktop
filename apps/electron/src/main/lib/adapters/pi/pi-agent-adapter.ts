@@ -487,6 +487,57 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       }
     }
 
+    // ===== 单真源流式（S1）：partial assistant 合并器 =====
+    // Pi 每个 delta 都携带累计 partial（thinking/text/tool_use 在 content[] 长大）。
+    // 限频 50ms（20fps）推 partial assistant（同 uuid，_partial 标记，不落盘），
+    // 渲染层按 uuid 原地 upsert；turn_end/message_end 同 uuid final 替换 partial。
+    // 对齐 Proma `createPartialMessageCoalescer`。
+    const PI_PARTIAL_FLUSH_MS = 50
+    let pendingPartial: AssistantMessage | null = null
+    let partialFlushTimer: ReturnType<typeof setTimeout> | null = null
+
+    const flushPartial = (): void => {
+      if (partialFlushTimer != null) {
+        clearTimeout(partialFlushTimer)
+        partialFlushTimer = null
+      }
+      const msg = pendingPartial
+      pendingPartial = null
+      if (!msg) return
+      const ir = piAssistantToIR(msg, sessionId, { partial: true })
+      if (ir.type === 'assistant') {
+        pushMessage({ kind: 'sdk_message', message: ir })
+      }
+    }
+
+    /** 调度一条 partial（合并到下一帧 flush）；无 content 时跳过，避免空占位噪声 */
+    const schedulePartial = (msg: AssistantMessage): void => {
+      if (!msg.content || msg.content.length === 0) return
+      pendingPartial = msg
+      if (partialFlushTimer == null) {
+        partialFlushTimer = setTimeout(flushPartial, PI_PARTIAL_FLUSH_MS)
+      }
+    }
+
+    /** 取 message_update 携带的累计 partial assistant（pi-ai AssistantMessage） */
+    const partialFromEvent = (event: AgentEvent): AssistantMessage | null => {
+      if (event.type !== 'message_update') return null
+      const ae = (event as { assistantMessageEvent?: { partial?: AssistantMessage } })
+        .assistantMessageEvent
+      const partial = ae?.partial
+      if (!partial || typeof partial !== 'object') return null
+      if (!('role' in partial) || (partial as { role?: string }).role !== 'assistant') return null
+      return partial
+    }
+
+    const disposePartialCoalescer = (): void => {
+      if (partialFlushTimer != null) {
+        clearTimeout(partialFlushTimer)
+        partialFlushTimer = null
+      }
+      pendingPartial = null
+    }
+
     // 注册 Agent 事件监听
     let lastDeltaAt = 0
     let deltaCount = 0
@@ -525,6 +576,22 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       }
 
       try {
+        // 单真源流式（S1）：
+        // - message_update：把累计 partial 调度进 content[]（thinking/text/tool_use 原地长，不靠 streamState）。
+        // - tool_execution_start / turn_end / message_end / agent_end：先 flush partial，
+        //   让 partial 的最新状态落地；turn_end 的 final 同 uuid 原地替换 partial。
+        if (event.type === 'message_update') {
+          const partial = partialFromEvent(event)
+          if (partial) schedulePartial(partial)
+        } else if (
+          event.type === 'tool_execution_start' ||
+          event.type === 'turn_end' ||
+          event.type === 'message_end' ||
+          event.type === 'agent_end'
+        ) {
+          flushPartial()
+        }
+
         const payloads = piEventToIR(event, sessionId)
         for (const p of payloads) {
           // message_end 错误气泡：可重试时暂扣，避免 retry 中途闪错误
@@ -759,6 +826,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       }
     } finally {
       unsubscribe()
+      disposePartialCoalescer()
     }
   }
 
@@ -1283,21 +1351,34 @@ function piAssistantUuid(msg: { timestamp?: number }, sessionId: string): string
   return `pi-${sessionId}-${Date.now()}`
 }
 
-/** Pi AssistantMessage → IR TAgentAssistantMessage */
-function piAssistantToIR(msg: AssistantMessage, sessionId: string): TAgentMessage {
+/**
+ * Pi AssistantMessage → IR TAgentAssistantMessage。
+ *
+ * `partial: true` 时产**流式 partial**：带 `_partial` 标记、无 `stop_reason`（渲染层据此视为仍在流式），
+ * thinking/text/tool_use 在 content[] 原地累积。与 turn_end final 共用 `piAssistantUuid`
+ * （同 partial.timestamp），渲染层按 uuid 原地 upsert，final 同 uuid 替换 partial。
+ * 见 docs/dev/core-loop/S1S2-single-source-brief.md（单真源流式）。
+ */
+/** Pi AssistantMessage → IR TAgentAssistantMessage（`partial:true` 产流式 partial，见上） */
+export function piAssistantToIR(
+  msg: AssistantMessage,
+  sessionId: string,
+  opts?: { partial?: boolean },
+): TAgentMessage {
   const content = msg.content.map(piBlockToIR)
   const isError = msg.stopReason === 'error'
+  const isPartial = opts?.partial === true
   return {
     type: 'assistant',
     uuid: piAssistantUuid(msg, sessionId),
     sessionId,
     modelId: msg.model,
     content,
-    usage: msg.usage ? piUsageToIR(msg.usage) : undefined,
-    error: isError ? { message: msg.errorMessage ?? '' } : undefined,
-    // turn_end 最终消息带 stopReason → 映射 stop_reason，渲染层据此清 streaming 标记。
-    // 流式中间 sdk_message（tool_execution_start）不经本函数、无 stop_reason → 视为仍在流式。
-    stop_reason: msg.stopReason,
+    usage: isPartial ? undefined : msg.usage ? piUsageToIR(msg.usage) : undefined,
+    error: isPartial ? undefined : isError ? { message: msg.errorMessage ?? '' } : undefined,
+    // partial：无 stop_reason（仍在流式）；final：带 stop_reason（回合完成）
+    stop_reason: isPartial ? undefined : msg.stopReason,
+    ...(isPartial ? { _partial: true } : {}),
   }
 }
 
@@ -1338,11 +1419,13 @@ function piStreamEventToIR(ev: AssistantMessageEvent, sessionId: string): TAgent
 
   switch (ev.type) {
     case 'text_delta':
-      return { kind: 'stream_text_delta', text: ev.delta, uuid }
     case 'thinking_delta':
-      return { kind: 'stream_thinking_delta', text: ev.delta, uuid }
+      // 单真源（S1）：text/thinking 已由 message_update → partial assistant content[] 承载。
+      // 再推 stream_*_delta 会与 partial 双写，渲染层来回抢长度 → 正文前几行抽搐。
+      // delta 仅保留 uuid 侧诊断价值不够，直接省略。
+      return null
     case 'toolcall_end':
-      // 故意不推 sdk_message：终态由 turn_end 统一产出，过程中由 tool_execution_start 展示
+      // 故意不推 sdk_message：终态由 turn_end 统一产出，过程中由 partial content[] 展示
       return null
     // toolcall_delta / done / error / start 类：不产流式 delta（done/error 由 turn_end/agent_end 处理）
     default:
@@ -1392,23 +1475,11 @@ export function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktop
       break
 
     case 'tool_execution_start': {
-      // 工具执行中展示：无 stop_reason 的 tool_use 卡片（过程区「进行中」）
-      // 终态完整 assistant（含 stop_reason）+ tool_result 仍由 turn_end 产出；渲染层按 tool_use id 去重合并。
-      results.push({
-        kind: 'sdk_message',
-        message: {
-          type: 'assistant',
-          sessionId,
-          content: [
-            {
-              type: 'tool_use',
-              id: event.toolCallId,
-              name: event.toolName,
-              input: (event.args ?? {}) as Record<string, unknown>,
-            },
-          ],
-        },
-      })
+      // 单真源流式（S1）：不再推「只有 tool_use、无 thinking」的孤儿 assistant——
+      // 那会覆盖/顶掉同 uuid partial 的 thinking，且自身无 uuid 无法原地 upsert。
+      // tool_use 已在 message_update 的 partial content[] 中累积（toolcall_delta/end），
+      // subscribe 在本事件 flush partial 即可让工具卡就地展示；
+      // 终态完整 assistant（含 stop_reason + thinking）+ tool_result 仍由 turn_end 产出。
       break
     }
 

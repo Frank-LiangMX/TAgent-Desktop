@@ -33,6 +33,11 @@ interface FilePathChipProps {
   getSessionId?: () => string | null
   /** 文件类型图标组件 */
   FileIcon?: React.ComponentType<{ name: string; isDirectory?: boolean; size?: number }>
+  /**
+   * 所属 Markdown 仍在流式输出。流式中文件可能尚未落盘，且打字机会反复重挂 chip——
+   * 此期间只允许 idle/checking/resolved，**禁止**写入 broken / 负缓存（否则锁 30s「文件不存在」）。
+   */
+  streaming?: boolean
 }
 
 /** MessageResponse 内 FilePathChip 的注入上下文（应用层 Provider 提供 IPC 回调） */
@@ -59,6 +64,8 @@ const confirmedMissingAt = new Map<string, number>()
 const MISSING_TTL_MS = 30_000
 /** 首次未命中不下结论，隔一小会儿再确认一次：文件可能正在写盘 */
 const RECHECK_DELAY_MS = 400
+/** 流式结束后的加长复查：Agent 写盘常晚于正文出现 chip */
+const POST_STREAM_RECHECK_DELAYS_MS = [400, 1200, 2500] as const
 
 /** 测试用：清空负缓存 */
 export function clearFilePathMissingCache(): void {
@@ -74,6 +81,7 @@ export function FilePathChip({
   onOpenFile,
   getSessionId,
   FileIcon,
+  streaming = false,
 }: FilePathChipProps): React.ReactElement {
   const trimmedPath = filePath.trim()
   const { path: cleanPath, suffix: lineColSuffix } = stripLineCol(trimmedPath)
@@ -83,6 +91,8 @@ export function FilePathChip({
     cleanPath.startsWith('/') || cleanPath.startsWith('\\\\') || /^[A-Za-z]:[\\/]/.test(cleanPath)
 
   const chipRef = React.useRef<HTMLButtonElement>(null)
+  const streamingRef = React.useRef(streaming)
+  streamingRef.current = streaming
 
   const candidateBases = React.useMemo<string[]>(() => {
     if (basePaths && basePaths.length > 0) return basePaths.filter(Boolean)
@@ -97,8 +107,9 @@ export function FilePathChip({
     const key = existsCacheKey(cleanPath, candidateBases)
     if (cache.get(key) === true) return 'resolved'
     if (cache.has(key)) cache.delete(key)
+    // 流式中忽略负缓存：上一次误判不该锁死本轮
+    if (streaming) return 'idle'
     const missingAt = confirmedMissingAt.get(key)
-    // 沿用上次已确认的结论，重挂载时不再从「正常」跳到「不存在」
     if (missingAt !== undefined && Date.now() - missingAt < MISSING_TTL_MS) return 'broken'
     return 'idle'
   })
@@ -139,30 +150,45 @@ export function FilePathChip({
     }
     if (cache.has(key)) cache.delete(key)
 
+    // 流式开始：清掉可能过期的负结论，回到可复查态
+    if (streaming) {
+      confirmedMissingAt.delete(key)
+      setFileStatus((prev) => (prev === 'broken' ? 'idle' : prev))
+    }
+
     const missingAt = confirmedMissingAt.get(key)
     const alreadyConfirmedMissing =
-      missingAt !== undefined && Date.now() - missingAt < MISSING_TTL_MS
+      !streaming &&
+      missingAt !== undefined &&
+      Date.now() - missingAt < MISSING_TTL_MS
     if (alreadyConfirmedMissing) setFileStatus('broken')
 
     let cancelled = false
-    let recheckTimer: ReturnType<typeof setTimeout> | undefined
+    const timers: ReturnType<typeof setTimeout>[] = []
 
-    const resolve = (isRecheck: boolean): void => {
+    const resolve = (attempt: number): void => {
       const bases = candidateBases.length > 0 ? candidateBases : undefined
       onResolveFile(cleanPath, bases)
         .then((resolved) => {
           if (cancelled) return
           if (resolved !== null) {
-            // 仅缓存「存在」：避免一次性误判（盘符大小写/写盘竞态）永久锁死为 broken
             cache.set(key, true)
             confirmedMissingAt.delete(key)
             setFileStatus('resolved')
             return
           }
           cache.delete(key)
-          // 首次未命中先不显示 broken；已确认过的路径直接沿用结论，不必再等一轮
-          if (!isRecheck && !alreadyConfirmedMissing) {
-            recheckTimer = setTimeout(() => resolve(true), RECHECK_DELAY_MS)
+          if (streamingRef.current) {
+            // 流式中：有限次轻量重试，绝不写负缓存 / broken（等 streaming 结束再裁决）
+            setFileStatus((prev) => (prev === 'resolved' ? prev : 'checking'))
+            if (attempt < 6) {
+              timers.push(setTimeout(() => resolve(attempt + 1), 1000))
+            }
+            return
+          }
+          const delays = POST_STREAM_RECHECK_DELAYS_MS
+          if (attempt < delays.length && !alreadyConfirmedMissing) {
+            timers.push(setTimeout(() => resolve(attempt + 1), delays[attempt]!))
             return
           }
           confirmedMissingAt.set(key, Date.now())
@@ -176,17 +202,63 @@ export function FilePathChip({
         if (!entries[0]?.isIntersecting) return
         observer.disconnect()
         setFileStatus((prev) => (prev === 'idle' ? 'checking' : prev))
-        resolve(false)
+        resolve(0)
       },
-      { threshold: 0 }
+      { threshold: 0 },
     )
     observer.observe(el)
     return () => {
       cancelled = true
       observer.disconnect()
-      if (recheckTimer) clearTimeout(recheckTimer)
+      for (const t of timers) clearTimeout(t)
     }
-  }, [cleanPath, candidateBases, onResolveFile, getSessionId, cache])
+  }, [cleanPath, candidateBases, onResolveFile, getSessionId, cache, streaming])
+
+  // 流式刚结束：再跑最终裁决（流式期间的 miss 都未写负缓存）
+  const wasStreamingRef = React.useRef(streaming)
+  React.useEffect(() => {
+    const ended = wasStreamingRef.current && !streaming
+    wasStreamingRef.current = streaming
+    if (!ended || !onResolveFile) return
+
+    const key = existsCacheKey(cleanPath, candidateBases)
+    if (cache.get(key) === true) {
+      setFileStatus('resolved')
+      return
+    }
+
+    let cancelled = false
+    const timers: ReturnType<typeof setTimeout>[] = []
+    const bases = candidateBases.length > 0 ? candidateBases : undefined
+
+    const finalize = (attempt: number): void => {
+      onResolveFile(cleanPath, bases)
+        .then((resolved) => {
+          if (cancelled) return
+          if (resolved !== null) {
+            cache.set(key, true)
+            confirmedMissingAt.delete(key)
+            setFileStatus('resolved')
+            return
+          }
+          const delays = POST_STREAM_RECHECK_DELAYS_MS
+          if (attempt < delays.length) {
+            timers.push(setTimeout(() => finalize(attempt + 1), delays[attempt]!))
+            return
+          }
+          confirmedMissingAt.set(key, Date.now())
+          setFileStatus('broken')
+        })
+        .catch(() => {})
+    }
+
+    setFileStatus((prev) => (prev === 'resolved' ? prev : 'checking'))
+    finalize(0)
+    return () => {
+      cancelled = true
+      for (const t of timers) clearTimeout(t)
+    }
+  }, [streaming, cleanPath, candidateBases, onResolveFile, cache])
 
   const handleClick = React.useCallback(() => {
     if (!onOpenFile) return

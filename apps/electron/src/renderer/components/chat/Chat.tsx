@@ -75,9 +75,16 @@ import {
   isRealUserInput,
 } from './session-turn-model'
 import {
-  applyThinkingDelta,
+  applySdkMessageToItems,
+  applySdkMessageToStreamState,
+  applyTextDelta,
+  applyThinkingDeltaToState,
+  clearSessionStreamState,
+  EMPTY_STREAM_STATE,
+  hasStreamContent,
   purgeStreamingItems,
-  upsertStreamItem as upsertStreamItemModel,
+  shouldClearStreamThinking,
+  type SessionStreamState,
 } from './stream-item-model'
 import { ChatInput, type ChatInputHandle } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
@@ -161,11 +168,13 @@ const CREW_PANEL_WIDTH_MIN = 280
 const CREW_PANEL_WIDTH_MAX = 560
 const CREW_PANEL_WIDTH_DEFAULT = 380
 /**
- * turn_end 延迟停止宽限期（ms）：kscc/pi 多工具循环中每个 SDK turn 结束都发 turn_end，
- * 若立即 stopRun → running=false → 过程区（思考链）2.5s 后收起、下一轮 delta 又来再展开，
- * 视觉反复跳动。宽限期内有新流式事件 → 保持 running；真正结束由 result → completeRun 兜底。
+ * turn_end 延迟停止：
+ * - GRACE：宽限期内有新流式 → 取消停止（多工具循环不抖过程区）
+ * - 到期先软停（running=false，短暂保留 startedAt）
+ * - 再过 HARD：硬清 startedAt。否则 result 丢失时 isLiveTurn 因 startedAt 永真 →「跑完一直不停止」
  */
 const RUN_STOP_GRACE_MS = 3000
+const RUN_STOP_HARD_AFTER_SOFT_MS = 2000
 function loadCrewPanelWidth(): number {
   try {
     const n = Number(localStorage.getItem(CREW_PANEL_WIDTH_KEY))
@@ -200,6 +209,8 @@ export function Chat({
 }): JSX.Element {
   const sessionId = session.id
   const [items, setItems] = useState<DisplayItem[]>([])
+  /** 会话级流式缓冲（delta 累积；与 items 分离） */
+  const [streamState, setStreamState] = useState<SessionStreamState>(EMPTY_STREAM_STATE)
   // items 同步到 ref：recordCompletion 经 handlePayload 触发（onStreamEvent effect 空依赖
   // → 首渲染闭包），直接读 items 永远拿到初始空数组，耗时就落不了盘。
   const itemsRef = useRef(items)
@@ -238,20 +249,30 @@ export function Chat({
   const pushTicker = useSetAtom(pushStatusTickerAtom)
   // turn_end 延迟停止定时器（见 RUN_STOP_GRACE_MS 注释）
   const pendingStopTimerRef = useRef<number | null>(null)
+  const pendingHardStopTimerRef = useRef<number | null>(null)
   const clearPendingStop = useCallback(() => {
     if (pendingStopTimerRef.current != null) {
       window.clearTimeout(pendingStopTimerRef.current)
       pendingStopTimerRef.current = null
+    }
+    if (pendingHardStopTimerRef.current != null) {
+      window.clearTimeout(pendingHardStopTimerRef.current)
+      pendingHardStopTimerRef.current = null
     }
   }, [])
   const scheduleRunStop = useCallback(() => {
     clearPendingStop()
     pendingStopTimerRef.current = window.setTimeout(() => {
       pendingStopTimerRef.current = null
-      // 软停：过程区可收起，但保留 startedAt 记忆；下一 delta adopt 续计时不重置
+      // 软停：过程区可收起，短暂保留 startedAt；下一 delta adopt 续计时
       softStopSessionRun(sessionId)
+      // 硬停兜底：无后续活动则清 startedAt，避免 UI 永远 isLiveTurn
+      pendingHardStopTimerRef.current = window.setTimeout(() => {
+        pendingHardStopTimerRef.current = null
+        stopSessionRun(sessionId)
+      }, RUN_STOP_HARD_AFTER_SOFT_MS)
     }, RUN_STOP_GRACE_MS)
-  }, [clearPendingStop, sessionId, softStopSessionRun])
+  }, [clearPendingStop, sessionId, softStopSessionRun, stopSessionRun])
   /** 开始一轮运行：写 atom 置 running 并记起始时间戳 */
   const startRun = (): void => {
     clearPendingStop()
@@ -474,7 +495,8 @@ export function Chat({
   }, [sessionId])
   const scrollContextRef = useRef<StickToBottomContext | null>(null)
   const itemIdxRef = useRef(0)
-  const streamingRef = useRef<DisplayItem | null>(null)
+  const streamStateRef = useRef<SessionStreamState>(EMPTY_STREAM_STATE)
+  streamStateRef.current = streamState
   const chatInputRef = useRef<ChatInputHandle>(null)
   const composerClusterRef = useRef<HTMLDivElement>(null)
   const bottomStackRef = useRef<HTMLDivElement>(null)
@@ -573,11 +595,12 @@ export function Chat({
   useEffect(() => {
     sessionIdRef.current = sessionId
     setItems([])
+    setStreamState(clearSessionStreamState())
     // 运行态：不在此 stopRun（见下方 async reconcile 注释）。
     setHasDraft(false)
     setScrollReady(false)
     setVisibleCount(20) // 虚拟化：切会话重置首批 20
-    streamingRef.current = null
+    streamStateRef.current = clearSessionStreamState()
     itemIdxRef.current = 0
     setSubagentEagerness('conservative') // 切会话重置，下面异步回显持久化值
     setReasoningEffort(DEFAULT_REASONING_EFFORT) // 切会话重置，下面异步回显持久化值
@@ -742,7 +765,7 @@ export function Chat({
       // 仅刷新与当前会话相关的看板完成
       if (!matchesParent && !matchesBoard) return
       setBackgroundCrewBanner(null)
-      if (streamingRef.current) return
+      if (hasStreamContent(streamStateRef.current) || runningRef.current) return
       void (async () => {
         try {
           const history = (await window.electronAPI.getMessages(sid)) as unknown[]
@@ -1031,18 +1054,12 @@ export function Chat({
   ): DisplayItem =>
     existing ? { ...existing, taskCard: card } : { key: `task${itemIdxRef.current++}`, taskCard: card }
 
-  /** 包装 stream-item-model.upsertStreamItem，同步 streamingRef / itemIdxRef */
-  const upsertStreamItem = (
-    prev: DisplayItem[],
-    patch: Partial<Pick<DisplayItem, 'streamingText' | 'streamingThinking' | 'streamUuid'>>,
-  ): DisplayItem[] => {
-    const result = upsertStreamItemModel(prev, patch, {
-      currentStreaming: streamingRef.current,
-      allocKey: () => `s${itemIdxRef.current++}`,
-    })
-    streamingRef.current = result.streamingItem
-    return result.items
-  }
+  /** 段边界 / 落盘同批：清会话级 streamState */
+  const resetStreamState = useCallback((): void => {
+    setStreamState(clearSessionStreamState())
+    pendingThinkingRef.current = ''
+    pendingThinkingUuidRef.current = undefined
+  }, [])
 
   // thinking delta 的 rAF 合并缓冲：同一帧内多次 delta 只 flush 一次（渲染频率从"每事件"降到"每帧"）
   const pendingThinkingRef = useRef('')
@@ -1052,35 +1069,35 @@ export function Chat({
   const flushThinkingDelta = useCallback((): void => {
     thinkingFlushRafRef.current = null
     const delta = pendingThinkingRef.current
-    const uuid = pendingThinkingUuidRef.current
     pendingThinkingRef.current = ''
-    // 不清 pendingThinkingUuidRef：后续同 turn 帧可继续用
     if (!delta) return
-    setItems((prev) => {
-      // 绑不到不代表该丢：kscc thinking 先于正文、无空占位时必须新建（见 applyThinkingDelta）
-      const result = applyThinkingDelta(prev, delta, uuid, {
-        currentStreaming: streamingRef.current,
-        allocKey: () => `s${itemIdxRef.current++}`,
-      })
-      streamingRef.current = result.streamingItem
-      return result.items
-    })
+    setStreamState((prev) => applyThinkingDeltaToState(prev, delta))
   }, [])
 
   const handlePayload = (p: TAgentDesktopStreamPayload): void => {
+    // 终态 assistant（有 stop_reason、非 partial）不再 adopt / 取消停止计时——
+    // 否则 turn_end 已 scheduleStop，终态 sdk_message 又 clearPendingStop，result 一丢就永远 live。
+    const isTerminalAssistant =
+      p.kind === 'sdk_message' &&
+      p.message.type === 'assistant' &&
+      Boolean(p.message.stop_reason) &&
+      p.message._partial !== true
+
     // run 仍在进行：取消 turn_end 的延迟停止；流式/落盘事件恢复 running
     // （保过程区展开、停止键在位；adopt 沿用原 startedAt，不重置计时）
-    clearPendingStop()
-    if (
-      p.kind === 'stream_text_delta' ||
-      p.kind === 'stream_thinking_delta' ||
-      p.kind === 'sdk_message'
-    ) {
-      if (!runningRef.current) {
-        adoptSessionRun({
-          id: sessionId,
-          startedAt: runStartedAtPersistRef.current ?? runStartedAtRef.current ?? Date.now(),
-        })
+    if (!isTerminalAssistant) {
+      clearPendingStop()
+      if (
+        p.kind === 'stream_text_delta' ||
+        p.kind === 'stream_thinking_delta' ||
+        p.kind === 'sdk_message'
+      ) {
+        if (!runningRef.current) {
+          adoptSessionRun({
+            id: sessionId,
+            startedAt: runStartedAtPersistRef.current ?? runStartedAtRef.current ?? Date.now(),
+          })
+        }
       }
     }
     if (p.kind === 'sdk_message') {
@@ -1130,93 +1147,36 @@ export function Chat({
         return
       }
 
-      // 先记下流式占位 key（下面要清 streamingRef），用于就地升级占位、保留打字机起点
-      const streamingKey = streamingRef.current?.key
-      const streamingUuid = streamingRef.current?.streamUuid
-      streamingRef.current = null
-      // 落盘消息已含本段完整 thinking：丢掉同帧未 flush 的尾部缓冲，否则会重复追加。
-      // 这是丢弃缓冲的唯一正确时机——放在 flush 里按「绑不到就丢」会误杀整段 kscc 思考。
+      // 同帧未 flush 的 thinking：消息已带完整 thinking 才丢弃（防重复）；
+      // tool-only 中间态必须先并进 streamState，否则思考链会「出完即消失」。
+      if (thinkingFlushRafRef.current != null) {
+        cancelAnimationFrame(thinkingFlushRafRef.current)
+        thinkingFlushRafRef.current = null
+      }
+      const pendingThinking = pendingThinkingRef.current
       pendingThinkingRef.current = ''
       pendingThinkingUuidRef.current = undefined
+      const clearThinking = shouldClearStreamThinking(p.message)
+
       // assistant.usage 更新底栏（Pi）；kscc 圆环不展示，但状态可写无害
       if (p.message.type === 'assistant' && p.message.usage) {
         applyUsage(p.message.usage)
       }
-      const msgUuid =
-        p.message.type === 'assistant' || p.message.type === 'user' ? p.message.uuid : undefined
-      // 落盘消息：若当前有流式占位，就地升级它为落盘 message 项。
-      // 关键：清掉 streamingText（打字机续接靠 useSmoothStream 内部 prevContentRef，不靠保留 streamingText）。
-      // 保留 streamingText 会导致多轮工具时旧轮的 streamingText 残留、buildTurnPresentation 误收集 → 重复文字。
-      // useSmoothStream 实例在 turn 生命周期内存活（turn key 稳定），content 从 streamingText 切到 answerText，
-      // 同源前缀则 isAppend 逐字追完，不重挂不跳变。无流式占位（历史回放/纯落盘）则 append 新项。
-      // 优先 message.uuid / streamUuid 命中，避免连接重试或多 chunk 时 last-item 启发式误 append 双卡片。
-      setItems((prev) => {
-        const stopReason =
-          p.message.type === 'assistant' ? p.message.stop_reason : undefined
-        const stillStreaming = p.message.type === 'assistant' && !stopReason
-        const applyMsg = (it: DisplayItem): DisplayItem => ({
-          ...it,
-          message: p.message,
-          streamUuid: msgUuid ?? it.streamUuid,
-          streaming: stillStreaming,
-          streamingText: undefined,
-          streamingThinking: undefined,
-        })
-
-        // 1) 同 uuid 就地更新（流式占位 / 已落盘中间态 / 最终态）
-        if (msgUuid) {
-          const uuidIdx = prev.findIndex(
-            (it) =>
-              it.streamUuid === msgUuid ||
-              (it.message?.type === 'assistant' && it.message.uuid === msgUuid) ||
-              (it.message?.type === 'user' && it.message.uuid === msgUuid),
-          )
-          if (uuidIdx >= 0) {
-            return prev.map((it, i) => (i === uuidIdx ? applyMsg(it) : it))
-          }
-        }
-
-        // 2) 当前流式占位（streamingRef key；uuid 未对齐时的兼容路径）
-        if (streamingKey != null && prev.some((it) => it.key === streamingKey && it.streaming)) {
-          // 若占位已有不同 streamUuid，说明是另一条 assistant，勿误升级
-          const placeholder = prev.find((it) => it.key === streamingKey)
-          const placeholderUuid = placeholder?.streamUuid ?? streamingUuid
-          if (!msgUuid || !placeholderUuid || placeholderUuid === msgUuid) {
-            return prev.map((it) => (it.key === streamingKey ? applyMsg(it) : it))
-          }
-        }
-
-        // 3) Pi 核流式：无 stop_reason 时就地更新最后一个 assistant（无 uuid 的旧路径兜底）
-        // 必须就地更新，否则每次 chunk append 新 item → 同一 turn 内 N 个递增长度 assistant → 叠字。
-        if (stillStreaming) {
-          const lastIdx = prev.length - 1
-          const last = prev[lastIdx]
-          if (last?.message?.type === 'assistant') {
-            return prev.map((it, i) => (i === lastIdx ? applyMsg(it) : it))
-          }
-        }
-        // 4) Pi 核完成（有 stop_reason）→ 落盘最终 message：清 streaming 标记
-        if (p.message.type === 'assistant' && stopReason) {
-          const lastIdx = prev.length - 1
-          const last = prev[lastIdx]
-          if (last?.message?.type === 'assistant' && last.streaming) {
-            return prev.map((it, i) => (i === lastIdx ? applyMsg(it) : it))
-          }
-        }
-        return [
-          ...purgeStreamingItems(prev),
-          {
-            key: `m${itemIdxRef.current++}`,
-            message: p.message,
-            streamUuid: msgUuid,
-            streaming: stillStreaming,
-          },
-        ]
+      // 落盘消息推进 items：按 uuid 原地 upsert（S2.1 单真源，集中在 applySdkMessageToItems）；
+      // streamState 按消息内容选择性清（tool-only 保留 thinking）。
+      setItems((prev) =>
+        applySdkMessageToItems(prev, p.message, () => `m${itemIdxRef.current++}`),
+      )
+      setStreamState((prev) => {
+        const withPending =
+          !clearThinking && pendingThinking
+            ? applyThinkingDeltaToState(prev, pendingThinking)
+            : prev
+        return applySdkMessageToStreamState(withPending, p.message)
       })
     } else if (p.kind === 'result') {
       if (p.usage) applyUsage(p.usage)
-      streamingRef.current = null
-      pendingThinkingUuidRef.current = undefined
+      resetStreamState()
       // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
       setItems((prev) => {
         const cleaned = prev.map((it) =>
@@ -1263,48 +1223,13 @@ export function Chat({
     } else if (p.kind === 'stream_text_delta') {
       // 子代理流式正文不进主会话（详情页靠落盘 parentToolUseId 消息回放）
       if (p.parentToolUseId) return
-      setItems((prev) => {
-        const cur = streamingRef.current
-        // 同 uuid 时从已绑定项续接；否则从当前 streamingRef 续接
-        const bound =
-          (p.uuid &&
-            prev.find(
-              (it) =>
-                it.streamUuid === p.uuid ||
-                (it.message?.type === 'assistant' && it.message.uuid === p.uuid),
-            )) ||
-          (cur && prev.some((it) => it.key === cur.key) ? cur : undefined)
-        const prevText = bound?.streamingText ?? ''
-        return upsertStreamItem(prev, {
-          streamingText: prevText + p.text,
-          streamUuid: p.uuid,
-        })
-      })
+      setStreamState((prev) => applyTextDelta(prev, p.text))
     } else if (p.kind === 'stream_thinking_delta') {
       // 子代理思考流不进主会话
       if (p.parentToolUseId) return
-      // Pi message_start 的空占位：立即立起流式项（思考行/加载态先出现），不经 rAF
-      if (p.text === '') {
-        setItems((prev) => {
-          const cur = streamingRef.current
-          const bound =
-            (p.uuid &&
-              prev.find(
-                (it) =>
-                  it.streamUuid === p.uuid ||
-                  (it.message?.type === 'assistant' && it.message.uuid === p.uuid),
-              )) ||
-            (cur && prev.some((it) => it.key === cur.key) ? cur : undefined)
-          const prevThink = bound?.streamingThinking ?? ''
-          return upsertStreamItem(prev, {
-            streamingThinking: prevThink,
-            streamUuid: p.uuid,
-          })
-        })
-        return
-      }
-      // 非空 delta 按帧合并（Pi 每 token 一事件），避免高频 setItems 全量重建 turn
-      // uuid 挂在 pending 上：flush 时一并写入 streamUuid
+      // Pi message_start 的空 delta：无需改 state
+      if (p.text === '') return
+      // 非空 delta 按帧合并（Pi 每 token 一事件），避免高频 setState
       pendingThinkingRef.current += p.text
       if (p.uuid) pendingThinkingUuidRef.current = p.uuid
       if (thinkingFlushRafRef.current == null) {
@@ -1320,10 +1245,12 @@ export function Chat({
         status?: string
         summary?: string
         lastToolName?: string
+        parentToolUseId?: string
       }
-      if (evt.type === 'turn_end') {
-        streamingRef.current = null
-        pendingThinkingUuidRef.current = undefined
+      if (evt.type === 'tool_start' && !evt.parentToolUseId) {
+        resetStreamState()
+      } else if (evt.type === 'turn_end') {
+        resetStreamState()
         // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
         setItems((prev) => {
           const cleaned = prev.map((it) =>
@@ -1485,6 +1412,7 @@ export function Chat({
     }
     // 新发送/重试开始时收起错误条（若再失败会重新推 session_error）
     setSessionError({ sessionId: sessionIdRef.current, error: null })
+    resetStreamState()
     const channel = channels.find((item) => item.id === selection.channelId)
     const model = channel?.models.find((item) => item.id === selection.modelId)
     if (!channel?.enabled || !model?.enabled) {
@@ -1897,6 +1825,7 @@ export function Chat({
                     key={turn.key}
                     turn={turn}
                     isLiveTurn={isLiveTurn}
+                    streamState={isLiveTurn ? streamState : undefined}
                     onRefillToInput={pickSuggestion}
                     mentionLabels={
                       isLiveTurn && liveMentionLabels.length > 0
@@ -1910,11 +1839,34 @@ export function Chat({
                   />
                 )
               })}
-              {running &&
-                !items.some((it) => it.streaming) &&
-                visibleTurns[visibleTurns.length - 1]?.kind !== 'assistant-turn' && (
-                  <MessageLoading />
-                )}
+              {(() => {
+                const runActive = running || runStartedAt != null
+                const lastTurn = visibleTurns[visibleTurns.length - 1]
+                const needsSyntheticLiveTurn =
+                  runActive && lastTurn?.kind !== 'assistant-turn'
+                if (!needsSyntheticLiveTurn) return null
+                const liveKey =
+                  lastTurn?.kind === 'user'
+                    ? `turn-${lastTurn.key}-live`
+                    : `turn-stream-${sessionId}`
+                return (
+                  <TurnView
+                    key={liveKey}
+                    turn={{
+                      kind: 'assistant-turn',
+                      key: liveKey,
+                      items: [],
+                      isStreaming: true,
+                    }}
+                    isLiveTurn
+                    streamState={streamState}
+                    mentionLabels={liveMentionLabels.length > 0 ? liveMentionLabels : undefined}
+                    mentionRoles={mentionRoles}
+                    subagentCards={subagentCards}
+                    onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+                  />
+                )
+              })()}
             </div>
         </ConversationContent>
         {/* 切会话恢复滚动位置（无动画、不打断查历史），对齐 TAgent_General ScrollPositionManager */}
@@ -2303,6 +2255,7 @@ export function Chat({
 function TurnView({
   turn,
   isLiveTurn = false,
+  streamState,
   onRefillToInput,
   mentionLabels,
   mentionRoles,
@@ -2312,6 +2265,7 @@ function TurnView({
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
+  streamState?: SessionStreamState
   onRefillToInput?: (text: string) => void
   mentionLabels?: string[]
   mentionRoles?: Array<{ id: string; displayName: string }>
@@ -2336,6 +2290,7 @@ function TurnView({
         <AssistantTurnView
           turn={turn}
           isLiveTurn={isLiveTurn}
+          streamState={streamState}
           mentionLabels={mentionLabels}
           completedDuration={completedDuration}
           subagentCards={subagentCards}

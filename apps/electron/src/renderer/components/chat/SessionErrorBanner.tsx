@@ -66,6 +66,7 @@ export function SessionErrorBanner({
 
   if (!error) return null
 
+  const isChatModeBlock = error.code === 'chat_mode_blocked'
   const showRetry = error.retryable
   const retryDisabled = !canRetry || retrying
 
@@ -79,18 +80,30 @@ export function SessionErrorBanner({
         className={cn(
           'mx-3 mb-2 flex flex-col gap-2 rounded-2xl border p-3 shadow-sm backdrop-blur-xl sm:flex-row sm:items-start',
           'pl-[calc(var(--app-shell-session-gutter,16px)_-_3px)] pr-[calc(var(--app-shell-session-gutter,16px)_-_3px)]',
-          'border-destructive/35 bg-destructive/8',
+          isChatModeBlock
+            ? 'border-primary/35 bg-primary/10'
+            : 'border-destructive/35 bg-destructive/8',
         )}
       >
         <div className="flex min-w-0 flex-1 items-start gap-2.5">
           <WarningCircle
             size={20}
             weight="fill"
-            className="mt-0.5 shrink-0 text-destructive"
+            className={cn(
+              'mt-0.5 shrink-0',
+              isChatModeBlock ? 'text-primary' : 'text-destructive',
+            )}
             aria-hidden
           />
           <div className="min-w-0 flex-1">
-            <div className="text-xs font-semibold text-destructive">{error.title}</div>
+            <div
+              className={cn(
+                'text-xs font-semibold',
+                isChatModeBlock ? 'text-primary' : 'text-destructive',
+              )}
+            >
+              {error.title}
+            </div>
             {error.message ? (
               <p className="session-error-banner__detail mt-0.5 text-[12px] leading-snug text-muted-foreground">
                 {error.message}

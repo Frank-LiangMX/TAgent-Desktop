@@ -1,0 +1,11 @@
+你是 TAgent-Desktop 实现工程师。工作目录：C:\Users\loumi\Desktop\AI\TAgent-Desktop
+
+严格按 brief 修「思考链出完就消失 + 不流畅」：
+- docs/dev/core-loop/CL5-thinking-persist-brief.md
+
+根因：tool_execution_start 推的仅 tool_use 的 sdk_message 触发 Chat 全量 resetStreamState，把还没落盘的 thinking 清掉。
+
+必做：sdk_message 选择性清理 streamState；过程组勿秒折思考；补 vitest。
+跑 typecheck + 相关 vitest，修到绿。不要 git commit / push。
+
+完成后简短中文列出：改动文件、测试结果、手测步骤、风险。

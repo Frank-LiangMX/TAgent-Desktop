@@ -55,7 +55,8 @@ describe('execution-mode', () => {
     expect(s.fromMode).toBe('chat')
     expect(s.sessionId).toBe('s1')
     expect(s.toolName).toBe('Write')
-    expect(s.reason).toMatch(/Chat/)
+    expect(s.reason).toMatch(/讨论模式（Chat）/)
+    expect(s.reason).toMatch(/切换到 Work/)
   })
 
   test('buildChatSwitchSuggestion', () => {
