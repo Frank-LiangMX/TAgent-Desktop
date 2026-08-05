@@ -1,9 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
-import { findFileByName } from './file-search'
+import {
+  clearFileSearchCache,
+  findFileByName,
+  findFileByNameCached,
+  FILE_SEARCH_MAX_DEPTH,
+} from './file-search'
 
 let root: string
 
@@ -16,6 +21,7 @@ function write(relative: string, content = ''): string {
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'tagent-file-search-'))
+  clearFileSearchCache()
 })
 
 afterEach(() => {
@@ -61,5 +67,61 @@ describe('findFileByName', () => {
     write('src/index.ts')
 
     expect(findFileByName(root, 'nope.ts')).toBeNull()
+  })
+
+  test('能命中本仓库规模的深层源文件（monorepo 典型深度）', () => {
+    // apps/electron/src/main/lib/ipc/deep-target.ts —— 与真实仓库最深源码同量级
+    const expected = write('apps/electron/src/main/lib/ipc/adapters/deep-target.ts')
+
+    expect(findFileByName(root, 'deep-target.ts')).toBe(expected)
+  })
+
+  test('超过深度上限的文件不扫（守住主线程耗时）', () => {
+    const overDepth = Array.from({ length: FILE_SEARCH_MAX_DEPTH + 1 }, (_, i) => `d${i}`).join('/')
+    write(`${overDepth}/too-deep.ts`)
+
+    expect(findFileByName(root, 'too-deep.ts')).toBeNull()
+  })
+})
+
+describe('findFileByNameCached', () => {
+  test('未命中不写缓存：文件随后被创建能立刻查到', () => {
+    expect(findFileByNameCached(root, 'created-later.ts')).toBeNull()
+
+    const created = write('src/created-later.ts')
+
+    expect(findFileByNameCached(root, 'created-later.ts')).toBe(created)
+  })
+
+  test('命中写缓存：后续同名请求直接复用旧结果，不重扫', () => {
+    const first = write('deep/nested/cached.ts')
+    expect(findFileByNameCached(root, 'cached.ts')).toBe(first)
+
+    // 更浅的同名文件在重扫时一定会赢；仍返回旧路径即证明走的是缓存
+    write('cached.ts')
+
+    expect(findFileByNameCached(root, 'cached.ts')).toBe(first)
+  })
+
+  test('缓存的命中路径消失后重扫，不返回失效路径', () => {
+    const first = write('deep/nested/moved.ts')
+    expect(findFileByNameCached(root, 'moved.ts')).toBe(first)
+
+    unlinkSync(first)
+    const moved = write('src/moved.ts')
+
+    expect(findFileByNameCached(root, 'moved.ts')).toBe(moved)
+  })
+
+  test('缓存按根目录隔离', () => {
+    const other = mkdtempSync(join(tmpdir(), 'tagent-file-search-other-'))
+    try {
+      const inRoot = write('src/shared-name.ts')
+
+      expect(findFileByNameCached(root, 'shared-name.ts')).toBe(inRoot)
+      expect(findFileByNameCached(other, 'shared-name.ts')).toBeNull()
+    } finally {
+      rmSync(other, { recursive: true, force: true })
+    }
   })
 })

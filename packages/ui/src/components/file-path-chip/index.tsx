@@ -48,6 +48,23 @@ export interface MessageFilePathContextValue {
 export const MessageFilePathContext = React.createContext<MessageFilePathContextValue>({})
 export const MessageFilePathProvider = MessageFilePathContext.Provider
 
+/**
+ * 已确认「不存在」的路径（模块级，与 shared 的正缓存对称）。
+ *
+ * 流式期间同一条消息会反复重挂载。只有正缓存时，每次重挂都从 idle 重查、
+ * 重新闪一次灰色的「文件不存在」；有了这份负缓存，结论在 TTL 内保持一致。
+ * TTL 取短值：Agent 稍后把文件建出来时要能自愈。
+ */
+const confirmedMissingAt = new Map<string, number>()
+const MISSING_TTL_MS = 30_000
+/** 首次未命中不下结论，隔一小会儿再确认一次：文件可能正在写盘 */
+const RECHECK_DELAY_MS = 400
+
+/** 测试用：清空负缓存 */
+export function clearFilePathMissingCache(): void {
+  confirmedMissingAt.clear()
+}
+
 export function FilePathChip({
   filePath,
   basePath,
@@ -74,11 +91,15 @@ export function FilePathChip({
   }, [basePath, basePaths])
 
   const cache = getFileExistsCache()
-  const [fileStatus, setFileStatus] = React.useState<'idle' | 'resolved' | 'broken'>(() => {
+  const [fileStatus, setFileStatus] = React.useState<
+    'idle' | 'checking' | 'resolved' | 'broken'
+  >(() => {
     const key = existsCacheKey(cleanPath, candidateBases)
-    // 只信任「存在」缓存；负缓存可能由写盘竞态 / 路径大小写误判产生，需允许重试
     if (cache.get(key) === true) return 'resolved'
     if (cache.has(key)) cache.delete(key)
+    const missingAt = confirmedMissingAt.get(key)
+    // 沿用上次已确认的结论，重挂载时不再从「正常」跳到「不存在」
+    if (missingAt !== undefined && Date.now() - missingAt < MISSING_TTL_MS) return 'broken'
     return 'idle'
   })
 
@@ -118,26 +139,53 @@ export function FilePathChip({
     }
     if (cache.has(key)) cache.delete(key)
 
+    const missingAt = confirmedMissingAt.get(key)
+    const alreadyConfirmedMissing =
+      missingAt !== undefined && Date.now() - missingAt < MISSING_TTL_MS
+    if (alreadyConfirmedMissing) setFileStatus('broken')
+
+    let cancelled = false
+    let recheckTimer: ReturnType<typeof setTimeout> | undefined
+
+    const resolve = (isRecheck: boolean): void => {
+      const bases = candidateBases.length > 0 ? candidateBases : undefined
+      onResolveFile(cleanPath, bases)
+        .then((resolved) => {
+          if (cancelled) return
+          if (resolved !== null) {
+            // 仅缓存「存在」：避免一次性误判（盘符大小写/写盘竞态）永久锁死为 broken
+            cache.set(key, true)
+            confirmedMissingAt.delete(key)
+            setFileStatus('resolved')
+            return
+          }
+          cache.delete(key)
+          // 首次未命中先不显示 broken；已确认过的路径直接沿用结论，不必再等一轮
+          if (!isRecheck && !alreadyConfirmedMissing) {
+            recheckTimer = setTimeout(() => resolve(true), RECHECK_DELAY_MS)
+            return
+          }
+          confirmedMissingAt.set(key, Date.now())
+          setFileStatus('broken')
+        })
+        .catch(() => {})
+    }
+
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries[0]?.isIntersecting) return
         observer.disconnect()
-        const bases = candidateBases.length > 0 ? candidateBases : undefined
-        const sessionId = getSessionId?.()
-        onResolveFile(cleanPath, bases)
-          .then((resolved) => {
-            const exists = resolved !== null
-            // 仅缓存「存在」：避免一次性误判（盘符大小写/写盘竞态）永久锁死为 broken
-            if (exists) cache.set(key, true)
-            else cache.delete(key)
-            setFileStatus(exists ? 'resolved' : 'broken')
-          })
-          .catch(() => {})
+        setFileStatus((prev) => (prev === 'idle' ? 'checking' : prev))
+        resolve(false)
       },
       { threshold: 0 }
     )
     observer.observe(el)
-    return () => observer.disconnect()
+    return () => {
+      cancelled = true
+      observer.disconnect()
+      if (recheckTimer) clearTimeout(recheckTimer)
+    }
   }, [cleanPath, candidateBases, onResolveFile, getSessionId, cache])
 
   const handleClick = React.useCallback(() => {
@@ -156,6 +204,7 @@ export function FilePathChip({
           ref={chipRef}
           type="button"
           onClick={handleClick}
+          data-file-status={fileStatus}
           className={cn(
             'inline-flex items-center gap-1 rounded-[3px] px-[0.25em] py-0 text-[0.92em] font-medium leading-[1.6]',
             'cursor-pointer transition-colors',
