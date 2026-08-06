@@ -1,12 +1,9 @@
 /**
- * 会话列表侧栏 — D 方案(形态重构 + 状态色点 + 时间桶 + 已归档 + 动效)
+ * 会话列表侧栏 — D 方案(形态重构 + 状态色点 + 工作区分组 + 已归档 + 动效)
  *
- * 结构:顶行(标题/Threads + 新建+工作区胶囊)→ 搜索行 → 置顶栏 → 滚动列表
- *       (workspace 分组 + 当前 ws 内静态时间分段,默认只展开当前 ws)→ 已归档底部固定区
- * 状态色点:从 sessionStatusMapAtom 派生(idle/running/error),running 由 onStreamEvent 实时更新。
- * 选中态:左边框 primary + 行玻璃高光(无独立竖条)。
- * 折叠/展开:CSS max-height 过渡(不用 motion height auto,避免收不回);motion 只管 layout 重排。
- * 置顶后会话仍在列表原位,置顶栏是额外陈列。
+ * 结构:顶行 → 搜索行 → 打开中（纯展示页面可见会话）→ 滚动列表 → 已归档底栏
+ * 打开中：分屏下为各组当前露出的 chat，不是全部标签；无点击/关闭。
+ * 列表 is-open 与打开中同源；点击仍 open+focus（幂等）。
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
@@ -18,7 +15,6 @@ import {
   CaretRight,
   ChatsCircle,
   PencilSimple,
-  PushPin,
   Trash,
   DotsThreeVertical,
   DotsSixVertical,
@@ -45,6 +41,8 @@ import {
   type SessionStatus,
 } from '../../atoms/session-status-atoms'
 import { tabsAtom, activeTabIdAtom, closeTab } from '../../atoms/tabs'
+import { dockApiAtom, visibleSessionsAtom } from '../../atoms/dock-api'
+import { splitDockModeAtom } from '../../atoms/feature-flags'
 
 interface SessionMeta {
   id: string
@@ -151,13 +149,31 @@ export function SessionSidebar({
   const setStatus = useSetAtom(setSessionStatusAtom)
   const setArchived = useSetAtom(setSessionArchivedAtom)
 
-  // 已打开的会话（tabsAtom 是「哪些会话开着」的真相源，分屏 dock 也由它驱动）。
-  // 删除已打开会话时：先 closeTab 再调主进程 delete，避免孤儿 tab。
+  // tabsAtom = 打开的标签工作集；visibleSessions = 分屏主区当前露出的会话。
+  // 「打开中」条与列表 is-open：分屏时用可见会话，否则用 tabs 工作集。
   const openTabs = useAtomValue(tabsAtom)
   const activeTabId = useAtomValue(activeTabIdAtom)
   const setTabs = useSetAtom(tabsAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
-  const openSessionIds = new Set(openTabs.map((t) => t.sessionId))
+  const dockApi = useAtomValue(dockApiAtom)
+  const splitDockMode = useAtomValue(splitDockModeAtom)
+  const visibleSessions = useAtomValue(visibleSessionsAtom)
+  const titleByTabId = new Map(openTabs.map((t) => [t.sessionId, t.title]))
+  const activeSessionChips =
+    splitDockMode && visibleSessions.length > 0
+      ? visibleSessions.map((v) => ({
+          id: v.sessionId,
+          sessionId: v.sessionId,
+          title: titleByTabId.get(v.sessionId) ?? v.title,
+        }))
+      : openTabs.map((t) => ({
+          id: t.id,
+          sessionId: t.sessionId,
+          title: t.title,
+        }))
+  const openSessionIds = new Set(activeSessionChips.map((t) => t.sessionId))
+  /** 标签工作集（含同组后台 tab）；删会话/工作区判断用，不等于页面可见集 */
+  const tabSessionIds = new Set(openTabs.map((t) => t.sessionId))
 
   const refresh = useCallback(async (): Promise<void> => {
     const list = (await window.electronAPI.listSessions()) as SessionMeta[] | undefined
@@ -234,7 +250,7 @@ export function SessionSidebar({
     const target = deleteSessionTarget
     try {
       // 已打开：先关标签（含激活态切换到邻 tab），再删主进程 meta / runtime
-      if (openSessionIds.has(target.id)) {
+      if (tabSessionIds.has(target.id)) {
         const { tabs: nextTabs, activeTabId: nextActive } = closeTab(
           openTabs,
           activeTabId,
@@ -242,6 +258,7 @@ export function SessionSidebar({
         )
         setTabs(nextTabs)
         setActiveTabId(nextActive)
+        dockApi?.getPanel(target.id)?.api.close()
       }
       await window.electronAPI.deleteSession(target.id)
       setSessions((prev) => prev.filter((session) => session.id !== target.id))
@@ -275,12 +292,6 @@ export function SessionSidebar({
     setEditingId(null)
   }
 
-  const togglePin = async (id: string, e: React.MouseEvent): Promise<void> => {
-    e.stopPropagation()
-    await window.electronAPI.togglePin(id)
-    void refresh()
-  }
-
   const toggleGroup = (groupId: string): void => {
     setExpandedGroups((prev) => {
       const next = new Set(prev)
@@ -294,7 +305,7 @@ export function SessionSidebar({
   const deleteWorkspace = async (workspace: AgentWorkspace): Promise<void> => {
     // 工作区内有会话已打开时不可删除（菜单项已禁用，此处为防御）
     const openInWorkspace = sessions.filter(
-      (session) => session.workspaceId === workspace.id && openSessionIds.has(session.id),
+      (session) => session.workspaceId === workspace.id && tabSessionIds.has(session.id),
     )
     if (openInWorkspace.length > 0) {
       throw new Error(`工作区内有 ${openInWorkspace.length} 个会话已打开，请先关闭标签页后再删除工作区`)
@@ -401,9 +412,6 @@ export function SessionSidebar({
   const visibleWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id))
   const belongsToVisibleWorkspace = (session: SessionMeta): boolean =>
     !session.workspaceId || visibleWorkspaceIds.has(session.workspaceId)
-  const pinned = sessions.filter(
-    (s) => s.pinned && !s.archived && belongsToVisibleWorkspace(s) && matchesQuery(s),
-  )
   const activeSessions = sessions.filter((s) => !s.archived && belongsToVisibleWorkspace(s))
   const archivedSessions = sessions.filter((s) => s.archived && belongsToVisibleWorkspace(s))
   const visibleActiveSessions = activeSessions.filter(matchesQuery)
@@ -466,19 +474,17 @@ export function SessionSidebar({
         </div>
       </div>
 
-      {/* 置顶栏 */}
-      {pinned.length > 0 && (
-        <div className="pin-rail">
-          {pinned.map((s, i) => (
-            <AppTooltip key={s.id} label={s.title} side="bottom" multiline>
-              <button
-                type="button"
-                className="pin-chip"
-                onClick={() => onSelect(s)}
-              >
-                <span className={cn('pm', `c${i % 3}`)}>{s.title.slice(0, 1) || '·'}</span>
-                <span className="pt">{s.title.slice(0, 8)}</span>
-              </button>
+      {/* 打开中：纯展示「页面可见」会话（分屏=各组 active pane；非分屏=tabs 工作集） */}
+      {activeSessionChips.length > 0 && (
+        <div className="open-rail" aria-label="活跃会话">
+          {activeSessionChips.map((tab, i) => (
+            <AppTooltip key={tab.id} label={tab.title} side="bottom" multiline>
+              <div className="open-chip">
+                <span className={cn('pm', `c${i % 3}`)}>
+                  {tab.title.slice(0, 1) || '·'}
+                </span>
+                <span className="pt">{tab.title}</span>
+              </div>
             </AppTooltip>
           ))}
         </div>
@@ -493,7 +499,7 @@ export function SessionSidebar({
           const isManagedWorkspace = Boolean(group.workspace)
           // 工作区内已打开的会话数（含归档行；删除工作区会级联删全部会话）
           const groupOpenSessionCount = sessions.filter(
-            (session) => session.workspaceId === group.id && openSessionIds.has(session.id),
+            (session) => session.workspaceId === group.id && tabSessionIds.has(session.id),
           ).length
           const groupHeaderContent = (
             <>
@@ -641,7 +647,7 @@ export function SessionSidebar({
               </div>
 
               <div className="rows">
-                {renderBuckets(group.sessions, statusOf, openSessionIds, activeSessionId, editingId, editingTitle, onSelect, requestDeleteSession, startRename, commitRename, togglePin, onArchiveToggle, setEditingTitle, () => setEditingId(null))}
+                {renderBuckets(group.sessions, statusOf, openSessionIds, tabSessionIds, editingId, editingTitle, onSelect, requestDeleteSession, startRename, commitRename, onArchiveToggle, setEditingTitle, () => setEditingId(null))}
               </div>
             </div>
           )
@@ -669,14 +675,13 @@ export function SessionSidebar({
                   status="idle"
                   archived
                   isOpen={openSessionIds.has(s.id)}
-                  active={s.id === activeSessionId}
+                  isInTabs={tabSessionIds.has(s.id)}
                   editing={editingId === s.id}
                   editingTitle={editingTitle}
                   onSelect={onSelect}
                   onDelete={requestDeleteSession}
                   onRename={startRename}
                   onCommitRename={commitRename}
-                  onTogglePin={togglePin}
                   onArchiveToggle={onArchiveToggle}
                   onEditingTitleChange={setEditingTitle}
                   onCancelRename={() => setEditingId(null)}
@@ -693,7 +698,7 @@ export function SessionSidebar({
         icon={<Trash size={15} weight="duotone" />}
         title={`删除“${deleteSessionTarget?.title ?? ''}”？`}
         description={
-          deleteSessionTarget && openSessionIds.has(deleteSessionTarget.id)
+          deleteSessionTarget && tabSessionIds.has(deleteSessionTarget.id)
             ? '该会话当前已打开，删除将同时关闭对应标签页，聊天记录将永久删除且无法撤销。'
             : '该会话的全部聊天记录将被永久删除，此操作无法撤销。'
         }
@@ -721,14 +726,13 @@ function renderBuckets(
   sessions: SessionMeta[],
   statusOf: (s: SessionMeta) => SessionStatus,
   openSessionIds: Set<string>,
-  activeSessionId: string | null,
+  tabSessionIds: Set<string>,
   editingId: string | null,
   editingTitle: string,
   onSelect: (s: SessionMeta) => void,
   onDelete: (id: string, e: React.MouseEvent) => void,
   onRename: (s: SessionMeta, e: React.MouseEvent) => void,
   onCommitRename: () => Promise<void>,
-  onTogglePin: (id: string, e: React.MouseEvent) => Promise<void>,
   onArchiveToggle: (s: SessionMeta, e: React.MouseEvent) => Promise<void>,
   onEditingTitleChange: (v: string) => void,
   onCancelRename: () => void,
@@ -741,14 +745,13 @@ function renderBuckets(
           session={s}
           status={statusOf(s)}
           isOpen={openSessionIds.has(s.id)}
-          active={s.id === activeSessionId}
+          isInTabs={tabSessionIds.has(s.id)}
           editing={editingId === s.id}
           editingTitle={editingTitle}
           onSelect={onSelect}
           onDelete={onDelete}
           onRename={onRename}
           onCommitRename={onCommitRename}
-          onTogglePin={onTogglePin}
           onArchiveToggle={onArchiveToggle}
           onEditingTitleChange={onEditingTitleChange}
           onCancelRename={onCancelRename}
@@ -758,37 +761,36 @@ function renderBuckets(
   )
 }
 
-/** 单个会话行:状态点 + pin(行首)+ 标题/轮数 + 模型/时间 + 三点菜单让位 */
+/** 单个会话行:状态点 + 标题/轮数 + 时间 + 三点菜单 */
 function SessionRow({
   session: s,
   status,
-  active,
   archived,
   isOpen,
+  isInTabs,
   editing,
   editingTitle,
   onSelect,
   onDelete,
   onRename,
   onCommitRename,
-  onTogglePin,
   onArchiveToggle,
   onEditingTitleChange,
   onCancelRename,
 }: {
   session: SessionMeta
   status: SessionStatus
-  active: boolean
   archived?: boolean
-  /** 该会话是否已打开为标签页/分屏（删除时会一并关 tab） */
+  /** 主区当前可见（分屏组 active pane）→ is-open 样式 */
   isOpen: boolean
+  /** 仍在 tabs 工作集中（含后台 tab）→ 删除提示 */
+  isInTabs: boolean
   editing: boolean
   editingTitle: string
   onSelect: (s: SessionMeta) => void
   onDelete: (id: string, e: React.MouseEvent) => void
   onRename: (s: SessionMeta, e: React.MouseEvent) => void
   onCommitRename: () => Promise<void>
-  onTogglePin: (id: string, e: React.MouseEvent) => Promise<void>
   onArchiveToggle: (s: SessionMeta, e: React.MouseEvent) => Promise<void>
   onEditingTitleChange: (v: string) => void
   onCancelRename: () => void
@@ -804,7 +806,12 @@ function SessionRow({
       exit={archived ? undefined : { opacity: 0, height: 0 }}
       transition={SPRING}
       onClick={() => onSelect(s)}
-      className={cn('row', active && 'is-active', archived && 'row-archived', dotsOpen && 'is-dots-open')}
+      className={cn(
+        'row',
+        isOpen && 'is-open',
+        archived && 'row-archived',
+        dotsOpen && 'is-dots-open',
+      )}
     >
       {/* 行首:归档行用小方块标记,否则完整状态色点 stream/error/idle/done */}
       {archived ? (
@@ -823,8 +830,6 @@ function SessionRow({
           )}
         />
       )}
-      {/* pin 行首(置顶时) */}
-      {s.pinned && !archived && <PushPin size={11} weight="fill" className="pin" />}
       <div className="body">
         <div className="title">
           {editing ? (
@@ -867,11 +872,6 @@ function SessionRow({
           <DropdownMenuItem onClick={(e) => onRename(s, e)} className="rounded-lg px-2 py-1 text-xs">
             <PencilSimple size={13} weight="regular" /> 重命名
           </DropdownMenuItem>
-          {!archived && (
-            <DropdownMenuItem onClick={(e) => void onTogglePin(s.id, e)} className="rounded-lg px-2 py-1 text-xs">
-              <PushPin size={13} weight="regular" /> {s.pinned ? '取消置顶' : '置顶'}
-            </DropdownMenuItem>
-          )}
           <DropdownMenuItem onClick={(e) => void onArchiveToggle(s, e)} className="rounded-lg px-2 py-1 text-xs">
             <Archive size={13} weight="regular" /> {archived ? '取消归档' : '归档'}
           </DropdownMenuItem>
@@ -881,7 +881,7 @@ function SessionRow({
           >
             <Trash size={13} weight="regular" /> 删除
           </DropdownMenuItem>
-          {isOpen && (
+          {isInTabs && (
             <div className="px-2 pb-0.5 pt-1 text-[10px] leading-tight text-muted-foreground/70">
               将同时关闭已打开的标签
             </div>

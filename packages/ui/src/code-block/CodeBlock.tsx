@@ -254,9 +254,9 @@ export function CodeBlock({ children }: CodeBlockProps): React.ReactElement {
   }, [trimmedCode])
 
   return (
-    <div className="code-block-wrapper group/code my-2 overflow-hidden rounded-glass-popover border border-border/70">
+    <div className="code-block-wrapper group/code my-2 overflow-hidden rounded-glass-popover border border-foreground/15 bg-foreground/[0.02]">
       {/* 头部栏：语言标签 + 复制按钮 */}
-      <div className="flex h-[34px] items-center justify-between bg-foreground/[0.05] px-2 py-1 text-xs text-muted-foreground">
+      <div className="flex h-[34px] items-center justify-between border-b border-foreground/10 bg-foreground/[0.045] px-2 py-1 text-xs text-muted-foreground">
         <span className="select-none font-medium">{getDisplayName(language)}</span>
         <button
           type="button"
@@ -270,7 +270,7 @@ export function CodeBlock({ children }: CodeBlockProps): React.ReactElement {
 
       {/* 代码区域：逐行渲染 */}
       <pre
-        className="shiki scrollbar-thin m-0 overflow-x-auto bg-[hsl(var(--code-bg))] p-3.5 text-[0.8125em] leading-[1.55]"
+        className="shiki scrollbar-thin m-0 overflow-x-auto bg-foreground/[0.015] p-3.5 text-[0.8125em] leading-[1.55]"
         style={{
           color: usePlainTextColors
             ? 'hsl(var(--foreground))'

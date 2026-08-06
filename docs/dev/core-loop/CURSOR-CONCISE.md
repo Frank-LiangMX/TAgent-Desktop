@@ -31,6 +31,7 @@
 | 最终正文 | `narrative.final` 在容器外，无卡片边框 |
 | 句尾状态 | 结束（完成/已中断/出错）统一在消息尾：`已中断 · 1m 24s · 03/15 14:32` |
 | Files Changed | 有编辑工具时句尾卡片：`N Files Changed` + 文件名 + `+N -M`；Review/行点击 → 文件预览（非 git diff） |
+| 句尾状态 | 完成 / 已中断 / 出错 · 耗时 · 墙钟；常显（非仅 hover） |
 | full | ProcessGroupView 不变；句尾状态 / Files Changed 同上 |
 
 ---

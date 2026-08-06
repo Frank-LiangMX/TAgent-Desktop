@@ -33,6 +33,7 @@ import {
   TAGENT_DEFAULT_PERMISSION_MODE,
   DEFAULT_REASONING_EFFORT,
   DEFAULT_CONTEXT_WINDOW,
+  resolveUiContextWindow,
   migrateReasoningEffort,
   migratePermissionMode,
   type TAgentUsage,
@@ -54,7 +55,6 @@ import {
   ReasoningContent,
   Button,
   AppTooltip,
-  MessageFilePathProvider,
 } from '@tagent/ui'
 import { ArrowUp, Square, Compass, Zap, Plus, X } from 'lucide-react'
 import { UsersThree } from '@phosphor-icons/react'
@@ -96,7 +96,10 @@ import {
   type TaskCardState,
   type TaskCardEvent,
 } from './subagent-ui-model'
+import { MessageFilePathProvider, MessageRichPreviewProvider, type RichPreviewKind } from '@tagent/ui'
 import { filePreviewRequestAtom } from '../../atoms/file-preview'
+import { richPreviewRequestAtom } from '../../atoms/rich-preview'
+import { splitDockModeAtom } from '../../atoms/feature-flags'
 import { PermissionBanner } from '../permission/PermissionBanner'
 import { ExecutionModeSuggestionBanner } from './ExecutionModeSuggestionBanner'
 import { SessionErrorBanner } from './SessionErrorBanner'
@@ -454,8 +457,10 @@ export function Chat({
   const [isCompactingUi, setIsCompactingUi] = useState(false)
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
+  /** 当前模型窗口（ref）：流式回调里 applyUsage 不闭包过期 */
+  const contextWindowRef = useRef(DEFAULT_CONTEXT_WINDOW)
 
-  const applyUsage = (usage: TAgentUsage | undefined, contextWindow = DEFAULT_CONTEXT_WINDOW): void => {
+  const applyUsage = (usage: TAgentUsage | undefined): void => {
     if (!usage) return
     const input = usage.inputTokens ?? 0
     const output = usage.outputTokens ?? 0
@@ -464,14 +469,15 @@ export function Chat({
     // 有任意 usage 字段就更新（有的 provider 主字段只在 cache 上）
     if (input <= 0 && output <= 0 && cacheRead <= 0 && cacheWrite <= 0) return
 
-    setContextUsage((prev) => ({
+    const contextWindow = contextWindowRef.current
+
+    setContextUsage({
       inputTokens: Math.max(input, cacheRead + cacheWrite > 0 ? input : 0) || input,
       outputTokens: output,
       cacheReadTokens: cacheRead,
       cacheCreationTokens: cacheWrite,
-      contextWindow:
-        prev?.contextWindow && prev.contextWindow > 0 ? prev.contextWindow : contextWindow,
-    }))
+      contextWindow,
+    })
     setTokenTotals((prev) => ({
       totalInput: prev.totalInput + input,
       totalOutput: prev.totalOutput + output,
@@ -581,6 +587,24 @@ export function Chat({
   const selectionChannel = effectiveSelection
     ? channels.find((c) => c.id === effectiveSelection.channelId)
     : undefined
+  const configuredContextWindow = effectiveSelection
+    ? selectionChannel?.models.find((m) => m.id === effectiveSelection.modelId)?.contextWindow
+    : undefined
+  const displayContextWindow = resolveUiContextWindow({
+    modelId: effectiveSelection?.modelId,
+    configuredWindow: configuredContextWindow,
+  })
+  contextWindowRef.current = displayContextWindow
+
+  // 切模型时刷新圆环分母（不必等下一轮 usage）
+  useEffect(() => {
+    setContextUsage((prev) =>
+      prev && prev.contextWindow !== displayContextWindow
+        ? { ...prev, contextWindow: displayContextWindow }
+        : prev,
+    )
+  }, [displayContextWindow])
+
   // 会话已绑渠道优先；否则用当前选择；再否则用本会话已发送过的核
   const lockedKind: ChannelCoreKind | null = sessionChannel
     ? getChannelCoreKind(sessionChannel)
@@ -1338,7 +1362,7 @@ export function Chat({
               ? { ...prev, inputTokens: Math.min(prev.inputTokens, tokensBefore) || tokensBefore }
               : {
                   inputTokens: tokensBefore,
-                  contextWindow: DEFAULT_CONTEXT_WINDOW,
+                  contextWindow: contextWindowRef.current,
                 },
           )
         }
@@ -1749,6 +1773,9 @@ export function Chat({
 
   // 消息内文件 chip 的注入上下文：打开/存在性检查走主进程 IPC。
   const setFilePreviewRequest = useSetAtom(filePreviewRequestAtom)
+  const setRichPreviewRequest = useSetAtom(richPreviewRequestAtom)
+  const setSplitDockMode = useSetAtom(splitDockModeAtom)
+  const splitDockMode = useAtomValue(splitDockModeAtom)
   const workspaces = useAtomValue(workspacesAtom)
   /** 会话工作区的项目绝对目录：chip 解析相对路径的 base。草稿会话主进程反查不到 workspace，只能靠这里注入。 */
   const workspaceDirectory =
@@ -1782,7 +1809,36 @@ export function Chat({
     }
   }, [workspaceDirectory, setFilePreviewRequest])
 
+  const richPreviewProviderValue = useMemo(
+    () => ({
+      openRichInSplit: (payload: {
+        kind: RichPreviewKind
+        code: string
+        title?: string
+      }): void => {
+        if (!splitDockMode) setSplitDockMode(true)
+        setRichPreviewRequest({
+          sessionId: sessionIdRef.current,
+          kind: payload.kind,
+          code: payload.code,
+          title: payload.title,
+        })
+      },
+      openMermaidInSplit: (code: string, title?: string): void => {
+        if (!splitDockMode) setSplitDockMode(true)
+        setRichPreviewRequest({
+          sessionId: sessionIdRef.current,
+          kind: 'mermaid',
+          code,
+          title: title ?? 'Mermaid',
+        })
+      },
+    }),
+    [setRichPreviewRequest, setSplitDockMode, splitDockMode],
+  )
+
   return (
+    <MessageRichPreviewProvider value={richPreviewProviderValue}>
     <MessageFilePathProvider value={filePathProviderValue}>
     <div className="session-body flex h-full min-h-0">
       {/* 左：对话 + 输入（测量锚点 rootRef 只包对话列，避免右栏影响下箭头） */}
@@ -2278,6 +2334,7 @@ export function Chat({
       )}
     </div>
     </MessageFilePathProvider>
+    </MessageRichPreviewProvider>
   )
 }
 

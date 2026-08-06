@@ -1,8 +1,15 @@
 # 消息富内容渲染（Markdown 围栏语言分派）
 
-> 状态：设计中（2026-07-31）
-> 范围：renderer 消息渲染层；双核适配器 / 消息协议零改动
+> 状态：主路径已落地；分屏/全屏预览与填满画布已补（2026-08-06）
+> 范围：renderer 消息渲染层 + Dock 富块预览 pane；双核适配器 / 消息协议零改动
 > 参考：Frakio Work 的「围栏语言约定」思路（**只借鉴产品思路，不复制其代码**）
+
+## 近况补记（2026-08-06）
+
+- Mermaid / DataTable / RichFrame：分屏 + 全屏；分屏走 `richPreviewRequestAtom` → `RichPreviewPane`（pane 内去嵌套卡片，画布填满）。
+- Mermaid：透明 SVG 底；edge-label 需实色 `--bg`；边线加粗。
+- DataTable：筛选折叠、斑马纹、Radix Select（避免 Windows 原生黄框）。
+- 全局滚动条：去掉与 `::-webkit-scrollbar` 冲突的 `scrollbar-width/color`，隐藏 Windows classic 箭头按钮。
 
 ## 1. 背景
 

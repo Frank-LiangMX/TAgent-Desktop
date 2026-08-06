@@ -123,6 +123,24 @@ export function resolveDisplayContextWindow(
   return sdkWindow
 }
 
+/**
+ * 聊天 UI 圆环分母（所有模型）。
+ * 优先级：渠道配置 contextWindow → 经展示纠偏；否则按模型名推断；再否则 200k。
+ * sdkWindow 可选（来自 result.modelUsage），用于兼容端点低估纠偏。
+ */
+export function resolveUiContextWindow(options: {
+  modelId?: string
+  configuredWindow?: number
+  sdkWindow?: number
+}): number {
+  const { modelId, configuredWindow, sdkWindow } = options
+  const seed =
+    configuredWindow && configuredWindow > 0
+      ? configuredWindow
+      : sdkWindow
+  return resolveDisplayContextWindow(modelId, seed)
+}
+
 /** 从 result.modelUsage 多 entry 中选代表性 contextWindow（取最大，贴近主模型视角） */
 export function pickResultContextWindow(
   modelUsage?: Record<string, { contextWindow?: number }>

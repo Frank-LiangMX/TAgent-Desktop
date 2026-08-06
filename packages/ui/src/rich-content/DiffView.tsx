@@ -12,6 +12,7 @@ import { RichFrame } from './RichFrame'
 
 interface DiffViewProps {
   code: string
+  variant?: 'default' | 'pane'
 }
 
 function fileName(path: string): string {
@@ -19,12 +20,15 @@ function fileName(path: string): string {
   return clean === '/dev/null' ? '新文件' : clean
 }
 
-export function DiffView({ code }: DiffViewProps): React.ReactElement | null {
+export function DiffView({
+  code,
+  variant = 'default',
+}: DiffViewProps): React.ReactElement | null {
   const parsed = React.useMemo(() => parseUnifiedDiff(code), [code])
   if (!parsed) {
     // 解析失败（流式半截 / diff 格式不合法）→ 提示而非空白
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+      <div className="rounded-lg border border-foreground/12 bg-foreground/[0.03] px-3 py-2.5 text-xs text-muted-foreground">
         diff 内容无效（解析失败，可能不完整）
       </div>
     )
@@ -34,14 +38,21 @@ export function DiffView({ code }: DiffViewProps): React.ReactElement | null {
   const title = `${fileName(parsed.newPath || parsed.oldPath)} · +${add} −${del}`
 
   return (
-    <RichFrame title={title} copyValue={code} fullscreen fullscreenTitle={title}>
+    <RichFrame
+      title={title}
+      copyValue={code}
+      fullscreen
+      fullscreenTitle={title}
+      splitKind={variant === 'default' ? 'diff' : undefined}
+      variant={variant}
+    >
       <div className="diff-view text-xs leading-[1.6]">
         {parsed.hunks.map((hunk, hunkIndex) => {
           let oldLine = hunk.oldStart
           let newLine = hunk.newStart
           return (
             <div key={hunkIndex} className="diff-hunk">
-              <div className="diff-hunk-head select-none bg-muted/40 px-3 py-0.5 font-mono text-muted-foreground">
+              <div className="diff-hunk-head select-none bg-foreground/[0.04] px-3 py-0.5 font-mono text-muted-foreground">
                 @@ -{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@
               </div>
               {hunk.lines.map((line, lineIndex) => {

@@ -3,11 +3,9 @@
  *
  * 数据流：
  * - tabsAtom 是「哪些会话打开」的真相源；Dockview 管 layout（分屏方向/group 树）。
- * - tabsAtom → api：新 TabItem → api.addPanel（id=sessionId, component:'chat'）；
- *   TabItem 移除 → api.getPanel(id)?.close()。幂等守卫防重复 add。
- * - api → tabsAtom：用户点 Dockview tab × 关 panel → onDidRemovePanel → closeTab；
- *   isReconciling ref 防回环（我们主动 close 触发的 remove 不再改 tabsAtom）。
- * - 拖 tab 到边缘分屏只动 Dockview 内部 layout，不碰 tabsAtom（分屏是布局不是开关）。
+ * - tabsAtom → api：缺 panel 则 addPanel；dock 多出的 chat → 回填 tabs（不关 panel）。
+ * - 关 panel：Dockview × → onDidRemovePanel；TabBar/侧栏删除 → closeTab + api.close。
+ * - 拖 tab 分屏只动 layout；误删 tabs 时由 reconcile 回填修复。
  * - onDidActivePanelChange → setActiveTabIdAtom 软同步（侧栏高亮等用）。
  *
  * 多 Chat 并存已验证安全：Chat 流式事件按 sessionIdRef 过滤（Chat.tsx:868）。
@@ -22,19 +20,22 @@ import './dock.css'
 import { ChatPane } from './ChatPane'
 import { CrewPane } from './CrewPane'
 import { FilePreviewPane } from './FilePreviewPane'
+import { RichPreviewPane } from './RichPreviewPane'
 import { DockTab } from './DockTab'
 import { mountDockActivePlates } from './dockActivePlate'
 import { tabsAtom, activeTabIdAtom, closeTab, type TabItem } from '../../atoms/tabs'
+import { dockApiAtom, visibleSessionsAtom, collectVisibleSessions } from '../../atoms/dock-api'
 import { filePreviewRequestAtom } from '../../atoms/file-preview'
+import { richPreviewRequestAtom } from '../../atoms/rich-preview'
 
 const DOCK_LAYOUT_KEY = 'tagent:dockLayout'
 
 /**
- * 非会话 pane 的 id 前缀：crew（班组）、file-preview（文件预览）。
+ * 非会话 pane 的 id 前缀：crew（班组）、file-preview（文件预览）、mermaid-preview。
  * 这类 pane 激活/关闭都不得同步 tabsAtom/activeTabIdAtom——
  * 否则 App 的 activeTab 查 tabs 找不到 → 误判无活跃 tab → 显示引导页盖住整个 dock。
  */
-const NON_SESSION_PANE_PREFIXES = ['crew:', 'file-preview:'] as const
+const NON_SESSION_PANE_PREFIXES = ['crew:', 'file-preview:', 'mermaid-preview:', 'rich-preview:'] as const
 function isNonSessionPane(id: string): boolean {
   return NON_SESSION_PANE_PREFIXES.some((prefix) => id.startsWith(prefix))
 }
@@ -156,7 +157,10 @@ export function WorkspaceDock(): JSX.Element {
   const activeTabId = useAtomValue(activeTabIdAtom)
   const setTabs = useSetAtom(tabsAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
+  const setDockApi = useSetAtom(dockApiAtom)
+  const setVisibleSessions = useSetAtom(visibleSessionsAtom)
   const filePreviewReq = useAtomValue(filePreviewRequestAtom)
+  const richPreviewReq = useAtomValue(richPreviewRequestAtom)
 
   const apiRef = useRef<DockviewApi | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -174,7 +178,9 @@ export function WorkspaceDock(): JSX.Element {
     return mountDockActivePlates(root)
   }, [apiReady])
 
-  // tabsAtom → api：增删 panel 与 tabs 对齐（api 就绪后 / tabs 变更都跑）
+  // tabsAtom → api：补齐缺失 panel；dock 多出的 chat → 回填 tabs（不在此关 panel）。
+  // 关 panel 由显式路径负责：Dockview × → onDidRemovePanel；TabBar × → closeTab + api.close。
+  // 旧逻辑「tabs 无则关 orphan」会在拖分屏误删 tabs 时把第 3 块干掉或留下 tabs/panels 漂移。
   useEffect(() => {
     const api = apiRef.current
     if (!api || !apiReady) return
@@ -183,7 +189,8 @@ export function WorkspaceDock(): JSX.Element {
       const currentIds = new Set<string>()
       api.panels.forEach((p: IDockviewPanel) => currentIds.add(p.id))
 
-      // 新增 tabs：addPanel（幂等，已存在跳过并同步标题）
+      const toAdopt: TabItem[] = []
+
       for (const tab of tabs) {
         if (currentIds.has(tab.sessionId)) {
           currentIds.delete(tab.sessionId)
@@ -199,16 +206,30 @@ export function WorkspaceDock(): JSX.Element {
         })
       }
 
-      // 残留 chat panel（tabs 已无）→ 关闭。crew/file-preview pane 由用户/dock 自管，不在此清。
       for (const orphanId of currentIds) {
         if (isNonSessionPane(orphanId)) continue
         const orphan = api.getPanel(orphanId)
-        if (orphan) orphan.api.close()
+        toAdopt.push({
+          id: orphanId,
+          sessionId: orphanId,
+          title: orphan?.title || '会话',
+        })
       }
+
+      if (toAdopt.length > 0) {
+        setTabs((prev: TabItem[]) => {
+          const have = new Set(prev.map((t) => t.sessionId))
+          const add = toAdopt.filter((t) => !have.has(t.sessionId))
+          return add.length ? [...prev, ...add] : prev
+        })
+      }
+      setVisibleSessions(collectVisibleSessions(api))
     } finally {
-      isReconcilingRef.current = false
+      queueMicrotask(() => {
+        isReconcilingRef.current = false
+      })
     }
-  }, [tabs, apiReady])
+  }, [tabs, apiReady, setTabs, setVisibleSessions])
 
   // activeTabIdAtom → api：侧栏/外部改激活 tab 时，Dockview 同步 setActive。
   // 原先只有 onDidActivePanelChange → atom（dock→侧栏），缺 atom→dock，
@@ -237,23 +258,26 @@ export function WorkspaceDock(): JSX.Element {
     const api = apiRef.current
     if (!api || !apiReady) return
     // 用户在 Dockview 关 panel → 同步 tabsAtom（非我们 reconcile 触发的）
-    // 注意：跨 group move 时原生可能先 remove 再 open；若 panel 仍在 api 里，
-    // 说明是搬迁不是关闭，切勿 closeTab（否则会把会话从 tabs 里删掉再被 reconcile 搞乱）。
+    // 注意：跨 group move 时原生可能先 remove 再挂回；若同步立刻 closeTab，
+    // tabs 会丢会话，随后 panel 又出现 → 「分屏 3 块、tabs/打开中只有 2」漂移。
+    // 延后到下一帧确认 panel 真的不在了再关。
     const dRemove = api.onDidRemovePanel((panel: IDockviewPanel) => {
       if (isReconcilingRef.current) return
       if (isNonSessionPane(panel.id)) return
-      // 仍挂在 dock 上 = 跨组分屏搬迁，不是关 tab
-      if (api.getPanel(panel.id)) return
       const sessionId = panel.id
-      setTabs((prev: TabItem[]) => {
-        if (!prev.some((t) => t.sessionId === sessionId)) return prev
-        const { tabs: next, activeTabId: nextActive } = closeTab(
-          prev,
-          activeTabIdRef.current,
-          sessionId,
-        )
-        setActiveTabId(nextActive)
-        return next
+      requestAnimationFrame(() => {
+        if (isReconcilingRef.current) return
+        if (api.getPanel(sessionId)) return
+        setTabs((prev: TabItem[]) => {
+          if (!prev.some((t) => t.sessionId === sessionId)) return prev
+          const { tabs: next, activeTabId: nextActive } = closeTab(
+            prev,
+            activeTabIdRef.current,
+            sessionId,
+          )
+          setActiveTabId(nextActive)
+          return next
+        })
       })
     })
 
@@ -263,8 +287,12 @@ export function WorkspaceDock(): JSX.Element {
     const dActive = api.onDidActivePanelChange((evt) => {
       if (isReconcilingRef.current) return
       const panel = (evt as { panel?: IDockviewPanel }).panel
-      if (!panel || isNonSessionPane(panel.id)) return
+      if (!panel || isNonSessionPane(panel.id)) {
+        setVisibleSessions(collectVisibleSessions(api))
+        return
+      }
       setActiveTabId(panel.id)
+      setVisibleSessions(collectVisibleSessions(api))
     })
 
     // 根 drop target 的 canDisplayOverlay 对非 center 位置返回 onUnhandledDragOver 的 isAccepted，
@@ -286,8 +314,9 @@ export function WorkspaceDock(): JSX.Element {
 
     // 布局持久化：布局变化（拖拽分屏/调宽/关 panel）后存 toJSON 到 localStorage，重启恢复。
     // 节流：拖拽中 onDidLayoutChange 频繁触发，用 rAF 合并，避免每个像素都写。
+    // 同时：dock 里仍有、tabsAtom 没有的 chat panel → 补回 tabs（修搬迁误删漂移）。
     let rafId: number | null = null
-    const persist = (): void => {
+    const persistAndRepairTabs = (): void => {
       if (rafId != null) return
       rafId = window.requestAnimationFrame(() => {
         rafId = null
@@ -296,9 +325,29 @@ export function WorkspaceDock(): JSX.Element {
         } catch {
           /* 存储失败（配额/隐私模式）忽略 */
         }
+        setVisibleSessions(collectVisibleSessions(api))
+        if (isReconcilingRef.current) return
+        const missing: TabItem[] = []
+        api.panels.forEach((p: IDockviewPanel) => {
+          if (isNonSessionPane(p.id)) return
+          missing.push({
+            id: p.id,
+            sessionId: p.id,
+            title: p.title || '会话',
+          })
+        })
+        if (missing.length === 0) return
+        setTabs((prev: TabItem[]) => {
+          const have = new Set(prev.map((t) => t.sessionId))
+          const toAdd = missing.filter((t) => !have.has(t.sessionId))
+          return toAdd.length ? [...prev, ...toAdd] : prev
+        })
       })
     }
-    const dLayout = api.onDidLayoutChange(() => persist())
+    const dLayout = api.onDidLayoutChange(() => persistAndRepairTabs())
+
+    // 挂载时修一次已有漂移（例如此前搬迁误删 tabs、panel 仍在）
+    persistAndRepairTabs()
 
     return () => {
       dRemove.dispose()
@@ -314,7 +363,7 @@ export function WorkspaceDock(): JSX.Element {
         /* 忽略 */
       }
     }
-  }, [apiReady, setTabs, setActiveTabId])
+  }, [apiReady, setTabs, setActiveTabId, setVisibleSessions])
 
   // 文件预览请求 → 在 chat 面板右侧分屏开/聚焦预览 pane（同会话复用，内容由 atom 驱动刷新）
   useEffect(() => {
@@ -339,8 +388,32 @@ export function WorkspaceDock(): JSX.Element {
     })
   }, [apiReady, filePreviewReq])
 
+  // 富块（Mermaid / DataTable / JSON …）→ 独立标签分屏（同会话复用）
+  useEffect(() => {
+    const api = apiRef.current
+    if (!api || !apiReady || !richPreviewReq) return
+    const { sessionId, kind, title } = richPreviewReq
+    const paneId = `rich-preview:${sessionId}`
+    const label = title?.trim() || kind
+    const existing = api.getPanel(paneId)
+    if (existing) {
+      existing.setTitle?.(`预览 · ${label}`)
+      existing.api.setActive?.()
+      return
+    }
+    const chatPanel = api.getPanel(sessionId)
+    api.addPanel({
+      id: paneId,
+      title: `预览 · ${label}`,
+      component: 'rich-preview',
+      params: { sessionId },
+      ...(chatPanel ? { position: { direction: 'right', referencePanel: chatPanel } } : {}),
+    })
+  }, [apiReady, richPreviewReq])
+
   const handleReady = (e: { api: DockviewApi }): void => {
     apiRef.current = e.api
+    setDockApi(e.api)
     // 恢复持久化的分屏布局（含 crew pane 的 sessionId 关联，GroupviewPanelState.params 保留）
     try {
       const raw = localStorage.getItem(DOCK_LAYOUT_KEY)
@@ -351,14 +424,46 @@ export function WorkspaceDock(): JSX.Element {
     } catch {
       /* layout 损坏则丢弃，走空 dock + reconcile 重建 */
     }
-    setApiReady(true) // 触发下面两个 effect 首次 reconcile（补 layout 没有的新 tab）+ 挂事件
+    // layout 里已有、tabsAtom 尚未收录的 chat → 先补进 tabs
+    const fromLayout: TabItem[] = []
+    e.api.panels.forEach((p: IDockviewPanel) => {
+      if (isNonSessionPane(p.id)) return
+      fromLayout.push({
+        id: p.id,
+        sessionId: p.id,
+        title: p.title || '会话',
+      })
+    })
+    if (fromLayout.length > 0) {
+      setTabs((prev: TabItem[]) => {
+        const have = new Set(prev.map((t) => t.sessionId))
+        const toAdd = fromLayout.filter((t) => !have.has(t.sessionId))
+        return toAdd.length ? [...prev, ...toAdd] : prev
+      })
+    }
+    setVisibleSessions(collectVisibleSessions(e.api))
+    setApiReady(true)
   }
+
+  useEffect(() => {
+    return () => {
+      setDockApi(null)
+      setVisibleSessions([])
+    }
+  }, [setDockApi, setVisibleSessions])
 
   return (
     <div ref={rootRef} className="workspace-dock h-full min-h-0">
       <DockviewReact
         onReady={handleReady}
-        components={{ chat: ChatPane, crew: CrewPane, 'file-preview': FilePreviewPane }}
+        components={{
+          chat: ChatPane,
+          crew: CrewPane,
+          'file-preview': FilePreviewPane,
+          'rich-preview': RichPreviewPane,
+          // 兼容旧布局里残留的 mermaid-preview pane id
+          'mermaid-preview': RichPreviewPane,
+        }}
         defaultTabComponent={DockTab}
         theme={dockTheme}
         onWillDrop={handleWillDrop}

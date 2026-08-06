@@ -12,13 +12,21 @@ import { RichFrame } from './RichFrame'
 
 interface MathViewProps {
   code: string
+  variant?: 'default' | 'pane'
 }
 
-export function MathView({ code }: MathViewProps): React.ReactElement {
+export function MathView({ code, variant = 'default' }: MathViewProps): React.ReactElement {
   const content = React.useMemo(() => `$$\n${code}\n$$`, [code])
 
   return (
-    <RichFrame title="Math" copyValue={code} fullscreen fullscreenTitle="Math">
+    <RichFrame
+      title="Math"
+      copyValue={code}
+      fullscreen
+      fullscreenTitle="Math"
+      splitKind={variant === 'default' ? 'math' : undefined}
+      variant={variant}
+    >
       <div className="rich-math px-3 py-2.5 text-foreground/90">
         <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
           {content}

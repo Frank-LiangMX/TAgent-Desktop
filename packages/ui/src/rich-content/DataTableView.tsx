@@ -12,6 +12,13 @@ import * as React from 'react'
 
 import { cn } from '../lib/utils'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '../components/select'
+import {
   normalizeDataSpec,
   parseDataSpec,
   toCsv,
@@ -23,6 +30,8 @@ import { RichFrame } from './RichFrame'
 interface DataTableViewProps {
   code: string
   spreadsheet?: boolean
+  /** pane：分屏标签内嵌，隐藏再开分屏 */
+  variant?: 'default' | 'pane'
 }
 
 function formatValue(value: DataValue, type: string): string {
@@ -46,7 +55,11 @@ function downloadBlob(blob: Blob, filename: string): void {
   URL.revokeObjectURL(url)
 }
 
-export function DataTableView({ code, spreadsheet = false }: DataTableViewProps): React.ReactElement | null {
+export function DataTableView({
+  code,
+  spreadsheet = false,
+  variant = 'default',
+}: DataTableViewProps): React.ReactElement | null {
   const normalized = React.useMemo<NormalizedDataSpec | null>(() => {
     const spec = parseDataSpec(code)
     return normalizeDataSpec(spec)
@@ -54,12 +67,16 @@ export function DataTableView({ code, spreadsheet = false }: DataTableViewProps)
 
   const [query, setQuery] = React.useState('')
   const [filters, setFilters] = React.useState<Record<number, string>>({})
+  const [showColFilters, setShowColFilters] = React.useState(false)
   const [sort, setSort] = React.useState<{ index: number; direction: 1 | -1 } | null>(null)
   const [groupIndex, setGroupIndex] = React.useState(-1)
   const [collapsed, setCollapsed] = React.useState<Set<string>>(() => new Set())
 
   const hasGroupBy =
     normalized !== null && groupIndex >= 0 && groupIndex < normalized.columns.length
+  const activeFilterCount = Object.values(filters).filter((v) => v.trim()).length
+  const showFilters = !spreadsheet && showColFilters
+
 
   // 搜索 + 过滤
   const filtered = React.useMemo(() => {
@@ -103,7 +120,7 @@ export function DataTableView({ code, spreadsheet = false }: DataTableViewProps)
   // 否则 hook 顺序在「有数据 / 无数据」渲染间变化，React 报 Rendered more hooks。
   if (!normalized) {
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground">
+      <div className="rounded-lg border border-foreground/12 bg-foreground/[0.03] px-3 py-2.5 text-xs text-muted-foreground">
         表格数据无效（JSON 解析失败，内容可能不完整）
       </div>
     )
@@ -129,77 +146,110 @@ export function DataTableView({ code, spreadsheet = false }: DataTableViewProps)
     await writeXlsxFile(sheet).toFile('data.xlsx')
   }
 
-  const renderRow = (row: DataValue[], rowKey: string): React.ReactElement => (
-    <tr key={rowKey} className="border-t border-border/50 hover:bg-muted/20">
-      {row.map((value, cellIndex) => (
-        <td key={cellIndex} className="px-2.5 py-1 align-top text-foreground/85">
-          <span className={cn('break-words', columnDefs[cellIndex]?.type === 'number' && 'tabular-nums')}>
-            {formatValue(value, columnDefs[cellIndex]?.type ?? 'text')}
-          </span>
-        </td>
-      ))}
+  const renderRow = (row: DataValue[], rowKey: string, zebra: boolean): React.ReactElement => (
+    <tr key={rowKey} className={cn('data-table__row', zebra && 'data-table__row--zebra')}>
+      {row.map((value, cellIndex) => {
+        const type = columnDefs[cellIndex]?.type ?? 'text'
+        const text = formatValue(value, type)
+        return (
+          <td
+            key={cellIndex}
+            className={cn(
+              'data-table__td',
+              type === 'number' && 'data-table__td--num',
+              cellIndex === 0 && type === 'text' && 'data-table__td--key',
+            )}
+            title={text.length > 80 ? text : undefined}
+          >
+            {text}
+          </td>
+        )
+      })}
     </tr>
   )
 
   const table = (
-    <div className="data-table">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-2.5 py-1.5">
+    <div
+      className={cn(
+        'data-table not-prose',
+        variant === 'pane' && 'data-table--fill',
+      )}
+    >
+      <div className="data-table__toolbar">
         <input
-          type="text"
+          type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="搜索数据"
-          className="h-7 min-w-0 flex-1 rounded-md border border-border/70 bg-background/40 px-2 text-xs text-foreground outline-none transition-colors focus:border-primary/50"
+          placeholder="搜索…"
+          className="data-table__search"
         />
         {!spreadsheet && columns.length > 0 && (
-          <select
-            value={groupIndex}
-            onChange={(event) => setGroupIndex(Number(event.target.value))}
-            className="h-7 rounded-md border border-border/70 bg-background/40 px-1.5 text-xs text-foreground outline-none"
-          >
-            <option value={-1}>不分组</option>
-            {columns.map((column, index) => (
-              <option key={column} value={index}>
-                按 {column} 分组
-              </option>
-            ))}
-          </select>
+          <>
+            <Select
+              value={String(groupIndex)}
+              onValueChange={(value) => setGroupIndex(Number(value))}
+            >
+              <SelectTrigger className="data-table__select" aria-label="分组">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper" className="data-table__select-menu">
+                <SelectItem value="-1">不分组</SelectItem>
+                {columns.map((column, index) => (
+                  <SelectItem key={column} value={String(index)}>
+                    按 {column}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <button
+              type="button"
+              className={cn(
+                'data-table__filter-toggle',
+                (showColFilters || activeFilterCount > 0) && 'is-active',
+              )}
+              aria-pressed={showColFilters}
+              onClick={() => setShowColFilters((v) => !v)}
+              title="按列筛选"
+            >
+              筛选{activeFilterCount > 0 ? ` ${activeFilterCount}` : ''}
+            </button>
+          </>
         )}
-        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{visibleRows.length} 行</span>
+        <span className="data-table__count">{visibleRows.length} 行</span>
       </div>
 
-      <div className="scrollbar-thin max-h-[340px] overflow-auto">
-        <table className="w-full border-collapse text-xs">
-          <thead className="sticky top-0 z-[1] bg-muted/60">
+      <div className="data-table__scroll scrollbar-thin">
+        {/*
+          sticky 挂在 th 上；border-separate 避免双行表头被压扁叠到首行。
+          列筛选默认收起，避免表头区输入框墙。
+        */}
+        <table className="data-table__table">
+          <thead>
             <tr>
               {columns.map((column, index) => (
-                <th key={column} className="px-2.5 py-1.5 text-left font-medium text-foreground/75">
-                  <button
-                    type="button"
-                    onClick={() => handleSort(index)}
-                    className="inline-flex items-center gap-0.5 transition-colors hover:text-foreground"
-                  >
-                    {column}
-                    <span className="text-[9px] text-muted-foreground">
+                <th key={column} className="data-table__th data-table__th--head">
+                  <button type="button" onClick={() => handleSort(index)} className="data-table__sort">
+                    <span>{column}</span>
+                    <span className="data-table__sort-mark" aria-hidden>
                       {sort?.index === index ? (sort.direction === 1 ? '↑' : '↓') : ''}
                     </span>
                   </button>
                 </th>
               ))}
             </tr>
-            {!spreadsheet && (
+            {showFilters && (
               <tr>
                 {columns.map((column, index) => (
-                  <th key={column} className="px-1 py-1">
+                  <th key={column} className="data-table__th data-table__th--filter">
                     <input
                       type="text"
                       value={filters[index] ?? ''}
                       onChange={(event) =>
                         setFilters((current) => ({ ...current, [index]: event.target.value }))
                       }
-                      placeholder={`筛选 ${column}`}
+                      placeholder={column}
                       aria-label={`筛选 ${column}`}
-                      className="h-6 w-full rounded border border-border/60 bg-background/40 px-1.5 text-[11px] text-foreground outline-none"
+                      className="data-table__col-filter"
                     />
                   </th>
                 ))}
@@ -209,7 +259,7 @@ export function DataTableView({ code, spreadsheet = false }: DataTableViewProps)
           <tbody>
             {visibleRows.length === 0 ? (
               <tr>
-                <td colSpan={columns.length || 1} className="px-2.5 py-6 text-center text-muted-foreground">
+                <td colSpan={columns.length || 1} className="data-table__empty">
                   无匹配数据
                 </td>
               </tr>
@@ -219,7 +269,7 @@ export function DataTableView({ code, spreadsheet = false }: DataTableViewProps)
                 return [
                   <tr
                     key={`group-${group}`}
-                    className="cursor-pointer border-t border-border/60 bg-muted/25"
+                    className="data-table__group"
                     onClick={() =>
                       setCollapsed((current) => {
                         const next = new Set(current)
@@ -229,23 +279,26 @@ export function DataTableView({ code, spreadsheet = false }: DataTableViewProps)
                       })
                     }
                   >
-                    <td colSpan={columns.length || 1} className="px-2.5 py-1 text-foreground/80">
+                    <td colSpan={columns.length || 1}>
                       <span
-                        className={cn('mr-1 inline-block text-[9px] text-muted-foreground transition-transform', !isCollapsed && 'rotate-90')}
+                        className={cn('data-table__group-caret', !isCollapsed && 'is-open')}
+                        aria-hidden
                       >
                         ▸
                       </span>
                       {columns[groupIndex]}: {group}
-                      <span className="ml-1 text-muted-foreground">({groupRows.length})</span>
+                      <span className="data-table__group-count">({groupRows.length})</span>
                     </td>
                   </tr>,
                   ...(isCollapsed
                     ? []
-                    : groupRows.map((row, index) => renderRow(row, `${group}-${index}`))),
+                    : groupRows.map((row, index) =>
+                        renderRow(row, `${group}-${index}`, index % 2 === 1),
+                      )),
                 ]
               })
             ) : (
-              visibleRows.map((row, index) => renderRow(row, String(index)))
+              visibleRows.map((row, index) => renderRow(row, String(index), index % 2 === 1))
             )}
           </tbody>
         </table>
@@ -256,6 +309,7 @@ export function DataTableView({ code, spreadsheet = false }: DataTableViewProps)
   return (
     <RichFrame
       title={spreadsheet ? 'Spreadsheet' : 'Data table'}
+      variant={variant}
       actions={
         <>
           <button
@@ -281,6 +335,7 @@ export function DataTableView({ code, spreadsheet = false }: DataTableViewProps)
       copyValue={code}
       fullscreen
       fullscreenTitle={spreadsheet ? 'Spreadsheet' : 'Data table'}
+      splitKind={variant === 'default' ? (spreadsheet ? 'spreadsheet' : 'datatable') : undefined}
     >
       {table}
     </RichFrame>

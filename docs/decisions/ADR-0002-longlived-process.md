@@ -35,3 +35,4 @@ TAgent_General 旧骨架（agent-orchestrator 3997 行）是"发一条→spawn�
 - 错误恢复（进程崩 fallback spawn+resume）
 - prompt_too_long compaction
 - 会话持久化（JSONL + resume 读历史）
+- **标签页上限（6 个）**：本文设计意图，**代码从未落地**（`openTab` / `materializeTab` / WorkspaceDock 均无长度检查；CHANGELOG 亦记 LRU 未做）。分屏共用同一 `tabsAtom`，可见会话条数另由布局约束。若要恢复管控，需在 `openTab`（及必要时 dock 回填）显式 cap / LRU，并实现「跑任务不许关/不许被顶」。

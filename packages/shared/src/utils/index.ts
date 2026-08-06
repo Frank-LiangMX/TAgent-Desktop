@@ -25,6 +25,7 @@ export {
   inferContextWindow,
   pickResultContextWindow,
   resolveDisplayContextWindow,
+  resolveUiContextWindow,
   supports1MContext,
 } from './context-window'
 export {

@@ -1,7 +1,7 @@
 # 渠道模型 contextWindow 补全（2026-08-06）
 
-> **状态**：待落地
-> **范围**：channel-store 启动迁移 + 已有 channels.json 模型字段补全
+> **状态**：渠道迁移已落地；**UI 圆环分母接线已落地（同日）**
+> **范围**：channel-store 启动迁移 + Chat ContextUsageBadge 分母
 > **关联**：`2026-08-06-kscc-soft-reset-first-turn-trigger.md`（阈值依赖 safeLimit，safeLimit 依赖 contextWindow）
 
 ---
@@ -13,7 +13,7 @@
 导致 `resolveModelSafeContextLimit` 全部走 fallback `200k × 0.7 = 140k`：
 - glm-5.2 应有 180k safeLimit → 实际 140k（更保守，但非设计意图）
 - mimo-v2.5 / deepseek-v4 应有 700k safeLimit → 实际 140k（84k 就触发压缩）
-- UI 显示 1M 窗口但软重置按 140k 触发，用户看到「8% 就开始压缩」
+- UI 圆环曾固定显示 `/ 200k`（`Chat.applyUsage` 写死 `DEFAULT_CONTEXT_WINDOW`），与渠道/推断脱节（如 MiniMax-M3 应为 1M）
 
 ## 2. 修复方案
 
@@ -29,6 +29,16 @@
 ### 2.2 直接修复磁盘 channels.json
 
 对当前 `~/.tagent-dev/channels.json` 执行一次性补全，让用户重启即生效。
+
+### 2.3 UI 圆环分母（所有模型）
+
+`packages/shared` 新增 `resolveUiContextWindow`：
+
+1. 渠道 `ChannelModel.contextWindow`（经 `resolveDisplayContextWindow` 纠偏）
+2. 否则 `inferContextWindow(modelId)`
+3. 再否则 `DEFAULT_CONTEXT_WINDOW`（200k）
+
+`Chat.tsx`：`contextWindowRef` 跟当前选择模型走；`applyUsage` / 切模型 / `compact_complete` 均用该分母，不再 sticky 首轮 200k。
 
 ## 3. 补全后的容量
 
@@ -46,6 +56,7 @@
 
 ## 4. 验证
 
-- 启动后 `channels.json` 模型含 `contextWindow` 字段
-- `resolveModelSafeContextLimit` 读到真实值，不再走 fallback
-- typecheck + test 全绿
+- [x] 启动后 `channels.json` 模型含 `contextWindow` 字段（迁移路径）
+- [x] `resolveModelSafeContextLimit` 读到真实值，不再走 fallback
+- [x] ContextUsageBadge 分母随模型变化（M3 → `… / 1M`）
+- [ ] typecheck + test 全绿（提交前按需跑）
