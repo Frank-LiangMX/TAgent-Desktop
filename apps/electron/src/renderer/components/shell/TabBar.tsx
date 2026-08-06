@@ -14,6 +14,7 @@ import {
   closeTab,
   type TabItem,
 } from '../../atoms/tabs'
+import { dockApiAtom } from '../../atoms/dock-api'
 
 interface TabBarProps {
   runningSessionIds?: Set<string>
@@ -24,6 +25,7 @@ export function TabBar({ runningSessionIds }: TabBarProps): JSX.Element | null {
   const activeTabId = useAtomValue(activeTabIdAtom)
   const setTabs = useSetAtom(tabsAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
+  const dockApi = useAtomValue(dockApiAtom)
 
   const listRef = useRef<HTMLDivElement>(null)
   const plateRef = useRef<HTMLDivElement>(null)
@@ -58,6 +60,8 @@ export function TabBar({ runningSessionIds }: TabBarProps): JSX.Element | null {
     const { tabs: next, activeTabId: nextActive } = closeTab(tabs, activeTabId, tab.id)
     setTabs(next)
     setActiveTabId(nextActive)
+    // split 模式：reconcile 不再关 orphan，须显式关 panel
+    dockApi?.getPanel(tab.sessionId)?.api.close()
   }
 
   return (

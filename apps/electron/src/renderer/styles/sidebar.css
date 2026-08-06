@@ -171,12 +171,13 @@
   background: rgb(var(--glass-rgb) / 0.4);
 }
 
-/* ===== 置顶栏:单层磨砂轨道 + 横向胶囊陈列 ===== */
-.pin-rail {
+/* ===== 打开中：纵向陈列（无交互，避免横向裁切） ===== */
+.open-rail {
   position: relative;
   z-index: 2;
   display: flex;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
   margin: 0 4px 4px;
   padding: 5px;
   border: 1px solid rgb(var(--glass-rgb) / 0.42);
@@ -193,43 +194,37 @@
     inset 0 1px 0 rgb(255 255 255 / 0.42);
   -webkit-backdrop-filter: blur(22px) saturate(1.06);
   backdrop-filter: blur(22px) saturate(1.06);
-  overflow-x: auto;
+  max-height: min(28vh, 168px);
+  overflow-x: hidden;
+  overflow-y: auto;
   scrollbar-width: none;
 }
-.dark .pin-rail {
+.dark .open-rail {
   border-color: rgb(255 255 255 / 0.07);
   box-shadow:
     0 8px 20px -14px rgb(0 0 0 / 0.38),
     inset 0 1px 0 rgb(255 255 255 / 0.06);
 }
-.pin-rail::-webkit-scrollbar {
+.open-rail::-webkit-scrollbar {
   display: none;
 }
-.pin-chip {
-  flex: none;
+.open-chip {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 30px;
+  min-width: 0;
+  height: 28px;
   padding: 0 10px 0 8px;
   border-radius: 9px;
-  cursor: pointer;
-  border: 1px solid rgb(var(--glass-rgb) / 0.3);
+  border: 1px solid rgb(var(--glass-rgb) / 0.28);
   background: rgb(var(--glass-rgb) / 0.34);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-  transition: background 0.16s, border-color 0.16s,
-    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-.pin-chip:hover {
-  background: rgb(var(--glass-rgb) / 0.52);
-  border-color: rgb(var(--glass-rgb) / 0.5);
-  transform: scale(1.04);
+.light .open-chip {
+  background: rgb(255 255 255 / 0.72);
+  border-color: rgb(255 255 255 / 0.78);
 }
-.pin-chip:active {
-  transform: scale(0.94);
-}
-.pin-chip .pm {
+.open-chip .pm {
+  flex: none;
   width: 18px;
   height: 18px;
   border-radius: 6px;
@@ -238,39 +233,39 @@
   font-size: 10px;
   font-weight: 650;
 }
-.pin-chip .pm.c0 {
+.open-chip .pm.c0 {
   background: hsl(34 44% 58% / 0.2);
   color: hsl(34 48% 66%);
 }
-.pin-chip .pm.c1 {
+.open-chip .pm.c1 {
   background: hsl(186 28% 52% / 0.2);
   color: hsl(186 32% 64%);
 }
-.pin-chip .pm.c2 {
+.open-chip .pm.c2 {
   background: hsl(255 30% 66% / 0.22);
   color: hsl(255 34% 76%);
 }
-.light .pin-chip .pm.c0 {
+.light .open-chip .pm.c0 {
   background: hsl(34 58% 56% / 0.16);
   color: hsl(34 62% 40%);
 }
-.light .pin-chip .pm.c1 {
+.light .open-chip .pm.c1 {
   background: hsl(186 36% 50% / 0.16);
   color: hsl(186 40% 34%);
 }
-.light .pin-chip .pm.c2 {
+.light .open-chip .pm.c2 {
   background: hsl(255 38% 56% / 0.16);
   color: hsl(255 42% 42%);
 }
-.light .pin-chip {
-  background: rgb(255 255 255 / 0.5);
-  border-color: rgb(255 255 255 / 0.6);
-}
-.pin-chip .pt {
+.open-chip .pt {
+  flex: 1;
+  min-width: 0;
   font-size: 11.5px;
   font-weight: 550;
   color: hsl(var(--foreground) / 0.82);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ===== 滚动列表 ===== */
@@ -296,8 +291,7 @@
 /*
  * ===== 工作区 vs 会话：两层视觉语义 =====
  * 工作区 = 分区标题（section label）：更克制、字重/色相像导航，不装成会话卡片
- * 会话行 = 内容卡片：保留玻璃选中/hover（见下方 .row）
- * 展开后会话略缩进 + 左侧细轨，读起来是「挂在这个工作区下」
+ * 会话行 = 列表项：hover 轻玻璃；已打开用 is-open 淡标
  */
 .group {
   padding: 0 2px;
@@ -574,17 +568,14 @@
 }
 
 /*
- * 会话列表：挂在工作区下
- * - 左侧 1px 轨 + 缩进 → 读作「属于该工作区」
- * - 会话行本身仍是卡片（玻璃选中），与工作区标题语义相反
+ * 会话列表：挂在工作区下（不缩进、不画竖轨）
  */
 .group > .rows {
   overflow: hidden;
   max-height: 2400px;
-  margin: 0 0 2px 10px;
-  padding: 2px 0 4px 6px;
+  margin: 0 0 2px;
+  padding: 2px 0 4px;
   border: 0;
-  border-left: 1px solid hsl(var(--muted-foreground) / 0.12);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -592,11 +583,7 @@
   backdrop-filter: none;
   transition:
     max-height 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.2s ease,
-    border-color 0.2s ease;
-}
-.group.open > .rows {
-  border-left-color: hsl(var(--muted-foreground) / 0.16);
+    opacity 0.2s ease;
 }
 .group:not(.open) > .rows {
   max-height: 0;
@@ -605,13 +592,6 @@
   padding-top: 0;
   padding-bottom: 0;
   opacity: 0;
-  border-left-color: transparent;
-}
-/* 归档抽屉内的 rows 不缩进、不画轨（本身就是独立底栏） */
-.group-archived > .rows {
-  margin-left: 0;
-  padding-left: 0;
-  border-left: 0;
 }
 
 /* ===== 时间分段：弱标题，缩进对齐会话列 ===== */
@@ -672,43 +652,25 @@
 .light .row:hover {
   box-shadow: 0 4px 12px -6px rgb(48 59 76 / 0.16), inset 0 1px 0 rgb(255 255 255 / 0.4);
 }
-/* 选中态：行玻璃高光 + 稳定悬浮阴影（原 D 方案视觉，不砍） */
-.row.is-active {
-  background: radial-gradient(
-      120% 140% at 10% 0%,
-      rgb(var(--scene-a-rgb) / 0.1),
-      transparent 64%
-    ),
-    rgb(var(--glass-rgb) / 0.42);
-  border-color: rgb(var(--glass-rgb) / 0.5);
-  box-shadow:
-    0 6px 18px -7px rgb(0 0 0 / 0.16),
-    0 2px 6px -3px rgb(0 0 0 / 0.09),
-    inset 0 1px 0 rgb(255 255 255 / 0.14);
+/* 已打开：与 open-chip 同色玻璃底，去掉灰阶竖条 */
+.row.is-open {
+  background: rgb(var(--glass-rgb) / 0.34);
+  border-color: rgb(var(--glass-rgb) / 0.28);
+  box-shadow: none;
 }
-.light .row.is-active {
-  background: rgb(255 255 255 / 0.66);
-  border-color: rgb(255 255 255 / 0.75);
-  box-shadow:
-    0 6px 18px -8px rgb(48 59 76 / 0.12),
-    0 2px 6px -4px rgb(48 59 76 / 0.07),
-    inset 0 1px 0 rgb(255 255 255 / 0.8);
+.light .row.is-open {
+  background: rgb(255 255 255 / 0.72);
+  border-color: rgb(255 255 255 / 0.78);
 }
-.row.is-active:hover {
-  box-shadow:
-    0 8px 20px -7px rgb(0 0 0 / 0.2),
-    0 3px 8px -4px rgb(0 0 0 / 0.11),
-    inset 0 1px 0 rgb(255 255 255 / 0.18);
+.row.is-open .t {
+  color: hsl(var(--foreground) / 0.92);
 }
-.light .row.is-active:hover {
-  box-shadow:
-    0 8px 20px -8px rgb(48 59 76 / 0.15),
-    0 3px 8px -5px rgb(48 59 76 / 0.09),
-    inset 0 1px 0 rgb(255 255 255 / 0.86);
+.row.is-open:hover {
+  background: rgb(var(--glass-rgb) / 0.48);
+  box-shadow: none;
 }
-.row.is-active .t {
-  font-weight: 620;
-  color: hsl(var(--foreground));
+.light .row.is-open:hover {
+  background: rgb(255 255 255 / 0.88);
 }
 
 .row .body {
@@ -795,12 +757,6 @@
     box-shadow: 0 0 0 4px hsl(var(--primary) / 0);
     opacity: 1;
   }
-}
-
-/* pin 图标:行首流内(状态点后),非绝对定位角标 */
-.pin {
-  flex: none;
-  color: hsl(var(--primary) / 0.85);
 }
 
 /* 三点菜单:hover 行时从 0 宽展开让位,标题区 flex:1 自然收缩 */
@@ -1026,10 +982,6 @@
   box-sizing: border-box;
   border: 1.5px solid hsl(var(--muted-foreground) / 0.4);
   background: transparent;
-}
-.row-archived.is-active .t {
-  color: hsl(var(--foreground));
-  font-weight: 620;
 }
 
 /* ===== 进场动效(react-bits FadeIn/BlurText 思路,stagger) ===== */

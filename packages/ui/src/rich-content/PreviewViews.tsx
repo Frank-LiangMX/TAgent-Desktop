@@ -113,7 +113,13 @@ export function HtmlPreviewView({ code }: { code: string }): React.ReactElement 
   if (!spec) return <ErrorHint message="预览参数无效（spec 解析失败）" />
 
   return (
-    <RichFrame title={spec.title || 'HTML preview'} copyValue={code} fullscreen fullscreenTitle={spec.title || 'HTML preview'}>
+    <RichFrame
+      title={spec.title || 'HTML preview'}
+      copyValue={code}
+      fullscreen
+      fullscreenTitle={spec.title || 'HTML preview'}
+      splitKind="html-preview"
+    >
       {state === 'loading' ? (
         <LoadingHint />
       ) : state === 'error' ? (
@@ -123,7 +129,7 @@ export function HtmlPreviewView({ code }: { code: string }): React.ReactElement 
           title={spec.title || 'HTML preview'}
           sandbox=""
           srcDoc={result?.text ?? ''}
-          className="h-[320px] w-full border-0 bg-background"
+          className="h-[320px] w-full border-0 bg-foreground/[0.02]"
         />
       )}
     </RichFrame>
@@ -138,7 +144,13 @@ export function ImagePreviewView({ code }: { code: string }): React.ReactElement
   if (!spec) return <ErrorHint message="预览参数无效（spec 解析失败）" />
 
   return (
-    <RichFrame title={spec.title || spec.label || 'Image'} copyValue={code} fullscreen fullscreenTitle={spec.title || 'Image'}>
+    <RichFrame
+      title={spec.title || spec.label || 'Image'}
+      copyValue={code}
+      fullscreen
+      fullscreenTitle={spec.title || 'Image'}
+      splitKind="image-preview"
+    >
       {state === 'loading' ? (
         <LoadingHint />
       ) : state === 'error' ? (
@@ -147,7 +159,7 @@ export function ImagePreviewView({ code }: { code: string }): React.ReactElement
         <img
           src={result.dataUrl}
           alt={spec.title || spec.label || ''}
-          className="max-h-[420px] w-auto max-w-full object-contain bg-background p-2"
+          className="max-h-[420px] w-auto max-w-full object-contain bg-foreground/[0.02] p-2"
         />
       ) : (
         <ErrorHint message="该文件不是可预览的图片" />
@@ -235,7 +247,13 @@ export function PdfPreviewView({ code }: { code: string }): React.ReactElement |
   }
 
   return (
-    <RichFrame title={spec.title || 'PDF'} copyValue={code} fullscreen fullscreenTitle={spec.title || 'PDF'}>
+    <RichFrame
+      title={spec.title || 'PDF'}
+      copyValue={code}
+      fullscreen
+      fullscreenTitle={spec.title || 'PDF'}
+      splitKind="pdf-preview"
+    >
       {body}
     </RichFrame>
   )
@@ -266,13 +284,19 @@ export function MarkdownPreviewView({ code }: { code: string }): React.ReactElem
   else if (!NestedMarkdown) body = <LoadingHint />
   else
     body = (
-      <div className="scrollbar-thin max-h-[420px] overflow-auto bg-background p-3">
+      <div className="scrollbar-thin max-h-[420px] overflow-auto bg-foreground/[0.02] p-3">
         <NestedMarkdown>{result?.text ?? ''}</NestedMarkdown>
       </div>
     )
 
   return (
-    <RichFrame title={spec.title || 'Markdown'} copyValue={code} fullscreen fullscreenTitle={spec.title || 'Markdown'}>
+    <RichFrame
+      title={spec.title || 'Markdown'}
+      copyValue={code}
+      fullscreen
+      fullscreenTitle={spec.title || 'Markdown'}
+      splitKind="markdown-preview"
+    >
       {body}
     </RichFrame>
   )

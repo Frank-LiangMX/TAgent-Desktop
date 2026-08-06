@@ -1049,7 +1049,6 @@
   max-height: min(28vh, 220px);
   overflow-y: auto;
   word-break: break-word;
-  scrollbar-width: thin;
 }
 
 /* 折叠态：纯文本预览（不解析 Markdown，live 变长也不触发重解析） */
@@ -1078,7 +1077,6 @@
   max-height: min(40vh, 320px);
   overflow-y: auto;
   word-break: break-word;
-  scrollbar-width: thin;
 }
 
 .agent-process-text__preview {

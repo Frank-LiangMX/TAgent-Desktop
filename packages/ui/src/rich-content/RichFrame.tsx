@@ -1,7 +1,7 @@
 /**
  * RichFrame — 富内容块外壳（自研）
  *
- * 统一视觉：标题栏（内容类型）+ 操作（复制 / 全屏）+ 内容体。
+ * 统一视觉：标题栏（内容类型）+ 操作（分屏 / 全屏 / 复制）+ 内容体。
  * 样式走全局 tokens（radius-glass / foreground / muted-foreground / border），
  * 头部栏与 CodeBlock / MermaidBlock 同构。
  *
@@ -12,6 +12,10 @@ import * as React from 'react'
 import { createPortal } from 'react-dom'
 
 import { cn } from '../lib/utils'
+import {
+  MessageRichPreviewContext,
+  type RichPreviewKind,
+} from './rich-preview-context'
 
 // ===== 图标（与 CodeBlock / MermaidBlock 一致） =====
 
@@ -39,6 +43,12 @@ const fullscreenIconPath = (
     <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
     <path d="M3 16v3a2 2 0 0 0 2 2h3" />
     <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+  </>
+)
+const splitPaneIconPath = (
+  <>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M12 3v18" />
   </>
 )
 
@@ -113,13 +123,16 @@ interface RichFullscreenProps {
   title: string
   onClose: () => void
   children: React.ReactNode
+  /** wide：脑图等需要更大视口 */
+  size?: 'default' | 'wide'
 }
 
-function RichFullscreen({
+export function RichFullscreen({
   open,
   title,
   onClose,
   children,
+  size = 'default',
 }: RichFullscreenProps): React.ReactElement | null {
   React.useEffect(() => {
     if (!open) return
@@ -134,12 +147,17 @@ function RichFullscreen({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-6 backdrop-blur-sm"
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm sm:p-6"
       role="presentation"
       onMouseDown={onClose}
     >
       <section
-        className="flex h-full w-full max-w-[1200px] flex-col overflow-hidden rounded-[var(--radius-glass-modal)] border border-border/70 bg-background shadow-2xl"
+        className={cn(
+          'flex flex-col overflow-hidden rounded-[var(--radius-glass-modal)] border border-foreground/15 bg-[hsl(var(--background))] shadow-2xl',
+          size === 'wide'
+            ? 'h-[min(94vh,960px)] w-[min(98vw,1680px)]'
+            : 'h-[min(90vh,860px)] w-[min(96vw,1200px)]',
+        )}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -159,7 +177,9 @@ function RichFullscreen({
             </svg>
           </button>
         </header>
-        <div className="rich-fullscreen-body scrollbar-thin min-h-0 flex-1 overflow-auto">{children}</div>
+        <div className="rich-fullscreen-body scrollbar-thin flex min-h-0 flex-1 flex-col overflow-auto">
+          {children}
+        </div>
       </section>
     </div>,
     document.body,
@@ -179,6 +199,15 @@ export interface RichFrameProps {
   /** 是否提供全屏入口 */
   fullscreen?: boolean
   fullscreenTitle?: string
+  /** 全屏视口尺寸（脑图等用 wide） */
+  fullscreenSize?: 'default' | 'wide'
+  /**
+   * 分屏种类：有值且 Chat 注入了 openRichInSplit 时显示「分屏」。
+   * pane 内嵌时勿传，避免递归开标签。
+   */
+  splitKind?: RichPreviewKind
+  /** pane：去掉外边距、隐藏分屏（分屏标签内嵌） */
+  variant?: 'default' | 'pane'
 }
 
 export function RichFrame({
@@ -189,44 +218,97 @@ export function RichFrame({
   copyValue,
   fullscreen = false,
   fullscreenTitle,
+  fullscreenSize = 'default',
+  splitKind,
+  variant = 'default',
 }: RichFrameProps): React.ReactElement {
+  const { openRichInSplit, openMermaidInSplit } = React.useContext(MessageRichPreviewContext)
   const [fullscreenOpen, setFullscreenOpen] = React.useState(false)
+
+  const canSplit =
+    variant === 'default' &&
+    Boolean(splitKind) &&
+    copyValue !== undefined &&
+    Boolean(openRichInSplit || (splitKind === 'mermaid' && openMermaidInSplit))
+
+  const handleSplit = (): void => {
+    if (!splitKind || copyValue === undefined) return
+    if (openRichInSplit) {
+      openRichInSplit({ kind: splitKind, code: copyValue, title })
+      return
+    }
+    if (splitKind === 'mermaid') openMermaidInSplit?.(copyValue, title)
+  }
 
   return (
     <>
-      <section
-        className={cn(
-          'my-2 overflow-hidden rounded-glass-popover border border-border/70',
-          className,
-        )}
-      >
-        <div className="flex h-[34px] items-center justify-between bg-foreground/[0.05] px-2 py-1 text-xs text-muted-foreground">
-          <span className="select-none font-medium">{title}</span>
-          <div className="flex items-center gap-1">
-            {actions}
-            {fullscreen && (
-              <button
-                type="button"
-                onClick={() => setFullscreenOpen(true)}
-                className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-                title="全屏查看"
-              >
-                <svg {...ICON_ATTRS}>{fullscreenIconPath}</svg>
-              </button>
-            )}
-            {copyValue !== undefined && <RichCopyAction value={copyValue} />}
+      {variant === 'pane' ? (
+        <div className="rich-frame rich-frame--pane flex h-full min-h-0 flex-col">
+          {(actions || copyValue !== undefined) && (
+            <div className="flex h-[34px] shrink-0 items-center justify-end gap-1 px-2 text-xs text-muted-foreground">
+              {actions}
+              {copyValue !== undefined && <RichCopyAction value={copyValue} />}
+            </div>
+          )}
+          <div className="rich-frame-body scrollbar-thin flex min-h-0 flex-1 flex-col overflow-auto">
+            {children}
           </div>
         </div>
-        <div className="rich-frame-body scrollbar-thin overflow-x-auto">{children}</div>
-      </section>
+      ) : (
+        <section
+          className={cn(
+            'rich-frame my-2 overflow-hidden rounded-[var(--radius-glass-modal)] border border-foreground/15 bg-foreground/[0.02]',
+            className,
+          )}
+        >
+          <div className="flex h-[34px] items-center justify-between border-b border-foreground/10 bg-foreground/[0.045] px-2 py-1 text-xs text-muted-foreground">
+            <span className="select-none font-medium">{title}</span>
+            <div className="flex items-center gap-1">
+              {actions}
+              {canSplit ? (
+                <button
+                  type="button"
+                  onClick={handleSplit}
+                  className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                  title="在分屏独立标签打开"
+                >
+                  <svg {...ICON_ATTRS}>{splitPaneIconPath}</svg>
+                  <span>分屏</span>
+                </button>
+              ) : null}
+              {fullscreen && (
+                <button
+                  type="button"
+                  onClick={() => setFullscreenOpen(true)}
+                  className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                  title="全屏查看"
+                >
+                  <svg {...ICON_ATTRS}>{fullscreenIconPath}</svg>
+                </button>
+              )}
+              {copyValue !== undefined && <RichCopyAction value={copyValue} />}
+            </div>
+          </div>
+          <div className="rich-frame-body scrollbar-thin overflow-x-auto">{children}</div>
+        </section>
+      )}
 
-      {fullscreen && (
+      {fullscreen && variant === 'default' && (
         <RichFullscreen
           open={fullscreenOpen}
           title={fullscreenTitle ?? title}
           onClose={() => setFullscreenOpen(false)}
+          size={fullscreenSize}
         >
-          {children}
+          <div className="rich-expanded-fill flex min-h-0 flex-1 flex-col overflow-auto">
+            {(actions || copyValue !== undefined) && (
+              <div className="flex h-[34px] shrink-0 items-center justify-end gap-1 px-3 text-xs text-muted-foreground">
+                {actions}
+                {copyValue !== undefined && <RichCopyAction value={copyValue} />}
+              </div>
+            )}
+            <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">{children}</div>
+          </div>
         </RichFullscreen>
       )}
     </>

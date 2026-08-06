@@ -5,6 +5,7 @@ import {
   inferContextWindow,
   pickResultContextWindow,
   resolveDisplayContextWindow,
+  resolveUiContextWindow,
 } from './context-window'
 
 describe('sumContextUsedTokens', () => {
@@ -74,5 +75,29 @@ describe('resolveDisplayContextWindow', () => {
 
   test('trusts SDK when already above 200K', () => {
     expect(resolveDisplayContextWindow('MiniMax-M3', 512_000)).toBe(512_000)
+  })
+})
+
+describe('resolveUiContextWindow', () => {
+  test('prefers configured channel window', () => {
+    expect(
+      resolveUiContextWindow({
+        modelId: 'custom-model',
+        configuredWindow: 256_000,
+      }),
+    ).toBe(256_000)
+  })
+
+  test('infers MiniMax-M3 as 1M when config missing', () => {
+    expect(resolveUiContextWindow({ modelId: 'MiniMax-M3' })).toBe(1_000_000)
+  })
+
+  test('upgrades configured 200k for MiniMax-M3', () => {
+    expect(
+      resolveUiContextWindow({
+        modelId: 'MiniMax-M3',
+        configuredWindow: 200_000,
+      }),
+    ).toBe(1_000_000)
   })
 })

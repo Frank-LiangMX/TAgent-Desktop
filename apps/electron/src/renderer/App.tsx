@@ -43,6 +43,7 @@ import { WelcomeStart } from './components/shell/WelcomeStart'
 import { NewConversationLanding } from './components/chat/NewConversationLanding'
 import { ProjectOnboarding } from './components/chat/ProjectOnboarding'
 import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
+import { dockApiAtom } from './atoms/dock-api'
 import { splitDockModeAtom } from './atoms/feature-flags'
 import { pendingSuggestionAtom } from './atoms/pending-suggestion'
 import {
@@ -297,7 +298,7 @@ declare global {
 
 export function App(): JSX.Element {
   const [showSettings, setShowSettings] = useState(false)
-  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('appearance')
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general')
   /** 主区导航：会话 | 插件 | 记忆 | 角色库（设置走对话框，打开时 rail 高亮 settings） */
   const [activeRail, setActiveRail] = useState<Exclude<RailItem, 'settings'>>('chat')
   /**
@@ -410,6 +411,7 @@ export function App(): JSX.Element {
   const setActiveTabId = useSetAtom(activeTabIdAtom)
   const setLastActiveWorkspaceId = useSetAtom(lastActiveWorkspaceIdAtom)
   const setPendingSuggestion = useSetAtom(pendingSuggestionAtom)
+  const dockApi = useAtomValue(dockApiAtom)
   // 分屏工作台（实验）：on → 主区用 Dockview，拖会话 tab 到边缘自动分屏
   const splitDockMode = useAtomValue(splitDockModeAtom)
   /** 草稿会话（无 tab 的新会话页）：点「新建会话」设置，发送首条消息时由 Chat 物化为 tab */
@@ -533,7 +535,11 @@ export function App(): JSX.Element {
       setLastActiveWorkspaceId(nextWorkspaceId)
     }
 
+    const removed = tabs.filter((tab) => tab.workspaceId === workspaceId)
     setTabs(remaining)
+    for (const tab of removed) {
+      dockApi?.getPanel(tab.sessionId)?.api.close()
+    }
     if (activeBelongsToWorkspace) {
       setActiveTabId(rightNeighbor?.id ?? leftNeighbor?.id ?? null)
     }
@@ -567,7 +573,7 @@ export function App(): JSX.Element {
             onPlugins={() => selectRail('plugins')}
             onMemory={() => selectRail('memory')}
             onRoles={() => selectRail('roles')}
-            onSettings={() => openSettings('appearance')}
+            onSettings={() => openSettings(settingsInitialTab)}
           />
         }
         sidebar={
@@ -654,6 +660,7 @@ export function App(): JSX.Element {
         open={showSettings}
         initialTab={settingsInitialTab}
         onOpenChange={setShowSettings}
+        onTabChange={setSettingsInitialTab}
       />
       {/* 面板 Toast：受通用设置「面板悬浮」开关；进度类默认走顶栏 */}
       {notificationPrefs.panelToast ? (

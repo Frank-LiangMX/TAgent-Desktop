@@ -20,9 +20,18 @@ import * as React from 'react'
 
 import type { DiagramColors, RenderOptions } from 'beautiful-mermaid'
 
+import { cn } from '../lib/utils'
+import { RichFullscreen } from '../rich-content/RichFrame'
+import { MessageRichPreviewContext } from '../rich-content/rich-preview-context'
+
 interface MermaidBlockProps {
   /** mermaid 源码 */
   code: string
+  /**
+   * pane：分屏独立标签内嵌（隐藏「分屏打开」避免递归）
+   * default：消息内嵌块
+   */
+  variant?: 'default' | 'pane'
 }
 
 /** 防抖间隔（ms） */
@@ -39,8 +48,22 @@ function isDarkMode(): boolean {
 }
 
 function getThemeOptions(themes: Record<string, DiagramColors>): RenderOptions {
-  const colors = isDarkMode() ? themes['github-dark'] : themes['github-light']
-  return colors ? { ...colors } : {}
+  const dark = isDarkMode()
+  const base = dark ? themes['github-dark'] : themes['github-light']
+  // transparent：SVG 根节点不铺底；但 --bg 仍需实色——edge-label 药丸底用 var(--bg)，
+  // 若也透明，连线会从标注文字中间穿过（像「没颜色的卡片被线挡」）。
+  return {
+    ...(base ?? { bg: '#ffffff', fg: '#0f172a' }),
+    transparent: true,
+    bg: dark ? '#0f172a' : '#f1f5f9',
+    // 浅色：连线用近黑 slate，避免浅灰贴浅底看不清
+    line: dark ? '#cbd5e1' : '#1e293b',
+    border: dark ? '#94a3b8' : '#475569',
+    accent: dark ? '#93c5fd' : '#1d4ed8',
+    muted: dark ? '#94a3b8' : '#334155',
+    surface: dark ? '#1e293b' : '#ffffff',
+    fg: dark ? '#e2e8f0' : '#0f172a',
+  }
 }
 
 function isUsableSvg(svg: unknown): svg is string {
@@ -61,14 +84,17 @@ async function renderWithOfficialMermaid(code: string): Promise<string> {
     // 解析/绘制失败时清理临时节点并抛错，而非把错误图注入 document.body
     // （后者会在页面底部残留一条孤立的 "Syntax error in text" bar）
     suppressErrorRendering: true,
-    theme: dark ? 'dark' : 'default',
+    theme: dark ? 'dark' : 'base',
     themeVariables: {
-      background: dark ? '#0f172a' : '#ffffff',
+      // 画布透明，交给外层冷灰洗底；节点仍用中性 slate，避免偏黄
+      background: 'transparent',
       mainBkg: dark ? '#1e293b' : '#f8fafc',
       primaryColor: dark ? '#1e293b' : '#f8fafc',
       primaryTextColor: dark ? '#e2e8f0' : '#0f172a',
-      primaryBorderColor: dark ? '#475569' : '#cbd5e1',
-      lineColor: dark ? '#94a3b8' : '#64748b',
+      primaryBorderColor: dark ? '#64748b' : '#475569',
+      secondaryColor: dark ? '#1e293b' : '#f1f5f9',
+      tertiaryColor: dark ? '#0f172a' : '#e2e8f0',
+      lineColor: dark ? '#cbd5e1' : '#1e293b',
       textColor: dark ? '#e2e8f0' : '#0f172a',
     },
   })
@@ -93,6 +119,80 @@ async function renderMermaidSvg(code: string): Promise<string> {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
+}
+
+/** 从 SVG 字符串解析固有宽高（viewBox 或 width/height） */
+function readSvgIntrinsicSize(svg: string): { w: number; h: number } | null {
+  const vb = svg.match(/viewBox=["']\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*["']/i)
+  if (vb) {
+    const w = Number(vb[3])
+    const h = Number(vb[4])
+    if (w > 0 && h > 0) return { w, h }
+  }
+  const wm = svg.match(/\bwidth=["']([\d.]+)(?:px)?["']/i)
+  const hm = svg.match(/\bheight=["']([\d.]+)(?:px)?["']/i)
+  if (wm && hm) {
+    const w = Number(wm[1])
+    const h = Number(hm[1])
+    if (w > 0 && h > 0) return { w, h }
+  }
+  return null
+}
+
+/**
+ * 画布铺满：按容器尺寸 fit SVG，再乘用户缩放。
+ * 消息内 inline 不走这套，仍用手势 scale。
+ */
+function MermaidFitCanvas({
+  svg,
+  userScale,
+}: {
+  svg: string
+  userScale: number
+}): React.ReactElement {
+  const hostRef = React.useRef<HTMLDivElement>(null)
+  const [fit, setFit] = React.useState(1)
+  const intrinsic = React.useMemo(() => readSvgIntrinsicSize(svg), [svg])
+
+  React.useEffect(() => {
+    const host = hostRef.current
+    if (!host || !intrinsic) return
+
+    const update = (): void => {
+      const pad = 32
+      const cw = Math.max(0, host.clientWidth - pad)
+      const ch = Math.max(0, host.clientHeight - pad)
+      if (cw < 8 || ch < 8) return
+      setFit(Math.min(cw / intrinsic.w, ch / intrinsic.h, 8))
+    }
+
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(host)
+    return () => ro.disconnect()
+  }, [intrinsic, svg])
+
+  const scale = fit * userScale
+
+  return (
+    <div
+      ref={hostRef}
+      className="mermaid-fit-canvas relative min-h-0 flex-1 overflow-auto bg-foreground/[0.015]"
+    >
+      <div className="flex h-full w-full items-center justify-center p-4">
+        <div
+          className="mermaid-svg mermaid-svg--fit [&>svg]:bg-transparent"
+          style={{
+            transform: `scale(${scale})`,
+            transformOrigin: 'center center',
+            width: intrinsic?.w,
+            height: intrinsic?.h,
+          }}
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      </div>
+    </div>
+  )
 }
 
 // ===== 图标（与 CodeBlock 一致） =====
@@ -130,12 +230,33 @@ const zoomOutPath = (
   </>
 )
 
+const fullscreenIconPath = (
+  <>
+    <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+    <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+    <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+    <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+  </>
+)
+
+const splitPanePath = (
+  <>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M12 3v18" />
+  </>
+)
+
 // ===== 主组件 =====
 
-export function MermaidBlock({ code }: MermaidBlockProps): React.ReactElement {
+export function MermaidBlock({
+  code,
+  variant = 'default',
+}: MermaidBlockProps): React.ReactElement {
+  const { openRichInSplit, openMermaidInSplit } = React.useContext(MessageRichPreviewContext)
   const [renderedSvg, setRenderedSvg] = React.useState<string | null>(null)
   const [copied, setCopied] = React.useState(false)
   const [scale, setScale] = React.useState<number>(INITIAL_SCALE)
+  const [fullscreenOpen, setFullscreenOpen] = React.useState(false)
 
   const codeRef = React.useRef(code)
   const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -201,71 +322,175 @@ export function MermaidBlock({ code }: MermaidBlockProps): React.ReactElement {
   }, [code])
 
   const zoomPercent = Math.round(scale * 100)
+  const canOpenSplit =
+    variant === 'default' && Boolean(openRichInSplit || openMermaidInSplit)
 
-  return (
-    <div className="mermaid-block-wrapper group/mermaid rounded-glass-popover overflow-hidden my-2 border border-border/50">
-      {/* 头部栏 */}
-      <div className="flex items-center justify-between h-[34px] px-2 py-1 bg-muted/60 text-muted-foreground text-xs">
-        <span className="font-medium select-none">Mermaid</span>
-        <div className="flex items-center gap-1">
-          {renderedSvg && (
-            <div className="flex items-center gap-0.5 mr-2">
-              <button
-                type="button"
-                onClick={handleZoomOut}
-                className="p-0.5 rounded hover:bg-foreground/10 transition-colors"
-                title="缩小"
-              >
-                <svg {...ICON_ATTRS}>{zoomOutPath}</svg>
-              </button>
-              <button
-                type="button"
-                onClick={handleZoomReset}
-                className="px-1 py-0.5 rounded hover:bg-foreground/10 transition-colors min-w-[40px] text-center tabular-nums"
-                title="重置缩放"
-              >
-                {zoomPercent}%
-              </button>
-              <button
-                type="button"
-                onClick={handleZoomIn}
-                className="p-0.5 rounded hover:bg-foreground/10 transition-colors"
-                title="放大"
-              >
-                <svg {...ICON_ATTRS}>{zoomInPath}</svg>
-              </button>
-            </div>
+  const handleOpenSplit = (): void => {
+    if (openRichInSplit) {
+      openRichInSplit({ kind: 'mermaid', code, title: 'Mermaid' })
+      return
+    }
+    openMermaidInSplit?.(code, 'Mermaid')
+  }
+
+  const renderDiagram = (fill: boolean): React.ReactElement => {
+    if (!renderedSvg) {
+      return (
+        <pre
+          className={cn(
+            'mermaid-block-scroll scrollbar-thin m-0 overflow-x-auto bg-foreground/[0.015] p-4 text-[13px] leading-[1.6] text-foreground/80',
+            fill && 'min-h-0 flex-1',
           )}
+        >
+          <code>{code}</code>
+        </pre>
+      )
+    }
+    if (fill) {
+      return <MermaidFitCanvas svg={renderedSvg} userScale={scale} />
+    }
+    return (
+      <div className="mermaid-block-scroll scrollbar-thin min-h-[180px] overflow-auto bg-foreground/[0.02]">
+        <div
+          className="flex min-h-[180px] origin-center items-center justify-center p-4"
+          style={{ transform: `scale(${scale})` }}
+        >
+          <div
+            className="mermaid-svg [&>svg]:h-auto [&>svg]:max-w-full [&>svg]:bg-transparent"
+            dangerouslySetInnerHTML={{ __html: renderedSvg }}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  /** 全屏 / 分屏共用：无卡片边框，仅顶栏缩放 + 画布铺满 */
+  const expandedChrome = (opts: { showCopy?: boolean }): React.ReactElement => (
+    <div className="flex h-full min-h-0 flex-col bg-foreground/[0.015]">
+      <div className="flex h-[34px] shrink-0 items-center justify-end gap-1 px-2 text-xs text-muted-foreground">
+        {renderedSvg ? (
+          <div className="mr-auto flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={handleZoomOut}
+              className="rounded p-0.5 transition-colors hover:bg-foreground/10"
+              title="缩小"
+            >
+              <svg {...ICON_ATTRS}>{zoomOutPath}</svg>
+            </button>
+            <button
+              type="button"
+              onClick={handleZoomReset}
+              className="min-w-[40px] rounded px-1 py-0.5 text-center tabular-nums transition-colors hover:bg-foreground/10"
+              title="适应画布"
+            >
+              {zoomPercent}%
+            </button>
+            <button
+              type="button"
+              onClick={handleZoomIn}
+              className="rounded p-0.5 transition-colors hover:bg-foreground/10"
+              title="放大"
+            >
+              <svg {...ICON_ATTRS}>{zoomInPath}</svg>
+            </button>
+          </div>
+        ) : (
+          <span className="mr-auto select-none text-muted-foreground/70">渲染中…</span>
+        )}
+        {opts.showCopy ? (
           <button
             type="button"
             onClick={handleCopy}
-            className="flex items-center gap-1.5 px-1.5 py-0.5 rounded hover:bg-foreground/10 transition-colors text-muted-foreground hover:text-foreground"
+            className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
           >
             <svg {...ICON_ATTRS}>{copied ? checkIconPath : copyIconPath}</svg>
             <span>{copied ? '已复制' : '复制'}</span>
           </button>
+        ) : null}
+      </div>
+      {renderDiagram(true)}
+    </div>
+  )
+
+  if (variant === 'pane') {
+    return expandedChrome({ showCopy: true })
+  }
+
+  return (
+    <>
+      <div className="mermaid-block-wrapper group/mermaid my-2 overflow-hidden rounded-[var(--radius-glass-modal)] border border-foreground/15 bg-foreground/[0.02]">
+        <div className="flex h-[34px] shrink-0 items-center justify-between border-b border-foreground/10 bg-foreground/[0.045] px-2 py-1 text-xs text-muted-foreground">
+          <span className="select-none font-medium">Mermaid</span>
+          <div className="flex items-center gap-1">
+            {renderedSvg && (
+              <div className="mr-2 flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={handleZoomOut}
+                  className="rounded p-0.5 transition-colors hover:bg-foreground/10"
+                  title="缩小"
+                >
+                  <svg {...ICON_ATTRS}>{zoomOutPath}</svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleZoomReset}
+                  className="min-w-[40px] rounded px-1 py-0.5 text-center tabular-nums transition-colors hover:bg-foreground/10"
+                  title="重置缩放"
+                >
+                  {zoomPercent}%
+                </button>
+                <button
+                  type="button"
+                  onClick={handleZoomIn}
+                  className="rounded p-0.5 transition-colors hover:bg-foreground/10"
+                  title="放大"
+                >
+                  <svg {...ICON_ATTRS}>{zoomInPath}</svg>
+                </button>
+              </div>
+            )}
+            {canOpenSplit ? (
+              <button
+                type="button"
+                onClick={handleOpenSplit}
+                className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                title="在分屏独立标签打开"
+              >
+                <svg {...ICON_ATTRS}>{splitPanePath}</svg>
+                <span>分屏</span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setFullscreenOpen(true)}
+              className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              title="全屏查看"
+            >
+              <svg {...ICON_ATTRS}>{fullscreenIconPath}</svg>
+            </button>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+            >
+              <svg {...ICON_ATTRS}>{copied ? checkIconPath : copyIconPath}</svg>
+              <span>{copied ? '已复制' : '复制'}</span>
+            </button>
+          </div>
         </div>
+        <div className="overflow-hidden">{renderDiagram(false)}</div>
       </div>
 
-      <div className="overflow-hidden">
-        {!renderedSvg ? (
-          <pre className="mermaid-block-scroll scrollbar-thin overflow-x-auto p-4 m-0 text-[13px] leading-[1.6] bg-muted/30 text-foreground/80">
-            <code>{code}</code>
-          </pre>
-        ) : (
-          <div className="mermaid-block-scroll scrollbar-thin bg-background overflow-auto min-h-[180px]">
-            <div
-              className="flex justify-center items-center p-4 min-h-[180px] origin-center"
-              style={{ transform: `scale(${scale})` }}
-            >
-              <div
-                className="mermaid-svg [&>svg]:max-w-full [&>svg]:h-auto"
-                dangerouslySetInnerHTML={{ __html: renderedSvg }}
-              />
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+      <RichFullscreen
+        open={fullscreenOpen}
+        title="Mermaid"
+        onClose={() => setFullscreenOpen(false)}
+        size="wide"
+      >
+        {expandedChrome({ showCopy: false })}
+      </RichFullscreen>
+    </>
   )
 }

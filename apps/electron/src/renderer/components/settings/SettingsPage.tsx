@@ -316,11 +316,13 @@ function SettingsPageIntro({ title, description }: { title: string; description?
 export function SettingsDialog({
   open,
   onOpenChange,
-  initialTab = 'appearance',
+  initialTab = 'general',
+  onTabChange,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialTab?: SettingsTab
+  onTabChange?: (tab: SettingsTab) => void
 }): JSX.Element {
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab)
   const [paneKey, setPaneKey] = useState(0)
@@ -335,6 +337,7 @@ export function SettingsDialog({
     if (tabId === activeTab) return
     setActiveTab(tabId)
     setPaneKey((k) => k + 1)
+    onTabChange?.(tabId)
   }
 
   return (

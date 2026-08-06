@@ -285,8 +285,8 @@ interface MessageResponseProps {
 /** 流式占位：富内容围栏尚未闭合 */
 function PendingRichBlock(): React.ReactElement {
   return (
-    <div className="my-2 overflow-hidden rounded-glass-popover border border-border/70">
-      <div className="flex h-[34px] items-center justify-between bg-foreground/[0.05] px-2 py-1 text-xs text-muted-foreground">
+    <div className="my-2 overflow-hidden rounded-glass-popover border border-foreground/15 bg-foreground/[0.02]">
+      <div className="flex h-[34px] items-center justify-between border-b border-foreground/10 bg-foreground/[0.045] px-2 py-1 text-xs text-muted-foreground">
         <span className="select-none font-medium">正在生成内容</span>
       </div>
       <div className="flex items-center gap-2 px-3 py-2.5 text-xs text-muted-foreground">
