@@ -11,10 +11,12 @@
  * 输入/token 另走 .session-composer-cluster 全宽。
  */
 .tagent-thread {
-  width: min(var(--conversation-max, 720px), 100%);
-  max-width: var(--conversation-max, 720px);
+  width: min(var(--conversation-max, 1037px), 100%);
+  max-width: var(--conversation-max, 1037px);
   margin-inline: auto;
   padding-top: 22px;
+  padding-left: 5px;
+  padding-right: 5px;
 }
 
 /*
@@ -204,16 +206,19 @@
 }
 
 /*
- * 用户 / Agent 底部工具条：复制等
+ * 用户 / Agent 底部工具条：复制等 — 独占一行，hover 才显
  */
 .tagent-thread .agent-user-toolbar,
 .tagent-thread .agent-answer-toolbar {
   display: flex;
   align-items: center;
-  min-height: 20px;
-  margin-top: 4px;
-  padding: 0 2px;
+  min-height: 0;
+  margin-top: 2px;
+  padding: 0;
   color: hsl(var(--muted-foreground) / 0.55);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
 }
 .tagent-thread .agent-user-toolbar {
   justify-content: flex-end;
@@ -222,6 +227,25 @@
 .tagent-thread .agent-answer-toolbar {
   justify-content: flex-start;
   align-self: flex-start;
+  margin-top: -6px;
+  padding-left: 0.625rem;
+}
+.tagent-thread .agent-answer-block:hover .agent-answer-toolbar,
+.tagent-thread .is-user:hover .agent-user-toolbar,
+.tagent-thread .agent-turn:hover .agent-answer-toolbar,
+.tagent-thread .is-assistant:hover .agent-answer-toolbar {
+  opacity: 1;
+  pointer-events: auto;
+}
+.tagent-thread .agent-answer-toolbar:has(.msg-icon-btn--done),
+.tagent-thread .agent-user-toolbar:has(.msg-icon-btn--done) {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* 句尾完成/中断/出错时间戳始终可见（不依赖 hover） */
+.tagent-thread .agent-answer-toolbar:has(.agent-answer-time) {
+  opacity: 1;
+  pointer-events: auto;
 }
 .tagent-thread .agent-answer-block {
   display: flex;
@@ -298,50 +322,69 @@
 .agent-concise-timeline {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 
 .agent-concise-run {
   min-width: 0;
+  /* 与 final 的 Message（px-2.5）左缘对齐，避免过程链贴容器左缘 */
+  padding-inline: 0.625rem;
 }
 
 .agent-concise-run__head {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
+  gap: 4px;
   max-width: 100%;
-  padding: 2px 0;
+  padding: 1px 0;
   border: 0;
   background: transparent;
   cursor: pointer;
   text-align: left;
-  color: hsl(var(--muted-foreground) / 0.78);
+  color: hsl(var(--muted-foreground) / 0.72);
 }
 
 .agent-concise-run__head:hover {
-  color: hsl(var(--muted-foreground) / 0.95);
+  color: hsl(var(--muted-foreground) / 0.92);
 }
 
 .agent-concise-run__label {
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 12.5px;
   line-height: 1.45;
+  font-weight: 400;
 }
 
 .agent-concise-run.is-live .agent-concise-run__label {
-  color: hsl(var(--muted-foreground) / 0.9);
+  color: hsl(var(--muted-foreground) / 0.88);
 }
 
 .agent-concise-run__body {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 4px;
-  /* 过程链相对「运行了」外层缩进 */
-  padding-left: 16px;
-  border-left: 1px solid hsl(var(--border) / 0.35);
+  gap: 4px;
+  /* 「运行了」与下一行（思考/阶段）拉开一点，避免贴死 */
+  margin-top: 10px;
+  padding-left: 2px;
   min-width: 0;
+}
+
+.agent-concise-caret {
+  color: hsl(var(--muted-foreground) / 0.45);
+  opacity: 0;
+  flex-shrink: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease, color 0.15s ease;
+}
+
+.agent-concise-run__head:hover .agent-concise-caret,
+.agent-concise-fold__head:hover .agent-concise-caret,
+.agent-concise-step__head:hover .agent-concise-caret,
+.agent-concise-run.is-live .agent-concise-caret,
+.agent-concise-fold.is-live .agent-concise-caret,
+.agent-concise-step.is-active .agent-concise-caret {
+  opacity: 1;
 }
 
 .agent-concise-stage__panel {
@@ -359,46 +402,55 @@
   min-height: 0;
 }
 
+.agent-concise-stage__extras {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 1px 0 2px 2px;
+}
+
 .agent-concise-fold {
   min-width: 0;
 }
 
 .agent-concise-fold__head {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
+  gap: 4px;
   max-width: 100%;
-  padding: 2px 0;
+  padding: 1px 0;
   border: 0;
   background: transparent;
   cursor: pointer;
   text-align: left;
-  color: hsl(var(--muted-foreground) / 0.72);
+  color: hsl(var(--muted-foreground) / 0.68);
 }
 
 .agent-concise-fold__head:hover {
-  color: hsl(var(--muted-foreground) / 0.95);
+  color: hsl(var(--muted-foreground) / 0.9);
 }
 
 .agent-concise-fold__summary {
-  flex: 1;
+  /* 不吃满整行：箭头紧跟文字，不挤到行尾 */
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12.5px;
   line-height: 1.45;
+  font-weight: 400;
 }
 
 .agent-concise-fold.is-live .agent-concise-fold__summary {
-  color: hsl(var(--muted-foreground) / 0.88);
+  color: hsl(var(--muted-foreground) / 0.85);
 }
 
 .agent-concise-fold__body {
-  margin: 2px 0 4px 2px;
-  padding: 4px 0 4px 10px;
-  border-left: 1px solid hsl(var(--border) / 0.55);
+  margin: 2px 0 2px 0;
+  padding: 2px 0 2px 12px;
+  border-left: 1px solid hsl(var(--border) / 0.4);
   max-height: 220px;
   overflow: auto;
 }
@@ -449,15 +501,36 @@
 }
 
 .agent-concise-narrative--progress {
-  opacity: 0.92;
+  padding: 1px 0;
+}
+
+.agent-concise-narrative__text {
+  font-size: 13px;
+  line-height: 1.55;
+  color: hsl(var(--foreground) / 0.9);
 }
 
 .agent-concise-narrative--final {
-  margin-top: 6px;
-  padding: 10px 12px;
-  border: 1px solid hsl(var(--border) / 0.55);
-  border-radius: 10px;
-  background: hsl(var(--background) / 0.35);
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* concise：正文与句尾贴紧（去掉 Message 底 padding + turn 大 gap） */
+.agent-concise-narrative--final > .is-assistant {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.agent-turn:has(.agent-concise-timeline) {
+  gap: 4px;
+}
+
+/* 复制栏与 Message / 运行链左缘对齐；贴在 final 正下方 */
+.agent-turn:has(.agent-concise-timeline) .agent-answer-toolbar {
+  margin-top: 2px;
+  padding-inline: 0.625rem;
 }
 
 .agent-concise-stage-thinking {
@@ -483,35 +556,286 @@
   color: hsl(0 55% 52%);
 }
 
+/* Cursor 式句尾 Files Changed */
+.agent-files-changed {
+  margin: 8px 0.625rem 4px;
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border) / 0.55);
+  border-radius: 10px;
+  background: hsl(var(--foreground) / 0.025);
+  min-width: 0;
+}
+.agent-files-changed__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.agent-files-changed__title {
+  font-size: 12px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground) / 0.88);
+  line-height: 1.3;
+}
+.agent-files-changed__review {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground) / 0.72);
+  cursor: pointer;
+  line-height: 1.3;
+}
+.agent-files-changed__review:hover {
+  color: hsl(var(--foreground) / 0.88);
+}
+.agent-files-changed__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agent-files-changed__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: hsl(var(--foreground) / 0.88);
+}
+.agent-files-changed__row:hover {
+  background: hsl(var(--foreground) / 0.04);
+}
+.agent-files-changed__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.agent-files-changed__badge--react {
+  background: hsl(199 80% 48% / 0.16);
+  color: hsl(199 80% 38%);
+}
+.agent-files-changed__badge--ts {
+  background: hsl(211 70% 48% / 0.14);
+  color: hsl(211 70% 40%);
+}
+.agent-files-changed__badge--css {
+  background: hsl(187 60% 40% / 0.16);
+  color: hsl(187 60% 32%);
+}
+.agent-files-changed__badge--data {
+  background: hsl(var(--muted-foreground) / 0.12);
+  color: hsl(var(--muted-foreground) / 0.8);
+}
+.agent-files-changed__badge--file {
+  background: hsl(var(--muted-foreground) / 0.1);
+  color: hsl(var(--muted-foreground) / 0.7);
+}
+.agent-files-changed__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.35;
+}
+.agent-files-changed__diff {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.agent-files-changed__diff-empty {
+  color: hsl(var(--muted-foreground) / 0.35);
+}
+
 .agent-concise-live-status {
-  padding: 1px 0 2px 18px;
+  padding: 1px 0 2px 2px;
   font-size: 12.5px;
   line-height: 1.45;
-  color: hsl(var(--muted-foreground) / 0.72);
+  color: hsl(var(--muted-foreground) / 0.68);
+  animation: agent-concise-live-in 0.22s ease-out;
+}
+
+@keyframes agent-concise-live-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-concise-live-status {
+    animation: none;
+  }
 }
 
 .agent-concise-live-status--in-body {
-  padding-left: 22px;
+  padding-left: 18px;
+}
+
+/* Cursor 式运行中文字扫光：扫完出字外再停顿，循环跳回时亮带不在字中间 */
+.agent-concise-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    hsl(var(--muted-foreground) / 0.42) 0%,
+    hsl(var(--muted-foreground) / 0.42) 40%,
+    hsl(var(--foreground) / 0.82) 50%,
+    hsl(var(--muted-foreground) / 0.42) 60%,
+    hsl(var(--muted-foreground) / 0.42) 100%
+  );
+  background-size: 280% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  /* linear：匀速扫过；关键帧在字外停顿后再循环（偏慢，避免抢戏） */
+  animation: agent-concise-shimmer 4.8s linear infinite;
+}
+
+@keyframes agent-concise-shimmer {
+  /* 亮带在右侧字外 */
+  0% {
+    background-position: 140% 0;
+  }
+  /* 扫过全文，亮带到达左侧字外 */
+  55% {
+    background-position: -140% 0;
+  }
+  /* 停在字外；100%→0% 跳回时两端都在字外，中断不落在字中间 */
+  100% {
+    background-position: -140% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-concise-shimmer {
+    animation: none;
+    color: hsl(var(--muted-foreground) / 0.78);
+    -webkit-text-fill-color: unset;
+    background: none;
+  }
+}
+
+/* Cursor 式子代理嵌套行 */
+.agent-concise-subagent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  margin: 1px 0;
+  padding: 1px 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+
+.agent-concise-subagent__bullet {
+  flex-shrink: 0;
+  width: 12px;
+  padding-top: 1px;
+  color: hsl(var(--muted-foreground) / 0.5);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.agent-concise-subagent__main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.agent-concise-subagent__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.agent-concise-subagent__title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: hsl(var(--foreground) / 0.88);
+}
+
+.agent-concise-subagent__meta {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: hsl(var(--muted-foreground) / 0.58);
+}
+
+.agent-concise-subagent__progress {
+  padding-left: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: hsl(var(--muted-foreground) / 0.62);
+}
+
+.agent-concise-subagent.is-failed .agent-concise-subagent__meta,
+.agent-concise-subagent.is-failed .agent-concise-subagent__progress {
+  color: hsl(0 55% 52%);
+}
+
+.agent-concise-subagent:hover .agent-concise-subagent__title {
+  color: hsl(var(--foreground));
 }
 
 .agent-concise-fold__body--steps {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 2px 0 4px;
+  gap: 1px;
+  padding: 2px 0 2px;
+  border-left: 0;
+  margin: 0;
 }
 
 .agent-concise-step__head {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
-  padding: 2px 0;
+  max-width: 100%;
+  padding: 1px 0;
   border: 0;
   background: transparent;
   cursor: pointer;
   text-align: left;
-  color: hsl(var(--muted-foreground) / 0.78);
+  color: hsl(var(--muted-foreground) / 0.72);
 }
 
 .agent-concise-step__head:disabled {
@@ -519,7 +843,7 @@
 }
 
 .agent-concise-step__head:not(:disabled):hover {
-  color: hsl(var(--muted-foreground) / 0.95);
+  color: hsl(var(--muted-foreground) / 0.92);
 }
 
 .agent-concise-step__icon {
@@ -529,6 +853,7 @@
 }
 
 .agent-concise-step__label {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1259,27 +1584,42 @@
     inset 0 1px 0 rgb(255 255 255 / 0.08);
 }
 .composer-run-timer__dot {
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
   flex-shrink: 0;
+  box-sizing: border-box;
   border-radius: 999px;
-  background: hsl(var(--primary) / 0.85);
-  animation: agent-thinking-pulse 1.2s ease-in-out infinite;
+  border: 1.5px solid hsl(var(--primary) / 0.22);
+  border-top-color: hsl(var(--primary) / 0.95);
+  background: transparent;
+  animation: composer-run-spin 0.75s linear infinite;
+}
+@keyframes composer-run-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .composer-run-timer__dot {
     animation: none;
-    opacity: 0.85;
+    border-color: hsl(var(--primary) / 0.55);
+    background: hsl(var(--primary) / 0.55);
   }
 }
 
-/* 回答底部复制栏的完成耗时 */
+/* 回答句尾：完成 / 已中断 / 出错 · 耗时 · 墙钟 */
 .agent-answer-time {
   margin-left: 6px;
   font-size: 10.5px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   color: hsl(var(--muted-foreground) / 0.6);
+}
+.agent-answer-time--stopped {
+  color: hsl(var(--muted-foreground) / 0.75);
+}
+.agent-answer-time--error {
+  color: hsl(var(--destructive) / 0.85);
 }
 
 /* 顶栏：对齐会话区 chrome 密度（约 36–40px 高，10–11px 字） */

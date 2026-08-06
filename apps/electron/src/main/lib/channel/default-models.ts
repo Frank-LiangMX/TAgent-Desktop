@@ -12,9 +12,7 @@ import type { ChannelModel, ProviderType } from '@tagent/shared'
 /** kscc 内网渠道默认模型（与 TAgent kscc-config.ts 保持一致） */
 export const KSCC_DEFAULT_MODELS: ChannelModel[] = [
   { id: 'glm-5.1', name: 'GLM-5.1', enabled: true, contextWindow: 200_000 },
-  // GLM-5.2 标称 1M，但实测 256k 就爆 → safeContextLimit 手动标 180k（256k×0.7），
-  // 软重置按 180k 提前触发，永远到不了 256k 爆点。contextWindow 仍标 1M（算 8k 预算用标称值）。
-  { id: 'glm-5.2', name: 'GLM-5.2 (1M)', enabled: true, contextWindow: 1_000_000, safeContextLimit: 180_000 },
+  { id: 'glm-5.2', name: 'GLM-5.2 (1M)', enabled: true, contextWindow: 1_000_000 },
   { id: 'kimi-k2.5', name: 'Kimi K2.5', enabled: true, contextWindow: 200_000 },
   { id: 'kimi-k2.6', name: 'Kimi K2.6', enabled: true, contextWindow: 200_000 },
   { id: 'mimo-v2.5', name: 'MiMo V2.5 (1M)', enabled: true, contextWindow: 1_000_000 },
