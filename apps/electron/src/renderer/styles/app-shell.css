@@ -818,6 +818,28 @@
 }
 
 /*
+ * Chat 模式专属：安全绿（只读/无破坏性操作）。
+ * 放在权限模式规则之后，同特异性下后声明胜出，覆盖 bypass 橙色。
+ */
+.session-input-dock[data-execution-mode='chat'] .chat-input-glass:focus-within {
+  border-color: hsl(152 55% 45% / 0.55);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    0 0 0 2px hsl(152 55% 45% / 0.12),
+    0 0 16px hsl(152 55% 45% / 0.18),
+    0 10px 30px -10px rgb(23 30 40 / 0.18);
+  transform: none;
+}
+.dark .session-input-dock[data-execution-mode='chat'] .chat-input-glass:focus-within {
+  border-color: hsl(152 50% 55% / 0.5);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    0 0 0 2px hsl(152 50% 55% / 0.1),
+    0 0 16px hsl(152 50% 55% / 0.16),
+    0 10px 30px -10px rgb(0 0 0 / 0.4);
+}
+
+/*
  * 权限模式角标：功能栏折叠时，输入框工具栏的权限 chip 仍可见，
  * 图标 + 状态色一眼区分模式（plan 紫 / bypass 橙；auto 不显示）。
  */

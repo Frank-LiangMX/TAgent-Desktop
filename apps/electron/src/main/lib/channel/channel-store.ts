@@ -26,6 +26,7 @@ import type {
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import { getChannelsPath } from '../config/config-paths'
 import { getDefaultModelsForProvider, KSCC_DEFAULT_MODEL_ID, KSCC_DEFAULT_MODELS } from './default-models'
+import { inferContextWindow } from '@tagent/shared'
 
 /** kscc 内置渠道 seed 时用的固定 ID（仅 fresh 安装时用；识别 kscc 一律按 provider） */
 const KSCC_BUILTIN_CHANNEL_ID = 'kscc-internal'
@@ -208,4 +209,47 @@ export function seedBuiltinChannels(): void {
   config.channels.push(kscc)
   writeConfig(config)
   console.log('[渠道存储] 已 seed kscc-internal 内置渠道')
+}
+
+/**
+ * 启动迁移：补全已有渠道模型的 contextWindow / safeContextLimit。
+ *
+ * 早期创建的渠道模型缺窗口字段（default-models 加字段之前），导致
+ * resolveModelSafeContextLimit 全走 fallback 200k，1M 模型也按 140k 触发压缩。
+ *
+ * - kscc-internal：按 default-models.ts KSCC_DEFAULT_MODELS 补全（权威源）
+ * - 外部渠道：缺 contextWindow 时用 inferContextWindow(modelId) 推断
+ * - 幂等：已有字段不覆盖，仅补缺失
+ */
+export function migrateModelWindows(): void {
+  const config = readConfig()
+  let changed = false
+
+  for (const channel of config.channels) {
+    for (const model of channel.models) {
+      if (model.contextWindow && model.contextWindow > 0) continue
+
+      if (channel.provider === 'kscc-internal') {
+        const defaults = KSCC_DEFAULT_MODELS.find((d) => d.id === model.id)
+        if (defaults?.contextWindow) {
+          model.contextWindow = defaults.contextWindow
+          if (defaults.safeContextLimit && !model.safeContextLimit) {
+            model.safeContextLimit = defaults.safeContextLimit
+          }
+          changed = true
+        }
+      } else {
+        const inferred = inferContextWindow(model.id)
+        if (inferred && inferred > 0) {
+          model.contextWindow = inferred
+          changed = true
+        }
+      }
+    }
+  }
+
+  if (changed) {
+    writeConfig(config)
+    console.log('[渠道存储] 已补全模型 contextWindow 字段')
+  }
 }

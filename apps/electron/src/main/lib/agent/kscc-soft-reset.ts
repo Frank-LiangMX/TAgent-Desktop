@@ -32,6 +32,7 @@ import {
 const CHEAP_RATIO = 0.45
 const SHADOW_RATIO = 0.6
 const SWITCH_RATIO = 0.75
+const MIN_TURNS_FOR_COMPACT = 2
 
 export type ShadowState = NonNullable<AgentSessionMeta['shadowState']>
 
@@ -66,7 +67,7 @@ function estimateSdkTokens(messages: unknown[]): number {
       if (typeof block.text === 'string') chars += block.text.length
       if (block.type === 'tool_result' && Array.isArray(block.content)) {
         for (const c of block.content as Array<{ text?: string }>) {
-          if (c?.text) chars += c.text.length
+          if (c?.text) chars += c.text.slice(0, 2000).length
         }
       }
     }
@@ -200,7 +201,9 @@ class KsccSoftResetService {
 
     // 2) 拉影子
     const state = meta.shadowState ?? 'idle'
+    const turnCount = meta.turnCount ?? 0
     if (estimated >= safeLimit * SHADOW_RATIO && (state === 'idle' || state === 'switched')) {
+      if (turnCount < MIN_TURNS_FOR_COMPACT) return
       void this.startShadowCompact(input.sessionId, meta)
     }
 

@@ -15,9 +15,10 @@ import { MemoryService } from './lib/ipc/memory-service'
 import { UserProfileService } from './lib/ipc/user-profile-service'
 import { BalanceService } from './lib/ipc/balance-service'
 import { PermissionService } from './lib/permission/permission-service'
-import { seedBuiltinChannels } from './lib/channel/channel-store'
+import { seedBuiltinChannels, migrateModelWindows } from './lib/channel/channel-store'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
 import { createTray, destroyTray, getTray, updateTrayTheme } from './tray'
+import { initAutoUpdater, configureUpdater, cleanupUpdater, registerUpdaterIpc } from './lib/updater'
 import {
   memoryLayerService,
   scheduledCleanupService,
@@ -225,6 +226,7 @@ app.whenReady().then(async () => {
 
   createWindow()
   seedBuiltinChannels()
+  migrateModelWindows()
 
   // Phase 2：全局记忆 L5 服务启动 wiring
   try {
@@ -276,6 +278,19 @@ app.whenReady().then(async () => {
     (workspaceId) => sessionService?.deleteWorkspaceSessions(workspaceId) ?? 0,
   )
 
+  // 自动更新：IPC 处理器始终注册（dev 也能查 status），electron-updater 仅打包后初始化
+  if (mainWindow) {
+    configureUpdater(mainWindow, {
+      hasActiveAgents: () => {
+        return sessionService?.hasActiveAgents() ?? false
+      },
+    })
+    registerUpdaterIpc()
+    if (app.isPackaged) {
+      initAutoUpdater(mainWindow)
+    }
+  }
+
   // mac Dock / 再次激活：显示窗口
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) createWindow()
@@ -302,6 +317,7 @@ app.on('before-quit', () => {
   } catch (err) {
     console.error('[memory] shutdown cleanup failed:', err)
   }
+  cleanupUpdater()
   sessionService?.disposeAll()
   destroyTray()
 })

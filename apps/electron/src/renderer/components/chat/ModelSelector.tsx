@@ -180,6 +180,7 @@ export function ModelSelector({
         align="start"
         side="top"
         sideOffset={8}
+        collisionPadding={12}
         className="w-[320px] overflow-hidden p-0"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >

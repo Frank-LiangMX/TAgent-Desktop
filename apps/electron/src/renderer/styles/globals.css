@@ -13,6 +13,7 @@
 @import './sidebar.css';
 @import './welcome.css';
 @import './settings-shell.css';
+@import './updater.css';
 /* 记忆页 content-glass（General 原样） */
 @import './content-glass.css';
 
@@ -28,7 +29,7 @@
   :root {
     color-scheme: light;
     /* 会话信息流最大可读宽（居中）；输入/token 不套此限制，铺满 main */
-    --conversation-max: 720px;
+    --conversation-max: 1037px;
     /* composer 玻璃浮岛圆角（对齐 TAgent_General --app-shell-composer-radius） */
     --app-shell-composer-radius: 16px;
     /* 用户气泡圆角 + 右下尖角 */

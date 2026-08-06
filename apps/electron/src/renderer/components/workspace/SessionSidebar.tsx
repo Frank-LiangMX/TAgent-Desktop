@@ -74,18 +74,12 @@ interface WorkspaceDropIndicator {
   position: 'before' | 'after'
 }
 
-interface TimeBucket {
-  name: '今天' | '昨天' | '近 7 天' | '更早'
-  sessions: SessionMeta[]
-}
-
 /** 状态排序权重:进行中 → 出错 → 其余按时间 */
 const STATUS_RANK: Record<SessionStatus, number> = { running: 0, error: 1, idle: 2 }
 
 /** 列表项进场/重排 spring(对齐现代 UI 丝滑感) */
 const SPRING = { type: 'spring', stiffness: 380, damping: 32, mass: 0.8 } as const
 
-const BUCKET_ORDER: TimeBucket['name'][] = ['今天', '昨天', '近 7 天', '更早']
 const EXPANDED_GROUPS_KEY = 'tagent.sidebar.expanded-groups.v1'
 
 function readStoredSet(key: string): Set<string> | null {
@@ -722,7 +716,7 @@ export function SessionSidebar({
   )
 }
 
-/** 时间分段渲染：仅用于扫描，不承担折叠交互。 */
+/** 会话列表渲染（扁平，无时间分段） */
 function renderBuckets(
   sessions: SessionMeta[],
   statusOf: (s: SessionMeta) => SessionStatus,
@@ -739,42 +733,27 @@ function renderBuckets(
   onEditingTitleChange: (v: string) => void,
   onCancelRename: () => void,
 ): JSX.Element {
-  const buckets = bucketize(sessions)
   return (
     <>
-      {BUCKET_ORDER.map((name) => {
-        const arr = buckets[name]
-        if (!arr || arr.length === 0) return null
-        return (
-          <section key={name} className="bucket-group" aria-label={name}>
-            <div className="bucket-divider">
-              <span>{name}</span>
-              <i aria-hidden="true" />
-            </div>
-            <div className="bucket-rows">
-              {arr.map((s) => (
-                <SessionRow
-                  key={s.id}
-                  session={s}
-                  status={statusOf(s)}
-                  isOpen={openSessionIds.has(s.id)}
-                  active={s.id === activeSessionId}
-                  editing={editingId === s.id}
-                  editingTitle={editingTitle}
-                  onSelect={onSelect}
-                  onDelete={onDelete}
-                  onRename={onRename}
-                  onCommitRename={onCommitRename}
-                  onTogglePin={onTogglePin}
-                  onArchiveToggle={onArchiveToggle}
-                  onEditingTitleChange={onEditingTitleChange}
-                  onCancelRename={onCancelRename}
-                />
-              ))}
-            </div>
-          </section>
-        )
-      })}
+      {sessions.map((s) => (
+        <SessionRow
+          key={s.id}
+          session={s}
+          status={statusOf(s)}
+          isOpen={openSessionIds.has(s.id)}
+          active={s.id === activeSessionId}
+          editing={editingId === s.id}
+          editingTitle={editingTitle}
+          onSelect={onSelect}
+          onDelete={onDelete}
+          onRename={onRename}
+          onCommitRename={onCommitRename}
+          onTogglePin={onTogglePin}
+          onArchiveToggle={onArchiveToggle}
+          onEditingTitleChange={onEditingTitleChange}
+          onCancelRename={onCancelRename}
+        />
+      ))}
     </>
   )
 }
@@ -966,33 +945,6 @@ function buildGroups(
   const unclassified = groupMap.get('__unclassified__')
   if (unclassified && unclassified.sessions.length > 0) result.push(unclassified)
   return result
-}
-
-/** 按时间分桶（今天/昨天/近 7 天/更早）。 */
-function bucketize(sessions: SessionMeta[]): Record<TimeBucket['name'], SessionMeta[]> {
-  const now = Date.now()
-  const DAY = 24 * 60 * 60 * 1000
-  const todayStart = new Date()
-  todayStart.setHours(0, 0, 0, 0)
-  const todayStartMs = todayStart.getTime()
-  const yesterdayStartMs = todayStartMs - DAY
-  const recentStartMs = now - 7 * DAY
-  const buckets: Record<TimeBucket['name'], SessionMeta[]> = {
-    今天: [],
-    昨天: [],
-    '近 7 天': [],
-    更早: [],
-  }
-  for (const s of sessions) {
-    const updatedAt = s.updatedAt ?? 0
-    let name: TimeBucket['name']
-    if (updatedAt >= todayStartMs) name = '今天'
-    else if (updatedAt >= yesterdayStartMs) name = '昨天'
-    else if (updatedAt >= recentStartMs) name = '近 7 天'
-    else name = '更早'
-    buckets[name].push(s)
-  }
-  return buckets
 }
 
 /** 相对时间(替代 formatTime 的 HH:MM):刚刚/N分钟前/N小时前/昨天/N天前/上周 */
