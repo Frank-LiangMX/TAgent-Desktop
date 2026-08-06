@@ -253,15 +253,18 @@ const WorkStageFold = memo(function WorkStageFold({
   steps: WorkStageStep[]
   isLive: boolean
 }): JSX.Element {
-  const [open, setOpen] = useState(false)
+  // live：默认展开看执行明细；完成后自动收进阶段块（可手动再开）
+  const [open, setOpen] = useState(isLive)
   const wasLive = useRef(isLive)
   const liveStatus = isLive ? getLiveStatusFromSteps(steps) : undefined
 
-  // 阶段做完：自动收成折叠块（对齐 Cursor）；用户手动展开不受影响于后续 live
   useEffect(() => {
-    if (wasLive.current && !isLive) setOpen(false)
+    if (isLive) setOpen(true)
+    else if (wasLive.current && !isLive) setOpen(false)
     wasLive.current = isLive
   }, [isLive])
+
+  const detailOpen = open || isLive
 
   return (
     <div className={cn('agent-concise-fold', 'agent-concise-stage', isLive && 'is-live')}>
@@ -269,7 +272,7 @@ const WorkStageFold = memo(function WorkStageFold({
         type="button"
         className="agent-concise-fold__head"
         onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
+        aria-expanded={detailOpen}
       >
         {isLive ? (
           <CircleNotch size={12} className="shrink-0 animate-spin text-muted-foreground/45" />
@@ -284,32 +287,37 @@ const WorkStageFold = memo(function WorkStageFold({
           size={11}
           className={cn(
             'ml-auto shrink-0 text-muted-foreground/35 transition-transform',
-            open && 'rotate-90',
+            detailOpen && 'rotate-90',
           )}
         />
       </button>
 
-      {/* live 且未展开：底部滚动态，阶段不消失 */}
-      {isLive && !open && liveStatus ? (
+      {/* live 且折叠态：仍露出当前动作一行 */}
+      {isLive && !open ? (
         <div className="agent-concise-live-status">{liveStatus}</div>
       ) : null}
 
-      {open ? (
-        <div className="agent-concise-fold__body agent-concise-fold__body--steps">
-          {steps.map((step) => (
-            <StageStepRow
-              key={step.key}
-              step={step}
-              isStreaming={isLive && step.kind === 'tool' && !step.tool.result}
-            />
-          ))}
-          {isLive && liveStatus ? (
-            <div className="agent-concise-live-status agent-concise-live-status--in-body">
-              {liveStatus}
-            </div>
-          ) : null}
+      <div
+        className={cn('agent-concise-stage__panel', detailOpen && 'is-open')}
+        aria-hidden={!detailOpen}
+      >
+        <div className="agent-concise-stage__panel-inner">
+          <div className="agent-concise-fold__body agent-concise-fold__body--steps">
+            {steps.map((step) => (
+              <StageStepRow
+                key={step.key}
+                step={step}
+                isStreaming={isLive && step.kind === 'tool' && !step.tool.result}
+              />
+            ))}
+            {isLive && liveStatus ? (
+              <div className="agent-concise-live-status agent-concise-live-status--in-body">
+                {liveStatus}
+              </div>
+            ) : null}
+          </div>
         </div>
-      ) : null}
+      </div>
     </div>
   )
 })
@@ -400,9 +408,30 @@ const NarrativeRow = memo(function NarrativeRow({
   tone: 'progress' | 'final'
   isStreaming: boolean
 }): JSX.Element {
+  // kscc 常一次落盘：首次非流式出现时先喂空串再喂全文，让 useSmoothStream 走逐字
+  const [boot, setBoot] = useState(!isStreaming && text.trim().length > 0)
+  const [seed, setSeed] = useState(() => (isStreaming || !text.trim() ? text : ''))
+
+  useEffect(() => {
+    if (isStreaming) {
+      setBoot(false)
+      setSeed(text)
+      return
+    }
+    if (boot) {
+      const id = requestAnimationFrame(() => {
+        setSeed(text)
+        setBoot(false)
+      })
+      return () => cancelAnimationFrame(id)
+    }
+    setSeed(text)
+  }, [text, isStreaming, boot])
+
+  const smoothStreaming = isStreaming || boot || (seed !== text && text.length > 0)
   const { displayedContent } = useSmoothStream({
-    content: text,
-    isStreaming,
+    content: seed,
+    isStreaming: smoothStreaming,
   })
   const content = displayedContent.trim()
 
@@ -417,8 +446,8 @@ const NarrativeRow = memo(function NarrativeRow({
       <Message from="assistant">
         <MessageContent>
           {content ? (
-            <MessageResponse streaming={isStreaming}>{displayedContent}</MessageResponse>
-          ) : isStreaming ? (
+            <MessageResponse streaming={smoothStreaming}>{displayedContent}</MessageResponse>
+          ) : smoothStreaming ? (
             <span className="text-muted-foreground/50">…</span>
           ) : null}
         </MessageContent>

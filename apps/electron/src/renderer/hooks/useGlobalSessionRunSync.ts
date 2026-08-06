@@ -36,6 +36,7 @@ type StreamEnvelope = {
       type?: string
       stop_reason?: string
       _partial?: boolean
+      parentToolUseId?: string
     }
   }
 }
@@ -47,6 +48,15 @@ function isTerminalAssistantPayload(p: NonNullable<StreamEnvelope['payload']>): 
     p.message?.type === 'assistant' &&
     Boolean(p.message.stop_reason) &&
     p.message._partial !== true
+  )
+}
+
+/** 子代理 parented 消息：不 adopt（失败后否则底栏运行态常驻） */
+function isParentedSdkPayload(p: NonNullable<StreamEnvelope['payload']>): boolean {
+  return (
+    p.kind === 'sdk_message' &&
+    (p.message?.type === 'assistant' || p.message?.type === 'user') &&
+    Boolean(p.message?.parentToolUseId)
   )
 }
 
@@ -88,7 +98,7 @@ export function useGlobalSessionRunSync(): void {
 
       // 流式活动：保证 running + 保住已有 startedAt（勿用 Date.now 重置）
       // 终态 assistant 跳过：turn_end 已 schedule 软/硬停，再 adopt 会把 UI 拉回「一直在跑」
-      if (STREAM_ACTIVITY_KINDS.has(p.kind) && !isTerminalAssistantPayload(p)) {
+      if (STREAM_ACTIVITY_KINDS.has(p.kind) && !isTerminalAssistantPayload(p) && !isParentedSdkPayload(p)) {
         lastStreamEventAtMap.set(sessionId, Date.now())
         const entry = getDefaultStore().get(sessionRunMapAtom)[sessionId]
         if (entry?.running && entry.startedAt != null) return

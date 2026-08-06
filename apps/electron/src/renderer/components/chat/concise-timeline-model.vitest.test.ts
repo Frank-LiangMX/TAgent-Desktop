@@ -235,6 +235,18 @@ describe('buildConciseTimeline', () => {
     expect(segs).toHaveLength(1)
     expect(segs[0]).toMatchObject({ kind: 'narrative', tone: 'final' })
   })
+  it('live trailing text stays progress (no final flash)', () => {
+    const process: ProcessEntry[] = [
+      tool('Read', '1', { file_path: 'a.ts' }),
+      { type: 'text', key: 'n1', text: '正在写结论…' },
+    ]
+    const live = buildConciseTimeline(process, { isLive: true })
+    expect(live.map((s) => s.kind)).toEqual(['work_stage', 'narrative'])
+    expect(live[1]).toMatchObject({ kind: 'narrative', tone: 'progress' })
+
+    const done = buildConciseTimeline(process, { isLive: false })
+    expect(done[1]).toMatchObject({ kind: 'narrative', tone: 'final' })
+  })
 })
 
 describe('summarizeToolCluster', () => {

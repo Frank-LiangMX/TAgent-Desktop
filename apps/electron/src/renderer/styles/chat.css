@@ -344,6 +344,21 @@
   min-width: 0;
 }
 
+.agent-concise-stage__panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s ease;
+}
+
+.agent-concise-stage__panel.is-open {
+  grid-template-rows: 1fr;
+}
+
+.agent-concise-stage__panel-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
 .agent-concise-fold {
   min-width: 0;
 }
