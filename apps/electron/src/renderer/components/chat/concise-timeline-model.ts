@@ -514,7 +514,18 @@ export function buildConciseTimeline(
         continue
       }
       if (isTrivialThinking(t)) continue
-      // 对齐 Cursor：中段非琐碎思考收成独立灰字折叠，打断当前阶段
+      // 普通中段思考且当前阶段已有工具 → 并入 stage steps（对齐 Cursor 阶段内思考，
+      // 不刷独立 ThinkingFold、不拆 stage）；可交付思考（或当前阶段无工具）才升独立折叠打断阶段
+      if (!isDeliverableThinking(t) && stageSteps.some((s) => s.kind === 'tool')) {
+        stageSteps.push({
+          kind: 'thinking',
+          key: cur.key,
+          thinking: t,
+          durationSec: resolveThinkingDurationSec(t, cur.durationSec),
+        })
+        continue
+      }
+      // 对齐 Cursor：可交付中段思考收成独立灰字折叠，打断当前阶段
       flushLeadingThink()
       flushStage()
       const durationSec = resolveThinkingDurationSec(t, cur.durationSec)

@@ -455,6 +455,27 @@
   overflow: auto;
 }
 
+/* ThinkingFold 折叠面板：body 常驻 DOM，grid 0fr↔1fr + opacity 平滑过渡。
+ * live→idle settle 后再折起（不 null 卸载），折起后点开仍见全文。 */
+.agent-concise-fold__panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.28s ease,
+    opacity 0.2s ease;
+}
+
+.agent-concise-fold__panel.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.agent-concise-fold__panel-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
 .agent-concise-fold__body--tools {
   display: flex;
   flex-direction: column;
@@ -677,6 +698,20 @@
   line-height: 1.45;
   color: hsl(var(--muted-foreground) / 0.68);
   animation: agent-concise-live-in 0.22s ease-out;
+  /* hold 后淡出：禁止工具完成瞬间 null 卸 DOM（对齐 Cursor 折进灰字摘要） */
+  max-height: 28px;
+  overflow: hidden;
+  transition:
+    opacity 0.25s ease,
+    max-height 0.25s ease,
+    padding 0.25s ease;
+}
+
+.agent-concise-live-status.is-fading {
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 @keyframes agent-concise-live-in {
@@ -693,6 +728,11 @@
 @media (prefers-reduced-motion: reduce) {
   .agent-concise-live-status {
     animation: none;
+    transition: none;
+  }
+  /* settle 折起交给状态切换，不要过渡抢动 */
+  .agent-concise-fold__panel {
+    transition: none;
   }
 }
 

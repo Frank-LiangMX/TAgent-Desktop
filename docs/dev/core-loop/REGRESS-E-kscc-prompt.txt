@@ -1,0 +1,12 @@
+严格按 docs/dev/core-loop/REGRESS-E-thinking-persist-brief.md 执行。
+
+工作区：C:\Users\loumi\Desktop\AI\TAgent-Desktop
+
+用户截图：结束后时间线只有「运行了 N 条命令」，思考灰字头全无（含最后一段）。REGRESS-D settle 解决不了「segment 被删」。
+
+必须：
+1. 取证 H1（_partial 从未打上）+ H2（stop_reason 清空无 thinking 的 stream）→ 写 REGRESS-E-FINDINGS.md
+2. 修 H1+H2 + vitest；保证有过思考的回合结束后 concise 仍有 thinking 段
+3. 不 commit、不碰 permission、不回退 REGRESS-D
+
+stdout：文件列表 + 测试 + 手测步骤。

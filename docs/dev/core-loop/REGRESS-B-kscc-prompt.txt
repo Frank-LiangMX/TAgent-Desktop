@@ -1,0 +1,11 @@
+严格按 docs/dev/core-loop/REGRESS-B-progress-live-brief.md 执行。
+
+工作区：C:\Users\loumi\Desktop\AI\TAgent-Desktop
+规格：docs/dev/core-loop/REGRESS-2026-08-07-SPEC.md §B
+对照：docs/dev/core-loop/CURSOR-CONCISE.md、investigation/kscc-stream-flush/hypotheses.tsv
+
+要求：
+1. 先弄清为何 Cursor 式「思考后阶段性总结」live 不显示、结束才出现；写 REGRESS-B-FINDINGS.md。
+2. 验收/完善工作树未提交的 _partial / SmoothStream 修复；补最小洞 + vitest。
+3. 不 commit、不 push、不改 permission/Chat-Work。
+4. stdout 列改动文件 + vitest 摘要 + 手测步骤。

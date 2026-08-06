@@ -11,6 +11,7 @@ import {
   applyTextDelta,
   applyThinkingDeltaToState,
   clearSessionStreamState,
+  commitStreamThinkingToLastAssistant,
   EMPTY_STREAM_STATE,
   shouldClearStreamText,
   shouldClearStreamThinking,
@@ -98,14 +99,14 @@ describe('tool-only sdk_message 不得清 thinking（防出完即消失）', () 
     expect(state.text).toBe('')
   })
 
-  it('stop_reason 终态清空 thinking', () => {
-    let state = applyThinkingDeltaToState(EMPTY_STREAM_STATE, 'x')
+  it('stop_reason 但 content 无 thinking → 保留 stream thinking（REGRESS-E）', () => {
+    let state = applyThinkingDeltaToState(EMPTY_STREAM_STATE, '完整思考不应被剥')
     state = applySdkMessageToStreamState(state, {
       type: 'assistant',
       content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }],
       stop_reason: 'tool_use',
     })
-    expect(state.thinking).toBe('')
+    expect(state.thinking).toBe('完整思考不应被剥')
   })
 })
 
@@ -176,5 +177,49 @@ describe('applySdkMessageToItems：uuid 原地 upsert（S2.1 单真源）', () =
     expect(items[1]?.message?.type === 'assistant' ? items[1].message.uuid : undefined).toBe('u2')
     expect(items[0]?.streaming).toBe(false)
     expect(items[1]?.streaming).toBe(true)
+  })
+
+  it('同 uuid 后到 tool-only 快照保留已有 thinking（REGRESS-E）', () => {
+    let items = applySdkMessageToItems<StreamItemLike>([], partialMsg('u1', '完整思考全文'), alloc)
+    items = applySdkMessageToItems(
+      items,
+      {
+        type: 'assistant',
+        uuid: 'u1',
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }],
+      },
+      alloc,
+    )
+    expect(items).toHaveLength(1)
+    const m = items[0]?.message
+    expect(m?.type).toBe('assistant')
+    if (m?.type === 'assistant') {
+      const think = m.content.find((b) => b.type === 'thinking')
+      expect(think && think.type === 'thinking' ? think.thinking : '').toBe('完整思考全文')
+      expect(m.content.some((b) => b.type === 'tool_use')).toBe(true)
+      expect(m._partial).toBeUndefined()
+      expect(m.stop_reason).toBe('tool_use')
+    }
+  })
+
+  it('commitStreamThinkingToLastAssistant 写入无 thinking 的末条 assistant', () => {
+    let items: StreamItemLike[] = [
+      {
+        key: 'm0',
+        message: {
+          type: 'assistant',
+          uuid: 'u1',
+          stop_reason: 'tool_use',
+          content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }],
+        },
+      },
+    ]
+    items = commitStreamThinkingToLastAssistant(items, '缓冲里的思考')
+    const m = items[0]?.message
+    expect(m?.type).toBe('assistant')
+    if (m?.type === 'assistant') {
+      expect(m.content[0]).toMatchObject({ type: 'thinking', thinking: '缓冲里的思考' })
+    }
   })
 })

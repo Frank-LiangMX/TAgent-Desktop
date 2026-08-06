@@ -537,10 +537,51 @@ export function buildTurnPresentation(
   // 单真源（S2.2）：消息 content 已带「非空」thinking / text 块时以消息为准——
   // streamState 仅作「尚无 partial」的短暂兜底。正文若再被 streamState 覆盖，
   // 会与 50ms partial 快照来回抢长度 → useSmoothStream 非追加重置 → 前几行抽搐。
-  if (allBlocks.some((x) => x.block.type === 'thinking' && (x.block as TAgentThinkingBlock).thinking.trim())) {
+  // **partial 不算**：同 uuid partial→final 原地 upsert（S1）时，若 partial 文本
+  // 立即把 streamingText 抽空，会让 partial 文本直接进 process 触发 progress tone，
+  // final 帧同 uuid 替换再切 final tone → concise-timeline 卡片瞬间闪烁。
+  // 只看 final/非 partial 的 message content 触发单真源切换，partial 文本继续走 streamState 路径。
+  const isFinalAssistant = (m: TAgentMessage): boolean =>
+    m.type === 'assistant' && (m as { _partial?: boolean })._partial !== true
+  if (
+    allBlocks.some((x) => x.block.type === 'thinking' && (x.block as TAgentThinkingBlock).thinking.trim()) &&
+    turn.items.some(
+      (it) => it.message?.type === 'assistant' && isFinalAssistant(it.message),
+    )
+  ) {
     streamingThinking = undefined
   }
-  if (allBlocks.some((x) => x.block.type === 'text' && (x.block as TAgentTextBlock).text.trim())) {
+  // concise 跨段保护（S3）：上一段 final 文本不得清掉**新段**的 streamState delta。
+  // 现象：u1 final(text) 落盘后，u2 段间 progress 的 delta 仍只活在 streamState——
+  // 若被这条「以消息为准」守卫一并清空，u2 进度要等 u2 partial/final 才可见＝「结束才出现」。
+  // 只在 streamState 与最近一条 final 文本**同段**（前缀/空）时才清；非前缀＝新段，concise 保留。
+  // full 仍按原义清（回答壳以消息 content 为准，见 turn-presentation.vitest 「防双源抽搐」用例）。
+  const lastFinalAssistantText = (() => {
+    for (let i = turn.items.length - 1; i >= 0; i--) {
+      const m = turn.items[i]?.message
+      if (m?.type === 'assistant' && !m.parentToolUseId && isFinalAssistant(m)) {
+        let txt: string | undefined
+        for (const b of m.content) {
+          if (b.type === 'text' && (b as TAgentTextBlock).text.trim()) txt = (b as TAgentTextBlock).text
+        }
+        return txt
+      }
+    }
+    return undefined
+  })()
+  const streamTextRaw = streamingText?.trim() ?? ''
+  const streamSameSegmentAsFinal =
+    !streamTextRaw ||
+    (lastFinalAssistantText != null &&
+      (streamTextRaw.startsWith(lastFinalAssistantText.trim()) ||
+        lastFinalAssistantText.trim().startsWith(streamTextRaw)))
+  if (
+    allBlocks.some((x) => x.block.type === 'text' && (x.block as TAgentTextBlock).text.trim()) &&
+    turn.items.some(
+      (it) => it.message?.type === 'assistant' && isFinalAssistant(it.message),
+    ) &&
+    (!isConcise || streamSameSegmentAsFinal)
+  ) {
     streamingText = undefined
   }
 
@@ -649,6 +690,31 @@ export function buildTurnPresentation(
 
   const streamText = streamingText?.trim() ?? ''
 
+  // 单真源归一（S3，concise+live）：kscc 双源——partial content[] 的 text 块（上次快照）
+  // + streamState.text（自上次 partial 以来的新 delta）。两者本属同一段正在生长的正文，
+  // 但因 streamState 在带 text 的 partial 到达时被清（stream-item-model shouldClearStreamText），
+  // streamState 永远只装「上次 partial 之后的新增量」。若各推一条 process text，pushNarrative
+  // 会把非前缀的两条拼成 `快照\n\n增量`（live 抽搐，final 对齐才稳＝「结束才正常」）。
+  // 这里取「最后一条仍在流式（无 stop_reason）的主线 assistant」的末个非空 text 块」，
+  // 据此把 delta 拼到该 text 块尾部，使 partial+delta 成为单一 narrative 源（逐字打字机）。
+  // 与 Pi 单源语义对齐（pi-agent-adapter 不再发 stream_text_delta）；不改主进程 IR。
+  const lastStreamingPartialText = (() => {
+    for (let i = turn.items.length - 1; i >= 0; i--) {
+      const m = turn.items[i]?.message
+      if (m?.type === 'assistant' && !m.parentToolUseId && !m.stop_reason) {
+        let txt: string | undefined
+        for (const b of m.content) {
+          if (b.type === 'text') {
+            const t = (b as TAgentTextBlock).text
+            if (t.trim()) txt = t
+          }
+        }
+        return txt
+      }
+    }
+    return undefined
+  })()
+
   // full：仅未完成工具时 hold streamingText 在过程区；否则走回答壳。
   // concise：live 流式正文一律写入 process text（timeline narrative）。
   const hasIncompleteTools = !areToolsBeforeIndexCompleted(
@@ -675,6 +741,16 @@ export function buildTurnPresentation(
         last.key === 'stream-text'
       ) {
         process[lastTextIdx] = { type: 'text', key: last.key, text: streamText }
+      } else if (
+        // concise+live 同段续写：last 是当前 partial 的 text 块，streamText 是其后的增量。
+        // 拼成「partial 文本 + 增量」单一源，避免 pushNarrative 把两条目拼成 `a\n\nb` 抽搐。
+        // 仅当 last 文本与当前流式 partial 的 text 块一致时才拼（跨段 final 文本不拼）。
+        isConcise &&
+        isActive &&
+        lastStreamingPartialText &&
+        last.text.trim() === lastStreamingPartialText.trim()
+      ) {
+        process[lastTextIdx] = { type: 'text', key: last.key, text: last.text + streamText }
       } else {
         process.push({ type: 'text', key: 'stream-text', text: streamText })
       }
@@ -769,7 +845,8 @@ export function resolveThinkingDurationSec(
   return Math.max(1, Math.min(180, Math.round(len / 45)))
 }
 
-/** 折叠文案：对齐 Cursor「Thought briefly / Thought for 46s」→ 思考了片刻 / 思考了 46s */
+/** 折叠文案：对齐 Cursor「Thought briefly / Thought for 46s」→ 思考了片刻 / 思考了 46s
+ *  < 3s 一律「思考了片刻」（避免满屏「思考了 1s」）；live 文案不变。 */
 export function formatThinkingSummary(
   durationSec: number | undefined,
   opts?: { live?: boolean; liveElapsedSec?: number },
@@ -779,7 +856,7 @@ export function formatThinkingSummary(
     if (n != null && n >= 1) return `思考中 ${n}s`
     return '正在思考…'
   }
-  if (durationSec != null && durationSec > 0) return `思考了 ${durationSec}s`
+  if (durationSec != null && durationSec >= 3) return `思考了 ${durationSec}s`
   return '思考了片刻'
 }
 

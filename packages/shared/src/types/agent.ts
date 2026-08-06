@@ -370,6 +370,10 @@ export interface SDKAssistantMessage {
   isReplay?: boolean
   /** 渠道配置的模型 ID，持久化/流式期间注入，用于正确匹配模型显示名 */
   _channelModelId?: string
+  /** Claude Agent SDK `includePartialMessages:true` 时携带的流式中间态标记。
+   *  与 Proma/Pi 的 IR `_partial` 同义，渲染层按 uuid 原地 upsert，final 替换。
+   *  不在官方 SDK 类型中，自定义顶层字段。 */
+  _partial?: boolean
 }
 
 /** SDK user 消息 */

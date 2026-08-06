@@ -18,6 +18,7 @@ import {
 } from './concise-timeline-model'
 import { isOneShotTextJump } from './narrative-oneshot'
 import { formatThinkingSummary } from './session-turn-model'
+import { isNearBottom } from './thinking-scroll-follow'
 
 interface ConciseTimelineViewProps {
   segments: ConciseSegment[]
@@ -62,6 +63,17 @@ export function ConciseTimelineView({
 
   const hasProcess = processSegs.length > 0 || Boolean(processExtras)
 
+  // 末阶段判定：live 时最后一个 work_stage 保持底栏，但其后已有 narrative 在流则让位给正文
+  const lastWorkStageIdx = (() => {
+    for (let i = processSegs.length - 1; i >= 0; i--) {
+      if (processSegs[i]!.kind === 'work_stage') return i
+    }
+    return -1
+  })()
+  const hasNarrativeAfterLastStage =
+    lastWorkStageIdx >= 0 &&
+    processSegs.slice(lastWorkStageIdx + 1).some((s) => s.kind === 'narrative')
+
   return (
     <div className="agent-concise-timeline">
       {hasProcess ? (
@@ -70,19 +82,23 @@ export function ConciseTimelineView({
           isLive={isLive}
           defaultExpanded={isLatestTurn || isLive}
         >
-          {processSegs.map((seg) => {
+          {processSegs.map((seg, idx) => {
             if (seg.kind === 'thinking') {
               return (
                 <ThinkingFold
                   key={seg.key}
                   thinking={seg.thinking}
                   durationSec={seg.durationSec}
-                  isLive={isLive && isLastOfKind(processSegs, seg.key, 'thinking')}
+                  // 仅当前正在流式的思考（过程队列末位）为 live；工具/正文一旦跟上 → idle 走 settle
+                  isLive={isLive && isLastSegment(processSegs, seg.key)}
                 />
               )
             }
             if (seg.kind === 'work_stage') {
               const stageLive = isLive && seg.tools.some((t) => !t.result)
+              // 末阶段在回合 live 且其后无 narrative 时保持 live 底栏（不只「有未完成 tool」）
+              const keepWhileActive =
+                isLive && idx === lastWorkStageIdx && !hasNarrativeAfterLastStage
               return (
                 <WorkStageFold
                   key={seg.key}
@@ -90,7 +106,8 @@ export function ConciseTimelineView({
                   diffAdd={seg.diffAdd}
                   diffDel={seg.diffDel}
                   steps={seg.steps}
-                  isLive={stageLive}
+                  isStageLive={stageLive}
+                  keepWhileActive={keepWhileActive}
                   extras={getStageExtras?.(seg)}
                 />
               )
@@ -176,16 +193,15 @@ const RunQueueShell = memo(function RunQueueShell({
   )
 })
 
-function isLastOfKind(
-  segments: ConciseSegment[],
-  key: string,
-  kind: ConciseSegment['kind'],
-): boolean {
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (segments[i]!.kind === kind) return segments[i]!.key === key
-  }
-  return false
+/** seg 是否为过程队列末位（其后再无工具 / 正文 / 进度文）→ 仍属正在流式的思考。 */
+function isLastSegment(segments: ConciseSegment[], key: string): boolean {
+  const last = segments[segments.length - 1]
+  return last != null && last.key === key
 }
+
+/** live→idle 后保持展开的 settle 时长（ms）：先让用户读完尾部，再 CSS 过渡折起。
+ *  对照 Cursor「Thought for Ns」收折节奏；区间 1.5–2.5s。 */
+const THINK_SETTLE_MS = 1800
 
 const ThinkingFold = memo(function ThinkingFold({
   thinking,
@@ -196,9 +212,11 @@ const ThinkingFold = memo(function ThinkingFold({
   durationSec?: number
   isLive: boolean
 }): JSX.Element {
-  // live 时展开看思考输出；结束后可手动收起
+  // live 时展开看思考输出；结束后 settle 保持展开再优雅折起（不秒卸 body），
+  // 头栏常驻「思考了 Ns / 片刻」可再点开回看全文。
   const [open, setOpen] = useState(isLive)
   const wasLive = useRef(isLive)
+  const settleTimer = useRef<number | null>(null)
   const startRef = useRef<number | null>(null)
   if (isLive && startRef.current == null) startRef.current = Date.now()
   const elapsedMs = useLiveElapsedMs(startRef.current ?? undefined, isLive)
@@ -211,11 +229,51 @@ const ThinkingFold = memo(function ThinkingFold({
     liveElapsedSec: Math.floor(elapsedMs / 1000),
   })
 
+  // 流式滚动跟随：body 加 ref；isLive 且内容增长且用户未上滚 → scrollTop 钉底
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  const stickRef = useRef(true)
+  const handleBodyScroll = (): void => {
+    const el = bodyRef.current
+    if (!el) return
+    stickRef.current = isNearBottom(el.scrollTop, el.scrollHeight, el.clientHeight)
+  }
   useEffect(() => {
-    if (isLive) setOpen(true)
-    else if (wasLive.current && !isLive) setOpen(false)
-    wasLive.current = isLive
+    if (!isLive) return
+    const el = bodyRef.current
+    if (!el || !stickRef.current) return
+    el.scrollTop = el.scrollHeight
+  }, [displayedContent, isLive])
+
+  // live→idle：禁止秒折 null 卸 body。先保持展开 settle ~1.8s，再 CSS 过渡折起。
+  // 用户在 settle 期间手动收起 → 尊重用户，取消待执行的强制折起。
+  useEffect(() => {
+    if (isLive) {
+      setOpen(true)
+      wasLive.current = true
+      return
+    }
+    if (!wasLive.current) return
+    wasLive.current = false
+    settleTimer.current = window.setTimeout(() => {
+      settleTimer.current = null
+      setOpen(false)
+    }, THINK_SETTLE_MS)
+    return () => {
+      if (settleTimer.current != null) {
+        window.clearTimeout(settleTimer.current)
+        settleTimer.current = null
+      }
+    }
   }, [isLive])
+
+  const handleToggle = (): void => {
+    // 用户手动收起 / 展开：取消待执行的 settle 强制折起，避免夺回用户刚展开的状态
+    if (settleTimer.current != null) {
+      window.clearTimeout(settleTimer.current)
+      settleTimer.current = null
+    }
+    setOpen((v) => !v)
+  }
 
   // 流式竞态偶发 displayed 被清空时，勿用「…」顶替已有思考正文
   const bodyText = (() => {
@@ -231,7 +289,7 @@ const ThinkingFold = memo(function ThinkingFold({
       <button
         type="button"
         className="agent-concise-fold__head"
-        onClick={() => setOpen((v) => !v)}
+        onClick={handleToggle}
         aria-expanded={open}
       >
         <span className={cn('agent-concise-fold__summary', isLive && 'agent-concise-shimmer')}>
@@ -245,16 +303,22 @@ const ThinkingFold = memo(function ThinkingFold({
           )}
         />
       </button>
-      {open ? (
-        <div className="agent-concise-fold__body">
-          <MessageResponse
-            className="text-[12.5px] leading-[1.55] text-muted-foreground/80"
-            streaming={isLive}
-          >
-            {bodyText}
-          </MessageResponse>
+      {/* body 常驻 DOM：grid 0fr↔1fr + opacity 过渡折起，不 null 卸载；折起后点开仍见全文 */}
+      <div
+        className={cn('agent-concise-fold__panel', open && 'is-open')}
+        aria-hidden={!open}
+      >
+        <div className="agent-concise-fold__panel-inner">
+          <div className="agent-concise-fold__body" ref={bodyRef} onScroll={handleBodyScroll}>
+            <MessageResponse
+              className="text-[12.5px] leading-[1.55] text-muted-foreground/80"
+              streaming={isLive}
+            >
+              {bodyText}
+            </MessageResponse>
+          </div>
         </div>
-      ) : null}
+      </div>
     </div>
   )
 })
@@ -280,31 +344,35 @@ const WorkStageFold = memo(function WorkStageFold({
   diffAdd,
   diffDel,
   steps,
-  isLive,
+  isStageLive,
+  keepWhileActive,
   extras,
 }: {
   summary: string
   diffAdd?: number
   diffDel?: number
   steps: WorkStageStep[]
-  isLive: boolean
+  isStageLive: boolean
+  /** 末阶段在回合 live 时保持 live 底栏（无后续 narrative）；整轮结束才收灰字行 */
+  keepWhileActive: boolean
   extras?: ReactNode
 }): JSX.Element {
   // Cursor：live 只露摘要 + 当前动作；明细仅用户展开。禁止 live 灌入步骤再整收。
   const [open, setOpen] = useState(false)
-  const wasLive = useRef(isLive)
-  const rawLiveStatus = isLive ? getLiveStatusFromSteps(steps) : undefined
-  // 工具切换很快时防顶栏/底行动作文案连闪
-  const liveStatus = useDebouncedValue(rawLiveStatus, 280)
+  const stageActive = isStageLive || keepWhileActive
+  const wasActive = useRef(stageActive)
+  const rawLiveStatus = stageActive ? getLiveStatusFromSteps(steps) : undefined
+  // hold last live status 再淡出，禁止工具完成瞬间 null 卸 DOM（对齐 Cursor 折进灰字摘要）
+  const { shown: liveStatus, fading } = useLiveStatusHold(rawLiveStatus, keepWhileActive)
 
   useEffect(() => {
-    // 阶段结束：若用户曾展开，收回收成灰字行（与 Cursor done 折叠一致）
-    if (wasLive.current && !isLive) setOpen(false)
-    wasLive.current = isLive
-  }, [isLive])
+    // 阶段结束（含末阶段回合结束）：若用户曾展开，收回收成灰字行
+    if (wasActive.current && !stageActive) setOpen(false)
+    wasActive.current = stageActive
+  }, [stageActive])
 
   return (
-    <div className={cn('agent-concise-fold', 'agent-concise-stage', isLive && 'is-live')}>
+    <div className={cn('agent-concise-fold', 'agent-concise-stage', stageActive && 'is-live')}>
       <button
         type="button"
         className="agent-concise-fold__head"
@@ -329,8 +397,10 @@ const WorkStageFold = memo(function WorkStageFold({
       {extras ? <div className="agent-concise-stage__extras">{extras}</div> : null}
 
       {/* live 折叠态：只露当前动作一行（摘要已在 head 累积） */}
-      {isLive && !open && liveStatus ? (
-        <div className="agent-concise-live-status">
+      {!open && liveStatus ? (
+        <div
+          className={cn('agent-concise-live-status', fading && 'is-fading')}
+        >
           <span className="agent-concise-shimmer">{liveStatus}</span>
         </div>
       ) : null}
@@ -345,11 +415,16 @@ const WorkStageFold = memo(function WorkStageFold({
               <StageStepRow
                 key={step.key}
                 step={step}
-                isStreaming={isLive && step.kind === 'tool' && !step.tool.result}
+                isStreaming={isStageLive && step.kind === 'tool' && !step.tool.result}
               />
             ))}
-            {isLive && open && liveStatus ? (
-              <div className="agent-concise-live-status agent-concise-live-status--in-body">
+            {open && liveStatus ? (
+              <div
+                className={cn(
+                  'agent-concise-live-status agent-concise-live-status--in-body',
+                  fading && 'is-fading',
+                )}
+              >
                 <span className="agent-concise-shimmer">{liveStatus}</span>
               </div>
             ) : null}
@@ -360,25 +435,69 @@ const WorkStageFold = memo(function WorkStageFold({
   )
 })
 
-/** 短延迟：同一阶段内工具连发时动作文案更稳；首值立刻显示以便扫光马上可见 */
-function useDebouncedValue<T>(value: T, ms: number): T {
-  const [debounced, setDebounced] = useState(value)
-  const primed = useRef(false)
+/**
+ * live 底栏 hold + 淡出：raw 状态变空时先保持旧值（hold ~500ms），再淡出（~250ms）后卸 DOM，
+ * 禁止工具完成瞬间 null 卸 DOM（对齐 Cursor「当前动作扫光 → 折进阶段灰字摘要」）。
+ * keepWhileActive（末阶段 + 回合 live）：持续保持上一个动作扫光，回合结束才走 hold→淡出。
+ */
+function useLiveStatusHold(
+  raw: string | undefined,
+  keepWhileActive: boolean,
+): { shown: string | undefined; fading: boolean } {
+  const [shown, setShown] = useState<string | undefined>(raw)
+  const [fading, setFading] = useState(false)
+  const heldRef = useRef<string | undefined>(raw)
+  const holdTimer = useRef<number | null>(null)
+  const fadeTimer = useRef<number | null>(null)
+  const shownRef = useRef(shown)
+  shownRef.current = shown
+
+  const clearTimers = (): void => {
+    if (holdTimer.current != null) {
+      window.clearTimeout(holdTimer.current)
+      holdTimer.current = null
+    }
+    if (fadeTimer.current != null) {
+      window.clearTimeout(fadeTimer.current)
+      fadeTimer.current = null
+    }
+  }
+
   useEffect(() => {
-    if (value == null || value === '') {
-      primed.current = false
-      setDebounced(value)
+    if (raw) {
+      // 有当前动作：立即显示，停淡出
+      heldRef.current = raw
+      clearTimers()
+      setFading(false)
+      if (shownRef.current !== raw) setShown(raw)
       return
     }
-    if (!primed.current) {
-      primed.current = true
-      setDebounced(value)
+    // raw 空
+    if (keepWhileActive) {
+      // 末阶段 + 回合 live：保持上一个动作扫光，不淡出
+      clearTimers()
+      setFading(false)
+      if (!shownRef.current && heldRef.current) setShown(heldRef.current)
       return
     }
-    const id = window.setTimeout(() => setDebounced(value), ms)
-    return () => window.clearTimeout(id)
-  }, [value, ms])
-  return debounced
+    // 不再 active 且当前仍有内容：hold 500ms → 淡出 250ms → 卸 DOM
+    if (shownRef.current && holdTimer.current == null && fadeTimer.current == null) {
+      holdTimer.current = window.setTimeout(() => {
+        holdTimer.current = null
+        setFading(true)
+        fadeTimer.current = window.setTimeout(() => {
+          fadeTimer.current = null
+          setFading(false)
+          setShown(undefined)
+        }, 250)
+      }, 500)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [raw, keepWhileActive])
+
+  useEffect(() => () => clearTimers(), [])
+
+  return { shown, fading }
 }
 const StageStepRow = memo(function StageStepRow({
   step,

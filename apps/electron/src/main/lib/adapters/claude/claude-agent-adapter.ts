@@ -48,7 +48,7 @@ export interface KsccQueryOptions extends AgentQueryInput {
     options: { mcpServers?: unknown }
   ) => Promise<
     | { behavior: 'allow'; updatedInput: Record<string, unknown>; message?: string }
-    | { behavior: 'deny'; message: string }
+    | { behavior: 'deny'; message: string; interrupt?: boolean }
     | { behavior: 'ask'; message?: string }
   >
   /** 系统提示词 */

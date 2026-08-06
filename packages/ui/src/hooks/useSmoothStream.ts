@@ -182,6 +182,24 @@ export function useSmoothStream({
       }
       prevContentRef.current = newContent
       return
+    } else if (
+      // 兜底：newContent 把「已显示内容」作为子串包含（trim/dedupe/多段拼接等破坏前缀），
+      // 按「已显示」为基追加剩余 + 重置 prevContentRef，让下一帧继续走追加分支，
+      // 不再整段 setDisplayedContent 一次性 dump（"一大团"）。
+      displayedRef.current.length > 0 &&
+      newContent.includes(displayedRef.current) &&
+      newContent.length > displayedRef.current.length
+    ) {
+      const delta = newContent.slice(displayedRef.current.length)
+      chunkQueueRef.current = []
+      if (delta) {
+        chunkQueueRef.current.push(...segmentText(delta))
+        if (!rafRef.current) {
+          rafRef.current = requestAnimationFrame(renderLoop)
+        }
+      }
+      prevContentRef.current = newContent
+      return
     } else {
       // 内容重置（用户重新发送等场景）
       chunkQueueRef.current = []
