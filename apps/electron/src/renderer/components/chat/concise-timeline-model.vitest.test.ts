@@ -3,6 +3,7 @@ import type { ProcessEntry } from './session-turn-model'
 import {
   buildConciseTimeline,
   classifyToolFamily,
+  collectTurnEditedFiles,
   extractDiffHint,
   getLiveStatusFromSteps,
   getWorkStepLabel,
@@ -11,6 +12,7 @@ import {
   summarizeToolCluster,
   summarizeWorkStage,
 } from './concise-timeline-model'
+import { isOneShotTextJump } from './narrative-oneshot'
 
 function tool(
   name: string,
@@ -139,17 +141,16 @@ describe('buildConciseTimeline', () => {
       tool('Edit', 'e1', { file_path: 'b.ts' }),
     ]
     const segs = buildConciseTimeline(process)
-    expect(segs[0]).toMatchObject({ kind: 'thinking', summary: '思考了 6 秒', durationSec: 6 })
+    expect(segs[0]).toMatchObject({ kind: 'thinking', summary: '思考了 6s', durationSec: 6 })
     const stage = segs[1]!
     expect(stage.kind).toBe('work_stage')
     if (stage.kind === 'work_stage') {
-      const think = stage.steps.find((s) => s.kind === 'thinking')
-      expect(think && think.kind === 'thinking' ? think.durationSec : undefined).toBe(3)
-      expect(getWorkStepLabel(think!)).toBe('思考了 3 秒')
+      // 中段思考已升为独立 ThinkingFold，不再埋进阶段 steps
+      expect(stage.steps.every((s) => s.kind === 'tool')).toBe(true)
     }
   })
 
-  it('interleaves thinking steps inside work_stage for expand view', () => {
+  it('lifts mid-run thinking to top-level fold between stages (Cursor)', () => {
     const process: ProcessEntry[] = [
       { type: 'thinking', key: 't1', thinking: '先摸清 Proma 结构' },
       tool('Bash', 'b1', { command: 'dir' }),
@@ -163,17 +164,23 @@ describe('buildConciseTimeline', () => {
       tool('Edit', 'e1', { file_path: 'a.ts' }, true, 'ok +10 -2'),
     ]
     const segs = buildConciseTimeline(process)
-    expect(segs.map((s) => s.kind)).toEqual(['thinking', 'work_stage'])
-    const stage = segs[1]!
-    if (stage.kind === 'work_stage') {
-      expect(stage.steps.map((s) => s.kind)).toEqual(['tool', 'tool', 'thinking', 'tool'])
-      const think = stage.steps.find((s) => s.kind === 'thinking')
-      expect(think && think.kind === 'thinking' ? think.thinking : '').toContain('**pi')
-      expect(stage.diffAdd).toBe(10)
-      expect(stage.diffDel).toBe(2)
-      const editStep = stage.steps[3]!
-      expect(editStep.kind === 'tool' && editStep.diff).toEqual({ add: 10, del: 2 })
-      expect(getWorkStepLabel(editStep)).toBe('编辑 a.ts')
+    expect(segs.map((s) => s.kind)).toEqual([
+      'thinking',
+      'work_stage',
+      'thinking',
+      'work_stage',
+    ])
+    const mid = segs[2]!
+    expect(mid.kind).toBe('thinking')
+    if (mid.kind === 'thinking') {
+      expect(mid.thinking).toContain('**pi')
+    }
+    const editStage = segs[3]!
+    if (editStage.kind === 'work_stage') {
+      expect(editStage.steps.map((s) => s.kind)).toEqual(['tool'])
+      expect(editStage.diffAdd).toBe(10)
+      expect(editStage.diffDel).toBe(2)
+      expect(getWorkStepLabel(editStage.steps[0]!)).toBe('编辑 a.ts')
     }
   })
 
@@ -249,6 +256,15 @@ describe('buildConciseTimeline', () => {
   })
 })
 
+describe('isOneShotTextJump (NarrativeRow)', () => {
+  it('detects empty→large and large relative jumps', () => {
+    expect(isOneShotTextJump(0, 100)).toBe(true)
+    expect(isOneShotTextJump(10, 200)).toBe(true)
+    expect(isOneShotTextJump(0, 20)).toBe(false)
+    expect(isOneShotTextJump(100, 150)).toBe(false)
+  })
+})
+
 describe('summarizeToolCluster', () => {
   it('summarizes explore cluster', () => {
     const tools = [
@@ -256,5 +272,31 @@ describe('summarizeToolCluster', () => {
       tool('Read', '2', { file_path: 'b.ts' }),
     ] as Extract<ProcessEntry, { type: 'tool' }>[]
     expect(summarizeToolCluster('explore', tools)).toMatch(/探索了 2/)
+  })
+})
+
+describe('collectTurnEditedFiles', () => {
+  it('merges edits by path and skips pending / non-edit', () => {
+    const process: ProcessEntry[] = [
+      tool('Read', 'r1', { file_path: 'a.ts' }, true, 'ok'),
+      tool('Edit', 'e1', { file_path: 'src/ConciseTimelineView.tsx' }, true, 'Updated +2 -1'),
+      tool('StrReplace', 'e2', { path: 'src/AssistantTurnView.tsx' }, true, 'ok +1 -1'),
+      tool('Write', 'e3', { filePath: 'apps/electron/src/renderer/styles/chat.css' }, true, '+11 -1'),
+      tool('Edit', 'e4', { file_path: 'src/ConciseTimelineView.tsx' }, true, 'Updated +3 -0'),
+      tool('Edit', 'pending', { file_path: 'wip.ts' }, false),
+    ]
+    const files = collectTurnEditedFiles(process)
+    expect(files.map((f) => f.name)).toEqual([
+      'ConciseTimelineView.tsx',
+      'AssistantTurnView.tsx',
+      'chat.css',
+    ])
+    expect(files[0]).toMatchObject({ add: 5, del: 1 })
+    expect(files[1]).toMatchObject({ add: 1, del: 1 })
+    expect(files[2]).toMatchObject({ add: 11, del: 1 })
+  })
+
+  it('classifies StrReplace as edit', () => {
+    expect(classifyToolFamily('StrReplace')).toBe('edit')
   })
 })

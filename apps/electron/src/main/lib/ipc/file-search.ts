@@ -20,10 +20,23 @@ export const FILE_SEARCH_SKIP_DIRS = new Set([
   'coverage',
   '.venv',
   'venv',
+  // 生成物/缓存目录（j3_statics 的 preview_cache 有 2.8 万项）
+  'preview_cache',
+  'preview-cache',
+  '.preview-cache',
 ])
 
 /** 构建产物目录：首轮跳过，第二轮才进 */
 export const FILE_SEARCH_ARTIFACT_DIRS = new Set(['dist', 'build', 'out', '.next', 'target'])
+
+/**
+ * 单目录条目上限：readdir 结果超过即视为生成物/缓存目录，跳过不深入。
+ *
+ * 全局配额（FILE_SEARCH_MAX_FILES）会被单个爆炸目录瞬间吃光——
+ * preview_cache 2.8 万项 > 8000 上限，按名搜索一进它就整体终止，
+ * 排在其后的 py/、static/ 等真实源码目录永远扫不到（j3_statics 实测复现）。
+ */
+export const FILE_SEARCH_MAX_DIR_ENTRIES = 3000
 
 /**
  * 扫描上限（超过放弃，防止超大项目阻塞主进程）。
@@ -52,6 +65,9 @@ function searchFileByName(
     } catch {
       return null
     }
+    // 单目录条目爆炸（preview_cache 这类 2 万+ 生成物目录）会瞬间吃光全局配额，
+    // 导致排在其后的真实源码目录永远扫不到——超过阈值整体跳过（本层文件仍可比对）。
+    const isHugeDir = entries.length > FILE_SEARCH_MAX_DIR_ENTRIES
     // 先比完本层文件再下潜：同名文件优先命中更浅的那个，也避免深目录抢先
     const subdirs: string[] = []
     for (const entry of entries) {
@@ -59,6 +75,7 @@ function searchFileByName(
       if (entry.isDirectory()) {
         if (FILE_SEARCH_SKIP_DIRS.has(entry.name)) continue
         if (!includeArtifacts && FILE_SEARCH_ARTIFACT_DIRS.has(entry.name)) continue
+        if (isHugeDir) continue
         subdirs.push(join(dir, entry.name))
       } else if (entry.name.toLowerCase() === target) {
         return join(dir, entry.name)

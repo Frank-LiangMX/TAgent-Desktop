@@ -14,8 +14,17 @@ import {
   stripLineCol,
   existsCacheKey,
   getFileExistsCache,
+  msysPathToWindowsDrivePath,
 } from '@tagent/shared'
 import { cn } from '../../lib/utils'
+
+/** Windows 平台（渲染进程无 process，用 navigator 探测；jsdom 测试默认非 win 不转换） */
+const IS_WINDOWS =
+  typeof navigator !== 'undefined' &&
+  (/win/i.test(navigator.platform || '') ||
+    (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform
+      ?.toLowerCase()
+      .includes('win'))
 
 interface FilePathChipProps {
   /** 文件路径（绝对或相对，可能带行号后缀） */
@@ -115,7 +124,14 @@ export function FilePathChip({
   })
 
   const displayPath = React.useMemo(() => {
-    if (isAbsolute) return trimmedPath
+    if (isAbsolute) {
+      // MSYS/Git Bash 挂载形态（/f/...）：Windows 上按盘符路径显示，避免 tooltip 出现解析不了的假路径
+      if (IS_WINDOWS) {
+        const drive = msysPathToWindowsDrivePath(trimmedPath)
+        if (drive) return drive
+      }
+      return trimmedPath
+    }
     if (candidateBases.length > 0) {
       const firstSegment = cleanPath.split('/')[0]
       if (firstSegment) {

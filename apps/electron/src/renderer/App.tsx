@@ -65,6 +65,8 @@ import {
 } from './atoms/workspace-atoms'
 import { useGlobalSessionRunSync } from './hooks/useGlobalSessionRunSync'
 import { useGlobalPermissionSync } from './hooks/useGlobalPermissionSync'
+import { useInitUpdaterListener } from './atoms/updater'
+import { UpdateBanner } from './components/updater/UpdateBanner'
 
 declare global {
   interface Window {
@@ -281,6 +283,14 @@ declare global {
       updateUserProfile: (updates: Partial<UserProfile>) => Promise<UserProfile>
       // 渠道余额
       getChannelBalance: (channelId: string) => Promise<ChannelBalanceResult>
+      // 自动更新
+      updater?: {
+        checkForUpdates: () => Promise<void>
+        getStatus: () => Promise<unknown>
+        installWhenIdle: () => Promise<boolean>
+        cancelIdleInstall: () => Promise<void>
+        onStatusChanged: (cb: (status: unknown) => void) => () => void
+      }
     }
   }
 }
@@ -330,6 +340,8 @@ export function App(): JSX.Element {
   useGlobalSessionRunSync()
   // 全局权限队列同步（REQUEST 入队 / RESOLVED 出队，切会话不丢横幅）
   useGlobalPermissionSync()
+  // 自动更新状态监听（主进程推送 → atom → UpdateBanner）
+  useInitUpdaterListener()
 
   // Phase 2：全局 Nudge → 按设置：顶栏 ticker / 面板 toast
   useEffect(() => {
@@ -647,6 +659,7 @@ export function App(): JSX.Element {
       {notificationPrefs.panelToast ? (
         <Toaster position="top-center" richColors closeButton visibleToasts={2} />
       ) : null}
+      <UpdateBanner />
       </RichSourceContext.Provider>
     </TooltipProvider>
   )

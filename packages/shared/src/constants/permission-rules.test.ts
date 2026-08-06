@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 import {
   isAutoModeAutoAllowTool,
   isChatModeBlockedTool,
+  isChatModeHardStopTool,
   CHAT_MODE_BLOCK_REASON,
   CHAT_MODE_BLOCK_USER_MESSAGE,
   CHAT_MODE_BLOCK_USER_TITLE,
@@ -209,6 +210,22 @@ describe('isChatModeBlockedTool（Chat 硬拦）', () => {
     expect(isChatModeBlockedTool('Bash', { command: 'ls' }, cwd)).toBe(false)
   })
 
+  test('AskUserQuestion 讨论问答放行（Chat≈Work，只禁写）', () => {
+    expect(isChatModeBlockedTool('AskUserQuestion', { questions: [] }, cwd)).toBe(false)
+  })
+
+  test('EnterPlanMode / Task 在 Chat 拦截，但非硬停', () => {
+    expect(isChatModeBlockedTool('EnterPlanMode', {}, cwd)).toBe(true)
+    expect(isChatModeHardStopTool('EnterPlanMode', {}, cwd)).toBe(false)
+    expect(isChatModeBlockedTool('Task', { prompt: 'x' }, cwd)).toBe(true)
+    expect(isChatModeHardStopTool('Task', { prompt: 'x' }, cwd)).toBe(false)
+  })
+
+  test('Write / 破坏性 Bash 在 Chat 硬停', () => {
+    expect(isChatModeHardStopTool('Write', { file_path: 'a.ts' }, cwd)).toBe(true)
+    expect(isChatModeHardStopTool('Bash', { command: 'rm -rf node_modules' }, cwd)).toBe(true)
+  })
+
   test('写工具 / 看板 / 破坏性命令拦截', () => {
     expect(isChatModeBlockedTool('Write', { file_path: 'a.ts' }, cwd)).toBe(true)
     expect(isChatModeBlockedTool('Edit', { file_path: 'a.ts' }, cwd)).toBe(true)
@@ -220,8 +237,9 @@ describe('isChatModeBlockedTool（Chat 硬拦）', () => {
 
   test('拦截原因文案含 Chat 与切 Work 引导', () => {
     expect(CHAT_MODE_BLOCK_REASON.length).toBeGreaterThan(10)
-    expect(CHAT_MODE_BLOCK_REASON).toMatch(/讨论模式（Chat）/)
-    expect(CHAT_MODE_BLOCK_REASON).toMatch(/切换到 Work/)
+    expect(CHAT_MODE_BLOCK_REASON).toMatch(/Chat/)
+    expect(CHAT_MODE_BLOCK_REASON).toMatch(/Work/)
+    expect(CHAT_MODE_BLOCK_REASON).toMatch(/不要重试|EnterPlanMode/)
     expect(CHAT_MODE_BLOCK_USER_TITLE).toMatch(/Chat/)
     expect(CHAT_MODE_BLOCK_USER_MESSAGE).toMatch(/Chat \| Work/)
   })

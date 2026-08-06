@@ -16,14 +16,21 @@ import {
 } from '@tagent/ui'
 import { ProcessGroupView } from './ProcessGroupView'
 import { ConciseTimelineView, joinNarrativeTexts } from './ConciseTimelineView'
-import { buildConciseTimeline } from './concise-timeline-model'
+import {
+  buildConciseTimeline,
+  classifyToolFamily,
+  collectTurnEditedFiles,
+  type ConciseSegment,
+} from './concise-timeline-model'
 import { SubagentEntryCard } from './SubagentEntryCard'
+import { TurnFilesChangedCard } from './TurnFilesChangedCard'
 import {
   buildTurnPresentation,
   filterSubagentItems,
   findSubagentTaskTool,
   listSubagentEntryIds,
   type SessionRenderTurn,
+  type TurnSourceItem,
   type TurnStreamState,
 } from './session-turn-model'
 import type { TaskCardState } from './subagent-ui-model'
@@ -34,6 +41,7 @@ import {
   formatMessageTime,
   useLiveElapsedMs,
 } from '../../lib/time-utils'
+import { cn } from '../../lib/utils'
 import { MentionChip } from './MentionText'
 import { chatProcessDisplayModeAtom } from '../../atoms/chat-display-prefs'
 
@@ -149,11 +157,11 @@ export function AssistantTurnView({
     return turnCreatedAt
   }, [mainItems, turnCreatedAt])
 
-  // 完成/中断耗时：正常完成显示「完成 Xs」（复制栏）；用户停止/出错在标题行显示「停止/出错 Xs」
+  // 完成/中断/出错：句尾统一「已中断|出错|完成 · 耗时 · 墙钟」；标题行仅 live 计时
   const completionMs = !isLiveTurn && completedDuration ? completedDuration.ms : 0
   const endedBy = completedDuration?.endedBy
   const completionLabel =
-    endedBy === 'stopped' ? '停止' : endedBy === 'error' ? '出错' : '完成'
+    endedBy === 'stopped' ? '已中断' : endedBy === 'error' ? '出错' : '完成'
 
   // live 且尚无 createdAt：用首次进入 live 的时刻（结束后 ref 保留，不重置）
   const liveStartRef = useRef<number | null>(null)
@@ -174,11 +182,7 @@ export function AssistantTurnView({
     ? '' // concise：时长进「运行了」外层容器，标题行不再重复
     : isLiveTurn
       ? `运行 ${formatElapsedDuration(elapsedMs)}`
-      : completionMs > 0 && endedBy !== 'complete'
-        ? `${completionLabel} ${formatElapsedDuration(completionMs)}`
-        : turnFinishedAt
-          ? formatMessageTime(turnFinishedAt)
-          : ''
+      : ''
 
   const workedMs = isLiveTurn
     ? elapsedMs
@@ -188,13 +192,39 @@ export function AssistantTurnView({
         ? turnFinishedAt - turnCreatedAt
         : 0
 
+  // 墙钟：优先 起点+耗时（中断/出错时末条 assistant.createdAt 可能仍是中段）
+  const endClockAt =
+    !isLiveTurn && startedAt != null && completionMs > 0
+      ? startedAt + completionMs
+      : turnFinishedAt
+
   // 复制：concise 拼 narrative；full 用回答壳全文
   const copyText = isConcise
     ? joinNarrativeTexts(conciseSegments).trim()
     : (answerFull || displayedContent || content).trim()
 
+  // 句尾状态：完成 / 已中断 / 出错 + 耗时 + 墙钟（concise / full 共用）
+  const endFooter =
+    !processLive && (completionMs > 0 || endClockAt)
+      ? {
+          label: completionLabel,
+          duration:
+            completionMs > 0 ? formatElapsedDuration(completionMs) : undefined,
+          clock: endClockAt ? formatMessageTime(endClockAt) : undefined,
+          kind: endedBy ?? 'complete',
+        }
+      : null
+
+  // Cursor 式 Files Changed：回合结束后从编辑工具聚合
+  const editedFiles = useMemo(
+    () => (!processLive ? collectTurnEditedFiles(presentation.process) : []),
+    [processLive, presentation.process],
+  )
+  const filesCard =
+    editedFiles.length > 0 ? <TurnFilesChangedCard files={editedFiles} /> : null
+
   return (
-    <div className="agent-turn flex flex-col gap-3">
+    <div className="agent-turn flex flex-col">
       {(presentation.modelId || statusLabel || (mentionLabels && mentionLabels.length > 0)) && (
         <div className="agent-turn-title-row flex-wrap">
           {/* 有 @ 角色铭牌时不重复显示 modelId（避免两个铭牌并列）；否则正常显示模型名 */}
@@ -236,10 +266,40 @@ export function AssistantTurnView({
             isLive={processLive}
             isLatestTurn={isLatestAssistantTurn || processLive}
             workedMs={workedMs}
+            getStageExtras={
+              subagentEntryIds.length > 0
+                ? (seg) => {
+                    const hostKey = pickSubagentHostStageKey(conciseSegments)
+                    if (hostKey !== seg.key) return null
+                    return renderConciseSubagents(
+                      subagentEntryIds,
+                      turn.items,
+                      subagentCards,
+                      processLive,
+                      onOpenSubagent,
+                    )
+                  }
+                : undefined
+            }
+            processExtras={
+              // 尚无阶段时仍展示子代理行（挂在运行队列末尾）
+              subagentEntryIds.length > 0 &&
+              !conciseSegments.some((s) => s.kind === 'work_stage')
+                ? renderConciseSubagents(
+                    subagentEntryIds,
+                    turn.items,
+                    subagentCards,
+                    processLive,
+                    onOpenSubagent,
+                  )
+                : undefined
+            }
           />
-          {copyText && !processLive ? (
+          {filesCard}
+          {copyText || endFooter ? (
             <div className="agent-answer-toolbar">
-              <MessageCopyButton text={copyText} />
+              {copyText ? <MessageCopyButton text={copyText} /> : null}
+              {endFooter ? <TurnEndFooter {...endFooter} /> : null}
             </div>
           ) : null}
         </>
@@ -257,21 +317,25 @@ export function AssistantTurnView({
         )
       )}
 
-      {subagentEntryIds.map((parentToolUseId) => {
-        const group = filterSubagentItems(turn.items, parentToolUseId).filter(
-          (it) => it.message?.type === 'assistant',
-        )
-        return (
-          <SubagentEntryCard
-            key={parentToolUseId}
-            items={group}
-            card={subagentCards?.get(parentToolUseId)}
-            launcher={findSubagentTaskTool(turn.items, parentToolUseId)}
-            isLive={processLive}
-            onOpen={() => onOpenSubagent(parentToolUseId)}
-          />
-        )
-      })}
+      {!isConcise &&
+        subagentEntryIds.map((parentToolUseId) => {
+          const group = filterSubagentItems(turn.items, parentToolUseId).filter(
+            (it) => it.message?.type === 'assistant',
+          )
+          return (
+            <SubagentEntryCard
+              key={parentToolUseId}
+              items={group}
+              card={subagentCards?.get(parentToolUseId)}
+              launcher={findSubagentTaskTool(turn.items, parentToolUseId)}
+              isLive={processLive}
+              onOpen={() => onOpenSubagent(parentToolUseId)}
+            />
+          )
+        })}
+
+      {/* full：无回答壳时仍展示 Files Changed */}
+      {!isConcise && !showAnswerShell ? filesCard : null}
 
       {showAnswerShell && (
         <div className="agent-answer-block">
@@ -287,19 +351,43 @@ export function AssistantTurnView({
               ) : null}
             </MessageContent>
           </Message>
-          {copyText || completionMs > 0 ? (
+          {filesCard}
+          {copyText || endFooter ? (
             <div className="agent-answer-toolbar">
               {copyText ? <MessageCopyButton text={copyText} /> : null}
-              {completionMs > 0 && endedBy === 'complete' ? (
-                <span className="agent-answer-time">
-                  完成 {formatElapsedDuration(completionMs)}
-                </span>
-              ) : null}
+              {endFooter ? <TurnEndFooter {...endFooter} /> : null}
             </div>
           ) : null}
         </div>
       )}
     </div>
+  )
+}
+
+/** 消息句尾：完成 / 已中断 / 出错 + 耗时 + 墙钟时间 */
+function TurnEndFooter({
+  label,
+  duration,
+  clock,
+  kind,
+}: {
+  label: string
+  duration?: string
+  clock?: string
+  kind: 'complete' | 'stopped' | 'error'
+}): JSX.Element {
+  const parts = [label, duration, clock].filter(Boolean)
+  return (
+    <span
+      className={cn(
+        'agent-answer-time',
+        kind === 'stopped' && 'agent-answer-time--stopped',
+        kind === 'error' && 'agent-answer-time--error',
+      )}
+      title={parts.join(' · ')}
+    >
+      {parts.join(' · ')}
+    </span>
   )
 }
 
@@ -316,4 +404,50 @@ function resolveAnswerContent(answer: string, stream: string): string {
   }
   // 多轮工具后新开一段 stream，与旧 answer 不相交 → 用 stream（过程区另有旧文）
   return s
+}
+
+/** 子代理优先挂探索/搜索阶段（对齐 Cursor）；否则挂最后一个阶段 */
+function pickSubagentHostStageKey(segments: ConciseSegment[]): string | null {
+  const stages = segments.filter(
+    (s): s is Extract<ConciseSegment, { kind: 'work_stage' }> => s.kind === 'work_stage',
+  )
+  if (stages.length === 0) return null
+  for (let i = stages.length - 1; i >= 0; i--) {
+    const stage = stages[i]!
+    const hasExplore = stage.tools.some((t) => {
+      const f = classifyToolFamily(t.tool.name)
+      return f === 'explore' || f === 'search'
+    })
+    if (hasExplore) return stage.key
+  }
+  return stages[stages.length - 1]!.key
+}
+
+function renderConciseSubagents(
+  ids: string[],
+  items: TurnSourceItem[],
+  cards: Map<string, TaskCardState> | undefined,
+  isLive: boolean,
+  onOpen: (parentToolUseId: string) => void,
+): JSX.Element {
+  return (
+    <>
+      {ids.map((parentToolUseId) => {
+        const group = filterSubagentItems(items, parentToolUseId).filter(
+          (it) => it.message?.type === 'assistant',
+        )
+        return (
+          <SubagentEntryCard
+            key={parentToolUseId}
+            variant="timeline"
+            items={group}
+            card={cards?.get(parentToolUseId)}
+            launcher={findSubagentTaskTool(items, parentToolUseId)}
+            isLive={isLive}
+            onOpen={() => onOpen(parentToolUseId)}
+          />
+        )
+      })}
+    </>
+  )
 }

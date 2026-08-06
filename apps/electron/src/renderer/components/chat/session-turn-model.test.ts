@@ -58,6 +58,22 @@ describe('isRealUserInput / isToolResultOnlyUser', () => {
     expect(isRealUserInput(m)).toBe(false)
     expect(isToolResultOnlyUser(m)).toBe(true)
   })
+
+  test('kscc interrupt sentinel is not real user input', () => {
+    const m = userText('[Request interrupted by user for tool use]') as Extract<
+      TAgentMessage,
+      { type: 'user' }
+    >
+    expect(isRealUserInput(m)).toBe(false)
+  })
+
+  test('isSynthetic user is not real input', () => {
+    const m = {
+      ...userText('skill prompt'),
+      isSynthetic: true,
+    } as Extract<TAgentMessage, { type: 'user' }>
+    expect(isRealUserInput(m)).toBe(false)
+  })
 })
 
 describe('groupItemsIntoTurns', () => {
@@ -101,6 +117,17 @@ describe('groupItemsIntoTurns', () => {
     ]
     const turns = groupItemsIntoTurns(items)
     expect(turns.map((t) => t.kind)).toEqual(['user', 'standalone', 'assistant-turn'])
+  })
+
+  test('kscc interrupt does not become a user bubble', () => {
+    const items: TurnSourceItem[] = [
+      { key: 'u1', message: userText('分析') },
+      { key: 'a1', message: assistantTools('m', [{ id: 't1', name: 'Read' }]) },
+      { key: 'intr', message: userText('[Request interrupted by user for tool use]') },
+    ]
+    const turns = groupItemsIntoTurns(items)
+    expect(turns.map((t) => t.kind)).toEqual(['user', 'assistant-turn'])
+    expect(turns.some((t) => t.kind === 'user' && t.key === 'intr')).toBe(false)
   })
 })
 

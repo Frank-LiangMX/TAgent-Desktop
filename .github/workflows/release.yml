@@ -94,6 +94,47 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: bun run package:ci -- ${{ matrix.package_args }}
 
+      - name: Verify expected artifacts exist
+        working-directory: ${{ matrix.workdir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          echo "=== Verifying artifacts for ${RELEASE_TAG} (version ${VERSION}) ==="
+
+          check_file() {
+            local pattern="$1"
+            local label="$2"
+            local found
+            found=$(ls out/${pattern} 2>/dev/null | wc -l)
+            if [ "$found" -eq 0 ]; then
+              echo "::error::Missing ${label}: out/${pattern}"
+              exit 1
+            fi
+            echo "✓ ${label}: $(ls out/${pattern} 2>/dev/null | head -1)"
+          }
+
+          case "${{ matrix.os }}" in
+            macos-latest)
+              check_file "TAgent-${VERSION}-arm64.dmg" "macOS arm64 dmg"
+              check_file "TAgent-${VERSION}-x64.dmg" "macOS x64 dmg"
+              check_file "TAgent-${VERSION}-arm64.zip" "macOS arm64 zip"
+              check_file "TAgent-${VERSION}-x64.zip" "macOS x64 zip"
+              check_file "latest-mac.yml" "macOS update manifest"
+              ;;
+            windows-2022)
+              check_file "TAgent-${VERSION}-x64.exe" "Windows exe"
+              check_file "TAgent-${VERSION}-x64.exe.blockmap" "Windows blockmap"
+              check_file "latest.yml" "Windows update manifest"
+              ;;
+            ubuntu-latest)
+              check_file "TAgent-${VERSION}-x86_64.AppImage" "Linux AppImage"
+              check_file "latest-linux.yml" "Linux update manifest"
+              ;;
+          esac
+
+          echo "=== All expected artifacts present ==="
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -102,8 +143,9 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-  release:
-    name: Sync Release Body
+  # ── Gate: verify ALL platforms built successfully before publishing ──
+  verify-artifacts:
+    name: Verify All Platform Artifacts
     needs: [build-desktop]
     runs-on: ubuntu-latest
     steps:
@@ -111,17 +153,198 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
 
-      - name: Verify versioned release notes
-        run: |
-          test -f "${RELEASE_NOTES_PATH}"
-          head -n 5 "${RELEASE_NOTES_PATH}"
-
-      - name: Download packaged artifacts
+      - name: Download all packaged artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: desktop-*
           path: release-assets
           merge-multiple: true
+
+      - name: Verify complete three-platform artifact bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          echo "=== Verifying complete release bundle for ${RELEASE_TAG} ==="
+
+          errors=0
+
+          check() {
+            local file="$1"
+            local label="$2"
+            if [ ! -f "release-assets/${file}" ]; then
+              echo "::error::Missing ${label}: ${file}"
+              errors=$((errors + 1))
+            else
+              size=$(stat -c%s "release-assets/${file}" 2>/dev/null || stat -f%z "release-assets/${file}" 2>/dev/null || echo "?")
+              echo "✓ ${label}: ${file} (${size} bytes)"
+            fi
+          }
+
+          # macOS (arm64 + x64)
+          check "TAgent-${VERSION}-arm64.dmg" "macOS arm64 dmg"
+          check "TAgent-${VERSION}-x64.dmg" "macOS x64 dmg"
+          check "TAgent-${VERSION}-arm64.zip" "macOS arm64 zip"
+          check "TAgent-${VERSION}-x64.zip" "macOS x64 zip"
+          check "latest-mac.yml" "macOS update manifest"
+
+          # Windows
+          check "TAgent-${VERSION}-x64.exe" "Windows exe"
+          check "TAgent-${VERSION}-x64.exe.blockmap" "Windows blockmap"
+          check "latest.yml" "Windows update manifest"
+
+          # Linux
+          check "TAgent-${VERSION}-x86_64.AppImage" "Linux AppImage"
+          check "latest-linux.yml" "Linux update manifest"
+
+          if [ "$errors" -gt 0 ]; then
+            echo ""
+            echo "::error::${errors} artifact(s) missing — release aborted"
+            echo ""
+            echo "=== Files actually present ==="
+            find release-assets -type f -print | sort
+            exit 1
+          fi
+
+          echo ""
+          echo "=== All ${#} artifacts verified ==="
+          find release-assets -type f -print | sort
+
+  # ── Gate: verify release notes exist AND have real content ──
+  verify-release-notes:
+    name: Verify Release Notes
+    needs: [build-desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Verify release notes file exists and has content
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== Checking release notes: ${RELEASE_NOTES_PATH} ==="
+
+          if [ ! -f "${RELEASE_NOTES_PATH}" ]; then
+            echo "::error::Release notes file not found: ${RELEASE_NOTES_PATH}"
+            echo "::error::Run 'bun run scripts/prepare-release.ts <version>' first to generate it."
+            exit 1
+          fi
+
+          LINES=$(wc -l < "${RELEASE_NOTES_PATH}" | tr -d ' ')
+          CHARS=$(wc -c < "${RELEASE_NOTES_PATH}" | tr -d ' ')
+
+          echo "  Lines: ${LINES}"
+          echo "  Chars: ${CHARS}"
+
+          if [ "$LINES" -lt 5 ]; then
+            echo "::error::Release notes too short (${LINES} lines). Need at least 5 lines of real content."
+            echo "::error::Fill in the template at ${RELEASE_NOTES_PATH} before tagging."
+            exit 1
+          fi
+
+          if [ "$CHARS" -lt 100 ]; then
+            echo "::error::Release notes too short (${CHARS} bytes). Need at least 100 bytes of real content."
+            exit 1
+          fi
+
+          # Check it's not just the unfilled template
+          if grep -q '^- *$' "${RELEASE_NOTES_PATH}" && [ "$LINES" -lt 10 ]; then
+            echo "::error::Release notes appears to be an unfilled template (contains empty bullet points)."
+            echo "::error::Fill in the content at ${RELEASE_NOTES_PATH} before tagging."
+            exit 1
+          fi
+
+          echo "=== Release notes preview ==="
+          head -n 10 "${RELEASE_NOTES_PATH}"
+          echo ""
+          echo "✓ Release notes verified"
+
+  # ── Publish: only after both gates pass ──
+  release:
+    name: Publish GitHub Release
+    needs: [verify-artifacts, verify-release-notes]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download all packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Merge latest-mac.yml (arm64 + x64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+
+          # electron-builder builds arm64 and x64 separately, each generating
+          # its own latest-mac.yml. We must merge them into a single manifest
+          # that lists both architectures, otherwise auto-updater only sees one.
+          echo "=== Merging latest-mac.yml ==="
+
+          ARM64_ZIP=$(ls release-assets/TAgent-${VERSION}-arm64.zip 2>/dev/null | head -1)
+          X64_ZIP=$(ls release-assets/TAgent-${VERSION}-x64.zip 2>/dev/null | head -1)
+
+          if [ -z "$ARM64_ZIP" ] || [ -z "$X64_ZIP" ]; then
+            echo "::error::Missing macOS zip for latest-mac.yml merge"
+            exit 1
+          fi
+
+          ARM64_SHA=$(sha512sum "$ARM64_ZIP" | cut -d' ' -f1 | base64 -w0)
+          ARM64_SIZE=$(stat -c%s "$ARM64_ZIP")
+          X64_SHA=$(sha512sum "$X64_ZIP" | cut -d' ' -f1 | base64 -w0)
+          X64_SIZE=$(stat -c%s "$X64_ZIP")
+
+          ARM64_NAME=$(basename "$ARM64_ZIP")
+          X64_NAME=$(basename "$X64_ZIP")
+
+          RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
+
+          cat > release-assets/latest-mac.yml <<EOF
+          version: ${VERSION}
+          files:
+            - url: ${ARM64_NAME}
+              sha512: ${ARM64_SHA}
+              size: ${ARM64_SIZE}
+            - url: ${X64_NAME}
+              sha512: ${X64_SHA}
+              size: ${X64_SIZE}
+          path: ${ARM64_NAME}
+          sha512: ${ARM64_SHA}
+          releaseDate: '${RELEASE_DATE}'
+          EOF
+
+          # Remove leading whitespace from heredoc indentation
+          sed -i 's/^          //' release-assets/latest-mac.yml
+
+          echo "=== Merged latest-mac.yml ==="
+          cat release-assets/latest-mac.yml
+
+      - name: Verify release notes exist
+        shell: bash
+        run: |
+          test -f "${RELEASE_NOTES_PATH}"
+          echo "✓ Release notes: ${RELEASE_NOTES_PATH}"
+
+      - name: Count release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          COUNT=$(find release-assets -type f | wc -l | tr -d ' ')
+          echo "Total release assets: ${COUNT}"
+          if [ "$COUNT" -lt 10 ]; then
+            echo "::error::Expected at least 10 assets, got ${COUNT}"
+            find release-assets -type f -print | sort
+            exit 1
+          fi
+          find release-assets -type f -print | sort
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

@@ -41,7 +41,10 @@ type ExecutionMode = 'chat' | 'work'
 | 目标 | 对齐需求、讨论、只读探索 |
 | 主会话姿态 | 总助（SOUL）+ 可 `@` 专家 |
 | 读 / 搜 / 网 | ✅ |
-| 写本地文件 | ❌ **硬禁止**（服务端工具策略拦截，不单靠 prompt） |
+| 交互问答 AskUserQuestion | ✅（讨论态；与 Work 同路径，非写入） |
+| 文字方案 / 步骤说明 | ✅（不要调用 EnterPlanMode） |
+| EnterPlanMode / ExitPlanMode | ❌ 软拒绝（deny + 建议切 Work，不整轮中断） |
+| 写本地文件 | ❌ **硬禁止**（拦截并中断当前 run + 建议切 Work） |
 | 有副作用 Bash | ❌ |
 | 建看板 / 派 Worker | ❌ |
 | SubAgent | 仅只读类；禁止写与 kanban |

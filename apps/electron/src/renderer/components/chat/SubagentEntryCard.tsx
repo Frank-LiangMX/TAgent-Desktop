@@ -1,8 +1,8 @@
 /**
- * SubagentEntryCard — 子代理入口卡片（主会话只留入口，过程细节进详情页）
+ * SubagentEntryCard — 子代理入口
  *
- * 运行中展示 progressText / lastToolName（来自 task_progress）；
- * 收口后展示 summary（来自 task_notification）。完整过程仍不进主时间线。
+ * - card：完整模式独立卡片
+ * - timeline：简洁模式 Cursor 式嵌套行（任务描述 + 右侧模型/状态 + 进度）
  */
 import { memo, useMemo } from 'react'
 import { ArrowRight } from '@phosphor-icons/react'
@@ -20,6 +20,8 @@ interface SubagentEntryCardProps {
   launcher?: { name: string; input: Record<string, unknown> } | null
   /** 当前会话仍在跑且本块属于最新一轮 */
   isLive?: boolean
+  /** card=独立卡；timeline=嵌进简洁运行链 */
+  variant?: 'card' | 'timeline'
   /** 点击入口：打开子代理独立会话页面 */
   onOpen: () => void
 }
@@ -41,14 +43,23 @@ function launcherSummary(launcher?: { name: string; input: Record<string, unknow
   return ''
 }
 
+function launcherModelHint(
+  launcher?: { name: string; input: Record<string, unknown> } | null,
+): string | undefined {
+  if (!launcher?.input) return undefined
+  const m = launcher.input.model ?? launcher.input.subagent_type ?? launcher.input.agent
+  if (typeof m === 'string' && m.trim()) return m.trim()
+  return undefined
+}
+
 export function SubagentEntryCard({
   items,
   card,
   launcher,
   isLive = false,
+  variant = 'card',
   onOpen,
 }: SubagentEntryCardProps): JSX.Element | null {
-  // 摘要：任务卡描述 > launcher input > 子代理首条文本
   const summary = useMemo(() => {
     if (card?.description) return card.description
     const fromLauncher = launcherSummary(launcher)
@@ -64,7 +75,7 @@ export function SubagentEntryCard({
   }, [card?.description, launcher, items])
 
   const messageCount = items.filter((it) => it.message?.type === 'assistant').length
-  // 尚无子代理消息、无收口卡、会话 live → 运行中；仅有 launcher 且会话已结束 → 已完成
+  // terminal card.status 优先；缺卡时 live 才算 running，避免失败后仍显示运行中
   const status: TaskCardState['status'] =
     card?.status ??
     (messageCount === 0 && isLive
@@ -74,9 +85,55 @@ export function SubagentEntryCard({
         : 'completed')
   const statusText = card ? STATUS_TEXT[card.status] : STATUS_TEXT[status]
   const isRunning = status === 'running'
+  const modelHint = launcherModelHint(launcher) ?? '子代理'
+  // Cursor：右侧常挂模型名；完成态用第二行 Completed，不替换右侧
   const progressLine = isRunning
     ? card?.progressText || (card?.lastToolName ? `运行工具：${card.lastToolName}` : undefined)
-    : card?.summary
+    : status === 'completed'
+      ? '已完成'
+      : statusText
+
+  if (variant === 'timeline') {
+    return (
+      <button
+        type="button"
+        className={cn(
+          'agent-concise-subagent',
+          isRunning && 'is-running',
+          status === 'failed' && 'is-failed',
+        )}
+        onClick={onOpen}
+        title="查看子代理完整过程"
+      >
+        <span className="agent-concise-subagent__bullet" aria-hidden>
+          •
+        </span>
+        <span className="agent-concise-subagent__main">
+          <span className="agent-concise-subagent__row">
+            <span className="agent-concise-subagent__title">{summary}</span>
+            <span
+              className={cn(
+                'agent-concise-subagent__meta',
+                isRunning && 'agent-concise-shimmer',
+              )}
+            >
+              {modelHint}
+            </span>
+          </span>
+          {progressLine && progressLine !== summary ? (
+            <span
+              className={cn(
+                'agent-concise-subagent__progress',
+                isRunning && 'agent-concise-shimmer',
+              )}
+            >
+              {progressLine}
+            </span>
+          ) : null}
+        </span>
+      </button>
+    )
+  }
 
   return (
     <button
@@ -94,7 +151,14 @@ export function SubagentEntryCard({
       <span className="subagent-entry-card__body">
         <span className="subagent-entry-card__row">
           <span className="subagent-entry-card__title">子代理</span>
-          <span className="subagent-entry-card__status">{statusText}</span>
+          <span
+            className={cn(
+              'subagent-entry-card__status',
+              isRunning && 'agent-concise-shimmer',
+            )}
+          >
+            {statusText}
+          </span>
           {isRunning && card?.lastToolName ? (
             <span className="subagent-entry-card__tool">· {card.lastToolName}</span>
           ) : null}
@@ -104,7 +168,14 @@ export function SubagentEntryCard({
         </span>
         <span className="subagent-entry-card__summary">{summary}</span>
         {progressLine && progressLine !== summary ? (
-          <span className="subagent-entry-card__progress">{progressLine}</span>
+          <span
+            className={cn(
+              'subagent-entry-card__progress',
+              isRunning && 'agent-concise-shimmer',
+            )}
+          >
+            {progressLine}
+          </span>
         ) : null}
       </span>
       <span className="subagent-entry-card__open">

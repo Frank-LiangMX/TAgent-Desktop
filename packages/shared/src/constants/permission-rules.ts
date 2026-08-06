@@ -603,8 +603,9 @@ export function requiresAutoModeConfirmation(
 /**
  * Chat 协作模式下是否应硬拦该工具（服务端 enforce，不单靠 prompt）
  *
- * 放行：只读类（isAutoModeAutoAllowTool）
- * 拦截：写文件、非只读 Bash、看板派工、自动化变更类 MCP 等
+ * 产品口径：Chat ≈ 只读讨论 + 探索；写/Plan/派工须切 Work。
+ * 放行：只读类（isAutoModeAutoAllowTool）+ 交互问答（AskUserQuestion）
+ * 拦截：写文件、非只读 Bash、看板派工、Plan 闸门、自动化变更、Task/Agent 等
  *
  * @see docs/plans/multi-runtime/02-chat-work-and-permissions.md
  */
@@ -613,6 +614,9 @@ export function isChatModeBlockedTool(
   input: Record<string, unknown>,
   cwd?: string,
 ): boolean {
+  // 交互问答：讨论态核心能力，与读写无关，Chat / Work 同路径
+  if (toolName === 'AskUserQuestion') return false
+
   // 只读静默放行集：Chat 同样放行
   if (isAutoModeAutoAllowTool(toolName, input, cwd)) return false
 
@@ -631,9 +635,38 @@ export function isChatModeBlockedTool(
   if (isWriteTool(toolName, input)) return true
   // 自动化变更类
   if (isAutomationMutationTool(toolName)) return true
-  // 其余非只读：Chat 一律拦（含 Task/Agent 写活；Phase A 保守）
-  // Task 探索在 Chat 也暂禁，避免子代理写盘旁路；后续可按 runtimeModes 放宽只读 SubAgent
+  // 其余非只读：Chat 一律拦（含 Task/Agent、EnterPlanMode/ExitPlanMode）
   return true
+}
+
+/**
+ * Chat 拦截后是否应**整轮中断**（写盘/破坏性命令）。
+ * Plan / SubAgent / 看板等「误用执行能力」→ 软拒绝：deny + 建议切 Work，让模型继续用文字回复。
+ */
+export function isChatModeHardStopTool(
+  toolName: string,
+  input: Record<string, unknown>,
+  cwd?: string,
+): boolean {
+  if (!isChatModeBlockedTool(toolName, input, cwd)) return false
+  const lower = toolName.toLowerCase()
+  // Plan / 子代理 / 看板：软拒绝，避免「开个 Plan 就整轮打断」
+  if (
+    lower === 'enterplanmode' ||
+    lower === 'exitplanmode' ||
+    lower === 'task' ||
+    lower === 'agent' ||
+    lower.includes('kanban') ||
+    lower.startsWith('mcp__kanban')
+  ) {
+    return false
+  }
+  // 明确写工具 / 破坏性 Bash → 硬停
+  if (WRITE_TOOLS.some((w) => w.toLowerCase() === lower)) return true
+  if (isWriteTool(toolName, input)) return true
+  if (lower === 'bash' || lower === 'shell') return true
+  // 其它未知非只读：偏软，给模型改口机会
+  return false
 }
 
 /** Chat 硬拦：用户可见标题（SessionErrorBanner / 建议条） */
@@ -643,8 +676,12 @@ export const CHAT_MODE_BLOCK_USER_TITLE = '讨论模式（Chat）不能写入'
 export const CHAT_MODE_BLOCK_USER_MESSAGE =
   '当前为讨论模式（Chat），写入/改文件请切换到 Work。可在输入框左下角「Chat | Work」切换，或点下方建议条确认。'
 
-/** Chat 拦截时返回给模型的 deny 原因（与 UI 文案同源，便于 result 分类） */
-export const CHAT_MODE_BLOCK_REASON = CHAT_MODE_BLOCK_USER_MESSAGE
+/** Chat 拦截时返回给模型的 deny 原因（引导改口建议切 Work，勿重试） */
+export const CHAT_MODE_BLOCK_REASON =
+  '当前为 Chat（只读讨论）模式，该工具不可用。请用文字建议用户切换到 Work 后再执行；不要重试同一工具，也不要改用 EnterPlanMode/Task/Agent 绕过。'
+
+/** @deprecated 与 CHAT_MODE_BLOCK_REASON 相同；保留别名供旧引用 */
+export const CHAT_MODE_BLOCK_MODEL_REASON = CHAT_MODE_BLOCK_REASON
 
 /**
  * TAgent 权限模式 → 传给 Claude Agent SDK 的 permissionMode
