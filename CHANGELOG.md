@@ -3,58 +3,30 @@
 本项目变更记录，遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [2.0.0-dev.9] - 2026-07-28
+## [2.0.0-dev.1] - 2026-08-06
 
-桌面会话体验与稳定性收口：移除全局“当前工作区”，完成侧栏、归档抽屉和欢迎页设计，并建立测试、CI 与安装包门禁。
-
-### 新增
-- **无会话欢迎页** — 提供明确的新建会话与打开项目入口。
-- **项目选择器** — 多项目环境中新会话显式选择所属项目；单项目自动绑定。
-- **真实渠道检测** — 外部 Provider 连接测试和模型列表拉取改为真实 HTTP 请求，失败时保留默认模型兜底。
-- **核心回归测试** — 覆盖会话标签项目归属、渠道协议与异常、会话元数据和 JSONL 重载恢复。
-- **桌面打包配置** — 增加 electron-builder 配置、原生依赖重建和 Windows/多平台打包脚本。
-
-### 变更
-- **会话归属模型** — 删除全局 current workspace 状态和切换 IPC；`workspaceId` 随会话 Tab 与消息发送链路传递。
-- **会话侧栏** — 工作区和时间线采用独立折叠状态，搜索及活动会话自动展开，归档抽屉融入 Sidebar。
-- **测试体系** — 全仓统一使用 Vitest，UI 使用 jsdom 和统一 setup；CI 增加测试与 Windows 打包门禁。
-- **发布流程** — CI 同时覆盖 `main`/`master`，Release 从版本化 release note 读取说明并集中发布各平台产物。
-
-### 修复
-- 修复归档抽屉下方内容穿透、文字未模糊和折叠态过强的问题。
-- 修复测试混用 `bun:test`、缺少 Jest DOM 全局和 UI 路径别名导致的测试套件加载失败。
-- 修复 Release 流水线引用不存在脚本、临时 `RELEASE_NOTES.md` 和直接并发发布产物的问题。
-
-### 已知缺口
-- MCP 配置管理 UI 和 HTTP/SSE 真实连接测试尚未完成。
-- 子代理实时进度、父子消息嵌套与积极性设置尚未完成。
-- Windows NSIS 最终安装器仍需在网络可访问 GitHub 工具下载源的环境完成验证。
-
-## [2.0.0-dev.8] - 2026-07-26
-
-两核工具循环完整接通 + 子代理（SubAgent）功能。
+首个公开预发布版本。双核可拔插 + 会话进程长驻 + 模块化 monorepo，含子代理、Cursor 式时间线、自动更新、权限体系等完整桌面体验。
 
 ### 新增
-- **Kscc 核接通** — session-service 传 mcpServers/canUseTool/permissionMode（非硬编码 bypass）+ allowDangerouslySkipPermissions:!canUseTool。
-- **Pi 核接通** — session-service 传 mcpConfig/beforeToolCall/cwd/permissionMode；pi-agent-adapter 合并 mcpTools + 挂 beforeToolCall + kscc bare 传 descriptors + bashTool 用 createBashTool(cwd) 闭包注入工作目录。
-- **权限模式运行中切换** — UPDATE_SESSION_PERMISSION_MODE IPC + SessionRuntime.setPermissionMode（kscc 调 SDK setPermissionMode；Pi 靠闭包读 meta）。
-- **PermissionService 白名单精确 key** — toolKey 含工具名 + 关键参数 hash，危险命令永不入白名单。
-- **PermissionModeSelector** — 输入框 footer 三模式 Popover pill（auto/bypass/plan）。
-- **子代理（SubAgent）** — Kscc 核 SDK 原生（agents 选项 + forwardSubagentText + agentProgressSummaries）+ Pi 核自实现 task 工具（executionMode: 'parallel' 支持并发）。内置 3 个子代理（code-reviewer/explorer/researcher），模型路由（Claude→haiku），System Prompt 委派策略，subagentEagerness 4 档（hardcoded conservative）。渲染嵌套简化版（左边框 + 标识）。task_* 事件转译 + 显示。
-- **pi-core createBashTool(cwd)** — 工厂函数，创建带指定 cwd 的 Bash 工具实例。
+- **双核可拔插** — kscc 核（内网渠道）+ Pi 核（外部渠道），按渠选核。
+- **会话=进程长驻** — 多轮复用不重放历史。
+- **子代理（SubAgent）** — 内置 code-reviewer / explorer / researcher，支持并发。
+- **Cursor 式运行容器** — 阶段工作块简洁时间线。
+- **富内容分屏预览** — 代码 / 图片 / 文件分屏预览。
+- **上下文容量按模型显示** — 实时 token 用量展示。
+- **文件查找增强** — 模块化，超大目录跳过。
+- **自动更新** — 应用内检查与升级。
+- **权限模式运行中切换** — auto / bypass / plan 三模式。
+- **真实渠道检测** — HTTP 真实连接测试。
+- **桌面打包** — electron-builder 三平台打包与 CI 门禁。
+- **核心回归测试** — 74 文件 / 739 测试。
 
-### 变更
-- session-service 构造函数加 permissionService 参数；main/index.ts 注入。
-- kscc 适配器 buildSdkOptions 加 agents/forwardSubagentText/agentProgressSummaries。
-- Pi 适配器 createSession 合并 mcpTools/beforeToolCall/kscc bare descriptors/createBashTool(cwd)。
-- sdkMessageToIR 新增 task_started/task_progress/task_notification 转译。
-
-### 已知缺口（后续版本补）
-- subagentEagerness 接 UI 设置
-- 完整渲染嵌套（parentToolUseId 映射到父 tool_use，可展开/折叠）
-- 子代理进度条（task_progress 实时更新）
-- MCP 配置 UI
-- 端到端验证
+### 体验优化
+- 简洁时间线：过程区轻量逐步可见，自动折叠已完成阶段。
+- 流式输出硬化：单真源流式 + idle 看门狗 + 权限超时倒计时。
+- 侧栏改进：工作区和时间线独立折叠，搜索自动展开。
+- 运行计时跨会话保持。
+- Windows 全平台兼容。
 
 ## [2.0.0-dev.7] - 2026-07-26
 

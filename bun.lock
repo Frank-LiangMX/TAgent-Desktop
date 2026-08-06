@@ -5,7 +5,6 @@
     "": {
       "name": "tagent-desktop",
       "dependencies": {
-        "electron": "^43.3.0",
         "jotai": "^2.17.1",
         "motion": "^12.42.2",
       },
