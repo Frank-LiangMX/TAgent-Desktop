@@ -392,9 +392,10 @@ function pushNarrative(
  */
 export function buildConciseTimeline(
   process: ProcessEntry[],
-  opts?: { answerTexts?: string[]; streamingText?: string },
+  opts?: { answerTexts?: string[]; streamingText?: string; isLive?: boolean },
 ): ConciseSegment[] {
   const source = mergeAnswerIntoProcess(process, opts?.answerTexts, opts?.streamingText)
+  const isLive = Boolean(opts?.isLive)
 
   let lastToolIdx = -1
   for (let i = 0; i < source.length; i++) {
@@ -429,7 +430,6 @@ export function buildConciseTimeline(
       .filter((s): s is Extract<WorkStageStep, { kind: 'tool' }> => s.kind === 'tool')
       .map((s) => s.tool)
     if (tools.length === 0) {
-      // 无工具思考：并回 leading（尚未开干）
       for (const s of stageSteps) {
         if (s.kind === 'thinking' && !sawTool) leadingThink.push(s.thinking)
       }
@@ -493,7 +493,10 @@ export function buildConciseTimeline(
       if (!cur.text.trim()) continue
       flushLeadingThink()
       flushStage()
-      const tone: 'progress' | 'final' = i < lastToolIdx ? 'progress' : 'final'
+      // live 时尾部正文先当 progress（进运行队列打字机），避免 final 卡片闪现；
+      // 回合结束后再升为 final。
+      const tone: 'progress' | 'final' =
+        i < lastToolIdx || isLive ? 'progress' : 'final'
       pushNarrative(segments, cur.key, cur.text, tone)
     }
   }

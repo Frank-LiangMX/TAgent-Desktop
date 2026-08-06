@@ -1083,9 +1083,15 @@ export function Chat({
       Boolean(p.message.stop_reason) &&
       p.message._partial !== true
 
+    // 子代理 parented 消息：不 adopt / 不清停止计时（否则失败后 ComposerRunTimer 常驻）
+    const isParentedSdk =
+      p.kind === 'sdk_message' &&
+      (p.message.type === 'assistant' || p.message.type === 'user') &&
+      Boolean(p.message.parentToolUseId)
+
     // run 仍在进行：取消 turn_end 的延迟停止；流式/落盘事件恢复 running
     // （保过程区展开、停止键在位；adopt 沿用原 startedAt，不重置计时）
-    if (!isTerminalAssistant) {
+    if (!isTerminalAssistant && !isParentedSdk) {
       clearPendingStop()
       if (
         p.kind === 'stream_text_delta' ||
@@ -1381,6 +1387,13 @@ export function Chat({
           summary: evt.summary ?? '',
         }
         setItems((prev) => reduceTaskEvent(prev, event, taskCardApply))
+        // 失败/停止：若主会话已无 running 心跳，兜底 hard stop，避免底栏「运行中」常驻
+        if (
+          (status === 'failed' || status === 'stopped') &&
+          !runningRef.current
+        ) {
+          stopRun()
+        }
       }
     }
   }

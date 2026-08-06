@@ -96,6 +96,7 @@ export function AssistantTurnView({
         ? buildConciseTimeline(presentation.process, {
             answerTexts: presentation.answerTexts,
             streamingText: presentation.streamingText,
+            isLive: processLive,
           })
         : [],
     [
@@ -103,6 +104,7 @@ export function AssistantTurnView({
       presentation.process,
       presentation.answerTexts,
       presentation.streamingText,
+      processLive,
     ],
   )
 
@@ -235,7 +237,7 @@ export function AssistantTurnView({
             isLatestTurn={isLatestAssistantTurn || processLive}
             workedMs={workedMs}
           />
-          {copyText ? (
+          {copyText && !processLive ? (
             <div className="agent-answer-toolbar">
               <MessageCopyButton text={copyText} />
             </div>
