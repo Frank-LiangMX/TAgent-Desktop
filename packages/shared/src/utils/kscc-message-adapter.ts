@@ -84,12 +84,25 @@ export function sdkMessageToIR(
 
   if (type === 'assistant') {
     const message = m.message as
-      | { content?: Array<Record<string, unknown>>; usage?: Record<string, unknown>; model?: string }
+      | {
+          content?: Array<Record<string, unknown>>
+          usage?: Record<string, unknown>
+          model?: string
+          stop_reason?: string | null
+        }
       | undefined
     const content = Array.isArray(message?.content)
       ? message!.content.map(sdkBlockToIR)
       : []
     const error = m.error as { message?: string; errorType?: string } | undefined
+    const stopReason =
+      typeof message?.stop_reason === 'string' && message.stop_reason.length > 0
+        ? message.stop_reason
+        : undefined
+    // kscc/Claude SDK 开 includePartialMessages 时往往**不**打顶层 `_partial`。
+    // 对齐 Pi：无 stop_reason = 流式快照（partial）；有 stop_reason（含 tool_use）= 本条 final。
+    // 仅读 m._partial 会导致 isPartial 恒 false → 中间快照当终态、思考被后到的 tool-only 覆盖清掉（REGRESS-E）。
+    const isPartial = m._partial === true || stopReason == null
     return {
       message: {
         type: 'assistant',
@@ -102,6 +115,8 @@ export function sdkMessageToIR(
         error: error ? { message: error.message ?? '', code: error.errorType } : undefined,
         content: content as TAgentContentBlock[],
         usage: message?.usage ? sdkUsageToIR(message.usage) : undefined,
+        stop_reason: stopReason,
+        ...(isPartial ? { _partial: true } : {}),
       } as TAgentMessage,
     }
   }

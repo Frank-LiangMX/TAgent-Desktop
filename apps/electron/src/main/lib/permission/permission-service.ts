@@ -218,7 +218,7 @@ async function checkPermission(args: {
   permissionMode: TAgentPermissionMode
   /** 协作形态；缺省按 legacy work 兼容旧会话 */
   executionMode?: ExecutionMode
-}): Promise<{ allow: boolean; reason?: string }> {
+}): Promise<{ allow: boolean; reason?: string; interrupt?: boolean }> {
   const { win, sessionId, toolName, input, cwd, permissionMode } = args
   const executionMode = migrateExecutionMode(args.executionMode)
 
@@ -235,11 +235,17 @@ async function checkPermission(args: {
   if (executionMode === 'chat' && isChatModeBlockedTool(toolName, input, cwd)) {
     // 写盘/破坏性命令：整轮中断 + 建议切 Work。
     // Plan/SubAgent/看板等误用：软拒绝，让模型改口建议切 Work，避免「开个 Plan 就打断」。
-    if (isChatModeHardStopTool(toolName, input, cwd)) {
+    const hardStop = isChatModeHardStopTool(toolName, input, cwd)
+    if (hardStop) {
       chatModeBlockHandler?.(sessionId, toolName)
     }
     emitWorkSwitchSuggestion(win(), sessionId, toolName)
-    return { allow: false, reason: CHAT_MODE_BLOCK_REASON }
+    // 硬停：deny 带 interrupt:true → kscc 原子「拒工具 + 停本轮」（SDK PermissionResult.interrupt，
+    // 见 sdk.d.ts PermissionResult）。不带 interrupt 的软 deny 会被二进制当「用户拒工具」处理，
+    // 注入英文「doesn't want to proceed… STOP」控制文且本轮不停（模型可续跑/重试 Write），
+    // 再由 chatModeBlockHandler 的 rt.interrupt() 兜底即产生竞态（REGRESS-A 根因）。
+    // 软拒绝（EnterPlanMode 等）不带 interrupt，给模型改口机会。
+    return { allow: false, reason: CHAT_MODE_BLOCK_REASON, interrupt: hardStop }
   }
 
   // bypass：Work 下全放行
@@ -333,9 +339,9 @@ export class PermissionService {
       input: Record<string, unknown>,
     ): Promise<
       | { behavior: 'allow'; updatedInput: Record<string, unknown> }
-      | { behavior: 'deny'; message: string }
+      | { behavior: 'deny'; message: string; interrupt?: boolean }
     > => {
-      const { allow, reason } = await checkPermission({
+      const { allow, reason, interrupt } = await checkPermission({
         win: this.getWindow,
         sessionId,
         toolName,
@@ -347,7 +353,13 @@ export class PermissionService {
       if (allow) {
         return { behavior: 'allow', updatedInput: input }
       }
-      return { behavior: 'deny', message: reason ?? '权限拒绝' }
+      // Chat 硬停工具：带 interrupt:true 让 kscc 原子停本轮，避免软 deny 后模型续跑/重试
+      // 与英文「doesn't want to proceed」控制文竞态（REGRESS-A）。
+      return {
+        behavior: 'deny',
+        message: reason ?? '权限拒绝',
+        ...(interrupt ? { interrupt: true } : {}),
+      }
     }
   }
 

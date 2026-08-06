@@ -1,0 +1,13 @@
+严格按 docs/dev/core-loop/REGRESS-C-cursor-rhythm-brief.md 实现。
+
+工作区：C:\Users\loumi\Desktop\AI\TAgent-Desktop
+对照：docs/dev/core-loop/CURSOR-CONCISE.md
+
+重点：
+1. buildConciseTimeline：阶段内非可交付思考进 stageSteps，不刷独立 ThinkingFold、不拆 stage
+2. WorkStageFold：live status hold + 淡出；末阶段在回合 live 时保持底栏
+3. formatThinkingSummary：<3s → 思考了片刻
+4. 改/补 vitest 并跑绿
+5. 不 commit、不碰 permission/REGRESS-A/B
+
+stdout 列改动文件 + vitest 摘要 + 手测步骤。

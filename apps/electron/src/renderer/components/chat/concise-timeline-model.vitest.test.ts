@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProcessEntry } from './session-turn-model'
+import { formatThinkingSummary } from './session-turn-model'
 import {
   buildConciseTimeline,
   classifyToolFamily,
@@ -184,6 +185,50 @@ describe('buildConciseTimeline', () => {
     }
   })
 
+  it('folds mid-run ordinary (non-deliverable) thinking into stage steps — one work_stage (Cursor 节奏聚合)', () => {
+    const midThink = '比对两个文件的结构差异，逐行确认改造范围是否一致。'
+    // 前置断言：非琐碎且非可交付 → 应并入阶段而非刷独立折叠
+    expect(isTrivialThinking(midThink)).toBe(false)
+    expect(isDeliverableThinking(midThink)).toBe(false)
+    const process: ProcessEntry[] = [
+      tool('Read', 'r1', { file_path: 'a.ts' }),
+      { type: 'thinking', key: 't1', thinking: midThink },
+      tool('Grep', 'g1', { pattern: 'x' }),
+      tool('Bash', 'b1', { command: 'ls' }),
+    ]
+    const segs = buildConciseTimeline(process)
+    // 一个 work_stage：思考收进 steps，summary 聚合三族，不拆阶段、不刷独立 ThinkingFold
+    expect(segs.map((s) => s.kind)).toEqual(['work_stage'])
+    const stage = segs[0]!
+    if (stage.kind === 'work_stage') {
+      expect(stage.tools).toHaveLength(3)
+      expect(stage.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool', 'tool'])
+      expect(stage.steps[1]).toMatchObject({ kind: 'thinking', thinking: midThink })
+      expect(stage.summary).toContain('探索了 1')
+      expect(stage.summary).toContain('1 次搜索')
+      expect(stage.summary).toContain('运行了 1')
+    }
+  })
+
+  it('lifts mid-run deliverable thinking to split stages — work_stage | thinking | work_stage', () => {
+    const deliverable =
+      'Proma 我看了结构——它不是外围扩展，而是拿 **pi / Claude Agent SDK** 当内核，改造深度明显更激进。'
+    expect(isDeliverableThinking(deliverable)).toBe(true)
+    const process: ProcessEntry[] = [
+      tool('Read', 'r1', { file_path: 'a.ts' }),
+      { type: 'thinking', key: 't1', thinking: deliverable },
+      tool('Edit', 'e1', { file_path: 'b.ts' }),
+    ]
+    const segs = buildConciseTimeline(process)
+    expect(segs.map((s) => s.kind)).toEqual(['work_stage', 'thinking', 'work_stage'])
+    const mid = segs[1]!
+    if (mid.kind === 'thinking') expect(mid.thinking).toBe(deliverable)
+    const s0 = segs[0]!
+    if (s0.kind === 'work_stage') expect(s0.tools.map((t) => t.tool.name)).toEqual(['Read'])
+    const s2 = segs[2]!
+    if (s2.kind === 'work_stage') expect(s2.tools.map((t) => t.tool.name)).toEqual(['Edit'])
+  })
+
   it('shows progress narrative between stages', () => {
     const process: ProcessEntry[] = [
       { type: 'thinking', key: 't0', thinking: '先摸清目录再定改造面' },
@@ -253,6 +298,23 @@ describe('buildConciseTimeline', () => {
 
     const done = buildConciseTimeline(process, { isLive: false })
     expect(done[1]).toMatchObject({ kind: 'narrative', tone: 'final' })
+  })
+})
+
+describe('formatThinkingSummary (Cursor briefly)', () => {
+  it('<3s 或缺省 → 思考了片刻；>=3s → 思考了 Ns', () => {
+    expect(formatThinkingSummary(1)).toBe('思考了片刻')
+    expect(formatThinkingSummary(2)).toBe('思考了片刻')
+    expect(formatThinkingSummary(0)).toBe('思考了片刻')
+    expect(formatThinkingSummary(undefined)).toBe('思考了片刻')
+    expect(formatThinkingSummary(46)).toBe('思考了 46s')
+    expect(formatThinkingSummary(3)).toBe('思考了 3s')
+  })
+
+  it('live 文案不变', () => {
+    expect(formatThinkingSummary(undefined, { live: true })).toBe('正在思考…')
+    expect(formatThinkingSummary(1, { live: true })).toBe('正在思考…')
+    expect(formatThinkingSummary(1, { live: true, liveElapsedSec: 3 })).toBe('思考中 3s')
   })
 })
 

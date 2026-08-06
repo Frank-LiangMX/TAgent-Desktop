@@ -1,0 +1,10 @@
+严格按 docs/dev/core-loop/REGRESS-A-chat-write-interrupt-brief.md 执行。
+
+工作区：C:\Users\loumi\Desktop\AI\TAgent-Desktop
+规格：docs/dev/core-loop/REGRESS-2026-08-07-SPEC.md §A
+
+要求：
+1. 先只读摸清 Chat+Write 为何变成英文「The user doesn't want to proceed with this tool use」并打断会话；写 REGRESS-A-FINDINGS.md（根因+行号证据）。
+2. 再做最小修复 + vitest。
+3. 不 commit、不 push、不改 concise 时间线。
+4. stdout 列改动文件 + 测试结果。

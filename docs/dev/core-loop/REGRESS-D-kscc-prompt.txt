@@ -1,0 +1,11 @@
+严格按 docs/dev/core-loop/REGRESS-D-thinking-fold-brief.md 实现。
+
+工作区：C:\Users\loumi\Desktop\AI\TAgent-Desktop
+
+重点：
+1. ThinkingFold 流式时 body 滚动跟随（用户上翻则暂停）
+2. live→idle 禁止秒折：settle + 过渡收到「思考了 Ns」，折起后可再点开全文
+3. 不回退 REGRESS-C；不碰 permission；不 commit
+4. 补 CURSOR-CONCISE 验收条 + 短 FINDINGS；vitest/typecheck 绿
+
+stdout 列改动文件 + 测试摘要 + 手测步骤。

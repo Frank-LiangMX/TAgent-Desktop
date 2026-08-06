@@ -80,6 +80,7 @@ import {
   applyTextDelta,
   applyThinkingDeltaToState,
   clearSessionStreamState,
+  commitStreamThinkingToLastAssistant,
   EMPTY_STREAM_STATE,
   hasStreamContent,
   purgeStreamingItems,
@@ -1206,6 +1207,10 @@ export function Chat({
       })
     } else if (p.kind === 'result') {
       if (p.usage) applyUsage(p.usage)
+      const pendingThink = streamStateRef.current.thinking.trim()
+      if (pendingThink) {
+        setItems((prev) => commitStreamThinkingToLastAssistant(prev, pendingThink))
+      }
       resetStreamState()
       // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
       setItems((prev) => {
@@ -1278,8 +1283,15 @@ export function Chat({
         parentToolUseId?: string
       }
       if (evt.type === 'tool_start' && !evt.parentToolUseId) {
-        resetStreamState()
+        // 工具开始不得整表清 streamState：思考常仍只在 thinking 缓冲里，
+        // 一清就「出完即消失」（REGRESS-E / CL5）。只清正文 delta，保留 thinking。
+        setStreamState((prev) => (prev.text ? { ...prev, text: '' } : prev))
       } else if (evt.type === 'turn_end') {
+        // 回合边界：若 stream 仍有思考且末条 assistant 无 thinking 块，先写入 items 再清
+        const pendingThink = streamStateRef.current.thinking.trim()
+        if (pendingThink) {
+          setItems((prev) => commitStreamThinkingToLastAssistant(prev, pendingThink))
+        }
         resetStreamState()
         // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
         setItems((prev) => {

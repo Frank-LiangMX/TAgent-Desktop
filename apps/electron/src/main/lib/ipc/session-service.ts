@@ -1231,22 +1231,29 @@ export class SessionService {
     }
   }
 
-  /** kscc 路径：转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer，并双写 JSONL */
+  /** kscc 路径：转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer，并双写 JSONL。
+   *  单真源流式（S1）：partial assistant（`_partial`）只推渲染层原地 upsert，**不落盘**——
+   *  落盘只留 final（同 uuid 替换 partial），避免 partial 堆积污染历史 / L-rag；
+   *  对齐 handlePiStreamPayload 的 partial 不落盘语义。 */
   private handleSdkStreamMessage(sessionId: string, workspaceId: string | undefined, msg: SDKMessage): void {
     // 注入 createdAt（落盘带上，加载时 sdkMessageToIR 读回 → 渲染层显示时间）
     ;(msg as any).createdAt = (msg as any).createdAt ?? Date.now()
     const { message, event } = sdkMessageToIR(msg)
     if (message) {
-      // Phase 1.2 双写：先面板（保可见）再 SDK；流式 delta 不落盘
-      try {
-        appendPanelMessages(workspaceId, sessionId, [msg])
-      } catch (err) {
-        console.warn('[session-service] appendPanelMessages failed:', err)
-      }
-      try {
-        appendSdkMessages(workspaceId, sessionId, [msg])
-      } catch (err) {
-        console.error('[session-service] appendSdkMessages failed:', err)
+      const isPartial =
+        message.type === 'assistant' && (message as { _partial?: boolean })._partial === true
+      // Phase 1.2 双写：先面板（保可见）再 SDK；流式 partial 不落盘（与 Pi 对齐）
+      if (!isPartial) {
+        try {
+          appendPanelMessages(workspaceId, sessionId, [msg])
+        } catch (err) {
+          console.warn('[session-service] appendPanelMessages failed:', err)
+        }
+        try {
+          appendSdkMessages(workspaceId, sessionId, [msg])
+        } catch (err) {
+          console.error('[session-service] appendSdkMessages failed:', err)
+        }
       }
       this.sendPayload(sessionId, { kind: 'sdk_message', message })
     }
