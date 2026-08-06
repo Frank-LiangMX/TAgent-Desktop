@@ -4,7 +4,7 @@
  * - 独立一条 token-stats-bar，不塞进输入 footer 工具行
  * - 左侧：ContextUsageBadge 圆环（占用）
  * - 右侧：本会话累计 input/output、轮数
- * - 仅外部 / Pi 核显示；kscc 整栏不挂
+ * - 全部已绑定渠道显示；kscc 渠道隐藏占用圆环（占用不可信），累计统计仍显示
  */
 import { Database, TrendingDown, TrendingUp } from 'lucide-react'
 import { cn } from '../../lib/utils'
@@ -26,6 +26,8 @@ interface TokenStatsBarProps {
   channelId?: string
   isCompacting?: boolean
   onCompact?: () => void
+  /** 隐藏上下文占用圆环（kscc 渠道占用不可信），累计统计仍显示 */
+  hideContext?: boolean
   /** 窄宽：仅圆环 + 关键数字，隐藏中文标签与缓存细项 */
   compact?: boolean
   className?: string
@@ -57,6 +59,7 @@ export function TokenStatsBar({
   channelId,
   isCompacting,
   onCompact,
+  hideContext = false,
   compact = false,
   className,
 }: TokenStatsBarProps): JSX.Element {
@@ -64,6 +67,8 @@ export function TokenStatsBar({
   const hasTotals = totals.totalInput > 0 || totals.totalOutput > 0
   const empty = !hasContext && !hasTotals
   const cacheHitRate = calcCacheHitRate(totals)
+  // hideContext（kscc）：占用不可信，圆环与占位文案一并隐藏，仅保留累计统计
+  const showContext = !hideContext && hasContext && usage !== null
 
   return (
     <div
@@ -78,7 +83,7 @@ export function TokenStatsBar({
       {/* 窄宽隐藏余额徽章（最占横向） */}
       {!compact ? <ChannelBalanceBadge channelId={channelId} className="mr-auto" /> : null}
 
-      {hasContext && usage ? (
+      {showContext ? (
         <>
           <ContextUsageBadge
             usage={usage}
@@ -88,6 +93,7 @@ export function TokenStatsBar({
           {hasTotals && <div className="token-stats-bar__sep h-2.5 w-px shrink-0 bg-border/40" />}
         </>
       ) : (
+        !hideContext &&
         !compact && (
           <span className="text-[10px] text-muted-foreground/40">
             {empty ? '发送消息后显示占用' : null}

@@ -1,39 +1,60 @@
 /**
  * Cursor 式简洁时间线 — 纯函数投影
  *
- * - **text** → narrative（硬边界，开新阶段）
- * - 阶段内按时间序投影（不再把全部 thinking 抽到段首）：
- *   - 工具前的思考 → 一个折叠
- *   - 工具间/后的琐碎思考 → 隐藏或并入已有折叠（避免刷屏）
- *   - 工具间/后的「可交付」思考（加粗/标题/结论口吻）→ **narrative**，不当折叠埋掉
- * - 同族 tool 跨琐碎 thinking 合并；text / 可交付 narrative 打断簇
+ * 阶段生命周期（对齐 Cursor）：
+ *   live：摘要行累积 + 底部当前动作滚动态（Grepping / 搜索中…）
+ *   done：收成折叠块（不消失）
+ *   expand：按时间序明细 — 思考 / 探索 / 编辑（含 +N -M），点击再看详情
+ *
+ * - work_stage.steps：阶段内 chronological 步骤（thinking + tool）
+ * - narrative.progress / final：方向短总结 / 最终正文
  */
 import type { ProcessEntry } from './session-turn-model'
+import { formatThinkingSummary, resolveThinkingDurationSec } from './session-turn-model'
 import { getToolPhrase } from './tool-phrase'
 
-export type ToolFamily = 'explore' | 'edit' | 'shell' | 'other'
+export type ToolFamily = 'explore' | 'edit' | 'shell' | 'search' | 'other'
 
 export type ToolProcessEntry = Extract<ProcessEntry, { type: 'tool' }>
 
-export type ConciseSegment =
-  | { kind: 'thinking'; key: string; thinking: string; summary: string }
+export type WorkStageStep =
+  | { kind: 'thinking'; key: string; thinking: string; durationSec?: number }
   | {
-      kind: 'tool_cluster'
+      kind: 'tool'
       key: string
-      family: ToolFamily
+      tool: ToolProcessEntry
+      diff?: { add: number; del: number }
+    }
+
+export type ConciseSegment =
+  | {
+      kind: 'thinking'
+      key: string
+      thinking: string
+      summary: string
+      durationSec?: number
+    }
+  | {
+      kind: 'work_stage'
+      key: string
+      steps: WorkStageStep[]
       tools: ToolProcessEntry[]
       summary: string
+      diffAdd?: number
+      diffDel?: number
     }
-  | { kind: 'narrative'; key: string; text: string }
+  | { kind: 'narrative'; key: string; text: string; tone: 'progress' | 'final' }
 
+const SEARCH_RE = /^(grep|search|semanticsearch|websearch)/i
 const EXPLORE_RE =
-  /^(read|grep|glob|search|semanticsearch|websearch|webfetch|list|ls|find|catalog)/i
+  /^(read|glob|webfetch|list|ls|find|catalog)/i
 const EDIT_RE = /^(edit|write|multiedit|notebookedit|apply|create|delete|remove|patch)/i
 const SHELL_RE = /^(bash|shell|terminal|cmd|powershell|exec)/i
 
 export function classifyToolFamily(name: string): ToolFamily {
   const n = name.trim()
   if (!n) return 'other'
+  if (SEARCH_RE.test(n)) return 'search'
   if (EXPLORE_RE.test(n)) return 'explore'
   if (EDIT_RE.test(n)) return 'edit'
   if (SHELL_RE.test(n)) return 'shell'
@@ -49,7 +70,36 @@ function toolFileHint(tool: ToolProcessEntry): string | null {
   return null
 }
 
-/** 簇摘要：对齐 Cursor「编辑了 A / 探索了 N 个文件」语感 */
+function resultText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((b) =>
+        b && typeof b === 'object' && 'text' in b ? String((b as { text: unknown }).text) : '',
+      )
+      .join('\n')
+  }
+  if (content == null) return ''
+  try {
+    return JSON.stringify(content)
+  } catch {
+    return String(content)
+  }
+}
+
+/** 从单条 tool result 解析 +N -M */
+export function extractToolDiff(
+  tool: ToolProcessEntry,
+): { add: number; del: number } | undefined {
+  if (classifyToolFamily(tool.tool.name) !== 'edit') return undefined
+  const text = resultText(tool.result?.content)
+  if (!text) return undefined
+  const m = text.match(/\+(\d+)\s+[^\d-]*-(\d+)/) || text.match(/\+(\d+).*?-(\d+)/)
+  if (!m) return undefined
+  return { add: Number(m[1]) || 0, del: Number(m[2]) || 0 }
+}
+
+/** 单族簇摘要（细节/兼容）；阶段行用 summarizeWorkStage */
 export function summarizeToolCluster(
   family: ToolFamily,
   tools: ToolProcessEntry[],
@@ -76,6 +126,11 @@ export function summarizeToolCluster(
       ? `正在探索 ${tools.length} 项`
       : `探索了 ${tools.length} 个文件`
   }
+  if (family === 'search') {
+    return pending
+      ? `正在搜索 ${tools.length} 次`
+      : `${tools.length} 次搜索`
+  }
   if (family === 'shell') {
     if (tools.length === 1) {
       const phrase = getToolPhrase(tools[0]!.tool.name, tools[0]!.tool.input ?? {})
@@ -90,10 +145,146 @@ export function summarizeToolCluster(
   return pending ? `正在执行 ${tools.length} 步` : `执行了 ${tools.length} 步`
 }
 
+function countUniqueFiles(tools: ToolProcessEntry[]): number {
+  const names = tools.map((t) => toolFileHint(t)).filter(Boolean) as string[]
+  return new Set(names).size || tools.length
+}
+
 /**
- * 工具之后的思考是否像「给用户看的结论」（应升为 narrative，而非埋进折叠）。
- * 有加粗/标题/结论口吻，或足够长的成段说明。
+ * 阶段摘要：编辑了 N 个文件，探索了 M 个文件，K 次搜索，运行了 C 条命令
+ * 对齐 Cursor「Editing 7 files, explored 2 files, 2 searches, ran 1 command」
  */
+export function summarizeWorkStage(tools: ToolProcessEntry[]): string {
+  if (tools.length === 0) return '执行'
+  const pending = tools.some((t) => !t.result)
+  const buckets: Record<ToolFamily, ToolProcessEntry[]> = {
+    edit: [],
+    explore: [],
+    search: [],
+    shell: [],
+    other: [],
+  }
+  for (const t of tools) {
+    buckets[classifyToolFamily(t.tool.name)].push(t)
+  }
+
+  const parts: string[] = []
+  if (buckets.edit.length) {
+    const n = countUniqueFiles(buckets.edit)
+    parts.push(pending ? `正在编辑 ${n} 个文件` : `编辑了 ${n} 个文件`)
+  }
+  if (buckets.explore.length) {
+    const n = buckets.explore.length
+    parts.push(pending ? `正在探索 ${n} 项` : `探索了 ${n} 个文件`)
+  }
+  if (buckets.search.length) {
+    const n = buckets.search.length
+    parts.push(pending ? `正在搜索 ${n} 次` : `${n} 次搜索`)
+  }
+  if (buckets.shell.length) {
+    const n = buckets.shell.length
+    parts.push(pending ? `正在运行 ${n} 条命令` : `运行了 ${n} 条命令`)
+  }
+  if (buckets.other.length) {
+    const n = buckets.other.length
+    parts.push(pending ? `正在执行 ${n} 步` : `执行了 ${n} 步`)
+  }
+  return parts.join('，') || (pending ? '正在执行' : '已执行')
+}
+
+/** @deprecated 用 diffAdd/diffDel；保留聚合字符串给旧测试 */
+export function extractDiffHint(tools: ToolProcessEntry[]): string | undefined {
+  let add = 0
+  let del = 0
+  let found = false
+  for (const t of tools) {
+    const d = extractToolDiff(t)
+    if (!d) continue
+    add += d.add
+    del += d.del
+    found = true
+  }
+  if (!found) return undefined
+  return `+${add} -${del}`
+}
+
+export function aggregateDiff(
+  tools: ToolProcessEntry[],
+): { add: number; del: number } | undefined {
+  let add = 0
+  let del = 0
+  let found = false
+  for (const t of tools) {
+    const d = extractToolDiff(t)
+    if (!d) continue
+    add += d.add
+    del += d.del
+    found = true
+  }
+  return found ? { add, del } : undefined
+}
+
+/**
+ * 展开行 / live 滚动态文案（对齐 Cursor「Editing X」「Grepping」「Thought briefly」）
+ */
+export function getWorkStepLabel(
+  step: WorkStageStep,
+  opts?: { pending?: boolean; liveElapsedSec?: number },
+): string {
+  if (step.kind === 'thinking') {
+    return formatThinkingSummary(step.durationSec, {
+      live: opts?.pending,
+      liveElapsedSec: opts?.liveElapsedSec,
+    })
+  }
+  const tool = step.tool
+  const pending = opts?.pending ?? !tool.result
+  const name = tool.tool.name
+  const input = tool.tool.input ?? {}
+  const family = classifyToolFamily(name)
+  const file = toolFileHint(tool)
+
+  if (pending) {
+    if (family === 'search') return '搜索中'
+    if (family === 'edit') return file ? `正在编辑 ${file}` : '正在编辑'
+    if (family === 'explore') return file ? `正在探索 ${file}` : '正在探索'
+    if (family === 'shell') return '运行命令中'
+    return getToolPhrase(name, input).loadingLabel
+  }
+
+  if (family === 'search') {
+    const pattern = typeof input.pattern === 'string' ? input.pattern : ''
+    const short = pattern.length > 36 ? `${pattern.slice(0, 36)}…` : pattern
+    return short ? `搜索 ${short}` : '搜索'
+  }
+  if (family === 'edit') {
+    return file ? `编辑 ${file}` : '编辑文件'
+  }
+  if (family === 'explore' && /^read$/i.test(name)) {
+    const offset = typeof input.offset === 'number' ? input.offset : undefined
+    const limit = typeof input.limit === 'number' ? input.limit : undefined
+    if (file && offset !== undefined && limit !== undefined) {
+      return `读取 ${file} L${offset}-${offset + limit}`
+    }
+    return file ? `读取 ${file}` : '读取文件'
+  }
+  return getToolPhrase(name, input).label
+}
+
+/** live 阶段底部当前动作 */
+export function getLiveStatusFromSteps(steps: WorkStageStep[]): string | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i]!
+    if (s.kind === 'tool' && !s.tool.result) {
+      return getWorkStepLabel(s, { pending: true })
+    }
+    if (s.kind === 'thinking') {
+      return formatThinkingSummary(s.durationSec, { live: true })
+    }
+  }
+  return undefined
+}
+
 export function isDeliverableThinking(text: string): boolean {
   const t = text.trim()
   if (t.length < 20) return false
@@ -102,19 +293,17 @@ export function isDeliverableThinking(text: string): boolean {
   if (/(^|[\n。；])\s*(结论|综上|因此|所以|简言之|总的来说|我看了|看起来|改造深度)/.test(t)) {
     return true
   }
-  // 多句成段且不太像「让我先…」元话语
   if (t.length >= 100 && /[。！？]/.test(t) && !isTrivialThinking(t)) return true
   return false
 }
 
-/** 工具间隙的短元思考：隐藏，避免 think→tool→think 刷屏 */
 export function isTrivialThinking(text: string): boolean {
   const t = text.trim()
   if (!t) return true
   if (/\*\*[^*]+\*\*/.test(t) || /^#{1,3}\s/m.test(t)) return false
-  if (t.length <= 48) return true
+  if (t.length <= 16) return true
   if (
-    t.length <= 100 &&
+    t.length <= 80 &&
     /^(好的|嗯|接下来|然后|让我|我来|我先|下一步|继续|先(看|读|查|跑|搜|打开))/m.test(t)
   ) {
     return true
@@ -177,121 +366,25 @@ function mergeAnswerIntoProcess(
   return out
 }
 
-function pushNarrative(segments: ConciseSegment[], key: string, text: string): void {
+function pushNarrative(
+  segments: ConciseSegment[],
+  key: string,
+  text: string,
+  tone: 'progress' | 'final',
+): void {
   const trimmed = text.trim()
   if (!trimmed) return
   const last = segments[segments.length - 1]
-  if (last?.kind === 'narrative') {
+  if (last?.kind === 'narrative' && last.tone === tone) {
     const prev = last.text.trim()
     if (trimmed.startsWith(prev) || prev.startsWith(trimmed)) {
       last.text = trimmed.length >= prev.length ? text : last.text
       return
     }
-    // 相邻可交付段合并，避免碎成多块
     last.text = `${last.text.trim()}\n\n${trimmed}`
     return
   }
-  segments.push({ kind: 'narrative', key, text })
-}
-
-type PendingCluster = {
-  family: ToolFamily
-  tools: ToolProcessEntry[]
-  startKey: string
-}
-
-/**
- * 阶段内按序投影：保留「工具 → 结论正文」穿插，不把加粗结论抽回段首思考折叠。
- */
-function projectPhase(entries: ProcessEntry[]): ConciseSegment[] {
-  const out: ConciseSegment[] = []
-  let thinkingBuf: string[] = []
-  let thinkKey = 'think'
-  let toolsSeen = false
-  let pending: PendingCluster | null = null
-
-  const flushCluster = (): void => {
-    if (!pending) return
-    out.push({
-      kind: 'tool_cluster',
-      key: `cluster-${pending.family}-${pending.startKey}`,
-      family: pending.family,
-      tools: pending.tools,
-      summary: summarizeToolCluster(pending.family, pending.tools),
-    })
-    pending = null
-  }
-
-  const appendToExistingThinking = (text: string): void => {
-    for (let i = out.length - 1; i >= 0; i--) {
-      const s = out[i]!
-      if (s.kind === 'narrative') break
-      if (s.kind === 'thinking') {
-        s.thinking = `${s.thinking.trim()}\n\n${text}`
-        return
-      }
-    }
-  }
-
-  const flushThinking = (): void => {
-    if (thinkingBuf.length === 0) return
-    const text = thinkingBuf.join('\n\n')
-    const key = thinkKey
-    thinkingBuf = []
-
-    if (!toolsSeen) {
-      // 工具前：合并为一折叠
-      const last = out[out.length - 1]
-      if (last?.kind === 'thinking') {
-        last.thinking = `${last.thinking.trim()}\n\n${text}`
-      } else {
-        out.push({
-          kind: 'thinking',
-          key: `think-${key}`,
-          thinking: text,
-          summary: '思考了片刻',
-        })
-      }
-      return
-    }
-
-    // 工具后：可交付 → 正文；琐碎 → 丢弃；其余并入已有思考折叠（不新开一行）
-    if (isDeliverableThinking(text)) {
-      flushCluster()
-      pushNarrative(out, `narr-think-${key}`, text)
-      return
-    }
-    if (isTrivialThinking(text)) return
-    appendToExistingThinking(text)
-  }
-
-  const pushTool = (tool: ToolProcessEntry): void => {
-    flushThinking()
-    toolsSeen = true
-    const family = classifyToolFamily(tool.tool.name)
-    if (pending && pending.family === family) {
-      pending.tools.push(tool)
-      return
-    }
-    flushCluster()
-    pending = { family, tools: [tool], startKey: tool.key }
-  }
-
-  for (const e of entries) {
-    if (e.type === 'thinking') {
-      const t = e.thinking.trim()
-      if (!t) continue
-      if (thinkingBuf.length === 0) thinkKey = e.key
-      thinkingBuf.push(t)
-      continue
-    }
-    if (e.type === 'tool') {
-      pushTool(e)
-    }
-  }
-  flushThinking()
-  flushCluster()
-  return out
+  segments.push({ kind: 'narrative', key, text, tone })
 }
 
 /**
@@ -302,26 +395,110 @@ export function buildConciseTimeline(
   opts?: { answerTexts?: string[]; streamingText?: string },
 ): ConciseSegment[] {
   const source = mergeAnswerIntoProcess(process, opts?.answerTexts, opts?.streamingText)
-  const segments: ConciseSegment[] = []
-  let phaseEntries: ProcessEntry[] = []
 
-  const flushPhase = (): void => {
-    if (phaseEntries.length === 0) return
-    segments.push(...projectPhase(phaseEntries))
-    phaseEntries = []
+  let lastToolIdx = -1
+  for (let i = 0; i < source.length; i++) {
+    if (source[i]!.type === 'tool') lastToolIdx = i
   }
 
-  for (const cur of source) {
-    if (cur.type === 'text') {
-      if (!cur.text.trim()) continue
-      flushPhase()
-      pushNarrative(segments, cur.key, cur.text)
+  const segments: ConciseSegment[] = []
+  let leadingThink: string[] = []
+  let leadingKey = 'think'
+  let leadingDurationSec: number | undefined
+  let stageSteps: WorkStageStep[] = []
+  let stageStartKey = ''
+  let sawTool = false
+
+  const flushLeadingThink = (): void => {
+    if (leadingThink.length === 0) return
+    const text = leadingThink.join('\n\n')
+    const durationSec = resolveThinkingDurationSec(text, leadingDurationSec)
+    leadingThink = []
+    leadingDurationSec = undefined
+    segments.push({
+      kind: 'thinking',
+      key: `think-${leadingKey}`,
+      thinking: text,
+      durationSec,
+      summary: formatThinkingSummary(durationSec),
+    })
+  }
+
+  const flushStage = (): void => {
+    const tools = stageSteps
+      .filter((s): s is Extract<WorkStageStep, { kind: 'tool' }> => s.kind === 'tool')
+      .map((s) => s.tool)
+    if (tools.length === 0) {
+      // 无工具思考：并回 leading（尚未开干）
+      for (const s of stageSteps) {
+        if (s.kind === 'thinking' && !sawTool) leadingThink.push(s.thinking)
+      }
+      stageSteps = []
+      return
+    }
+    const diff = aggregateDiff(tools)
+    segments.push({
+      kind: 'work_stage',
+      key: `stage-${stageStartKey || tools[0]!.key}`,
+      steps: stageSteps,
+      tools,
+      summary: summarizeWorkStage(tools),
+      diffAdd: diff?.add,
+      diffDel: diff?.del,
+    })
+    stageSteps = []
+    stageStartKey = ''
+  }
+
+  for (let i = 0; i < source.length; i++) {
+    const cur = source[i]!
+
+    if (cur.type === 'thinking') {
+      const t = cur.thinking.trim()
+      if (!t) continue
+      if (!sawTool && stageSteps.length === 0) {
+        if (leadingThink.length === 0) {
+          leadingKey = cur.key
+          leadingDurationSec = cur.durationSec
+        } else if (cur.durationSec != null) {
+          leadingDurationSec = (leadingDurationSec ?? 0) + cur.durationSec
+        }
+        leadingThink.push(t)
+        continue
+      }
+      if (isTrivialThinking(t)) continue
+      stageSteps.push({
+        kind: 'thinking',
+        key: cur.key,
+        thinking: t,
+        durationSec: resolveThinkingDurationSec(t, cur.durationSec),
+      })
       continue
     }
-    if (cur.type === 'thinking' || cur.type === 'tool') {
-      phaseEntries.push(cur)
+
+    if (cur.type === 'tool') {
+      flushLeadingThink()
+      sawTool = true
+      if (stageSteps.length === 0) stageStartKey = cur.key
+      stageSteps.push({
+        kind: 'tool',
+        key: cur.key,
+        tool: cur,
+        diff: extractToolDiff(cur),
+      })
+      continue
+    }
+
+    if (cur.type === 'text') {
+      if (!cur.text.trim()) continue
+      flushLeadingThink()
+      flushStage()
+      const tone: 'progress' | 'final' = i < lastToolIdx ? 'progress' : 'final'
+      pushNarrative(segments, cur.key, cur.text, tone)
     }
   }
-  flushPhase()
+
+  flushLeadingThink()
+  flushStage()
   return segments
 }

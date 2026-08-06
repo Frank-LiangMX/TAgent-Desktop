@@ -41,11 +41,6 @@ import { ReasoningSlider, REASONING_LABELS } from './ReasoningSlider'
 /** 默认档，触发器上不回显（安全默认不占视觉带宽） */
 const REASONING_DEFAULT: ReasoningEffort = 'medium'
 
-const PROCESS_DISPLAY_LABELS: Record<ChatProcessDisplayMode, string> = {
-  full: '完整',
-  concise: '简洁',
-}
-
 interface ModelSelectorProps {
   selection: ModelSelection | null
   lockedKind: ChannelCoreKind | null
@@ -175,12 +170,6 @@ export function ModelSelector({
           {reasoningEffort && reasoningEffort !== REASONING_DEFAULT ? (
             <span className="model-selector__effort shrink-0 text-[10.5px] font-medium text-primary/80">
               {REASONING_LABELS[reasoningEffort]}
-            </span>
-          ) : null}
-          {/* 简洁模式非默认才回显，与思考强度 chip 同风格 */}
-          {processDisplayMode === 'concise' ? (
-            <span className="model-selector__effort shrink-0 text-[10.5px] font-medium text-primary/80">
-              {PROCESS_DISPLAY_LABELS.concise}
             </span>
           ) : null}
           <ChevronDown className="size-3 shrink-0 opacity-70" />
