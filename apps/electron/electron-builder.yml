@@ -56,3 +56,12 @@ linux:
     - deb
     - tar.gz
   artifactName: TAgent-${version}-${arch}.${ext}
+
+# ── 自动更新发布源 ──
+# electron-builder 会生成 latest.yml / latest-mac.yml / latest-linux.yml
+# 并上传到 GitHub Release。electron-updater 客户端轮询这些文件判断是否有新版本。
+# CI release.yml 会在 publish job 中合并 arm64+x64 的 latest-mac.yml。
+publish:
+  provider: github
+  owner: auser7x2y
+  repo: TAgent-Desktop

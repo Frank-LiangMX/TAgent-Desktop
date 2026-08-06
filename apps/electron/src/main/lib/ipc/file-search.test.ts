@@ -8,6 +8,7 @@ import {
   findFileByName,
   findFileByNameCached,
   FILE_SEARCH_MAX_DEPTH,
+  FILE_SEARCH_MAX_DIR_ENTRIES,
 } from './file-search'
 
 let root: string
@@ -81,6 +82,30 @@ describe('findFileByName', () => {
     write(`${overDepth}/too-deep.ts`)
 
     expect(findFileByName(root, 'too-deep.ts')).toBeNull()
+  })
+
+  test('超大生成物目录整体跳过，排在其后的源码目录仍能扫到（j3_statics 场景）', () => {
+    // 构造超过单目录上限的爆炸目录（名字不带缓存特征，验证的是 isHugeDir 逻辑本身）
+    const huge = join(root, 'zz-biggen')
+    mkdirSync(huge, { recursive: true })
+    for (let i = 0; i < FILE_SEARCH_MAX_DIR_ENTRIES + 10; i++) {
+      writeFileSync(join(huge, `gen-${i}.png`), '')
+    }
+
+    // 目标文件在被爆炸目录遮挡的后续目录里（readdir 顺序靠后）
+    const expected = write('py/parse_mesh.py')
+
+    expect(findFileByName(root, 'parse_mesh.py')).toBe(expected)
+  })
+
+  test('缓存类目录名不扫（preview_cache / preview-cache / .preview-cache）', () => {
+    write('preview_cache/thumb.png')
+    write('preview-cache/thumb2.png')
+    write('.preview-cache/thumb3.png')
+
+    expect(findFileByName(root, 'thumb.png')).toBeNull()
+    expect(findFileByName(root, 'thumb2.png')).toBeNull()
+    expect(findFileByName(root, 'thumb3.png')).toBeNull()
   })
 })
 

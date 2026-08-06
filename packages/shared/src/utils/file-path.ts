@@ -101,6 +101,20 @@ export function getExtension(filename: string): string {
 }
 
 /**
+ * 将 MSYS/Git Bash 挂载风格路径（/f/TAgent-Desktop/a.ts、/c/Users/x/a.ts）转换为
+ * Windows 盘符路径（F:\TAgent-Desktop\a.ts）。非该形态返回 null。
+ *
+ * Windows 上 kscc 的 Bash 工具经 Git Bash 执行，输出路径常带单字母盘符挂载前缀，
+ * win32 会把 /f/... 解析到当前盘根的 f 目录（必然不存在）——解析前先转换。
+ */
+export function msysPathToWindowsDrivePath(filePath: string): string | null {
+  const m = /^\/([a-zA-Z])\/(.+)$/.exec(filePath.trim())
+  if (!m) return null
+  // 剩余部分统一反斜杠（Windows 分隔符；路径中的 / 只可能是分隔符）
+  return `${m[1]!.toUpperCase()}:\\${m[2]!.replace(/\//g, '\\')}`
+}
+
+/**
  * 从路径中剥离末尾的行号/列号后缀（如 :42 或 :42:15）
  */
 export function stripLineCol(filePath: string): { path: string; suffix: string } {
@@ -151,7 +165,8 @@ export function isRelativeFilePath(text: string): boolean {
   const ext = getExtension(clean)
   if (!ext || !ALL_PREVIEWABLE_EXTS.has(ext)) return false
 
-  if (!/^[\w./@-]+$/.test(clean)) return false
+  // Windows Agent 输出反斜杠相对路径（py\parse_mesh.py）也要能识别
+  if (!/^[\w./@\\-]+$/.test(clean)) return false
 
   if (clean.startsWith('.') && !clean.startsWith('./') && !clean.includes('/')) return false
 

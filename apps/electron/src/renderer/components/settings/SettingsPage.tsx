@@ -44,6 +44,7 @@ import {
 } from '../../atoms/notification-prefs'
 import { splitDockModeAtom } from '../../atoms/feature-flags'
 import { ChannelsSettings } from './ChannelsSettings'
+import { UpdateChecker } from './UpdateChecker'
 import appiconLight from '../../assets/tagent-appicon-light.png'
 import appiconDark from '../../assets/tagent-appicon-dark.png'
 
@@ -948,6 +949,12 @@ function AboutSettings(): JSX.Element {
               </div>
             ))}
           </div>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="软件更新">
+        <SettingsCard divided={false}>
+          <UpdateChecker />
         </SettingsCard>
       </SettingsSection>
 

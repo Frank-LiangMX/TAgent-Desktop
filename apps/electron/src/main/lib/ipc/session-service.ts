@@ -25,7 +25,7 @@ import type {
   Channel,
   AgentSessionMeta,
 } from '@tagent/shared'
-import { AGENT_IPC_CHANNELS, MEMORY_IPC_CHANNELS } from '@tagent/shared'
+import { AGENT_IPC_CHANNELS, MEMORY_IPC_CHANNELS, msysPathToWindowsDrivePath } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
 import { getAdapter, PiAgentAdapter, type ChannelKind } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
@@ -399,10 +399,14 @@ export class SessionService {
           const base = workspace?.projectDirectory
           if (!base) return { ok: false, error: '会话未绑定工作区，无法解析相对路径' }
           abs = resolve(base, abs)
+        } else if (process.platform === 'win32') {
+          // MSYS/Git Bash 挂载形态（/f/...）：win32 会解析到盘根 f 目录，先试盘符路径
+          const drive = msysPathToWindowsDrivePath(abs)
+          if (drive && existsSync(drive)) abs = drive
         }
         if (!existsSync(abs)) {
           // 裸文件名（如 `Chat.tsx`）常规解析失败 → 项目内按文件名查找（与 resolveFile 同一兜底）
-          if (!isAbsolute(target) && workspace?.projectDirectory) {
+          if (workspace?.projectDirectory) {
             const found = findFileByNameCached(workspace.projectDirectory, basename(target))
             if (found) abs = found
           }
@@ -420,7 +424,7 @@ export class SessionService {
         _e,
         input: { sessionId: string; path: string; bases?: string[] },
       ): Promise<string | null> => {
-        const { isAbsolute, resolve, basename } = await import('node:path')
+        const { isAbsolute, resolve, basename, dirname } = await import('node:path')
         const { existsSync } = await import('node:fs')
         const target = input.path.trim()
         if (!target) return null
@@ -429,7 +433,22 @@ export class SessionService {
         const bases = (input.bases ?? []).filter(Boolean)
         if (isAbsolute(target)) {
           candidates.push(target)
+          // MSYS/Git Bash 挂载形态（/f/...）：win32 会解析到盘根 f 目录，按盘符路径再试
+          if (process.platform === 'win32') {
+            const drive = msysPathToWindowsDrivePath(target)
+            if (drive) candidates.push(drive)
+          }
         } else {
+          // 带项目名前缀的相对路径（如 `j3_statics/preview.js`）：首段匹配 base 名时
+          // 用 base 的父目录拼接（与渲染层 displayPath、1.0 resolveTargetPath 同款）
+          const firstSegment = target.split(/[\\/]/)[0]
+          if (firstSegment) {
+            for (const base of bases) {
+              if (basename(base) === firstSegment) {
+                candidates.push(resolve(dirname(base), target))
+              }
+            }
+          }
           for (const base of bases) candidates.push(resolve(base, target))
           if (workspace?.projectDirectory) {
             candidates.push(resolve(workspace.projectDirectory, target))
@@ -440,9 +459,10 @@ export class SessionService {
         }
         // 兜底：裸文件名/短路径（如 `Chat.tsx`）常规解析失败 → 项目内按文件名递归查找。
         // 排除依赖/产物目录、限深度与扫描量，命中结果带模块级缓存（见 file-search）。
+        // 绝对路径也走这里：MSYS 形态解析不到时按名找回（对齐 TAgent_General 1.0 行为）。
         // 草稿会话还没落 meta，反查不到 workspace，此时用渲染层注入的 base 当扫描根。
         const searchRoot = workspace?.projectDirectory ?? bases[0]
-        if (!isAbsolute(target) && searchRoot) {
+        if (searchRoot) {
           const found = findFileByNameCached(searchRoot, basename(target))
           if (found) return found
         }
@@ -1040,14 +1060,11 @@ export class SessionService {
           // 执行形态 +（Work 才）子代理委派 + 看板工具说明 + 富内容 + 记忆
           // Chat 下 Task/SubAgent/看板写 硬拦，不注入委派/看板工具
           append: [
-            // 身份对齐 Pi 内核：claude_code preset 开头那句「You are kscc, Owtffssent's
-            // official CLI」会让 agent 问候时自报家门（「我是 kscc…」）。Pi 核的
-            // DEFAULT_SYSTEM_PROMPT 无品牌身份句，只说「专业编程助手」。这里软覆盖：
-            // 不否定 preset 的工具能力设定，只约束回复时不自我介绍、不报 CLI 工具名/出品方。
+            // Chat/Work 策略须尽早出现，压过 claude_code preset 的动手/Plan 默认习惯
+            buildExecutionModePrompt(executionMode),
             '## 身份与自我介绍\n你是一个专业的编程助手，帮助用户完成软件开发任务。回复时不要自我介绍，也不要提及你所属的 CLI 工具名或出品方品牌；直接以助手姿态回答用户的问题。',
             // W8：输出风格沟通红线（与 Pi 核 buildOutputStylePrompt 同文）
             buildOutputStylePrompt(),
-            buildExecutionModePrompt(executionMode),
             executionMode === 'work' ? buildSubagentDelegationPrompt(eagerness) : '',
             executionMode === 'work'
               ? '## 看板派工工具\nWork 模式可用：kanban_create_board、kanban_add_task、kanban_list_boards、kanban_list_tasks。长任务拆成看板任务并指定 roleId；调度器会派 headless 工人。'
@@ -1447,5 +1464,16 @@ export class SessionService {
   disposeAll(): void {
     for (const rt of this.runtimes.values()) rt.destroy()
     this.runtimes.clear()
+  }
+
+  /**
+   * 是否有运行中的 Agent（自动更新安装前检查用）。
+   * 用 isTurnInFlight() 而非 isRunning()：长驻进程 isRunning 恒 true。
+   */
+  hasActiveAgents(): boolean {
+    for (const rt of this.runtimes.values()) {
+      if (rt.isTurnInFlight()) return true
+    }
+    return false
   }
 }

@@ -426,6 +426,19 @@ const electronAPI = {
   // ===== 渠道余额 =====
   getChannelBalance: (channelId: string) =>
     ipcRenderer.invoke(BALANCE_IPC_CHANNELS.GET, channelId) as Promise<ChannelBalanceResult>,
+
+  // ===== 自动更新 =====
+  updater: {
+    checkForUpdates: () => ipcRenderer.invoke('updater:check') as Promise<void>,
+    getStatus: () => ipcRenderer.invoke('updater:status') as Promise<unknown>,
+    installWhenIdle: () => ipcRenderer.invoke('updater:install-when-idle') as Promise<boolean>,
+    cancelIdleInstall: () => ipcRenderer.invoke('updater:cancel-idle-install') as Promise<void>,
+    onStatusChanged: (cb: (status: unknown) => void) => {
+      const handler = (_e: unknown, status: unknown): void => cb(status)
+      ipcRenderer.on('updater:on-status-changed', handler)
+      return () => ipcRenderer.removeListener('updater:on-status-changed', handler)
+    },
+  },
 } as const
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)

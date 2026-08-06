@@ -238,12 +238,35 @@ function getTurnLastMainAssistantCreatedAt(items: TurnSourceItem[]): number | un
  * 带 parentToolUseId 的 user 消息一律不算真实输入：SDK 委派子代理时会把
  * 「发给子代理的任务指令」作为一条 user 消息（text + parent_tool_use_id +
  * subagent_type）流入主线程流，这类消息是合成委派消息，不应渲染为用户气泡。
- * 真实用户输入由主进程构造时 parentToolUseId 恒为 null。 */
+ * 真实用户输入由主进程构造时 parentToolUseId 恒为 null。
+ *
+ * kscc 中断/合成控制文（如 `[Request interrupted by user for tool use]`）也不是用户气泡。
+ */
 export function isRealUserInput(message: TAgentUserMessage): boolean {
   if (message.parentToolUseId) return false
+  if (message.isSynthetic) return false
+  if (isSdkControlUserMessage(message)) return false
   return message.content.some(
     (b) => b.type === 'text' && typeof (b as TAgentTextBlock).text === 'string' && (b as TAgentTextBlock).text.trim().length > 0,
   )
+}
+
+/**
+ * kscc / claude-code 注入的控制型 user 消息（中断、拒工具等），不当聊天用户气泡。
+ * SDK 常不带 isSynthetic，只能靠文案哨兵识别。
+ */
+export function isSdkControlUserMessage(message: TAgentUserMessage): boolean {
+  if (message.isSynthetic) return true
+  for (const b of message.content) {
+    if (b.type !== 'text') continue
+    const t = (b as TAgentTextBlock).text?.trim() ?? ''
+    if (!t) continue
+    if (/^\[Request interrupted by user/i.test(t)) return true
+    if (/^\[Request cancelled/i.test(t)) return true
+    if (/^The user doesn't want to proceed with this tool use/i.test(t)) return true
+    if (/^Permission for .{0,80} (was|has been) denied/i.test(t)) return true
+  }
+  return false
 }
 
 /** 看板完成回流等系统通知（不当普通助手轮） */
@@ -308,9 +331,12 @@ export function groupItemsIntoTurns(items: TurnSourceItem[]): SessionRenderTurn[
       if (isRealUserInput(msg)) {
         flush()
         turns.push({ kind: 'user', key: item.key, message: msg })
-      } else if (isToolResultOnlyUser(msg) || msg.parentToolUseId) {
-        // tool_result 回传 / 子代理委派消息（合成 user，text+parentToolUseId）→ 归入当前 assistant-turn。
-        // 委派消息绝不渲染为独立用户气泡（主进程构造的真实用户输入 parentToolUseId 恒为 null）。
+      } else if (
+        isToolResultOnlyUser(msg) ||
+        msg.parentToolUseId ||
+        isSdkControlUserMessage(msg)
+      ) {
+        // tool_result / 子代理委派 / SDK 中断控制文 → 归入当前 assistant-turn，不渲染用户气泡
         if (!current) {
           current = {
             kind: 'assistant-turn',
@@ -743,17 +769,17 @@ export function resolveThinkingDurationSec(
   return Math.max(1, Math.min(180, Math.round(len / 45)))
 }
 
-/** 折叠文案：思考了 N 秒 / 思考了片刻 / 正在思考… */
+/** 折叠文案：对齐 Cursor「Thought briefly / Thought for 46s」→ 思考了片刻 / 思考了 46s */
 export function formatThinkingSummary(
   durationSec: number | undefined,
   opts?: { live?: boolean; liveElapsedSec?: number },
 ): string {
   if (opts?.live) {
     const n = opts.liveElapsedSec
-    if (n != null && n >= 1) return `思考中 ${n} 秒`
+    if (n != null && n >= 1) return `思考中 ${n}s`
     return '正在思考…'
   }
-  if (durationSec != null && durationSec > 0) return `思考了 ${durationSec} 秒`
+  if (durationSec != null && durationSec > 0) return `思考了 ${durationSec}s`
   return '思考了片刻'
 }
 

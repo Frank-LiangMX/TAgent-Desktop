@@ -16,6 +16,7 @@ import {
   hasWriteStructure,
   isAutoModeAutoAllowTool,
   isChatModeBlockedTool,
+  isChatModeHardStopTool,
   isDangerousCommand,
   isWriteTool,
   migrateExecutionMode,
@@ -232,9 +233,11 @@ async function checkPermission(args: {
 
   // Chat：硬只读（在 bypass/白名单之前，防止「完全自动」穿透 Chat）
   if (executionMode === 'chat' && isChatModeBlockedTool(toolName, input, cwd)) {
-    // 终止当前 run + 推建议条：须用户确认才切 Work（ADR-0005）。
-    // 被拦即停，而不是 deny 后让模型继续跑（用户视角「都在运行了还问我干啥」）。
-    chatModeBlockHandler?.(sessionId, toolName)
+    // 写盘/破坏性命令：整轮中断 + 建议切 Work。
+    // Plan/SubAgent/看板等误用：软拒绝，让模型改口建议切 Work，避免「开个 Plan 就打断」。
+    if (isChatModeHardStopTool(toolName, input, cwd)) {
+      chatModeBlockHandler?.(sessionId, toolName)
+    }
     emitWorkSwitchSuggestion(win(), sessionId, toolName)
     return { allow: false, reason: CHAT_MODE_BLOCK_REASON }
   }

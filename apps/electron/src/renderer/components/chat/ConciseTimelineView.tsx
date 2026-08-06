@@ -1,10 +1,10 @@
 /**
  * ConciseTimelineView — Cursor 式简洁时间线
  *
- * 最外层「运行了 Xm」容器：
- *   - 展开 → 思考 + 执行链（含进度短总结）
+ * 最外层「运行了 Xm Ys」容器：
+ *   - 展开 → 思考折叠 + 进度短文 + 阶段灰字行（可挂子代理）
  *   - 折叠 → 只留 final output（仍保留「运行了」开关以便再展开）
- * 阶段块 live：摘要累积 + 底部当前动作
+ * 阶段块 live：摘要累积 + 底部当前动作；层级文案扫光
  */
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import { CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
@@ -16,6 +16,7 @@ import {
   getLiveStatusFromSteps,
   getWorkStepLabel,
 } from './concise-timeline-model'
+import { isOneShotTextJump } from './narrative-oneshot'
 import { formatThinkingSummary } from './session-turn-model'
 
 interface ConciseTimelineViewProps {
@@ -25,6 +26,10 @@ interface ConciseTimelineViewProps {
   isLatestTurn?: boolean
   /** 本轮已运行毫秒（live 用实时；完成后用 completedDuration） */
   workedMs?: number
+  /** 挂到某 work_stage 下的额外内容（Cursor 式子代理行） */
+  getStageExtras?: (seg: Extract<ConciseSegment, { kind: 'work_stage' }>) => ReactNode
+  /** 未挂到阶段的兜底内容（插在运行队列末尾） */
+  processExtras?: ReactNode
 }
 
 export function ConciseTimelineView({
@@ -32,8 +37,10 @@ export function ConciseTimelineView({
   isLive = false,
   isLatestTurn = false,
   workedMs = 0,
+  getStageExtras,
+  processExtras,
 }: ConciseTimelineViewProps): JSX.Element | null {
-  if (segments.length === 0) return null
+  if (segments.length === 0 && !processExtras) return null
 
   const processSegs = segments.filter(
     (s) => !(s.kind === 'narrative' && s.tone === 'final'),
@@ -53,9 +60,11 @@ export function ConciseTimelineView({
     return null
   })()
 
+  const hasProcess = processSegs.length > 0 || Boolean(processExtras)
+
   return (
     <div className="agent-concise-timeline">
-      {processSegs.length > 0 ? (
+      {hasProcess ? (
         <RunQueueShell
           workedMs={workedMs}
           isLive={isLive}
@@ -82,6 +91,7 @@ export function ConciseTimelineView({
                   diffDel={seg.diffDel}
                   steps={seg.steps}
                   isLive={stageLive}
+                  extras={getStageExtras?.(seg)}
                 />
               )
             }
@@ -94,6 +104,7 @@ export function ConciseTimelineView({
               />
             )
           })}
+          {processExtras}
         </RunQueueShell>
       ) : null}
 
@@ -148,11 +159,14 @@ const RunQueueShell = memo(function RunQueueShell({
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
-        <span className="agent-concise-run__label">{label}</span>
+        <span className="agent-concise-run__label">
+          {/* 外层「运行中」只计时，不扫光；扫光留给当前动作行 */}
+          <span>{label}</span>
+        </span>
         <CaretRight
           size={12}
           className={cn(
-            'shrink-0 text-muted-foreground/40 transition-transform',
+            'agent-concise-caret shrink-0 transition-transform',
             open && 'rotate-90',
           )}
         />
@@ -161,6 +175,7 @@ const RunQueueShell = memo(function RunQueueShell({
     </div>
   )
 })
+
 function isLastOfKind(
   segments: ConciseSegment[],
   key: string,
@@ -181,7 +196,9 @@ const ThinkingFold = memo(function ThinkingFold({
   durationSec?: number
   isLive: boolean
 }): JSX.Element {
-  const [open, setOpen] = useState(false)
+  // live 时展开看思考输出；结束后可手动收起
+  const [open, setOpen] = useState(isLive)
+  const wasLive = useRef(isLive)
   const startRef = useRef<number | null>(null)
   if (isLive && startRef.current == null) startRef.current = Date.now()
   const elapsedMs = useLiveElapsedMs(startRef.current ?? undefined, isLive)
@@ -194,18 +211,36 @@ const ThinkingFold = memo(function ThinkingFold({
     liveElapsedSec: Math.floor(elapsedMs / 1000),
   })
 
+  useEffect(() => {
+    if (isLive) setOpen(true)
+    else if (wasLive.current && !isLive) setOpen(false)
+    wasLive.current = isLive
+  }, [isLive])
+
+  // 流式竞态偶发 displayed 被清空时，勿用「…」顶替已有思考正文
+  const bodyText = (() => {
+    const shown = displayedContent.trim()
+    if (shown) return shown
+    const raw = thinking.trim()
+    if (raw) return raw
+    return isLive ? '…' : ''
+  })()
+
   return (
     <div className={cn('agent-concise-fold', isLive && 'is-live')}>
       <button
         type="button"
         className="agent-concise-fold__head"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
       >
-        <span className="agent-concise-fold__summary">{summary}</span>
+        <span className={cn('agent-concise-fold__summary', isLive && 'agent-concise-shimmer')}>
+          {summary}
+        </span>
         <CaretRight
           size={11}
           className={cn(
-            'shrink-0 text-muted-foreground/35 transition-transform',
+            'agent-concise-caret shrink-0 transition-transform',
             open && 'rotate-90',
           )}
         />
@@ -213,10 +248,10 @@ const ThinkingFold = memo(function ThinkingFold({
       {open ? (
         <div className="agent-concise-fold__body">
           <MessageResponse
-            className="text-[12.5px] leading-[1.6] text-muted-foreground/85"
+            className="text-[12.5px] leading-[1.55] text-muted-foreground/80"
             streaming={isLive}
           >
-            {displayedContent.trim() || (isLive ? '…' : '')}
+            {bodyText}
           </MessageResponse>
         </div>
       ) : null}
@@ -246,25 +281,27 @@ const WorkStageFold = memo(function WorkStageFold({
   diffDel,
   steps,
   isLive,
+  extras,
 }: {
   summary: string
   diffAdd?: number
   diffDel?: number
   steps: WorkStageStep[]
   isLive: boolean
+  extras?: ReactNode
 }): JSX.Element {
-  // live：默认展开看执行明细；完成后自动收进阶段块（可手动再开）
-  const [open, setOpen] = useState(isLive)
+  // Cursor：live 只露摘要 + 当前动作；明细仅用户展开。禁止 live 灌入步骤再整收。
+  const [open, setOpen] = useState(false)
   const wasLive = useRef(isLive)
-  const liveStatus = isLive ? getLiveStatusFromSteps(steps) : undefined
+  const rawLiveStatus = isLive ? getLiveStatusFromSteps(steps) : undefined
+  // 工具切换很快时防顶栏/底行动作文案连闪
+  const liveStatus = useDebouncedValue(rawLiveStatus, 280)
 
   useEffect(() => {
-    if (isLive) setOpen(true)
-    else if (wasLive.current && !isLive) setOpen(false)
+    // 阶段结束：若用户曾展开，收回收成灰字行（与 Cursor done 折叠一致）
+    if (wasLive.current && !isLive) setOpen(false)
     wasLive.current = isLive
   }, [isLive])
-
-  const detailOpen = open || isLive
 
   return (
     <div className={cn('agent-concise-fold', 'agent-concise-stage', isLive && 'is-live')}>
@@ -272,34 +309,35 @@ const WorkStageFold = memo(function WorkStageFold({
         type="button"
         className="agent-concise-fold__head"
         onClick={() => setOpen((v) => !v)}
-        aria-expanded={detailOpen}
+        aria-expanded={open}
       >
-        {isLive ? (
-          <CircleNotch size={12} className="shrink-0 animate-spin text-muted-foreground/45" />
-        ) : (
-          <Check size={12} weight="bold" className="shrink-0 text-muted-foreground/35" />
-        )}
         <span className="agent-concise-fold__summary">
-          {summary}
+          {/* 摘要只累积计数、不扫光；扫光留给底部当前动作 */}
+          <span>{summary}</span>
           <DiffHint add={diffAdd} del={diffDel} />
         </span>
         <CaretRight
           size={11}
           className={cn(
-            'ml-auto shrink-0 text-muted-foreground/35 transition-transform',
-            detailOpen && 'rotate-90',
+            'agent-concise-caret shrink-0 transition-transform',
+            open && 'rotate-90',
           )}
         />
       </button>
 
-      {/* live 且折叠态：仍露出当前动作一行 */}
-      {isLive && !open ? (
-        <div className="agent-concise-live-status">{liveStatus}</div>
+      {/* 子代理挂在阶段摘要下（对齐 Cursor），折叠明细时仍可见 */}
+      {extras ? <div className="agent-concise-stage__extras">{extras}</div> : null}
+
+      {/* live 折叠态：只露当前动作一行（摘要已在 head 累积） */}
+      {isLive && !open && liveStatus ? (
+        <div className="agent-concise-live-status">
+          <span className="agent-concise-shimmer">{liveStatus}</span>
+        </div>
       ) : null}
 
       <div
-        className={cn('agent-concise-stage__panel', detailOpen && 'is-open')}
-        aria-hidden={!detailOpen}
+        className={cn('agent-concise-stage__panel', open && 'is-open')}
+        aria-hidden={!open}
       >
         <div className="agent-concise-stage__panel-inner">
           <div className="agent-concise-fold__body agent-concise-fold__body--steps">
@@ -310,9 +348,9 @@ const WorkStageFold = memo(function WorkStageFold({
                 isStreaming={isLive && step.kind === 'tool' && !step.tool.result}
               />
             ))}
-            {isLive && liveStatus ? (
+            {isLive && open && liveStatus ? (
               <div className="agent-concise-live-status agent-concise-live-status--in-body">
-                {liveStatus}
+                <span className="agent-concise-shimmer">{liveStatus}</span>
               </div>
             ) : null}
           </div>
@@ -322,6 +360,26 @@ const WorkStageFold = memo(function WorkStageFold({
   )
 })
 
+/** 短延迟：同一阶段内工具连发时动作文案更稳；首值立刻显示以便扫光马上可见 */
+function useDebouncedValue<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value)
+  const primed = useRef(false)
+  useEffect(() => {
+    if (value == null || value === '') {
+      primed.current = false
+      setDebounced(value)
+      return
+    }
+    if (!primed.current) {
+      primed.current = true
+      setDebounced(value)
+      return
+    }
+    const id = window.setTimeout(() => setDebounced(value), ms)
+    return () => window.clearTimeout(id)
+  }, [value, ms])
+  return debounced
+}
 const StageStepRow = memo(function StageStepRow({
   step,
   isStreaming,
@@ -362,7 +420,7 @@ const StageStepRow = memo(function StageStepRow({
           ) : isError ? (
             <WarningCircle size={12} weight="fill" className="text-destructive/70" />
           ) : (
-            <Check size={12} weight="bold" className="text-muted-foreground/40" />
+            <Check size={12} weight="bold" className="text-muted-foreground/35" />
           )}
         </span>
         <span className="agent-concise-step__label">{label}</span>
@@ -373,7 +431,7 @@ const StageStepRow = memo(function StageStepRow({
           <CaretRight
             size={10}
             className={cn(
-              'ml-auto shrink-0 text-muted-foreground/30 transition-transform',
+              'agent-concise-caret shrink-0 transition-transform',
               detailOpen && 'rotate-90',
             )}
           />
@@ -381,7 +439,7 @@ const StageStepRow = memo(function StageStepRow({
       </button>
       {detailOpen && step.kind === 'thinking' ? (
         <div className="agent-concise-step__detail">
-          <MessageResponse className="text-[12.5px] leading-[1.6] text-muted-foreground/85">
+          <MessageResponse className="text-[12.5px] leading-[1.55] text-muted-foreground/80">
             {step.thinking.trim()}
           </MessageResponse>
         </div>
@@ -399,6 +457,69 @@ const StageStepRow = memo(function StageStepRow({
   )
 })
 
+/** useSmoothStream 挂在可 key-remount 的子树，避免 one-shot 时 shrink 守卫吞掉空串重置 */
+const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
+  seed,
+  target,
+  tone,
+  smoothStreaming,
+  onCaughtUp,
+}: {
+  seed: string
+  target: string
+  tone: 'progress' | 'final'
+  smoothStreaming: boolean
+  onCaughtUp: () => void
+}): JSX.Element {
+  const { displayedContent } = useSmoothStream({
+    content: seed,
+    isStreaming: smoothStreaming,
+  })
+  const caughtRef = useRef(onCaughtUp)
+  caughtRef.current = onCaughtUp
+
+  useEffect(() => {
+    if (
+      smoothStreaming &&
+      seed === target &&
+      target.length > 0 &&
+      displayedContent === target
+    ) {
+      caughtRef.current()
+    }
+  }, [displayedContent, seed, target, smoothStreaming])
+
+  const content = displayedContent.trim()
+
+  if (tone === 'progress') {
+    return (
+      <div className="agent-concise-narrative agent-concise-narrative--progress">
+        {content ? (
+          <MessageResponse
+            className="agent-concise-narrative__text"
+            streaming={smoothStreaming}
+          >
+            {displayedContent}
+          </MessageResponse>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="agent-concise-narrative agent-concise-narrative--final">
+      {/* py-0：句尾工具条贴正文，避免 Message 默认 py-2.5 撑出大空白 */}
+      <Message from="assistant" className="py-0">
+        <MessageContent>
+          {content ? (
+            <MessageResponse streaming={smoothStreaming}>{displayedContent}</MessageResponse>
+          ) : null}
+        </MessageContent>
+      </Message>
+    </div>
+  )
+})
+
 const NarrativeRow = memo(function NarrativeRow({
   text,
   tone,
@@ -408,51 +529,80 @@ const NarrativeRow = memo(function NarrativeRow({
   tone: 'progress' | 'final'
   isStreaming: boolean
 }): JSX.Element {
-  // kscc 常一次落盘：首次非流式出现时先喂空串再喂全文，让 useSmoothStream 走逐字
-  const [boot, setBoot] = useState(!isStreaming && text.trim().length > 0)
-  const [seed, setSeed] = useState(() => (isStreaming || !text.trim() ? text : ''))
+  // 历史轮 / progress→final remount（!isStreaming 且已完整）：instant 全文，不重播打字机
+  // live one-shot（含 isStreaming）：seed '' → 下一帧全文，smooth 直到追上
+  const prevTextRef = useRef<string | null>(null)
+  const rafRef = useRef<number | null>(null)
+  const [seed, setSeed] = useState(() =>
+    !isStreaming && text.trim().length > 0 ? text : '',
+  )
+  const [epoch, setEpoch] = useState(0)
+  const [oneShot, setOneShot] = useState(false)
 
   useEffect(() => {
-    if (isStreaming) {
-      setBoot(false)
-      setSeed(text)
+    return () => {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+    }
+  }, [])
+
+  useEffect(() => {
+    const prev = prevTextRef.current
+    const next = text
+
+    const armOneShot = (nextText: string) => {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+      setEpoch((e) => e + 1)
+      setSeed('')
+      setOneShot(true)
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null
+        setSeed(nextText)
+      })
+    }
+
+    if (prev === null) {
+      prevTextRef.current = next
+      // 初次挂载：非 live 已完成 → 直接全文
+      if (!isStreaming && next.trim().length > 0) {
+        setSeed(next)
+        setOneShot(false)
+        return
+      }
+      if (isOneShotTextJump(0, next.length)) {
+        armOneShot(next)
+        return
+      }
+      setSeed(next)
+      setOneShot(false)
       return
     }
-    if (boot) {
-      const id = requestAnimationFrame(() => {
-        setSeed(text)
-        setBoot(false)
-      })
-      return () => cancelAnimationFrame(id)
-    }
-    setSeed(text)
-  }, [text, isStreaming, boot])
 
-  const smoothStreaming = isStreaming || boot || (seed !== text && text.length > 0)
-  const { displayedContent } = useSmoothStream({
-    content: seed,
-    isStreaming: smoothStreaming,
-  })
-  const content = displayedContent.trim()
+    if (prev === next) return
+
+    const prevLen = prev.length
+    prevTextRef.current = next
+
+    if (isOneShotTextJump(prevLen, next.length)) {
+      armOneShot(next)
+      return
+    }
+
+    // 真增量流式：交给 useSmoothStream
+    setSeed(next)
+  }, [text, isStreaming])
+
+  const smoothStreaming =
+    isStreaming || oneShot || (seed !== text && text.length > 0)
 
   return (
-    <div
-      className={cn(
-        'agent-concise-narrative',
-        tone === 'final' && 'agent-concise-narrative--final',
-        tone === 'progress' && 'agent-concise-narrative--progress',
-      )}
-    >
-      <Message from="assistant">
-        <MessageContent>
-          {content ? (
-            <MessageResponse streaming={smoothStreaming}>{displayedContent}</MessageResponse>
-          ) : smoothStreaming ? (
-            <span className="text-muted-foreground/50">…</span>
-          ) : null}
-        </MessageContent>
-      </Message>
-    </div>
+    <NarrativeSmoothBody
+      key={epoch}
+      seed={seed}
+      target={text}
+      tone={tone}
+      smoothStreaming={smoothStreaming}
+      onCaughtUp={() => setOneShot(false)}
+    />
   )
 })
 

@@ -1,6 +1,6 @@
 # Cursor 式简洁时间线
 
-> 日期：2026-08-06（对齐 Cursor：live 滚动态 → 完成折叠 → 展开明细）  
+> 日期：2026-08-06（对齐 Cursor：灰字层级 + 深色进度文 + 子代理嵌套 + live 扫光）  
 > 范围：仅 `displayMode === 'concise'`；`full` 零回归  
 > 代码：`concise-timeline-model.ts` / `ConciseTimelineView.tsx`
 
@@ -9,19 +9,29 @@
 ## 1. 产品目标
 
 ```
-[运行了 Xm]          ← 最外层容器（对齐 Cursor Worked for）
-  ├ 展开：思考了 N 秒 → 进度短总结 → 阶段块 → …
-  └ 折叠：过程链隐藏
-[最终正文]            ← 始终在容器外；折叠后页面上主要只剩它
+[运行了 8m 6s]       ← 最外层（对齐 Cursor Worked for；时长 Xm Ys）
+  ├ 思考了片刻 / 思考了 46s   ← 灰字折叠，可穿插整轮
+  ├ 进度短文（深色内联）
+  ├ 探索了 8 个文件，3 次搜索 ← 灰字阶段行（无勾选图标）
+  │    • 子代理任务  模型名
+  │      已完成
+  ├ …
+  └ 编辑了 N 个文件 +116 -32
+[最终正文]            ← 容器外；折叠后主要只剩它
 ```
 
 | 能力 | 行为 |
 |------|------|
-| 运行容器 | 最新一轮默认展开；用户发下一轮后历史链折叠；过程链相对外层缩进 |
-| 过程链 | 思考时长行 + 阶段工作块 + 进度短总结，全部在容器内 |
-| 最终正文 | `narrative.final` 在容器外，折叠后仍可见 |
-| 阶段块 | live 摘要+滚动态；done 折叠；expand 明细含思考了 N 秒 |
-| full | ProcessGroupView 不变 |
+| 运行容器 | 最新一轮默认展开；用户发下一轮后历史链折叠 |
+| 时长文案 | `运行了 8m 6s` / `思考了 46s` / `思考了片刻`（对齐 Cursor 后缀） |
+| 过程链 | 思考折叠 + 进度短文 + 阶段灰字行，全部在容器内 |
+| 阶段块 | live：顶栏摘要只累积「探索了 N…」（完成态措辞、不扫光）；底下一行族级当前动作（探索中/编辑中…）可扫光；不自动展开步骤 |
+| 子代理 | 挂探索/搜索阶段下：`• 任务` + 右侧模型 + 第二行状态 |
+| live 扫光 | 运行中 / 思考中 / 阶段摘要 / 子代理进度 |
+| 最终正文 | `narrative.final` 在容器外，无卡片边框 |
+| 句尾状态 | 结束（完成/已中断/出错）统一在消息尾：`已中断 · 1m 24s · 03/15 14:32` |
+| Files Changed | 有编辑工具时句尾卡片：`N Files Changed` + 文件名 + `+N -M`；Review/行点击 → 文件预览（非 git diff） |
+| full | ProcessGroupView 不变；句尾状态 / Files Changed 同上 |
 
 ---
 
@@ -33,7 +43,7 @@ WorkStageStep =
   | { kind: 'tool'; key; tool; diff?: { add; del } }
 
 ConciseSegment =
-  | { kind: 'thinking'; … }           // 仅首轮工具前
+  | { kind: 'thinking'; … }           // 首轮 + 中段非琐碎思考（打断阶段）
   | { kind: 'work_stage'; steps; tools; summary; diffAdd?; diffDel? }
   | { kind: 'narrative'; text; tone: 'progress' | 'final' }
 ```
@@ -42,17 +52,18 @@ ConciseSegment =
 
 ## 3. 验收
 
-1. live 阶段：摘要 + 底部当前动作；完成后仍在，成折叠块  
-2. 展开：思考与工具按时间交错；编辑行可有 `+N -M`  
-3. 点击明细行可展开详情  
-4. 工具间 text = 进度短总结；尾部 = 最终卡片  
+1. live 阶段：灰字摘要扫光 + 底部当前动作；完成后仍在，成折叠块（无常驻勾）  
+2. 中段思考升为独立「思考了 Ns」折叠，插在阶段之间  
+3. 子代理出现在探索阶段摘要下方  
+4. 工具间 text = 进度短总结；尾部 = 最终正文  
 5. vitest `concise-timeline-model` 绿  
+6. **kscc one-shot final**：即使无 `stream_text_delta`、整段 `sdk_message` 一次落盘，concise 尾部正文仍走打字机（live progress 即逐字；升 final 不二次整坨闪现）；历史轮打开不重播打字机  
 
 ---
 
 ## 4. 明确不做
 
-- 不改主进程 IR  
-- 不做外层「Worked for Xm」大折叠  
+- 不改主进程 IR / 不强迫 kscc 必发 delta（渲染侧兜底 one-shot）  
 - 无 text 时不编造进度文案  
 - 完整文件 diff 面板（点击详情目前为 result 摘要截断）  
+- 英文 UI 文案（保留中文，仅对齐 Cursor 视觉结构与时长格式）  

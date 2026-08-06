@@ -33,7 +33,7 @@ export type ConciseSegment =
       thinking: string
       summary: string
       durationSec?: number
-    }
+    } // 首轮工具前 + 中段非琐碎思考（打断阶段，对齐 Cursor）
   | {
       kind: 'work_stage'
       key: string
@@ -48,7 +48,8 @@ export type ConciseSegment =
 const SEARCH_RE = /^(grep|search|semanticsearch|websearch)/i
 const EXPLORE_RE =
   /^(read|glob|webfetch|list|ls|find|catalog)/i
-const EDIT_RE = /^(edit|write|multiedit|notebookedit|apply|create|delete|remove|patch)/i
+const EDIT_RE =
+  /^(edit|write|multiedit|notebookedit|strreplace|search_replace|apply|create|delete|remove|patch)/i
 const SHELL_RE = /^(bash|shell|terminal|cmd|powershell|exec)/i
 
 export function classifyToolFamily(name: string): ToolFamily {
@@ -62,11 +63,16 @@ export function classifyToolFamily(name: string): ToolFamily {
 }
 
 function toolFileHint(tool: ToolProcessEntry): string | null {
+  const fp = toolFilePath(tool)
+  if (!fp) return null
+  return fp.split(/[/\\]/).pop() || fp
+}
+
+/** 编辑工具 input 中的完整路径（句尾 Files Changed 用） */
+export function toolFilePath(tool: ToolProcessEntry): string | null {
   const input = tool.tool.input ?? {}
   const fp = input.file_path ?? input.filePath ?? input.path
-  if (typeof fp === 'string' && fp.trim()) {
-    return fp.split(/[/\\]/).pop() || fp
-  }
+  if (typeof fp === 'string' && fp.trim()) return fp.trim()
   return null
 }
 
@@ -152,11 +158,11 @@ function countUniqueFiles(tools: ToolProcessEntry[]): number {
 
 /**
  * 阶段摘要：编辑了 N 个文件，探索了 M 个文件，K 次搜索，运行了 C 条命令
- * 对齐 Cursor「Editing 7 files, explored 2 files, 2 searches, ran 1 command」
+ * 对齐 Cursor「Edited 7 files, explored 2 files…」——live 也用完成态措辞，
+ * 只累积计数，避免顶栏「正在…」随工具切换掠过。
  */
 export function summarizeWorkStage(tools: ToolProcessEntry[]): string {
   if (tools.length === 0) return '执行'
-  const pending = tools.some((t) => !t.result)
   const buckets: Record<ToolFamily, ToolProcessEntry[]> = {
     edit: [],
     explore: [],
@@ -171,25 +177,25 @@ export function summarizeWorkStage(tools: ToolProcessEntry[]): string {
   const parts: string[] = []
   if (buckets.edit.length) {
     const n = countUniqueFiles(buckets.edit)
-    parts.push(pending ? `正在编辑 ${n} 个文件` : `编辑了 ${n} 个文件`)
+    parts.push(`编辑了 ${n} 个文件`)
   }
   if (buckets.explore.length) {
     const n = buckets.explore.length
-    parts.push(pending ? `正在探索 ${n} 项` : `探索了 ${n} 个文件`)
+    parts.push(`探索了 ${n} 个文件`)
   }
   if (buckets.search.length) {
     const n = buckets.search.length
-    parts.push(pending ? `正在搜索 ${n} 次` : `${n} 次搜索`)
+    parts.push(`${n} 次搜索`)
   }
   if (buckets.shell.length) {
     const n = buckets.shell.length
-    parts.push(pending ? `正在运行 ${n} 条命令` : `运行了 ${n} 条命令`)
+    parts.push(`运行了 ${n} 条命令`)
   }
   if (buckets.other.length) {
     const n = buckets.other.length
-    parts.push(pending ? `正在执行 ${n} 步` : `执行了 ${n} 步`)
+    parts.push(`执行了 ${n} 步`)
   }
-  return parts.join('，') || (pending ? '正在执行' : '已执行')
+  return parts.join('，') || '已执行'
 }
 
 /** @deprecated 用 diffAdd/diffDel；保留聚合字符串给旧测试 */
@@ -222,6 +228,41 @@ export function aggregateDiff(
     found = true
   }
   return found ? { add, del } : undefined
+}
+
+/** 本轮编辑过的文件（按路径合并；句尾 Cursor 式 Files Changed） */
+export type TurnEditedFile = {
+  path: string
+  name: string
+  add: number
+  del: number
+}
+
+export function collectTurnEditedFiles(process: ProcessEntry[]): TurnEditedFile[] {
+  const map = new Map<string, TurnEditedFile>()
+  for (const entry of process) {
+    if (entry.type !== 'tool') continue
+    if (classifyToolFamily(entry.tool.name) !== 'edit') continue
+    // 尚无 result 的 live 编辑不进句尾（避免半截路径闪现）
+    if (!entry.result) continue
+    const path = toolFilePath(entry)
+    if (!path) continue
+    const diff = extractToolDiff(entry) ?? { add: 0, del: 0 }
+    const key = path.replace(/\\/g, '/').toLowerCase()
+    const prev = map.get(key)
+    if (prev) {
+      prev.add += diff.add
+      prev.del += diff.del
+    } else {
+      map.set(key, {
+        path,
+        name: path.split(/[/\\]/).pop() || path,
+        add: diff.add,
+        del: diff.del,
+      })
+    }
+  }
+  return [...map.values()]
 }
 
 /**
@@ -271,11 +312,16 @@ export function getWorkStepLabel(
   return getToolPhrase(name, input).label
 }
 
-/** live 阶段底部当前动作 */
+/** live 阶段底部当前动作（族级短句，避免文件名一闪而过） */
 export function getLiveStatusFromSteps(steps: WorkStageStep[]): string | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const s = steps[i]!
     if (s.kind === 'tool' && !s.tool.result) {
+      const family = classifyToolFamily(s.tool.tool.name)
+      if (family === 'search') return '搜索中'
+      if (family === 'edit') return '编辑中'
+      if (family === 'explore') return '探索中'
+      if (family === 'shell') return '运行命令中'
       return getWorkStepLabel(s, { pending: true })
     }
     if (s.kind === 'thinking') {
@@ -456,6 +502,7 @@ export function buildConciseTimeline(
     if (cur.type === 'thinking') {
       const t = cur.thinking.trim()
       if (!t) continue
+      // 首轮工具前：合并为顶部 ThinkingFold
       if (!sawTool && stageSteps.length === 0) {
         if (leadingThink.length === 0) {
           leadingKey = cur.key
@@ -467,11 +514,16 @@ export function buildConciseTimeline(
         continue
       }
       if (isTrivialThinking(t)) continue
-      stageSteps.push({
+      // 对齐 Cursor：中段非琐碎思考收成独立灰字折叠，打断当前阶段
+      flushLeadingThink()
+      flushStage()
+      const durationSec = resolveThinkingDurationSec(t, cur.durationSec)
+      segments.push({
         kind: 'thinking',
-        key: cur.key,
+        key: `think-${cur.key}`,
         thinking: t,
-        durationSec: resolveThinkingDurationSec(t, cur.durationSec),
+        durationSec,
+        summary: formatThinkingSummary(durationSec),
       })
       continue
     }

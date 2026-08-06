@@ -1,63 +1,58 @@
 ---
-description: 总监编排；实现必须派本地 kscc/grok/mimo CLI，禁止用 Cursor Task/composer 顶替
+description: 总监编排；探索/杂活/实现一律派本地 kscc CLI，禁止 Cursor Task 烧额度
 alwaysApply: true
 ---
 
 # 子代理优先（总监模式）
 
-本仓库复杂工作时，主 agent 默认当**总监**：拆目标、写 brief、用**本地 CLI**派工、交叉验收。不要等用户再说「派子代理」。
+本仓库复杂工作时，主 agent 默认当**总监**：拆目标、写 brief、用**本地 kscc CLI**派工、交叉验收。不要等用户再说「派子代理」。
 
-## 何时必须派本地子代理
+**用户硬约束（额度）：** 探索、摸底、杂活、对照、实现 —— **一律用本机 `kscc` 子代理**，不要用 Cursor 自带的 `Task` / explore / composer 子代理顶替。用户不想消耗 Cursor 额度。
+
+## 何时必须派本地 kscc
 
 满足任一条件即派，可并行多路（Shell 拉起多进程）：
 
-- 只读摸底 / 根因调查 / 对照其他仓库 → **grok**
-- 机械实现或范围清晰的改动 → **kscc**（核心）或 **mimo**（极窄省钱）
-- 需要对照 `F:\TAgent_General`、`F:\Proma` 或本仓库多处逻辑 → **kscc** / **grok**
-- 用户要「规范 / checkpoint / 文档 / 验证」类整包 → 总监写规格，实现仍派本地 CLI
+- 只读摸底 / 根因调查 / 对照 `F:\TAgent_General`、`F:\Proma` / 本仓库多处逻辑
+- 机械实现或范围清晰的改动
+- 规范 / checkpoint / 文档 / 验证类整包交付中的执行部分
+- 用户明确说的「杂活」「探索」
 
 窄问题（单文件几行、已有明确补丁）可总监自己做，不必为派而派。
 
-## 怎么派（强制：本地 CLI，禁止 Cursor Task 干活）
+## 怎么派（强制）
 
-实现 / 大改 / 对照落地 **必须** 用本机已装的渠道 CLI，在仓库根目录跑 headless：
+```bash
+# 仓库根目录；headless；可后台并行
+kscc -p --dangerously-skip-permissions "<读 docs/dev/.../xxx-brief.md 并按验收执行；返回文件+结论>"
+```
 
-| 渠道 | 调用示例 |
-|------|----------|
-| **kscc**（核心实现） | `kscc -p --dangerously-skip-permissions "<读 brief 路径并实现>"` |
-| **grok**（探索/草稿） | `grok --always-approve "<prompt>"`（或 TUI；按本机 grok --help） |
-| **mimo**（窄包，省着） | `mimo run --model deepseek/deepseek-v4-flash "<prompt>"` |
-| **opencode** | `opencode`（本机已装；按 `opencode --help` 用 print/run） | 免费额度探索/草稿 |
+可选：`--agent <name>` / `--agents '<json>'` 定义专用子代理角色。
 
 流程：
 
-1. 总监只写 `docs/dev/**` 规格与 `*-brief.md` / `*-prompt.txt`
-2. 用 **Shell** 拉起本地 CLI（可后台并行），把 brief 路径写进 prompt
-3. 子代理结果只取结论与证据；总监交叉验收、决定下一批
-4. **禁止**用 Cursor `Task` + composer/自带模型做实现或大范围探索来「顶替」本地额度——那会烧错账、也不符合本仓库派工约定
-5. Cursor Task 仅允许：纯本地 shell 编排、或用户**明确**要求时的 IDE 内辅助
+1. 总监只写 `docs/dev/**` 规格与 `*-brief.md`
+2. 用 **Shell** 拉起 `kscc -p ...`（可 `block_until_ms: 0` 后台并行）
+3. 子代理结果只取结论与证据；总监交叉验收、整合落地
+4. **禁止**用 Cursor `Task`（explore / generalPurpose / composer）做探索或实现来「省事」——烧的是用户 Cursor 额度
+5. Cursor `Task` **仅**在用户明确要求 IDE 内辅助，或纯 `shell` 编排且不调模型时可用
+
+## 其它本地渠道（次选）
+
+| 渠道 | 何时用 |
+|------|--------|
+| **kscc** | **默认**：探索、杂活、对照、核心实现、验收 |
+| grok / mimo / opencode | 仅当用户当次指定，或 kscc 不可用时的备胎 |
 
 ## 交付节奏
 
 1. 先写/更新 `docs/dev/**` 规格（根因、契约、验收、本轮不做）
-2. 本地 CLI 按工作流改代码 + 单测
+2. 本地 kscc 按 brief 改代码 + 单测
 3. 用户要求或规格写明时再 `git commit` checkpoint；不擅自 push
-
-## 模型 / 渠道（额度调度）
-
-| 渠道 | 约束 | 用途 |
-|------|------|------|
-| mimo deepseek-v4-flash | **计费，省着** | 窄 brief / 机械改 / 单测 |
-| kscc | **月额 ~3000** | 核心契约、对照实现、验收 |
-| MiniMax | **5h/400 次**，多模态 | 视觉走查、截图验收 |
-| grok | 本地有（替原 codex） | 探索/对照/草稿实现 |
-
-- 探索优先 grok；改核与消闪空用 **kscc**。
-- 架构拍板、契约正确性、最终整合由主 agent（总监）把关。
 
 ## 反例
 
-- ❌ 用 Cursor Task/composer 顶替本地 kscc/grok/mimo 干活
+- ❌ 用 Cursor Task/explore/composer 顶替本地 kscc（烧错额度）
 - ❌ 大范围自己线性翻代码，用户提醒才开子代理
 - ❌ 子代理无验收标准、改完不写规格
 - ❌ 缺错误原文就重写运行核（见 `01-CHECKPOINT2-SPEC` W7）
