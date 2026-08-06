@@ -3,7 +3,7 @@
  *
  * - 模型铭牌 ×1 + 运行中计时 / 完成后时间
  * - full：过程区逐条 + 底部回答壳
- * - concise：Cursor 式时间线（思考/工具簇折叠 + 穿插叙事），无独立回答壳
+ * - concise：Cursor 式时间线（外层「运行了」容器 + 过程链 + 最终正文）
  */
 import { useMemo, useRef } from 'react'
 import { useAtomValue } from 'jotai'
@@ -41,6 +41,8 @@ interface AssistantTurnViewProps {
   turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>
   /** 当前会话仍在跑且本 turn 是最新一轮（含工具间隙） */
   isLiveTurn?: boolean
+  /** 最后一个 assistant-turn：运行链默认展开；被新轮挤成历史后折叠 */
+  isLatestAssistantTurn?: boolean
   /** 会话级流式缓冲（live 轮 delta 累积，不绑 DisplayItem） */
   streamState?: TurnStreamState
   /** Chat @ 本轮点名角色展示名（顺序） */
@@ -56,6 +58,7 @@ interface AssistantTurnViewProps {
 export function AssistantTurnView({
   turn,
   isLiveTurn = false,
+  isLatestAssistantTurn = false,
   streamState,
   mentionLabels,
   completedDuration,
@@ -165,13 +168,23 @@ export function AssistantTurnView({
       ? Math.max(1, Math.round(completedDuration.ms / 1000))
       : undefined
 
-  const statusLabel = isLiveTurn
-    ? `运行 ${formatElapsedDuration(elapsedMs)}`
-    : completionMs > 0 && endedBy !== 'complete'
-      ? `${completionLabel} ${formatElapsedDuration(completionMs)}`
-      : turnFinishedAt
-        ? formatMessageTime(turnFinishedAt)
-        : ''
+  const statusLabel = isConcise
+    ? '' // concise：时长进「运行了」外层容器，标题行不再重复
+    : isLiveTurn
+      ? `运行 ${formatElapsedDuration(elapsedMs)}`
+      : completionMs > 0 && endedBy !== 'complete'
+        ? `${completionLabel} ${formatElapsedDuration(completionMs)}`
+        : turnFinishedAt
+          ? formatMessageTime(turnFinishedAt)
+          : ''
+
+  const workedMs = isLiveTurn
+    ? elapsedMs
+    : completedDuration
+      ? completedDuration.ms
+      : turnCreatedAt && turnFinishedAt && turnFinishedAt >= turnCreatedAt
+        ? turnFinishedAt - turnCreatedAt
+        : 0
 
   // 复制：concise 拼 narrative；full 用回答壳全文
   const copyText = isConcise
@@ -216,15 +229,15 @@ export function AssistantTurnView({
 
       {isConcise ? (
         <>
-          <ConciseTimelineView segments={conciseSegments} isLive={processLive} />
-          {copyText || completionMs > 0 ? (
+          <ConciseTimelineView
+            segments={conciseSegments}
+            isLive={processLive}
+            isLatestTurn={isLatestAssistantTurn || processLive}
+            workedMs={workedMs}
+          />
+          {copyText ? (
             <div className="agent-answer-toolbar">
-              {copyText ? <MessageCopyButton text={copyText} /> : null}
-              {completionMs > 0 && endedBy === 'complete' ? (
-                <span className="agent-answer-time">
-                  完成 {formatElapsedDuration(completionMs)}
-                </span>
-              ) : null}
+              <MessageCopyButton text={copyText} />
             </div>
           ) : null}
         </>

@@ -442,7 +442,7 @@ export function Chat({
     const raf = requestAnimationFrame(() => setPageMounted(true))
     return () => cancelAnimationFrame(raf)
   }, [])
-  /** 最近一轮 usage（仅外部/Pi 展示；kscc 不采信） */
+  /** 最近一轮 usage（kscc 渠道占用不可信，圆环由 hideContext 隐藏） */
   const [contextUsage, setContextUsage] = useState<ContextUsageSnapshotView | null>(null)
   const [tokenTotals, setTokenTotals] = useState<SessionTokenTotals>({
     totalInput: 0,
@@ -587,8 +587,8 @@ export function Chat({
     : selectionChannel
       ? getChannelCoreKind(selectionChannel)
       : sentCoreKind
-  /** 仅外部/Pi 显示 token 栏；kscc 占用不可信 */
-  const showTokenBar = lockedKind === 'external'
+  /** 已绑定渠道即显示 token 栏；kscc 仅隐藏占用圆环（占用不可信），累计统计照常 */
+  const showTokenBar = lockedKind !== null
 
   // 切换会话时加载历史。滚动位置恢复交给 ScrollPositionManager（Conversation 内部），
   // 它用 useLayoutEffect + stopScroll + 直接设 scrollTop（无动画、无可见滚动过程）。
@@ -1810,35 +1810,50 @@ export function Chat({
                   <span>正在加载更早的 {items.length - effectiveVisible} 条…</span>
                 </div>
               )}
-              {visibleTurns.map((turn, turnIndex) => {
-                // 最新 assistant-turn 且本轮未硬停：过程区「一条路」展开。
-                // 用 startedAt 而非仅 running——turn_end 软停会短暂 running=false，
-                // 若据此收过程/拆回答会整段跳变；硬停才清 startedAt。
-                const isLiveTurn =
-                  (running || runStartedAt != null) &&
-                  turnIndex === visibleTurns.length - 1 &&
-                  turn.kind === 'assistant-turn'
-                // 追踪最后一个 assistant-turn 的 key，供 completeRun 记完成耗时
-                if (turn.kind === 'assistant-turn') lastAssistantTurnKeyRef.current = turn.key
-                return (
-                  <TurnView
-                    key={turn.key}
-                    turn={turn}
-                    isLiveTurn={isLiveTurn}
-                    streamState={isLiveTurn ? streamState : undefined}
-                    onRefillToInput={pickSuggestion}
-                    mentionLabels={
-                      isLiveTurn && liveMentionLabels.length > 0
-                        ? liveMentionLabels
-                        : undefined
-                    }
-                    mentionRoles={mentionRoles}
-                    completedDuration={completedDurations[turn.key]}
-                    subagentCards={subagentCards}
-                    onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
-                  />
-                )
-              })}
+              {(() => {
+                let lastAssistantIdx = -1
+                for (let i = visibleTurns.length - 1; i >= 0; i--) {
+                  if (visibleTurns[i]!.kind === 'assistant-turn') {
+                    lastAssistantIdx = i
+                    break
+                  }
+                }
+                return visibleTurns.map((turn, turnIndex) => {
+                  // 最新 assistant-turn 且本轮未硬停：过程区「一条路」展开。
+                  // 用 startedAt 而非仅 running——turn_end 软停会短暂 running=false，
+                  // 若据此收过程/拆回答会整段跳变；硬停才清 startedAt。
+                  const isLiveTurn =
+                    (running || runStartedAt != null) &&
+                    turnIndex === visibleTurns.length - 1 &&
+                    turn.kind === 'assistant-turn'
+                  // 仅当该 assistant-turn 仍是会话末尾时默认展开；用户已发下一轮（末尾是 user）则旧链折叠
+                  const isLatestAssistantTurn =
+                    turn.kind === 'assistant-turn' &&
+                    turnIndex === lastAssistantIdx &&
+                    turnIndex === visibleTurns.length - 1
+                  // 追踪最后一个 assistant-turn 的 key，供 completeRun 记完成耗时
+                  if (turn.kind === 'assistant-turn') lastAssistantTurnKeyRef.current = turn.key
+                  return (
+                    <TurnView
+                      key={turn.key}
+                      turn={turn}
+                      isLiveTurn={isLiveTurn}
+                      isLatestAssistantTurn={isLatestAssistantTurn}
+                      streamState={isLiveTurn ? streamState : undefined}
+                      onRefillToInput={pickSuggestion}
+                      mentionLabels={
+                        isLiveTurn && liveMentionLabels.length > 0
+                          ? liveMentionLabels
+                          : undefined
+                      }
+                      mentionRoles={mentionRoles}
+                      completedDuration={completedDurations[turn.key]}
+                      subagentCards={subagentCards}
+                      onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+                    />
+                  )
+                })
+              })()}
               {(() => {
                 const runActive = running || runStartedAt != null
                 const lastTurn = visibleTurns[visibleTurns.length - 1]
@@ -1859,6 +1874,7 @@ export function Chat({
                       isStreaming: true,
                     }}
                     isLiveTurn
+                    isLatestAssistantTurn
                     streamState={streamState}
                     mentionLabels={liveMentionLabels.length > 0 ? liveMentionLabels : undefined}
                     mentionRoles={mentionRoles}
@@ -2194,7 +2210,7 @@ export function Chat({
             />
           </div>
         </div>
-        {/* token 栏：cluster 外部，stack 最底，落在 band 与窗边之间；仅 Pi/external */}
+        {/* token 栏：cluster 外部，stack 最底，落在 band 与窗边之间；kscc 隐藏占用圆环 */}
         {showTokenBar && (
           <TokenStatsBar
             usage={contextUsage}
@@ -2203,6 +2219,7 @@ export function Chat({
             isCompacting={isCompactingUi}
             onCompact={() => void compactContext()}
             compact={composerCompact}
+            hideContext={lockedKind === 'kscc'}
           />
         )}
       </div>
@@ -2255,6 +2272,7 @@ export function Chat({
 function TurnView({
   turn,
   isLiveTurn = false,
+  isLatestAssistantTurn = false,
   streamState,
   onRefillToInput,
   mentionLabels,
@@ -2265,6 +2283,8 @@ function TurnView({
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
+  /** 当前会话最后一个 assistant-turn；其运行链默认展开，被新轮挤掉后折叠 */
+  isLatestAssistantTurn?: boolean
   streamState?: SessionStreamState
   onRefillToInput?: (text: string) => void
   mentionLabels?: string[]
@@ -2290,6 +2310,7 @@ function TurnView({
         <AssistantTurnView
           turn={turn}
           isLiveTurn={isLiveTurn}
+          isLatestAssistantTurn={isLatestAssistantTurn}
           streamState={streamState}
           mentionLabels={mentionLabels}
           completedDuration={completedDuration}

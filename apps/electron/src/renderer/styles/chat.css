@@ -302,6 +302,48 @@
   min-width: 0;
 }
 
+.agent-concise-run {
+  min-width: 0;
+}
+
+.agent-concise-run__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: hsl(var(--muted-foreground) / 0.78);
+}
+
+.agent-concise-run__head:hover {
+  color: hsl(var(--muted-foreground) / 0.95);
+}
+
+.agent-concise-run__label {
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.agent-concise-run.is-live .agent-concise-run__label {
+  color: hsl(var(--muted-foreground) / 0.9);
+}
+
+.agent-concise-run__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  /* 过程链相对「运行了」外层缩进 */
+  padding-left: 16px;
+  border-left: 1px solid hsl(var(--border) / 0.35);
+  min-width: 0;
+}
+
 .agent-concise-fold {
   min-width: 0;
 }
@@ -389,6 +431,111 @@
 .agent-concise-narrative {
   min-width: 0;
   margin: 2px 0;
+}
+
+.agent-concise-narrative--progress {
+  opacity: 0.92;
+}
+
+.agent-concise-narrative--final {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border) / 0.55);
+  border-radius: 10px;
+  background: hsl(var(--background) / 0.35);
+}
+
+.agent-concise-stage-thinking {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid hsl(var(--border) / 0.35);
+}
+
+.agent-concise-diff {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.agent-concise-diff__add {
+  color: hsl(142 45% 42%);
+}
+
+.agent-concise-diff__del {
+  color: hsl(0 55% 52%);
+}
+
+.agent-concise-live-status {
+  padding: 1px 0 2px 18px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: hsl(var(--muted-foreground) / 0.72);
+}
+
+.agent-concise-live-status--in-body {
+  padding-left: 22px;
+}
+
+.agent-concise-fold__body--steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0 4px;
+}
+
+.agent-concise-step__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  color: hsl(var(--muted-foreground) / 0.78);
+}
+
+.agent-concise-step__head:disabled {
+  cursor: default;
+}
+
+.agent-concise-step__head:not(:disabled):hover {
+  color: hsl(var(--muted-foreground) / 0.95);
+}
+
+.agent-concise-step__icon {
+  display: inline-flex;
+  width: 12px;
+  justify-content: center;
+}
+
+.agent-concise-step__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.agent-concise-step__detail {
+  padding: 4px 0 6px 18px;
+}
+
+.agent-concise-step__pre {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  color: hsl(var(--muted-foreground) / 0.8);
 }
 
 .agent-process-group {

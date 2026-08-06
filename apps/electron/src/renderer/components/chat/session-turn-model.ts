@@ -55,14 +55,23 @@ export type SessionRenderTurn =
 // ===== 过程 / 回答拆分 =====
 
 export type ProcessEntry =
-  | { type: 'thinking'; thinking: string; key: string }
+  | {
+      type: 'thinking'
+      thinking: string
+      key: string
+      /** 所属消息 createdAt（ms），用于估算本段思考时长 */
+      at?: number
+      /** 本段思考时长（秒）；由 annotateThinkingDurations 填入 */
+      durationSec?: number
+    }
   | {
       type: 'tool'
       key: string
       tool: TAgentToolUseBlock
       result?: TAgentToolResultBlock
+      at?: number
     }
-  | { type: 'text'; text: string; key: string }
+  | { type: 'text'; text: string; key: string; at?: number }
 
 export interface TurnPresentation {
   modelId?: string
@@ -401,7 +410,7 @@ export function buildTurnPresentation(
     /**
      * 过程展示模式：
      * - full：尾部 text 外置到回答壳（现网）
-     * - concise：全部 text 留在 process，供 Cursor 式时间线穿插叙事（answerTexts=[]）
+     * - concise：全部 text 留在 process，由时间线只把尾部 final 投成 narrative（answerTexts=[]）
      */
     displayMode?: ProcessDisplayMode
   },
@@ -463,13 +472,14 @@ export function buildTurnPresentation(
   // **稳定 key**（S2.4）：tool 用 `tool-${id}`；thinking/text/blk 用「消息 uuid + 块在 content[] 中的下标」。
   //   - partial→final 原地 upsert（S1）uuid 不变，Pi 顺序追加 → blockIndex 不变 → 同一段思考 key 稳定，不随列表重编 remount。
   //   - 旧消息无 uuid 时回退 item.key（uuid upsert 亦保 key 不变）。
-  const allBlocks: Array<{ block: TAgentContentBlock; key: string }> = []
+  const allBlocks: Array<{ block: TAgentContentBlock; key: string; at?: number }> = []
   const toolUseSeen = new Map<string, { block: TAgentToolUseBlock; key: string; rich: boolean }>()
   for (const item of turn.items) {
     if (item.message?.type !== 'assistant') continue
     if (item.message.parentToolUseId) continue
     const rich = item.message.content.some((b) => b.type === 'thinking' || b.type === 'text')
     const ownerKey = item.message.uuid ?? item.key
+    const at = item.message.createdAt
     item.message.content.forEach((block, blockIndex) => {
       if (block.type === 'tool_use') {
         const tu = block as TAgentToolUseBlock
@@ -481,19 +491,19 @@ export function buildTurnPresentation(
           // 已有同 id：若当前消息更完整（rich）且旧的只是占位，替换内容但**保留稳定 key**
           if (rich && !prev.rich) {
             const idx = allBlocks.findIndex((x) => x.key === prev.key)
-            if (idx >= 0) allBlocks[idx] = { block, key: prev.key }
+            if (idx >= 0) allBlocks[idx] = { block, key: prev.key, at }
             toolUseSeen.set(tu.id, { block: tu, key: prev.key, rich })
           }
           return
         }
         toolUseSeen.set(tu.id, { block: tu, key: stableKey, rich })
-        allBlocks.push({ block, key: stableKey })
+        allBlocks.push({ block, key: stableKey, at })
       } else if (block.type === 'thinking') {
-        allBlocks.push({ block, key: `think-${ownerKey}-${blockIndex}` })
+        allBlocks.push({ block, key: `think-${ownerKey}-${blockIndex}`, at })
       } else if (block.type === 'text') {
-        allBlocks.push({ block, key: `text-${ownerKey}-${blockIndex}` })
+        allBlocks.push({ block, key: `text-${ownerKey}-${blockIndex}`, at })
       } else {
-        allBlocks.push({ block, key: `blk-${ownerKey}-${blockIndex}` })
+        allBlocks.push({ block, key: `blk-${ownerKey}-${blockIndex}`, at })
       }
     })
   }
@@ -534,12 +544,13 @@ export function buildTurnPresentation(
   const processEnd = splitAnswer ? trailingTextStart! : allBlocks.length
 
   for (let i = 0; i < processEnd; i++) {
-    const { block, key } = allBlocks[i]!
+    const { block, key, at } = allBlocks[i]!
     if (block.type === 'thinking') {
       process.push({
         type: 'thinking',
         key,
         thinking: (block as TAgentThinkingBlock).thinking,
+        at,
       })
     } else if (block.type === 'tool_use') {
       const tool = block as TAgentToolUseBlock
@@ -548,10 +559,11 @@ export function buildTurnPresentation(
         key,
         tool,
         result: resultById.get(tool.id),
+        at,
       })
     } else if (block.type === 'text') {
       const text = (block as TAgentTextBlock).text
-      if (text.trim()) process.push({ type: 'text', key, text })
+      if (text.trim()) process.push({ type: 'text', key, text, at })
     }
   }
 
@@ -681,6 +693,8 @@ export function buildTurnPresentation(
     streamText.length > 0 &&
     !(answerJoined && (answerJoined === streamText || answerJoined.startsWith(streamText)))
 
+  annotateThinkingDurations(process)
+
   return {
     modelId,
     process,
@@ -692,6 +706,55 @@ export function buildTurnPresentation(
     // 思考已进 process，回答区不再单独带 streamingThinking
     streamingThinking: undefined,
   }
+}
+
+/**
+ * 为每段 thinking 标注 durationSec：
+ * 1) 优先用本段 at → 下一条更大 at 的时间差（多消息阶段）
+ * 2) 否则按正文长度粗估（同消息多块无时间差时的兜底，避免一律「片刻」）
+ */
+export function annotateThinkingDurations(process: ProcessEntry[]): void {
+  for (let i = 0; i < process.length; i++) {
+    const cur = process[i]!
+    if (cur.type !== 'thinking') continue
+    let measured: number | undefined
+    if (cur.at != null) {
+      for (let j = i + 1; j < process.length; j++) {
+        const next = process[j]!
+        if (next.at != null && next.at > cur.at) {
+          measured = Math.max(1, Math.round((next.at - cur.at) / 1000))
+          break
+        }
+      }
+    }
+    cur.durationSec = resolveThinkingDurationSec(cur.thinking, measured)
+  }
+}
+
+/** 有实测用实测；否则按长度粗估；极短仍 undefined → UI「思考了片刻」 */
+export function resolveThinkingDurationSec(
+  thinking: string,
+  measuredSec?: number,
+): number | undefined {
+  if (measuredSec != null && measuredSec > 0) return measuredSec
+  const len = thinking.trim().length
+  if (len < 24) return undefined
+  // ~45 字/秒：长 CoT 有可读秒数，上限 3 分钟防夸张
+  return Math.max(1, Math.min(180, Math.round(len / 45)))
+}
+
+/** 折叠文案：思考了 N 秒 / 思考了片刻 / 正在思考… */
+export function formatThinkingSummary(
+  durationSec: number | undefined,
+  opts?: { live?: boolean; liveElapsedSec?: number },
+): string {
+  if (opts?.live) {
+    const n = opts.liveElapsedSec
+    if (n != null && n >= 1) return `思考中 ${n} 秒`
+    return '正在思考…'
+  }
+  if (durationSec != null && durationSec > 0) return `思考了 ${durationSec} 秒`
+  return '思考了片刻'
 }
 
 /** 去掉完全相同或被更长段「前缀」包含的重复（流式分段落盘常见）。
