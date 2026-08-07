@@ -60,7 +60,6 @@ linux:
   executableName: tagent
   target:
     - AppImage
-    - deb
     - tar.gz
   artifactName: TAgent-${version}-${arch}.${ext}
 
