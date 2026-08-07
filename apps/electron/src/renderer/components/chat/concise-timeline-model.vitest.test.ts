@@ -96,7 +96,19 @@ describe('extractDiffHint / live status', () => {
     const status = getLiveStatusFromSteps([
       { kind: 'tool', key: 'g1', tool: pending },
     ])
-    expect(status).toBe('搜索中')
+    expect(status).toBe('搜索 foo')
+  })
+
+  it('live status shows Editing-style file name (Cursor)', () => {
+    const pending = tool(
+      'Edit',
+      'e1',
+      { file_path: 'apps/electron/src/renderer/components/chat/ComposerRunTimer.tsx' },
+      false,
+    ) as Extract<ProcessEntry, { type: 'tool' }>
+    expect(
+      getLiveStatusFromSteps([{ kind: 'tool', key: 'e1', tool: pending }]),
+    ).toBe('编辑 ComposerRunTimer.tsx')
   })
 })
 

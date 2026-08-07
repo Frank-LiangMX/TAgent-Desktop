@@ -834,37 +834,31 @@
   padding-left: 18px;
 }
 
-/* Cursor 式运行中文字扫光：扫完出字外再停顿，循环跳回时亮带不在字中间 */
+/* 消息区 live 扫光：匀速、首尾同色接缝，禁止 ease 在两端「喘一口气」 */
 .agent-concise-shimmer {
   background-image: linear-gradient(
-    100deg,
-    hsl(var(--muted-foreground) / 0.42) 0%,
-    hsl(var(--muted-foreground) / 0.42) 40%,
-    hsl(var(--foreground) / 0.82) 50%,
-    hsl(var(--muted-foreground) / 0.42) 60%,
-    hsl(var(--muted-foreground) / 0.42) 100%
+    105deg,
+    hsl(var(--muted-foreground) / 0.4) 0%,
+    hsl(var(--muted-foreground) / 0.4) 42%,
+    hsl(var(--foreground) / 0.9) 50%,
+    hsl(var(--muted-foreground) / 0.4) 58%,
+    hsl(var(--muted-foreground) / 0.4) 100%
   );
-  background-size: 280% 100%;
+  /* 两倍宽：亮带匀速移出后再从另一侧进来，0%↔100% 视觉连续 */
+  background-size: 200% 100%;
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
   -webkit-text-fill-color: transparent;
-  /* linear：匀速扫过；关键帧在字外停顿后再循环（偏慢，避免抢戏） */
-  animation: agent-concise-shimmer 4.8s linear infinite;
+  animation: agent-concise-shimmer 1.8s linear infinite;
 }
 
 @keyframes agent-concise-shimmer {
-  /* 亮带在右侧字外 */
   0% {
-    background-position: 140% 0;
+    background-position: 100% 0;
   }
-  /* 扫过全文，亮带到达左侧字外 */
-  55% {
-    background-position: -140% 0;
-  }
-  /* 停在字外；100%→0% 跳回时两端都在字外，中断不落在字中间 */
   100% {
-    background-position: -140% 0;
+    background-position: -100% 0;
   }
 }
 
