@@ -32,6 +32,9 @@ win:
     - target: nsis
       arch:
         - x64
+    - target: portable
+      arch:
+        - x64
   artifactName: TAgent-${version}-${arch}.${ext}
 
 nsis:
@@ -39,6 +42,9 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   createStartMenuShortcut: true
+
+portable:
+  artifactName: TAgent-${version}-${arch}-portable.${ext}
 
 mac:
   icon: logo/appicon/light.png
@@ -63,5 +69,5 @@ linux:
 # CI release.yml 会在 publish job 中合并 arm64+x64 的 latest-mac.yml。
 publish:
   provider: github
-  owner: auser7x2y
+  owner: Frank-LiangMX
   repo: TAgent-Desktop

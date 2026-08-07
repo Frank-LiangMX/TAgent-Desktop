@@ -3,7 +3,7 @@
 本项目变更记录，遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [2.0.0-dev.1] - 2026-08-06
+## [2.0.0-dev.1] - 2026-08-07
 
 首个公开预发布版本。双核可拔插 + 会话进程长驻 + 模块化 monorepo，含子代理、Cursor 式时间线、自动更新、权限体系等完整桌面体验。
 
@@ -27,6 +27,14 @@
 - 侧栏改进：工作区和时间线独立折叠，搜索自动展开。
 - 运行计时跨会话保持。
 - Windows 全平台兼容。
+
+### 修复
+- **Chat 写拦 interrupt** — 流式输出期间可正确中断，思考链留存不丢失。（REGRESS A–E）
+- **子代理渠道判定** — claudeAvailable 按渠道动态判定，不再钉死 haiku 模型。
+- **Concise 节奏 / 阶段合并** — 阶段工作块合并显示，Files Changed 与路径预览优化。（REGRESS F–J）
+- **AskUserQuestion 移植** — 子代理交互问答组件移植完成。（REGRESS F–L）
+- **段间 progress 总结** — 段间进度总结打完即消，不再残留。（REGRESS-M）
+- **Live 底栏收尾动画** — 底栏收尾「往上折」动画过渡平滑。
 
 ## [2.0.0-dev.7] - 2026-07-26
 
