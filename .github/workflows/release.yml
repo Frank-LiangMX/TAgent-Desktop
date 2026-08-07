@@ -118,13 +118,23 @@ jobs:
           which fakeroot 2>/dev/null || echo "fakeroot NOT FOUND"
           which dpkg-deb 2>/dev/null || echo "dpkg-deb NOT FOUND"
           echo ""
-          echo "=== last 80 lines of package output ==="
-          tail -80 /tmp/package.log 2>/dev/null || echo "(no log)"
+          echo "=== LAST 50 LINES OF PACKAGE OUTPUT ==="
+          tail -50 /tmp/package.log 2>/dev/null || echo "(no log)"
           echo ""
-          echo "=== error lines only ==="
-          grep -iE 'error|fail|cannot|not found|missing|ENOENT' /tmp/package.log 2>/dev/null | tail -30 || true
+          echo "=== END PACKAGE OUTPUT ==="
           echo ""
-          # Write to step summary (visible in UI without login)
+          # Extract only real error lines (exclude debug noise like ? skipping/collected)
+          echo "=== FILTERED ERRORS ==="
+          grep -iE '^\s*(error|Error|ERROR|⚠|✘|fatal|FATAL|Cannot|cannot|ENOENT)' /tmp/package.log 2>/dev/null | grep -v '? skipping\|? collected\|node_modules' | tail -20 || echo "(no filtered errors)"
+          echo ""
+          # Emit filtered errors as annotation
+          ERRORS=$(grep -iE '^\s*(error|Error|ERROR|⚠|✘|fatal|FATAL|Cannot|cannot|ENOENT)' /tmp/package.log 2>/dev/null | grep -v '? skipping\|? collected\|node_modules' | tail -5)
+          if [ -n "$ERRORS" ]; then
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done <<< "$ERRORS"
+          fi
+          # Write to job summary
           {
             echo "## Linux Package Debug"
             echo ""
@@ -133,16 +143,11 @@ jobs:
             ls -la out/ 2>/dev/null || echo "(empty or missing)"
             echo '```'
             echo ""
-            echo "### Last 80 lines of package output"
+            echo "### Last 50 lines of package output"
             echo '```'
-            tail -80 /tmp/package.log 2>/dev/null || echo "(no log)"
+            tail -50 /tmp/package.log 2>/dev/null || echo "(no log)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          # Also emit as annotation (visible via API)
-          ERRORS=$(grep -iE 'error|fail|cannot|not found|missing|ENOENT' /tmp/package.log 2>/dev/null | tail -10)
-          if [ -n "$ERRORS" ]; then
-            echo "::error::Linux package errors:$(echo "$ERRORS" | head -5 | tr '\n' '|')"
-          fi
 
       - name: Verify expected artifacts exist
         working-directory: ${{ matrix.workdir }}
