@@ -785,22 +785,23 @@
   line-height: 1.45;
   color: hsl(var(--muted-foreground) / 0.68);
   animation: agent-concise-live-in 0.22s ease-out;
-  /* hold 后淡出：禁止工具完成瞬间 null 卸 DOM（对齐 Cursor 折进灰字摘要） */
-  max-height: 28px;
+  /* 回合结束往上折进：高度+位移+透明度一起过渡，禁止瞬间卸掉顿一下 */
+  max-height: 32px;
   overflow: hidden;
+  opacity: 1;
+  transform: translateY(0);
   transition:
-    opacity 0.25s ease,
-    max-height 0.25s ease,
-    margin 0.25s ease,
-    padding 0.25s ease;
+    opacity 0.38s ease,
+    max-height 0.38s ease,
+    margin-top 0.38s ease,
+    transform 0.38s ease;
 }
 
 .agent-concise-live-status.is-fading {
   opacity: 0;
   max-height: 0;
   margin-top: 0;
-  padding-top: 0;
-  padding-bottom: 0;
+  transform: translateY(-6px);
 }
 
 @keyframes agent-concise-live-in {
