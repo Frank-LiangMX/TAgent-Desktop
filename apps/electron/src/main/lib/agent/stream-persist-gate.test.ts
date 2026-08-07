@@ -1,0 +1,119 @@
+import { describe, expect, it } from 'vitest'
+import {
+  createStreamPersistGateState,
+  feedStreamPersistGate,
+  flushStreamPersistGate,
+} from './stream-persist-gate'
+
+/** assistant 文本块（glm 真实形状：独立 uuid、stop_reason:null、单 block）。 */
+function assistantText(uuid: string, text: string, extra: Record<string, unknown> = {}) {
+  return {
+    type: 'assistant',
+    uuid,
+    message: { content: [{ type: 'text', text }], stop_reason: null },
+    ...extra,
+  }
+}
+function assistantThinking(uuid: string, thinking: string) {
+  return { type: 'assistant', uuid, message: { content: [{ type: 'thinking', thinking }], stop_reason: null } }
+}
+function assistantToolUse(uuid: string, id: string) {
+  return {
+    type: 'assistant',
+    uuid,
+    message: { content: [{ type: 'tool_use', id, name: 'Bash', input: {} }], stop_reason: null },
+  }
+}
+function userToolResult(uuid: string) {
+  return { type: 'user', uuid, message: { content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] } }
+}
+
+/** 喂一个序列并 flush，返回「最终落盘」的全部消息（按落盘顺序）。 */
+function runSequence(msgs: unknown[]): unknown[] {
+  const s = createStreamPersistGateState()
+  const persisted: unknown[] = []
+  for (const m of msgs) persisted.push(...feedStreamPersistGate(s, m))
+  persisted.push(...flushStreamPersistGate(s))
+  return persisted
+}
+
+describe('stream-persist-gate（REGRESS-G 落盘闸口）', () => {
+  it('stop_reason:null + 仅非空 text（独立 uuid）→ 落盘', () => {
+    const persisted = runSequence([assistantText('u-text', '先探查一下目录结构。')])
+    expect(persisted).toHaveLength(1)
+    expect((persisted[0] as { uuid: string }).uuid).toBe('u-text')
+  })
+
+  it('显式 _partial:true → 不落盘（真流式快照）', () => {
+    const persisted = runSequence([
+      assistantText('u-p', '流式中', { _partial: true }),
+    ])
+    expect(persisted).toHaveLength(0)
+  })
+
+  it('同 uuid 流式中间态 → 不落盘，只落盘同 uuid 链的最后一条（final）', () => {
+    // 累积式渠道形状：同 uuid 多条流式快照，最后一条才是 final
+    const persisted = runSequence([
+      assistantThinking('u-chain', '想一下'),
+      { type: 'assistant', uuid: 'u-chain', message: { content: [{ type: 'thinking', thinking: '想一下' }, { type: 'text', text: '写到一半' }], stop_reason: null } },
+      { type: 'assistant', uuid: 'u-chain', message: { content: [{ type: 'thinking', thinking: '想一下' }, { type: 'text', text: '写完了' }, { type: 'tool_use', id: 't1', name: 'Bash', input: {} }], stop_reason: 'tool_use' } },
+    ])
+    // 只落盘最后一条 final；前两条中间态不落盘
+    expect(persisted).toHaveLength(1)
+    const last = (persisted[0] as { message: { content: Array<{ type: string }> } }).message.content
+    expect(last.some((b) => b.type === 'tool_use')).toBe(true)
+    expect((last.find((b) => b.type === 'text') as unknown as { text: string }).text).toBe('写完了')
+  })
+
+  it('空 content 的 assistant → 不落盘', () => {
+    const persisted = runSequence([
+      { type: 'assistant', uuid: 'u-empty', message: { content: [], stop_reason: null } },
+    ])
+    expect(persisted).toHaveLength(0)
+  })
+
+  it('glm 真实多段形状（块独立 uuid、stop_reason:null）→ 全段落盘、无堆积', () => {
+    // 思考 → 段间短文 → 工具 → 工具结果 → 思考 → 短文 → 工具 → 结果
+    const persisted = runSequence([
+      assistantThinking('u1', '先看目录'),
+      assistantText('u2', '先探查一下目录规模。'),
+      assistantToolUse('u3', 'call_1'),
+      userToolResult('u4'),
+      assistantThinking('u5', '摸清了'),
+      assistantText('u6', '摸清了，开始改权限。'),
+      assistantToolUse('u7', 'call_2'),
+    ])
+    const uuids = persisted.map((m) => (m as { uuid: string }).uuid)
+    // 每条独立段落盘一次，无重复、无堆积
+    expect(uuids).toEqual(['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7'])
+  })
+
+  it('tool_use-only 独立段（glm 块拆分）→ 落盘（工具/阶段/Files Changed 历史）', () => {
+    const persisted = runSequence([assistantToolUse('u-tool', 'call_9')])
+    expect(persisted).toHaveLength(1)
+  })
+
+  it('thinking-only 独立段（glm 块拆分）→ 落盘（重开仍可见「思考了 Ns」折叠）', () => {
+    const persisted = runSequence([assistantThinking('u-think', '盘算一下')])
+    expect(persisted).toHaveLength(1)
+  })
+
+  it('user 消息 → 立即落盘，并先 flush 待提交 assistant', () => {
+    const s = createStreamPersistGateState()
+    const out1 = feedStreamPersistGate(s, assistantText('u-a', '在思考…'))
+    expect(out1).toEqual([]) // assistant 暂存
+    const out2 = feedStreamPersistGate(s, userToolResult('u-b'))
+    // 先 flush assistant u-a，再落盘 user u-b
+    expect(out2.map((m) => (m as { uuid: string }).uuid)).toEqual(['u-a', 'u-b'])
+    expect(flushStreamPersistGate(s)).toEqual([]) // pending 已清
+  })
+
+  it('显式 partial 被同 uuid final 替换 → 只落盘 final', () => {
+    const persisted = runSequence([
+      assistantText('u-r', '流式', { _partial: true }),
+      assistantText('u-r', '完成。'),
+    ])
+    expect(persisted).toHaveLength(1)
+    expect((persisted[0] as { message: { content: Array<{ text: string }> } }).message.content[0]!.text).toBe('完成。')
+  })
+})

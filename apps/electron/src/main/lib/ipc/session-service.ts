@@ -48,8 +48,14 @@ import {
   deleteSession as deleteSessionMeta,
   deleteSessionsByWorkspace,
 } from '../agent/session-store'
+import {
+  createStreamPersistGateState,
+  feedStreamPersistGate,
+  flushStreamPersistGate,
+  type StreamPersistGateState,
+} from '../agent/stream-persist-gate'
 import { getChannel, getDecryptedApiKey, getKsccChannelId } from '../channel/channel-store'
-import { KSCC_DEFAULT_MODEL_ID } from '../channel/default-models'
+import { KSCC_DEFAULT_MODEL_ID, isClaudeAvailableForChannel } from '../channel/default-models'
 import { resolveModelContextWindow } from '../channel/model-window'
 import {
   buildMemoryPromptSections,
@@ -125,6 +131,12 @@ export class SessionService {
    */
   private pendingSteerBySession = new Map<string, string[]>()
 
+  /**
+   * kscc 流式落盘闸口状态（REGRESS-G）：按会话维护「同 uuid 去重 + 内容放行」的待提交 assistant。
+   * 见 stream-persist-gate.ts。仅 kscc 路径（handleSdkStreamMessage）写入；Pi 路径自管 _partial，不经此。
+   */
+  private streamPersistGateBySession = new Map<string, StreamPersistGateState>()
+
   private constructor(
     private readonly getWindow: () => BrowserWindow | null,
     private readonly permissionService: PermissionService | null,
@@ -149,6 +161,48 @@ export class SessionService {
   /** 丢弃 pending steer（STOP / 删会话） */
   private clearPendingSteer(sessionId: string): void {
     this.pendingSteerBySession.delete(sessionId)
+  }
+
+  /** 取/建会话的落盘闸口状态。 */
+  private getStreamPersistGate(sessionId: string): StreamPersistGateState {
+    let s = this.streamPersistGateBySession.get(sessionId)
+    if (!s) {
+      s = createStreamPersistGateState()
+      this.streamPersistGateBySession.set(sessionId, s)
+    }
+    return s
+  }
+
+  /** Phase 1.2 双写：先面板（保可见）再 SDK（resume）。 */
+  private persistStreamMessages(
+    workspaceId: string | undefined,
+    sessionId: string,
+    msgs: unknown[],
+  ): void {
+    if (msgs.length === 0) return
+    try {
+      appendPanelMessages(workspaceId, sessionId, msgs)
+    } catch (err) {
+      console.warn('[session-service] appendPanelMessages failed:', err)
+    }
+    try {
+      appendSdkMessages(workspaceId, sessionId, msgs)
+    } catch (err) {
+      console.error('[session-service] appendSdkMessages failed:', err)
+    }
+  }
+
+  /**
+   * 轮结束/中断兜底：flush 待提交 assistant 落盘。
+   * result 路径已自行 flush，此处幂等；STOP/Chat 拦截/turn_end 调用以清理 stale pending。
+   */
+  private flushStreamPersistGateFor(sessionId: string): void {
+    const s = this.streamPersistGateBySession.get(sessionId)
+    if (!s) return
+    const toPersist = flushStreamPersistGate(s)
+    if (toPersist.length === 0) return
+    const workspaceId = getSessionMeta(sessionId)?.workspaceId
+    this.persistStreamMessages(workspaceId, sessionId, toPersist)
   }
 
   /**
@@ -202,6 +256,8 @@ export class SessionService {
     if (rt) {
       void rt.interrupt().catch(() => {})
     }
+    // REGRESS-G：Chat 拦截中断也 flush 待提交 assistant（清 stale pending + 保已生成段落盘）
+    this.flushStreamPersistGateFor(sessionId)
     // 清流式占位 + running 停止（turn_end 语义；interrupt 后 adapter 可能不再发事件，兜底）
     this.sendPayload(sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
     // 用户可见引导：SessionErrorBanner（非 assistant 气泡里的工具失败原文）
@@ -279,6 +335,8 @@ export class SessionService {
       this.clearPendingSteer(sessionId)
       const rt = this.runtimes.get(sessionId)
       if (rt) await rt.interrupt()
+      // REGRESS-G：中断也 flush 待提交 assistant（保已生成的段落盘 + 清 stale pending 不漏进下一轮）
+      this.flushStreamPersistGateFor(sessionId)
       // 软停兜底：interrupt 不调 onTurnEnd，且 Pi abort 不保证再推 result。
       // 显式推 turn_end + meta idle → 侧栏 idle / 流式占位收（与 handleChatModeBlock 一致）。
       // 渲染层另有 userStopRun 硬停 running+startedAt；后续 result→onTurnEnd 再发 turn_end 幂等可接受。
@@ -915,6 +973,8 @@ export class SessionService {
             status: 'idle',
           })
           this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
+          // REGRESS-G：兜底 flush 待提交 assistant（result 路径已自行 flush，此处幂等）
+          this.flushStreamPersistGateFor(input.sessionId)
           // Phase 2.5：L4 recordSession + evidence sink
           this.recordSessionToMemory(input.sessionId, input.prompt)
           // Pi pending steer：本轮结束后自动开下一轮（kscc live enqueue 不经此路径）
@@ -1079,8 +1139,11 @@ export class SessionService {
         },
         persistSession: true,
         mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
-        // 子代理定义：仅 Work 注册（Chat 硬拦 Task，注册无意义）
-        agents: executionMode === 'work' ? buildBuiltinSubagentDefinitions(true) : undefined,
+        // 子代理定义：仅 Work 注册（Chat 硬拦 Task，注册无意义）。
+        // claudeAvailable 按渠道判定（isClaudeAvailableForChannel）：非 Anthropic 系（kscc-internal 等）
+        // → false → 操作型角色不带 model → SDK 继承父会话模型（glm 等），避免钉 haiku 打到无 Claude
+        // 的网关而子代理首轮 LLM 调用即失败。仅 Anthropic 系渠道才钉 haiku。见 SUBAGENT-FAIL-FINDINGS 根因 1。
+        agents: executionMode === 'work' ? buildBuiltinSubagentDefinitions(isClaudeAvailableForChannel(channel)) : undefined,
         // 权限钩子（bypass 模式不挂）
         ...(canUseTool ? { canUseTool } : {}),
         // 长驻首次 spawn 带 resume 续历史（SDK 读 JSONL 一次），之后靠内存
@@ -1232,36 +1295,33 @@ export class SessionService {
   }
 
   /** kscc 路径：转译 SDKMessage → IR，发 TAgentDesktopStreamPayload 给 renderer，并双写 JSONL。
-   *  单真源流式（S1）：partial assistant（`_partial`）只推渲染层原地 upsert，**不落盘**——
-   *  落盘只留 final（同 uuid 替换 partial），避免 partial 堆积污染历史 / L-rag；
-   *  对齐 handlePiStreamPayload 的 partial 不落盘语义。 */
+   *  单真源流式落盘（REGRESS-G）：走「同 uuid 去重 + 内容放行」闸口（stream-persist-gate.ts）——
+   *  assistant 暂存为 pending，等下一条不同 uuid（或轮结束 flush）再提交；同 uuid 后到快照只留最新（= final），
+   *  避免流式中间快照堆积（不回退 E/S1）；显式 `_partial:true` 与空 content 不落盘。
+   *  替原「按 IR `_partial` 一刀切跳过」——glm 每 content 块为独立 uuid 且 `stop_reason` 始终 null，旧规则全标 `_partial` 全跳过 → 段间短文/工具/思考落盘全丢。
+   *  live 推流（sendPayload）不受影响——闸口只管落盘。 */
   private handleSdkStreamMessage(sessionId: string, workspaceId: string | undefined, msg: SDKMessage): void {
     // 注入 createdAt（落盘带上，加载时 sdkMessageToIR 读回 → 渲染层显示时间）
     ;(msg as any).createdAt = (msg as any).createdAt ?? Date.now()
     const { message, event } = sdkMessageToIR(msg)
+    const msgType = (msg as { type?: string }).type
     if (message) {
-      const isPartial =
-        message.type === 'assistant' && (message as { _partial?: boolean })._partial === true
-      // Phase 1.2 双写：先面板（保可见）再 SDK；流式 partial 不落盘（与 Pi 对齐）
-      if (!isPartial) {
-        try {
-          appendPanelMessages(workspaceId, sessionId, [msg])
-        } catch (err) {
-          console.warn('[session-service] appendPanelMessages failed:', err)
-        }
-        try {
-          appendSdkMessages(workspaceId, sessionId, [msg])
-        } catch (err) {
-          console.error('[session-service] appendSdkMessages failed:', err)
-        }
-      }
+      // REGRESS-G 落盘闸口：替原「isPartial 一刀切跳过」为「同 uuid 去重 + 内容放行」。
+      // kscc/glm 每 content 块为独立 uuid 且 stop_reason 始终 null，旧规则全标 _partial 全跳过 → 段间短文/工具/思考落盘全丢。
+      // 详见 stream-persist-gate.ts。live 推流（sendPayload）不受影响——闸口只管落盘。
+      const toPersist = feedStreamPersistGate(this.getStreamPersistGate(sessionId), msg)
+      this.persistStreamMessages(workspaceId, sessionId, toPersist)
       this.sendPayload(sessionId, { kind: 'sdk_message', message })
+    } else if (msgType === 'result') {
+      // result 不带 message 但标志轮结束：先 flush 待提交 assistant，再走下方 result 事件
+      const toPersist = flushStreamPersistGate(this.getStreamPersistGate(sessionId))
+      this.persistStreamMessages(workspaceId, sessionId, toPersist)
     }
     if (event) {
       this.sendPayload(sessionId, event)
     }
     // Phase 4：result 后跑软重置阈值（廉价清理 / 影子 / 切换）
-    if ((msg as { type?: string }).type === 'result') {
+    if (msgType === 'result') {
       const meta = getSessionMeta(sessionId)
       const usage = (msg as { usage?: { input_tokens?: number; inputTokens?: number } }).usage
       const inputTokens = usage?.input_tokens ?? usage?.inputTokens

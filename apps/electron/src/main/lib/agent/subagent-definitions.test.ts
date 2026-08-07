@@ -71,4 +71,27 @@ describe('subagent-definitions 角色投影', () => {
     expect(text).toContain('analyst')
     expect(text).toMatch(/角色库/)
   })
+
+  test('claudeAvailable:false → 内置角色均无 model（继承父会话模型）', () => {
+    // kscc-internal 等无 Claude 渠道：isClaudeAvailableForChannel → false
+    // → resolveModelForRole 返回 undefined → AgentDefinition 不带 model → SDK 继承父模型
+    const agents = buildBuiltinSubagentDefinitions(false)
+    // 操作型 seed（modelPool 空）
+    expect(agents.explorer!.model).toBeUndefined()
+    expect(agents.researcher!.model).toBeUndefined()
+    // code-reviewer 投影自 reviewer（modelPool 空）
+    expect(agents['code-reviewer']!.model).toBeUndefined()
+    // 岗位短列表（DEFAULT_ROLES modelPool 均空）—— 全部继承父，无一处钉 haiku
+    expect(agents.reviewer!.model).toBeUndefined()
+    expect(agents.analyst!.model).toBeUndefined()
+    expect(agents.coder!.model).toBeUndefined()
+    expect(agents.generalist!.model).toBeUndefined()
+  })
+
+  test('claudeAvailable:true → 操作型钉 haiku（对照组）', () => {
+    const agents = buildBuiltinSubagentDefinitions(true)
+    expect(agents.explorer!.model).toBe('haiku')
+    expect(agents.researcher!.model).toBe('haiku')
+    expect(agents['code-reviewer']!.model).toBe('haiku')
+  })
 })

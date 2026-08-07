@@ -7,7 +7,7 @@
  *
  * 用户可在渠道管理 UI 里增删改模型，此处仅是初始默认值。
  */
-import type { ChannelModel, ProviderType } from '@tagent/shared'
+import type { Channel, ChannelModel, ProviderType } from '@tagent/shared'
 
 /** kscc 内网渠道默认模型（与 TAgent kscc-config.ts 保持一致） */
 export const KSCC_DEFAULT_MODELS: ChannelModel[] = [
@@ -55,4 +55,23 @@ export function getDefaultModelsForProvider(provider: ProviderType): ChannelMode
   if (provider === 'kscc-internal') return KSCC_DEFAULT_MODELS.map((m) => ({ ...m }))
   const list = EXTERNAL_DEFAULT_MODELS[provider]
   return list ? list.map((m) => ({ ...m })) : []
+}
+
+/**
+ * 该渠道是否对子代理可钉 Claude `haiku`（决定 buildBuiltinSubagentDefinitions 的 claudeAvailable）。
+ *
+ * SDK 的 `AgentDefinition.model` 为空时子代理继承父会话模型；非空则用定义里的 model
+ * （见 @anthropic-ai/claude-agent-sdk sdk-tools.d.ts「uses the agent definition's model,
+ * or inherits from the parent」）。内置角色 modelPool 均空，走 resolveModelForRole：
+ * claudeAvailable=true → 钉 'haiku'；false → undefined（继承父）。
+ *
+ * kscc-internal 网关只代理 glm/kimi/mimo（见 KSCC_DEFAULT_MODELS），不认识 'haiku' 别名 →
+ * 钉 haiku 会让子代理首轮 LLM 调用即失败。故仅 Anthropic 系渠道（真有 Claude 模型）才钉 haiku，
+ * 其余渠道省略 model 让子代理继承父会话模型（与 Pi 核 createSubagentStreamFn 的 modelOverride 兜底对齐）。
+ *
+ * @see docs/dev/core-loop/SUBAGENT-FAIL-FINDINGS.md 根因 1
+ * @see docs/dev/core-loop/SUBAGENT-HAIKU-FIX-brief.md
+ */
+export function isClaudeAvailableForChannel(channel: Channel): boolean {
+  return channel.provider === 'anthropic' || channel.provider === 'anthropic-compatible'
 }
