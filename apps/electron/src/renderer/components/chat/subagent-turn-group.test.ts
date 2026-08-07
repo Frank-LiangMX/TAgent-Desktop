@@ -254,6 +254,59 @@ describe('isSubagentLauncherTool / listSubagentEntryIds', () => {
     ]
     expect(listSubagentEntryIds(items)).toEqual(['call_a', 'call_b'])
   })
+
+  it('ignores Bash tool_use with same id (not a launcher)', () => {
+    const items: TurnSourceItem[] = [
+      {
+        key: 'm1',
+        message: {
+          type: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_bash',
+              name: 'Bash',
+              input: { description: 'Check docs/plans naming conventions' },
+            },
+          ],
+        } as TAgentMessage,
+      },
+    ]
+    expect(findSubagentTaskTool(items, 'call_bash')).toBeNull()
+    expect(listSubagentEntryIds(items)).toEqual([])
+  })
+
+  it('ignores taskCard without agent taskType (local_bash 冒充)', () => {
+    const items: TurnSourceItem[] = [
+      {
+        key: 'task1',
+        taskCard: {
+          taskId: 't1',
+          toolUseId: 'call_bash',
+          status: 'failed',
+          description: 'Check docs/plans naming conventions',
+          taskType: 'local_bash',
+        },
+      },
+    ]
+    expect(listSubagentEntryIds(items)).toEqual([])
+  })
+
+  it('lists taskCard when taskType is local_agent', () => {
+    const items: TurnSourceItem[] = [
+      {
+        key: 'task1',
+        taskCard: {
+          taskId: 't1',
+          toolUseId: 'call_a',
+          status: 'running',
+          description: '探索',
+          taskType: 'local_agent',
+        },
+      },
+    ]
+    expect(listSubagentEntryIds(items)).toEqual(['call_a'])
+  })
 })
 
 describe('taskCard does not split assistant-turn / model badges', () => {

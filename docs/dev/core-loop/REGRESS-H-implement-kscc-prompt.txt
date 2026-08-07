@@ -1,0 +1,15 @@
+读 docs/dev/core-loop/REGRESS-H-implement-brief.md 与 REGRESS-H-GENERAL-PORT-FINDINGS.md，按 brief 实现 AskUserQuestion 全链路（切片 1+2+3）。
+
+背景：用户又触发 AskUserQuestion，UI 无选项，agent 说「用户没选择」。Desktop 至今未接（无 agent-ask-user-service）。
+
+强制：
+- 搬 General `agent-ask-user-service.ts`；`createCanUseTool` 顶部拦截 AskUserQuestion，inject `updatedInput.answers`
+- createCanUseTool 需接 SDK 第三参 options.signal（若当前签名只有 toolName,input → 扩成兼容 SDK）
+- preload + useAskUserSync + AskUserQuestionBanner（PermissionBanner 皮）
+- Chat/Composer 区挂 Banner（见 brief 挂载点）
+- 写 docs/dev/core-loop/REGRESS-H-FIX-NOTES.md
+- 单测：ask-user-service 解析+respond；permission 拦截不进通用 askRenderer
+- 不 commit / 不 push
+- 仓库根 F:\TAgent-Desktop
+
+返回：改了哪些文件 + 手测要点。

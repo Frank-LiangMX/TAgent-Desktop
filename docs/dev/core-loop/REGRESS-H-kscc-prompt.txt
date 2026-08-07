@@ -1,0 +1,1 @@
+读 docs/dev/core-loop/REGRESS-H-ask-user-no-options-brief.md 与 REGRESS-A-FINDINGS.md，按 brief 只读摸底 AskUserQuestion / 选项 UI /「未选择」路径。必须回答全部必答，带 path:line。写出 docs/dev/core-loop/REGRESS-H-FINDINGS.md。仓库根：F:\TAgent-Desktop。禁止 git commit / push。完成后中文总结：为何无弹选项、为何当未选、最小修建议。

@@ -90,6 +90,11 @@ export interface TaskCardState {
   taskId: string
   /** 父 tool_use_id（task_progress 仅带 toolUseId 时的回退匹配键） */
   toolUseId?: string
+  /**
+   * SDK `task_type` / `subagent_type`（如 `local_agent`）。
+   * 建卡白名单依据；`local_bash` 等本机工具不得进子代理 UI。
+   */
+  taskType?: string
   /** 任务描述（task_started 给出，收口后保留展示） */
   description: string
   /** 生命周期状态 */
@@ -107,13 +112,21 @@ export interface TaskCardState {
  * Chat.handlePayload 把流式 tagent_event 归一成此联合后喂给 reduceTaskEvent。
  */
 export type TaskCardEvent =
-  | { type: 'task_started'; taskId: string; toolUseId?: string; description: string }
+  | {
+      type: 'task_started'
+      taskId: string
+      toolUseId?: string
+      description: string
+      /** SDK task_type；缺省或非 agent → 不建卡 */
+      taskType?: string
+    }
   | {
       type: 'task_progress'
       taskId?: string
       toolUseId?: string
       description?: string
       lastToolName?: string
+      taskType?: string
     }
   | {
       type: 'task_notification'
@@ -121,7 +134,33 @@ export type TaskCardEvent =
       toolUseId?: string
       status: 'completed' | 'failed' | 'stopped'
       summary: string
+      taskType?: string
     }
+
+/**
+ * SDK `task_*` 的 runtime type 白名单：只有真子代理。
+ *
+ * Claude/kscc 会对 **local_bash（本机 Bash）与 local_agent（子代理）** 都发 task_started；
+ * 若按「凡 task_* 即子代理」或只黑名单一个 local_bash，下一个 local_xxx 仍会漏进来。
+ * **默认拒绝，仅放行明确 agent 类型**——收口策略，不再个案加黑名单。
+ */
+export function isSubagentRuntimeTaskType(taskType: string | null | undefined): boolean {
+  if (!taskType) return false
+  const t = taskType.trim().toLowerCase().replace(/-/g, '_')
+  if (!t) return false
+  // 明确白名单（可按 SDK 演进追加，禁止改成「不等于 local_bash」）
+  if (t === 'local_agent' || t === 'agent') return true
+  // 保守：`*_agent` 且不含 bash/shell/command（防 local_bash_agent 之类臆造）
+  if (t.endsWith('_agent') && !/(bash|shell|command|cmd)/.test(t)) return true
+  return false
+}
+
+/** 是否允许用本事件**新建**子代理任务卡（更新已有卡不走此门） */
+export function canCreateSubagentTaskCard(event: {
+  taskType?: string
+}): boolean {
+  return isSubagentRuntimeTaskType(event.taskType)
+}
 
 /**
  * 任务卡片承载项：消息流中任意一项，可携带一张任务卡片。
@@ -186,19 +225,28 @@ export function reduceTaskEvent<T extends TaskCardCarrier>(
 ): T[] {
   switch (event.type) {
     case 'task_started': {
+      const idx = findCardIndex(items, event.taskId, event.toolUseId)
+      // 白名单：非 agent runtime 不建卡；若误建过则直接摘掉
+      if (!canCreateSubagentTaskCard(event)) {
+        if (idx < 0) return [...items]
+        return items.filter((_, i) => i !== idx)
+      }
       const card: TaskCardState = {
         taskId: event.taskId,
         toolUseId: event.toolUseId,
+        taskType: event.taskType,
         description: event.description,
         status: 'running',
         progressText: event.description.trim() ? event.description.trim() : '启动中…',
       }
-      const idx = findCardIndex(items, event.taskId, event.toolUseId)
       const existing = idx >= 0 ? items[idx] : undefined
       if (existing) {
-        // 已有卡片（如 progress 先于 started 到达）：重置为 running，保留心跳里的 lastToolName
         const prev = existing.taskCard
-        const merged: TaskCardState = { ...card, lastToolName: prev?.lastToolName }
+        const merged: TaskCardState = {
+          ...card,
+          lastToolName: prev?.lastToolName,
+          taskType: event.taskType ?? prev?.taskType,
+        }
         return items.map((it, i) => (i === idx ? apply(it, merged) : it))
       }
       return [...items, apply(undefined, card)]
@@ -219,10 +267,12 @@ export function reduceTaskEvent<T extends TaskCardCarrier>(
         }
         return items.map((it, i) => (i === idx ? apply(it, merged) : it))
       }
-      // 无卡片承载进度（progress 早于 started 到达）：建一张 running 卡片，避免丢失信号（仅一次 append）
+      // 无卡时禁止用 progress 新建——否则 Bash 心跳也会冒充子代理入口
+      if (!canCreateSubagentTaskCard(event)) return [...items]
       const card: TaskCardState = {
         taskId: event.taskId ?? event.toolUseId ?? '',
         toolUseId: event.toolUseId,
+        taskType: event.taskType,
         description: '',
         status: 'running',
         lastToolName: event.lastToolName,
@@ -246,10 +296,12 @@ export function reduceTaskEvent<T extends TaskCardCarrier>(
         }
         return items.map((it, i) => (i === idx ? apply(it, merged) : it))
       }
-      // 无卡片（started 丢失）：直接建一张已收口的卡片
+      // 无卡时禁止 notification 新建（同 progress）
+      if (!canCreateSubagentTaskCard(event)) return [...items]
       const card: TaskCardState = {
         taskId: event.taskId,
         toolUseId: event.toolUseId,
+        taskType: event.taskType,
         description: '',
         status: event.status,
         summary,

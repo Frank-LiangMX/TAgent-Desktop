@@ -7,7 +7,7 @@
  * - 过程区：复用主会话 ProcessGroupView（默认收成一行摘要，不整页展开思考/工具）
  * - 回答区：末尾交付文本
  */
-import { memo, useMemo, useState } from 'react'
+import { memo, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, CaretRight, Copy } from '@phosphor-icons/react'
 import { Message, MessageContent, MessageResponse } from '@tagent/ui'
 import { cn } from '../../lib/utils'
@@ -110,7 +110,14 @@ export function SubagentDetailView({
     return undefined
   }, [subagentItems])
   const isRunning = status === 'running'
-  const startedAt = firstCreatedAt ?? (isRunning ? Date.now() : undefined)
+  // 禁止 `isRunning ? Date.now() : undefined`——每帧新 timestamp 会打爆 useLiveElapsedMs
+  const liveFallbackRef = useRef<number | null>(null)
+  if (isRunning) {
+    if (liveFallbackRef.current == null) liveFallbackRef.current = Date.now()
+  } else {
+    liveFallbackRef.current = null
+  }
+  const startedAt = firstCreatedAt ?? liveFallbackRef.current ?? undefined
   const elapsedMs = useLiveElapsedMs(startedAt, isRunning)
   const statusText = isRunning
     ? `运行 ${formatElapsedDuration(elapsedMs)}`

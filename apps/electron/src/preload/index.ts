@@ -20,6 +20,8 @@ import {
 import type {
   AgentRoleProfile,
   AgentWorkspace,
+  AskUserRequest,
+  AskUserResponse,
   Channel,
   ChannelBalanceResult,
   ChannelCreateInput,
@@ -216,6 +218,20 @@ const electronAPI = {
   },
   respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) =>
     ipcRenderer.send(AGENT_IPC_CHANNELS.PERMISSION_RESPOND, { reqId, behavior, remember }),
+  // AskUserQuestion 交互式问答（主进程推请求 / 已决回听 / renderer 回灌答案）
+  onAskUserRequest: (cb: (request: AskUserRequest) => void) => {
+    const handler = (_e: unknown, request: AskUserRequest): void => cb(request)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.ASK_USER_REQUEST, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.ASK_USER_REQUEST, handler)
+  },
+  /** 用户 respond / 会话清理后推送，渲染层按 requestId 出队 + 清 drafts */
+  onAskUserResolved: (cb: (e: { requestId: string }) => void) => {
+    const handler = (_e: unknown, payload: { requestId: string }): void => cb(payload)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.ASK_USER_RESOLVED, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.ASK_USER_RESOLVED, handler)
+  },
+  askUserRespond: (response: AskUserResponse) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.ASK_USER_RESPOND, response),
   // 热切换指定会话的权限模式（持久化 meta + 通知运行时）
   setSessionPermissionMode: (sessionId: string, mode: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_PERMISSION_MODE, { sessionId, mode }) as Promise<{ ok: boolean; error?: string }>,

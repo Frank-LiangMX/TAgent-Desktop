@@ -1,0 +1,1 @@
+读 docs/dev/core-loop/REGRESS-G-stage-summary-persist-brief.md 与 REGRESS-B-FINDINGS.md、CURSOR-CONCISE.md，按 brief 只读摸底。必须回答全部必答，带 path:line。写出 docs/dev/core-loop/REGRESS-G-FINDINGS.md。仓库根：F:\TAgent-Desktop。禁止 git commit / push。完成后中文总结：是「模型不吐」还是「UI/落盘丢」、与 B 关系、最小修建议。

@@ -471,10 +471,10 @@ export function RolesPage(): JSX.Element {
 
       {/* 详情弹窗 */}
       <Dialog open={detailRole != null} onOpenChange={closeDetail}>
-        <DialogContent className="session-glass-modal max-h-[min(88vh,760px)] w-[min(560px,calc(100vw-2rem))] gap-0 overflow-hidden p-0 sm:max-w-xl">
+        <DialogContent className="roles-dialog session-glass-modal max-h-[min(88vh,980px)] w-[clamp(480px,46vw,800px)] gap-0 overflow-hidden p-0 sm:max-w-none">
           {detailRole ? (
             <>
-              <div className="border-b border-border/50 px-5 py-4">
+              <div className="roles-dialog__head border-b border-border/50">
                 <DialogTitle className="text-base font-semibold tracking-tight">
                   {detailRole.displayName}
                 </DialogTitle>
@@ -528,7 +528,7 @@ export function RolesPage(): JSX.Element {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between gap-2 border-t border-border/50 px-5 py-3">
+              <div className="roles-dialog__foot flex items-center justify-between gap-2 border-t border-border/50">
                 {!BUILTIN_IDS.has(detailRole.id) ? (
                   <Button
                     size="sm"
@@ -541,7 +541,9 @@ export function RolesPage(): JSX.Element {
                     删除
                   </Button>
                 ) : (
-                  <span className="text-[12px] text-muted-foreground">内置角色不可删除</span>
+                  <span className="roles-dialog__foot-hint text-[12px] text-muted-foreground">
+                    内置角色不可删除
+                  </span>
                 )}
                 <Button size="sm" variant="secondary" onClick={() => setDetailRole(null)}>
                   关闭

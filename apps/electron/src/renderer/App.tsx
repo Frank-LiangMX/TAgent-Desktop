@@ -9,6 +9,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import type {
   AgentWorkspace,
+  AskUserRequest,
+  AskUserResponse,
   Channel,
   ChannelBalanceResult,
   ChannelCreateInput,
@@ -66,6 +68,7 @@ import {
 } from './atoms/workspace-atoms'
 import { useGlobalSessionRunSync } from './hooks/useGlobalSessionRunSync'
 import { useGlobalPermissionSync } from './hooks/useGlobalPermissionSync'
+import { useAskUserSync } from './hooks/useAskUserSync'
 import { useInitUpdaterListener } from './atoms/updater'
 import { UpdateBanner } from './components/updater/UpdateBanner'
 
@@ -157,6 +160,10 @@ declare global {
       /** 主进程超时 deny / 用户 respond 后推送，渲染层按 reqId 出队 */
       onPermissionResolved: (cb: (payload: unknown) => void) => () => void
       respondToPermission: (reqId: string, behavior: 'allow' | 'deny', remember?: boolean) => void
+      // AskUserQuestion 交互式问答
+      onAskUserRequest: (cb: (request: AskUserRequest) => void) => () => void
+      onAskUserResolved: (cb: (e: { requestId: string }) => void) => () => void
+      askUserRespond: (response: AskUserResponse) => Promise<void>
       // 热切换会话权限模式
       setSessionPermissionMode: (sessionId: string, mode: string) => Promise<{ ok: boolean; error?: string }>
       /** 热切换 Chat|Work（仅用户源） */
@@ -341,6 +348,8 @@ export function App(): JSX.Element {
   useGlobalSessionRunSync()
   // 全局权限队列同步（REQUEST 入队 / RESOLVED 出队，切会话不丢横幅）
   useGlobalPermissionSync()
+  // 全局 AskUserQuestion 队列同步（REQUEST 入队 / RESOLVED 出队，切会话不丢选项卡）
+  useAskUserSync()
   // 自动更新状态监听（主进程推送 → atom → UpdateBanner）
   useInitUpdaterListener()
 

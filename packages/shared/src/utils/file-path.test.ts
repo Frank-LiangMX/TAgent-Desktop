@@ -42,6 +42,25 @@ describe('isAbsoluteFilePath', () => {
     expect(isAbsoluteFilePath('F:/proj/a.ts:42')).toBe(true)
     expect(isAbsoluteFilePath('/home/u/a.ts:10:5')).toBe(true)
   })
+
+  test('API / URL 风格路径不升 FileChip（Anthropic /v1/messages）', () => {
+    expect(isAbsoluteFilePath('/v1/messages')).toBe(false)
+    expect(isAbsoluteFilePath('/v1/chat/completions')).toBe(false)
+    expect(isAbsoluteFilePath('/api/foo')).toBe(false)
+    expect(isAbsoluteFilePath('/graphql')).toBe(false)
+    expect(isAbsoluteFilePath('/health')).toBe(false)
+  })
+
+  test('无扩展名的随意 /foo/bar 不升 FileChip', () => {
+    expect(isAbsoluteFilePath('/foo/bar')).toBe(false)
+    expect(isAbsoluteFilePath('/Anthropic/v1/messages')).toBe(false)
+  })
+
+  test('MSYS 盘符挂载与常见 FS 根仍识别', () => {
+    expect(isAbsoluteFilePath('/f/TAgent-Desktop/a.ts')).toBe(true)
+    expect(isAbsoluteFilePath('/home/user/bin/tool')).toBe(true)
+    expect(isAbsoluteFilePath('/tmp/out.log')).toBe(true)
+  })
 })
 
 describe('getFileName', () => {

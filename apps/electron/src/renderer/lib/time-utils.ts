@@ -1,7 +1,7 @@
 /**
  * 时间格式化工具函数
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 /**
  * 格式化消息时间（简略写法）
@@ -53,6 +53,10 @@ export function formatElapsedDuration(ms: number): string {
 
 /**
  * 运行中实时刷新 elapsed（ms）。isLive=false 时返回 0。
+ *
+ * 调用方不得每帧传入新的 `Date.now()` 作为 startedAt——会令 effect 依赖每帧变化，
+ * 同步 `setNow` 触发「Maximum update depth exceeded」。本 hook 在 live 期内锁定首个
+ * 有效起点；仍建议调用方用 ref 稳住 startedAt（见 SubagentDetailView）。
  */
 export function useLiveElapsedMs(
   startedAt: number | undefined,
@@ -60,12 +64,25 @@ export function useLiveElapsedMs(
   tickMs = 250,
 ): number {
   const [now, setNow] = useState(() => Date.now())
+  const anchorRef = useRef<number | null>(null)
+
+  if (isLive && startedAt != null && Number.isFinite(startedAt)) {
+    if (anchorRef.current == null) anchorRef.current = startedAt
+    // 随后落到更早的真实 createdAt 时采纳（比「首次 Date.now() 兜底」更准）
+    else if (startedAt < anchorRef.current) anchorRef.current = startedAt
+  } else if (!isLive) {
+    anchorRef.current = null
+  }
+
+  const anchor = anchorRef.current
+
   useEffect(() => {
-    if (!isLive || startedAt == null) return
+    if (!isLive || anchor == null) return
     setNow(Date.now())
     const id = window.setInterval(() => setNow(Date.now()), tickMs)
     return () => window.clearInterval(id)
-  }, [isLive, startedAt, tickMs])
-  if (!isLive || startedAt == null || !Number.isFinite(startedAt)) return 0
-  return Math.max(0, now - startedAt)
+  }, [isLive, anchor, tickMs])
+
+  if (!isLive || anchor == null) return 0
+  return Math.max(0, now - anchor)
 }

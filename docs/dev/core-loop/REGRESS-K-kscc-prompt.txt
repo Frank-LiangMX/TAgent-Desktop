@@ -1,0 +1,1 @@
+读 docs/dev/core-loop/REGRESS-K-investigate-brief.md 与 REGRESS-K-residual-detail-SPEC.md，只读摸底。写 docs/dev/core-loop/REGRESS-K-FINDINGS.md（K1 思考落正文秒消、K2 子代理详情空消息、K3 最新会话失败归因）。不改业务代码、不 commit。返回 FINDINGS 路径与三条结论摘要。

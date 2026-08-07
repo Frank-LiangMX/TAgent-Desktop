@@ -24,9 +24,11 @@ import type {
   TAgentMessage,
   Channel,
   AgentSessionMeta,
+  AskUserResponse,
 } from '@tagent/shared'
 import { AGENT_IPC_CHANNELS, MEMORY_IPC_CHANNELS, msysPathToWindowsDrivePath } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
+import { askUserService } from '../agent/agent-ask-user-service'
 import { getAdapter, PiAgentAdapter, type ChannelKind } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
 import {
@@ -333,6 +335,8 @@ export class SessionService {
       // 先丢 pending steer，再 interrupt：abort 可能同步触发 result→onTurnEnd，
       // 若先 interrupt 再 clear，会误 auto-send 用户刚想放弃的引导。
       this.clearPendingSteer(sessionId)
+      // 清待处理 AskUser 请求（resolve deny「会话已结束」；abort signal 兜底已 deny，此处幂等）
+      askUserService.clearSessionPending(sessionId)
       const rt = this.runtimes.get(sessionId)
       if (rt) await rt.interrupt()
       // REGRESS-G：中断也 flush 待提交 assistant（保已生成的段落盘 + 清 stale pending 不漏进下一轮）
@@ -349,6 +353,20 @@ export class SessionService {
       this.sendPayload(sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
       return { ok: true }
     })
+
+    // 响应 AskUserQuestion：渲染层回灌 answers → 注入 updatedInput.answers → resolve allow
+    // （SDK 拿到带 answers 的 input 执行，不再发 request_user_dialog 控制帧）
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.ASK_USER_RESPOND,
+      async (_e, response: AskUserResponse): Promise<void> => {
+        const requestId = response?.requestId
+        if (!requestId) return
+        const sessionId = askUserService.respondToAskUser(requestId, response?.answers ?? {})
+        if (sessionId) {
+          this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.ASK_USER_RESOLVED, { requestId })
+        }
+      }
+    )
 
     /**
      * 引导 Agent（不中断当前轮）。
@@ -684,6 +702,8 @@ export class SessionService {
       this.clearPendingSteer(sessionId)
       // 清会话权限白名单（「始终允许」状态）
       PermissionService.clearWhitelist(sessionId)
+      // 清待处理 AskUser 请求（resolve deny「会话已结束」）
+      askUserService.clearSessionPending(sessionId)
       deleteSessionMeta(sessionId)
       // Phase 2.5：记忆层标记会话已删（L0/L2/L3/L5 行加 deleted:1）
       void nudgeService.markSessionDeleted(sessionId).catch((err) => {

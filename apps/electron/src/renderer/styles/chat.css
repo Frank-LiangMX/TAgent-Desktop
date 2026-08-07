@@ -361,6 +361,31 @@
   color: hsl(var(--muted-foreground) / 0.88);
 }
 
+/* 外层「运行了」折叠：与 fold/stage 同 grid 0fr↔1fr，body 常驻不硬切 */
+.agent-concise-run__panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.28s ease,
+    opacity 0.2s ease;
+}
+
+.agent-concise-run__panel.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+/* 新消息挤成历史：瞬时收起，避免 StickToBottom smooth resize 扫视口 */
+.agent-concise-run__panel.is-instant {
+  transition: none;
+}
+
+.agent-concise-run__panel-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
 .agent-concise-run__body {
   display: flex;
   flex-direction: column;
@@ -798,6 +823,9 @@
   .agent-concise-fold__panel {
     transition: none;
   }
+  .agent-concise-run__panel {
+    transition: none;
+  }
 }
 
 .agent-concise-live-status--in-body {
@@ -1019,6 +1047,15 @@
   flex-direction: column;
   gap: 2px;
   padding: 2px 0 2px 4px;
+}
+
+/* REGRESS-K1：过程组收起后仍露出的思考头带 */
+.agent-process-group__thinking {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 0 2px 4px;
+  min-width: 0;
 }
 
 .agent-process-group.is-live {

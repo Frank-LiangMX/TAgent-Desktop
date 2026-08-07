@@ -1,0 +1,7 @@
+严格按 docs/dev/core-loop/REGRESS-I-flicker-summary-copy-brief.md 只读摸底；根因明确则最小修。
+
+工作区：F:\TAgent-Desktop
+
+三症状：①中间思考消失又出现致面板闪；②阶段思考总结大长段（应对齐 Cursor 短）；③运行中就显示复制按钮（应完成后才显示）。
+
+写 docs/dev/core-loop/REGRESS-I-FINDINGS.md；能修则修 + REGRESS-I-FIX-NOTES.md。禁止 commit/push。stdout 中文结论。
