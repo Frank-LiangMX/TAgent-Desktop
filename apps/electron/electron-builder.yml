@@ -57,6 +57,7 @@ mac:
 linux:
   icon: logo/appicon/light.png
   category: Development
+  executableName: tagent
   target:
     - AppImage
     - deb
