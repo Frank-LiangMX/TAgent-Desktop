@@ -1233,7 +1233,7 @@ export function Chat({
       })
       // result = 整个 run 真正 idle（turn_end 只是单个 SDK turn 结束，工具循环还会继续）。
       clearPendingStop()
-      beginStreamTransition()
+      // 收尾「往上折」靠 live 底栏 CSS 过渡；勿立刻 resize=instant，否则高度变化会顿一下。
 
       // error_* 以前几乎对 UI 透明（只吃 usage）；抬到 SessionErrorBanner，避免「气泡里有失败但无错误条」
       const subtype = typeof p.subtype === 'string' ? p.subtype : ''
@@ -1328,8 +1328,7 @@ export function Chat({
         // 工具循环中 turn_end 只是单轮结束：延迟停止，宽限期内有下一轮 delta → 保持 running
         // （过程区/思考链不闪断收起）；宽限期到且无后续 → 真正停止
         scheduleRunStop()
-        // 流式占位→落盘消息的高度切换：瞬间切 instant resize 防滚动动画闪动
-        beginStreamTransition()
+        // 工具循环中的 turn_end：不切 resize=instant（留给真正 result 收尾的平滑折进）
         // followMode：不再清 liveMentionLabels——铭牌代表当前 activeSpeaker，续聊仍由该角色接。
         // 用户在输入框 ✕ 清除 activeMentionRoleIds 时会一并清 liveMentionLabels。
         bumpRefresh()

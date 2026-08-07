@@ -520,10 +520,13 @@ const WorkStageFold = memo(function WorkStageFold({
 })
 
 /**
- * live 底栏 hold + 淡出：raw 状态变空时先保持旧值（hold ~500ms），再淡出（~250ms）后卸 DOM，
- * 禁止工具完成瞬间 null 卸 DOM（对齐 Cursor「当前动作扫光 → 折进阶段灰字摘要」）。
+ * live 底栏 hold + 淡出：raw 状态变空时先保持旧值（hold），再淡出后卸 DOM，
+ * 禁止工具/回合完成瞬间 null 卸 DOM（对齐 Cursor「当前动作扫光 → 折进灰字摘要」）。
  * keepWhileActive（末阶段 + 回合 live）：持续保持上一个动作扫光，回合结束才走 hold→淡出。
  */
+const LIVE_STATUS_HOLD_MS = 320
+const LIVE_STATUS_FADE_MS = 380
+
 function useLiveStatusHold(
   raw: string | undefined,
   keepWhileActive: boolean,
@@ -564,7 +567,7 @@ function useLiveStatusHold(
       if (!shownRef.current && heldRef.current) setShown(heldRef.current)
       return
     }
-    // 不再 active 且当前仍有内容：hold 500ms → 淡出 250ms → 卸 DOM
+    // 不再 active 且当前仍有内容：hold → 淡出 → 卸 DOM（时长对齐 CSS transition）
     if (shownRef.current && holdTimer.current == null && fadeTimer.current == null) {
       holdTimer.current = window.setTimeout(() => {
         holdTimer.current = null
@@ -573,8 +576,8 @@ function useLiveStatusHold(
           fadeTimer.current = null
           setFading(false)
           setShown(undefined)
-        }, 250)
-      }, 500)
+        }, LIVE_STATUS_FADE_MS)
+      }, LIVE_STATUS_HOLD_MS)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [raw, keepWhileActive])
