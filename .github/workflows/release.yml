@@ -99,7 +99,25 @@ jobs:
         working-directory: ${{ matrix.workdir }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: bun run package:ci -- ${{ matrix.package_args }}
+        run: bun run package:ci -- ${{ matrix.package_args }} --verbose
+        continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
+
+      - name: Debug — list out/ directory (Linux only)
+        if: always() && matrix.os == 'ubuntu-latest'
+        working-directory: ${{ matrix.workdir }}
+        shell: bash
+        run: |
+          echo "=== out/ directory ==="
+          ls -la out/ 2>/dev/null || echo "(empty or missing)"
+          echo ""
+          echo "=== which bsdtar ==="
+          which bsdtar 2>/dev/null || echo "bsdtar NOT FOUND"
+          echo ""
+          echo "=== which fakeroot ==="
+          which fakeroot 2>/dev/null || echo "fakeroot NOT FOUND"
+          echo ""
+          echo "=== which dpkg-deb ==="
+          which dpkg-deb 2>/dev/null || echo "dpkg-deb NOT FOUND"
 
       - name: Verify expected artifacts exist
         working-directory: ${{ matrix.workdir }}
