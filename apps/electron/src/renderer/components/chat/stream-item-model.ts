@@ -170,6 +170,47 @@ export function commitStreamThinkingToLastAssistant<T extends StreamItemLike>(
 }
 
 /**
+ * tool_start 清 stream 前：把仍只在缓冲里的段间 progress 写入末条主线 assistant。
+ *
+ * 现象：concise 下阶段性总结常只活在 `streamState.text`（打字机 NarrativeRow）；
+ * `tool_start` 若直接 `text=''`，总结秒消，等 sdk_message text 才回来（或永远闪没）。
+ * 插入到第一个 tool_use 之前，保证过程链顺序 = 总结 → 工具。
+ */
+export function commitStreamTextToLastAssistant<T extends StreamItemLike>(
+  prev: T[],
+  text: string,
+): T[] {
+  const t = text.trim()
+  if (!t) return prev
+  for (let i = prev.length - 1; i >= 0; i--) {
+    const m = prev[i]?.message
+    if (m?.type !== 'assistant' || m.parentToolUseId) continue
+    for (const b of m.content) {
+      if (b.type !== 'text') continue
+      const existing = typeof (b as { text?: string }).text === 'string' ? (b as { text: string }).text.trim() : ''
+      if (!existing) continue
+      // 已有相同 / 互为前缀 → 视为已落盘，防与随后 sdk_message 双份
+      if (existing === t || t.startsWith(existing) || existing.startsWith(t)) return prev
+    }
+    const content = [...m.content]
+    const toolIdx = content.findIndex((b) => b.type === 'tool_use')
+    const block = { type: 'text' as const, text: t }
+    if (toolIdx >= 0) content.splice(toolIdx, 0, block)
+    else content.push(block)
+    const next = [...prev]
+    next[i] = {
+      ...prev[i]!,
+      message: {
+        ...m,
+        content,
+      },
+    }
+    return next
+  }
+  return prev
+}
+
+/**
  * 单真源流式（S2.1）：把一条 sdk_message assistant/user 按 **uuid 原地 upsert** 进 items。
  *
  * - 同 uuid：就地替换（partial→final 同 uuid 一条），不新增、不覆盖上一轮已完成 assistant。

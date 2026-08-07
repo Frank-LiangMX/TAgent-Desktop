@@ -294,10 +294,28 @@ export function getWorkStepLabel(
   const file = toolFileHint(tool)
 
   if (pending) {
-    if (family === 'search') return '搜索中'
-    if (family === 'edit') return file ? `正在编辑 ${file}` : '正在编辑'
-    if (family === 'explore') return file ? `正在探索 ${file}` : '正在探索'
-    if (family === 'shell') return '运行命令中'
+    // 对齐 Cursor live：「Editing X.tsx」——带具体文件/模式，不用空泛「编辑中」
+    if (family === 'search') {
+      const pattern = typeof input.pattern === 'string' ? input.pattern : ''
+      const short = pattern.length > 28 ? `${pattern.slice(0, 28)}…` : pattern
+      return short ? `搜索 ${short}` : '搜索中'
+    }
+    if (family === 'edit') {
+      if (/^write$/i.test(name)) return file ? `写入 ${file}` : '正在写入'
+      return file ? `编辑 ${file}` : '正在编辑'
+    }
+    if (family === 'explore') {
+      if (/^read$/i.test(name) && file) return `读取 ${file}`
+      return file ? `探索 ${file}` : '正在探索'
+    }
+    if (family === 'shell') {
+      const cmd = typeof input.command === 'string' ? input.command.trim() : ''
+      if (cmd) {
+        const short = cmd.length > 42 ? `${cmd.slice(0, 42)}…` : cmd
+        return `运行 ${short}`
+      }
+      return '运行命令中'
+    }
     return getToolPhrase(name, input).loadingLabel
   }
 
@@ -320,17 +338,12 @@ export function getWorkStepLabel(
   return getToolPhrase(name, input).label
 }
 
-/** live 阶段底部当前动作（族级短句，避免文件名一闪而过）。
- *  末步是思考时回「正在思考…」，阶段收起时仍有扫光反馈（思考正文默认不铺开）。 */
+/** live 阶段底部当前动作（对齐 Cursor「Editing X.tsx」：带具体文件/模式，可扫光）。
+ *  末步是思考时回「正在思考…」，阶段收起时仍有扫光反馈。 */
 export function getLiveStatusFromSteps(steps: WorkStageStep[]): string | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const s = steps[i]!
     if (s.kind === 'tool' && !s.tool.result) {
-      const family = classifyToolFamily(s.tool.tool.name)
-      if (family === 'search') return '搜索中'
-      if (family === 'edit') return '编辑中'
-      if (family === 'explore') return '探索中'
-      if (family === 'shell') return '运行命令中'
       return getWorkStepLabel(s, { pending: true })
     }
     if (s.kind === 'thinking') {

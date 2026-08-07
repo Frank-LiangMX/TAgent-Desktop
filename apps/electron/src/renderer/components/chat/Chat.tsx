@@ -81,6 +81,7 @@ import {
   applyThinkingDeltaToState,
   clearSessionStreamState,
   commitStreamThinkingToLastAssistant,
+  commitStreamTextToLastAssistant,
   EMPTY_STREAM_STATE,
   hasStreamContent,
   purgeStreamingItems,
@@ -1294,8 +1295,12 @@ export function Chat({
         parentToolUseId?: string
       }
       if (evt.type === 'tool_start' && !evt.parentToolUseId) {
-        // 工具开始不得整表清 streamState：思考常仍只在 thinking 缓冲里，
-        // 一清就「出完即消失」（REGRESS-E / CL5）。只清正文 delta，保留 thinking。
+        // 段间 progress 常只活在 streamState.text；工具一开就清 → 阶段性总结打字机秒消。
+        // 先 commit 进末条主线 assistant（插到 tool_use 前），再清缓冲；思考仍保留。
+        const pendingText = streamStateRef.current.text.trim()
+        if (pendingText) {
+          setItems((prev) => commitStreamTextToLastAssistant(prev, pendingText))
+        }
         setStreamState((prev) => (prev.text ? { ...prev, text: '' } : prev))
       } else if (evt.type === 'turn_end') {
         // 回合边界：若 stream 仍有思考且末条 assistant 无 thinking 块，先写入 items 再清。

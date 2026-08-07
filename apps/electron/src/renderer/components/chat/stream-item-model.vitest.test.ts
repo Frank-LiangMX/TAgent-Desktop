@@ -12,6 +12,7 @@ import {
   applyThinkingDeltaToState,
   clearSessionStreamState,
   commitStreamThinkingToLastAssistant,
+  commitStreamTextToLastAssistant,
   EMPTY_STREAM_STATE,
   shouldClearStreamText,
   shouldClearStreamThinking,
@@ -220,6 +221,55 @@ describe('applySdkMessageToItems：uuid 原地 upsert（S2.1 单真源）', () =
     expect(m?.type).toBe('assistant')
     if (m?.type === 'assistant') {
       expect(m.content[0]).toMatchObject({ type: 'thinking', thinking: '缓冲里的思考' })
+    }
+  })
+
+  it('commitStreamTextToLastAssistant 插到 tool_use 前（段间 progress 不因 tool_start 秒消）', () => {
+    let items: StreamItemLike[] = [
+      {
+        key: 'm0',
+        message: {
+          type: 'assistant',
+          uuid: 'u1',
+          stop_reason: 'tool_use',
+          content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }],
+        },
+      },
+    ]
+    items = commitStreamTextToLastAssistant(
+      items,
+      '还有更多未跟踪文件，看全 + 我新加的调研文档在不在内。',
+    )
+    const m = items[0]?.message
+    expect(m?.type).toBe('assistant')
+    if (m?.type === 'assistant') {
+      expect(m.content.map((b) => b.type)).toEqual(['text', 'tool_use'])
+      expect(m.content[0]).toMatchObject({
+        type: 'text',
+        text: '还有更多未跟踪文件，看全 + 我新加的调研文档在不在内。',
+      })
+    }
+  })
+
+  it('commitStreamTextToLastAssistant 已有前缀 text 时不双写', () => {
+    const text = '52 个文件已暂存（调研文档排除在外）。'
+    let items: StreamItemLike[] = [
+      {
+        key: 'm0',
+        message: {
+          type: 'assistant',
+          content: [
+            { type: 'text', text },
+            { type: 'tool_use', id: 't1', name: 'Bash', input: {} },
+          ],
+        },
+      },
+    ]
+    items = commitStreamTextToLastAssistant(items, text + '提交第一个 commit')
+    const m = items[0]?.message
+    expect(m?.type).toBe('assistant')
+    if (m?.type === 'assistant') {
+      expect(m.content.filter((b) => b.type === 'text')).toHaveLength(1)
     }
   })
 })
