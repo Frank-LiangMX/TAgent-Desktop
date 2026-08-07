@@ -1422,7 +1422,7 @@ export function Chat({
           taskId: evt.taskId ?? '',
           toolUseId: evt.toolUseId,
           description: evt.description ?? '',
-          taskType: evt.taskType,
+          taskType: (evt as { taskType?: string }).taskType,
         }
         setItems((prev) => reduceTaskEvent(prev, event, taskCardApply))
       } else if (evt.type === 'task_progress') {
