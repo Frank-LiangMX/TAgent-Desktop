@@ -15,6 +15,7 @@ import {
   buildThinkingPreview,
   findLastProcessKey,
   planProcessGroupCollapse,
+  planThinkingRowSettle,
   projectConciseProcess,
   shouldCollapseProcessText,
   shouldCollapseThinking,
@@ -140,6 +141,24 @@ describe('planProcessGroupCollapse', () => {
         autoExpandWhenLive: true,
       }),
     ).toBe('collapse')
+  })
+})
+
+describe('planThinkingRowSettle (REGRESS-F)', () => {
+  it('新一轮开始（live && !wasLive）→ arm：复位 settled 以便结束时再走 settle', () => {
+    expect(planThinkingRowSettle({ isLive: true, wasLive: false })).toBe('arm')
+  })
+
+  it('持续 live（live && wasLive）→ noop：不再触发 settle 武装', () => {
+    expect(planThinkingRowSettle({ isLive: true, wasLive: true })).toBe('noop')
+  })
+
+  it('live→idle（!live && wasLive）→ settle：起定时器，窗口内保持展开，过后折起', () => {
+    expect(planThinkingRowSettle({ isLive: false, wasLive: true })).toBe('settle')
+  })
+
+  it('持续 idle（!live && !wasLive）→ noop：历史轮挂载不触发 settle', () => {
+    expect(planThinkingRowSettle({ isLive: false, wasLive: false })).toBe('noop')
   })
 })
 

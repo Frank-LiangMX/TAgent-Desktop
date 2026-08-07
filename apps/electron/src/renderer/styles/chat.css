@@ -364,10 +364,12 @@
 .agent-concise-run__body {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  /* 「运行了」与下一行（思考/阶段）拉开一点，避免贴死 */
-  margin-top: 10px;
-  padding-left: 2px;
+  /* 思考 / 进度短文 / 阶段：同一套行距，避免有的贴死有的空一大截 */
+  gap: 6px;
+  /* 「运行了」与下一行拉开一点，避免贴死 */
+  margin-top: 8px;
+  /* 与「运行中」头同左缘；勿再 +2px 造成锯齿 */
+  padding-left: 0;
   min-width: 0;
 }
 
@@ -406,7 +408,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 1px 0 2px 2px;
+  padding: 2px 0 0;
 }
 
 .agent-concise-fold {
@@ -518,7 +520,8 @@
 
 .agent-concise-narrative {
   min-width: 0;
-  margin: 2px 0;
+  /* 行距交给 .agent-concise-run__body 的 gap，避免 margin 叠出松紧不一 */
+  margin: 0;
 }
 
 .agent-concise-narrative--progress {
@@ -577,13 +580,18 @@
   color: hsl(0 55% 52%);
 }
 
-/* Cursor 式句尾 Files Changed */
+/* Cursor 式句尾 Files Changed：全宽、6px 圆角、扁平列表 */
 .agent-files-changed {
-  margin: 8px 0.625rem 4px;
-  padding: 10px 12px;
-  border: 1px solid hsl(var(--border) / 0.55);
-  border-radius: 10px;
-  background: hsl(var(--foreground) / 0.025);
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  margin: 10px 0 6px;
+  padding: 10px 12px 8px;
+  border: 1px solid hsl(var(--border) / 0.5);
+  /* Cursor Files Changed 偏软圆角（>8px） */
+  border-radius: 12px;
+  background: hsl(var(--background));
   min-width: 0;
 }
 .agent-files-changed__head {
@@ -591,12 +599,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
+  min-height: 18px;
 }
 .agent-files-changed__title {
   font-size: 12px;
   font-weight: 500;
-  color: hsl(var(--muted-foreground) / 0.88);
+  color: hsl(var(--muted-foreground) / 0.85);
   line-height: 1.3;
 }
 .agent-files-changed__review {
@@ -605,12 +614,12 @@
   padding: 0;
   font-size: 12px;
   font-weight: 500;
-  color: hsl(var(--muted-foreground) / 0.72);
+  color: hsl(var(--muted-foreground) / 0.75);
   cursor: pointer;
   line-height: 1.3;
 }
 .agent-files-changed__review:hover {
-  color: hsl(var(--foreground) / 0.88);
+  color: hsl(var(--foreground) / 0.9);
 }
 .agent-files-changed__list {
   list-style: none;
@@ -618,57 +627,73 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
+  width: 100%;
+}
+.agent-files-changed__item {
+  width: 100%;
+  min-width: 0;
 }
 .agent-files-changed__row {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
+  box-sizing: border-box;
   margin: 0;
-  padding: 4px 2px;
+  padding: 3px 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 0;
   background: transparent;
   cursor: pointer;
   text-align: left;
-  color: hsl(var(--foreground) / 0.88);
+  color: hsl(var(--foreground) / 0.9);
 }
 .agent-files-changed__row:hover {
-  background: hsl(var(--foreground) / 0.04);
+  background: transparent;
+}
+.agent-files-changed__row:hover .agent-files-changed__name {
+  color: hsl(var(--foreground));
 }
 .agent-files-changed__badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 16px;
+  min-width: 16px;
   height: 16px;
+  padding: 0;
+  box-sizing: border-box;
   flex-shrink: 0;
   border-radius: 3px;
-  font-size: 8px;
+  font-size: 7.5px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   line-height: 1;
 }
 .agent-files-changed__badge--react {
-  background: hsl(199 80% 48% / 0.16);
-  color: hsl(199 80% 38%);
+  background: hsl(193 85% 40% / 0.18);
+  color: hsl(193 85% 32%);
 }
 .agent-files-changed__badge--ts {
-  background: hsl(211 70% 48% / 0.14);
-  color: hsl(211 70% 40%);
+  background: hsl(211 70% 48% / 0.16);
+  color: hsl(211 70% 38%);
 }
 .agent-files-changed__badge--css {
-  background: hsl(187 60% 40% / 0.16);
-  color: hsl(187 60% 32%);
+  background: hsl(187 65% 40% / 0.16);
+  color: hsl(187 65% 32%);
 }
-.agent-files-changed__badge--data {
-  background: hsl(var(--muted-foreground) / 0.12);
-  color: hsl(var(--muted-foreground) / 0.8);
+.agent-files-changed__badge--md {
+  background: hsl(25 70% 45% / 0.14);
+  color: hsl(25 70% 36%);
 }
-.agent-files-changed__badge--file {
+.agent-files-changed__badge--code {
+  background: hsl(215 40% 46% / 0.14);
+  color: hsl(215 40% 36%);
+}
+.agent-files-changed__badge--text {
   background: hsl(var(--muted-foreground) / 0.1);
-  color: hsl(var(--muted-foreground) / 0.7);
+  color: hsl(var(--muted-foreground) / 0.75);
 }
 .agent-files-changed__name {
   flex: 1 1 auto;
@@ -676,24 +701,61 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  line-height: 1.35;
+  font-size: 13px;
+  font-weight: 400;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  line-height: 1.4;
+  color: hsl(var(--foreground) / 0.88);
 }
 .agent-files-changed__diff {
   display: inline-flex;
-  gap: 6px;
+  gap: 8px;
   flex-shrink: 0;
+  justify-content: flex-end;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  line-height: 1;
+  line-height: 1.2;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+.agent-files-changed__add,
+.agent-files-changed__del {
+  min-width: 2.1em;
+  text-align: right;
+}
+.agent-files-changed__add {
+  color: hsl(142 45% 38%);
+}
+.agent-files-changed__del {
+  color: hsl(0 55% 52%);
+}
+.agent-files-changed__more {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground) / 0.78);
+  cursor: pointer;
+  line-height: 1.3;
+}
+.agent-files-changed__more:hover {
+  color: hsl(var(--foreground) / 0.85);
+}
+.agent-files-changed__more-dots {
+  letter-spacing: 1px;
+  color: hsl(var(--muted-foreground) / 0.55);
 }
 .agent-files-changed__diff-empty {
-  color: hsl(var(--muted-foreground) / 0.35);
+  display: none;
 }
 
 .agent-concise-live-status {
-  padding: 1px 0 2px 2px;
+  /* 与阶段摘要头同左缘；只在上方留一点气，避免「2 次搜索 / 正在思考」贴成一块 */
+  margin-top: 4px;
+  padding: 0;
   font-size: 12.5px;
   line-height: 1.45;
   color: hsl(var(--muted-foreground) / 0.68);
@@ -704,12 +766,14 @@
   transition:
     opacity 0.25s ease,
     max-height 0.25s ease,
+    margin 0.25s ease,
     padding 0.25s ease;
 }
 
 .agent-concise-live-status.is-fading {
   opacity: 0;
   max-height: 0;
+  margin-top: 0;
   padding-top: 0;
   padding-bottom: 0;
 }
@@ -737,6 +801,8 @@
 }
 
 .agent-concise-live-status--in-body {
+  /* 展开明细时与 step 文案列对齐（icon 12 + gap 6） */
+  margin-top: 4px;
   padding-left: 18px;
 }
 
@@ -1083,7 +1149,28 @@
   }
 }
 
-/* 展开态：挂 Markdown，容器只负责限高与滚动 */
+/* 折叠面板：body 常驻 DOM，grid 0fr↔1fr + opacity 平滑过渡。
+ * live→idle settle 后再折起（不 null 卸载），折起后点开仍见全文。对齐 .agent-concise-fold__panel（REGRESS-F）。 */
+.agent-thinking-row__panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.28s ease,
+    opacity 0.2s ease;
+}
+
+.agent-thinking-row__panel.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.agent-thinking-row__panel-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* 展开态：挂 Markdown，容器只负责限高与滚动（位于 __panel-inner 内，常驻不卸载） */
 .agent-thinking-row__body {
   margin-top: 6px;
   max-height: min(28vh, 220px);
@@ -1099,6 +1186,13 @@
   font-size: 12.5px;
   line-height: 1.55;
   color: hsl(var(--muted-foreground) / 0.7);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* settle 折起交给状态切换，不要过渡抢动 */
+  .agent-thinking-row__panel {
+    transition: none;
+  }
 }
 
 /* 过程内中间文本：未交付到回答区的正文，弱样式但内容完整 */
@@ -1598,8 +1692,14 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin: 0 0 6px;
-  padding: 3px 10px;
+  /* 中心线对齐下箭头（不等高）：
+     箭头 36px、bottom = --session-composer-top + gap，中心 Y = +gap+18；
+     pill 锚 cluster 顶（=composer-top，banners 收起时），高 ≈ 27px，中心 Y = margin + 13.5。
+     令 margin = gap + 18 - 13.5 ≈ gap + 4 → 中心齐平，底基线随 gap 同步。
+     故 pill 底比箭头底高约 (36-27)/2 ≈ 4-5px（pill 较矮所致，属预期，非错位）。
+     banner/队列展开时 pill 浮输入框顶、箭头浮底栏顶，本就不同行，属预期。 */
+  margin: 0 0 calc(var(--session-scroll-btn-gap, 12px) + 4px);
+  padding: 5px 12px;
   border-radius: 999px;
   border: 1px solid rgb(var(--glass-rgb) / 0.5);
   background: rgb(var(--glass-rgb) / 0.72);
@@ -1621,27 +1721,78 @@
     0 6px 16px -6px rgb(0 0 0 / 0.35),
     inset 0 1px 0 rgb(255 255 255 / 0.08);
 }
-.composer-run-timer__dot {
-  width: 10px;
-  height: 10px;
+/* —— uiverse _5797/perfect-termite-38 改主题色：旋转 glow orb —— */
+.composer-run-timer__orb {
+  width: 12px;
+  height: 12px;
   flex-shrink: 0;
-  box-sizing: border-box;
-  border-radius: 999px;
-  border: 1.5px solid hsl(var(--primary) / 0.22);
-  border-top-color: hsl(var(--primary) / 0.95);
-  background: transparent;
-  animation: composer-run-spin 0.75s linear infinite;
+  border-radius: 50%;
+  background-color: transparent;
+  animation: composer-run-orb 1.5s linear infinite;
+  z-index: 0;
 }
-@keyframes composer-run-spin {
-  to {
-    transform: rotate(360deg);
+@keyframes composer-run-orb {
+  0% {
+    transform: rotate(90deg);
+    box-shadow:
+      0 1px 1px 0 rgb(255 255 255 / 0.9) inset,
+      0 2px 3px 0 hsl(var(--primary) / 0.85) inset,
+      0 3px 3px 0 hsl(var(--primary)) inset;
+  }
+  50% {
+    transform: rotate(270deg);
+    background: hsl(var(--primary) / 0.16);
+    box-shadow:
+      0 1px 1px 0 hsl(var(--primary) / 0.55) inset,
+      0 2px 3px 0 hsl(var(--primary) / 0.9) inset,
+      0 3px 3px 0 hsl(var(--primary) / 0.6) inset;
+  }
+  100% {
+    transform: rotate(450deg);
+    box-shadow:
+      0 1px 1px 0 rgb(255 255 255 / 0.9) inset,
+      0 2px 3px 0 hsl(var(--primary) / 0.7) inset,
+      0 3px 3px 0 hsl(var(--primary) / 0.95) inset;
+  }
+}
+/* 计时字符逐字 wave（替代原 "Searching" 字样） */
+.composer-run-timer__chars {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5px;
+  z-index: 1;
+}
+.composer-run-timer__char {
+  display: inline-block;
+  white-space: pre;
+  opacity: 0.42;
+  transform: translateY(0) scale(1);
+  animation: composer-run-wave 2s infinite;
+}
+@keyframes composer-run-wave {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: translateY(0) scale(1);
+  }
+  20% {
+    opacity: 1;
+    transform: translateY(0) scale(1.12);
+  }
+  40% {
+    opacity: 0.7;
+    transform: translateY(0) scale(1);
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .composer-run-timer__dot {
+  .composer-run-timer__orb {
     animation: none;
-    border-color: hsl(var(--primary) / 0.55);
-    background: hsl(var(--primary) / 0.55);
+    background: hsl(var(--primary) / 0.5);
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.4) inset;
+  }
+  .composer-run-timer__char {
+    animation: none;
+    opacity: 0.85;
   }
 }
 

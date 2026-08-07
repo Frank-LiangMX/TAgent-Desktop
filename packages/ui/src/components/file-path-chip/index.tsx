@@ -14,6 +14,8 @@ import {
   stripLineCol,
   existsCacheKey,
   getFileExistsCache,
+  joinBasePath,
+  normalizeFilePathSeparators,
   msysPathToWindowsDrivePath,
 } from '@tagent/shared'
 import { cn } from '../../lib/utils'
@@ -133,24 +135,23 @@ export function FilePathChip({
       return trimmedPath
     }
     if (candidateBases.length > 0) {
+      // REGRESS-J(J6)：base 可能是 `D:\UnrealTagManager`（反斜杠）、cleanPath 可能带 `/`，
+      // 统一经 joinBasePath 归一为 `/`，不再拼出 `D:\UnrealTagManager/Foo/Bar.h` 混分隔符路径。
       const firstSegment = cleanPath.split('/')[0]
       if (firstSegment) {
         for (const base of candidateBases) {
-          const baseName = base.endsWith('/')
-            ? base.slice(0, -1).split('/').pop()
-            : base.split('/').pop()
+          const baseName = normalizeFilePathSeparators(base)
+            .replace(/\/+$/, '')
+            .split('/')
+            .pop()
           if (baseName === firstSegment) {
-            const parentDir = base.endsWith('/')
-              ? base.slice(0, base.slice(0, -1).lastIndexOf('/'))
-              : base.slice(0, base.lastIndexOf('/'))
-            return parentDir.endsWith('/')
-              ? `${parentDir}${cleanPath}`
-              : `${parentDir}/${cleanPath}`
+            const parentDir = normalizeFilePathSeparators(base).replace(/\/+$/, '').replace(/[^/]*$/, '')
+            return joinBasePath(parentDir, cleanPath)
           }
         }
       }
       const base = candidateBases[0]!
-      return base.endsWith('/') ? `${base}${cleanPath}` : `${base}/${cleanPath}`
+      return joinBasePath(base, cleanPath)
     }
     return trimmedPath
   }, [trimmedPath, cleanPath, isAbsolute, candidateBases])

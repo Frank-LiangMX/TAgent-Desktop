@@ -9,6 +9,7 @@ import {
   getLiveStatusFromSteps,
   getWorkStepLabel,
   isDeliverableThinking,
+  isShortProgressText,
   isTrivialThinking,
   summarizeToolCluster,
   summarizeWorkStage,
@@ -146,12 +147,13 @@ describe('buildConciseTimeline', () => {
     const stage = segs[1]!
     expect(stage.kind).toBe('work_stage')
     if (stage.kind === 'work_stage') {
-      // 中段思考已升为独立 ThinkingFold，不再埋进阶段 steps
-      expect(stage.steps.every((s) => s.kind === 'tool')).toBe(true)
+      // REGRESS-J(J3)：中段思考留在阶段 steps（展开可见全文），不再升独立 fold 拆阶段
+      expect(stage.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
+      expect(stage.steps[1]).toMatchObject({ kind: 'thinking', thinking: expect.stringContaining('**pi') })
     }
   })
 
-  it('lifts mid-run thinking to top-level fold between stages (Cursor)', () => {
+  it('leading thinking stays top fold; mid-run deliverable thinking merges into one work_stage (REGRESS-J J3)', () => {
     const process: ProcessEntry[] = [
       { type: 'thinking', key: 't1', thinking: '先摸清 Proma 结构' },
       tool('Bash', 'b1', { command: 'dir' }),
@@ -165,23 +167,16 @@ describe('buildConciseTimeline', () => {
       tool('Edit', 'e1', { file_path: 'a.ts' }, true, 'ok +10 -2'),
     ]
     const segs = buildConciseTimeline(process)
-    expect(segs.map((s) => s.kind)).toEqual([
-      'thinking',
-      'work_stage',
-      'thinking',
-      'work_stage',
-    ])
-    const mid = segs[2]!
-    expect(mid.kind).toBe('thinking')
-    if (mid.kind === 'thinking') {
-      expect(mid.thinking).toContain('**pi')
-    }
-    const editStage = segs[3]!
-    if (editStage.kind === 'work_stage') {
-      expect(editStage.steps.map((s) => s.kind)).toEqual(['tool'])
-      expect(editStage.diffAdd).toBe(10)
-      expect(editStage.diffDel).toBe(2)
-      expect(getWorkStepLabel(editStage.steps[0]!)).toBe('编辑 a.ts')
+    // leading 思考独立 fold；中段 deliverable 思考留在 stage steps，不再拆出独立 fold
+    expect(segs.map((s) => s.kind)).toEqual(['thinking', 'work_stage'])
+    const stage = segs[1]!
+    if (stage.kind === 'work_stage') {
+      expect(stage.steps.map((s) => s.kind)).toEqual(['tool', 'tool', 'thinking', 'tool'])
+      const mid = stage.steps[2]!
+      if (mid.kind === 'thinking') expect(mid.thinking).toContain('**pi')
+      expect(stage.diffAdd).toBe(10)
+      expect(stage.diffDel).toBe(2)
+      expect(getWorkStepLabel(stage.steps[3]!)).toBe('编辑 a.ts')
     }
   })
 
@@ -210,7 +205,7 @@ describe('buildConciseTimeline', () => {
     }
   })
 
-  it('lifts mid-run deliverable thinking to split stages — work_stage | thinking | work_stage', () => {
+  it('keeps mid-run deliverable thinking inside stage steps — one work_stage (REGRESS-J J3)', () => {
     const deliverable =
       'Proma 我看了结构——它不是外围扩展，而是拿 **pi / Claude Agent SDK** 当内核，改造深度明显更激进。'
     expect(isDeliverableThinking(deliverable)).toBe(true)
@@ -220,13 +215,15 @@ describe('buildConciseTimeline', () => {
       tool('Edit', 'e1', { file_path: 'b.ts' }),
     ]
     const segs = buildConciseTimeline(process)
-    expect(segs.map((s) => s.kind)).toEqual(['work_stage', 'thinking', 'work_stage'])
-    const mid = segs[1]!
-    if (mid.kind === 'thinking') expect(mid.thinking).toBe(deliverable)
+    // 中段思考不再升独立 fold 打断阶段：Read | thinking | Edit 合并为一个 work_stage
+    expect(segs.map((s) => s.kind)).toEqual(['work_stage'])
     const s0 = segs[0]!
-    if (s0.kind === 'work_stage') expect(s0.tools.map((t) => t.tool.name)).toEqual(['Read'])
-    const s2 = segs[2]!
-    if (s2.kind === 'work_stage') expect(s2.tools.map((t) => t.tool.name)).toEqual(['Edit'])
+    if (s0.kind === 'work_stage') {
+      expect(s0.tools.map((t) => t.tool.name)).toEqual(['Read', 'Edit'])
+      expect(s0.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
+      const mid = s0.steps[1]!
+      if (mid.kind === 'thinking') expect(mid.thinking).toBe(deliverable)
+    }
   })
 
   it('shows progress narrative between stages', () => {
@@ -298,6 +295,91 @@ describe('buildConciseTimeline', () => {
 
     const done = buildConciseTimeline(process, { isLive: false })
     expect(done[1]).toMatchObject({ kind: 'narrative', tone: 'final' })
+  })
+
+  it('live 时不丢弃 trivial 中段思考（避免逐帧消失又出现），并入 stage；idle 后再丢弃', () => {
+    const trivial = '让我再读两个文件'
+    expect(isTrivialThinking(trivial)).toBe(true)
+    const process: ProcessEntry[] = [
+      tool('Read', 'r1', { file_path: 'a.ts' }),
+      { type: 'thinking', key: 't1', thinking: trivial },
+      tool('Grep', 'g1', { pattern: 'x' }),
+    ]
+    // live：trivial 思考并入 stage（key=cur.key 稳定，不丢=不消失）
+    const live = buildConciseTimeline(process, { isLive: true })
+    expect(live.map((s) => s.kind)).toEqual(['work_stage'])
+    if (live[0]!.kind === 'work_stage') {
+      expect(live[0]!.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
+    }
+    // idle：trivial 思考按终态丢弃，stage 只剩工具
+    const done = buildConciseTimeline(process, { isLive: false })
+    if (done[0]!.kind === 'work_stage') {
+      expect(done[0]!.steps.map((s) => s.kind)).toEqual(['tool', 'tool'])
+    }
+  })
+
+  it('live 与 idle 一致：deliverable 中段思考都留在 stage（不升独立 fold、不打断阶段）——REGRESS-J J3', () => {
+    const deliverable =
+      'Proma 我看了结构——它不是外围扩展，而是拿 **pi / Claude Agent SDK** 当内核，改造深度明显更激进。'
+    expect(isDeliverableThinking(deliverable)).toBe(true)
+    const process: ProcessEntry[] = [
+      tool('Read', 'r1', { file_path: 'a.ts' }),
+      { type: 'thinking', key: 't1', thinking: deliverable },
+      tool('Edit', 'e1', { file_path: 'b.ts' }),
+    ]
+    // live：思考并入 stage（key=cur.key 稳定，不与 think-${cur.key} 互跳 remount）
+    const live = buildConciseTimeline(process, { isLive: true })
+    expect(live.map((s) => s.kind)).toEqual(['work_stage'])
+    if (live[0]!.kind === 'work_stage') {
+      expect(live[0]!.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
+    }
+    // idle：同样留在 stage，不再升独立 fold 拆 stage（展开步骤可见完整思考）
+    const done = buildConciseTimeline(process, { isLive: false })
+    expect(done.map((s) => s.kind)).toEqual(['work_stage'])
+    if (done[0]!.kind === 'work_stage') {
+      expect(done[0]!.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
+    }
+  })
+
+  it('短 progress 短文不拆 stage：tool → 短 text → tool → tool = 1 个 work_stage（REGRESS-J J4）', () => {
+    const shortNote = '正在跑一下验证'
+    expect(isShortProgressText(shortNote)).toBe(true)
+    const process: ProcessEntry[] = [
+      tool('Bash', 'b1', { command: 'git status' }),
+      { type: 'text', key: 'p1', text: shortNote },
+      tool('Bash', 'b2', { command: 'ls' }),
+      tool('Bash', 'b3', { command: 'pwd' }),
+    ]
+    const segs = buildConciseTimeline(process)
+    // 只 1 个 work_stage（N=3 条工具合并），短文被忽略不拆 → 消除「运行了 1 条命令」刷屏
+    expect(segs.map((s) => s.kind)).toEqual(['work_stage'])
+    const stage = segs[0]!
+    if (stage.kind === 'work_stage') {
+      expect(stage.tools).toHaveLength(3)
+      expect(stage.steps.every((s) => s.kind === 'tool')).toBe(true)
+      expect(stage.summary).toContain('运行了 3 条命令')
+    }
+  })
+
+  it('较长的实质叙述仍作为阶段边界：work_stage | narrative | work_stage（不吞掉进度叙述）', () => {
+    const substantive = '目录摸清了：问题在投影层，下一步改 concise 模型。'
+    expect(isShortProgressText(substantive)).toBe(false)
+    const process: ProcessEntry[] = [
+      tool('Read', 'r1', { file_path: 'a.ts' }),
+      tool('Bash', 'b1', { command: 'ls' }),
+      { type: 'text', key: 'p1', text: substantive },
+      tool('Edit', 'e1', { file_path: 'concise-timeline-model.ts' }),
+      { type: 'text', key: 'f1', text: '已改成阶段工作块 + 进度短总结。' },
+    ]
+    const segs = buildConciseTimeline(process)
+    expect(segs.map((s) => s.kind)).toEqual([
+      'work_stage',
+      'narrative',
+      'work_stage',
+      'narrative',
+    ])
+    expect(segs[1]).toMatchObject({ kind: 'narrative', tone: 'progress' })
+    expect(segs[3]).toMatchObject({ kind: 'narrative', tone: 'final' })
   })
 })
 

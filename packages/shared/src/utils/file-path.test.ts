@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'vitest'
 
 import {
+  existsCacheKey,
   getFileName,
   isAbsoluteFilePath,
   isRelativeFilePath,
+  joinBasePath,
   msysPathToWindowsDrivePath,
+  normalizeFilePathSeparators,
   stripLineCol,
 } from './file-path'
 
@@ -94,5 +97,43 @@ describe('isRelativeFilePath', () => {
   test('正斜杠相对路径仍识别', () => {
     expect(isRelativeFilePath('py/parse_mesh.py')).toBe(true)
     expect(isRelativeFilePath('src/a.ts:42')).toBe(true)
+  })
+})
+
+describe('normalizeFilePathSeparators (REGRESS-J J6)', () => {
+  test('反斜杠归一为正斜杠', () => {
+    expect(normalizeFilePathSeparators('D:\\UnrealTagManager\\Foo\\Bar.h')).toBe(
+      'D:/UnrealTagManager/Foo/Bar.h',
+    )
+    expect(normalizeFilePathSeparators('src\\a.ts')).toBe('src/a.ts')
+  })
+
+  test('正斜杠保持原样', () => {
+    expect(normalizeFilePathSeparators('src/a.ts')).toBe('src/a.ts')
+  })
+})
+
+describe('joinBasePath (REGRESS-J J6)', () => {
+  test('base 反斜杠 + 相对正斜杠 → 统一 `/` 的绝对路径（D:\\UnrealTagManager + Foo/Bar.h）', () => {
+    expect(joinBasePath('D:\\UnrealTagManager', 'Foo/Bar.h')).toBe('D:/UnrealTagManager/Foo/Bar.h')
+    expect(joinBasePath('D:\\UnrealTagManager\\', '/Foo/Bar.h')).toBe(
+      'D:/UnrealTagManager/Foo/Bar.h',
+    )
+    expect(joinBasePath('C:/proj', 'a\\b.ts')).toBe('C:/proj/a/b.ts')
+  })
+
+  test('空相对路径退回 base', () => {
+    expect(joinBasePath('D:/proj', '')).toBe('D:/proj')
+  })
+})
+
+describe('existsCacheKey (REGRESS-J J6)', () => {
+  test('同一文件不同分隔符写法命中同一缓存键', () => {
+    expect(existsCacheKey('Foo/Bar.h', ['D:\\UnrealTagManager'])).toBe(
+      existsCacheKey('Foo\\Bar.h', ['D:/UnrealTagManager']),
+    )
+    expect(existsCacheKey('Foo/Bar.h', ['D:\\UnrealTagManager'])).toBe(
+      'Foo/Bar.h\0D:/UnrealTagManager',
+    )
   })
 })

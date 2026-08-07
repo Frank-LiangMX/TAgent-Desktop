@@ -203,6 +203,10 @@ function isLastSegment(segments: ConciseSegment[], key: string): boolean {
  *  对照 Cursor「Thought for Ns」收折节奏；区间 1.5–2.5s。 */
 const THINK_SETTLE_MS = 1800
 
+/** 阶段 live→idle 后的 settle 时长（ms）：REGRESS-J(J2) 对齐 ThinkingFold/思考行，
+ *  阶段执行结束先 hold 约 1.8s 再折回灰字摘要，禁止 live→idle 瞬间卸掉阶段行。 */
+const WORK_STAGE_SETTLE_MS = 1800
+
 const ThinkingFold = memo(function ThinkingFold({
   thinking,
   durationSec,
@@ -361,22 +365,52 @@ const WorkStageFold = memo(function WorkStageFold({
   const [open, setOpen] = useState(false)
   const stageActive = isStageLive || keepWhileActive
   const wasActive = useRef(stageActive)
+  const settleTimer = useRef<number | null>(null)
   const rawLiveStatus = stageActive ? getLiveStatusFromSteps(steps) : undefined
   // hold last live status 再淡出，禁止工具完成瞬间 null 卸 DOM（对齐 Cursor 折进灰字摘要）
   const { shown: liveStatus, fading } = useLiveStatusHold(rawLiveStatus, keepWhileActive)
 
+  // REGRESS-J(J2)：live→idle 不瞬间折叠。阶段激活时武装；结束先 hold ~1.8s 再折回灰字摘要，
+  // 与 ThinkingFold settle 一致，panel 常驻（grid 0fr↔1fr），折起后可再点开明细。
   useEffect(() => {
-    // 阶段结束（含末阶段回合结束）：若用户曾展开，收回收成灰字行
-    if (wasActive.current && !stageActive) setOpen(false)
-    wasActive.current = stageActive
+    if (stageActive) {
+      if (settleTimer.current != null) {
+        window.clearTimeout(settleTimer.current)
+        settleTimer.current = null
+      }
+      wasActive.current = true
+      return
+    }
+    if (!wasActive.current) return
+    wasActive.current = false
+    settleTimer.current = window.setTimeout(() => {
+      settleTimer.current = null
+      // 阶段结束（含末阶段回合结束）：若用户曾展开，收回收成灰字行
+      setOpen(false)
+    }, WORK_STAGE_SETTLE_MS)
+    return () => {
+      if (settleTimer.current != null) {
+        window.clearTimeout(settleTimer.current)
+        settleTimer.current = null
+      }
+    }
   }, [stageActive])
+
+  const handleToggle = (): void => {
+    // 用户手动收起 / 展开：取消待执行的 settle 强制折起，避免夺回用户刚展开的状态
+    if (settleTimer.current != null) {
+      window.clearTimeout(settleTimer.current)
+      settleTimer.current = null
+    }
+    setOpen((v) => !v)
+  }
 
   return (
     <div className={cn('agent-concise-fold', 'agent-concise-stage', stageActive && 'is-live')}>
       <button
         type="button"
         className="agent-concise-fold__head"
-        onClick={() => setOpen((v) => !v)}
+        onClick={handleToggle}
         aria-expanded={open}
       >
         <span className="agent-concise-fold__summary">

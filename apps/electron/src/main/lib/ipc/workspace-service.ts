@@ -32,6 +32,8 @@ const MIME_BY_EXT: Record<string, string> = {
   '.html': 'text/html',
   '.htm': 'text/html',
   '.md': 'text/markdown',
+  '.mdc': 'text/markdown',
+  '.mdx': 'text/markdown',
   '.txt': 'text/plain',
   '.json': 'application/json',
   '.csv': 'text/csv',
@@ -42,7 +44,23 @@ const MIME_BY_EXT: Record<string, string> = {
   '.tsx': 'text/plain',
   '.js': 'text/plain',
   '.jsx': 'text/plain',
+  '.mjs': 'text/plain',
+  '.cjs': 'text/plain',
   '.css': 'text/css',
+  '.c': 'text/plain',
+  '.h': 'text/plain',
+  '.cc': 'text/plain',
+  '.cpp': 'text/plain',
+  '.cxx': 'text/plain',
+  '.hpp': 'text/plain',
+  '.hh': 'text/plain',
+  '.cs': 'text/plain',
+  '.py': 'text/plain',
+  '.go': 'text/plain',
+  '.rs': 'text/plain',
+  '.java': 'text/plain',
+  '.kt': 'text/plain',
+  '.build.cs': 'text/plain',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -56,12 +74,19 @@ const TEXT_MIME_PREFIXES = ['text/', 'application/json', 'application/xml']
 
 /** 读取工作区文件（仅限已注册工作区目录内，防路径穿越） */
 async function readWorkspaceFile(filePath: string): Promise<WorkspaceFileReadResult | null> {
-  const resolved = path.resolve(filePath)
+  // 混用 D:\foo/bar 时先统一分隔符再 resolve，避免「解析到了却判工作区外」
+  const normalizedInput = filePath.replace(/\//g, path.sep).replace(/\\/g, path.sep)
+  const resolved = path.resolve(normalizedInput)
   const workspaces = listWorkspaces()
   const inside = workspaces.some((workspace) => {
     const root = workspace.projectDirectory
     if (!root) return false
-    const rootResolved = path.resolve(root)
+    const rootResolved = path.resolve(root.replace(/\//g, path.sep).replace(/\\/g, path.sep))
+    if (process.platform === 'win32') {
+      const a = resolved.toLowerCase()
+      const b = rootResolved.toLowerCase()
+      return a === b || a.startsWith(`${b}\\`)
+    }
     return resolved === rootResolved || resolved.startsWith(rootResolved + path.sep)
   })
   if (!inside) {
@@ -69,7 +94,12 @@ async function readWorkspaceFile(filePath: string): Promise<WorkspaceFileReadRes
     return null
   }
 
-  const ext = path.extname(resolved).toLowerCase()
+  // .Build.cs 这类双扩展：优先取完整后缀再回退 .cs
+  const base = path.basename(resolved).toLowerCase()
+  const ext =
+    base.endsWith('.build.cs')
+      ? '.cs'
+      : path.extname(resolved).toLowerCase()
   const mime = MIME_BY_EXT[ext] ?? 'application/octet-stream'
   const buf = await readFile(resolved)
   if (buf.length > 10 * 1024 * 1024) {

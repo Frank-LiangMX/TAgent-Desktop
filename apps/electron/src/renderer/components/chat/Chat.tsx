@@ -1207,7 +1207,17 @@ export function Chat({
       })
     } else if (p.kind === 'result') {
       if (p.usage) applyUsage(p.usage)
-      const pendingThink = streamStateRef.current.thinking.trim()
+      // 提交前先 flush rAF 合帧缓冲：result 与 thinking delta 同帧到达时，pending batch 尚未
+      // 写入 streamState（rAF 未 fire），直接读 ref 会漏，resetStreamState 又清掉 pending →
+      // 末段思考增量永久丢失（REGRESS-F RC1，对齐 sdk_message 分支的 flush 守卫）
+      if (thinkingFlushRafRef.current != null) {
+        cancelAnimationFrame(thinkingFlushRafRef.current)
+        thinkingFlushRafRef.current = null
+      }
+      const pendingDelta = pendingThinkingRef.current
+      pendingThinkingRef.current = ''
+      pendingThinkingUuidRef.current = undefined
+      const pendingThink = (streamStateRef.current.thinking + pendingDelta).trim()
       if (pendingThink) {
         setItems((prev) => commitStreamThinkingToLastAssistant(prev, pendingThink))
       }
@@ -1287,8 +1297,17 @@ export function Chat({
         // 一清就「出完即消失」（REGRESS-E / CL5）。只清正文 delta，保留 thinking。
         setStreamState((prev) => (prev.text ? { ...prev, text: '' } : prev))
       } else if (evt.type === 'turn_end') {
-        // 回合边界：若 stream 仍有思考且末条 assistant 无 thinking 块，先写入 items 再清
-        const pendingThink = streamStateRef.current.thinking.trim()
+        // 回合边界：若 stream 仍有思考且末条 assistant 无 thinking 块，先写入 items 再清。
+        // 提交前先 flush rAF 合帧缓冲：turn_end 与 thinking delta 同帧到达时，pending batch 尚未
+        // 写入 streamState，直接读 ref 会漏，resetStreamState 又清掉 pending → 末段思考丢失（REGRESS-F RC1）
+        if (thinkingFlushRafRef.current != null) {
+          cancelAnimationFrame(thinkingFlushRafRef.current)
+          thinkingFlushRafRef.current = null
+        }
+        const pendingDelta = pendingThinkingRef.current
+        pendingThinkingRef.current = ''
+        pendingThinkingUuidRef.current = undefined
+        const pendingThink = (streamStateRef.current.thinking + pendingDelta).trim()
         if (pendingThink) {
           setItems((prev) => commitStreamThinkingToLastAssistant(prev, pendingThink))
         }
@@ -1800,9 +1819,25 @@ export function Chat({
     const hitCache = resolveHitCacheRef.current
     return {
       basePaths: workspaceDirectory ? [workspaceDirectory] : undefined,
-      // 点击文件 chip → 右侧分屏打开应用内预览（dock 监听 filePreviewRequestAtom 开 pane）
-      onOpenFile: (path: string): void => {
-        setFilePreviewRequest({ sessionId: sessionIdRef.current, path })
+      // 点击文件 chip / Files Changed → 先带 workspace bases 解析成绝对路径再开预览，
+      // 避免相对路径或混分隔符落到「解析到了但不在工作区」读失败。
+      onOpenFile: (path: string, options?: { basePaths?: string[] }): void => {
+        const sid = sessionIdRef.current
+        const bases =
+          options?.basePaths ??
+          (workspaceDirectory ? [workspaceDirectory] : undefined)
+        void (async () => {
+          const resolved = await window.electronAPI.resolveFile({
+            sessionId: sid,
+            path,
+            bases,
+          })
+          setFilePreviewRequest({
+            sessionId: sid,
+            path: resolved ?? path,
+            bases,
+          })
+        })()
       },
       onResolveFile: async (path: string, bases?: string[]): Promise<string | null> => {
         const key = `${path}\0${(bases ?? []).join('\0')}`

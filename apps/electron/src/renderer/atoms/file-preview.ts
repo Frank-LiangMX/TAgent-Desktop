@@ -6,10 +6,12 @@ import { atom } from 'jotai'
 
 export interface FilePreviewRequest {
   sessionId: string
-  /** 文件路径（相对或绝对，预览 pane 内自行 resolve） */
+  /** 文件路径（相对或绝对；优先已 resolve 的绝对路径） */
   path: string
   /** 显示标题（未传则取文件名） */
   title?: string
+  /** 解析相对路径时的候选根（工作区目录等） */
+  bases?: string[]
 }
 
 export const filePreviewRequestAtom = atom<FilePreviewRequest | null>(null)

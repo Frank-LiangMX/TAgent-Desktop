@@ -57,11 +57,12 @@ ConciseSegment =
 1. live 阶段：灰字摘要扫光 + 底部当前动作；完成后仍在，成折叠块（无常驻勾）  
 2. 中段「可交付」思考升为独立「思考了 Ns」折叠，插在阶段之间；普通中段思考并入阶段 steps，不拆 stage、不刷独立折叠  
 3. 子代理出现在探索阶段摘要下方  
-4. 工具间 text = 进度短总结；尾部 = 最终正文  
+4. 工具间 text = 进度短总结；尾部 = 最终正文。期望模型在每段思考后吐**一句**进度短文（点当前阶段、不展开）；无 text 时不编造、不补、不结尾复盘清单（见 §4）
 5. vitest `concise-timeline-model` 绿  
 6. **kscc one-shot final**：即使无 `stream_text_delta`、整段 `sdk_message` 一次落盘，concise 尾部正文仍走打字机（live progress 即逐字；升 final 不二次整坨闪现）；历史轮打开不重播打字机  
 7. **live settle（对齐 Cursor 折进灰字摘要）**：工具完成不瞬间卸 DOM，先 hold 上一个动作扫光 ~500ms 再淡出 ~250ms；末阶段在回合 live 且其后无 narrative 时保持 live 底栏，整轮结束才收灰字行；`formatThinkingSummary` < 3s → `思考了片刻`（不刷「思考了 1s」）
 8. **ThinkingFold 流式跟随 + settle 折进（对齐 Cursor Thought for Ns）**：live 思考在 fold body（max-height 220px）内流式时 `scrollTop` 钉底跟随最新字；用户上滚离开底部（距底 > 40px）则暂停跟随，回到底部恢复。仅过程队列末位的思考为 live（工具/正文一旦跟上 → idle），live→idle 不秒折 null 卸 body：先保持展开 ~1.8s settle，再以 CSS max-height/opacity 过渡折成「思考了 Ns / 片刻」灰字头；头栏常驻，点开可回看全文（内容常驻 DOM，整轮结束后仍在）；用户在 settle 期间手动收起则尊重取消
+9. **多点 final 层级（对齐 Cursor 编号 + 标题另起 + 正文缩进）**：多条并列结论 / 对照 / 步骤须用 `1. 2. 3.` 有序列表；每条首行为加粗标题（`**标题**` 或 `**标题** → **一句结论**`），细则换行缩进子列表 `-`；禁止 `**标题**：` 后糊一整段正文。单点短答仍 1～3 句，不硬套编号。（与 `output-style-prompt.ts`「多点并列用有序编号」对齐。）
 
 ---
 
