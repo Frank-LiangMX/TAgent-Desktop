@@ -201,6 +201,43 @@ export function projectConciseProcess(process: ProcessEntry[]): ProcessEntry[] {
   return result
 }
 
+// ===== 过程组渲染拆分（REGRESS-K1） =====
+
+export type ThinkingProcessEntry = Extract<ProcessEntry, { type: 'thinking' }>
+
+export interface ProcessRenderSplit {
+  /** 常驻渲染的思考行（toggle 头下，不受 showBody 影响） */
+  thinking: ThinkingProcessEntry[]
+  /** 过程正文：工具 + 中间文本（仅在 showBody 内渲染） */
+  body: ProcessEntry[]
+}
+
+/**
+ * 思考行 vs 过程正文（工具/中间文本）拆分（REGRESS-K1）。
+ *
+ * full 默认路径的过程组 idle 后会自动收起 `__body`（`showBody=false`）。若思考行留在
+ * `__body` 内，整段 body 卸 DOM 时思考行一起消失——执行块连「思考了片刻」头都不剩。
+ * 这里把思考行单独拆出，让组件在 toggle 头下**常驻渲染**思考行（不受 showBody 影响），
+ * 工具/中间文本仍只在 `showBody` 内。思考正文继续默认收起（对齐 Cursor 扫光头），但不再
+ * 随 body 卸载而消失。
+ *
+ * - concise：复用 `projectConciseProcess`（所有 thinking 合并成一块），拆出后仍是一个思考块。
+ * - full：原 `process` 保序，thinking 与 tool/text 分到两条序列。
+ */
+export function splitProcessForRender(
+  process: ProcessEntry[],
+  displayMode: ProcessDisplayMode,
+): ProcessRenderSplit {
+  const projected = displayMode === 'concise' ? projectConciseProcess(process) : process
+  const thinking: ThinkingProcessEntry[] = []
+  const body: ProcessEntry[] = []
+  for (const entry of projected) {
+    if (entry.type === 'thinking') thinking.push(entry)
+    else body.push(entry)
+  }
+  return { thinking, body }
+}
+
 // ===== 过程组标题 =====
 
 export type ProcessDisplayMode = 'full' | 'concise'

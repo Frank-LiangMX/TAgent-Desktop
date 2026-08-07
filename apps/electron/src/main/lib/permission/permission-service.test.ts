@@ -28,9 +28,11 @@ vi.mock('electron', () => ({
 }))
 
 import { PermissionService, setOnChatModeBlock } from './permission-service'
+import { askUserService } from '../agent/agent-ask-user-service'
 import {
   AGENT_IPC_CHANNELS,
   CHAT_MODE_BLOCK_REASON,
+  type AskUserRequest,
   type ExecutionMode,
   type TAgentPermissionMode,
 } from '@tagent/shared'
@@ -127,6 +129,79 @@ describe('createCanUseTool — Chat 写工具硬拦（REGRESS-A）', () => {
       expect(blockCalls).toHaveLength(0)
     } finally {
       vi.useRealTimers()
+    }
+  })
+})
+
+describe('createCanUseTool — AskUserQuestion 拦截（REGRESS-H）', () => {
+  let sends: Array<{ channel: string; payload: unknown }>
+  let win: { webContents: { send: (channel: string, payload: unknown) => void } }
+  let svc: PermissionService
+
+  beforeEach(() => {
+    sends = []
+    win = {
+      webContents: {
+        send: (channel: string, payload: unknown) => {
+          sends.push({ channel, payload })
+        },
+      },
+    }
+    svc = PermissionService.create(() => win as unknown as BrowserWindow)
+  })
+
+  afterEach(() => {
+    // 清共享 ask-user 单例残留 pending（避免跨用例泄漏）
+    askUserService.clearSessionPending('sess-ask')
+    askUserService.clearSessionPending('sess-ask-abort')
+  })
+
+  it('AskUserQuestion 走拦截分支：发 ASK_USER_REQUEST，不进 askRenderer（不发 PERMISSION_REQUEST）；respond 注入 answers', async () => {
+    const ac = new AbortController()
+    const canUseTool = svc.createCanUseTool('sess-ask', () => AUTO, CWD, () => CHAT)
+    const resultP = canUseTool(
+      'AskUserQuestion',
+      { questions: [{ question: '选哪个？', options: [{ label: 'A' }, { label: 'B' }] }] },
+      { signal: ac.signal }
+    )
+
+    // 同步发出 AskUser 请求（早于 checkPermission / askRenderer）
+    expect(sends.some((s) => s.channel === AGENT_IPC_CHANNELS.ASK_USER_REQUEST)).toBe(true)
+    // 不进通用权限横幅
+    expect(sends.some((s) => s.channel === AGENT_IPC_CHANNELS.PERMISSION_REQUEST)).toBe(false)
+
+    const req = sends.find((s) => s.channel === AGENT_IPC_CHANNELS.ASK_USER_REQUEST)!
+      .payload as AskUserRequest
+    expect(req.questions).toHaveLength(1)
+    expect(req.questions[0]!.options).toHaveLength(2)
+    expect(req.sessionId).toBe('sess-ask')
+
+    // 用户作答 → 注入 answers + resolve allow（不卡、不当「未选」）
+    const sid = askUserService.respondToAskUser(req.requestId, { '选哪个？': 'A' })
+    expect(sid).toBe('sess-ask')
+    const result = await resultP
+    expect(result.behavior).toBe('allow')
+    if (result.behavior === 'allow') {
+      expect(result.updatedInput.answers).toEqual({ '选哪个？': 'A' })
+      expect(Array.isArray(result.updatedInput.questions)).toBe(true)
+    }
+  })
+
+  it('AskUserQuestion abort → deny「操作已中止」（不进 askRenderer）', async () => {
+    const ac = new AbortController()
+    const canUseTool = svc.createCanUseTool('sess-ask-abort', () => AUTO, CWD, () => CHAT)
+    const resultP = canUseTool(
+      'AskUserQuestion',
+      { questions: [{ question: 'q', options: [{ label: 'x' }] }] },
+      { signal: ac.signal }
+    )
+    expect(sends.some((s) => s.channel === AGENT_IPC_CHANNELS.ASK_USER_REQUEST)).toBe(true)
+    expect(sends.some((s) => s.channel === AGENT_IPC_CHANNELS.PERMISSION_REQUEST)).toBe(false)
+    ac.abort()
+    const result = await resultP
+    expect(result.behavior).toBe('deny')
+    if (result.behavior === 'deny') {
+      expect(result.message).toBe('操作已中止')
     }
   })
 })

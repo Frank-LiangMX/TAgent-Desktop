@@ -1,0 +1,43 @@
+你是 TAgent-Desktop（Electron + React + TypeScript）的资深前端工程师。工作目录：F:\TAgent-Desktop（Windows，git bash）。本任务来自 REGRESS-J：修复 concise 时间线的阶段碎裂 / 秒折 / 思考游离 / FilesChanged 丑点 / FileChip 路径误报等视觉问题，对齐 Cursor 的体验。
+
+==== 第一步：读规格（必做）====
+先完整读这两个文件，它们是完整规格与根因，严格按其执行：
+- F:\TAgent-Desktop\docs\dev\core-loop\REGRESS-J-stage-fragment-SPEC.md
+- F:\TAgent-Desktop\docs\dev\core-loop\REGRESS-J-implement-brief.md
+
+==== 极重要：合并约束（违反即失败）====
+当前 git 工作区已有 REGRESS-F/G/H/I 的未提交改动（约 12 个 tracked 文件被改、244 行新增）。你必须做**外科式增量编辑**：先用 Read 看清现状再改，**严禁整体覆写文件**、严禁删除既有改动或既有单测。以下文件已被前序 REGRESS 改过，改动时特别小心别覆盖：
+- apps/electron/src/renderer/components/chat/concise-timeline-model.ts （REGRESS-I 已改）
+- apps/electron/src/renderer/components/chat/concise-timeline-model.vitest.test.ts （REGRESS-I 已加测试，勿删，可追加）
+- packages/shared/src/utils/output-style-prompt.ts （REGRESS-I 已改，保留其「多点编号」改动）
+- apps/electron/src/renderer/components/chat/ProcessGroupView.tsx （REGRESS-F 已加 ThinkingFold/ThinkingActivityRow settle：THINK_SETTLE_MS/THINKING_ROW_SETTLE_MS + grid 0fr↔1fr 常驻）
+- apps/electron/src/renderer/components/chat/process-group-model.ts （REGRESS-F 已加 planThinkingRowSettle 纯函数 + 测试，可复用其模式）
+- apps/electron/src/renderer/components/chat/AssistantTurnView.tsx （REGRESS-I 可能已改复制按钮，先查是否已修）
+- apps/electron/src/renderer/components/chat/Chat.tsx
+- apps/electron/src/renderer/styles/chat.css
+
+==== 必做项（按优先级）====
+1) 碎阶段（J4/J7，主因）：concise-timeline-model.ts 中 cur.type==='text' 时无条件 flushStage()（约 559–568 行）导致每段 progress 短文都切断工具合并 →「运行了 1 条命令」刷屏。
+   修：短 progress / 非 final 的 text **不要 flushStage**（或仅当 text 像最终交付才 flush）；工具继续累进同一 stage；仅 final 正文（回合末 / tone=final）才 flush 后外置 narrative。补单测：tool → 短 text → tool → tool，期望只有 **1 个** work_stage（N≥2 tools），中间短文作 stage 内注或忽略不拆。
+2) 思考升 fold（J3）：idle 时 isDeliverableThinking 升独立 fold 会 flushStage 拆阶段。改为：中段思考**默认留 stage.steps**（展开可见全文）；仅 leading / 整轮末大思考保留独立 ThinkingFold。目标：执行块内能找回完整思考。
+3) 阶段秒折（J2）：WorkStageFold 对齐 ThinkingFold settle（~1.8s）+ panel 常驻，live→idle 不瞬间卸。参考 ProcessGroupView.tsx 里 ThinkingFold / ThinkingActivityRow 已有的 settle + grid 0fr↔1fr 模式，移植到 WorkStageFold。若已有 planThinkingRowSettle 纯函数可复用/仿写一个 workStage 版。
+4) Files Changed（J5）：TurnFilesChangedCard.tsx 中 .cpp/.h 等落到 kind:'file' 显示丑点 ·；add/del===0 也只显示 ·。
+   修：徽章按扩展名给可读缩写（C++/H/CS/TS/JS…）或统一文件图标，禁空洞圆点；+/-：查 extractToolDiff / collectTurnEditedFiles 为何常为 0，能解析则显示 add/del，不能则隐藏空点勿占位。
+5) FileChip 路径（J6）：解析前 normalize `\` 与 `/`（path.posix 或统一 replace）；basePath 拼接勿混分隔符。补单测：`D:\UnrealTagManager` + `Foo/Bar.h` → 存在性检查用规范化绝对路径。generated.h 可标注生成文件弱提示（可选）。
+6) 复制按钮（若 REGRESS-I 未修）：AssistantTurnView 中 processLive / isLiveTurn 时不渲染 MessageCopyButton。先查现状是否已修，已修则跳过，勿重复改。
+7) Prompt（J7）：output-style-prompt 收紧「进度一句」——不要每段思考都写；仅阶段切换时偶发一句；禁止思考后必跟旁白。与 REGRESS-I 已有的「多点编号」并存，勿覆盖 I 的改动。
+
+==== 验证（必做，勿跳过，全绿才算完成）====
+本机 git bash 在某些 sandbox 下 fork 会报错（非命令失败）。优先用 npx；若 fork 报错改用 node 直跑：
+- 单测：`npx vitest run apps/electron/src/renderer/components/chat/concise-timeline-model.vitest.test.ts apps/electron/src/renderer/components/chat/process-group-model.vitest.test.ts`
+  （fork 报错则：`node node_modules/vitest/vitest.mjs run <同上文件>`）。新增的 path normalize 单测也跑。必须全绿。
+- typecheck：`npx tsc --noEmit -p apps/electron`（exit 0）。fork 报错则 `node node_modules/typescript/bin/tsc --noEmit -p apps/electron`。
+- 额外建议跑全量 `npx vitest run` 确认无其它回归。
+
+==== 交付物 ====
+- 新建 docs/dev/core-loop/REGRESS-J-FINDINGS.md：每项根因取证（引用 file:line）+ 你的判定。
+- 新建 docs/dev/core-loop/REGRESS-J-FIX-NOTES.md：每项改了哪些文件/函数、新增单测、vitest 与 typecheck 结果（贴关键输出摘要）。
+- **严禁** commit / push / git add / git stash（留给上游）。
+
+==== 返回 ====
+最后用一段简洁中文总结：每个 J 项的处理结果（已修/部分/跳过）、改动的文件清单、vitest 与 typecheck 结果、未完成项与风险点。

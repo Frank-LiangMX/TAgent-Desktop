@@ -320,7 +320,8 @@ export function getWorkStepLabel(
   return getToolPhrase(name, input).label
 }
 
-/** live 阶段底部当前动作（族级短句，避免文件名一闪而过） */
+/** live 阶段底部当前动作（族级短句，避免文件名一闪而过）。
+ *  末步是思考时回「正在思考…」，阶段收起时仍有扫光反馈（思考正文默认不铺开）。 */
 export function getLiveStatusFromSteps(steps: WorkStageStep[]): string | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const s = steps[i]!
@@ -535,9 +536,8 @@ export function buildConciseTimeline(
         leadingThink.push(t)
         continue
       }
-      // live 时不丢弃 trivial 思考：流式思考逐帧跨越 trivial 阈值会被丢（=消失）再长回（=出现），
-      // 面板不停闪。回合 idle 后再按终态丢弃短思考。
-      if (isTrivialThinking(t) && !isLive) continue
+      // REGRESS-K1：idle 不再因 trivial 整段丢弃——短思考也要留「思考了片刻」可点开，
+      // 否则 live 可见、结束后执行块无思考行（用户观感=流完即消）。
       // REGRESS-J(J3)：中段思考（当前阶段已执行过工具）一律并入 stage.steps——展开可见全文，
       // 不再按 isDeliverableThinking 升独立 fold。升 fold 会 flushStage 拆 stage，导致
       // 「思考游离在执行块之外、找不到完整思考」，且频繁打断工具合并。live/idle 一致，key=cur.key
@@ -551,8 +551,7 @@ export function buildConciseTimeline(
         })
         continue
       }
-      // 阶段之外（跨阶段边界的收尾思考）：仅可交付 / live 保留独立 ThinkingFold，普通跳过。
-      if (!isDeliverableThinking(t) && !isLive) continue
+      // 阶段之外（跨阶段边界的收尾思考）：一律独立 ThinkingFold（含 trivial），保证执行链可回看。
       flushLeadingThink()
       flushStage()
       const durationSec = resolveThinkingDurationSec(t, cur.durationSec)

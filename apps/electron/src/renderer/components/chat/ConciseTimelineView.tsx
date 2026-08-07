@@ -152,28 +152,53 @@ const RunQueueShell = memo(function RunQueueShell({
 }): JSX.Element {
   const [open, setOpen] = useState(defaultExpanded)
   const wasExpandedDefault = useRef(defaultExpanded)
+  // 沦为历史时瞬时折叠：禁止 grid 过渡 + StickToBottom smooth resize 叠成「从上扫到底」
+  const [collapseInstant, setCollapseInstant] = useState(false)
 
   useEffect(() => {
     // 成为最新轮 / live → 展开；沦为历史 → 折叠
-    if (defaultExpanded && !wasExpandedDefault.current) setOpen(true)
-    if (!defaultExpanded && wasExpandedDefault.current) setOpen(false)
+    if (defaultExpanded && !wasExpandedDefault.current) {
+      setCollapseInstant(false)
+      setOpen(true)
+    }
+    if (!defaultExpanded && wasExpandedDefault.current) {
+      setCollapseInstant(true)
+      setOpen(false)
+    }
     wasExpandedDefault.current = defaultExpanded
   }, [defaultExpanded])
 
   // live 时强制保持展开（跑着不应被手动叠住看不见）
   useEffect(() => {
-    if (isLive) setOpen(true)
+    if (isLive) {
+      setCollapseInstant(false)
+      setOpen(true)
+    }
   }, [isLive])
+
+  // 瞬时折叠已上屏后清掉 flag，之后用户手动展开/收起仍可丝滑过渡
+  useEffect(() => {
+    if (!collapseInstant) return
+    const id = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => setCollapseInstant(false))
+    })
+    return () => cancelAnimationFrame(id)
+  }, [collapseInstant])
 
   const dur = formatElapsedDuration(Math.max(0, workedMs))
   const label = isLive ? `运行中 ${dur}` : `运行了 ${dur}`
+
+  const handleToggle = (): void => {
+    setCollapseInstant(false)
+    setOpen((v) => !v)
+  }
 
   return (
     <div className={cn('agent-concise-run', isLive && 'is-live')}>
       <button
         type="button"
         className="agent-concise-run__head"
-        onClick={() => setOpen((v) => !v)}
+        onClick={handleToggle}
         aria-expanded={open}
       >
         <span className="agent-concise-run__label">
@@ -188,7 +213,19 @@ const RunQueueShell = memo(function RunQueueShell({
           )}
         />
       </button>
-      {open ? <div className="agent-concise-run__body">{children}</div> : null}
+      {/* 与 ThinkingFold / WorkStageFold 同：body 常驻 + grid 0fr↔1fr；历史降级可 is-instant */}
+      <div
+        className={cn(
+          'agent-concise-run__panel',
+          open && 'is-open',
+          collapseInstant && 'is-instant',
+        )}
+        aria-hidden={!open}
+      >
+        <div className="agent-concise-run__panel-inner">
+          <div className="agent-concise-run__body">{children}</div>
+        </div>
+      </div>
     </div>
   )
 })
@@ -199,8 +236,7 @@ function isLastSegment(segments: ConciseSegment[], key: string): boolean {
   return last != null && last.key === key
 }
 
-/** live→idle 后保持展开的 settle 时长（ms）：先让用户读完尾部，再 CSS 过渡折起。
- *  对照 Cursor「Thought for Ns」收折节奏；区间 1.5–2.5s。 */
+/** live→idle 后若用户曾手动展开，settle 再折回一行头（默认 live 也不自动展开，对齐 Cursor）。 */
 const THINK_SETTLE_MS = 1800
 
 /** 阶段 live→idle 后的 settle 时长（ms）：REGRESS-J(J2) 对齐 ThinkingFold/思考行，
@@ -216,9 +252,12 @@ const ThinkingFold = memo(function ThinkingFold({
   durationSec?: number
   isLive: boolean
 }): JSX.Element {
-  // live 时展开看思考输出；结束后 settle 保持展开再优雅折起（不秒卸 body），
-  // 头栏常驻「思考了 Ns / 片刻」可再点开回看全文。
-  const [open, setOpen] = useState(isLive)
+  // Cursor 式：默认只露一行头（「正在思考…」扫光 / 「思考了片刻」）；正文不自动铺开，
+  // 及时反馈靠头栏扫光，点开再看全文。避免流式撑版与流完秒卸正文。
+  // 用户手动展开后，live→idle settle ~1.8s 再优雅折回一行（body 常驻 DOM）。
+  const [open, setOpen] = useState(false)
+  const openRef = useRef(false)
+  openRef.current = open
   const wasLive = useRef(isLive)
   const settleTimer = useRef<number | null>(null)
   const startRef = useRef<number | null>(null)
@@ -233,7 +272,7 @@ const ThinkingFold = memo(function ThinkingFold({
     liveElapsedSec: Math.floor(elapsedMs / 1000),
   })
 
-  // 流式滚动跟随：body 加 ref；isLive 且内容增长且用户未上滚 → scrollTop 钉底
+  // 流式滚动跟随：仅在用户展开时钉底；收起时不滚
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const stickRef = useRef(true)
   const handleBodyScroll = (): void => {
@@ -242,22 +281,25 @@ const ThinkingFold = memo(function ThinkingFold({
     stickRef.current = isNearBottom(el.scrollTop, el.scrollHeight, el.clientHeight)
   }
   useEffect(() => {
-    if (!isLive) return
+    if (!isLive || !open) return
     const el = bodyRef.current
     if (!el || !stickRef.current) return
     el.scrollTop = el.scrollHeight
-  }, [displayedContent, isLive])
+  }, [displayedContent, isLive, open])
 
-  // live→idle：禁止秒折 null 卸 body。先保持展开 settle ~1.8s，再 CSS 过渡折起。
-  // 用户在 settle 期间手动收起 → 尊重用户，取消待执行的强制折起。
+  // live 时不强制展开；live→idle 仅当用户已展开才 settle 折回一行。
   useEffect(() => {
     if (isLive) {
-      setOpen(true)
       wasLive.current = true
+      if (settleTimer.current != null) {
+        window.clearTimeout(settleTimer.current)
+        settleTimer.current = null
+      }
       return
     }
     if (!wasLive.current) return
     wasLive.current = false
+    if (!openRef.current) return
     settleTimer.current = window.setTimeout(() => {
       settleTimer.current = null
       setOpen(false)
@@ -271,7 +313,6 @@ const ThinkingFold = memo(function ThinkingFold({
   }, [isLive])
 
   const handleToggle = (): void => {
-    // 用户手动收起 / 展开：取消待执行的 settle 强制折起，避免夺回用户刚展开的状态
     if (settleTimer.current != null) {
       window.clearTimeout(settleTimer.current)
       settleTimer.current = null
@@ -429,6 +470,15 @@ const WorkStageFold = memo(function WorkStageFold({
 
       {/* 子代理挂在阶段摘要下（对齐 Cursor），折叠明细时仍可见 */}
       {extras ? <div className="agent-concise-stage__extras">{extras}</div> : null}
+
+      {/* REGRESS-K1：阶段收起时仍露思考 step 头，避免「执行块内无思考行」 */}
+      {!open
+        ? steps
+            .filter((s): s is Extract<WorkStageStep, { kind: 'thinking' }> => s.kind === 'thinking')
+            .map((s) => (
+              <StageStepRow key={`peek-${s.key}`} step={s} isStreaming={false} />
+            ))
+        : null}
 
       {/* live 折叠态：只露当前动作一行（摘要已在 head 累积） */}
       {!open && liveStatus ? (

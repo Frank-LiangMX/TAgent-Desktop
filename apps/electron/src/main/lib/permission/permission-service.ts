@@ -29,6 +29,7 @@ import {
   clearSessionWhitelist,
   isSessionWhitelisted,
 } from './session-whitelist'
+import { askUserService } from '../agent/agent-ask-user-service'
 
 /** 权限请求（推 renderer） */
 export interface PermissionRequest {
@@ -337,10 +338,29 @@ export class PermissionService {
     return async (
       toolName: string,
       input: Record<string, unknown>,
+      // options/signal 均可选 + 含 mcpServers?：兼容本地 KsccQueryOptions（options:{mcpServers?}）
+      // 与 SDK CanUseTool（options:{signal,...}）。SDK 恒传 signal；缺省走兜底 signal。
+      options?: { signal?: AbortSignal; mcpServers?: unknown },
     ): Promise<
       | { behavior: 'allow'; updatedInput: Record<string, unknown> }
       | { behavior: 'deny'; message: string; interrupt?: boolean }
     > => {
+      // AskUserQuestion 拦截：委托交互式问答服务，早于 checkPermission / askRenderer。
+      // 通过 updatedInput.answers 回灌用户答案，SDK 不再发 request_user_dialog 控制帧
+      // （同 SDK 0.3.185 TAgent_General 已证可用；见 REGRESS-H-GENERAL-PORT-FINDINGS）。
+      if (toolName === 'AskUserQuestion') {
+        // SDK 恒传 options.signal（run 级 abort）；兜底一个永不 abort 的 signal，避免边缘调用崩
+        const signal = options?.signal ?? new AbortController().signal
+        return askUserService.handleAskUserQuestion(
+          sessionId,
+          input,
+          signal,
+          (request) => {
+            this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.ASK_USER_REQUEST, request)
+          }
+        )
+      }
+
       const { allow, reason, interrupt } = await checkPermission({
         win: this.getWindow,
         sessionId,

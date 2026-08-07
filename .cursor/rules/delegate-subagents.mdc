@@ -24,10 +24,12 @@ alwaysApply: true
 
 ```bash
 # 仓库根目录；headless；可后台并行
-kscc -p --dangerously-skip-permissions "<读 docs/dev/.../xxx-brief.md 并按验收执行；返回文件+结论>"
+# 模型固定 glm-5.2（勿用默认 mimo，太慢）
+kscc -p --model glm-5.2 --dangerously-skip-permissions "<读 docs/dev/.../xxx-brief.md 并按验收执行；返回文件+结论>"
 ```
 
 可选：`--agent <name>` / `--agents '<json>'` 定义专用子代理角色。
+用户当次另指定模型时，以当次为准。
 
 流程：
 

@@ -1,0 +1,9 @@
+严格按 docs/dev/core-loop/REGRESS-G-implement-brief.md 实现。
+
+工作区：F:\TAgent-Desktop
+
+用户已拍板：松绑 prompt 允许思考后一句进度短文。必须同轮修「独立 text + stop_reason null 被 _partial 拦落盘」（见 REGRESS-G-FINDINGS.md）。
+
+禁止 commit/push；禁止 Cursor Task；不碰 AskUserQuestion（H）。
+
+完成后写 REGRESS-G-FIX-NOTES.md，stdout 中文：文件列表 + 测试 + 手测步骤。

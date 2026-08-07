@@ -251,7 +251,7 @@ describe('buildConciseTimeline', () => {
     expect(segs[4]).toMatchObject({ kind: 'narrative', tone: 'final' })
   })
 
-  it('hides trivial inter-tool thinking', () => {
+  it('keeps trivial inter-tool thinking in stage (REGRESS-K1，idle 可回看)', () => {
     const process: ProcessEntry[] = [
       { type: 'thinking', key: 't1', thinking: '先看目录结构再决定' },
       tool('Bash', 'b1', { command: 'dir' }),
@@ -259,10 +259,10 @@ describe('buildConciseTimeline', () => {
       tool('Read', 'r1', { file_path: 'a.ts' }),
     ]
     const segs = buildConciseTimeline(process)
+    expect(segs[0]?.kind).toBe('thinking')
     const stage = segs[1]!
     if (stage.kind === 'work_stage') {
-      expect(stage.steps.every((s) => s.kind === 'tool')).toBe(true)
-      expect(stage.steps).toHaveLength(2)
+      expect(stage.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
     }
   })
 
@@ -297,7 +297,7 @@ describe('buildConciseTimeline', () => {
     expect(done[1]).toMatchObject({ kind: 'narrative', tone: 'final' })
   })
 
-  it('live 时不丢弃 trivial 中段思考（避免逐帧消失又出现），并入 stage；idle 后再丢弃', () => {
+  it('live/idle 均保留 trivial 中段思考并入 stage（REGRESS-K1 不丢弃）', () => {
     const trivial = '让我再读两个文件'
     expect(isTrivialThinking(trivial)).toBe(true)
     const process: ProcessEntry[] = [
@@ -305,16 +305,14 @@ describe('buildConciseTimeline', () => {
       { type: 'thinking', key: 't1', thinking: trivial },
       tool('Grep', 'g1', { pattern: 'x' }),
     ]
-    // live：trivial 思考并入 stage（key=cur.key 稳定，不丢=不消失）
     const live = buildConciseTimeline(process, { isLive: true })
     expect(live.map((s) => s.kind)).toEqual(['work_stage'])
     if (live[0]!.kind === 'work_stage') {
       expect(live[0]!.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
     }
-    // idle：trivial 思考按终态丢弃，stage 只剩工具
     const done = buildConciseTimeline(process, { isLive: false })
     if (done[0]!.kind === 'work_stage') {
-      expect(done[0]!.steps.map((s) => s.kind)).toEqual(['tool', 'tool'])
+      expect(done[0]!.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
     }
   })
 

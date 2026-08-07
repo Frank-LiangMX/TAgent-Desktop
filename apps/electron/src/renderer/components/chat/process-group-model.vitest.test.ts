@@ -19,6 +19,7 @@ import {
   projectConciseProcess,
   shouldCollapseProcessText,
   shouldCollapseThinking,
+  splitProcessForRender,
 } from './process-group-model'
 
 describe('planProcessGroupCollapse', () => {
@@ -372,5 +373,72 @@ describe('projectConciseProcess', () => {
     expect(projectConciseProcess(projectConciseProcess(process))).toEqual(
       projectConciseProcess(process),
     )
+  })
+})
+
+describe('splitProcessForRender (REGRESS-K1：full 折叠后仍暴露 thinking 条目)', () => {
+  it('full：思考拆到 thinking 序列、工具/正文留 body——body 折叠卸载不带走思考行', () => {
+    const process: ProcessEntry[] = [
+      { type: 'thinking', key: 't0', thinking: '先摸清结构' },
+      {
+        type: 'tool',
+        key: 'r0',
+        tool: { type: 'tool_use', id: 'r0', name: 'Read', input: { file_path: 'a.ts' } },
+      },
+      { type: 'thinking', key: 't1', thinking: '中段思考' },
+      {
+        type: 'tool',
+        key: 'e0',
+        tool: { type: 'tool_use', id: 'e0', name: 'Edit', input: { file_path: 'b.ts' } },
+      },
+      { type: 'text', key: 'x0', text: '改完跑一下' },
+    ]
+    const { thinking, body } = splitProcessForRender(process, 'full')
+    // 思考行被单独拆出：折叠 body 也不卸载它们 → 执行块仍露「思考了…」
+    expect(thinking.map((e) => e.key)).toEqual(['t0', 't1'])
+    expect(thinking.every((e) => e.type === 'thinking')).toBe(true)
+    // body 只剩工具 + 中间文本（无思考）→ body 卸 DOM 不带走思考
+    expect(body.every((e) => e.type !== 'thinking')).toBe(true)
+    expect(body.map((e) => e.key)).toEqual(['r0', 'e0', 'x0'])
+    // 拆分无损：thinking ∪ body = 原全部条目
+    expect([...thinking, ...body].map((e) => e.key).sort()).toEqual(
+      ['t0', 't1', 'r0', 'e0', 'x0'].sort(),
+    )
+  })
+
+  it('full：仅思考（无工具/正文）→ thinking 全留、body 空（折叠无内容可藏，思考仍露）', () => {
+    const process: ProcessEntry[] = [
+      { type: 'thinking', key: 't0', thinking: '只想了一段' },
+      { type: 'thinking', key: 't1', thinking: '又想了一段' },
+    ]
+    const { thinking, body } = splitProcessForRender(process, 'full')
+    expect(thinking.map((e) => e.key)).toEqual(['t0', 't1'])
+    expect(body).toHaveLength(0)
+  })
+
+  it('concise：所有思考合并成一块拆出（projectConciseProcess 投影），工具/正文保序留 body', () => {
+    const process: ProcessEntry[] = [
+      { type: 'thinking', key: 't0', thinking: '先读文件' },
+      { type: 'tool', key: 'r0', tool: { type: 'tool_use', id: 'r0', name: 'Read', input: {} } },
+      { type: 'thinking', key: 't1', thinking: '再想一下' },
+      { type: 'tool', key: 'e0', tool: { type: 'tool_use', id: 'e0', name: 'Edit', input: {} } },
+      { type: 'text', key: 'x0', text: '中间正文' },
+    ]
+    const { thinking, body } = splitProcessForRender(process, 'concise')
+    // concise 投影：思考合并成单块（key=concise-thinking-merged）
+    expect(thinking).toHaveLength(1)
+    expect(thinking[0]?.type === 'thinking' && thinking[0].key).toBe('concise-thinking-merged')
+    expect(thinking[0]?.type === 'thinking' && thinking[0].thinking).toBe('先读文件\n\n再想一下')
+    expect(body.map((e) => e.key)).toEqual(['r0', 'e0', 'x0'])
+  })
+
+  it('无思考时 thinking 为空、body 原样保序', () => {
+    const process: ProcessEntry[] = [
+      { type: 'tool', key: 'r0', tool: { type: 'tool_use', id: 'r0', name: 'Read', input: {} } },
+      { type: 'text', key: 'x0', text: '正文' },
+    ]
+    const { thinking, body } = splitProcessForRender(process, 'full')
+    expect(thinking).toHaveLength(0)
+    expect(body.map((e) => e.key)).toEqual(['r0', 'x0'])
   })
 })

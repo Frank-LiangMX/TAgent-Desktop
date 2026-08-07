@@ -1,0 +1,6 @@
+读 docs/dev/core-loop/REGRESS-H-port-from-general-brief.md 与 REGRESS-H-FINDINGS.md，对照 F:\TAgent_General 的 AskUserQuestion/选项卡实现与 F:\TAgent-Desktop 断点。
+
+必须：只读摸底；写出 REGRESS-H-GENERAL-PORT-FINDINGS.md + REGRESS-H-implement-brief.md。
+可用 --add-dir 已包含则直接读 General。禁止改业务代码、禁止 commit。
+
+stdout 中文：移植还是重捏、抄 General 哪些文件、Desktop 皮怎么改、工作量 S/M/L。

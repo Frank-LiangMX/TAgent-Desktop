@@ -1,0 +1,1 @@
+读 docs/dev/core-loop/REGRESS-F-thinking-vanish-residual-brief.md 与 REGRESS-E-FINDINGS.md、REGRESS-D-FINDINGS.md，按 brief 只读摸底（必要时最小修）。必须回答 brief 全部必答，带 path:line 证据。写出 docs/dev/core-loop/REGRESS-F-FINDINGS.md。仓库根：F:\TAgent-Desktop。禁止 git commit / push。禁止用 Cursor Task。完成后用中文总结：根因、是否需再修、关键文件。

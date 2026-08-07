@@ -1,0 +1,9 @@
+严格按 docs/dev/core-loop/UX-final-answer-hierarchy-brief.md 实现。
+
+工作区：F:\TAgent-Desktop
+
+用户纠正：final 乱的主因是没编号、加粗当标题却和正文糊同一行；要像 Cursor：1. **标题** 另起，细则换行缩进。
+
+若 packages/shared/src/utils/output-style-prompt.ts 已被其他 agent 改过（REGRESS-G 一句进度短文窄口），**合并**勿覆盖。顺手 prose-li/ol 略增间距。
+
+禁止 commit/push。写 docs/dev/core-loop/UX-final-answer-hierarchy-FIX.md。stdout 中文结论。

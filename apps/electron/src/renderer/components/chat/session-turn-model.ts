@@ -24,6 +24,7 @@ import type {
   TurnDuration,
 } from '@tagent/shared'
 import type { ProcessDisplayMode } from './process-group-model'
+import { isSubagentRuntimeTaskType } from './subagent-ui-model'
 
 // ===== 输入侧 DisplayItem 最小形状（避免循环依赖 Chat.tsx） =====
 
@@ -126,10 +127,10 @@ export function groupSubagentItems(items: TurnSourceItem[]): TurnSourceItem[][] 
 /**
  * 主会话应展示的子代理入口 id 列表（保序、去重）。
  *
- * 来源：
- * 1. 主线 tool_use（Agent / task / Task）—— 一点就出卡，不必等子代理回消息
+ * 来源（白名单，禁止「凡 taskCard 即入口」）：
+ * 1. 主线 tool_use（Agent / task / Task）—— 一点就出卡
  * 2. 带 parentToolUseId 的子代理 assistant（无 launcher 时的兜底）
- * 3. taskCard.toolUseId（runtime 生命周期事件）
+ * 3. taskCard.toolUseId **且** `taskType` 为 agent runtime（local_bash 等不得由此冒充）
  */
 export function listSubagentEntryIds(items: TurnSourceItem[]): string[] {
   const order: string[] = []
@@ -152,8 +153,10 @@ export function listSubagentEntryIds(items: TurnSourceItem[]): string[] {
     if (m?.type === 'assistant' && m.parentToolUseId) {
       push(m.parentToolUseId)
     }
-    const card = it.taskCard as { toolUseId?: string } | undefined
-    if (card?.toolUseId) push(card.toolUseId)
+    const card = it.taskCard as { toolUseId?: string; taskType?: string } | undefined
+    if (card?.toolUseId && isSubagentRuntimeTaskType(card.taskType)) {
+      push(card.toolUseId)
+    }
   }
   return order
 }
@@ -174,7 +177,8 @@ export function findSubagentTaskTool(
     for (const b of m.content) {
       if (b.type === 'tool_use') {
         const tu = b as TAgentToolUseBlock
-        if (tu.id === parentToolUseId) {
+        // 必须是 Agent|Task：同 id 的 Bash/Glob 等不得冒充子代理 launcher
+        if (tu.id === parentToolUseId && isSubagentLauncherTool(tu.name)) {
           return { name: tu.name, input: tu.input ?? {} }
         }
       }

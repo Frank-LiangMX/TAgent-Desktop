@@ -1,0 +1,9 @@
+读 docs/dev/core-loop/SUBAGENT-FAIL-ROUND2-brief.md 与 SUBAGENT-FAIL-FINDINGS.md、SUBAGENT-HAIKU-FIX-NOTES.md。
+
+工作区：F:\TAgent-Desktop
+
+最新会话线索（本机已定位）：
+- 今日最新：C:\Users\liangmingxuan\.claude\projects\D--UnrealTagManager\（约 11:46）
+- 修复前后 Desktop：C:\Users\liangmingxuan\.claude\projects\F--TAgent-Desktop\（11:23 及更早，含 subagents/）
+
+必做：读最新 jsonl，抽出 Agent/Task + task_notification status/summary + 子代理 model 是否仍 haiku；判断 831c941 是否生效；列同会话其它异常。写 docs/dev/core-loop/SUBAGENT-FAIL-ROUND2-FINDINGS.md。禁止改代码、禁止 commit。stdout 中文结论。

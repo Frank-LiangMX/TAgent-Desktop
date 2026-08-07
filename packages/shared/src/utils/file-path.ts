@@ -156,6 +156,8 @@ export function stripLineCol(filePath: string): { path: string; suffix: string }
  * - 盘符大小写：`C:\` / `c:\`
  * - 分隔符：`\` / `/`（如 `F:/proj/a.ts`）
  * - UNC：`\\server\share\...`
+ *
+ * POSIX：拒绝 API/URL 风格路径（如 `/v1/messages`、`/api/foo`），避免行内代码误升 FileChip。
  */
 export function isAbsoluteFilePath(text: string): boolean {
   const trimmed = text.trim()
@@ -163,8 +165,19 @@ export function isAbsoluteFilePath(text: string): boolean {
 
   const { path: clean } = stripLineCol(trimmed)
 
-  if (clean.startsWith('/') && /^\/[^\n]+\/[^\n]+$/.test(clean)) {
+  if (clean.startsWith('/')) {
+    // Anthropic `/v1/messages`、REST `/api/...` 等：不是本地文件
+    if (isApiStyleAbsolutePath(clean)) return false
+    // 至少两段（/a/b）；目录尾斜杠且无点 → 不当文件
+    if (!/^\/[^\n]+\/[^\n]+$/.test(clean)) return false
     if (clean.endsWith('/') && !clean.includes('.')) return false
+    // 无扩展名时要求像真实文件系统根 / MSYS 盘符挂载，避免 `/foo/bar` 误伤
+    const ext = getExtension(getFileName(clean))
+    if (!ext) {
+      if (msysPathToWindowsDrivePath(clean)) return true
+      if (POSIX_FS_ROOT_RE.test(clean)) return true
+      return false
+    }
     return true
   }
 
@@ -176,6 +189,16 @@ export function isAbsoluteFilePath(text: string): boolean {
 
   return false
 }
+
+/** `/v1/...`、`/api/...` 等 HTTP API 路径，不应升 FileChip */
+function isApiStyleAbsolutePath(clean: string): boolean {
+  return /^\/(?:v\d+|api|graphql|oauth|rest|rpc|healthz?|status|webhook)(?:\/|$)/i.test(clean)
+}
+
+/** 常见 Unix / macOS 绝对路径前缀（无扩展名时仍可能是目录或二进制路径） */
+const POSIX_FS_ROOT_RE =
+  /^\/(?:Users|home|tmp|var|etc|opt|usr|mnt|media|private|Volumes|Applications|Library|System|root|data|workspace|workspaces|projects)(?:\/|$)/i
+
 
 /**
  * 检测文本是否为相对文件路径（需要 basePath 才有意义）

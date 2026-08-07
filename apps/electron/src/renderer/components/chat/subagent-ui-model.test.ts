@@ -14,6 +14,8 @@ import {
   summarizeFirstText,
   formatProgressText,
   reduceTaskEvent,
+  isSubagentRuntimeTaskType,
+  canCreateSubagentTaskCard,
   type TaskCardState,
   type TaskCardCarrier,
   type TaskCardEvent,
@@ -113,30 +115,87 @@ describe('formatProgressText', () => {
 
 // ===== 任务卡片状态机 =====
 
+/** 真子代理 started（必须带 taskType，白名单） */
+function agentStarted(
+  partial: Omit<Extract<TaskCardEvent, { type: 'task_started' }>, 'type' | 'taskType'> & {
+    taskType?: string
+  },
+): TaskCardEvent {
+  return { type: 'task_started', taskType: 'local_agent', ...partial }
+}
+
+describe('isSubagentRuntimeTaskType / canCreateSubagentTaskCard', () => {
+  it('白名单放行 local_agent / agent', () => {
+    expect(isSubagentRuntimeTaskType('local_agent')).toBe(true)
+    expect(isSubagentRuntimeTaskType('agent')).toBe(true)
+    expect(canCreateSubagentTaskCard({ taskType: 'local_agent' })).toBe(true)
+  })
+
+  it('默认拒绝：缺省、local_bash、未知类型（不开黑名单洞）', () => {
+    expect(isSubagentRuntimeTaskType(undefined)).toBe(false)
+    expect(isSubagentRuntimeTaskType('local_bash')).toBe(false)
+    expect(isSubagentRuntimeTaskType('local_shell')).toBe(false)
+    expect(isSubagentRuntimeTaskType('something_else')).toBe(false)
+    expect(canCreateSubagentTaskCard({ taskType: 'local_bash' })).toBe(false)
+    expect(canCreateSubagentTaskCard({})).toBe(false)
+  })
+})
+
 describe('reduceTaskEvent', () => {
   it('task_started 建一张 running 卡片', () => {
     const create = mkFactory()
-    const items = reduceTaskEvent([], { type: 'task_started', taskId: 't1', description: '探索代码库' }, create)
+    const items = reduceTaskEvent(
+      [],
+      agentStarted({ taskId: 't1', description: '探索代码库' }),
+      create,
+    )
     expect(items).toHaveLength(1)
     expect(items[0]?.taskCard).toMatchObject({
       taskId: 't1',
       status: 'running',
       description: '探索代码库',
       progressText: '探索代码库',
+      taskType: 'local_agent',
     })
+  })
+
+  it('local_bash task_started 不建卡（本机 Bash 不是子代理）', () => {
+    const create = mkFactory()
+    const items = reduceTaskEvent(
+      [],
+      {
+        type: 'task_started',
+        taskId: 'bash1',
+        toolUseId: 'tu_bash',
+        description: 'Check docs/plans naming conventions',
+        taskType: 'local_bash',
+      },
+      create,
+    )
+    expect(items).toHaveLength(0)
+  })
+
+  it('缺省 taskType 的 task_started 不建卡（默认拒绝）', () => {
+    const create = mkFactory()
+    const items = reduceTaskEvent(
+      [],
+      { type: 'task_started', taskId: 't1', description: '探索代码库' },
+      create,
+    )
+    expect(items).toHaveLength(0)
   })
 
   it('task_started 无 description 时进度文案为 启动中…', () => {
     const create = mkFactory()
-    const items = reduceTaskEvent([], { type: 'task_started', taskId: 't1', description: '' }, create)
+    const items = reduceTaskEvent([], agentStarted({ taskId: 't1', description: '' }), create)
     expect(items[0]?.taskCard?.progressText).toBe('启动中…')
   })
 
   it('同 taskId 的 task_started 是 upsert，不新增卡片', () => {
     const create = mkFactory()
-    let items = reduceTaskEvent([], { type: 'task_started', taskId: 't1', description: 'A' }, create)
+    let items = reduceTaskEvent([], agentStarted({ taskId: 't1', description: 'A' }), create)
     const firstKey = items[0]?.key
-    items = reduceTaskEvent(items, { type: 'task_started', taskId: 't1', description: 'B' }, create)
+    items = reduceTaskEvent(items, agentStarted({ taskId: 't1', description: 'B' }), create)
     expect(items).toHaveLength(1)
     expect(items[0]?.key).toBe(firstKey) // 原地更新，key 不变
     expect(items[0]?.taskCard?.description).toBe('B')
@@ -144,7 +203,7 @@ describe('reduceTaskEvent', () => {
 
   it('task_progress 更新同一卡片进度文案，不新增气泡', () => {
     const create = mkFactory()
-    let items = reduceTaskEvent([], { type: 'task_started', taskId: 't1', description: '探索' }, create)
+    let items = reduceTaskEvent([], agentStarted({ taskId: 't1', description: '探索' }), create)
     items = reduceTaskEvent(items, { type: 'task_progress', taskId: 't1', lastToolName: 'Grep' }, create)
     expect(items).toHaveLength(1) // 不新增
     const card0 = items[0]?.taskCard
@@ -155,7 +214,11 @@ describe('reduceTaskEvent', () => {
 
   it('task_progress 仅带 toolUseId 时按 toolUseId 回退匹配', () => {
     const create = mkFactory()
-    let items = reduceTaskEvent([], { type: 'task_started', taskId: 't1', toolUseId: 'tu1', description: '探索' }, create)
+    let items = reduceTaskEvent(
+      [],
+      agentStarted({ taskId: 't1', toolUseId: 'tu1', description: '探索' }),
+      create,
+    )
     items = reduceTaskEvent(items, { type: 'task_progress', toolUseId: 'tu1', lastToolName: 'Read' }, create)
     expect(items).toHaveLength(1)
     expect(items[0]?.taskCard?.lastToolName).toBe('Read')
@@ -163,9 +226,13 @@ describe('reduceTaskEvent', () => {
 
   it('task_notification 收口：置 status + summary，清空进度文案', () => {
     const create = mkFactory()
-    let items = reduceTaskEvent([], { type: 'task_started', taskId: 't1', description: '探索' }, create)
+    let items = reduceTaskEvent([], agentStarted({ taskId: 't1', description: '探索' }), create)
     items = reduceTaskEvent(items, { type: 'task_progress', taskId: 't1', lastToolName: 'Grep' }, create)
-    items = reduceTaskEvent(items, { type: 'task_notification', taskId: 't1', status: 'completed', summary: '找到 3 个文件' }, create)
+    items = reduceTaskEvent(
+      items,
+      { type: 'task_notification', taskId: 't1', status: 'completed', summary: '找到 3 个文件' },
+      create,
+    )
     expect(items).toHaveLength(1)
     expect(items[0]?.taskCard?.status).toBe('completed')
     expect(items[0]?.taskCard?.summary).toBe('找到 3 个文件')
@@ -174,28 +241,56 @@ describe('reduceTaskEvent', () => {
 
   it('task_progress 命中已收口卡片时不复活（status 不回 running）', () => {
     const create = mkFactory()
-    let items = reduceTaskEvent([], { type: 'task_started', taskId: 't1', description: '探索' }, create)
-    items = reduceTaskEvent(items, { type: 'task_notification', taskId: 't1', status: 'failed', summary: '失败' }, create)
+    let items = reduceTaskEvent([], agentStarted({ taskId: 't1', description: '探索' }), create)
+    items = reduceTaskEvent(
+      items,
+      { type: 'task_notification', taskId: 't1', status: 'failed', summary: '失败' },
+      create,
+    )
     items = reduceTaskEvent(items, { type: 'task_progress', taskId: 't1', lastToolName: 'Grep' }, create)
     expect(items[0]?.taskCard?.status).toBe('failed')
     expect(items[0]?.taskCard?.progressText).toBeUndefined()
   })
 
-  it('task_notification 在无卡片时直接建一张已收口卡片', () => {
+  it('无卡时 task_notification 缺 taskType 不建卡；带 local_agent 才建', () => {
     const create = mkFactory()
-    const items = reduceTaskEvent([], { type: 'task_notification', taskId: 't1', status: 'stopped', summary: '用户中止' }, create)
-    expect(items).toHaveLength(1)
-    expect(items[0]?.taskCard?.status).toBe('stopped')
-    expect(items[0]?.taskCard?.summary).toBe('用户中止')
+    const denied = reduceTaskEvent(
+      [],
+      { type: 'task_notification', taskId: 't1', status: 'stopped', summary: '用户中止' },
+      create,
+    )
+    expect(denied).toHaveLength(0)
+    const allowed = reduceTaskEvent(
+      [],
+      {
+        type: 'task_notification',
+        taskId: 't1',
+        status: 'stopped',
+        summary: '用户中止',
+        taskType: 'local_agent',
+      },
+      create,
+    )
+    expect(allowed).toHaveLength(1)
+    expect(allowed[0]?.taskCard?.status).toBe('stopped')
   })
 
-  it('task_progress 早于 started 到达时建 running 卡片承载进度', () => {
+  it('无卡时 task_progress 缺 taskType 不建卡；带 local_agent 才建并保留到 started', () => {
     const create = mkFactory()
-    let items = reduceTaskEvent([], { type: 'task_progress', taskId: 't1', lastToolName: 'Grep' }, create)
+    const denied = reduceTaskEvent(
+      [],
+      { type: 'task_progress', taskId: 't1', lastToolName: 'Grep' },
+      create,
+    )
+    expect(denied).toHaveLength(0)
+    let items = reduceTaskEvent(
+      [],
+      { type: 'task_progress', taskId: 't1', lastToolName: 'Grep', taskType: 'local_agent' },
+      create,
+    )
     expect(items).toHaveLength(1)
     expect(items[0]?.taskCard?.status).toBe('running')
-    // 随后 started 到达：upsert 同一张卡片，保留 lastToolName
-    items = reduceTaskEvent(items, { type: 'task_started', taskId: 't1', description: '探索' }, create)
+    items = reduceTaskEvent(items, agentStarted({ taskId: 't1', description: '探索' }), create)
     expect(items).toHaveLength(1)
     expect(items[0]?.taskCard?.description).toBe('探索')
     expect(items[0]?.taskCard?.lastToolName).toBe('Grep')
@@ -204,10 +299,14 @@ describe('reduceTaskEvent', () => {
   it('多个不同 taskId 并存：各自独立生命周期', () => {
     const create = mkFactory()
     let items: TaskCardCarrier[] = []
-    items = reduceTaskEvent(items, { type: 'task_started', taskId: 't1', description: '探索' }, create)
-    items = reduceTaskEvent(items, { type: 'task_started', taskId: 't2', description: '审查' }, create)
+    items = reduceTaskEvent(items, agentStarted({ taskId: 't1', description: '探索' }), create)
+    items = reduceTaskEvent(items, agentStarted({ taskId: 't2', description: '审查' }), create)
     items = reduceTaskEvent(items, { type: 'task_progress', taskId: 't2', lastToolName: 'Read' }, create)
-    items = reduceTaskEvent(items, { type: 'task_notification', taskId: 't1', status: 'completed', summary: 'OK' }, create)
+    items = reduceTaskEvent(
+      items,
+      { type: 'task_notification', taskId: 't1', status: 'completed', summary: 'OK' },
+      create,
+    )
     expect(items).toHaveLength(2)
     const t1 = items.find((i) => i.taskCard?.taskId === 't1')
     const t2 = items.find((i) => i.taskCard?.taskId === 't2')
@@ -218,7 +317,7 @@ describe('reduceTaskEvent', () => {
 
   it('不修改原数组（返回新数组）', () => {
     const create = mkFactory()
-    const items = reduceTaskEvent([], { type: 'task_started', taskId: 't1', description: 'A' }, create)
+    const items = reduceTaskEvent([], agentStarted({ taskId: 't1', description: 'A' }), create)
     const snapshot = [...items]
     reduceTaskEvent(items, { type: 'task_progress', taskId: 't1', lastToolName: 'Grep' }, create)
     expect(items).toEqual(snapshot) // 原数组未被 mutate
@@ -233,7 +332,7 @@ describe('reduceTaskEvent', () => {
       existing ? { ...existing, taskCard: card } : { key: `r${n++}`, taskCard: card, kind: 'rich' }
     let items = reduceTaskEvent<RichItem>(
       [],
-      { type: 'task_started', taskId: 't1', description: 'A' } as TaskCardEvent,
+      agentStarted({ taskId: 't1', description: 'A' }),
       applyRich,
     )
     expect(items[0]?.kind).toBe('rich')

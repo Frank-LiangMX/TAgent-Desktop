@@ -1,0 +1,7 @@
+严格按 docs/dev/core-loop/REGRESS-F-implement-brief.md 与 REGRESS-F-FINDINGS.md 实现。
+
+工作区：F:\TAgent-Desktop
+
+主修：ProcessGroupView ThinkingActivityRow settle+panel（对齐 concise ThinkingFold）；次修 Chat.tsx turn_end/result rAF flush（RC1）。
+
+禁止 commit/push；不碰 H。写 REGRESS-F-FIX-NOTES.md。stdout 中文：文件列表+测试+手测。

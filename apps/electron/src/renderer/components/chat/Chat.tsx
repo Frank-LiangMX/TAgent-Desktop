@@ -102,6 +102,7 @@ import { filePreviewRequestAtom } from '../../atoms/file-preview'
 import { richPreviewRequestAtom } from '../../atoms/rich-preview'
 import { splitDockModeAtom } from '../../atoms/feature-flags'
 import { PermissionBanner } from '../permission/PermissionBanner'
+import { AskUserQuestionBanner } from './AskUserQuestionBanner'
 import { ExecutionModeSuggestionBanner } from './ExecutionModeSuggestionBanner'
 import { SessionErrorBanner } from './SessionErrorBanner'
 import { setSessionErrorAtom } from '../../atoms/session-error-atoms'
@@ -346,12 +347,12 @@ export function Chat({
   /** 历史加载完成的标志：false 时 Conversation resize=instant（无动画）+ ScrollPositionManager 恢复位置 */
   const [scrollReady, setScrollReady] = useState(false)
   /**
-   * 流式结束过渡：result/turn_end 瞬间（流式占位 → 落盘消息，高度切换）切 resize=instant，
-   * 150ms 后回 smooth——防止高度变化触发平滑滚动动画（对齐 1.0/Proma 的 needsInstant 机制）。
+   * 流式结束 / 新消息发送过渡：切 resize=instant，短暂后回 smooth——
+   * 防止高度变化（落盘切换、上一轮执行块折叠）触发平滑滚动扫视口。
    */
   const [streamTransitioning, setStreamTransitioning] = useState(false)
   const streamTransitionTimerRef = useRef<number | null>(null)
-  const beginStreamTransition = useCallback(() => {
+  const beginStreamTransition = useCallback((ms = 150) => {
     setStreamTransitioning(true)
     if (streamTransitionTimerRef.current != null) {
       window.clearTimeout(streamTransitionTimerRef.current)
@@ -359,7 +360,7 @@ export function Chat({
     streamTransitionTimerRef.current = window.setTimeout(() => {
       streamTransitionTimerRef.current = null
       setStreamTransitioning(false)
-    }, 150)
+    }, ms)
   }, [])
   useEffect(() => {
     return () => {
@@ -1411,11 +1412,13 @@ export function Chat({
         })
       } else if (evt.type === 'task_started') {
         // 子代理启动：upsert 任务卡片（running），不再塞 assistant 文本气泡
+        // taskType 必须传入：reduceTaskEvent 白名单只放行 local_agent 等，挡 local_bash
         const event: TaskCardEvent = {
           type: 'task_started',
           taskId: evt.taskId ?? '',
           toolUseId: evt.toolUseId,
           description: evt.description ?? '',
+          taskType: evt.taskType,
         }
         setItems((prev) => reduceTaskEvent(prev, event, taskCardApply))
       } else if (evt.type === 'task_progress') {
@@ -1426,6 +1429,7 @@ export function Chat({
           toolUseId: evt.toolUseId,
           description: evt.description,
           lastToolName: evt.lastToolName,
+          taskType: (evt as { taskType?: string }).taskType,
         }
         setItems((prev) => reduceTaskEvent(prev, event, taskCardApply))
       } else if (evt.type === 'task_notification') {
@@ -1440,6 +1444,7 @@ export function Chat({
           toolUseId: evt.toolUseId,
           status,
           summary: evt.summary ?? '',
+          taskType: (evt as { taskType?: string }).taskType,
         }
         setItems((prev) => reduceTaskEvent(prev, event, taskCardApply))
         // 失败/停止：若主会话已无 running 心跳，兜底 hard stop，避免底栏「运行中」常驻
@@ -1478,6 +1483,9 @@ export function Chat({
       alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
       return
     }
+    // 新消息落地时上一轮「运行了」会瞬时折叠：~400ms resize=instant，
+    // 避免 StickToBottom smooth 跟着高度收缩扫视口（对齐 Cursor）。
+    beginStreamTransition(400)
     // 新发送/重试开始时收起错误条（若再失败会重新推 session_error）
     setSessionError({ sessionId: sessionIdRef.current, error: null })
     resetStreamState()
@@ -2076,6 +2084,7 @@ export function Chat({
           onRetry={retryLastUserPrompt}
         />
         <PermissionBanner sessionId={sessionId} />
+        <AskUserQuestionBanner sessionId={sessionId} />
         <div
           ref={composerClusterRef}
           className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''}`}

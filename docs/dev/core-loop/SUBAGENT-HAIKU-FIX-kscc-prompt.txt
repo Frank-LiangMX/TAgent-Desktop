@@ -1,0 +1,5 @@
+严格按 docs/dev/core-loop/SUBAGENT-HAIKU-FIX-brief.md 与 SUBAGENT-FAIL-FINDINGS.md 根因1 实现。
+
+工作区：F:\TAgent-Desktop
+
+session-service.ts kscc 路径：按渠道判 claudeAvailable（kscc-internal→false），勿写死 true。加测 + SUBAGENT-HAIKU-FIX-NOTES.md。禁止 commit/push。stdout 中文结论。

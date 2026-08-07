@@ -148,6 +148,9 @@
   padding: 0;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  /* 行等高：1fr 让每行取全网格最高行的高度，行间也对齐；
+     配合 .roles-card { height:100% } 填满格 → 整片网格卡片高度一致 */
+  grid-auto-rows: 1fr;
   gap: 14px;
 }
 
@@ -156,6 +159,7 @@
   display: flex;
   flex-direction: column;
   width: 100%;
+  height: 100%;
   min-height: 168px;
   padding: 0;
   border: 1px solid hsl(var(--border) / 0.95);
@@ -317,11 +321,32 @@
 }
 
 /* —— 详情弹窗内容 —— */
+/* 三行 grid：头(auto) / 内容(minmax(0,auto)) / 底栏(auto)。
+ * 中间行按内容收缩（短内容→弹窗不高，无多余空白），但内容溢出时可收缩到
+ * 可用空间并内部滚动——绝不硬要 70vh 与 88vh 抢高度、被 overflow:hidden 裁底。
+ * 故滚到底必能看到最底内容（dialog.tsx 默认纯 auto 行会按内容撑开、超界裁剪）。 */
+.roles-dialog {
+  grid-template-rows: auto minmax(0, auto) auto;
+}
+
+/* 头/底栏固定不滚、不收缩，只有中间 body 滚动 → 底栏恒可见、滚到底停在底栏上方留白处 */
+.roles-dialog__head {
+  padding: 18px 20px 14px;
+}
+.roles-dialog__foot {
+  flex-shrink: 0;
+  min-height: 56px; /* 底栏有最小高，内置角色提示与关闭按钮垂直居中、不贴弹窗底缘 */
+  padding: 14px 20px 18px;
+}
+.roles-dialog__foot-hint {
+  align-self: center;
+}
+
 .roles-dialog-body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-height: min(70vh, 640px);
+  min-height: 0; /* 配合 minmax(0,auto)：允许收缩到可用空间内并滚动 */
   overflow: auto;
   padding: 4px 2px 8px;
 }
