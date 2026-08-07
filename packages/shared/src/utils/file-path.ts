@@ -78,8 +78,32 @@ export const ALL_PREVIEWABLE_EXTS = new Set([
 /** 文件存在性缓存（模块级共享） */
 const fileExistsCache = new Map<string, boolean>()
 
+/**
+ * 统一路径分隔符：Windows 反斜杠归一为 POSIX `/`。
+ *
+ * REGRESS-J(J6)：Agent 输出常混用分隔符（如 `D:\proj/a.ts`、`basePath=D:\UnrealTagManager`
+ * + `Foo/Bar.h`）。解析/存在性检查前先归一，避免拼接出 `D:\UnrealTagManager/Foo/Bar.h`
+ * 这类混分隔符路径，也让 existsCacheKey 对同一文件的不同分隔符写法命中同一缓存键。
+ */
+export function normalizeFilePathSeparators(filePath: string): string {
+  return filePath.replace(/\\/g, '/')
+}
+
+/**
+ * 拼接 base 目录 + 相对路径，返回分隔符统一的绝对路径（供存在性检查与显示）。
+ * 例：`joinBasePath('D:\\UnrealTagManager', 'Foo/Bar.h')` → `D:/UnrealTagManager/Foo/Bar.h`。
+ */
+export function joinBasePath(base: string, relativePath: string): string {
+  const b = normalizeFilePathSeparators(base).replace(/\/+$/, '')
+  const r = normalizeFilePathSeparators(relativePath).replace(/^\/+/, '')
+  return r ? `${b}/${r}` : b
+}
+
+/** 存在性缓存键：入参与 base 都先归一，混用分隔符的写法映射到同一键 */
 export function existsCacheKey(filePath: string, bases: string[]): string {
-  return `${filePath}\0${bases.join('\0')}`
+  const normPath = normalizeFilePathSeparators(filePath)
+  const normBases = bases.map((b) => normalizeFilePathSeparators(b))
+  return `${normPath}\0${normBases.join('\0')}`
 }
 
 export function getFileExistsCache(): Map<string, boolean> {

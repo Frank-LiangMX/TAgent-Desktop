@@ -18,15 +18,16 @@ import {
 } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 import type { ProcessEntry } from './session-turn-model'
-import { summarizeProcess } from './session-turn-model'
+import { summarizeProcess, formatThinkingSummary } from './session-turn-model'
 import {
   PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS,
   PROCESS_GROUP_AUTO_COLLAPSE_SETTLE_MS,
+  THINKING_ROW_SETTLE_MS,
   buildProcessGroupHeaderLabel,
   buildProcessTextPreview,
-  buildThinkingPreview,
   findLastProcessKey,
   planProcessGroupCollapse,
+  planThinkingRowSettle,
   projectConciseProcess,
   shouldCollapseProcessText,
   shouldCollapseThinking,
@@ -226,6 +227,7 @@ export function ProcessGroupView({
                   key={entry.key}
                   thinking={entry.thinking}
                   isLive={live && entry.key === lastThinkingKey}
+                  durationSec={entry.durationSec}
                   displayMode={displayMode}
                 />
               )
@@ -273,15 +275,22 @@ export function ProcessGroupView({
 /**
  * 思考行：正在写的那段直接展开看实时思考，其余按内容长度决定折叠。
  * 展开挂 Markdown，折叠只挂纯文本预览——live 每帧变长时不会反复重解析 Markdown。
+ *
+ * live→idle settle（REGRESS-F，对齐 concise `ThinkingFold`）：正在展开的思考正文在 live
+ * 结束后先保持展开 ~`THINKING_ROW_SETTLE_MS` 再 CSS 过渡折起，不瞬间 null 卸 body 换 4 行预览。
+ * body 常驻 DOM（`__panel` grid 0fr↔1fr + opacity），折起后点开头栏仍见全文。
  */
 const ThinkingActivityRow = memo(function ThinkingActivityRow({
   thinking,
   isLive,
+  durationSec,
   displayMode = 'full',
 }: {
   thinking: string
   /** 本段是当前正在写的思考（整轮 live 时只有最后一段为真） */
   isLive: boolean
+  /** 本段思考时长（秒）；idle 折叠态头栏显示「思考了 Ns」对齐 Cursor，不铺正文预览 */
+  durationSec?: number
   /** 过程展示模式：concise 时思考默认紧凑预览（不铺全文 Markdown），可点开看全文 */
   displayMode?: ProcessDisplayMode
 }): JSX.Element {
@@ -293,12 +302,44 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
   })
   const text = displayedContent.trim()
 
-  // 静态阈值判定「够长才值得折」：不读 DOM，live 每帧变长也不触发测量与高度抖动
+  // 静态阈值判定「够长才值得折」：不读 DOM，live 每帧变长也不触发测量与高度抖动。
+  // 仍只决定「是否可折」，不决定卸载 body——body 常驻 DOM，折起由 CSS panel 过渡。
   const collapsible = useMemo(() => shouldCollapseThinking(thinking), [thinking])
   // null = 未手动 override；full：live 段默认展开、历史段够长则收成预览；
   // concise：一律默认紧凑预览（不铺全文 Markdown），live 当前段只更新预览——用户可点开看全文
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
-  const open = userExpanded ?? (displayMode === 'concise' ? false : isLive || !collapsible)
+
+  // settle：born live 即武装（settled=false）；live→idle 起 ~1.8s 定时器后再 settled。
+  // settle 窗口内 autoOpen 仍 true（保持展开），过后才折起。用户手动 toggle 取消定时器。
+  const [settled, setSettled] = useState(!isLive)
+  const wasLiveRef = useRef(isLive)
+  const settleTimerRef = useRef<number | null>(null)
+  useEffect(() => {
+    const plan = planThinkingRowSettle({ isLive, wasLive: wasLiveRef.current })
+    if (plan === 'arm') {
+      wasLiveRef.current = true
+      setSettled(false)
+      return
+    }
+    if (plan === 'settle') {
+      wasLiveRef.current = false
+      settleTimerRef.current = window.setTimeout(() => {
+        settleTimerRef.current = null
+        setSettled(true)
+      }, THINKING_ROW_SETTLE_MS)
+      return () => {
+        if (settleTimerRef.current != null) {
+          window.clearTimeout(settleTimerRef.current)
+          settleTimerRef.current = null
+        }
+      }
+    }
+  }, [isLive])
+
+  // autoOpen：live 展开；idle 短文(!collapsible) 恒展；idle 长文 settle 窗口内仍展、过后折。
+  // concise 恒预览（false）——settle 不影响 concise 分支，零回归。
+  const autoOpen = displayMode === 'concise' ? false : isLive || !collapsible || !settled
+  const open = userExpanded ?? autoOpen
 
   // live 时正文跟随最新：新内容追加后滚到底；用户滚离底部（想从头读）时暂停跟随
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -315,9 +356,17 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
       <button
         type="button"
         className="agent-thinking-row__head"
-        onClick={() => setUserExpanded(!open)}
+        aria-expanded={open}
+        onClick={() => {
+          // 用户手动展开/收起：取消待执行的 settle 强制折起，避免夺回用户刚展开的状态
+          if (settleTimerRef.current != null) {
+            window.clearTimeout(settleTimerRef.current)
+            settleTimerRef.current = null
+          }
+          setUserExpanded(!open)
+        }}
       >
-        <span className="agent-thinking-row__badge">思考</span>
+        <span className="agent-thinking-row__badge">{isLive ? '思考' : formatThinkingSummary(durationSec)}</span>
         {isLive && <span className="agent-thinking-row__dot" aria-hidden />}
         {isLive && <span className="text-[11px] text-muted-foreground/45">进行中</span>}
         <CaretRight
@@ -328,23 +377,24 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
           )}
         />
       </button>
-      {open ? (
-        <div
-          ref={bodyRef}
-          className="agent-thinking-row__body"
-          onScroll={(e) => {
-            const el = e.currentTarget
-            // 距底 < 24px 视为"在底部"：在底 → 继续跟随最新；滚上去读 → 停止跟随
-            stickToLatestRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
-          }}
-        >
-          <MessageResponse className={PROCESS_MD_CLASS} streaming={isLive}>
-            {text || (isLive ? '…' : '')}
-          </MessageResponse>
+      {/* body 常驻 DOM：grid 0fr↔1fr + opacity 过渡折起（不 null 卸载），折起后点开仍见全文（REGRESS-F） */}
+      <div className={cn('agent-thinking-row__panel', open && 'is-open')} aria-hidden={!open}>
+        <div className="agent-thinking-row__panel-inner">
+          <div
+            ref={bodyRef}
+            className="agent-thinking-row__body"
+            onScroll={(e) => {
+              const el = e.currentTarget
+              // 距底 < 24px 视为"在底部"：在底 → 继续跟随最新；滚上去读 → 停止跟随
+              stickToLatestRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+            }}
+          >
+            <MessageResponse className={PROCESS_MD_CLASS} streaming={isLive}>
+              {text || (isLive ? '…' : '')}
+            </MessageResponse>
+          </div>
         </div>
-      ) : (
-        <div className="agent-thinking-row__preview">{buildThinkingPreview(text)}</div>
-      )}
+      </div>
     </div>
   )
 })

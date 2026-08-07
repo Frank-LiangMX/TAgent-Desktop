@@ -296,7 +296,7 @@ export function AssistantTurnView({
             }
           />
           {filesCard}
-          {copyText || endFooter ? (
+          {!processLive && (copyText || endFooter) ? (
             <div className="agent-answer-toolbar">
               {copyText ? <MessageCopyButton text={copyText} /> : null}
               {endFooter ? <TurnEndFooter {...endFooter} /> : null}
@@ -352,7 +352,7 @@ export function AssistantTurnView({
             </MessageContent>
           </Message>
           {filesCard}
-          {copyText || endFooter ? (
+          {!processLive && (copyText || endFooter) ? (
             <div className="agent-answer-toolbar">
               {copyText ? <MessageCopyButton text={copyText} /> : null}
               {endFooter ? <TurnEndFooter {...endFooter} /> : null}

@@ -93,16 +93,24 @@ function resultText(content: unknown): string {
   }
 }
 
-/** 从单条 tool result 解析 +N -M */
+/** 从单条 tool result 解析 +N -M。优先成对 `+N -M`；缺边时单独识别 +N 或 -M（如只有
+ *  "Changed +5" / "removed 3"），都匹配不到才返回 undefined（UI 据此隐藏空占位，见
+ *  TurnFilesChangedCard）。REGRESS-J(J5)：放宽单边匹配，避免常见单边文案 add/del 恒 0。 */
 export function extractToolDiff(
   tool: ToolProcessEntry,
 ): { add: number; del: number } | undefined {
   if (classifyToolFamily(tool.tool.name) !== 'edit') return undefined
   const text = resultText(tool.result?.content)
   if (!text) return undefined
-  const m = text.match(/\+(\d+)\s+[^\d-]*-(\d+)/) || text.match(/\+(\d+).*?-(\d+)/)
-  if (!m) return undefined
-  return { add: Number(m[1]) || 0, del: Number(m[2]) || 0 }
+  const both = text.match(/\+(\d+)\s+[^\d-]*-(\d+)/) || text.match(/\+(\d+).*?-(\d+)/)
+  if (both) return { add: Number(both[1]) || 0, del: Number(both[2]) || 0 }
+  const add = text.match(/\+\d+/)
+  const del = text.match(/(?:\s|^)-(\d+)/)
+  if (!add && !del) return undefined
+  return {
+    add: add ? Number(add[0].replace('+', '')) || 0 : 0,
+    del: del ? Number(del[1]) || 0 : 0,
+  }
 }
 
 /** 单族簇摘要（细节/兼容）；阶段行用 summarizeWorkStage */
@@ -357,6 +365,20 @@ export function isTrivialThinking(text: string): boolean {
   return false
 }
 
+/**
+ * 极短的段间进度短文（如「先摸清目录结构」「已改完，跑一下验证」）：
+ * 属于过程中的低信息「旁白」，不该切断正在累积的工具 stage（否则工具→短文→工具→短文
+ * 会被拆成一条命令一阶段，刷「运行了 1 条命令」）。此类 text 在模型里直接忽略，
+ * 工具继续累进同一 work_stage；较长的实质叙述 / 回合末最终交付才 flush 成独立 narrative。
+ */
+export const SHORT_PROGRESS_MAX_CHARS = 20
+
+export function isShortProgressText(text: string): boolean {
+  const t = text.trim()
+  if (!t) return true
+  return t.length <= SHORT_PROGRESS_MAX_CHARS
+}
+
 function mergeAnswerIntoProcess(
   process: ProcessEntry[],
   answerTexts?: string[],
@@ -513,10 +535,14 @@ export function buildConciseTimeline(
         leadingThink.push(t)
         continue
       }
-      if (isTrivialThinking(t)) continue
-      // 普通中段思考且当前阶段已有工具 → 并入 stage steps（对齐 Cursor 阶段内思考，
-      // 不刷独立 ThinkingFold、不拆 stage）；可交付思考（或当前阶段无工具）才升独立折叠打断阶段
-      if (!isDeliverableThinking(t) && stageSteps.some((s) => s.kind === 'tool')) {
+      // live 时不丢弃 trivial 思考：流式思考逐帧跨越 trivial 阈值会被丢（=消失）再长回（=出现），
+      // 面板不停闪。回合 idle 后再按终态丢弃短思考。
+      if (isTrivialThinking(t) && !isLive) continue
+      // REGRESS-J(J3)：中段思考（当前阶段已执行过工具）一律并入 stage.steps——展开可见全文，
+      // 不再按 isDeliverableThinking 升独立 fold。升 fold 会 flushStage 拆 stage，导致
+      // 「思考游离在执行块之外、找不到完整思考」，且频繁打断工具合并。live/idle 一致，key=cur.key
+      // 稳定不走 remount，避免「思考→工具」切换时思考从独立 fold 跌回 step 触发整段重排闪。
+      if (stageSteps.some((s) => s.kind === 'tool')) {
         stageSteps.push({
           kind: 'thinking',
           key: cur.key,
@@ -525,7 +551,8 @@ export function buildConciseTimeline(
         })
         continue
       }
-      // 对齐 Cursor：可交付中段思考收成独立灰字折叠，打断当前阶段
+      // 阶段之外（跨阶段边界的收尾思考）：仅可交付 / live 保留独立 ThinkingFold，普通跳过。
+      if (!isDeliverableThinking(t) && !isLive) continue
       flushLeadingThink()
       flushStage()
       const durationSec = resolveThinkingDurationSec(t, cur.durationSec)
@@ -555,11 +582,17 @@ export function buildConciseTimeline(
     if (cur.type === 'text') {
       if (!cur.text.trim()) continue
       flushLeadingThink()
+      // REGRESS-J(J1/J4)：非最终、极短的段间 progress 在 idle 不再无条件 flushStage。
+      // 回合结束时工具之间的短旁白直接忽略，让连续 Bash/探索累进同一 work_stage，
+      // 消除「运行了 1 条命令」刷屏。live 流式期间保留（打字机需即时可见，避免憋到结束）；
+      // 回合结束后同一过程数组重投影即得合并的单一 work_stage。
+      const isRoundFinal = i > lastToolIdx || lastToolIdx < 0
+      const isShortIdleProgress = !isLive && !isRoundFinal && isShortProgressText(cur.text)
+      if (isShortIdleProgress) continue
       flushStage()
-      // live 时尾部正文先当 progress（进运行队列打字机），避免 final 卡片闪现；
+      // live 时尾部正文先当 progress（运行队列打字机），避免 final 卡片闪现；
       // 回合结束后再升为 final。
-      const tone: 'progress' | 'final' =
-        i < lastToolIdx || isLive ? 'progress' : 'final'
+      const tone: 'progress' | 'final' = i < lastToolIdx || isLive ? 'progress' : 'final'
       pushNarrative(segments, cur.key, cur.text, tone)
     }
   }

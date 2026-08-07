@@ -127,6 +127,7 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
         const abs = await window.electronAPI.resolveFile({
           sessionId: target.sessionId,
           path: target.path,
+          bases: target.bases,
         })
         if (cancelled) return
         if (!abs) {
@@ -153,7 +154,7 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
     return () => {
       cancelled = true
     }
-  }, [target?.sessionId, target?.path])
+  }, [target?.sessionId, target?.path, target?.bases])
 
   // ===== 渲染分发 =====
 

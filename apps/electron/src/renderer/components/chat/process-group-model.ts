@@ -16,6 +16,12 @@ export const PROCESS_GROUP_AUTO_COLLAPSE_SETTLE_MS = 2500
 /** 倒计时秒数（对齐 Proma/General） */
 export const PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS = 3
 
+/**
+ * 思考行 live→idle 后保持展开的 settle 时长（ms）：先让用户读完尾部，再 CSS 过渡折起。
+ * 对齐 concise `ThinkingFold` 的 `THINK_SETTLE_MS`（1.5–2.5s 区间）；REGRESS-F 移植到 full 思考行。
+ */
+export const THINKING_ROW_SETTLE_MS = 1800
+
 export type ProcessGroupCollapsePlan =
   /** 展开并保持（运行中） */
   | 'expand'
@@ -58,6 +64,35 @@ export function planProcessGroupCollapse(
   // 简洁模式：body 本就默认收起，live→idle 不要倒计时
   if (!autoExpandWhenLive) return 'collapse'
   return wasLive ? 'countdown' : 'collapse'
+}
+
+// ===== 思考行 settle（REGRESS-F，对齐 concise ThinkingFold） =====
+
+export type ThinkingRowSettlePlan =
+  /** 进入新一轮 live：武装 settle（结束时再折） */
+  | 'arm'
+  /** live→idle：起 settle 定时器，到期后再折 */
+  | 'settle'
+  /** 无转换（仍 live / 仍 idle） */
+  | 'noop'
+
+/**
+ * 思考行 settle 决策（纯函数，可单测）。
+ *
+ * - `isLive && !wasLive` → `arm`：新一轮开始，复位「已 settle」以便结束时再走 settle 窗口。
+ * - `!isLive && wasLive` → `settle`：本轮刚结束，起 ~`THINKING_ROW_SETTLE_MS` 定时器后再折。
+ * - 其余 → `noop`（仍 live / 仍 idle，无转换）。
+ *
+ * 组件据此在 effect 里更新 `wasLive` ref 与 settle 定时器；`open` 在 settle 窗口内保持 true，
+ * 窗口外（且 collapsible、非用户 override）才折起——避免 live→false 瞬间 null 卸 body 换预览。
+ */
+export function planThinkingRowSettle(input: {
+  isLive: boolean
+  wasLive: boolean
+}): ThinkingRowSettlePlan {
+  const { isLive, wasLive } = input
+  if (isLive) return wasLive ? 'noop' : 'arm'
+  return wasLive ? 'settle' : 'noop'
 }
 
 // ===== 思考预览 =====

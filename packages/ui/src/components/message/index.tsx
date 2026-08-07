@@ -430,7 +430,9 @@ export const MessageResponse = React.memo(
         className={cn(
           'prose dark:prose-invert max-w-none text-[length:var(--md-preview-font-size,13px)]',
           'prose-p:my-2 prose-p:leading-[1.65] prose-li:leading-[1.65] prose-pre:my-0 prose-hr:my-4',
-          'prose-ul:my-2 prose-ol:my-2 prose-li:my-1',
+          // UX-final-answer-hierarchy：列表条目间距略增（my-1 → my-1.5），让「1. 加粗标题 + 缩进子项」更透气；
+          // 列表缩进不另加 pl-——base prose 的 ol/ul paddingInlineStart 默认 em(26,16)=1.625em 已可见，嵌套再叠加。
+          'prose-ul:my-2 prose-ol:my-2 prose-li:my-1.5',
           // 标题不做海报字号，但上间距必须明显大于段间距——分节感全靠这个留白，
           // 否则长回答会糊成一根连续的灰柱子。
           'prose-headings:mt-5 prose-headings:mb-2 prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-foreground',
