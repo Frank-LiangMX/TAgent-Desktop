@@ -23,5 +23,16 @@ export const setSplitDockMode = atom(null, (_get, set, value: boolean) => {
   set(splitDockModeAtom, value)
 })
 
+/**
+ * 加载动画预览开关（外观页）：
+ * on → 外观页「加载动画」预览播放（配色跟随主题色系）；
+ * off → 预览暂停 + 变淡。
+ * 当前仅作外观预览，不接管应用真实加载场景（仍用 Spinner / AddonLoader）。
+ */
+export const loaderAnimationEnabledAtom = atomWithStorage<boolean>(
+  'tagent:loaderAnimation',
+  true,
+)
+
 // 防止 RESET 类型未被引用的告警（atomWithStorage 内部用到）
 export type { RESET }

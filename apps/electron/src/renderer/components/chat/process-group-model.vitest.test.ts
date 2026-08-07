@@ -111,7 +111,7 @@ describe('planProcessGroupCollapse', () => {
     ).toBe('keep')
   })
 
-  it('live→idle 进入倒计时', () => {
+  it('live→idle 直接收起（不再倒计时；切会话/跑完默认折叠减渲染）', () => {
     expect(
       planProcessGroupCollapse({
         live: false,
@@ -119,7 +119,7 @@ describe('planProcessGroupCollapse', () => {
         userToggled: false,
         autoExpandWhenLive: true,
       }),
-    ).toBe('countdown')
+    ).toBe('collapse')
   })
 
   it('用户手动 toggle 过则取消自动折', () => {
@@ -376,8 +376,8 @@ describe('projectConciseProcess', () => {
   })
 })
 
-describe('splitProcessForRender (REGRESS-K1：full 折叠后仍暴露 thinking 条目)', () => {
-  it('full：思考拆到 thinking 序列、工具/正文留 body——body 折叠卸载不带走思考行', () => {
+describe('splitProcessForRender（思考 / 正文拆分）', () => {
+  it('full：思考拆到 thinking 序列、工具/正文留 body', () => {
     const process: ProcessEntry[] = [
       { type: 'thinking', key: 't0', thinking: '先摸清结构' },
       {
@@ -394,10 +394,8 @@ describe('splitProcessForRender (REGRESS-K1：full 折叠后仍暴露 thinking �
       { type: 'text', key: 'x0', text: '改完跑一下' },
     ]
     const { thinking, body } = splitProcessForRender(process, 'full')
-    // 思考行被单独拆出：折叠 body 也不卸载它们 → 执行块仍露「思考了…」
     expect(thinking.map((e) => e.key)).toEqual(['t0', 't1'])
     expect(thinking.every((e) => e.type === 'thinking')).toBe(true)
-    // body 只剩工具 + 中间文本（无思考）→ body 卸 DOM 不带走思考
     expect(body.every((e) => e.type !== 'thinking')).toBe(true)
     expect(body.map((e) => e.key)).toEqual(['r0', 'e0', 'x0'])
     // 拆分无损：thinking ∪ body = 原全部条目
@@ -406,7 +404,7 @@ describe('splitProcessForRender (REGRESS-K1：full 折叠后仍暴露 thinking �
     )
   })
 
-  it('full：仅思考（无工具/正文）→ thinking 全留、body 空（折叠无内容可藏，思考仍露）', () => {
+  it('full：仅思考（无工具/正文）→ thinking 全留、body 空', () => {
     const process: ProcessEntry[] = [
       { type: 'thinking', key: 't0', thinking: '只想了一段' },
       { type: 'thinking', key: 't1', thinking: '又想了一段' },

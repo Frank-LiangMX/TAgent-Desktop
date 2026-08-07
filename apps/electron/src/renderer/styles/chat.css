@@ -31,16 +31,25 @@
   background: rgb(var(--glass-rgb) / 0.88);
   border: 1px solid var(--surface-role-message-user-rim);
   border-radius: var(--bubble-radius, 16px);
-  border-bottom-right-radius: var(--bubble-tail, 6px);
   box-shadow: var(--surface-role-message-user-shadow);
   color: hsl(var(--foreground) / 0.92);
   font-size: 12px;
   font-weight: 500;
   line-height: 1.72;
-  padding: 12px 14px;
+  padding: 10px 14px;
+  /* 短句按内容撑开；到上限再换行，禁止被父级压成「一字一行」 */
+  width: fit-content;
+  max-width: 100%;
+  box-sizing: border-box;
+  word-break: normal;
+  overflow-wrap: anywhere;
   filter: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+}
+.tagent-thread .agent-user-bubble__rich {
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 /*
@@ -78,7 +87,7 @@
   margin-top: 0;
   justify-content: flex-start;
   padding: 22px 14px 10px;
-  border-radius: 0 0 var(--bubble-tail, 6px) var(--bubble-radius, 16px);
+  border-radius: 0 0 var(--bubble-radius, 16px) var(--bubble-radius, 16px);
   /* 用气泡同色实底渐隐，避免透明叠字 */
   background: linear-gradient(
     to top,
@@ -95,7 +104,7 @@
  * 文字色 muted（0.88），不是 0.6；align-self 让胶囊贴左不撑满。
  */
 /*
- * 铭牌行：胶囊（仅模型名）+ 外侧时间，时间不进胶囊
+ * 铭牌行：胶囊（仅模型名）+ 外侧时间（兼容旧引用；主路径改用 .agent-speaker）
  */
 .agent-turn-title-row {
   display: flex;
@@ -156,45 +165,279 @@
 }
 
 /*
- * 用户顶部：时间 + 用户铭牌（右对齐）
+ * Speaker 头（多 agent 预留）：磨砂玻璃 monogram + 名 + 模型 pill
+ * 色槽只影响极轻描边/底色，正文仍全宽文档流，不改用户气泡玻璃风。
  */
-.tagent-thread .agent-user-title-row {
+.agent-speaker {
+  --speaker-accent: hsl(var(--primary));
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  align-self: flex-end;
-  gap: 8px;
+  align-self: flex-start;
+  gap: 9px;
   max-width: 100%;
   min-width: 0;
-  margin-bottom: 6px;
 }
-.tagent-thread .agent-user-title {
+.agent-speaker[data-speaker-slot='0'] {
+  --speaker-accent: hsl(210 42% 48%);
+}
+.agent-speaker[data-speaker-slot='1'] {
+  --speaker-accent: hsl(162 32% 40%);
+}
+.agent-speaker[data-speaker-slot='2'] {
+  --speaker-accent: hsl(28 40% 48%);
+}
+.agent-speaker[data-speaker-slot='3'] {
+  --speaker-accent: hsl(280 28% 52%);
+}
+.agent-speaker[data-speaker-slot='4'] {
+  --speaker-accent: hsl(340 32% 50%);
+}
+.agent-speaker[data-speaker-slot='5'] {
+  --speaker-accent: hsl(190 36% 42%);
+}
+
+.agent-speaker__avatar {
   display: inline-flex;
   align-items: center;
-  flex-shrink: 1;
-  min-width: 0;
-  max-width: min(200px, 50vw);
-  min-height: 22px;
-  padding: 0 10px;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 5.5%, transparent);
-  background: color-mix(in srgb, hsl(var(--card)) 55%, transparent);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  line-height: 1.3;
-  color: hsl(var(--muted-foreground) / 0.88);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
+  background: color-mix(in srgb, hsl(var(--card)) 62%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.4),
+    0 1px 2px rgb(23 30 40 / 0.06);
+  color: color-mix(in srgb, var(--speaker-accent) 75%, hsl(var(--foreground)));
   user-select: none;
+}
+/* logo 不铺满：玻璃圆底 + 图标约 55% 居中 */
+.agent-speaker[data-has-logo='true'] .agent-speaker__avatar {
+  border-color: color-mix(in srgb, hsl(var(--foreground)) 7%, transparent);
+  background: color-mix(in srgb, hsl(var(--background)) 78%, hsl(var(--card)) 22%);
+  padding: 8px;
+  box-sizing: border-box;
+}
+.dark .agent-speaker__avatar {
+  background: color-mix(in srgb, rgb(var(--glass-rgb, 50 52 56)) 58%, transparent);
+  border-color: rgb(255 255 255 / 0.12);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 1px 3px rgb(0 0 0 / 0.25);
+}
+.dark .agent-speaker[data-has-logo='true'] .agent-speaker__avatar {
+  background: color-mix(in srgb, rgb(var(--glass-rgb, 50 52 56)) 52%, transparent);
+}
+.agent-speaker__logo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+.agent-speaker__mono {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.agent-speaker__main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.agent-speaker__line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.agent-speaker__name {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  color: hsl(var(--foreground) / 0.9);
+  max-width: min(220px, 48vw);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
 }
-.dark .tagent-thread .agent-user-title {
-  background: color-mix(in srgb, rgb(var(--glass-rgb, 50 52 56)) 55%, transparent);
-  border-color: rgb(255 255 255 / 0.1);
+
+.agent-speaker__handoff {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-width: 100%;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground) / 0.62);
 }
+.agent-speaker__handoff-name {
+  max-width: 5.5em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-speaker__handoff-arrow {
+  opacity: 0.55;
+  font-size: 10px;
+  padding: 0 1px;
+}
+
+.agent-speaker__time {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground) / 0.55);
+  font-variant-numeric: tabular-nums;
+  padding: 0 2px;
+}
+.agent-speaker__time--live {
+  color: hsl(var(--primary) / 0.85);
+}
+
+/* turn 左侧极轻身份条（不抢正文） */
+.agent-turn[data-speaker] {
+  position: relative;
+}
+.agent-turn > .agent-speaker {
+  margin-bottom: 8px;
+}
+
+/*
+ * 用户消息 flex（避免 grid minmax(0,auto) 把短中文压成竖排）：
+ *   [ 气泡 + 时间|复制 ]  (头像)
+ * 左列 width:fit-content 跟字走；max-width 限制长消息。
+ */
+.tagent-thread .agent-user-block {
+  --user-avatar-size: 40px;
+  --user-avatar-gap: 10px;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: var(--user-avatar-gap);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.tagent-thread .agent-user-block__col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  min-width: 0;
+  /* 长消息上限；短句由气泡 fit-content 决定，不会被压扁 */
+  max-width: min(75%, 28rem);
+  flex: 0 1 auto;
+}
+.tagent-thread .agent-user-block.has-avatar .agent-user-block__col {
+  max-width: min(75%, calc(100% - var(--user-avatar-size) - var(--user-avatar-gap)), 28rem);
+}
+.tagent-thread .agent-user-block__bubble {
+  /* 覆盖 MessageContent 的 min-w-0 / overflow-hidden，让短句自然撑开 */
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
+  gap: 0;
+}
+.tagent-thread .agent-user-block__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--user-avatar-size);
+  height: var(--user-avatar-size);
+  flex-shrink: 0;
+  margin-top: 1px;
+  border-radius: 999px;
+  border: 2px solid hsl(var(--background) / 0.9);
+  color: hsl(var(--primary-foreground));
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, hsl(var(--primary)) 82%, white),
+    hsl(var(--primary) / 0.62)
+  );
+  box-shadow:
+    0 1px 2px hsl(var(--foreground) / 0.08),
+    0 4px 12px -2px hsl(var(--foreground) / 0.12);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+}
+.dark .tagent-thread .agent-user-block__avatar {
+  border-color: hsl(var(--background) / 0.75);
+}
+/*
+ * 元信息行：整行与气泡同宽，时间永远贴右；
+ * 复制按钮在时间左侧，默认不占宽（避免未 hover 时时间悬在中间）。
+ */
+.tagent-thread .agent-user-block__meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  width: 100%;
+  min-height: 22px;
+  margin-top: 4px;
+  box-sizing: border-box;
+}
+.tagent-thread .agent-user-block__time {
+  flex-shrink: 0;
+  order: 2; /* 视觉最右 */
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground) / 0.55);
+  font-variant-numeric: tabular-nums;
+  padding: 0 2px;
+}
+.tagent-thread .agent-user-block__tools.agent-user-toolbar {
+  order: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  align-self: center;
+  margin-top: 0;
+  min-height: 0;
+  /* 未 hover：折叠宽度，不把时间顶到中间 */
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  gap: 0;
+  transition:
+    opacity 0.15s ease,
+    max-width 0.15s ease;
+}
+.tagent-thread .is-user:hover .agent-user-block__tools.agent-user-toolbar,
+.tagent-thread .agent-user-block__tools.agent-user-toolbar:has(.msg-icon-btn--done) {
+  max-width: 5.5rem;
+  opacity: 1;
+  pointer-events: auto;
+  gap: 2px;
+}
+/* 兼容旧 class 名 */
+.tagent-thread .agent-user-row__time {
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground) / 0.55);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 兼容旧 class（若有残留） */
 .tagent-thread .agent-user-title-row__time {
   flex-shrink: 0;
   font-size: 10px;
@@ -605,7 +848,7 @@
   color: hsl(0 55% 52%);
 }
 
-/* Cursor 式句尾 Files Changed：全宽、6px 圆角、扁平列表 */
+/* Cursor 式句尾 Files Changed：全宽、软表面（避免纯白卡片扎眼） */
 .agent-files-changed {
   display: block;
   box-sizing: border-box;
@@ -613,10 +856,10 @@
   max-width: none;
   margin: 10px 0 6px;
   padding: 10px 12px 8px;
-  border: 1px solid hsl(var(--border) / 0.5);
-  /* Cursor Files Changed 偏软圆角（>8px） */
+  border: 1px solid hsl(var(--border) / 0.4);
   border-radius: 12px;
-  background: hsl(var(--background));
+  /* 贴会话底的半透明 muted，不用 --background 纯白 */
+  background: color-mix(in srgb, hsl(var(--muted)) 42%, transparent);
   min-width: 0;
 }
 .agent-files-changed__head {
@@ -630,21 +873,29 @@
 .agent-files-changed__title {
   font-size: 12px;
   font-weight: 500;
-  color: hsl(var(--muted-foreground) / 0.85);
+  color: hsl(var(--muted-foreground) / 0.9);
   line-height: 1.3;
 }
 .agent-files-changed__review {
   border: 0;
   background: transparent;
-  padding: 0;
+  padding: 2px 6px;
+  margin-right: -4px;
+  border-radius: 6px;
   font-size: 12px;
   font-weight: 500;
-  color: hsl(var(--muted-foreground) / 0.75);
+  color: hsl(var(--muted-foreground) / 0.8);
   cursor: pointer;
   line-height: 1.3;
+  transition: color 0.12s ease, background 0.12s ease;
 }
 .agent-files-changed__review:hover {
-  color: hsl(var(--foreground) / 0.9);
+  color: hsl(var(--foreground) / 0.92);
+  background: hsl(var(--muted) / 0.55);
+}
+.agent-files-changed__review:focus-visible {
+  outline: 2px solid hsl(var(--ring) / 0.55);
+  outline-offset: 1px;
 }
 .agent-files-changed__list {
   list-style: none;
@@ -666,19 +917,26 @@
   width: 100%;
   box-sizing: border-box;
   margin: 0;
-  padding: 3px 0;
+  padding: 4px 6px;
+  margin-inline: -6px;
+  width: calc(100% + 12px);
   border: 0;
-  border-radius: 0;
+  border-radius: 6px;
   background: transparent;
   cursor: pointer;
   text-align: left;
   color: hsl(var(--foreground) / 0.9);
+  transition: background 0.12s ease;
 }
 .agent-files-changed__row:hover {
-  background: transparent;
+  background: hsl(var(--muted) / 0.55);
 }
 .agent-files-changed__row:hover .agent-files-changed__name {
   color: hsl(var(--foreground));
+}
+.agent-files-changed__row:focus-visible {
+  outline: 2px solid hsl(var(--ring) / 0.55);
+  outline-offset: 0;
 }
 .agent-files-changed__badge {
   display: inline-flex;
@@ -978,7 +1236,23 @@
 .agent-concise-step__icon {
   display: inline-flex;
   width: 12px;
+  height: 12px;
+  align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+}
+
+/* 思考 step：不用 ✓（非任务完成）；占位圆点对齐工具行图标宽 */
+.agent-concise-step__icon-dot {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.35);
+}
+
+.agent-concise-step--thinking .agent-concise-step__label {
+  color: hsl(var(--muted-foreground) / 0.82);
 }
 
 .agent-concise-step__label {
@@ -1044,7 +1318,7 @@
   padding: 2px 0 2px 4px;
 }
 
-/* REGRESS-K1：过程组收起后仍露出的思考头带 */
+/* 兼容保留：过程组收起态已整块折叠，不再常驻渲染思考带 */
 .agent-process-group__thinking {
   display: flex;
   flex-direction: column;
@@ -1712,24 +1986,23 @@
 
 /*
  * Composer 运行计时 pill：发送即开始，完成/出错/用户停止清零。
- * 绝对定位浮在 .session-composer-cluster 顶缘之上——不参与文档流、不撑高
- * bottom-stack，因此 .composer-blur-underlay 不会为整行上扩模糊带。
- * pill 自身玻璃底（对齐 .conversation-scroll-btn），只遮挡 pill 区域。
+ * 绝对定位、不参与文档流——不撑高 bottom-stack / blur underlay。
+ *
+ * 垂直位置（与下箭头同带，消息队列时也保持可见、不能藏）：
+ *   bottom = cluster 顶 + stack 在 cluster 之上的高度（队列/横幅）
+ *   无队列时 over=0，等价贴输入框顶；有队列时抬到「队列中 N 条」卡片上方。
+ * --session-stack-over-cluster 由 Chat.updateComposerTop 测量写入。
  */
 .composer-run-timer {
   position: absolute;
   left: var(--app-shell-session-gutter, 16px);
-  bottom: 100%;
-  z-index: 25;
+  /* 100% = cluster 顶；再加 over-cluster 抬过 MessageQueue 等 */
+  bottom: calc(100% + var(--session-stack-over-cluster, 0px));
+  z-index: 30;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  /* 中心线对齐下箭头（不等高）：
-     箭头 36px、bottom = --session-composer-top + gap，中心 Y = +gap+18；
-     pill 锚 cluster 顶（=composer-top，banners 收起时），高 ≈ 27px，中心 Y = margin + 13.5。
-     令 margin = gap + 18 - 13.5 ≈ gap + 4 → 中心齐平，底基线随 gap 同步。
-     故 pill 底比箭头底高约 (36-27)/2 ≈ 4-5px（pill 较矮所致，属预期，非错位）。
-     banner/队列展开时 pill 浮输入框顶、箭头浮底栏顶，本就不同行，属预期。 */
+  /* 与下箭头中心线大致齐平：箭头 bottom=composer-top+gap、高 36；pill 高≈27 → margin≈gap+4 */
   margin: 0 0 calc(var(--session-scroll-btn-gap, 12px) + 4px);
   padding: 5px 12px;
   border-radius: 999px;
@@ -1746,6 +2019,24 @@
   -webkit-backdrop-filter: blur(12px) saturate(1.06);
   backdrop-filter: blur(12px) saturate(1.06);
   pointer-events: none;
+  transition: bottom 120ms ease;
+}
+
+/*
+ * 浮层让位：输入框上方的运行胶囊与下箭头 fade out + 失去点击。
+ * 覆盖：@ 选择面板、AskUserQuestion、权限审批横幅——
+ * 否则胶囊贴 cluster 顶、下箭头若 composer-top 滞后，会叠在弹窗底栏（「Enter 确认」旁）。
+ * 仅隐藏显示，不碰计时/滚动状态；关闭后恢复。
+ */
+.session-chat-col[data-mention-open='true'] .composer-run-timer,
+.session-chat-col[data-mention-open='true'] [data-conversation-scroll-btn],
+.session-chat-col[data-bottom-banner-open='true'] .composer-run-timer,
+.session-chat-col[data-bottom-banner-open='true'] [data-conversation-scroll-btn] {
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
 }
 .dark .composer-run-timer {
   border-color: rgb(var(--glass-rgb) / 0.35);
@@ -1826,6 +2117,409 @@
     animation: none;
     opacity: 0.85;
   }
+}
+
+/* ===== AskUserQuestion 问答卡（对齐底栏玻璃栈，非 General 实心紫选项皮） ===== */
+.ask-user-card {
+  box-sizing: border-box;
+  margin: 0 12px 8px;
+  padding: 12px 12px 10px;
+  border-radius: 14px;
+  border: 1px solid hsl(var(--border) / 0.45);
+  background: color-mix(in srgb, hsl(var(--muted)) 38%, hsl(var(--background)) 62%);
+  -webkit-backdrop-filter: blur(18px) saturate(1.06);
+  backdrop-filter: blur(18px) saturate(1.06);
+  box-shadow:
+    0 10px 28px -12px rgb(23 30 40 / 0.18),
+    inset 0 1px 0 rgb(255 255 255 / 0.42);
+  min-width: 0;
+}
+.dark .ask-user-card {
+  background: color-mix(in srgb, hsl(var(--muted)) 28%, hsl(var(--background)) 72%);
+  border-color: hsl(var(--border) / 0.5);
+  box-shadow:
+    0 12px 32px -14px rgb(0 0 0 / 0.45),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+
+.ask-user-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.ask-user-card__head-left {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.ask-user-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  flex-shrink: 0;
+  color: hsl(var(--primary) / 0.92);
+  background: hsl(var(--primary) / 0.1);
+  border: 1px solid hsl(var(--primary) / 0.14);
+}
+.ask-user-card__titles {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ask-user-card__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: hsl(var(--foreground) / 0.92);
+  line-height: 1.25;
+}
+.ask-user-card__meta {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground) / 0.78);
+  line-height: 1.3;
+}
+.ask-user-card__head-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.ask-user-card__queue {
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--muted-foreground) / 0.85);
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: hsl(var(--foreground) / 0.05);
+  border: 1px solid hsl(var(--border) / 0.4);
+}
+.ask-user-card__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--muted-foreground) / 0.55);
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    background 0.12s ease;
+}
+.ask-user-card__icon-btn:hover {
+  color: hsl(var(--foreground) / 0.9);
+  background: hsl(var(--foreground) / 0.07);
+}
+
+/* 多题步进条 */
+.ask-user-card__steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid hsl(var(--border) / 0.35);
+}
+.ask-user-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 9px 4px 5px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border) / 0.4);
+  background: hsl(var(--foreground) / 0.03);
+  color: hsl(var(--muted-foreground) / 0.88);
+  font-size: 11px;
+  line-height: 1.25;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+.ask-user-step:hover {
+  background: hsl(var(--foreground) / 0.06);
+  color: hsl(var(--foreground) / 0.88);
+}
+.ask-user-step.is-active {
+  border-color: hsl(var(--primary) / 0.35);
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--foreground) / 0.92);
+}
+.ask-user-step.is-done:not(.is-active) {
+  border-color: hsl(var(--primary) / 0.18);
+  color: hsl(var(--primary) / 0.9);
+}
+.ask-user-step__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: hsl(var(--foreground) / 0.06);
+  color: inherit;
+}
+.ask-user-step.is-active .ask-user-step__num {
+  background: hsl(var(--primary) / 0.18);
+  color: hsl(var(--primary));
+}
+.ask-user-step__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 9.5em;
+}
+
+.ask-user-card__body {
+  margin-top: 10px;
+  min-width: 0;
+}
+
+.ask-user-q__prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.ask-user-q__badge {
+  align-self: flex-start;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: hsl(var(--muted-foreground) / 0.88);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border) / 0.4);
+  background: hsl(var(--foreground) / 0.03);
+}
+.ask-user-q__text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: hsl(var(--foreground) / 0.92);
+}
+
+.ask-user-q__options {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ask-user-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid hsl(var(--border) / 0.4);
+  background: hsl(var(--background) / 0.45);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.ask-user-opt:hover {
+  background: hsl(var(--foreground) / 0.04);
+  border-color: hsl(var(--border) / 0.55);
+}
+.ask-user-opt.is-selected {
+  border-color: hsl(var(--primary) / 0.42);
+  background: hsl(var(--primary) / 0.09);
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.08);
+}
+.ask-user-opt.is-focused:not(.is-selected) {
+  border-color: hsl(var(--primary) / 0.28);
+  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.12);
+}
+.ask-user-opt.is-selected.is-focused {
+  box-shadow:
+    inset 0 0 0 1px hsl(var(--primary) / 0.1),
+    0 0 0 2px hsl(var(--primary) / 0.14);
+}
+.ask-user-opt:focus-visible {
+  outline: 2px solid hsl(var(--ring) / 0.55);
+  outline-offset: 1px;
+}
+
+.ask-user-opt__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  color: hsl(var(--primary));
+}
+.ask-user-opt.is-selected .ask-user-opt__mark {
+  background: hsl(var(--primary) / 0.14);
+}
+.ask-user-opt__radio {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1.5px solid hsl(var(--muted-foreground) / 0.45);
+  box-sizing: border-box;
+}
+.ask-user-opt__radio.is-on {
+  border-color: hsl(var(--primary) / 0.75);
+  background:
+    radial-gradient(circle at center, hsl(var(--primary)) 0 3px, transparent 3.5px);
+}
+.ask-user-opt__idx {
+  flex-shrink: 0;
+  width: 1.1em;
+  margin-top: 1px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--muted-foreground) / 0.55);
+  line-height: 1.35;
+}
+.ask-user-opt.is-selected .ask-user-opt__idx {
+  color: hsl(var(--primary) / 0.75);
+}
+.ask-user-opt__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.ask-user-opt__label {
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1.35;
+  color: hsl(var(--foreground) / 0.9);
+}
+.ask-user-opt__desc {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: hsl(var(--muted-foreground) / 0.82);
+}
+
+.ask-user-q__custom {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid hsl(var(--border) / 0.45);
+  background: hsl(var(--background) / 0.55);
+  color: hsl(var(--foreground) / 0.92);
+  font-size: 12.5px;
+  line-height: 1.4;
+  outline: none;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.ask-user-q__custom::placeholder {
+  color: hsl(var(--muted-foreground) / 0.5);
+}
+.ask-user-q__custom:focus {
+  border-color: hsl(var(--primary) / 0.4);
+  background: hsl(var(--background) / 0.75);
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.12);
+}
+
+.ask-user-q__preview {
+  margin: 8px 0 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid hsl(var(--border) / 0.35);
+  background: hsl(var(--foreground) / 0.03);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: hsl(var(--foreground) / 0.78);
+}
+
+.ask-user-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 11px;
+  padding-top: 9px;
+  border-top: 1px solid hsl(var(--border) / 0.32);
+}
+.ask-user-card__hint {
+  font-size: 10.5px;
+  color: hsl(var(--muted-foreground) / 0.55);
+  line-height: 1.3;
+}
+.ask-user-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.ask-user-card__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 8px;
+  border: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    opacity 0.12s ease;
+}
+.ask-user-card__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ask-user-card__btn--ghost {
+  background: hsl(var(--foreground) / 0.05);
+  color: hsl(var(--foreground) / 0.82);
+}
+.ask-user-card__btn--ghost:hover:not(:disabled) {
+  background: hsl(var(--foreground) / 0.09);
+  color: hsl(var(--foreground));
+}
+.ask-user-card__btn--primary {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+.ask-user-card__btn--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, hsl(var(--primary)) 88%, black);
 }
 
 /* 回答句尾：完成 / 已中断 / 出错 · 耗时 · 墙钟 */

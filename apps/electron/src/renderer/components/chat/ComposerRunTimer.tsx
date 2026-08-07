@@ -3,8 +3,9 @@
  *
  * 发送即开始（Chat startRun / 全局 stream sync 写 startedAt），覆盖思考期无产出。
  * startedAt 有值即显示（含 turn_end 软停后的工具间隙）；硬停（result/error/用户停）才清 null。
- * 绝对定位浮在输入框上方：不撑高 bottom-stack，避免整行 blur underlay 上扩；
- * pill 自身带玻璃底（如下箭头），只遮挡 pill 区域下的滚动内容。
+ * 绝对定位：默认贴输入框顶；有消息队列/横幅时抬到 bottom-stack 顶缘
+ * （--session-stack-over-cluster），与下箭头同带，队列场景不能隐藏。
+ * 不撑高 bottom-stack，避免整行 blur underlay 上扩。
  *
  * 视觉取自 uiverse _5797/perfect-termite-38（Searching orb loader），改用主题色：
  * 旋转 glow orb + 计时字符逐字 wave 动画（原 "Searching" 字样换成实时计时）。

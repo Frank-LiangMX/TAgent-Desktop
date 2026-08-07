@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
 import {
+  cleanFilePathInput,
   existsCacheKey,
   getFileName,
   isAbsoluteFilePath,
@@ -85,6 +86,22 @@ describe('stripLineCol', () => {
 
   test('不误伤 Windows 盘符', () => {
     expect(stripLineCol('F:\\proj\\a.ts')).toEqual({ path: 'F:\\proj\\a.ts', suffix: '' })
+  })
+})
+
+describe('cleanFilePathInput', () => {
+  test('去引号与空白', () => {
+    expect(cleanFilePathInput('  "./src/a.ts"  ')).toBe('./src/a.ts')
+    expect(cleanFilePathInput("'src/a.ts'")).toBe('src/a.ts')
+  })
+
+  test('剥行号后缀', () => {
+    expect(cleanFilePathInput('src/a.ts:42')).toBe('src/a.ts')
+    expect(cleanFilePathInput('src/a.ts:42:7')).toBe('src/a.ts')
+  })
+
+  test('file:// URL', () => {
+    expect(cleanFilePathInput('file:///C:/proj/a.ts')).toBe('C:/proj/a.ts')
   })
 })
 

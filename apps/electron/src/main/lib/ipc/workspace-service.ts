@@ -5,19 +5,21 @@
  * 职责：
  * - 列出所有工作区
  * - 创建项目工作区（弹出文件夹选择对话框 → getOrCreateWorkspace）
+ * - 读取文件预览（存在即可读，不因工作区边界拒绝——Agent 能改则应能看）
  *
  * 见 shared/types/agent.ts 的 AGENT_IPC_CHANNELS。
  */
 import { ipcMain, dialog, type BrowserWindow } from 'electron'
-import { readFile } from 'node:fs/promises'
+import { readFile, realpath, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { AGENT_IPC_CHANNELS } from '@tagent/shared'
+import { AGENT_IPC_CHANNELS, cleanFilePathInput, msysPathToWindowsDrivePath } from '@tagent/shared'
 import type { AgentWorkspace } from '@tagent/shared'
 import {
   deleteWorkspace,
   getOrCreateWorkspace,
   listWorkspaces,
   reorderWorkspaces,
+  resolveWorkspaceForSession,
 } from '../workspace/workspace-manager'
 
 export interface WorkspaceFileReadResult {
@@ -27,6 +29,16 @@ export interface WorkspaceFileReadResult {
   dataUrl?: string
   mime?: string
 }
+
+export type ReadWorkspaceFileInput =
+  | string
+  | {
+      path: string
+      /** 会话 id：把该会话绑定的 projectDirectory 纳入允许根（listWorkspaces 会跳过 hidden） */
+      sessionId?: string
+      /** 渲染层注入的 base 路径（草稿会话 / 额外根） */
+      bases?: string[]
+    }
 
 const MIME_BY_EXT: Record<string, string> = {
   '.html': 'text/html',
@@ -72,47 +84,137 @@ const MIME_BY_EXT: Record<string, string> = {
 
 const TEXT_MIME_PREFIXES = ['text/', 'application/json', 'application/xml']
 
-/** 读取工作区文件（仅限已注册工作区目录内，防路径穿越） */
-async function readWorkspaceFile(filePath: string): Promise<WorkspaceFileReadResult | null> {
-  // 混用 D:\foo/bar 时先统一分隔符再 resolve，避免「解析到了却判工作区外」
-  const normalizedInput = filePath.replace(/\//g, path.sep).replace(/\\/g, path.sep)
-  const resolved = path.resolve(normalizedInput)
-  const workspaces = listWorkspaces()
-  const inside = workspaces.some((workspace) => {
-    const root = workspace.projectDirectory
-    if (!root) return false
-    const rootResolved = path.resolve(root.replace(/\//g, path.sep).replace(/\\/g, path.sep))
-    if (process.platform === 'win32') {
-      const a = resolved.toLowerCase()
-      const b = rootResolved.toLowerCase()
-      return a === b || a.startsWith(`${b}\\`)
+/** 统一分隔符后 resolve；Win 上再试 MSYS `/f/...` → 盘符路径 */
+function normalizeToAbsolute(filePath: string): string {
+  const cleaned = cleanFilePathInput(filePath)
+  if (!cleaned) return cleaned
+  const msys = process.platform === 'win32' ? msysPathToWindowsDrivePath(cleaned) : null
+  const raw = msys ?? cleaned
+  const sepNormalized = raw.replace(/\//g, path.sep).replace(/\\/g, path.sep)
+  return path.resolve(sepNormalized)
+}
+
+/** 尽量 realpath（处理 junction / 大小写 / 符号链接）；失败则用 resolve 结果 */
+async function resolveReal(absPath: string): Promise<string> {
+  try {
+    return await realpath(absPath)
+  } catch {
+    return absPath
+  }
+}
+
+/**
+ * file 是否在 root 内（含 root 自身）。
+ * 用 path.relative，避免 startsWith 在尾斜杠 / 大小写 / 混分隔符下误判。
+ */
+export function isPathInsideRoot(fileAbs: string, rootAbs: string): boolean {
+  if (!fileAbs || !rootAbs) return false
+  let file = fileAbs
+  let root = rootAbs
+  if (process.platform === 'win32') {
+    file = file.toLowerCase()
+    root = root.toLowerCase()
+  }
+  const rel = path.relative(root, file)
+  if (!rel) return true
+  // 在 root 外：relative 以 .. 开头，或变成绝对路径
+  if (rel.startsWith('..')) return false
+  if (path.isAbsolute(rel)) return false
+  return true
+}
+
+/** 收集允许读取的根：已注册工作区 + 会话工作区 + bases（去空、resolve） */
+export function collectAllowedReadRoots(opts?: {
+  sessionId?: string
+  bases?: string[]
+}): string[] {
+  const roots = new Set<string>()
+  for (const workspace of listWorkspaces()) {
+    if (workspace.projectDirectory) {
+      roots.add(normalizeToAbsolute(workspace.projectDirectory))
     }
-    return resolved === rootResolved || resolved.startsWith(rootResolved + path.sep)
-  })
-  if (!inside) {
-    console.warn(`[工作区] 拒绝读取工作区外文件: ${resolved}`)
+  }
+  // listWorkspaces 会跳过 hidden；会话绑定的工作区仍应可读（Files Changed 预览）
+  if (opts?.sessionId) {
+    const ws = resolveWorkspaceForSession(opts.sessionId)
+    if (ws?.projectDirectory) {
+      roots.add(normalizeToAbsolute(ws.projectDirectory))
+    }
+  }
+  for (const base of opts?.bases ?? []) {
+    if (base?.trim()) roots.add(normalizeToAbsolute(base))
+  }
+  return [...roots]
+}
+
+/**
+ * 读取文件供预览（Files Changed / chip / 富内容）。
+ *
+ * **产品原则**：Agent 能改到的路径就应能预览——不再因「是否登记在工作区列表」拒绝。
+ * 仅做存在性 / 普通文件 / 10MB 上限；工作区根仅用于日志诊断。
+ * （本 IPC 仅桌面端受信渲染进程可调；沙箱挡预览只会制造「敢改不能看」。）
+ */
+async function readWorkspaceFile(
+  filePath: string,
+  opts?: { sessionId?: string; bases?: string[] },
+): Promise<WorkspaceFileReadResult | null> {
+  const abs = normalizeToAbsolute(filePath)
+  if (!abs) {
+    console.warn(`[工作区] 拒绝读取：路径为空`)
     return null
+  }
+
+  const resolved = await resolveReal(abs)
+
+  // 先 stat：不存在 / 非文件 / 过大 → 明确失败；不再用工作区边界挡预览
+  let size = 0
+  try {
+    const st = await stat(resolved)
+    if (!st.isFile()) {
+      console.warn(`[工作区] 不是普通文件: ${resolved}`)
+      return null
+    }
+    size = st.size
+  } catch (error) {
+    console.warn(`[工作区] stat 失败: ${resolved}`, error)
+    return null
+  }
+  if (size > 10 * 1024 * 1024) {
+    console.warn(`[工作区] 文件过大，跳过预览: ${resolved}（${size} bytes）`)
+    return null
+  }
+
+  // 诊断：若在已知根外仍可读（Agent 改了工作区外路径），打 warn 不拦截
+  const roots = collectAllowedReadRoots(opts)
+  if (roots.length > 0) {
+    const realRoots = await Promise.all(roots.map((r) => resolveReal(r)))
+    const inside = realRoots.some((root) => isPathInsideRoot(resolved, root))
+    if (!inside) {
+      console.warn(`[工作区] 预览工作区外文件（仍允许）: ${resolved}`)
+    }
   }
 
   // .Build.cs 这类双扩展：优先取完整后缀再回退 .cs
   const base = path.basename(resolved).toLowerCase()
-  const ext =
-    base.endsWith('.build.cs')
-      ? '.cs'
-      : path.extname(resolved).toLowerCase()
+  const ext = base.endsWith('.build.cs') ? '.cs' : path.extname(resolved).toLowerCase()
   const mime = MIME_BY_EXT[ext] ?? 'application/octet-stream'
-  const buf = await readFile(resolved)
-  if (buf.length > 10 * 1024 * 1024) {
-    console.warn(`[工作区] 文件过大，跳过预览: ${resolved}（${buf.length} bytes）`)
+
+  let buf: Buffer
+  try {
+    buf = await readFile(resolved)
+  } catch (error) {
+    console.warn(`[工作区] 读取文件失败: ${resolved}`, error)
     return null
   }
 
   if (mime.startsWith('image/') || mime === 'application/pdf') {
     return { dataUrl: `data:${mime};base64,${buf.toString('base64')}`, mime }
   }
-  if (TEXT_MIME_PREFIXES.some((prefix) => mime.startsWith(prefix)) || mime === 'application/octet-stream') {
-    const content = buf.toString('utf8')
-    return { content, mime }
+  if (
+    TEXT_MIME_PREFIXES.some((prefix) => mime.startsWith(prefix)) ||
+    mime === 'application/octet-stream'
+  ) {
+    return { content: buf.toString('utf8'), mime }
   }
   return { dataUrl: `data:${mime};base64,${buf.toString('base64')}`, mime }
 }
@@ -134,12 +236,10 @@ export class WorkspaceService {
 
   /** 注册 IPC handler */
   private registerIpc(): void {
-    // 列出所有工作区
     ipcMain.handle(AGENT_IPC_CHANNELS.LIST_WORKSPACES, async (): Promise<AgentWorkspace[]> => {
       return listWorkspaces()
     })
 
-    // 创建项目工作区（弹出文件夹选择对话框 → 创建 workspace）
     ipcMain.handle(
       AGENT_IPC_CHANNELS.CREATE_PROJECT_WORKSPACE,
       async (): Promise<AgentWorkspace | null> => {
@@ -153,10 +253,9 @@ export class WorkspaceService {
         const workspace = getOrCreateWorkspace(projectPath)
         console.log(`[工作区] 已创建：${workspace.name}（${workspace.id}）`)
         return workspace
-      }
+      },
     )
 
-    // 删除工作区索引及其全部会话；本地项目源码目录保持不变。
     ipcMain.handle(AGENT_IPC_CHANNELS.DELETE_WORKSPACE, async (_event, id: string): Promise<void> => {
       if (!listWorkspaces().some((workspace) => workspace.id === id)) {
         throw new Error(`工作区不存在: ${id}`)
@@ -170,20 +269,27 @@ export class WorkspaceService {
       AGENT_IPC_CHANNELS.REORDER_WORKSPACES,
       async (_event, orderedIds: string[]): Promise<AgentWorkspace[]> => {
         return reorderWorkspaces(orderedIds)
-      }
+      },
     )
 
-    // 读取工作区文件（富内容预览块用；仅限已注册工作区目录内）
+    // 读取工作区文件：兼容旧调用 (string) 与新调用 ({ path, sessionId, bases })
     ipcMain.handle(
       AGENT_IPC_CHANNELS.READ_WORKSPACE_FILE,
-      async (_event, filePath: string): Promise<WorkspaceFileReadResult | null> => {
+      async (_event, input: ReadWorkspaceFileInput): Promise<WorkspaceFileReadResult | null> => {
         try {
-          return await readWorkspaceFile(filePath)
+          if (typeof input === 'string') {
+            return await readWorkspaceFile(input)
+          }
+          if (!input?.path) return null
+          return await readWorkspaceFile(input.path, {
+            sessionId: input.sessionId,
+            bases: input.bases,
+          })
         } catch (error) {
-          console.warn(`[工作区] 读取文件失败: ${filePath}`, error)
+          console.warn(`[工作区] 读取文件失败:`, input, error)
           return null
         }
-      }
+      },
     )
   }
 }

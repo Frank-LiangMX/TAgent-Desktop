@@ -36,6 +36,7 @@ import { summarizeFirstText } from './subagent-ui-model'
 import { MessageCopyButton } from './MessageCopyButton'
 import { MessageRefillButton } from './MessageRefillButton'
 import { MentionText } from './MentionText'
+import { SpeakerHeader } from './SpeakerHeader'
 
 // ===== 主组件 =====
 
@@ -75,6 +76,8 @@ function UserView({
 }): React.ReactElement {
   const profile = useAtomValue(userProfileAtom)
   const userName = (profile.userName || DEFAULT_USER_NAME).trim() || DEFAULT_USER_NAME
+  // 与设置入口 rail-avatar 一致：用户名首字圆形头像
+  const avatarLetter = userName.charAt(0).toUpperCase() || 'U'
 
   const textBlocks = message.content.filter(
     (b): b is TAgentTextBlock => b.type === 'text',
@@ -87,49 +90,58 @@ function UserView({
 
   return (
     <Message from="user">
-      {/* 顶部：时间 + 用户铭牌（右对齐） */}
-      {showChrome ? (
-        <div className="agent-user-title-row">
-          {message.createdAt ? (
-            <span className="agent-user-title-row__time">
-              {formatMessageTime(message.createdAt)}
-            </span>
-          ) : null}
-          <div className="agent-user-title" title={userName}>
-            {userName}
-          </div>
-        </div>
-      ) : null}
+      {/*
+        右对齐 flex：左列 = 气泡 +（时间|复制）；右列 = 头像。
+        气泡 width:fit-content，避免 grid minmax(0,auto) 把短句压成竖排。
+      */}
+      <div className={cn('agent-user-block', showChrome && 'has-avatar')}>
+        <div className="agent-user-block__col">
+          <MessageContent className="agent-user-block__bubble">
+            {message.attachments?.length ? (
+              <MessageAttachments
+                attachments={message.attachments}
+                onReadAttachment={async (localPath) => {
+                  const base64 = await (window as any).electronAPI.readAttachment(localPath)
+                  return base64
+                }}
+              />
+            ) : null}
+            {textBlocks.length > 0 && (
+              <UserMessageContent contentKey={plainText}>
+                <MentionText text={plainText} roles={mentionRoles} />
+              </UserMessageContent>
+            )}
+            {toolResultBlocks.map((b) => (
+              <ToolResultView key={b.toolUseId} block={b} />
+            ))}
+          </MessageContent>
 
-      <MessageContent>
-        {message.attachments?.length ? (
-          <MessageAttachments
-            attachments={message.attachments}
-            onReadAttachment={async (localPath) => {
-              const base64 = await (window as any).electronAPI.readAttachment(localPath)
-              return base64
-            }}
-          />
+          {showChrome && (message.createdAt || plainText.trim()) ? (
+            <div className="agent-user-block__meta">
+              {/* 工具在左、时间贴右；隐藏工具时不占宽，时间始终贴气泡右缘 */}
+              {plainText.trim() ? (
+                <div className="agent-user-block__tools agent-user-toolbar">
+                  {onRefillToInput ? (
+                    <MessageRefillButton text={plainText} onRefill={onRefillToInput} />
+                  ) : null}
+                  <MessageCopyButton text={plainText} />
+                </div>
+              ) : null}
+              {message.createdAt ? (
+                <span className="agent-user-block__time">
+                  {formatMessageTime(message.createdAt)}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+
+        {showChrome ? (
+          <span className="agent-user-block__avatar" title={userName} aria-label={userName}>
+            {avatarLetter}
+          </span>
         ) : null}
-        {textBlocks.length > 0 && (
-          <UserMessageContent contentKey={plainText}>
-            <MentionText text={plainText} roles={mentionRoles} />
-          </UserMessageContent>
-        )}
-        {toolResultBlocks.map((b) => (
-          <ToolResultView key={b.toolUseId} block={b} />
-        ))}
-      </MessageContent>
-
-      {/* 底部：填入输入框 + 复制（仅图标，hover tooltip） */}
-      {showChrome && plainText.trim() ? (
-        <div className="agent-user-toolbar">
-          {onRefillToInput ? (
-            <MessageRefillButton text={plainText} onRefill={onRefillToInput} />
-          ) : null}
-          <MessageCopyButton text={plainText} />
-        </div>
-      ) : null}
+      </div>
     </Message>
   )
 }
@@ -187,16 +199,14 @@ function AssistantView({
 
           <CollapsibleContent>
             {(message.modelId || message.createdAt) && (
-              <div className="agent-turn-title-row mb-2.5 mt-2">
-                {message.modelId ? (
-                  <div className="agent-turn-title">{message.modelId}</div>
-                ) : null}
-                {message.createdAt ? (
-                  <span className="agent-turn-title-row__time">
-                    {formatMessageTime(message.createdAt)}
-                  </span>
-                ) : null}
-              </div>
+              <SpeakerHeader
+                name={message.modelId?.trim() || '子代理'}
+                modelId={message.modelId}
+                statusLabel={
+                  message.createdAt ? formatMessageTime(message.createdAt) : undefined
+                }
+                className="mb-2.5 mt-2"
+              />
             )}
             <MessageContent className="border-l-2 border-primary/20 pl-3">
               {message.error && (
@@ -242,16 +252,12 @@ function AssistantView({
   return (
     <Message from="assistant">
       {(message.modelId || message.createdAt) && (
-        <div className="agent-turn-title-row mb-2.5">
-          {message.modelId ? (
-            <div className="agent-turn-title">{message.modelId}</div>
-          ) : null}
-          {message.createdAt ? (
-            <span className="agent-turn-title-row__time">
-              {formatMessageTime(message.createdAt)}
-            </span>
-          ) : null}
-        </div>
+        <SpeakerHeader
+          name={message.modelId?.trim() || '助手'}
+          modelId={message.modelId}
+          statusLabel={message.createdAt ? formatMessageTime(message.createdAt) : undefined}
+          className="mb-2.5"
+        />
       )}
       <MessageContent>
         {message.error && (

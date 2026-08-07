@@ -9,11 +9,11 @@ import type { ProcessEntry } from './session-turn-model'
 // ===== 自动折叠 =====
 
 /**
- * live 结束到倒计时开始之间的静置时间。
- * 工具循环里 live 可能瞬时抖到 false，静置期内一旦回到 live，定时器被清掉，不会误收。
+ * @deprecated 跑完后改为立即折叠（减渲染压力）；保留常量避免外部 import 断裂。
+ * live 结束到倒计时开始之间的静置时间（旧行为）。
  */
 export const PROCESS_GROUP_AUTO_COLLAPSE_SETTLE_MS = 2500
-/** 倒计时秒数（对齐 Proma/General） */
+/** @deprecated 倒计时秒数（旧行为；现 live→idle 直接 collapse） */
 export const PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS = 3
 
 /**
@@ -23,11 +23,14 @@ export const PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS = 3
 export const THINKING_ROW_SETTLE_MS = 1800
 
 export type ProcessGroupCollapsePlan =
-  /** 展开并保持（运行中） */
+  /** 展开并保持（运行中实时查看） */
   | 'expand'
-  /** 静置 + 倒计时后收起（本轮刚结束且用户没插手） */
+  /**
+   * @deprecated 已不再发出；live→idle 一律 `collapse`。
+   * 保留联合成员以免旧测试/调用方类型炸掉。
+   */
   | 'countdown'
-  /** 立即收起（非本轮结束的静态渲染，如历史轮挂载） */
+  /** 收起（历史轮 / 切会话 / 跑完；默认路径） */
   | 'collapse'
   /** 保持现状（用户手动 toggle 过） */
   | 'keep'
@@ -46,7 +49,9 @@ export interface ProcessGroupCollapseInput {
 /**
  * 过程组折叠决策。
  *
- * 新一轮开始（`live && !wasLive`）时复位「用户手动 toggle」，本轮结束后仍能自动收起。
+ * - **仅 live 且允许自动展开**时展开（用户实时查看）。
+ * - 切会话 / 历史挂载 / live→idle：一律收起，避免大过程树默认挂载拖垮渲染。
+ * - 新一轮开始（`live && !wasLive`）时复位「用户手动 toggle」。
  */
 export function planProcessGroupCollapse(
   input: ProcessGroupCollapseInput,
@@ -60,10 +65,9 @@ export function planProcessGroupCollapse(
     if (userToggled) return 'keep'
     return 'expand'
   }
+  // 跑完 / 历史 / 切会话：默认折叠；用户手动展开过才 keep
   if (userToggled) return 'keep'
-  // 简洁模式：body 本就默认收起，live→idle 不要倒计时
-  if (!autoExpandWhenLive) return 'collapse'
-  return wasLive ? 'countdown' : 'collapse'
+  return 'collapse'
 }
 
 // ===== 思考行 settle（REGRESS-F，对齐 concise ThinkingFold） =====
@@ -213,13 +217,11 @@ export interface ProcessRenderSplit {
 }
 
 /**
- * 思考行 vs 过程正文（工具/中间文本）拆分（REGRESS-K1）。
+ * 思考行 vs 过程正文（工具/中间文本）拆分。
  *
- * full 默认路径的过程组 idle 后会自动收起 `__body`（`showBody=false`）。若思考行留在
- * `__body` 内，整段 body 卸 DOM 时思考行一起消失——执行块连「思考了片刻」头都不剩。
- * 这里把思考行单独拆出，让组件在 toggle 头下**常驻渲染**思考行（不受 showBody 影响），
- * 工具/中间文本仍只在 `showBody` 内。思考正文继续默认收起（对齐 Cursor 扫光头），但不再
- * 随 body 卸载而消失。
+ * 数据层工具：把 thinking 与 tool/text 拆成两条序列，供需要单独统计/投影的调用方使用。
+ * UI 侧 full 模式收起后**整块**折叠成摘要头（不再常驻露「思考了片刻」列表），展开时仍
+ * 按原序交错渲染；标题「含 N 段思考」提示可回看。
  *
  * - concise：复用 `projectConciseProcess`（所有 thinking 合并成一块），拆出后仍是一个思考块。
  * - full：原 `process` 保序，thinking 与 tool/text 分到两条序列。

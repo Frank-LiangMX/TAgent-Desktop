@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import {
   Palette,
@@ -22,6 +22,7 @@ import {
   SettingsSection,
   SettingsCard,
   Switch,
+  ThreePetalSpiral,
 } from '@tagent/ui'
 import {
   themeModeAtom,
@@ -42,7 +43,7 @@ import {
   notificationPrefsAtom,
   setNotificationPrefsAtom,
 } from '../../atoms/notification-prefs'
-import { splitDockModeAtom } from '../../atoms/feature-flags'
+import { loaderAnimationEnabledAtom, splitDockModeAtom } from '../../atoms/feature-flags'
 import { ChannelsSettings } from './ChannelsSettings'
 import { UpdateChecker } from './UpdateChecker'
 import appiconLight from '../../assets/tagent-appicon-light.png'
@@ -745,12 +746,48 @@ function NotifDiagramToast({ active }: { active: boolean }): JSX.Element {
   )
 }
 
+/** 外观页加载动画预览（Uiverse young-walrus-64 移植，配色跟随 --primary） */
+function LoaderPreview({ disabled }: { disabled: boolean }): JSX.Element {
+  const maskId = useId()
+  return (
+    <div
+      className="tagent-loader-preview"
+      data-disabled={disabled || undefined}
+      style={{ '--tlp-mask-url': `url(#${maskId})` } as CSSProperties}
+      role="img"
+      aria-label="加载动画预览"
+    >
+      <svg
+        className="tagent-loader-preview__svg"
+        viewBox="0 0 100 100"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
+      >
+        <defs>
+          <mask id={maskId} className="tagent-loader-mask">
+            <polygon points="0,0 100,0 100,100 0,100" fill="black" />
+            <polygon points="25,25 75,25 50,75" fill="white" />
+            <polygon points="50,25 75,75 25,75" fill="white" />
+            <polygon points="35,35 65,35 50,65" fill="white" />
+            <polygon points="35,35 65,35 50,65" fill="white" />
+            <polygon points="35,35 65,35 50,65" fill="white" />
+            <polygon points="35,35 65,35 50,65" fill="white" />
+          </mask>
+        </defs>
+      </svg>
+      <div className="tagent-loader-preview__box" />
+    </div>
+  )
+}
+
 function AppearanceSettings(): JSX.Element {
   const themeMode = useAtomValue(themeModeAtom)
   const themeStyle = useAtomValue(themeStyleAtom)
   const resolvedDark = useAtomValue(resolvedDarkAtom)
   const dynamicBg = useAtomValue(dynamicBgEnabledAtom)
   const setDynamicBg = useSetAtom(dynamicBgEnabledAtom)
+  const loaderEnabled = useAtomValue(loaderAnimationEnabledAtom)
+  const setLoaderEnabled = useSetAtom(loaderAnimationEnabledAtom)
 
   const isAuto = themeMode === 'system'
 
@@ -814,6 +851,38 @@ function AppearanceSettings(): JSX.Element {
                   onSelect={() => setThemeStyle(style.family, themeMode)}
                 />
               ))}
+            </div>
+          </div>
+          <div className="tagent-loader-section">
+            <div className="settings-row">
+              <div className="settings-row-main min-w-0 flex-1">
+                <span className="settings-field-label">加载动画</span>
+                <div className="settings-row-bottom mt-1">
+                  <span className="text-xs leading-relaxed text-muted-foreground">
+                    加载动画预览（有机形变 / 三瓣螺旋），配色跟随当前主题色系
+                  </span>
+                </div>
+              </div>
+              <div className="settings-row-control shrink-0">
+                <Switch
+                  checked={loaderEnabled}
+                  onCheckedChange={setLoaderEnabled}
+                  aria-label="启用加载动画预览"
+                />
+              </div>
+            </div>
+            <div
+              className="tagent-loader-preview-stage"
+              data-disabled={!loaderEnabled || undefined}
+            >
+              <div className="tagent-loader-preview-item">
+                <LoaderPreview disabled={!loaderEnabled} />
+                <span className="tagent-loader-preview-caption">有机形变</span>
+              </div>
+              <div className="tagent-loader-preview-item">
+                <ThreePetalSpiral size={40} active={loaderEnabled} />
+                <span className="tagent-loader-preview-caption">三瓣螺旋</span>
+              </div>
             </div>
           </div>
           <div className="settings-row">

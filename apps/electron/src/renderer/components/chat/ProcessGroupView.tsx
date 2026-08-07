@@ -16,11 +16,10 @@ import {
   useSmoothStream,
 } from '@tagent/ui'
 import { cn } from '../../lib/utils'
+import { useLiveElapsedMs } from '../../lib/time-utils'
 import type { ProcessEntry } from './session-turn-model'
 import { summarizeProcess, formatThinkingSummary } from './session-turn-model'
 import {
-  PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS,
-  PROCESS_GROUP_AUTO_COLLAPSE_SETTLE_MS,
   THINKING_ROW_SETTLE_MS,
   buildProcessGroupHeaderLabel,
   buildProcessTextPreview,
@@ -59,6 +58,11 @@ interface ProcessGroupViewProps {
   displayMode?: ProcessDisplayMode
   /** 思考时长（秒），concise idle 标题「思考了 N 秒」 */
   thinkingDurationSec?: number
+  /**
+   * 最终回答已开始输出。full 模式：交付后自动把执行链收成一行摘要，
+   * 避免 final 下方仍铺开思考/工具明细。用户手动展开后本轮不再强折。
+   */
+  hasFinalOutput?: boolean
 }
 
 export function ProcessGroupView({
@@ -68,66 +72,44 @@ export function ProcessGroupView({
   autoExpandWhenLive = true,
   displayMode = 'full',
   thinkingDurationSec,
+  hasFinalOutput = false,
 }: ProcessGroupViewProps): JSX.Element | null {
   const live = isLive ?? isStreaming
   const summary = summarizeProcess(process)
-  const [expanded, setExpanded] = useState(autoExpandWhenLive ? live : false)
-  const [collapseCountdown, setCollapseCountdown] = useState<number | null>(null)
+  // 仅 live 实时查看默认展开；切会话 / 历史 / 已有 final → 折叠（减过程树挂载）
+  const [expanded, setExpanded] = useState(
+    autoExpandWhenLive && live && !hasFinalOutput,
+  )
   const userToggledRef = useRef(false)
   const wasLiveRef = useRef(live)
-  const autoCollapseTimersRef = useRef<number[]>([])
-
-  const clearAutoCollapseTimers = useCallback(() => {
-    for (const timer of autoCollapseTimersRef.current) window.clearTimeout(timer)
-    autoCollapseTimersRef.current = []
-  }, [])
 
   /** 用户插手（展开/收起）：放弃本轮自动收起 */
   const markUserToggled = useCallback(() => {
     userToggledRef.current = true
-    clearAutoCollapseTimers()
-    setCollapseCountdown(null)
-  }, [clearAutoCollapseTimers])
+  }, [])
 
   useEffect(() => {
-    clearAutoCollapseTimers()
-    const plan = planProcessGroupCollapse({
-      live,
-      wasLive: wasLiveRef.current,
-      userToggled: userToggledRef.current,
-      autoExpandWhenLive,
-    })
-    if (live && !wasLiveRef.current) userToggledRef.current = false
+    const wasLive = wasLiveRef.current
+    if (live && !wasLive) userToggledRef.current = false
     wasLiveRef.current = live
 
-    if (plan === 'expand') setExpanded(true)
-    if (plan === 'collapse') setExpanded(false)
-    if (plan !== 'countdown') {
-      setCollapseCountdown(null)
+    // final 已交付：整块执行链收成摘要；用户手动展开后本轮不再强折
+    // （须压过 live→expand，否则 final 流式期间会被再次顶开）
+    if (hasFinalOutput && !userToggledRef.current) {
+      setExpanded(false)
       return
     }
 
-    // 静置一会儿再开始倒计时：工具间隙的瞬时 idle 不会把正在看的过程收走
-    autoCollapseTimersRef.current.push(
-      window.setTimeout(() => {
-        setCollapseCountdown(PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS)
-        for (let second = PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS - 1; second >= 1; second--) {
-          const elapsed = (PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS - second) * 1000
-          autoCollapseTimersRef.current.push(
-            window.setTimeout(() => setCollapseCountdown(second), elapsed),
-          )
-        }
-        autoCollapseTimersRef.current.push(
-          window.setTimeout(() => {
-            setCollapseCountdown(null)
-            setExpanded(false)
-          }, PROCESS_GROUP_AUTO_COLLAPSE_COUNTDOWN_SECONDS * 1000),
-        )
-      }, PROCESS_GROUP_AUTO_COLLAPSE_SETTLE_MS),
-    )
+    const plan = planProcessGroupCollapse({
+      live,
+      wasLive,
+      userToggled: userToggledRef.current,
+      autoExpandWhenLive,
+    })
 
-    return clearAutoCollapseTimers
-  }, [live, autoExpandWhenLive, clearAutoCollapseTimers])
+    if (plan === 'expand') setExpanded(true)
+    if (plan === 'collapse' || plan === 'countdown') setExpanded(false)
+  }, [live, autoExpandWhenLive, hasFinalOutput])
 
   const liveHint = useMemo(() => {
     if (!live) return null
@@ -164,25 +146,22 @@ export function ProcessGroupView({
 
   const showBody = expanded
 
-  // REGRESS-K1：思考可在收起态单独露出；展开态仍走完整过程序（thinking/tool/text 交错）。
+  // 展开态按 thinking / tool / text 原序交错；收起态只留摘要头（避免 final 后堆一排「思考了片刻」）。
   const projectedProcess = useMemo(
     () => (displayMode === 'concise' ? projectConciseProcess(process) : process),
     [process, displayMode],
-  )
-  const thinkingEntries = useMemo(
-    () =>
-      projectedProcess.filter(
-        (e): e is Extract<ProcessEntry, { type: 'thinking' }> => e.type === 'thinking',
-      ),
-    [projectedProcess],
   )
   const lastThinkingKey = useMemo(
     () => findLastProcessKey(projectedProcess, 'thinking'),
     [projectedProcess],
   )
   const lastTextKey = useMemo(() => findLastProcessKey(projectedProcess, 'text'), [projectedProcess])
+  // 思考也算可展开明细：收起后仍提示「查看过程」（标题里已有「含 N 段思考」）
   const hasDetailBody = projectedProcess.some(
-    (e) => e.type === 'tool' || (e.type === 'text' && e.text.trim()),
+    (e) =>
+      e.type === 'tool' ||
+      e.type === 'thinking' ||
+      (e.type === 'text' && e.text.trim()),
   )
 
   // 空过程组不渲染。早退必须在所有 hook 之后，否则 0→非 0 时 hook 数量变化会崩
@@ -224,21 +203,12 @@ export function ProcessGroupView({
         >
           {headerLabel}
         </span>
-        {collapseCountdown !== null && (
-          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/45">
-            {collapseCountdown}s
-          </span>
-        )}
         {!showBody && !live && hasDetailBody && (
           <span className="shrink-0 text-[11px] text-muted-foreground/40">查看过程</span>
         )}
       </button>
 
-      {/* idle 收起：思考头常驻；展开时改由下方 body 按序交错渲染，避免重复 */}
-      {!showBody && thinkingEntries.length > 0 ? (
-        <div className="agent-process-group__thinking">{thinkingEntries.map(renderThinking)}</div>
-      ) : null}
-
+      {/* 仅展开时渲染过程明细；收起 = 整块执行链折叠成一行摘要 */}
       {showBody && (
         <div className="agent-process-group__body">
           {projectedProcess.map((entry) => {
@@ -312,6 +282,18 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
   const openRef = useRef(open)
   openRef.current = open
 
+  // live 墙钟：idle 后冻结秒数，避免退回偏大的字数粗估
+  const startRef = useRef<number | null>(null)
+  const frozenLiveSecRef = useRef<number | undefined>(undefined)
+  if (isLive && startRef.current == null) {
+    startRef.current = Date.now()
+    frozenLiveSecRef.current = undefined
+  }
+  const elapsedMs = useLiveElapsedMs(startRef.current ?? undefined, isLive)
+  if (isLive && elapsedMs > 0) {
+    frozenLiveSecRef.current = Math.max(1, Math.floor(elapsedMs / 1000))
+  }
+
   // 用户手动展开后，live→idle settle 再折回一行头
   const wasLiveRef = useRef(isLive)
   const settleTimerRef = useRef<number | null>(null)
@@ -348,7 +330,13 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
     el.scrollTop = el.scrollHeight
   }, [text, isLive, open])
 
-  const headLabel = formatThinkingSummary(durationSec, { live: isLive })
+  const effectiveSec = isLive
+    ? Math.floor(elapsedMs / 1000)
+    : (frozenLiveSecRef.current ?? durationSec)
+  const headLabel = formatThinkingSummary(effectiveSec, {
+    live: isLive,
+    liveElapsedSec: Math.floor(elapsedMs / 1000),
+  })
 
   return (
     <div className={cn('agent-thinking-row', isLive && 'is-live')}>

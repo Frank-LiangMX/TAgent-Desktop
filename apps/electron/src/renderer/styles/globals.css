@@ -13,6 +13,7 @@
 @import './sidebar.css';
 @import './welcome.css';
 @import './settings-shell.css';
+@import './loader-preview.css';
 @import './updater.css';
 /* 记忆页 content-glass（General 原样） */
 @import './content-glass.css';

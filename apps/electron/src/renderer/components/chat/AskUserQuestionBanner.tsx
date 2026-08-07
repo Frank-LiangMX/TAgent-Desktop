@@ -1,23 +1,19 @@
 /**
- * AskUserQuestionBanner — Agent AskUserQuestion 交互式问答横幅
+ * AskUserQuestionBanner — Agent AskUserQuestion 交互式问答
  *
- * 多问题用顶部 Tab 切换，选项竖向排列。
- * 填写进度持久化在 askUserDraftsAtom，切换预览 Tab / 分屏后仍保留。
- * 键盘：↑↓ 选择选项，Enter 确认当前问题（最后一题提交，否则翻页）。
- *
- * 移植自 TAgent_General AskUserBanner.tsx，换 Desktop PermissionBanner 视觉皮
- * （motion.div session-permission-banner + rounded-2xl border backdrop-blur-xl）。
- * 预览降级为纯文本（Desktop 未装 react-markdown；option.preview 直接 <pre>）。
- * 机制见 REGRESS-H-GENERAL-PORT-FINDINGS / REGRESS-H-implement-brief。
+ * 机制：多题 Tab、草稿 atom 持久化、↑↓ / Enter 键盘流（与 General 移植一致）。
+ * 视觉：对齐 Desktop 底栏玻璃栈（PermissionBanner / MessageQueue）——
+ * 软表面、细边框、Phosphor 图标；选项用描边+淡底选中，不用整行实心 primary 填色。
  */
 import { useAtom } from 'jotai'
-import { Send, X } from 'lucide-react'
+import { ChatCircleDots, Check, PaperPlaneTilt, X } from '@phosphor-icons/react'
 import { motion, AnimatePresence } from 'motion/react'
 import * as React from 'react'
 
 import type { AskUserQuestion } from '@tagent/shared'
 
-import { Button, Tooltip, TooltipContent, TooltipTrigger } from '@tagent/ui'
+import { AppTooltip } from '@tagent/ui'
+import { cn } from '../../lib/utils'
 import {
   allPendingAskUserRequestsAtom,
   askUserDraftsAtom,
@@ -154,7 +150,7 @@ export function AskUserQuestionBanner({
   }
 
   function updateAnswers(
-    updater: (prev: Map<number, AskUserQuestionDraft>) => Map<number, AskUserQuestionDraft>
+    updater: (prev: Map<number, AskUserQuestionDraft>) => Map<number, AskUserQuestionDraft>,
   ): void {
     updateCurrentDraft((draft) => ({ ...draft, answers: updater(draft.answers) }))
   }
@@ -232,7 +228,6 @@ export function AskUserQuestionBanner({
         requestId: request.requestId,
         answers: answersRecord,
       })
-      // 乐观出队；主进程 respond 后会再推 ASK_USER_RESOLVED 幂等清理
       setAllRequests((prev) => {
         const map = new Map(prev)
         const current = map.get(sessionId) ?? []
@@ -263,41 +258,69 @@ export function AskUserQuestionBanner({
     if (!isLastTab) setActiveTabByState((prev) => prev + 1)
   }
 
+  const answeredCount = questions.reduce((n, _, idx) => {
+    const a = getAnswer(idx)
+    return a.selected.length > 0 || (a.showCustom && a.customText.trim()) ? n + 1 : n
+  }, 0)
+
+  const remeasureComposerTop = (): void => {
+    window.dispatchEvent(new CustomEvent('tagent:composer-top-remeasure'))
+  }
+
   return (
     <AnimatePresence>
       {request && (
         <motion.div
           key={request.requestId}
-          initial={{ opacity: 0, y: 16, height: 0 }}
+          initial={{ opacity: 0, y: 12, height: 0 }}
           animate={{ opacity: 1, y: 0, height: 'auto' }}
-          exit={{ opacity: 0, y: 16, height: 0 }}
+          exit={{ opacity: 0, y: 12, height: 0 }}
           transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+          onAnimationComplete={remeasureComposerTop}
           className="session-permission-banner pointer-events-auto overflow-hidden"
         >
-          <div className="mx-3 mb-2 rounded-2xl border border-border/60 bg-background/80 p-3 shadow-lg backdrop-blur-xl">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium text-foreground">TAgent 需要你的输入</span>
-              <div className="flex items-center gap-1.5">
-                {requests.length > 1 && (
-                  <span className="text-xs text-muted-foreground">(+{requests.length - 1})</span>
-                )}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      className="flex size-5 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted/60 hover:text-foreground"
-                      onClick={handleDismiss}
-                    >
-                      <X className="size-3.5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>关闭并终止 Agent</TooltipContent>
-                </Tooltip>
+          <div className="ask-user-card">
+            {/* 顶栏 */}
+            <header className="ask-user-card__head">
+              <div className="ask-user-card__head-left">
+                <span className="ask-user-card__icon" aria-hidden>
+                  <ChatCircleDots size={15} weight="duotone" />
+                </span>
+                <div className="ask-user-card__titles">
+                  <span className="ask-user-card__title">需要你的选择</span>
+                  {questions.length > 1 ? (
+                    <span className="ask-user-card__meta">
+                      {answeredCount}/{questions.length} 已答
+                    </span>
+                  ) : (
+                    <span className="ask-user-card__meta">
+                      {currentQuestion.multiSelect ? '可多选' : '单选一项'}
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
+              <div className="ask-user-card__head-right">
+                {requests.length > 1 ? (
+                  <span className="ask-user-card__queue" title={`另有 ${requests.length - 1} 组问题`}>
+                    +{requests.length - 1}
+                  </span>
+                ) : null}
+                <AppTooltip label="关闭并终止 Agent" side="top">
+                  <button
+                    type="button"
+                    className="ask-user-card__icon-btn"
+                    onClick={handleDismiss}
+                    aria-label="关闭并终止 Agent"
+                  >
+                    <X size={14} weight="bold" />
+                  </button>
+                </AppTooltip>
+              </div>
+            </header>
 
-            {questions.length > 1 && (
-              <div className="mt-2 flex flex-wrap gap-1">
+            {/* 多题步进：细段 + 短标题，不用实心 chip 墙 */}
+            {questions.length > 1 ? (
+              <div className="ask-user-card__steps" role="tablist" aria-label="问题列表">
                 {questions.map((q, idx) => {
                   const isActive = idx === activeTab
                   const ans = getAnswer(idx)
@@ -307,29 +330,31 @@ export function AskUserQuestionBanner({
                     <button
                       key={idx}
                       type="button"
-                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all outline-none ${
-                        isActive
-                          ? 'bg-primary text-primary-foreground shadow-sm'
-                          : hasAnswer
-                            ? 'bg-primary/15 text-primary'
-                            : 'bg-foreground/[0.04] text-muted-foreground hover:bg-foreground/[0.08] hover:text-foreground'
-                      }`}
+                      role="tab"
+                      aria-selected={isActive}
+                      className={cn(
+                        'ask-user-step',
+                        isActive && 'is-active',
+                        hasAnswer && !isActive && 'is-done',
+                      )}
                       onClick={() => setActiveTabByState(idx)}
                     >
-                      {`${idx + 1}-${q.multiSelect ? '多选' : '单选'}：${q.header || `问题 ${idx + 1}`}`}
+                      <span className="ask-user-step__num">{idx + 1}</span>
+                      <span className="ask-user-step__label">
+                        {q.header?.trim() || `问题 ${idx + 1}`}
+                      </span>
                     </button>
                   )
                 })}
               </div>
-            )}
+            ) : null}
 
-            <div className="mt-2">
+            <div className="ask-user-card__body">
               <QuestionCard
                 question={currentQuestion}
-                questionIndex={activeTab}
                 answer={getAnswer(activeTab)}
                 focusedIndex={focusedOptIdx}
-                showBadge={questions.length === 1}
+                showModeBadge={questions.length === 1}
                 onToggleOption={(label) => {
                   toggleOptionByState(activeTab, currentQuestion, label)
                   if (!currentQuestion.multiSelect && !isLastTab) {
@@ -353,28 +378,42 @@ export function AskUserQuestionBanner({
               />
             </div>
 
-            <div className="mt-2 flex items-center justify-end gap-1.5">
-              <span className="mr-auto text-[10px] text-muted-foreground/40">
-                {`↑↓ 选择 · Enter ${isLastTab ? '确认' : '下一个'}`}
+            <footer className="ask-user-card__foot">
+              <span className="ask-user-card__hint">
+                ↑↓ 选择 · Enter {isLastTab ? '确认' : '下一题'}
               </span>
-              {isLastTab && (
-                <Button
-                  variant="default"
-                  size="sm"
-                  onClick={handleSubmit}
-                  disabled={submitting || !hasValidAnswers}
-                  className="h-7 px-3 text-xs"
-                >
-                  <Send className="mr-1 size-3" />
-                  确认
-                </Button>
-              )}
-            </div>
+              <div className="ask-user-card__actions">
+                {!isLastTab ? (
+                  <button
+                    type="button"
+                    className="ask-user-card__btn ask-user-card__btn--ghost"
+                    onClick={goNextTab}
+                    disabled={!hasAnswerFor(getAnswer(activeTab))}
+                  >
+                    下一题
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="ask-user-card__btn ask-user-card__btn--primary"
+                    onClick={() => void handleSubmit()}
+                    disabled={submitting || !hasValidAnswers}
+                  >
+                    <PaperPlaneTilt size={13} weight="fill" />
+                    {submitting ? '提交中…' : '确认'}
+                  </button>
+                )}
+              </div>
+            </footer>
           </div>
         </motion.div>
       )}
     </AnimatePresence>
   )
+}
+
+function hasAnswerFor(a: AskUserQuestionDraft): boolean {
+  return a.selected.length > 0 || (a.showCustom && a.customText.trim().length > 0)
 }
 
 function createInitialDraft(questions: readonly AskUserQuestion[]): AskUserRequestDraft {
@@ -388,7 +427,7 @@ function createInitialDraft(questions: readonly AskUserQuestion[]): AskUserReque
 function ensureAnswerForTab(
   answers: Map<number, AskUserQuestionDraft>,
   questions: readonly AskUserQuestion[],
-  tabIndex: number
+  tabIndex: number,
 ): Map<number, AskUserQuestionDraft> {
   if (answers.has(tabIndex)) return answers
   const firstOpt = questions[tabIndex]?.options[0]
@@ -400,20 +439,18 @@ function ensureAnswerForTab(
 
 function QuestionCard({
   question,
-  questionIndex,
   answer,
   focusedIndex,
-  showBadge,
+  showModeBadge,
   onToggleOption,
   onToggleCustom,
   onCustomTextChange,
   onSubmit,
 }: {
   question: AskUserQuestion
-  questionIndex: number
   answer: AskUserQuestionDraft
   focusedIndex: number
-  showBadge: boolean
+  showModeBadge: boolean
   onToggleOption: (label: string) => void
   onToggleCustom: () => void
   onCustomTextChange: (text: string) => void
@@ -427,17 +464,20 @@ function QuestionCard({
   const previewContent = previewOption?.preview
 
   return (
-    <div className="space-y-2">
-      <div className="space-y-1">
-        {showBadge && (
-          <span className="inline-flex shrink-0 items-center rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground shadow-sm">
-            {`${questionIndex + 1}-${question.multiSelect ? '多选' : '单选'}${question.header ? `：${question.header}` : ''}`}
+    <div className="ask-user-q">
+      <div className="ask-user-q__prompt">
+        {showModeBadge ? (
+          <span className="ask-user-q__badge">
+            {question.multiSelect ? '多选' : '单选'}
+            {question.header ? ` · ${question.header}` : ''}
           </span>
-        )}
-        <p className="text-sm text-foreground">{question.question}</p>
+        ) : question.header ? (
+          <span className="ask-user-q__badge">{question.header}</span>
+        ) : null}
+        <p className="ask-user-q__text">{question.question}</p>
       </div>
 
-      <div className="flex flex-col gap-1">
+      <div className="ask-user-q__options" role="listbox" aria-multiselectable={question.multiSelect}>
         {question.options.map((option, idx) => {
           const isSelected = answer.selected.includes(option.label)
           const isFocused = focusedIndex === idx
@@ -445,53 +485,68 @@ function QuestionCard({
             <button
               key={option.label}
               type="button"
-              className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-all outline-none ${
-                isSelected
-                  ? 'bg-primary text-primary-foreground shadow-sm'
-                  : 'bg-foreground/[0.04] text-foreground/80 hover:bg-foreground/[0.08]'
-              }${isFocused ? ' ring-2 ring-primary/50 ring-offset-1 ring-offset-transparent' : ''}`}
+              role="option"
+              aria-selected={isSelected}
+              className={cn(
+                'ask-user-opt',
+                isSelected && 'is-selected',
+                isFocused && 'is-focused',
+              )}
               onClick={() => onToggleOption(option.label)}
             >
-              <span
-                className={`shrink-0 text-[10px] ${isSelected ? 'text-primary-foreground/60' : 'text-muted-foreground/50'}`}
-              >
-                {idx + 1}
+              <span className="ask-user-opt__mark" aria-hidden>
+                {question.multiSelect ? (
+                  isSelected ? (
+                    <Check size={11} weight="bold" />
+                  ) : null
+                ) : (
+                  <span className={cn('ask-user-opt__radio', isSelected && 'is-on')} />
+                )}
               </span>
-              <span className="font-medium">{option.label}</span>
-              {option.description && (
-                <span
-                  className={`text-[11px] ${isSelected ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}
-                >
-                  {option.description}
-                </span>
-              )}
+              <span className="ask-user-opt__idx">{idx + 1}</span>
+              <span className="ask-user-opt__body">
+                <span className="ask-user-opt__label">{option.label}</span>
+                {option.description ? (
+                  <span className="ask-user-opt__desc">{option.description}</span>
+                ) : null}
+              </span>
             </button>
           )
         })}
 
         <button
           type="button"
-          className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-all outline-none ${
-            answer.showCustom
-              ? 'bg-primary text-primary-foreground shadow-sm'
-              : 'bg-foreground/[0.04] text-foreground/80 hover:bg-foreground/[0.08]'
-          }${focusedIndex === optionCount ? ' ring-2 ring-primary/50 ring-offset-1 ring-offset-transparent' : ''}`}
+          role="option"
+          aria-selected={answer.showCustom}
+          className={cn(
+            'ask-user-opt',
+            answer.showCustom && 'is-selected',
+            focusedIndex === optionCount && 'is-focused',
+          )}
           onClick={onToggleCustom}
         >
-          <span
-            className={`shrink-0 text-[10px] ${answer.showCustom ? 'text-primary-foreground/60' : 'text-muted-foreground/50'}`}
-          >
-            {optionCount + 1}
+          <span className="ask-user-opt__mark" aria-hidden>
+            {question.multiSelect ? (
+              answer.showCustom ? (
+                <Check size={11} weight="bold" />
+              ) : null
+            ) : (
+              <span className={cn('ask-user-opt__radio', answer.showCustom && 'is-on')} />
+            )}
           </span>
-          <span className="font-medium">其他...</span>
+          <span className="ask-user-opt__idx">{optionCount + 1}</span>
+          <span className="ask-user-opt__body">
+            <span className="ask-user-opt__label">其他</span>
+            <span className="ask-user-opt__desc">自定义输入</span>
+          </span>
         </button>
       </div>
 
-      {answer.showCustom && (
+      {answer.showCustom ? (
         <input
           type="text"
-          className="w-full rounded-lg bg-foreground/[0.04] px-3 py-2 text-xs transition-colors placeholder:text-muted-foreground/40 focus:bg-foreground/[0.08] focus:outline-none focus:ring-2 focus:ring-primary/30"
-          placeholder="输入自定义答案..."
+          className="ask-user-q__custom"
+          placeholder="输入你的答案…"
           value={answer.customText}
           onChange={(e) => onCustomTextChange(e.target.value)}
           onKeyDown={(e) => {
@@ -503,13 +558,11 @@ function QuestionCard({
           }}
           autoFocus
         />
-      )}
+      ) : null}
 
-      {previewContent && (
-        <pre className="mt-2 max-h-60 overflow-auto rounded-xl bg-foreground/[0.04] p-3 text-xs leading-relaxed whitespace-pre-wrap break-words text-foreground/80">
-          {previewContent}
-        </pre>
-      )}
+      {previewContent ? (
+        <pre className="ask-user-q__preview">{previewContent}</pre>
+      ) : null}
     </div>
   )
 }

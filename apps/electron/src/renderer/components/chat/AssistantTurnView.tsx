@@ -42,14 +42,17 @@ import {
   useLiveElapsedMs,
 } from '../../lib/time-utils'
 import { cn } from '../../lib/utils'
-import { MentionChip } from './MentionText'
+import { SpeakerHeader, resolveSpeakerName } from './SpeakerHeader'
 import { chatProcessDisplayModeAtom } from '../../atoms/chat-display-prefs'
 
 interface AssistantTurnViewProps {
   turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>
   /** 当前会话仍在跑且本 turn 是最新一轮（含工具间隙） */
   isLiveTurn?: boolean
-  /** 最后一个 assistant-turn：运行链默认展开；被新轮挤成历史后折叠 */
+  /**
+   * 是否为会话末尾的 assistant-turn。
+   * 简洁模式：live 结束后若仍为 true 保持执行块展开；发新一轮 / 切会话后折叠。
+   */
   isLatestAssistantTurn?: boolean
   /** 会话级流式缓冲（live 轮 delta 累积，不绑 DisplayItem） */
   streamState?: TurnStreamState
@@ -223,48 +226,33 @@ export function AssistantTurnView({
   const filesCard =
     editedFiles.length > 0 ? <TurnFilesChangedCard files={editedFiles} /> : null
 
+  const speakerName = resolveSpeakerName(mentionLabels, presentation.modelId)
+  const showSpeakerRow =
+    Boolean(presentation.modelId) ||
+    Boolean(statusLabel) ||
+    Boolean(mentionLabels && mentionLabels.length > 0) ||
+    presentation.process.length > 0 ||
+    Boolean(content.trim())
+
   return (
-    <div className="agent-turn flex flex-col">
-      {(presentation.modelId || statusLabel || (mentionLabels && mentionLabels.length > 0)) && (
-        <div className="agent-turn-title-row flex-wrap">
-          {/* 有 @ 角色铭牌时不重复显示 modelId（避免两个铭牌并列）；否则正常显示模型名 */}
-          {presentation.modelId && !(mentionLabels && mentionLabels.length > 0) ? (
-            <div className="agent-turn-title">{presentation.modelId}</div>
-          ) : null}
-          {mentionLabels && mentionLabels.length > 0 ? (
-            <div className="agent-turn-mention-list" title="本轮 @ 点名顺序">
-              {mentionLabels.map((label, i) => (
-                <span key={`${label}-${i}`} className="agent-turn-mention-list__item">
-                  {i > 0 ? (
-                    <span className="agent-turn-mention-list__arrow" aria-hidden>
-                      →
-                    </span>
-                  ) : null}
-                  <MentionChip label={label} />
-                </span>
-              ))}
-            </div>
-          ) : null}
-          {statusLabel ? (
-            <span
-              className={
-                isLiveTurn
-                  ? 'agent-turn-title-row__time agent-turn-title-row__time--live'
-                  : 'agent-turn-title-row__time'
-              }
-            >
-              {statusLabel}
-            </span>
-          ) : null}
-        </div>
-      )}
+    <div className="agent-turn flex flex-col" data-speaker={speakerName}>
+      {showSpeakerRow ? (
+        <SpeakerHeader
+          name={speakerName}
+          modelId={presentation.modelId}
+          statusLabel={statusLabel || undefined}
+          isLive={isLiveTurn}
+          handoffLabels={mentionLabels}
+          className="mb-2"
+        />
+      ) : null}
 
       {isConcise ? (
         <>
           <ConciseTimelineView
             segments={conciseSegments}
             isLive={processLive}
-            isLatestTurn={isLatestAssistantTurn || processLive}
+            isLatestTurn={isLatestAssistantTurn}
             workedMs={workedMs}
             getStageExtras={
               subagentEntryIds.length > 0
@@ -312,6 +300,7 @@ export function AssistantTurnView({
               autoExpandWhenLive
               displayMode="full"
               thinkingDurationSec={thinkingDurationSec}
+              hasFinalOutput={Boolean(content.trim())}
             />
           </div>
         )

@@ -816,8 +816,9 @@ export function buildTurnPresentation(
 
 /**
  * 为每段 thinking 标注 durationSec：
- * 1) 优先用本段 at → 下一条更大 at 的时间差（多消息阶段）
- * 2) 否则按正文长度粗估（同消息多块无时间差时的兜底，避免一律「片刻」）
+ * 1) 墙钟：本段 at → 下一条 **更大** at 的差（ms→秒）。中间若已夹 tool，
+ *    间隔含工具回合耗时，不能当思考时长（旧逻辑会把「探索 2 文件」的 50s 算进思考）。
+ * 2) 否则按正文长度粗估（同消息多块无时间差时的兜底）。
  */
 export function annotateThinkingDurations(process: ProcessEntry[]): void {
   for (let i = 0; i < process.length; i++) {
@@ -825,16 +826,30 @@ export function annotateThinkingDurations(process: ProcessEntry[]): void {
     if (cur.type !== 'thinking') continue
     let measured: number | undefined
     if (cur.at != null) {
+      let sawTool = false
       for (let j = i + 1; j < process.length; j++) {
         const next = process[j]!
-        if (next.at != null && next.at > cur.at) {
+        if (next.type === 'tool') sawTool = true
+        if (next.at == null || next.at <= cur.at) continue
+        // 跨到更晚时间戳；中间夹过 tool 则放弃墙钟（那是工具+等待，不是思考）
+        if (!sawTool) {
           measured = Math.max(1, Math.round((next.at - cur.at) / 1000))
-          break
         }
+        break
       }
     }
     cur.durationSec = resolveThinkingDurationSec(cur.thinking, measured)
   }
+}
+
+/**
+ * 规范化「秒」时长：防御把 ms 误当秒传入（如 52000 → 52s）。
+ * 思考展示很少超过 15 分钟；大于 900 的整数按 ms 再换算。
+ */
+export function normalizeThinkingDurationSec(raw: number): number {
+  if (!Number.isFinite(raw) || raw <= 0) return 1
+  if (raw > 900) return Math.max(1, Math.min(180, Math.round(raw / 1000)))
+  return Math.max(1, Math.min(180, Math.round(raw)))
 }
 
 /** 有实测用实测；否则按长度粗估；极短仍 undefined → UI「思考了片刻」 */
@@ -842,11 +857,13 @@ export function resolveThinkingDurationSec(
   thinking: string,
   measuredSec?: number,
 ): number | undefined {
-  if (measuredSec != null && measuredSec > 0) return measuredSec
+  if (measuredSec != null && measuredSec > 0) {
+    return normalizeThinkingDurationSec(measuredSec)
+  }
   const len = thinking.trim().length
   if (len < 24) return undefined
-  // ~45 字/秒：长 CoT 有可读秒数，上限 3 分钟防夸张
-  return Math.max(1, Math.min(180, Math.round(len / 45)))
+  // ~200 字/秒：贴近 LLM 流式吞吐。旧 45 字/秒会把几秒的长 CoT 估成「几十秒」（观感像把 ms 当秒）。
+  return Math.max(1, Math.min(180, Math.round(len / 200)))
 }
 
 /** 折叠文案：对齐 Cursor「Thought briefly / Thought for 46s」→ 思考了片刻 / 思考了 46s

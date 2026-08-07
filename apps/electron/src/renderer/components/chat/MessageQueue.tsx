@@ -20,6 +20,11 @@ interface MessageQueueProps {
 }
 
 export function MessageQueue({ queue, onRemove, onClear }: MessageQueueProps): JSX.Element {
+  /** spring 高度稳定后再通知 Chat 重测胶囊/下箭头（避免压在队列卡片上） */
+  const remeasureComposerTop = (): void => {
+    window.dispatchEvent(new CustomEvent('tagent:composer-top-remeasure'))
+  }
+
   return (
     <AnimatePresence>
       {queue.length > 0 && (
@@ -29,6 +34,7 @@ export function MessageQueue({ queue, onRemove, onClear }: MessageQueueProps): J
           animate={{ opacity: 1, y: 0, height: 'auto' }}
           exit={{ opacity: 0, y: 12, height: 0 }}
           transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+          onAnimationComplete={remeasureComposerTop}
           className="pointer-events-auto overflow-hidden"
         >
           <div className="mx-3 mb-2 rounded-2xl border border-border/60 bg-background/80 shadow-lg backdrop-blur-xl">

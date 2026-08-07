@@ -1,0 +1,188 @@
+/**
+ * LoaderPreview — 外观页「加载动画」预览
+ *
+ * 来源：Uiverse.io / andrew-manzyk / young-walrus-64（MIT）
+ * https://uiverse.io/andrew-manzyk/young-walrus-64
+ *
+ * 改造（对齐项目 addon-loader.css 范式）：
+ * - 颜色派生自 --primary（HSL 三段式），跟随主题色系 + 深浅自动适配；
+ * - 去掉原版 hue-rotate 色相循环（colorize），它会偏离当前主题色；
+ * - 保留 polygon 旋转（rotation）+ contrast 脱气脉动（roundness），颜色恒为主题色；
+ * - mask id 由组件 useId() 注入 --tlp-mask-url，避免多实例冲突；
+ * - prefers-reduced-motion 降级为静态外观。
+ *
+ * 尺寸：内部坐标系仍为原版 100px，容器 44px，子元素 scale(0.44) origin top-left
+ * 填满容器，布局占 44×44，无空白。
+ */
+
+.tagent-loader-preview {
+  --tlp-hi: color-mix(in srgb, hsl(var(--primary)) 72%, white 28%);
+  --tlp-deep: color-mix(in srgb, hsl(var(--primary)) 55%, black 45%);
+  --tlp-glow: hsl(var(--primary) / 0.45);
+  --tlp-glow-deep: hsl(var(--primary) / 0.5);
+  --tlp-glow-faint: hsl(var(--primary) / 0.25);
+  --tlp-time: 2s;
+
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  box-shadow:
+    0 0 18px 0 var(--tlp-glow),
+    0 10px 22px 0 var(--tlp-glow-deep);
+}
+
+.tagent-loader-preview::before,
+.tagent-loader-preview__box,
+.tagent-loader-preview__svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100px;
+  height: 100px;
+  transform: scale(0.44);
+  transform-origin: top left;
+}
+
+.tagent-loader-preview::before {
+  content: '';
+  border-radius: 50%;
+  border-top: solid 1px var(--tlp-hi);
+  border-bottom: solid 1px var(--tlp-deep);
+  background: linear-gradient(180deg, var(--tlp-glow-faint), var(--tlp-glow-deep));
+  box-shadow:
+    inset 0 10px 10px 0 var(--tlp-glow),
+    inset 0 -10px 10px 0 var(--tlp-glow-deep);
+}
+
+.tagent-loader-preview__box {
+  background: linear-gradient(180deg, var(--tlp-hi) 30%, var(--tlp-deep) 70%);
+  mask: var(--tlp-mask-url);
+  -webkit-mask: var(--tlp-mask-url);
+}
+
+.tagent-loader-preview__svg .tagent-loader-mask {
+  filter: contrast(15);
+  animation: tagent-loader-roundness calc(var(--tlp-time) / 2) linear infinite;
+}
+
+.tagent-loader-preview__svg .tagent-loader-mask polygon {
+  filter: blur(7px);
+}
+
+.tagent-loader-preview__svg .tagent-loader-mask polygon:nth-child(1) {
+  transform-origin: 75% 25%;
+  transform: rotate(90deg);
+}
+
+.tagent-loader-preview__svg .tagent-loader-mask polygon:nth-child(2) {
+  transform-origin: 50% 50%;
+  animation: tagent-loader-rotation var(--tlp-time) linear infinite reverse;
+}
+
+.tagent-loader-preview__svg .tagent-loader-mask polygon:nth-child(3) {
+  transform-origin: 50% 60%;
+  animation: tagent-loader-rotation var(--tlp-time) linear infinite;
+  animation-delay: calc(var(--tlp-time) / -3);
+}
+
+.tagent-loader-preview__svg .tagent-loader-mask polygon:nth-child(4) {
+  transform-origin: 40% 40%;
+  animation: tagent-loader-rotation var(--tlp-time) linear infinite reverse;
+}
+
+.tagent-loader-preview__svg .tagent-loader-mask polygon:nth-child(5) {
+  transform-origin: 40% 40%;
+  animation: tagent-loader-rotation var(--tlp-time) linear infinite reverse;
+  animation-delay: calc(var(--tlp-time) / -2);
+}
+
+.tagent-loader-preview__svg .tagent-loader-mask polygon:nth-child(6) {
+  transform-origin: 60% 40%;
+  animation: tagent-loader-rotation var(--tlp-time) linear infinite;
+}
+
+.tagent-loader-preview__svg .tagent-loader-mask polygon:nth-child(7) {
+  transform-origin: 60% 40%;
+  animation: tagent-loader-rotation var(--tlp-time) linear infinite;
+  animation-delay: calc(var(--tlp-time) / -1.5);
+}
+
+@keyframes tagent-loader-rotation {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes tagent-loader-roundness {
+  0% {
+    filter: contrast(15);
+  }
+  20% {
+    filter: contrast(3);
+  }
+  40% {
+    filter: contrast(3);
+  }
+  60% {
+    filter: contrast(15);
+  }
+  100% {
+    filter: contrast(15);
+  }
+}
+
+/* 开关关闭：暂停 young-walrus 动画（变淡由 stage 统一处理） */
+.tagent-loader-preview[data-disabled] .tagent-loader-mask,
+.tagent-loader-preview[data-disabled] .tagent-loader-mask polygon {
+  animation-play-state: paused;
+}
+
+/* ===== 外观页预览舞台 ===== */
+
+.tagent-loader-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.tagent-loader-preview-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  padding: 4px 14px 16px;
+}
+
+.tagent-loader-preview-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.tagent-loader-preview-caption {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: hsl(var(--muted-foreground));
+}
+
+/* 开关关闭：整体变淡（young-walrus 动画暂停见上；螺旋由 active prop 暂停） */
+.tagent-loader-preview-stage[data-disabled] .tagent-loader-preview-item {
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tagent-loader-preview .tagent-loader-mask {
+    animation: none;
+    filter: contrast(15);
+  }
+
+  .tagent-loader-preview .tagent-loader-mask polygon {
+    animation: none;
+  }
+}

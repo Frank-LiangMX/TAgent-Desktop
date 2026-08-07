@@ -493,7 +493,7 @@ export class SessionService {
       }
     )
 
-    // 解析文件路径是否存在（文件 chip 存在性检查）。候选 base 优先，无则回退会话工作区。
+    // 解析文件路径是否存在（文件 chip / Files Changed 存在性检查）。候选 base 优先，无则回退会话工作区。
     ipcMain.handle(
       AGENT_IPC_CHANNELS.RESOLVE_FILE,
       async (
@@ -502,7 +502,9 @@ export class SessionService {
       ): Promise<string | null> => {
         const { isAbsolute, resolve, basename, dirname } = await import('node:path')
         const { existsSync } = await import('node:fs')
-        const target = input.path.trim()
+        const { cleanFilePathInput } = await import('@tagent/shared')
+        // 清洗引号 / file:// / :line 后缀，避免「解析到了但路径脏」→ 预览读失败
+        const target = cleanFilePathInput(input.path ?? '')
         if (!target) return null
         const candidates: string[] = []
         const workspace = resolveWorkspaceForSession(input.sessionId)

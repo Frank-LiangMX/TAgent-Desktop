@@ -45,6 +45,8 @@ interface ChatInputProps {
   onOpenFileDialog?: () => void
   mentionRoles?: MentionRoleOption[]
   topBar?: React.ReactNode
+  /** @ 选择面板开合变化：true=弹出（输入框上方浮层），false=关闭。供调用方让位重叠 UI */
+  onMentionOpenChange?: (open: boolean) => void
 }
 
 // ─── 序列化 / 反序列化 ───────────────────────────────────────────
@@ -178,6 +180,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     onOpenFileDialog,
     mentionRoles,
     topBar,
+    onMentionOpenChange,
   }, ref) {
     const editorRef = useRef<HTMLDivElement>(null)
     /** 输入浮岛外框：MentionPicker 锚定在其上方外侧（portal） */
@@ -396,6 +399,11 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     useEffect(() => {
       if (!mentionRoles?.length) setMentionOpen(false)
     }, [mentionRoles])
+
+    // 面板开合通知调用方：让位输入框上方重叠 UI（运行胶囊/下箭头），不碰任何计时状态
+    useEffect(() => {
+      onMentionOpenChange?.(mentionOpen)
+    }, [mentionOpen, onMentionOpenChange])
 
     const removeAttachment = useCallback(
       (id: string) => {

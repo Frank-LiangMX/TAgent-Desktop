@@ -23,7 +23,11 @@ import { isNearBottom } from './thinking-scroll-follow'
 interface ConciseTimelineViewProps {
   segments: ConciseSegment[]
   isLive?: boolean
-  /** 最新一轮：运行链默认展开；历史轮折叠 */
+  /**
+   * 是否仍为会话末尾的 assistant 轮。
+   * live 结束后若仍为 true：保持展开便于回看；一旦 false（用户发了新一轮）→ 折叠并保持。
+   * 切会话会 key=sessionId 卸载，回来重挂载默认折叠（不因 isLatestTurn 再展开）。
+   */
   isLatestTurn?: boolean
   /** 本轮已运行毫秒（live 用实时；完成后用 completedDuration） */
   workedMs?: number
@@ -77,11 +81,7 @@ export function ConciseTimelineView({
   return (
     <div className="agent-concise-timeline">
       {hasProcess ? (
-        <RunQueueShell
-          workedMs={workedMs}
-          isLive={isLive}
-          defaultExpanded={isLatestTurn || isLive}
-        >
+        <RunQueueShell workedMs={workedMs} isLive={isLive} isLatestTurn={isLatestTurn}>
           {processSegs.map((seg, idx) => {
             if (seg.kind === 'thinking') {
               return (
@@ -137,44 +137,54 @@ export function ConciseTimelineView({
   )
 }
 
-/** 最外层运行容器：对齐 Cursor「Worked for Xm」 */
+/**
+ * 最外层运行容器：对齐 Cursor「Worked for Xm」
+ *
+ * 展开策略（简洁模式）：
+ * - live：强制展开（实时查看）
+ * - live→idle 且仍是会话末尾一轮：保持展开，方便看完过程
+ * - 不再是末尾（用户发了新一轮）→ 折叠，且不再因「曾是最新」自动展开
+ * - 切会话：Chat key=sessionId 卸载；回来重挂载时默认折叠（即使仍是末尾轮）
+ */
 const RunQueueShell = memo(function RunQueueShell({
   workedMs,
   isLive,
-  defaultExpanded,
+  isLatestTurn,
   children,
 }: {
   workedMs: number
   isLive: boolean
-  /** 最新轮默认展开；被新消息挤成历史后折叠 */
-  defaultExpanded: boolean
+  isLatestTurn: boolean
   children: ReactNode
 }): JSX.Element {
-  const [open, setOpen] = useState(defaultExpanded)
-  const wasExpandedDefault = useRef(defaultExpanded)
-  // 沦为历史时瞬时折叠：禁止 grid 过渡 + StickToBottom smooth resize 叠成「从上扫到底」
+  // 重挂载默认折叠（切会话回来）；仅中途挂上的 live 轮才默认开
+  const [open, setOpen] = useState(isLive)
+  const wasLiveRef = useRef(isLive)
+  const wasLatestRef = useRef(isLatestTurn)
+  // 沦为历史时瞬时折叠，避免 StickToBottom smooth resize 扫视口
   const [collapseInstant, setCollapseInstant] = useState(false)
 
   useEffect(() => {
-    // 成为最新轮 / live → 展开；沦为历史 → 折叠
-    if (defaultExpanded && !wasExpandedDefault.current) {
-      setCollapseInstant(false)
-      setOpen(true)
-    }
-    if (!defaultExpanded && wasExpandedDefault.current) {
-      setCollapseInstant(true)
-      setOpen(false)
-    }
-    wasExpandedDefault.current = defaultExpanded
-  }, [defaultExpanded])
+    const wasLive = wasLiveRef.current
+    const wasLatest = wasLatestRef.current
+    wasLiveRef.current = isLive
+    wasLatestRef.current = isLatestTurn
 
-  // live 时强制保持展开（跑着不应被手动叠住看不见）
-  useEffect(() => {
     if (isLive) {
       setCollapseInstant(false)
       setOpen(true)
+      return
     }
-  }, [isLive])
+
+    // 跑完仍停在本会话末尾轮：保持展开（不在这里强折）
+    if (wasLive && isLatestTurn) return
+
+    // 焦点离开本轮：发了新一轮 / 被挤成历史 → 折叠并卸载过程树
+    if (wasLatest && !isLatestTurn) {
+      setCollapseInstant(true)
+      setOpen(false)
+    }
+  }, [isLive, isLatestTurn])
 
   // 瞬时折叠已上屏后清掉 flag，之后用户手动展开/收起仍可丝滑过渡
   useEffect(() => {
@@ -213,7 +223,7 @@ const RunQueueShell = memo(function RunQueueShell({
           )}
         />
       </button>
-      {/* 与 ThinkingFold / WorkStageFold 同：body 常驻 + grid 0fr↔1fr；历史降级可 is-instant */}
+      {/* 折叠时卸载 children，避免历史轮 / 切会话挂载整棵过程树 */}
       <div
         className={cn(
           'agent-concise-run__panel',
@@ -222,9 +232,11 @@ const RunQueueShell = memo(function RunQueueShell({
         )}
         aria-hidden={!open}
       >
-        <div className="agent-concise-run__panel-inner">
-          <div className="agent-concise-run__body">{children}</div>
-        </div>
+        {open ? (
+          <div className="agent-concise-run__panel-inner">
+            <div className="agent-concise-run__body">{children}</div>
+          </div>
+        ) : null}
       </div>
     </div>
   )
@@ -261,13 +273,25 @@ const ThinkingFold = memo(function ThinkingFold({
   const wasLive = useRef(isLive)
   const settleTimer = useRef<number | null>(null)
   const startRef = useRef<number | null>(null)
-  if (isLive && startRef.current == null) startRef.current = Date.now()
+  // live 墙钟：idle 后 useLiveElapsedMs 归零，需冻结最后一秒数，避免退回偏大的字数粗估
+  const frozenLiveSecRef = useRef<number | undefined>(undefined)
+  if (isLive && startRef.current == null) {
+    startRef.current = Date.now()
+    frozenLiveSecRef.current = undefined
+  }
   const elapsedMs = useLiveElapsedMs(startRef.current ?? undefined, isLive)
+  if (isLive && elapsedMs > 0) {
+    frozenLiveSecRef.current = Math.max(1, Math.floor(elapsedMs / 1000))
+  }
   const { displayedContent } = useSmoothStream({
     content: thinking,
     isStreaming: isLive,
   })
-  const summary = formatThinkingSummary(durationSec, {
+  // 优先真实观看时长；无 live 样本时才用 annotate 的 durationSec
+  const effectiveSec = isLive
+    ? Math.floor(elapsedMs / 1000)
+    : (frozenLiveSecRef.current ?? durationSec)
+  const summary = formatThinkingSummary(effectiveSec, {
     live: isLive,
     liveElapsedSec: Math.floor(elapsedMs / 1000),
   })
@@ -471,16 +495,7 @@ const WorkStageFold = memo(function WorkStageFold({
       {/* 子代理挂在阶段摘要下（对齐 Cursor），折叠明细时仍可见 */}
       {extras ? <div className="agent-concise-stage__extras">{extras}</div> : null}
 
-      {/* REGRESS-K1：阶段收起时仍露思考 step 头，避免「执行块内无思考行」 */}
-      {!open
-        ? steps
-            .filter((s): s is Extract<WorkStageStep, { kind: 'thinking' }> => s.kind === 'thinking')
-            .map((s) => (
-              <StageStepRow key={`peek-${s.key}`} step={s} isStreaming={false} />
-            ))
-        : null}
-
-      {/* live 折叠态：只露当前动作一行（摘要已在 head 累积） */}
+      {/* 收起态：不外挂「✓ 思考了片刻」——思考收回阶段块，展开才见；live 只露底栏当前动作 */}
       {!open && liveStatus ? (
         <div
           className={cn('agent-concise-live-status', fading && 'is-fading')}
@@ -499,7 +514,14 @@ const WorkStageFold = memo(function WorkStageFold({
               <StageStepRow
                 key={step.key}
                 step={step}
-                isStreaming={isStageLive && step.kind === 'tool' && !step.tool.result}
+                isStreaming={
+                  stageActive &&
+                  (step.kind === 'tool'
+                    ? !step.tool.result
+                    : step.kind === 'thinking' &&
+                      isLastThinkingStep(steps, step.key) &&
+                      !steps.some((s) => s.kind === 'tool' && !s.tool.result))
+                }
               />
             ))}
             {open && liveStatus ? (
@@ -586,6 +608,14 @@ function useLiveStatusHold(
 
   return { shown, fading }
 }
+/** 阶段内是否为末段思考（仅末段在 live 时可转圈；历史思考不再外露打勾） */
+function isLastThinkingStep(steps: WorkStageStep[], key: string): boolean {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (steps[i]!.kind === 'thinking') return steps[i]!.key === key
+  }
+  return false
+}
+
 const StageStepRow = memo(function StageStepRow({
   step,
   isStreaming,
@@ -595,25 +625,55 @@ const StageStepRow = memo(function StageStepRow({
 }): JSX.Element {
   const [detailOpen, setDetailOpen] = useState(false)
   const startRef = useRef<number | null>(null)
-  const thinkingLive = step.kind === 'thinking' && isStreaming
-  if (thinkingLive && startRef.current == null) startRef.current = Date.now()
-  // tool pending 也算 streaming；思考行用 live 计时
+  const frozenLiveSecRef = useRef<number | undefined>(undefined)
+  const isThinking = step.kind === 'thinking'
+  const thinkingLive = isThinking && isStreaming
+  if (thinkingLive && startRef.current == null) {
+    startRef.current = Date.now()
+    frozenLiveSecRef.current = undefined
+  }
+  // tool pending 也算 streaming；思考行用 live 计时，idle 后冻结避免退回字数粗估
   const elapsedMs = useLiveElapsedMs(
-    step.kind === 'thinking' ? (startRef.current ?? undefined) : undefined,
+    isThinking ? (startRef.current ?? undefined) : undefined,
     thinkingLive,
   )
-  const label = getWorkStepLabel(step, {
-    pending: isStreaming,
-    liveElapsedSec: Math.floor(elapsedMs / 1000),
-  })
+  if (thinkingLive && elapsedMs > 0) {
+    frozenLiveSecRef.current = Math.max(1, Math.floor(elapsedMs / 1000))
+  }
+  const stepDurationSec = isThinking
+    ? (frozenLiveSecRef.current ?? step.durationSec)
+    : step.durationSec
+  const label = getWorkStepLabel(
+    isThinking ? { ...step, durationSec: stepDurationSec } : step,
+    {
+      pending: isStreaming,
+      liveElapsedSec: Math.floor(elapsedMs / 1000),
+    },
+  )
   const isError = step.kind === 'tool' && Boolean(step.tool.result?.isError)
-  const hasDetail =
-    step.kind === 'thinking'
-      ? Boolean(step.thinking.trim())
-      : Boolean(step.tool.result?.content) || Boolean(step.diff)
+  const hasDetail = isThinking
+    ? Boolean(step.thinking.trim())
+    : Boolean(step.tool.result?.content) || Boolean(step.diff)
+
+  // 思考：不打勾；live 用文字扫光（不用转圈）。工具 live 仍可转圈表执行中。
+  const stepIcon = isThinking ? (
+    <span className="agent-concise-step__icon-dot" />
+  ) : isStreaming ? (
+    <CircleNotch size={12} className="animate-spin text-muted-foreground/50" />
+  ) : isError ? (
+    <WarningCircle size={12} weight="fill" className="text-destructive/70" />
+  ) : (
+    <Check size={12} weight="bold" className="text-muted-foreground/35" />
+  )
 
   return (
-    <div className={cn('agent-concise-step', isStreaming && 'is-active')}>
+    <div
+      className={cn(
+        'agent-concise-step',
+        isStreaming && 'is-active',
+        isThinking && 'agent-concise-step--thinking',
+      )}
+    >
       <button
         type="button"
         className="agent-concise-step__head"
@@ -621,15 +681,17 @@ const StageStepRow = memo(function StageStepRow({
         disabled={!hasDetail}
       >
         <span className="agent-concise-step__icon" aria-hidden>
-          {isStreaming ? (
-            <CircleNotch size={12} className="animate-spin text-muted-foreground/50" />
-          ) : isError ? (
-            <WarningCircle size={12} weight="fill" className="text-destructive/70" />
-          ) : (
-            <Check size={12} weight="bold" className="text-muted-foreground/35" />
-          )}
+          {stepIcon}
         </span>
-        <span className="agent-concise-step__label">{label}</span>
+        <span
+          className={cn(
+            'agent-concise-step__label',
+            // 思考 live：文案扫光（对齐 Cursor / 阶段底栏「正在思考…」）
+            isThinking && isStreaming && 'agent-concise-shimmer',
+          )}
+        >
+          {label}
+        </span>
         {step.kind === 'tool' && step.diff ? (
           <DiffHint add={step.diff.add} del={step.diff.del} />
         ) : null}

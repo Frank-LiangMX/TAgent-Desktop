@@ -9,6 +9,7 @@
  * - work_stage.steps：阶段内 chronological 步骤（thinking + tool）
  * - narrative.progress / final：方向短总结 / 最终正文
  */
+import { cleanFilePathInput } from '@tagent/shared'
 import type { ProcessEntry } from './session-turn-model'
 import { formatThinkingSummary, resolveThinkingDurationSec } from './session-turn-model'
 import { getToolPhrase } from './tool-phrase'
@@ -72,8 +73,9 @@ function toolFileHint(tool: ToolProcessEntry): string | null {
 export function toolFilePath(tool: ToolProcessEntry): string | null {
   const input = tool.tool.input ?? {}
   const fp = input.file_path ?? input.filePath ?? input.path
-  if (typeof fp === 'string' && fp.trim()) return fp.trim()
-  return null
+  if (typeof fp !== 'string' || !fp.trim()) return null
+  const cleaned = cleanFilePathInput(fp)
+  return cleaned || null
 }
 
 function resultText(content: unknown): string {

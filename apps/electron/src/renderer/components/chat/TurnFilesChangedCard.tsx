@@ -53,11 +53,13 @@ export function TurnFilesChangedCard({ files }: TurnFilesChangedCardProps): JSX.
   if (files.length === 0) return null
 
   const open = (path: string): void => {
-    onOpenFile?.(path, basePaths?.length ? { basePaths } : undefined)
+    if (!onOpenFile) return
+    onOpenFile(path, basePaths?.length ? { basePaths } : undefined)
   }
 
   const hidden = Math.max(0, files.length - PREVIEW_COUNT)
   const visible = expanded || hidden === 0 ? files : files.slice(0, PREVIEW_COUNT)
+  const canOpen = Boolean(onOpenFile)
 
   return (
     <div className="agent-files-changed" role="region" aria-label="本轮更改的文件">
@@ -65,11 +67,12 @@ export function TurnFilesChangedCard({ files }: TurnFilesChangedCardProps): JSX.
         <span className="agent-files-changed__title">
           {files.length} {files.length === 1 ? 'File Changed' : 'Files Changed'}
         </span>
-        {onOpenFile ? (
+        {canOpen ? (
           <button
             type="button"
             className="agent-files-changed__review"
             onClick={() => open(files[0]!.path)}
+            title={`在分屏中预览 ${files[0]!.name}`}
           >
             Review
           </button>
@@ -82,7 +85,8 @@ export function TurnFilesChangedCard({ files }: TurnFilesChangedCardProps): JSX.
               type="button"
               className="agent-files-changed__row"
               onClick={() => open(f.path)}
-              title={f.path}
+              disabled={!canOpen}
+              title={canOpen ? `打开 ${f.path}` : f.path}
             >
               <FileLangBadge name={f.name} />
               <span className="agent-files-changed__name">{f.name}</span>

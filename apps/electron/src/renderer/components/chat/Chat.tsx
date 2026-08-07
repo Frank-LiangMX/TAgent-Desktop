@@ -107,6 +107,8 @@ import { AskUserQuestionBanner } from './AskUserQuestionBanner'
 import { ExecutionModeSuggestionBanner } from './ExecutionModeSuggestionBanner'
 import { SessionErrorBanner } from './SessionErrorBanner'
 import { setSessionErrorAtom } from '../../atoms/session-error-atoms'
+import { allPendingAskUserRequestsAtom } from '../../atoms/ask-user-atoms'
+import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
 import { RunModeSelector } from './RunModeSelector'
 import { KanbanCrewPanel } from './KanbanCrewPanel'
 import { MessageQueue } from './MessageQueue'
@@ -197,6 +199,7 @@ export function Chat({
   session,
   onDraftWorkspaceChange,
   onBack,
+  onMaterialized,
   crewExternalized = false,
   onOpenCrew,
 }: {
@@ -205,6 +208,12 @@ export function Chat({
   onDraftWorkspaceChange?: (id: string) => void
   /** 草稿态返回欢迎页（丢弃草稿）；会话页/线程态由 SessionRouter 不传 */
   onBack?: () => void
+  /**
+   * 草稿态发送首条消息物化为正式 tab 后通知 App 清草稿态。
+   * 已有 tab（SessionRouter）不传；调用方负责 setDraftSession(null)。
+   * 不清的话切到其他 tab 时草稿 overlay 条件会复活，覆盖带 TabBar 的会话页。
+   */
+  onMaterialized?: () => void
   /**
    * 班组面板已外置到 Dockview 独立 pane（分屏模式）。true 时隐藏 Chat 内部班组面板
    * 及其入口（footer 按钮 / edge-tab / Work 自动开），班组全走 dock 的 crew pane。
@@ -406,6 +415,14 @@ export function Chat({
   }, [crewPanelWidth])
   /** 对话列变窄时启用紧凑输入底栏（右栏展开 / 窗口窄） */
   const [composerCompact, setComposerCompact] = useState(false)
+  /** @ 选择面板是否展开：展开时让位输入框上方重叠 UI（运行胶囊/下箭头），不碰计时状态 */
+  const [mentionPickerOpen, setMentionPickerOpen] = useState(false)
+  /** AskUser / 权限横幅：与 @ 一样让位浮层，避免胶囊+下箭头压在弹窗底栏 */
+  const pendingAskUserMap = useAtomValue(allPendingAskUserRequestsAtom)
+  const pendingPermissionMap = useAtomValue(pendingPermissionMapAtom)
+  const hasBlockingBottomBanner =
+    (pendingAskUserMap.get(sessionId)?.length ?? 0) > 0 ||
+    (pendingPermissionMap[sessionId]?.length ?? 0) > 0
   /** Chat @ 角色库短列表 */
   const [mentionRoles, setMentionRoles] = useState<
     Array<{ id: string; displayName: string; description?: string }>
@@ -871,12 +888,15 @@ export function Chat({
     [sessionBoardId],
   )
 
-  // 动态测量底部 UI 实际顶部 → --session-composer-top（下箭头 bottom 锚定）
+  // 动态测量底部 UI：
+  //   --session-composer-top：Conversation 底 → bottom-stack 顶（下箭头 bottom 锚定）
+  //   --session-stack-over-cluster：cluster 顶 → stack 顶（队列/横幅高度；运行胶囊上抬量）
   // 必须以 Conversation 底边为基准（按钮定位上下文），不能只量 root：
   // 有图片附件时输入玻璃变高，若变量滞后，箭头会停在旧高度并被 z-20 底栏盖住。
   const updateComposerTop = useCallback((): void => {
     const root = rootRef.current
     const stack = bottomStackRef.current
+    const cluster = composerClusterRef.current
     if (!root || !stack) return
     // Conversation 是 absolute inset-0 的滚动容器，scroll 按钮 relative 于它
     const conversationEl =
@@ -885,9 +905,17 @@ export function Chat({
     const stackTop = stack.getBoundingClientRect().top
     const dist = Math.max(0, Math.round(convBottom - stackTop))
     root.style.setProperty('--session-composer-top', `${dist}px`)
+    // 队列/建议条等在 cluster 之上：胶囊不能再贴输入框顶，要抬过它们
+    if (cluster) {
+      const clusterTop = cluster.getBoundingClientRect().top
+      const over = Math.max(0, Math.round(clusterTop - stackTop))
+      root.style.setProperty('--session-stack-over-cluster', `${over}px`)
+    } else {
+      root.style.setProperty('--session-stack-over-cluster', '0px')
+    }
   }, [])
 
-  /** 布局变化后多帧校正（附件 DOM 插入、图片解码、功能栏动画） */
+  /** 布局变化后多帧校正（附件 DOM 插入、图片解码、功能栏动画、队列 spring） */
   const scheduleComposerTopUpdate = useCallback((): (() => void) => {
     updateComposerTop()
     const raf1 = requestAnimationFrame(() => {
@@ -896,10 +924,13 @@ export function Chat({
     })
     const t1 = window.setTimeout(updateComposerTop, 50)
     const t2 = window.setTimeout(updateComposerTop, 200)
+    // MessageQueue / AskUser motion spring 常 >200ms，再补一帧避免胶囊/箭头压队列
+    const t3 = window.setTimeout(updateComposerTop, 420)
     return () => {
       cancelAnimationFrame(raf1)
       clearTimeout(t1)
       clearTimeout(t2)
+      clearTimeout(t3)
     }
   }, [updateComposerTop])
 
@@ -908,7 +939,7 @@ export function Chat({
     const composer = composerClusterRef.current
     if (!stack || !composer) return
 
-    // RO：box 尺寸变化（功能栏/token/多行输入/附件撑高）
+    // RO：box 尺寸变化（功能栏/token/多行输入/附件撑高/队列高度）
     const ro = new ResizeObserver(() => {
       updateComposerTop()
     })
@@ -931,7 +962,7 @@ export function Chat({
     }
   }, [updateComposerTop, scheduleComposerTopUpdate])
 
-  // 附件 / 模式：显式重测（不依赖 RO 是否丢帧）
+  // 附件 / 模式 / 消息队列：显式重测（不依赖 RO 是否丢帧）
   useEffect(() => {
     return scheduleComposerTopUpdate()
   }, [
@@ -949,6 +980,11 @@ export function Chat({
     window.addEventListener('tagent:composer-top-remeasure', onRemeasure)
     return () => window.removeEventListener('tagent:composer-top-remeasure', onRemeasure)
   }, [scheduleComposerTopUpdate])
+
+  // AskUser / 权限弹窗出现或收起：强制重测（motion 高度动画时 RO 偶发滞后）
+  useEffect(() => {
+    return scheduleComposerTopUpdate()
+  }, [hasBlockingBottomBanner, scheduleComposerTopUpdate])
 
   // 对话列宽度：右栏打开或窗口变窄 → 紧凑输入栏（图标优先，防文字叠压）
   useEffect(() => {
@@ -1558,6 +1594,9 @@ export function Chat({
           )
           setTabs(nextTabs)
           setActiveTabId(activeTabId)
+          // 草稿转正：通知 App 清 draftSession，否则切到其他 tab 时
+          // 草稿 overlay 条件（draftSession.id !== activeTab.sessionId）会复活，覆盖带 TabBar 的会话页
+          onMaterialized?.()
         } else {
           setTabs((prev) => prev.map((tab) => (
             tab.sessionId === sid
@@ -1799,6 +1838,7 @@ export function Chat({
       mentionRoles={executionMode === 'chat' ? mentionRoles : undefined}
       topBar={activeMentionBar}
       footer={landingFooter}
+      onMentionOpenChange={setMentionPickerOpen}
     />
   )
 
@@ -1831,13 +1871,14 @@ export function Chat({
     const hitCache = resolveHitCacheRef.current
     return {
       basePaths: workspaceDirectory ? [workspaceDirectory] : undefined,
-      // 点击文件 chip / Files Changed → 先带 workspace bases 解析成绝对路径再开预览，
-      // 避免相对路径或混分隔符落到「解析到了但不在工作区」读失败。
+      // 点击文件 chip / Files Changed → 打开分屏 + 解析路径后开预览。
+      // 须先 setSplitDockMode：非 dock 布局下 WorkspaceDock 不挂载，只写 atom 会像「点了没反应」。
       onOpenFile: (path: string, options?: { basePaths?: string[] }): void => {
         const sid = sessionIdRef.current
         const bases =
           options?.basePaths ??
           (workspaceDirectory ? [workspaceDirectory] : undefined)
+        if (!splitDockMode) setSplitDockMode(true)
         void (async () => {
           const resolved = await window.electronAPI.resolveFile({
             sessionId: sid,
@@ -1866,7 +1907,7 @@ export function Chat({
       },
       getSessionId: () => sessionIdRef.current,
     }
-  }, [workspaceDirectory, setFilePreviewRequest])
+  }, [workspaceDirectory, setFilePreviewRequest, setSplitDockMode, splitDockMode])
 
   const richPreviewProviderValue = useMemo(
     () => ({
@@ -1908,6 +1949,8 @@ export function Chat({
           composerCompact && 'is-composer-compact',
         )}
         data-composer-density={composerCompact ? 'compact' : 'comfortable'}
+        data-mention-open={mentionPickerOpen ? 'true' : 'false'}
+        data-bottom-banner-open={hasBlockingBottomBanner ? 'true' : 'false'}
       >
       {items.length === 0 && !running ? (
         <NewConversationLanding
@@ -1954,7 +1997,7 @@ export function Chat({
                     (running || runStartedAt != null) &&
                     turnIndex === visibleTurns.length - 1 &&
                     turn.kind === 'assistant-turn'
-                  // 仅当该 assistant-turn 仍是会话末尾时默认展开；用户已发下一轮（末尾是 user）则旧链折叠
+                  // 简洁：末尾 assistant 跑完可保持展开；发新一轮后 isLatest=false → 折叠
                   const isLatestAssistantTurn =
                     turn.kind === 'assistant-turn' &&
                     turnIndex === lastAssistantIdx &&
@@ -2113,6 +2156,7 @@ export function Chat({
               onOpenFileDialog={handleOpenFileDialog}
               mentionRoles={executionMode === 'chat' ? mentionRoles : undefined}
               topBar={activeMentionBar}
+              onMentionOpenChange={setMentionPickerOpen}
               footer={
                 /* h-7 固定底栏；窄宽时 is-composer-compact 走图标优先方案 */
                 <div
@@ -2413,7 +2457,7 @@ function TurnView({
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
-  /** 当前会话最后一个 assistant-turn；其运行链默认展开，被新轮挤掉后折叠 */
+  /** 当前会话末尾 assistant-turn（简洁模式跑完保持展开用） */
   isLatestAssistantTurn?: boolean
   streamState?: SessionStreamState
   onRefillToInput?: (text: string) => void

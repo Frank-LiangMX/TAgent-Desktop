@@ -18,6 +18,8 @@ interface ThreePetalSpiralProps {
   className?: string
   /** 动画缩放尺寸，默认 24px */
   size?: number
+  /** 是否运行动画；false 时只渲染静态首帧（用于预览暂停），默认 true */
+  active?: boolean
 }
 
 const SPIRAL_CONFIG = {
@@ -78,6 +80,7 @@ function getParticle(
 export function ThreePetalSpiral({
   className,
   size = 24,
+  active = true,
 }: ThreePetalSpiralProps): React.ReactElement {
   const svgRef = React.useRef<SVGSVGElement>(null)
   const groupEl = React.useRef<SVGGElement | null>(null)
@@ -159,9 +162,15 @@ export function ThreePetalSpiral({
       rafId.current = requestAnimationFrame(render)
     }
 
+    // 暂停：只渲染一次静态首帧，不启动 rAF
+    if (!active) {
+      render(startTime.current)
+      return
+    }
+
     rafId.current = requestAnimationFrame(render)
     return () => cancelAnimationFrame(rafId.current)
-  }, [])
+  }, [active])
 
   return (
     <svg

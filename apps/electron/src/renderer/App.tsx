@@ -110,7 +110,9 @@ declare global {
       createProjectWorkspace: () => Promise<AgentWorkspace | null>
       deleteWorkspace: (id: string) => Promise<void>
       reorderWorkspaces: (orderedIds: string[]) => Promise<AgentWorkspace[]>
-      readWorkspaceFile: (filePath: string) => Promise<{
+      readWorkspaceFile: (
+        input: string | { path: string; sessionId?: string; bases?: string[] },
+      ) => Promise<{
         content?: string
         dataUrl?: string
         mime?: string
@@ -637,6 +639,7 @@ export function App(): JSX.Element {
               setDraftSession((prev) => (prev ? { ...prev, workspaceId: id } : prev))
             }}
             onBack={() => setDraftSession(null)}
+            onMaterialized={() => setDraftSession(null)}
           />
         ) : activeTab ? (
           splitDockMode ? (

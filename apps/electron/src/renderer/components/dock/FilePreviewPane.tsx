@@ -134,10 +134,18 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
           setState({ kind: 'error', message: `文件不存在：${target.path}` })
           return
         }
-        const file = await window.electronAPI.readWorkspaceFile(abs)
+        // 带上 sessionId + bases：允许根含会话工作区（hidden / 草稿 bases），避免「解析成功却读失败」
+        const file = await window.electronAPI.readWorkspaceFile({
+          path: abs,
+          sessionId: target.sessionId,
+          bases: target.bases,
+        })
         if (cancelled) return
         if (!file) {
-          setState({ kind: 'error', message: '无法读取文件（可能不在工作区或超过 10MB）' })
+          setState({
+            kind: 'error',
+            message: `无法读取文件：${abs}（文件不存在、超过 10MB，或无读权限）`,
+          })
           return
         }
         setState({

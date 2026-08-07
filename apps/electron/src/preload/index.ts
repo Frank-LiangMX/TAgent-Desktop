@@ -135,9 +135,17 @@ const electronAPI = {
   /** 删除工作区及其会话；不删除本地项目源码目录 */
   deleteWorkspace: (id: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_WORKSPACE, id) as Promise<void>,
-  /** 读取工作区文件（富内容预览块用；仅限已注册工作区目录内） */
-  readWorkspaceFile: (filePath: string) =>
-    ipcRenderer.invoke(AGENT_IPC_CHANNELS.READ_WORKSPACE_FILE, filePath) as Promise<{
+  /**
+   * 读取文件供预览（Files Changed / chip）。
+   * 兼容旧签名 string；`{ path, sessionId?, bases? }` 用于诊断日志。
+   * 存在且未超 10MB 即可读——不因「工作区外」拒绝（Agent 能改则应能看）。
+   */
+  readWorkspaceFile: (
+    input:
+      | string
+      | { path: string; sessionId?: string; bases?: string[] },
+  ) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.READ_WORKSPACE_FILE, input) as Promise<{
       content?: string
       dataUrl?: string
       mime?: string

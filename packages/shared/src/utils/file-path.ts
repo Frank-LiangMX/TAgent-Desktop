@@ -150,6 +150,37 @@ export function stripLineCol(filePath: string): { path: string; suffix: string }
 }
 
 /**
+ * 清洗 Agent / 工具给出的路径：去引号、file://、行号后缀、首尾空白。
+ * Files Changed / resolveFile 共用，避免 `"./a.ts"`、`file:///C:/a.ts:12` 解析到了却读失败。
+ */
+export function cleanFilePathInput(filePath: string): string {
+  let s = filePath.trim()
+  if (!s) return s
+  // 包裹引号
+  if (
+    (s.startsWith('"') && s.endsWith('"') && s.length >= 2) ||
+    (s.startsWith("'") && s.endsWith("'") && s.length >= 2)
+  ) {
+    s = s.slice(1, -1).trim()
+  }
+  // file:// 或 file:///C:/...
+  if (/^file:/i.test(s)) {
+    try {
+      // Windows file:///C:/x → pathname /C:/x；用 URL 解析再剥前导斜杠
+      const u = new URL(s)
+      let pathname = decodeURIComponent(u.pathname || '')
+      if (/^\/[A-Za-z]:\//.test(pathname)) pathname = pathname.slice(1)
+      s = pathname || s
+    } catch {
+      s = s.replace(/^file:\/\//i, '')
+      if (/^\/[A-Za-z]:\//.test(s)) s = s.slice(1)
+    }
+  }
+  s = stripLineCol(s).path.trim()
+  return s
+}
+
+/**
  * 检测文本是否为绝对文件路径
  *
  * Windows 同时接受：
