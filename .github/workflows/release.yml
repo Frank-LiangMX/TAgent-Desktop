@@ -99,7 +99,8 @@ jobs:
         working-directory: ${{ matrix.workdir }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: bun run package:ci -- ${{ matrix.package_args }} --verbose
+          DEBUG: 'electron-builder'
+        run: bun run package:ci -- ${{ matrix.package_args }}
         continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
 
       - name: Debug — list out/ directory (Linux only)
