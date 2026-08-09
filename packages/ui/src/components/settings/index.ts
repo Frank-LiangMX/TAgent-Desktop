@@ -6,6 +6,7 @@
 
 export * from './SettingsUIConstants'
 export * from './FieldLabel'
+export * from './SettingsPageIntro'
 export * from './SettingsSection'
 export * from './SettingsCard'
 export * from './SettingsRow'

@@ -13,16 +13,23 @@ import {
   Moon,
   Sun,
   UserRound,
+  Users,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import {
+  AppTooltip,
   Dialog,
   DialogContent,
   SettingsInput,
+  SettingsPageIntro,
   SettingsSection,
   SettingsCard,
   Switch,
   ThreePetalSpiral,
+  Spinner,
+  LoadingIndicator,
+  MessageLoading,
+  AddonLoader,
 } from '@tagent/ui'
 import {
   themeModeAtom,
@@ -45,7 +52,9 @@ import {
 } from '../../atoms/notification-prefs'
 import { loaderAnimationEnabledAtom, splitDockModeAtom } from '../../atoms/feature-flags'
 import { ChannelsSettings } from './ChannelsSettings'
+import { AgentBehaviorSettings } from './AgentBehaviorSettings'
 import { UpdateChecker } from './UpdateChecker'
+import { ComposerRunTimer } from '../chat/ComposerRunTimer'
 import appiconLight from '../../assets/tagent-appicon-light.png'
 import appiconDark from '../../assets/tagent-appicon-dark.png'
 
@@ -53,7 +62,7 @@ const APP_VERSION =
   typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : '2.0.0-dev.9'
 
 /** 设置页 tab：工作区在侧栏管；插件/MCP 在 Rail 插件页 */
-export type SettingsTab = 'general' | 'appearance' | 'channels' | 'about'
+export type SettingsTab = 'general' | 'appearance' | 'channels' | 'agent' | 'about'
 
 interface TabItem {
   id: SettingsTab
@@ -88,6 +97,13 @@ const ALL_TABS: TabItem[] = [
     label: '渠道',
     description: 'AI 供应商、密钥与连通',
     icon: <Cable size={14} strokeWidth={1.75} />,
+    group: 'core',
+  },
+  {
+    id: 'agent',
+    label: 'Agent 行为',
+    description: '班组、会诊、圆桌等协作策略',
+    icon: <Users size={14} strokeWidth={1.75} />,
     group: 'core',
   },
   {
@@ -298,20 +314,10 @@ function renderTabContent(tab: SettingsTab): JSX.Element {
     case 'general': return <GeneralSettings />
     case 'appearance': return <AppearanceSettings />
     case 'channels': return <ChannelsSettings />
+    case 'agent': return <AgentBehaviorSettings />
     case 'about': return <AboutSettings />
     default: return <AppearanceSettings />
   }
-}
-
-function SettingsPageIntro({ title, description }: { title: string; description?: string }): JSX.Element {
-  return (
-    <div className="settings-page-intro">
-      <div>
-        <h2 className="settings-page-intro-title">{title}</h2>
-        {description && <p className="settings-page-intro-desc">{description}</p>}
-      </div>
-    </div>
-  )
 }
 
 export function SettingsDialog({
@@ -403,7 +409,7 @@ export function SettingsDialog({
                 <div className="settings-shell-scroll scrollbar-thin">
                   <div
                     key={`${activeTab}-${paneKey}`}
-                    className={`settings-shell-content settings-shell-pane ${activeTab === 'channels' ? 'settings-shell-content--wide' : ''}`}
+                    className={`settings-shell-content settings-shell-pane ${activeTab === 'channels' || activeTab === 'agent' ? 'settings-shell-content--wide' : ''}`}
                   >
                     {renderTabContent(activeTab)}
                   </div>
@@ -788,6 +794,8 @@ function AppearanceSettings(): JSX.Element {
   const setDynamicBg = useSetAtom(dynamicBgEnabledAtom)
   const loaderEnabled = useAtomValue(loaderAnimationEnabledAtom)
   const setLoaderEnabled = useSetAtom(loaderAnimationEnabledAtom)
+  /** 运行胶囊图鉴锚点：固定起点，预览里实时走字（关开关只暂停动画，不卸 DOM） */
+  const [runCapsulePreviewAt] = useState(() => Date.now() - 12_000)
 
   const isAuto = themeMode === 'system'
 
@@ -859,7 +867,7 @@ function AppearanceSettings(): JSX.Element {
                 <span className="settings-field-label">加载动画</span>
                 <div className="settings-row-bottom mt-1">
                   <span className="text-xs leading-relaxed text-muted-foreground">
-                    加载动画预览（有机形变 / 三瓣螺旋），配色跟随当前主题色系
+                    仓库内各加载动画组件图鉴预览，配色跟随当前主题色系；关闭开关则全部暂停并变淡
                   </span>
                 </div>
               </div>
@@ -874,14 +882,60 @@ function AppearanceSettings(): JSX.Element {
             <div
               className="tagent-loader-preview-stage"
               data-disabled={!loaderEnabled || undefined}
+              role="list"
+              aria-label="加载动画图鉴"
             >
-              <div className="tagent-loader-preview-item">
-                <LoaderPreview disabled={!loaderEnabled} />
+              <div className="tagent-loader-preview-item" role="listitem">
+                <div className="tagent-loader-preview-frame">
+                  <LoaderPreview disabled={!loaderEnabled} />
+                </div>
                 <span className="tagent-loader-preview-caption">有机形变</span>
+                <span className="tagent-loader-preview-usage">外观页 · 默认</span>
               </div>
-              <div className="tagent-loader-preview-item">
-                <ThreePetalSpiral size={40} active={loaderEnabled} />
+              <div className="tagent-loader-preview-item" role="listitem">
+                <div className="tagent-loader-preview-frame">
+                  <ThreePetalSpiral size={40} active={loaderEnabled} />
+                </div>
                 <span className="tagent-loader-preview-caption">三瓣螺旋</span>
+                <span className="tagent-loader-preview-usage">轻量 · 默认</span>
+              </div>
+              <div className="tagent-loader-preview-item" role="listitem">
+                <div className="tagent-loader-preview-frame">
+                  <Spinner size="default" />
+                </div>
+                <span className="tagent-loader-preview-caption">点阵网格</span>
+                <span className="tagent-loader-preview-usage">通用等待 · 默认</span>
+              </div>
+              <div className="tagent-loader-preview-item" role="listitem">
+                <div className="tagent-loader-preview-frame">
+                  <LoadingIndicator label="思考中" />
+                </div>
+                <span className="tagent-loader-preview-caption">带标签指示器</span>
+                <span className="tagent-loader-preview-usage">可附计时 · 默认</span>
+              </div>
+              <div className="tagent-loader-preview-item" role="listitem">
+                <div className="tagent-loader-preview-frame">
+                  <MessageLoading />
+                </div>
+                <span className="tagent-loader-preview-caption">消息弹跳点</span>
+                <span className="tagent-loader-preview-usage">消息中 · 占位</span>
+              </div>
+              <div className="tagent-loader-preview-item" role="listitem">
+                <div className="tagent-loader-preview-frame">
+                  <AddonLoader size={80} fontSize="1em" />
+                </div>
+                <span className="tagent-loader-preview-caption">附加光环</span>
+                <span className="tagent-loader-preview-usage">重操作 · 附加</span>
+              </div>
+              <div
+                className="tagent-loader-preview-item tagent-loader-preview-item--wide"
+                role="listitem"
+              >
+                <div className="tagent-loader-preview-frame tagent-loader-preview-frame--wide">
+                  <ComposerRunTimer startedAt={runCapsulePreviewAt} />
+                </div>
+                <span className="tagent-loader-preview-caption">运行胶囊</span>
+                <span className="tagent-loader-preview-usage">会话 · 输入框上方计时</span>
               </div>
             </div>
           </div>
@@ -1017,7 +1071,9 @@ function AboutSettings(): JSX.Element {
             {envItems.map(({ label, value }) => (
               <div key={label} className="settings-env-item">
                 <span className="settings-env-label">{label}</span>
-                <span className="settings-env-value" title={value}>{value}</span>
+                <AppTooltip label={value} multiline>
+                  <span className="settings-env-value">{value}</span>
+                </AppTooltip>
               </div>
             ))}
           </div>

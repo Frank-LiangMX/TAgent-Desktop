@@ -97,3 +97,15 @@ export * from './user-profile'
 
 // 渠道余额查询
 export * from './balance'
+
+// MoA 会诊预置（虚拟 modelId + 预置存储契约）
+export * from './moa-preset'
+
+// MoA 圆桌卡纯函数状态机（panel 推/渲染用）
+export * from './moa-roundtable'
+
+// MoA 历史注入纯函数（拼会话上下文块 + 议题前缀）
+export * from './moa-history'
+
+// MoA 落盘 shape 纯函数（汇总 final assistant SDKMessage 构造）
+export * from './moa-persist'

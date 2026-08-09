@@ -12,6 +12,7 @@ import * as React from 'react'
 import { createPortal } from 'react-dom'
 
 import { cn } from '../lib/utils'
+import { AppTooltip } from '../components/tooltip'
 import {
   MessageRichPreviewContext,
   type RichPreviewKind,
@@ -104,15 +105,16 @@ export function RichCopyAction({ value, label }: CopyActionProps): React.ReactEl
   }, [value])
 
   return (
-    <button
-      type="button"
-      onClick={() => void handleCopy()}
-      className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-      title={copied ? '已复制' : '复制'}
-    >
-      <svg {...ICON_ATTRS}>{copied ? checkIconPath : copyIconPath}</svg>
-      {label !== undefined && <span>{copied ? '已复制' : label}</span>}
-    </button>
+    <AppTooltip label={copied ? '已复制' : '复制'}>
+      <button
+        type="button"
+        onClick={() => void handleCopy()}
+        className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+      >
+        <svg {...ICON_ATTRS}>{copied ? checkIconPath : copyIconPath}</svg>
+        {label !== undefined && <span>{copied ? '已复制' : label}</span>}
+      </button>
+    </AppTooltip>
   )
 }
 
@@ -165,17 +167,18 @@ export function RichFullscreen({
       >
         <header className="flex h-[40px] shrink-0 items-center justify-between border-b border-border/70 bg-foreground/[0.05] px-3">
           <strong className="text-xs font-semibold text-foreground">{title}</strong>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-            title="关闭"
-          >
-            <svg {...ICON_ATTRS}>
-              <path d="M18 6 6 18" />
-              <path d="m6 6 12 12" />
-            </svg>
-          </button>
+          <AppTooltip label="关闭">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+            >
+              <svg {...ICON_ATTRS}>
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </svg>
+            </button>
+          </AppTooltip>
         </header>
         <div className="rich-fullscreen-body scrollbar-thin flex min-h-0 flex-1 flex-col overflow-auto">
           {children}
@@ -266,25 +269,27 @@ export function RichFrame({
             <div className="flex items-center gap-1">
               {actions}
               {canSplit ? (
-                <button
-                  type="button"
-                  onClick={handleSplit}
-                  className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-                  title="在分屏独立标签打开"
-                >
-                  <svg {...ICON_ATTRS}>{splitPaneIconPath}</svg>
-                  <span>分屏</span>
-                </button>
+                <AppTooltip label="在分屏独立标签打开">
+                  <button
+                    type="button"
+                    onClick={handleSplit}
+                    className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                  >
+                    <svg {...ICON_ATTRS}>{splitPaneIconPath}</svg>
+                    <span>分屏</span>
+                  </button>
+                </AppTooltip>
               ) : null}
               {fullscreen && (
-                <button
-                  type="button"
-                  onClick={() => setFullscreenOpen(true)}
-                  className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-                  title="全屏查看"
-                >
-                  <svg {...ICON_ATTRS}>{fullscreenIconPath}</svg>
-                </button>
+                <AppTooltip label="全屏查看">
+                  <button
+                    type="button"
+                    onClick={() => setFullscreenOpen(true)}
+                    className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                  >
+                    <svg {...ICON_ATTRS}>{fullscreenIconPath}</svg>
+                  </button>
+                </AppTooltip>
               )}
               {copyValue !== undefined && <RichCopyAction value={copyValue} />}
             </div>

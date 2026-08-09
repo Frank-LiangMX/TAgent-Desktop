@@ -13,6 +13,7 @@ import {
   cancelIdleInstallAtom,
 } from '../../atoms/updater'
 import { useState, useEffect } from 'react'
+import { AppTooltip } from '@tagent/ui'
 
 export function UpdateBanner(): JSX.Element | null {
   const state = useAtomValue(updateStateAtom)
@@ -105,7 +106,9 @@ export function UpdateBanner(): JSX.Element | null {
         <span className="upd-banner-dot" data-state="error">
           <AlertCircle size={13} />
         </span>
-        <span className="upd-banner-label" title={state.error}>更新检查失败</span>
+        <AppTooltip label={state.error} multiline>
+          <span className="upd-banner-label">更新检查失败</span>
+        </AppTooltip>
         <button
           type="button"
           className="upd-banner-btn"

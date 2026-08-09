@@ -11,6 +11,7 @@ import {
 } from '../../atoms/status-ticker'
 import { notificationPrefsAtom } from '../../atoms/notification-prefs'
 import { cn } from '../../lib/utils'
+import { AppTooltip } from '@tagent/ui'
 
 export function StatusTicker(): JSX.Element {
   const enabled = useAtomValue(notificationPrefsAtom).titlebarTicker
@@ -40,33 +41,34 @@ export function StatusTicker(): JSX.Element {
   }
 
   return (
-    <div
-      className={cn(
-        'status-ticker titlebar-no-drag',
-        current.tone && `status-ticker--${current.tone}`,
-      )}
-      role="status"
-      aria-live="polite"
-      title={current.text}
-      onClick={() => dismiss(current.id)}
-    >
-      <div className="status-ticker__viewport">
-        <div
-          key={`${current.id}-${tick}`}
-          className={cn('status-ticker__track', long && 'status-ticker__track--marquee')}
-        >
-          <span className="status-ticker__text">{current.text}</span>
-          {long ? (
-            <span className="status-ticker__text status-ticker__text--dup" aria-hidden>
-              {current.text}
-            </span>
-          ) : null}
+    <AppTooltip label={current.text} side="bottom">
+      <div
+        className={cn(
+          'status-ticker titlebar-no-drag',
+          current.tone && `status-ticker--${current.tone}`,
+        )}
+        role="status"
+        aria-live="polite"
+        onClick={() => dismiss(current.id)}
+      >
+        <div className="status-ticker__viewport">
+          <div
+            key={`${current.id}-${tick}`}
+            className={cn('status-ticker__track', long && 'status-ticker__track--marquee')}
+          >
+            <span className="status-ticker__text">{current.text}</span>
+            {long ? (
+              <span className="status-ticker__text status-ticker__text--dup" aria-hidden>
+                {current.text}
+              </span>
+            ) : null}
+          </div>
         </div>
+        {queue.length > 1 ? (
+          <span className="status-ticker__badge">+{queue.length - 1}</span>
+        ) : null}
       </div>
-      {queue.length > 1 ? (
-        <span className="status-ticker__badge">+{queue.length - 1}</span>
-      ) : null}
-    </div>
+    </AppTooltip>
   )
 }
 

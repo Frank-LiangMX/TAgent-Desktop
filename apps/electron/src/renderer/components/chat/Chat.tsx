@@ -26,9 +26,10 @@ import type {
   TurnDuration,
   UserFacingError,
 } from '@tagent/shared'
-import { migrateExecutionMode, DEFAULT_EXECUTION_MODE, parseMentions, classifyUserFacingError } from '@tagent/shared'
+import { migrateExecutionMode, DEFAULT_EXECUTION_MODE, parseMentions, classifyUserFacingError, isMoaModelId } from '@tagent/shared'
 import {
   resolveChannelDefaultModelId,
+  resolveConsultPresetsForChannel,
   sdkMessageToIR,
   TAGENT_DEFAULT_PERMISSION_MODE,
   DEFAULT_REASONING_EFFORT,
@@ -37,6 +38,8 @@ import {
   migrateReasoningEffort,
   migratePermissionMode,
   type TAgentUsage,
+  type MoARoundtablePanel,
+  type MoAPreset,
 } from '@tagent/shared'
 import { type ContextUsageSnapshotView } from './ContextUsageBadge'
 import { TokenStatsBar, type SessionTokenTotals } from './TokenStatsBar'
@@ -56,7 +59,7 @@ import {
   Button,
   AppTooltip,
 } from '@tagent/ui'
-import { ArrowUp, Square, Compass, Zap, Plus, X } from 'lucide-react'
+import { Square, Compass, Zap, Plus, X } from 'lucide-react'
 import { UsersThree } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import {
@@ -65,6 +68,8 @@ import {
 } from '@tagent/shared'
 import { MessageView } from './MessageView'
 import { AssistantTurnView } from './AssistantTurnView'
+import { MoaRoundtableCard } from './MoaRoundtableCard'
+import { SendSplitButton } from './ConsultMenu'
 import { SubagentDetailView } from './SubagentDetailView'
 import { ComposerRunTimer } from './ComposerRunTimer'
 import {
@@ -166,6 +171,8 @@ interface DisplayItem {
   /** 上下文压缩状态行 */
   compactStatus?: 'compacting' | 'complete'
   compactTrigger?: 'auto' | 'manual'
+  /** MoA 圆桌卡（moa_roundtable 事件按 roundtableId 就地 upsert） */
+  moaRoundtable?: MoARoundtablePanel
 }
 
 /** 新会话页提示词默认值见 NewConversationLanding（welcome / compose 两形态共用） */
@@ -349,11 +356,25 @@ export function Chat({
   /** 输入框是否有草稿（供发送/停止键同槽复用：运行中且有草稿→仍可追加发送，显示发送键；运行中无草稿→停止键） */
   const [hasDraft, setHasDraft] = useState(false)
   /** 运行中排队的消息（运行中发送→入队，运行结束→自动消费） */
-  const [messageQueue, setMessageQueue] = useState<Array<{ text: string; selection: ModelSelection }>>([])
+  const [messageQueue, setMessageQueue] = useState<Array<{
+    text: string
+    selection: ModelSelection
+    /** MoA 会诊本条（one-shot）preset id：选了预置后追加发送带它；非 sticky */
+    moaOneShotPresetId?: string
+  }>>([])
   /** 待发送附件（输入框暂存，发送后清空） */
   const [pendingAttachments, setPendingAttachments] = useState<Array<{
     id: string; filename: string; mediaType: string; size: number; previewUrl?: string; data: string
   }>>([])
+  /** MoA 会诊预置（发送键旁 ▾「发送方式」）。挂载拉一次。 */
+  const [consultPresets, setConsultPresets] = useState<MoAPreset[]>([])
+  useEffect(() => {
+    let cancelled = false
+    void window.electronAPI.listMoaPresets().then((list) => {
+      if (!cancelled) setConsultPresets(list ?? [])
+    }).catch(() => { /* 预置拉取失败：菜单空态，不阻塞正常发送 */ })
+    return () => { cancelled = true }
+  }, [])
   /** 历史加载完成的标志：false 时 Conversation resize=instant（无动画）+ ScrollPositionManager 恢复位置 */
   const [scrollReady, setScrollReady] = useState(false)
   /**
@@ -607,6 +628,14 @@ export function Chat({
   const selectionChannel = effectiveSelection
     ? channels.find((c) => c.id === effectiveSelection.channelId)
     : undefined
+  /**
+   * 会诊本条菜单预置：按当前渠道解析。
+   * - kscc：过滤掉席位模型未启用的 stored 预置
+   * - 外部 ≥2 模：命中本渠的 stored，否则合成 channel-default
+   * - 外部 =1 模：合成 channel-same-model（同模多角色，菜单标「同模」）
+   * 渠道缺失 / 无可用预置 → []（SendSplitButton 退回单发送键）
+   */
+  const consultPresetsForMenu = resolveConsultPresetsForChannel(selectionChannel, consultPresets)
   const configuredContextWindow = effectiveSelection
     ? selectionChannel?.models.find((m) => m.id === effectiveSelection.modelId)?.contextWindow
     : undefined
@@ -615,6 +644,27 @@ export function Chat({
     configuredWindow: configuredContextWindow,
   })
   contextWindowRef.current = displayContextWindow
+
+  // 旧粘性 moa:*：会诊入口已迁出发送旁，自动落回渠道默认真实模型，避免选择器卡死在会诊名上
+  useEffect(() => {
+    if (!effectiveSelection || !isMoaModelId(effectiveSelection.modelId)) return
+    const ch = channels.find((c) => c.id === effectiveSelection.channelId)
+    const realId = resolveChannelDefaultModelId(ch)
+    if (!realId || !ch) return
+    const next = { channelId: ch.id, modelId: realId }
+    setSelectionOverride(next)
+    setSelectedModelSelection(next)
+    if (!onDraftWorkspaceChange) {
+      void window.electronAPI.updateSessionMeta(sessionId, { modelId: realId })
+    }
+  }, [
+    effectiveSelection?.channelId,
+    effectiveSelection?.modelId,
+    channels,
+    sessionId,
+    onDraftWorkspaceChange,
+    setSelectedModelSelection,
+  ])
 
   // 切模型时刷新圆环分母（不必等下一轮 usage）
   useEffect(() => {
@@ -1055,15 +1105,16 @@ export function Chat({
           </span>
         ))}
         <span className="active-speaker-bar__label">对话</span>
-        <button
-          type="button"
-          className="active-speaker-clear"
-          onClick={() => void clearActiveMention()}
-          aria-label="结束跟随，回到默认助手"
-          title="结束跟随，回到默认助手"
-        >
-          <X className="size-3" aria-hidden />
-        </button>
+        <AppTooltip label="结束跟随，回到默认助手">
+          <button
+            type="button"
+            className="active-speaker-clear"
+            onClick={() => void clearActiveMention()}
+            aria-label="结束跟随，回到默认助手"
+          >
+            <X className="size-3" aria-hidden />
+          </button>
+        </AppTooltip>
       </div>
     ) : null
 
@@ -1330,7 +1381,30 @@ export function Chat({
         lastToolName?: string
         parentToolUseId?: string
       }
-      if (evt.type === 'tool_start' && !evt.parentToolUseId) {
+      if (evt.type === 'moa_roundtable') {
+        // MoA 圆桌卡：按 roundtableId 就地 upsert（同轮多张状态卡只保留最新）。
+        const panel = (p.event as { panel?: MoARoundtablePanel }).panel
+        if (panel) {
+          const key = `moa-${panel.roundtableId}`
+          setItems((prev) => {
+            const idx = prev.findIndex((it) => it.moaRoundtable?.roundtableId === panel.roundtableId)
+            if (idx >= 0) {
+              return prev.map((it, i) => (i === idx ? { ...it, moaRoundtable: panel } : it))
+            }
+            return [...prev, { key, moaRoundtable: panel }]
+          })
+          // 非终态（参考/汇总中）→ 标 running，保过程区展开 + 停止键在位；
+          // 终态（done/error/cancelled）由后续 result/turn_end 收尾，不在此抢停。
+          const isRunning = panel.phase === 'references' || panel.phase === 'aggregating'
+          if (isRunning && !runningRef.current) {
+            adoptSessionRun({
+              id: sessionId,
+              startedAt: runStartedAtPersistRef.current ?? runStartedAtRef.current ?? Date.now(),
+            })
+          }
+          bumpRefresh()
+        }
+      } else if (evt.type === 'tool_start' && !evt.parentToolUseId) {
         // 段间 progress 常只活在 streamState.text；工具一开就清 → 阶段性总结打字机秒消。
         // 先 commit 进末条主线 assistant（插到 tool_use 前），再清缓冲；思考仍保留。
         const pendingText = streamStateRef.current.text.trim()
@@ -1515,9 +1589,11 @@ export function Chat({
   }
 
   /** 核心发送逻辑：校验渠道 → 保存附件 → IPC sendMessage → materializeTab */
-  const sendQueued = async ({ text, selection, attachments }: {
+  const sendQueued = async ({ text, selection, attachments, moaOneShotPresetId }: {
     text: string; selection: ModelSelection;
-    attachments?: Array<{ id: string; filename: string; mediaType: string; size: number; previewUrl?: string; data: string }>
+    attachments?: Array<{ id: string; filename: string; mediaType: string; size: number; previewUrl?: string; data: string }>;
+    /** MoA 会诊本条（one-shot）：本轮临时走会诊但不写 sticky moa modelId。SPEC §3 */
+    moaOneShotPresetId?: string;
   }): Promise<void> => {
     if (!selection) {
       alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
@@ -1530,8 +1606,15 @@ export function Chat({
     setSessionError({ sessionId: sessionIdRef.current, error: null })
     resetStreamState()
     const channel = channels.find((item) => item.id === selection.channelId)
-    const model = channel?.models.find((item) => item.id === selection.modelId)
-    if (!channel?.enabled || !model?.enabled) {
+    // MoA 会诊（sticky 或 one-shot）：modelId 可能是虚拟 moa:<preset> 或 one-shot presetId。
+    // 都不在渠道模型表里——跳过模型启用校验，由主进程 runMoATurn 校验预置 + 参考/汇总模型可用性。
+    const isMoa = isMoaModelId(selection.modelId)
+    const isOneShot = Boolean(moaOneShotPresetId)
+    const skipModelCheck = isMoa || isOneShot
+    const model = skipModelCheck
+      ? undefined
+      : channel?.models.find((item) => item.id === selection.modelId)
+    if (!channel?.enabled || (!skipModelCheck && !model?.enabled)) {
       alert('当前渠道或模型已停用，请选择同一运行区域内的可用模型')
       return
     }
@@ -1566,6 +1649,7 @@ export function Chat({
         model: selection.modelId,
         workspaceId: session.workspaceId,
         ...(savedAttachments.length ? { attachments: savedAttachments } : {}),
+        ...(moaOneShotPresetId ? { moaOneShotPresetId } : {}),
         mentionRoleIds:
           executionMode === 'chat' && mentionRoles.length > 0
             ? parseMentions(text, mentionRoles).map((h) => h.roleId)
@@ -1680,6 +1764,51 @@ export function Chat({
       return
     }
     await sendQueued({ text, selection: effectiveSelection, attachments: pendingAttachments })
+  }
+
+  /**
+   * 会诊本条（one-shot）：取当前输入框文案 + 选中的预置 → 走 sendQueued 带
+   * `moaOneShotPresetId`。**不**改 meta.modelId，会话 tab / ModelSelector 仍显示真实模型。
+   * 输入空 / 无可用预置 / 无渠道：放弃（按钮已禁用，本函数兜底）。
+   */
+  const sendConsult = async (presetId: string): Promise<void> => {
+    const text = chatInputRef.current?.getText().trim()
+    if (!text) return
+    if (!effectiveSelection) {
+      alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
+      return
+    }
+    // 复用 send() 的 @ mention / 草稿铭牌同步（避免会诊路径出现 follow 漂移）
+    if (executionMode === 'chat' && mentionRoles.length > 0) {
+      const hits = parseMentions(text, mentionRoles)
+      if (hits.length > 0) {
+        setActiveMentionRoleIds(hits.map((h) => h.roleId))
+        setLiveMentionLabels(hits.map((h) => h.displayName))
+      } else {
+        setLiveMentionLabels(
+          activeMentionRoleIds
+            .map((id) => roleNameById.get(id))
+            .filter((v): v is string => Boolean(v)),
+        )
+      }
+    } else {
+      setLiveMentionLabels([])
+    }
+    chatInputRef.current?.clear()
+    if (running) {
+      // 运行中：入队等本轮结束自动消费；带 presetId 让队列项保留会诊语义
+      setMessageQueue((q) => [
+        ...q,
+        { text, selection: effectiveSelection, moaOneShotPresetId: presetId },
+      ])
+      return
+    }
+    await sendQueued({
+      text,
+      selection: effectiveSelection,
+      attachments: pendingAttachments,
+      moaOneShotPresetId: presetId,
+    })
   }
 
   /** 运行结束 → 批量消费队列（逐条 await，确保 running 状态正确） */
@@ -1812,16 +1941,13 @@ export function Chat({
           <Square className="size-4" fill="currentColor" />
         </Button>
       ) : (
-        <Button
-          variant={hasDraft ? 'default' : 'ghost'}
-          size="icon"
-          className="size-9 rounded-full"
-          disabled={!hasDraft}
-          onClick={() => void send()}
-          aria-label="发送"
-        >
-          <ArrowUp className="size-5" />
-        </Button>
+        <SendSplitButton
+          presets={consultPresetsForMenu}
+          channel={selectionChannel}
+          hasDraft={hasDraft}
+          onSend={() => void send()}
+          onConsultPreset={(id) => void sendConsult(id)}
+        />
       )}
     </div>
   )
@@ -2021,6 +2147,7 @@ export function Chat({
                       completedDuration={completedDurations[turn.key]}
                       subagentCards={subagentCards}
                       onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+                      sessionId={sessionId}
                     />
                   )
                 })
@@ -2354,28 +2481,23 @@ export function Chat({
                             <Zap className="size-4" />
                           </Button>
                         </AppTooltip>
-                        <AppTooltip label="排队：当前轮结束后自动发送">
-                          <Button
-                            size="icon"
-                            className="size-8 rounded-full"
-                            onClick={() => void send()}
-                            aria-label="排队"
-                          >
-                            <ArrowUp className="size-4" />
-                          </Button>
-                        </AppTooltip>
+                        <SendSplitButton
+                          size="sm"
+                          presets={consultPresetsForMenu}
+                          channel={selectionChannel}
+                          hasDraft={hasDraft}
+                          onSend={() => void send()}
+                          onConsultPreset={(id) => void sendConsult(id)}
+                        />
                       </div>
                     ) : (
-                      <Button
-                        variant={hasDraft ? 'default' : 'ghost'}
-                        size="icon"
-                        className="size-9 rounded-full"
-                        disabled={!hasDraft}
-                        onClick={() => void send()}
-                        aria-label="发送"
-                      >
-                        <ArrowUp className="size-5" />
-                      </Button>
+                      <SendSplitButton
+                        presets={consultPresetsForMenu}
+                        channel={selectionChannel}
+                        hasDraft={hasDraft}
+                        onSend={() => void send()}
+                        onConsultPreset={(id) => void sendConsult(id)}
+                      />
                     )}
                   </div>
                 </div>
@@ -2454,6 +2576,7 @@ function TurnView({
   completedDuration,
   subagentCards,
   onOpenSubagent,
+  sessionId,
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
@@ -2466,6 +2589,8 @@ function TurnView({
   completedDuration?: TurnDuration
   subagentCards?: Map<string, TaskCardState>
   onOpenSubagent?: (parentToolUseId: string) => void
+  /** 当前会话 id（MoA 圆桌卡建看板 CTA 用） */
+  sessionId?: string
 }): JSX.Element {
   if (turn.kind === 'user') {
     return (
@@ -2494,11 +2619,15 @@ function TurnView({
       </div>
     )
   }
-  return <ItemView item={turn.item as DisplayItem} />
+  return <ItemView item={turn.item as DisplayItem} sessionId={sessionId} />
 }
 
-/** 显示项渲染（standalone：压缩行 / 任务卡 / 兜底） */
-function ItemView({ item }: { item: DisplayItem }): JSX.Element {
+/** 显示项渲染（standalone：压缩行 / 任务卡 / MoA 圆桌卡 / 兜底） */
+function ItemView({ item, sessionId }: { item: DisplayItem; sessionId?: string }): JSX.Element {
+  // MoA 圆桌卡（standalone，挂主时间线）
+  if (item.moaRoundtable) {
+    return <MoaRoundtableCard panel={item.moaRoundtable} sessionId={sessionId} />
+  }
   // 子代理 taskCard 已并入 assistant-turn + SubagentEntryCard，standalone 不再渲染第二张卡
   // （历史兜底：若仍有孤立 taskCard，也静默跳过，避免双卡 + 拆 turn 铭牌污染）
   if (item.taskCard && !item.message) {

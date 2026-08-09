@@ -7,12 +7,16 @@
 @import '@tagent/ui/styles/switch.css';
 @import '@tagent/ui/styles/segmented-tabs.css';
 @import '@tagent/ui/styles/rich-content.css';
+/* 加载动画图鉴：Spinner（点阵网格）+ AddonLoader（附加光环）组件样式 */
+@import '@tagent/ui/styles/spinner.css';
+@import '@tagent/ui/styles/addon-loader.css';
 @import './chat.css';
 @import './app-shell.css';
 @import './nav-island-morph.css';
 @import './sidebar.css';
 @import './welcome.css';
 @import './settings-shell.css';
+@import './agent-behavior-settings.css';
 @import './loader-preview.css';
 @import './updater.css';
 /* 记忆页 content-glass（General 原样） */

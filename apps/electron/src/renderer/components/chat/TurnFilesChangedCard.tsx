@@ -3,7 +3,7 @@
  * 扁平行（无 chip 底）、固定宽语言标、右侧 +/-、超出折叠 Show more。
  */
 import { useContext, useState } from 'react'
-import { MessageFilePathContext } from '@tagent/ui'
+import { MessageFilePathContext, AppTooltip } from '@tagent/ui'
 import type { TurnEditedFile } from './concise-timeline-model'
 
 interface TurnFilesChangedCardProps {
@@ -68,37 +68,41 @@ export function TurnFilesChangedCard({ files }: TurnFilesChangedCardProps): JSX.
           {files.length} {files.length === 1 ? 'File Changed' : 'Files Changed'}
         </span>
         {canOpen ? (
-          <button
-            type="button"
-            className="agent-files-changed__review"
-            onClick={() => open(files[0]!.path)}
-            title={`在分屏中预览 ${files[0]!.name}`}
-          >
-            Review
-          </button>
+          <AppTooltip label={`在分屏中预览 ${files[0]!.name}`}>
+            <button
+              type="button"
+              className="agent-files-changed__review"
+              onClick={() => open(files[0]!.path)}
+            >
+              Review
+            </button>
+          </AppTooltip>
         ) : null}
       </div>
       <ul className="agent-files-changed__list">
         {visible.map((f) => (
           <li key={f.path} className="agent-files-changed__item">
-            <button
-              type="button"
-              className="agent-files-changed__row"
-              onClick={() => open(f.path)}
-              disabled={!canOpen}
-              title={canOpen ? `打开 ${f.path}` : f.path}
-            >
-              <FileLangBadge name={f.name} />
-              <span className="agent-files-changed__name">{f.name}</span>
-              <span className="agent-files-changed__diff" aria-label="行变更">
-                {f.add > 0 ? (
-                  <span className="agent-files-changed__add">+{f.add}</span>
-                ) : null}
-                {f.del > 0 ? (
-                  <span className="agent-files-changed__del">-{f.del}</span>
-                ) : null}
+            <AppTooltip label={canOpen ? `打开 ${f.path}` : f.path} multiline>
+              <span className="block">
+                <button
+                  type="button"
+                  className="agent-files-changed__row"
+                  onClick={() => open(f.path)}
+                  disabled={!canOpen}
+                >
+                  <FileLangBadge name={f.name} />
+                  <span className="agent-files-changed__name">{f.name}</span>
+                  <span className="agent-files-changed__diff" aria-label="行变更">
+                    {f.add > 0 ? (
+                      <span className="agent-files-changed__add">+{f.add}</span>
+                    ) : null}
+                    {f.del > 0 ? (
+                      <span className="agent-files-changed__del">-{f.del}</span>
+                    ) : null}
+                  </span>
+                </button>
               </span>
-            </button>
+            </AppTooltip>
           </li>
         ))}
       </ul>

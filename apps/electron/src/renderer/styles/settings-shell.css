@@ -1387,7 +1387,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  margin-top: -7px;
+  margin-top: 0;
   font-size: 11px;
   color: var(--spatial-faint);
 }
@@ -1856,6 +1856,154 @@
   .channel-empty > button {
     grid-column: 2;
     justify-self: start;
+  }
+}
+
+/* ===== 渠道设置 · 同壳行（仅 ChannelsSettings 使用；MCP / 插件仍用 channel-*） =====
+ * 对齐 settings-row 节奏：左主文（名 13px + 中性标签 + 纯文字状态 + URL / 明细 / 测试结果）
+ * 右控件（Switch + 测试 / 编辑 / 删除）；无 accent provider 方块、无状态绿点。
+ * 列表表面由 SettingsCard（divided）提供，行间分隔走 settings-card-sep，不自画边框。 */
+.channel-shell-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  transition: background-color var(--settings-duration-fast) var(--settings-motion);
+}
+.channel-shell-row:hover {
+  background: var(--settings-hover-fill);
+}
+.channel-shell-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+.channel-shell-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+.channel-shell-name {
+  overflow: hidden;
+  color: var(--spatial-ink);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channel-shell-tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--spatial-line-strong);
+  border-radius: 5px;
+  color: var(--spatial-muted);
+  background: var(--settings-chip-fill);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.channel-shell-status {
+  flex: 0 0 auto;
+  color: var(--spatial-faint);
+  font-size: 10px;
+}
+.channel-shell-status--on {
+  color: var(--spatial-muted);
+}
+.channel-shell-url {
+  overflow: hidden;
+  margin: 0;
+  color: var(--spatial-faint);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channel-shell-details {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--spatial-faint);
+  font-size: 11px;
+}
+.channel-shell-credential {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.channel-shell-test {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--spatial-faint);
+  font-size: 10.5px;
+}
+.channel-shell-test span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channel-shell-test--success {
+  color: hsl(145 60% 36%);
+}
+.channel-shell-test--error {
+  color: hsl(var(--destructive));
+}
+.channel-shell-test--testing {
+  color: var(--spatial-accent);
+}
+.channel-shell-control {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+}
+.channel-shell-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.channel-shell-actions .h-8 {
+  height: 28px;
+}
+.channel-shell-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 70px;
+  padding: 14px 16px;
+  color: var(--spatial-faint);
+}
+.channel-shell-empty-copy {
+  min-width: 0;
+}
+/* 渠道编辑器表单块：SettingsCard 内给表单留 padding（channel-editor-section 留给 MCP） */
+.channel-form-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+}
+@media (max-width: 760px) {
+  .channel-shell-row {
+    flex-wrap: wrap;
+  }
+  .channel-shell-control {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .channel-shell-empty {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 

@@ -109,11 +109,13 @@ export interface StreamItemLike {
   taskCard?: unknown
   compactStatus?: 'compacting' | 'complete'
   compactTrigger?: 'auto' | 'manual'
+  /** MoA 圆桌卡（standalone，不被 purgeStreamingItems 清掉） */
+  moaRoundtable?: unknown
 }
 
-/** 清掉纯流式占位（无 message / 任务卡 / 压缩行） */
+/** 清掉纯流式占位（无 message / 任务卡 / 压缩行 / MoA 圆桌卡） */
 export function purgeStreamingItems<T extends StreamItemLike>(prev: T[]): T[] {
-  return prev.filter((it) => Boolean(it.message || it.taskCard || it.compactStatus))
+  return prev.filter((it) => Boolean(it.message || it.taskCard || it.compactStatus || it.moaRoundtable))
 }
 
 /**

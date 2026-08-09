@@ -189,11 +189,12 @@ describe('REGRESS-B：kscc 双源流式，concise live progress 持续可见', (
     expect(live.narratives.map((n) => n.tone)).toEqual(['progress', 'progress', 'progress'])
     expect(live.narratives.map((n) => n.text)).toEqual(['正在摸清目录', '准备编辑', '完成。'])
 
-    // 结束（isLive=false）：SEGRESS-J(J4) 短段间 progress 不拆 stage → 仅保留回合末 final。
-    // 短旁白（「正在摸清目录」「准备编辑」）被收敛进合并的 work_stage，不再刷成段间 narrative。
+    // 结束（isLive=false）：REGRESS-N 否决 J(J4) idle-drop——有信息的段间短 progress
+    // （「正在摸清目录」「准备编辑」）不再被 continue 丢，常驻 narrative.progress；
+    // 仅回合末「完成。」升 final。live/idle 同一套 segments 语义。
     const done = renderConcise({ items, stream: EMPTY_STREAM_STATE }, false)
-    expect(done.narratives.map((n) => n.tone)).toEqual(['final'])
-    expect(done.narratives[0]?.text).toBe('完成。')
+    expect(done.narratives.map((n) => n.tone)).toEqual(['progress', 'progress', 'final'])
+    expect(done.narratives.map((n) => n.text)).toEqual(['正在摸清目录', '准备编辑', '完成。'])
   })
 
   it('历史轮（isLive=false）不重播打字机：narrative 文本即全文，段拆分稳定', () => {
@@ -251,9 +252,10 @@ describe('REGRESS-B：kscc 双源流式，concise live progress 持续可见', (
     })
     const narrs = segs.filter((s) => s.kind === 'narrative')
     // ConciseTimelineView 非直播 instant 全文：narrative 文本本身就是全文，无 seed'' 重播。
-    // REGRESS-J(J4)：idle 短段间 progress 不拆 stage，仅剩回合末 final narrative。
-    expect(narrs.map((n) => (n as { text: string }).text)).toEqual(['完成。'])
-    expect(narrs.map((n) => (n as { tone: string }).tone)).toEqual(['final'])
+    // REGRESS-N 否决 J(J4) idle-drop：有信息的段间短 progress 常驻 narrative，
+    // 不再只剩回合末 final。
+    expect(narrs.map((n) => (n as { text: string }).text)).toEqual(['正在摸清目录', '准备编辑', '完成。'])
+    expect(narrs.map((n) => (n as { tone: string }).tone)).toEqual(['progress', 'progress', 'final'])
     // concise 不回传 streamingText（回答壳不参与），narrative 来自 process 全文
     expect(pres.streamingText).toBeUndefined()
   })

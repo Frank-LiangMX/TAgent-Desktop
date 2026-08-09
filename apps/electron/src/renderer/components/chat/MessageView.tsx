@@ -16,6 +16,7 @@ import type {
 import { DEFAULT_USER_NAME } from '@tagent/shared'
 
 import {
+  AppTooltip,
   Badge,
   Collapsible,
   CollapsibleTrigger,
@@ -137,9 +138,11 @@ function UserView({
         </div>
 
         {showChrome ? (
-          <span className="agent-user-block__avatar" title={userName} aria-label={userName}>
-            {avatarLetter}
-          </span>
+          <AppTooltip label={userName}>
+            <span className="agent-user-block__avatar" aria-label={userName}>
+              {avatarLetter}
+            </span>
+          </AppTooltip>
         ) : null}
       </div>
     </Message>

@@ -301,9 +301,11 @@ export function AskUserQuestionBanner({
               </div>
               <div className="ask-user-card__head-right">
                 {requests.length > 1 ? (
-                  <span className="ask-user-card__queue" title={`另有 ${requests.length - 1} 组问题`}>
-                    +{requests.length - 1}
-                  </span>
+                  <AppTooltip label={`另有 ${requests.length - 1} 组问题`}>
+                    <span className="ask-user-card__queue">
+                      +{requests.length - 1}
+                    </span>
+                  </AppTooltip>
                 ) : null}
                 <AppTooltip label="关闭并终止 Agent" side="top">
                   <button

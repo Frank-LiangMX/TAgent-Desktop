@@ -1,0 +1,10 @@
+严格按 docs/dev/core-loop/REGRESS-O-ui-swallow-brief.md 执行。
+
+工作区：C:\Users\loumi\Desktop\AI\TAgent-Desktop
+
+用户原话：打字机出思考总结立刻消失；完成后重启执行块内部正常 → UI remount/折叠吞掉，不是落盘丢数据。
+
+优先修 O1（stream-text → text-* 换 key）+ O2（思考掉进折叠 stage 看不见）。
+写 REGRESS-O-FINDINGS.md；不碰 MoA；不 commit。
+
+stdout：根因一句话 + 文件 + 测试 + 手测。

@@ -22,6 +22,7 @@ import type {
   TAgentToolUseBlock,
   TAgentUserMessage,
   TurnDuration,
+  MoARoundtablePanel,
 } from '@tagent/shared'
 import type { ProcessDisplayMode } from './process-group-model'
 import { isSubagentRuntimeTaskType } from './subagent-ui-model'
@@ -37,6 +38,8 @@ export interface TurnSourceItem {
   taskCard?: unknown
   compactStatus?: 'compacting' | 'complete'
   compactTrigger?: 'auto' | 'manual'
+  /** MoA 圆桌卡（主进程 moa_roundtable 事件就地 upsert；standalone 渲染） */
+  moaRoundtable?: MoARoundtablePanel
 }
 
 // ===== 输出 turn =====
@@ -307,6 +310,13 @@ export function groupItemsIntoTurns(items: TurnSourceItem[]): SessionRenderTurn[
   for (const item of items) {
     // 压缩边界：时间线独立占位（会打断 turn）
     if (item.compactStatus) {
+      flush()
+      turns.push({ kind: 'standalone', key: item.key, item })
+      continue
+    }
+
+    // MoA 圆桌卡：时间线独立占位（不并入 assistant-turn，避免与汇总正文抢铭牌）
+    if (item.moaRoundtable) {
       flush()
       turns.push({ kind: 'standalone', key: item.key, item })
       continue

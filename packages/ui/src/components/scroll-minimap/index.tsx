@@ -17,7 +17,7 @@ import remarkGfm from 'remark-gfm'
 import { useStickToBottomContext } from 'use-stick-to-bottom'
 
 import { SearchInput } from '../search-input'
-import { Tooltip, TooltipContent, TooltipTrigger } from '../tooltip'
+import { AppTooltip, Tooltip, TooltipContent, TooltipTrigger } from '../tooltip'
 import { cn } from '../../lib/utils'
 
 export interface MinimapItem {
@@ -621,13 +621,11 @@ export function ScrollMinimap({
                 {peekItem.attachments && peekItem.attachments.length > 0 ? (
                   <div className="flex flex-wrap gap-1 pt-0.5">
                     {peekItem.attachments.slice(0, 3).map((file) => (
-                      <span
-                        key={file.name}
-                        className="message-nav-peek-chip inline-flex max-w-[46%] items-center truncate rounded-md px-1.5 py-0.5 text-[10px]"
-                        title={file.name}
-                      >
-                        {file.name}
-                      </span>
+                      <AppTooltip key={file.name} label={file.name} multiline>
+                        <span className="message-nav-peek-chip inline-flex max-w-[46%] items-center truncate rounded-md px-1.5 py-0.5 text-[10px]">
+                          {file.name}
+                        </span>
+                      </AppTooltip>
                     ))}
                   </div>
                 ) : null}

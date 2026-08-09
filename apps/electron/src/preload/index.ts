@@ -41,6 +41,7 @@ import type {
   UserProfile,
   WorkspaceMcpConfig,
   WorkspacePluginBundleRecord,
+  MoAPreset,
 } from '@tagent/shared'
 
 export interface SendMessageInput {
@@ -52,6 +53,11 @@ export interface SendMessageInput {
   model?: string
   /** 工作区 ID（= sanitizePath(projectPath)，用于 JSONL 按项目存储） */
   workspaceId?: string
+  /**
+   * MoA 会诊本条（one-shot）：本轮走 runMoATurn，但**不**改 `meta.modelId`。
+   * 见 docs/dev/moa-roundtable/02-SESSION-UX-SPEC.md §3。
+   */
+  moaOneShotPresetId?: string
 }
 
 const electronAPI = {
@@ -93,6 +99,14 @@ const electronAPI = {
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_SESSION, sessionId),
   /** 列出所有会话（元数据） */
   listSessions: () => ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_SESSIONS),
+  /** 列出 MoA 会诊预置（首次调用会就地 seed 默认预置） */
+  listMoaPresets: () => ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_MOA_PRESETS) as Promise<MoAPreset[]>,
+  /**
+   * 保存整份 MoA 预置（覆盖式写；设置页会诊班底 CRUD）。
+   * 整单校验失败主进程 reject（中文错），调用方 catch 回显；成功返回重读后的列表。
+   */
+  saveMoaPresets: (presets: MoAPreset[]) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.SAVE_MOA_PRESETS, presets) as Promise<MoAPreset[]>,
   /** 读会话历史消息（JSONL） */
   getMessages: (sessionId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_SDK_MESSAGES, sessionId),

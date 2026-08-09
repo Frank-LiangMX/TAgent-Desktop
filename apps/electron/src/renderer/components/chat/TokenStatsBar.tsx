@@ -7,6 +7,7 @@
  * - 全部已绑定渠道显示；kscc 渠道隐藏占用圆环（占用不可信），累计统计仍显示
  */
 import { Database, TrendingDown, TrendingUp } from 'lucide-react'
+import { AppTooltip } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 import { ContextUsageBadge, type ContextUsageSnapshotView } from './ContextUsageBadge'
 import { ChannelBalanceBadge } from './ChannelBalanceBadge'
@@ -152,13 +153,12 @@ function StatItem({
   compact?: boolean
 }): JSX.Element {
   return (
-    <div
-      className="token-stats-item flex items-center gap-1 whitespace-nowrap"
-      title={compact ? `${label} ${value}` : undefined}
-    >
-      <span className="opacity-70">{icon}</span>
-      {!compact ? <span className="token-stats-item__label text-muted-foreground/70">{label}</span> : null}
-      <span className="font-medium tabular-nums text-muted-foreground">{value}</span>
-    </div>
+    <AppTooltip label={compact ? `${label} ${value}` : undefined}>
+      <div className="token-stats-item flex items-center gap-1 whitespace-nowrap">
+        <span className="opacity-70">{icon}</span>
+        {!compact ? <span className="token-stats-item__label text-muted-foreground/70">{label}</span> : null}
+        <span className="font-medium tabular-nums text-muted-foreground">{value}</span>
+      </div>
+    </AppTooltip>
   )
 }

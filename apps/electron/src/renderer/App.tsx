@@ -22,6 +22,7 @@ import type {
   GraphPayload,
   InstallStoreBundleResult,
   McpServerEntry,
+  MoAPreset,
   NudgeCandidate,
   PluginStoreCatalog,
   StageEntry,
@@ -81,6 +82,8 @@ declare global {
         channelId?: string
         model?: string
         workspaceId?: string
+        /** MoA 会诊本条（one-shot）：本轮走 runMoATurn，不改 meta.modelId。SPEC §3 */
+        moaOneShotPresetId?: string
       }) => Promise<{ ok: boolean; error?: string }>
       stopAgent: (sessionId: string) => Promise<{ ok: boolean }>
       steerAgent: (
@@ -90,6 +93,10 @@ declare global {
       deleteSession: (sessionId: string) => Promise<{ ok: boolean }>
       listSessions: () => Promise<unknown[]>
       getMessages: (sessionId: string) => Promise<unknown[]>
+      /** 列出 MoA 会诊预置（首次调用主进程就地 seed 默认预置） */
+      listMoaPresets: () => Promise<MoAPreset[]>
+      /** 保存整份 MoA 预置（设置页 CRUD；校验失败 reject 中文错；成功返回重读列表） */
+      saveMoaPresets: (presets: MoAPreset[]) => Promise<MoAPreset[]>
       onStreamEvent: (cb: (payload: unknown) => void) => () => void
       openPath: (input: { sessionId: string; path: string }) => Promise<{ ok: boolean; error?: string }>
       resolveFile: (input: {

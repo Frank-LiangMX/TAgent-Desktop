@@ -1,0 +1,11 @@
+严格按 docs/dev/core-loop/REGRESS-N-progress-vanish-stubborn-brief.md 执行。
+
+工作区：C:\Users\loumi\Desktop\AI\TAgent-Desktop
+
+用户 2026-08-08 截图：阶段性总结流完即消，只剩碎开的「运行了 N 条命令」+ 大空白。
+已改到 REGRESS-M 仍复发——重点查 REGRESS-J 的 idle `isShortIdleProgress continue` 是否在删总结。
+
+要求：取证写 REGRESS-N-FINDINGS.md → 按产品裁决改代码（禁止 idle 丢有信息 progress）→ vitest 绿。
+勿改无关 MoA 文件；不 commit。
+
+stdout：根因一句话 + 改动文件 + 测试 + 手测。

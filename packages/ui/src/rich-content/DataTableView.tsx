@@ -11,6 +11,7 @@
 import * as React from 'react'
 
 import { cn } from '../lib/utils'
+import { AppTooltip } from '../components/tooltip'
 import {
   Select,
   SelectContent,
@@ -152,17 +153,17 @@ export function DataTableView({
         const type = columnDefs[cellIndex]?.type ?? 'text'
         const text = formatValue(value, type)
         return (
-          <td
-            key={cellIndex}
-            className={cn(
-              'data-table__td',
-              type === 'number' && 'data-table__td--num',
-              cellIndex === 0 && type === 'text' && 'data-table__td--key',
-            )}
-            title={text.length > 80 ? text : undefined}
-          >
-            {text}
-          </td>
+          <AppTooltip key={cellIndex} label={text.length > 80 ? text : undefined} multiline>
+            <td
+              className={cn(
+                'data-table__td',
+                type === 'number' && 'data-table__td--num',
+                cellIndex === 0 && type === 'text' && 'data-table__td--key',
+              )}
+            >
+              {text}
+            </td>
+          </AppTooltip>
         )
       })}
     </tr>
@@ -201,18 +202,19 @@ export function DataTableView({
                 ))}
               </SelectContent>
             </Select>
-            <button
-              type="button"
-              className={cn(
-                'data-table__filter-toggle',
-                (showColFilters || activeFilterCount > 0) && 'is-active',
-              )}
-              aria-pressed={showColFilters}
-              onClick={() => setShowColFilters((v) => !v)}
-              title="按列筛选"
-            >
-              筛选{activeFilterCount > 0 ? ` ${activeFilterCount}` : ''}
-            </button>
+            <AppTooltip label="按列筛选">
+              <button
+                type="button"
+                className={cn(
+                  'data-table__filter-toggle',
+                  (showColFilters || activeFilterCount > 0) && 'is-active',
+                )}
+                aria-pressed={showColFilters}
+                onClick={() => setShowColFilters((v) => !v)}
+              >
+                筛选{activeFilterCount > 0 ? ` ${activeFilterCount}` : ''}
+              </button>
+            </AppTooltip>
           </>
         )}
         <span className="data-table__count">{visibleRows.length} 行</span>
@@ -312,23 +314,25 @@ export function DataTableView({
       variant={variant}
       actions={
         <>
-          <button
-            type="button"
-            onClick={exportCsv}
-            className="rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-            title="导出 CSV"
-          >
-            CSV
-          </button>
-          {spreadsheet && (
+          <AppTooltip label="导出 CSV">
             <button
               type="button"
-              onClick={() => void exportXlsx()}
+              onClick={exportCsv}
               className="rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-              title="导出 XLSX"
             >
-              XLSX
+              CSV
             </button>
+          </AppTooltip>
+          {spreadsheet && (
+            <AppTooltip label="导出 XLSX">
+              <button
+                type="button"
+                onClick={() => void exportXlsx()}
+                className="rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              >
+                XLSX
+              </button>
+            </AppTooltip>
           )}
         </>
       }

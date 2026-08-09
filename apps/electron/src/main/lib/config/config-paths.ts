@@ -137,3 +137,8 @@ export function getProjectMemoryDir(sanitizedPath: string): string {
 export function getUserProfilePath(): string {
   return join(getConfigDir(), 'user-profile.json')
 }
+
+/** MoA 会诊预置文件：~/.tagent[-dev]/moa-presets.json */
+export function getMoaPresetsPath(): string {
+  return join(getConfigDir(), 'moa-presets.json')
+}

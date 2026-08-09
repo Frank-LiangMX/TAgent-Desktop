@@ -6,6 +6,7 @@
  * 材质沿用磨砂玻璃，不引入实心彩气泡。
  */
 import { getModelLogo } from '../../lib/model-logo'
+import { AppTooltip } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 
 /** 稳定色相槽：仅 monogram 兜底时用 */
@@ -97,7 +98,6 @@ export function SpeakerHeader({
       className={cn('agent-speaker', className)}
       data-speaker-slot={slot}
       data-has-logo={logoSrc ? 'true' : 'false'}
-      title={modelId ? `${displayName} · ${modelId}` : displayName}
     >
       <div className="agent-speaker__avatar" aria-hidden>
         {logoSrc ? (
@@ -115,24 +115,28 @@ export function SpeakerHeader({
       <div className="agent-speaker__main min-w-0">
         <div className="agent-speaker__line">
           {prior.length > 0 ? (
-            <span className="agent-speaker__handoff" title="本轮点名顺序">
-              {prior.map((label, i) => (
-                <span key={`${label}-${i}`} className="agent-speaker__handoff-item">
-                  {i > 0 ? (
-                    <span className="agent-speaker__handoff-arrow" aria-hidden>
-                      →
-                    </span>
-                  ) : null}
-                  <span className="agent-speaker__handoff-name">{label}</span>
+            <AppTooltip label="本轮点名顺序">
+              <span className="agent-speaker__handoff">
+                {prior.map((label, i) => (
+                  <span key={`${label}-${i}`} className="agent-speaker__handoff-item">
+                    {i > 0 ? (
+                      <span className="agent-speaker__handoff-arrow" aria-hidden>
+                        →
+                      </span>
+                    ) : null}
+                    <span className="agent-speaker__handoff-name">{label}</span>
+                  </span>
+                ))}
+                <span className="agent-speaker__handoff-arrow" aria-hidden>
+                  →
                 </span>
-              ))}
-              <span className="agent-speaker__handoff-arrow" aria-hidden>
-                →
               </span>
-            </span>
+            </AppTooltip>
           ) : null}
-          {/* 无玻璃铭牌：名字纯文本；模型 id 仅放 title 悬停可见 */}
-          <span className="agent-speaker__name">{displayName}</span>
+          {/* 无玻璃铭牌：名字纯文本；模型 id 仅 AppTooltip 悬停可见 */}
+          <AppTooltip label={modelId ? `${displayName} · ${modelId}` : displayName}>
+            <span className="agent-speaker__name">{displayName}</span>
+          </AppTooltip>
         </div>
       </div>
 

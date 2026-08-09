@@ -382,10 +382,12 @@ export function isTrivialThinking(text: string): boolean {
 }
 
 /**
- * 极短的段间进度短文（如「先摸清目录结构」「已改完，跑一下验证」）：
- * 属于过程中的低信息「旁白」，不该切断正在累积的工具 stage（否则工具→短文→工具→短文
- * 会被拆成一条命令一阶段，刷「运行了 1 条命令」）。此类 text 在模型里直接忽略，
- * 工具继续累进同一 work_stage；较长的实质叙述 / 回合末最终交付才 flush 成独立 narrative。
+ * 极短的段间进度短文判定（仅按长度）。历史用途：live 是否把短文当打字机 progress。
+ *
+ * 注意：REGRESS-N 已否决「idle 按长度一刀切 continue 丢短 progress」（原 J1/J4）——
+ * 阈值无法区分 filler 与「正在跑验证」这类有信息短句，会把阶段性总结丢成「流完即消」。
+ * 现在合并阶段只看 {@link isFillerProgressText}（纯 filler 才吞）；有信息短句常驻
+ * `narrative.progress`。本函数保留给 live / 测试用，不再作 idle 丢弃判据。
  */
 export const SHORT_PROGRESS_MAX_CHARS = 20
 
@@ -393,6 +395,25 @@ export function isShortProgressText(text: string): boolean {
   const t = text.trim()
   if (!t) return true
   return t.length <= SHORT_PROGRESS_MAX_CHARS
+}
+
+/**
+ * 纯 filler 段间短文：仅 acknowledger / 过渡词（「好的」「嗯」「继续」「然后」…），
+ * 无动作对象、无结论。**仅此类**允许 idle 吞掉以合并连续工具 stage；
+ * 有信息的进度句（哪怕短，如「正在跑验证」「准备编辑」「目录摸清了」）必须常驻
+ * `narrative.progress`——REGRESS-N 否决 REGRESS-J(J1)「按长度一刀切 continue 丢短 progress」。
+ *
+ * 与 {@link isTrivialThinking} 同源（极短无信息），但更窄：带动词对象 / 状态 / 结论的不算 filler。
+ * 回合末（round-final）文本不走此规则——即便字面是 filler 也可能是用户的短回答，不得丢。
+ */
+const FILLER_PROGRESS_RE =
+  /^(好的|好|嗯|哦|ok|okay|行|可以|了解|收到|明白|继续|接着|接下来|然后|下一步)\s*[。.!！？?…~]*$/i
+
+export function isFillerProgressText(text: string): boolean {
+  const t = text.trim()
+  if (!t) return true
+  if (t.length > 16) return false
+  return FILLER_PROGRESS_RE.test(t)
 }
 
 function mergeAnswerIntoProcess(
@@ -450,9 +471,22 @@ function mergeAnswerIntoProcess(
   return out
 }
 
+/**
+ * 推一条 narrative 段（段间 progress / 句尾 final）。
+ *
+ * **稳定 key（REGRESS-O O1）**：narrative 的 React key 用「该 narrative 在段列表中的
+ * 位置下标」`narrative-${index}`，**不用**过程条目 key（`stream-text` / `text-${owner}-${i}`）。
+ * 现象：段间 progress 在 live 只活在 streamState → `holdStreamInProcess` 推 key=`stream-text`
+ * 的过程条目；下一帧 partial 快照带 text 块到达、streamState 被清 → 过程条目 key 换成
+ * `text-${owner}-${i}`。若 narrative key 跟着过程条目 key 走，NarrativeRow 会被 React 卸载
+ * 重挂（seed 回 ''）→ REGRESS-N「无内容 return null」秒空 + 打字机重来一截。
+ * 位置下标在同一生长段内稳定（其前的 thinking / work_stage / 前序 narrative 都已落盘不变，
+ * 新 narrative 只往后追加）→ stream→commit 同段 key 不变 → 不 remount、不闪空。
+ * 合并（同 tone 前缀）时保留既有 key（已是 `narrative-${index}`），不重编。
+ */
 function pushNarrative(
   segments: ConciseSegment[],
-  key: string,
+  _entryKey: string,
   text: string,
   tone: 'progress' | 'final',
 ): void {
@@ -468,7 +502,8 @@ function pushNarrative(
     last.text = `${last.text.trim()}\n\n${trimmed}`
     return
   }
-  segments.push({ kind: 'narrative', key, text, tone })
+  const index = segments.filter((s) => s.kind === 'narrative').length
+  segments.push({ kind: 'narrative', key: `narrative-${index}`, text, tone })
 }
 
 /**
@@ -596,13 +631,18 @@ export function buildConciseTimeline(
     if (cur.type === 'text') {
       if (!cur.text.trim()) continue
       flushLeadingThink()
-      // REGRESS-J(J1/J4)：非最终、极短的段间 progress 在 idle 不再无条件 flushStage。
-      // 回合结束时工具之间的短旁白直接忽略，让连续 Bash/探索累进同一 work_stage，
-      // 消除「运行了 1 条命令」刷屏。live 流式期间保留（打字机需即时可见，避免憋到结束）；
-      // 回合结束后同一过程数组重投影即得合并的单一 work_stage。
+      // REGRESS-N（否决 REGRESS-J J1/J4 的 isShortIdleProgress → continue）：
+      // 旧规则按长度（≤ SHORT_PROGRESS_MAX_CHARS）一刀切，idle 把「正在跑验证」「准备编辑」
+      // 这类**有信息**的段间短 progress 也直接 continue 丢掉——REGRESS-M 的 tool_start commit
+      // 让它在 live 打字机可见、idle 重投影即被吃 → 用户观感「阶段性总结流完即消」。
+      // 产品裁决：禁止 idle 为合并阶段而删有信息的段间 progress；**仅纯 filler**
+      // （好的/嗯/继续…极短无信息过渡词，见 isFillerProgressText）可吞以合并阶段，
+      // 有信息进度句一律常驻 narrative.progress。live/idle 同一套 segments 语义
+      // （禁止 live 一套、idle 把总结删光）。回合末文本（isRoundFinal）即便是 filler 也保留
+      // ——那可能是用户的短回答，不得丢。
       const isRoundFinal = i > lastToolIdx || lastToolIdx < 0
-      const isShortIdleProgress = !isLive && !isRoundFinal && isShortProgressText(cur.text)
-      if (isShortIdleProgress) continue
+      const isFiller = !isRoundFinal && isFillerProgressText(cur.text)
+      if (isFiller) continue
       flushStage()
       // live 时尾部正文先当 progress（运行队列打字机），避免 final 卡片闪现；
       // 回合结束后再升为 final。

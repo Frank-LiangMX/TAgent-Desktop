@@ -6,6 +6,7 @@
  */
 import { memo, useMemo } from 'react'
 import { ArrowRight } from '@phosphor-icons/react'
+import { AppTooltip } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 import { summarizeFirstText } from './subagent-ui-model'
 import type { TurnSourceItem } from './session-turn-model'
@@ -43,13 +44,53 @@ function launcherSummary(launcher?: { name: string; input: Record<string, unknow
   return ''
 }
 
-function launcherModelHint(
+/** launcher.input 里的角色/类型字段（不是模型 id） */
+function launcherRoleHint(
   launcher?: { name: string; input: Record<string, unknown> } | null,
 ): string | undefined {
   if (!launcher?.input) return undefined
-  const m = launcher.input.model ?? launcher.input.subagent_type ?? launcher.input.agent
-  if (typeof m === 'string' && m.trim()) return m.trim()
+  for (const key of ['subagent_type', 'agent', 'agent_type', 'role'] as const) {
+    const v = launcher.input[key]
+    if (typeof v === 'string' && v.trim()) return v.trim()
+  }
   return undefined
+}
+
+/**
+ * 右侧「模型」标签：优先 assistant.modelId（真实跑的模型），
+ * 其次 launcher.input.model（仅当不像角色别名时）。
+ * 不再用 subagent_type 冒充模型（会显示成 analyst / code-reviewer）。
+ */
+function resolveModelLabel(
+  items: TurnSourceItem[],
+  launcher?: { name: string; input: Record<string, unknown> } | null,
+): string | undefined {
+  for (const it of items) {
+    const m = it.message
+    if (m?.type === 'assistant' && typeof m.modelId === 'string' && m.modelId.trim()) {
+      return m.modelId.trim()
+    }
+  }
+  const raw = launcher?.input?.model
+  if (typeof raw !== 'string' || !raw.trim()) return undefined
+  const model = raw.trim()
+  // 若 model 字段实际填的是角色名，不当模型展示
+  const role = launcherRoleHint(launcher)
+  if (role && model === role) return undefined
+  return model
+}
+
+/** 简洁行右侧：有模型显示模型；兼有角色时「角色 · 模型」 */
+function resolveMetaLabel(
+  items: TurnSourceItem[],
+  launcher?: { name: string; input: Record<string, unknown> } | null,
+): string {
+  const model = resolveModelLabel(items, launcher)
+  const role = launcherRoleHint(launcher)
+  if (model && role && role !== model) return `${role} · ${model}`
+  if (model) return model
+  if (role) return role
+  return '子代理'
 }
 
 export function SubagentEntryCard({
@@ -85,8 +126,11 @@ export function SubagentEntryCard({
         : 'completed')
   const statusText = card ? STATUS_TEXT[card.status] : STATUS_TEXT[status]
   const isRunning = status === 'running'
-  const modelHint = launcherModelHint(launcher) ?? '子代理'
-  // Cursor：右侧常挂模型名；完成态用第二行 Completed，不替换右侧
+  const metaLabel = useMemo(
+    () => resolveMetaLabel(items, launcher),
+    [items, launcher],
+  )
+  // Cursor：右侧挂模型（可带角色前缀）；完成态用第二行 Completed，不替换右侧
   const progressLine = isRunning
     ? card?.progressText || (card?.lastToolName ? `运行工具：${card.lastToolName}` : undefined)
     : status === 'completed'
@@ -95,35 +139,83 @@ export function SubagentEntryCard({
 
   if (variant === 'timeline') {
     return (
+      <AppTooltip label="查看子代理完整过程">
+        <button
+          type="button"
+          className={cn(
+            'agent-concise-subagent',
+            isRunning && 'is-running',
+            status === 'failed' && 'is-failed',
+          )}
+          onClick={onOpen}
+        >
+          <span className="agent-concise-subagent__bullet" aria-hidden>
+            •
+          </span>
+          <span className="agent-concise-subagent__main">
+            <span className="agent-concise-subagent__row">
+              <span className="agent-concise-subagent__title">{summary}</span>
+              <span
+                className={cn(
+                  'agent-concise-subagent__meta',
+                  isRunning && 'agent-concise-shimmer',
+                )}
+              >
+                {metaLabel}
+              </span>
+            </span>
+            {progressLine && progressLine !== summary ? (
+              <span
+                className={cn(
+                  'agent-concise-subagent__progress',
+                  isRunning && 'agent-concise-shimmer',
+                )}
+              >
+                {progressLine}
+              </span>
+            ) : null}
+          </span>
+        </button>
+      </AppTooltip>
+    )
+  }
+
+  return (
+    <AppTooltip label="查看子代理完整过程">
       <button
         type="button"
         className={cn(
-          'agent-concise-subagent',
-          isRunning && 'is-running',
+          'subagent-entry-card',
+          status === 'running' && 'is-running',
           status === 'failed' && 'is-failed',
+          status === 'completed' && 'is-completed',
         )}
         onClick={onOpen}
-        title="查看子代理完整过程"
       >
-        <span className="agent-concise-subagent__bullet" aria-hidden>
-          •
-        </span>
-        <span className="agent-concise-subagent__main">
-          <span className="agent-concise-subagent__row">
-            <span className="agent-concise-subagent__title">{summary}</span>
+        <span className="subagent-entry-card__dot" aria-hidden />
+        <span className="subagent-entry-card__body">
+          <span className="subagent-entry-card__row">
+            <span className="subagent-entry-card__title">子代理</span>
             <span
               className={cn(
-                'agent-concise-subagent__meta',
+                'subagent-entry-card__status',
                 isRunning && 'agent-concise-shimmer',
               )}
             >
-              {modelHint}
+              {statusText}
             </span>
+            {isRunning && card?.lastToolName ? (
+              <span className="subagent-entry-card__tool">· {card.lastToolName}</span>
+            ) : null}
+            {messageCount > 1 && (
+              <span className="subagent-entry-card__count">{messageCount} 步</span>
+            )}
           </span>
+          <span className="subagent-entry-card__summary">{summary}</span>
           {progressLine && progressLine !== summary ? (
             <span
               className={cn(
-                'agent-concise-subagent__progress',
+                'subagent-entry-card__progress',
                 isRunning && 'agent-concise-shimmer',
               )}
             >
@@ -131,58 +223,12 @@ export function SubagentEntryCard({
             </span>
           ) : null}
         </span>
-      </button>
-    )
-  }
-
-  return (
-    <button
-      type="button"
-      className={cn(
-        'subagent-entry-card',
-        status === 'running' && 'is-running',
-        status === 'failed' && 'is-failed',
-        status === 'completed' && 'is-completed',
-      )}
-      onClick={onOpen}
-      title="查看子代理完整过程"
-    >
-      <span className="subagent-entry-card__dot" aria-hidden />
-      <span className="subagent-entry-card__body">
-        <span className="subagent-entry-card__row">
-          <span className="subagent-entry-card__title">子代理</span>
-          <span
-            className={cn(
-              'subagent-entry-card__status',
-              isRunning && 'agent-concise-shimmer',
-            )}
-          >
-            {statusText}
-          </span>
-          {isRunning && card?.lastToolName ? (
-            <span className="subagent-entry-card__tool">· {card.lastToolName}</span>
-          ) : null}
-          {messageCount > 1 && (
-            <span className="subagent-entry-card__count">{messageCount} 步</span>
-          )}
+        <span className="subagent-entry-card__open">
+          查看
+          <ArrowRight size={11} weight="bold" />
         </span>
-        <span className="subagent-entry-card__summary">{summary}</span>
-        {progressLine && progressLine !== summary ? (
-          <span
-            className={cn(
-              'subagent-entry-card__progress',
-              isRunning && 'agent-concise-shimmer',
-            )}
-          >
-            {progressLine}
-          </span>
-        ) : null}
-      </span>
-      <span className="subagent-entry-card__open">
-        查看
-        <ArrowRight size={11} weight="bold" />
-      </span>
-    </button>
+      </button>
+    </AppTooltip>
   )
 }
 

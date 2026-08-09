@@ -1,0 +1,396 @@
+/* ===== Agent 行为（协作策略板）— 同壳：SettingsSection + SettingsCard + SegmentedTabs =====
+ * 对齐通用 / 外观：会诊档切换 = SegmentedTabs（与设置其它分段同族）；预置列表 = SettingsCard divided 行；
+ * 预置行 = 左名 + 座位摘要 / 右 Switch + 编辑 + 删；编辑态同页表单进 SettingsCard；
+ * 班组 / 圆桌 = 各一 SettingsSection「即将推出」。无 kicker、无自绘 pill、无大虚线轨。
+ * 仅消费 settings-shell 既有 CSS 变量（--spatial-* / --settings-*-fill），浅 / 深随 shell 切换。
+ */
+
+/* ── 会诊区正文：多卡（通知 / 档行 / 名册 / 编辑器）纵向间距 ── */
+.agent-behavior-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── 档分段行：SegmentedTabs + 预置计数（SettingsCard 顶行） ── */
+.agent-behavior-tier-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+}
+.agent-behavior-summary {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--spatial-faint);
+}
+
+/* ── 通知 / loading / empty ── */
+.agent-behavior-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--spatial-line);
+  border-radius: 10px;
+  color: var(--spatial-muted);
+  background: var(--settings-chip-fill);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.agent-behavior-notice--success {
+  border-color: hsl(145 60% 38% / 0.25);
+  color: hsl(145 60% 32%);
+  background: hsl(145 60% 45% / 0.08);
+}
+.agent-behavior-notice--error {
+  border-color: hsl(var(--destructive) / 0.25);
+  color: hsl(var(--destructive));
+  background: hsl(var(--destructive) / 0.06);
+}
+.agent-behavior-notice-copy {
+  min-width: 0;
+  flex: 1;
+}
+.agent-behavior-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 120px;
+  color: var(--spatial-muted);
+  font-size: 12px;
+}
+.agent-behavior-empty {
+  display: grid;
+  place-items: center;
+  padding: 26px 16px;
+  color: var(--spatial-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+/* 外部渠空态：合成兜底说明 + CTA */
+.agent-behavior-empty-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ── 预置行：SettingsCard divided 行；左主文 / 右控件（无左竖条 / 无卡片渐变） ── */
+.agent-behavior-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  transition: background-color var(--settings-duration-fast) var(--settings-motion);
+}
+.agent-behavior-row:hover {
+  background: var(--settings-hover-fill);
+}
+/* 停用态：标题字色变 muted（层级靠字色 + 字重）；启用态靠 Switch */
+.agent-behavior-row--off .agent-behavior-row-title strong {
+  font-weight: 500;
+  color: var(--spatial-muted);
+}
+
+/* 左：名 + 内置标签 + 座位摘要 */
+.agent-behavior-row-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+.agent-behavior-row-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.agent-behavior-row-title strong {
+  overflow: hidden;
+  color: var(--spatial-ink);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-behavior-row-tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--spatial-line-strong);
+  border-radius: 5px;
+  color: var(--spatial-muted);
+  background: var(--settings-chip-fill);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+/* 右：超时 + 启用开关 + 编辑 / 删 */
+.agent-behavior-row-control {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 10px;
+}
+.agent-behavior-row-meta {
+  flex: 0 0 auto;
+  color: var(--spatial-faint);
+  font-size: 10px;
+}
+.agent-behavior-row-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ── 座位单行：参考席 名·模型（间隔点）→ 汇总 模型 ── */
+.agent-behavior-seat-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.agent-behavior-seat-token {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.agent-behavior-seat-token--agg {
+  flex: 0 0 auto;
+}
+.agent-behavior-seat-name {
+  color: var(--spatial-muted);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.agent-behavior-seat-model {
+  overflow: hidden;
+  color: var(--spatial-faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-behavior-seat-sep,
+.agent-behavior-seat-arrow {
+  flex: 0 0 auto;
+  color: var(--spatial-faint);
+  opacity: 0.7;
+}
+/* 汇总 token：用 ink 字色 + 字重区分（非 accent 色条 / 霓虹） */
+.agent-behavior-seat-token--agg .agent-behavior-seat-name {
+  color: var(--spatial-ink);
+  font-weight: 650;
+}
+.agent-behavior-seat-token--agg .agent-behavior-seat-model {
+  color: var(--spatial-muted);
+  opacity: 1;
+}
+
+/* ── 编辑器：SettingsCard 内同页表单（表面由 settings-card 提供，这里只留内距与节奏） ── */
+.agent-behavior-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+.agent-behavior-editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.agent-behavior-editor-copy {
+  min-width: 0;
+}
+.agent-behavior-editor-title {
+  margin: 0;
+  color: var(--spatial-ink);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+}
+.agent-behavior-editor-enabled {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  color: var(--spatial-muted);
+  font-size: 11px;
+}
+.agent-behavior-editor-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.agent-behavior-editor-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-behavior-editor-group-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.agent-behavior-editor-group-label {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--spatial-muted);
+}
+.agent-behavior-editor-group-desc {
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--spatial-faint);
+}
+
+/* ── 表单原语 ── */
+.agent-behavior-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+.agent-behavior-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.agent-behavior-field-label {
+  color: var(--spatial-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.agent-behavior-field-hint,
+.agent-behavior-field-error {
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+.agent-behavior-field-hint {
+  color: var(--spatial-faint);
+}
+.agent-behavior-field-error {
+  margin: 0;
+  color: hsl(var(--destructive));
+}
+.agent-behavior-input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--spatial-line-strong);
+  border-radius: 9px;
+  outline: none;
+  color: var(--spatial-ink);
+  background: hsl(var(--background) / 0.34);
+  font-size: 11.5px;
+  transition:
+    border-color var(--settings-duration-fast),
+    box-shadow var(--settings-duration-fast);
+}
+/* 隐藏原生 number 步进箭头（与设置壳其它输入一致，避免系统 UA 三角） */
+.agent-behavior-input[type='number'] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.agent-behavior-input[type='number']::-webkit-outer-spin-button,
+.agent-behavior-input[type='number']::-webkit-inner-spin-button {
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.agent-behavior-input:focus {
+  border-color: var(--spatial-accent-line);
+  box-shadow: 0 0 0 3px var(--spatial-accent-soft);
+}
+.agent-behavior-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.agent-behavior-input--mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+}
+/* Select 触发器对齐 input 视觉 */
+.agent-behavior-select {
+  display: flex;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-color: var(--spatial-line-strong);
+  border-radius: 9px;
+  background: hsl(var(--background) / 0.34);
+  box-shadow: none;
+  font-size: 11.5px;
+}
+.agent-behavior-select:focus {
+  border-color: var(--spatial-accent-line);
+  box-shadow: 0 0 0 3px var(--spatial-accent-soft);
+}
+
+/* 参考席位列表（编辑器内） */
+.agent-behavior-seat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.agent-behavior-seat-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.agent-behavior-seat-empty {
+  display: grid;
+  place-items: center;
+  min-height: 56px;
+  border: 1px dashed var(--spatial-line);
+  border-radius: 10px;
+  color: var(--spatial-faint);
+  font-size: 10.5px;
+}
+.agent-behavior-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+@media (max-width: 760px) {
+  .agent-behavior-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .agent-behavior-seat-row {
+    grid-template-columns: 1fr;
+  }
+  .agent-behavior-row {
+    flex-wrap: wrap;
+  }
+  .agent-behavior-row-control {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}

@@ -16,6 +16,7 @@ import {
   PushPin,
 } from '@phosphor-icons/react'
 import {
+  AppTooltip,
   Button,
   Dialog,
   DialogContent,
@@ -360,23 +361,28 @@ export function RolesPage(): JSX.Element {
                       </div>
                     </button>
                     {/* 置顶到 @ 快捷列表：放在卡片按钮之外（避免 button 嵌 button），右上角浮层 */}
-                    <button
-                      type="button"
-                      className={cn(
-                        'roles-card__pin',
-                        pinned && 'roles-card__pin--active',
-                      )}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        void togglePin(r)
-                      }}
-                      disabled={busy}
-                      aria-label={pinned ? '取消置顶' : '置顶到 @ 快捷列表'}
-                      aria-pressed={pinned}
-                      title={pinned ? '已置顶到 Chat @ 快捷列表（点击取消）' : '置顶到 Chat @ 快捷列表'}
+                    <AppTooltip
+                      label={
+                        pinned ? '已置顶到 Chat @ 快捷列表（点击取消）' : '置顶到 Chat @ 快捷列表'
+                      }
                     >
-                      <PushPin weight={pinned ? 'fill' : 'regular'} aria-hidden />
-                    </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          'roles-card__pin',
+                          pinned && 'roles-card__pin--active',
+                        )}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void togglePin(r)
+                        }}
+                        disabled={busy}
+                        aria-label={pinned ? '取消置顶' : '置顶到 @ 快捷列表'}
+                        aria-pressed={pinned}
+                      >
+                        <PushPin weight={pinned ? 'fill' : 'regular'} aria-hidden />
+                      </button>
+                    </AppTooltip>
                   </li>
                 )
               })}

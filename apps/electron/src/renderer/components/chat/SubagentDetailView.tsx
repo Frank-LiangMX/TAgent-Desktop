@@ -4,18 +4,22 @@
  * 从主会话入口（SubagentEntryCard）进入后全屏切换到此页：
  * - 顶部栏：返回 + 标题 + 模型 + 状态（chrome 只一次）
  * - 任务指令区：默认折叠，只显示一行摘要
- * - 过程区：复用主会话 ProcessGroupView（默认收成一行摘要，不整页展开思考/工具）
- * - 回答区：末尾交付文本
+ * - 过程区：与主会话同一套过程展示偏好（chatProcessDisplayModeAtom）
+ *   · full → ProcessGroupView
+ *   · concise → ConciseTimelineView
+ * - 回答区：full 模式末尾交付文本；concise 时正文已并入时间线
  */
 import { memo, useMemo, useRef, useState } from 'react'
+import { useAtomValue } from 'jotai'
 import { ArrowLeft, CaretRight, Copy } from '@phosphor-icons/react'
-import { Message, MessageContent, MessageResponse } from '@tagent/ui'
+import { AppTooltip, Message, MessageContent, MessageResponse } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 import {
   formatElapsedDuration,
   formatMessageTime,
   useLiveElapsedMs,
 } from '../../lib/time-utils'
+import { chatProcessDisplayModeAtom } from '../../atoms/chat-display-prefs'
 import type { TurnSourceItem } from './session-turn-model'
 import {
   buildTurnPresentation,
@@ -26,6 +30,8 @@ import { summarizeFirstText } from './subagent-ui-model'
 import type { TaskCardState } from './subagent-ui-model'
 import type { TAgentContentBlock, TAgentMessage } from '@tagent/shared'
 import { ProcessGroupView } from './ProcessGroupView'
+import { ConciseTimelineView } from './ConciseTimelineView'
+import { buildConciseTimeline } from './concise-timeline-model'
 
 interface SubagentDetailViewProps {
   /** Chat 全部显示项（实时，含流式） */
@@ -140,6 +146,10 @@ export function SubagentDetailView({
       .join('\n\n')
   }, [subagentItems])
 
+  /** 与主会话共用过程展示偏好（模型选择器里的完整/简洁） */
+  const processDisplayMode = useAtomValue(chatProcessDisplayModeAtom)
+  const isConcise = processDisplayMode === 'concise'
+
   /**
    * 与主会话同一套过程/回答拆分。
    * buildTurnPresentation 会跳过 parentToolUseId 消息，故展示前先剥掉 parent 标记。
@@ -162,10 +172,27 @@ export function SubagentDetailView({
         isStreaming: isRunning,
         modelId,
       },
-      // 运行中过程一条路展开摘要行；结束后收成一行，不默认摊开思考/工具全文
-      { isLiveTurn: isRunning },
+      { isLiveTurn: isRunning, displayMode: processDisplayMode },
     )
-  }, [subagentItems, parentToolUseId, isRunning, modelId])
+  }, [subagentItems, parentToolUseId, isRunning, modelId, processDisplayMode])
+
+  const conciseSegments = useMemo(
+    () =>
+      isConcise
+        ? buildConciseTimeline(presentation.process, {
+            answerTexts: presentation.answerTexts,
+            streamingText: presentation.streamingText,
+            isLive: isRunning,
+          })
+        : [],
+    [
+      isConcise,
+      presentation.process,
+      presentation.answerTexts,
+      presentation.streamingText,
+      isRunning,
+    ],
+  )
 
   const answerText = presentation.answerTexts.join('\n\n').trim()
   const copyText = (answerText || fullText).trim()
@@ -199,26 +226,38 @@ export function SubagentDetailView({
             <div className="subagent-detail__empty">子代理尚未产生消息…</div>
           )}
 
-          {presentation.process.length > 0 && (
-            <div className="agent-turn-process">
-              {/* 子代理详情：过程默认收成一行，不自动摊开全部思考/工具 */}
-              <ProcessGroupView
-                process={presentation.process}
+          {isConcise ? (
+            conciseSegments.length > 0 ? (
+              <ConciseTimelineView
+                segments={conciseSegments}
                 isLive={isRunning}
-                autoExpandWhenLive={false}
+                isLatestTurn
               />
-            </div>
+            ) : null
+          ) : (
+            <>
+              {presentation.process.length > 0 && (
+                <div className="agent-turn-process">
+                  <ProcessGroupView
+                    process={presentation.process}
+                    isLive={isRunning}
+                    autoExpandWhenLive
+                    displayMode="full"
+                    hasFinalOutput={Boolean(answerText)}
+                  />
+                </div>
+              )}
+              {answerText ? (
+                <div className="agent-answer-block subagent-detail__answer">
+                  <Message from="assistant">
+                    <MessageContent>
+                      <MessageResponse>{answerText}</MessageResponse>
+                    </MessageContent>
+                  </Message>
+                </div>
+              ) : null}
+            </>
           )}
-
-          {answerText ? (
-            <div className="agent-answer-block subagent-detail__answer">
-              <Message from="assistant">
-                <MessageContent>
-                  <MessageResponse>{answerText}</MessageResponse>
-                </MessageContent>
-              </Message>
-            </div>
-          ) : null}
         </div>
       </div>
     </div>
@@ -285,20 +324,21 @@ function TaskPromptBlock({
 /** 复制按钮（复制后短暂显示 ✓） */
 function CopyDetailButton({ text }: { text: string }): JSX.Element {
   return (
-    <button
-      type="button"
-      className="subagent-detail__copy"
-      title="复制子代理全部文本"
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text)
-        } catch {
-          /* clipboard 不可用时静默失败 */
-        }
-      }}
-    >
-      <Copy size={13} />
-    </button>
+    <AppTooltip label="复制子代理全部文本">
+      <button
+        type="button"
+        className="subagent-detail__copy"
+        onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(text)
+          } catch {
+            /* clipboard 不可用时静默失败 */
+          }
+        }}
+      >
+        <Copy size={13} />
+      </button>
+    </AppTooltip>
   )
 }
 

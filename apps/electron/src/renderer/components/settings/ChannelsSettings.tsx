@@ -9,7 +9,6 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  Server,
   Trash2,
   Wifi,
 } from 'lucide-react'
@@ -22,6 +21,9 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  SettingsCard,
+  SettingsPageIntro,
+  SettingsSection,
   Switch,
 } from '@tagent/ui'
 import {
@@ -174,19 +176,17 @@ export function ChannelsSettings(): JSX.Element {
 
   const enabledCount = channels.filter((channel) => channel.enabled).length
   return (
-    <div className="settings-page channel-settings-page">
-      <div className="channel-settings-heading">
-        <div>
-          <h2 className="settings-page-intro-title">渠道</h2>
-          <p className="settings-page-intro-desc">
-            管理 AI 供应商、访问凭据和会话可用的模型
-          </p>
-        </div>
-        <Button size="sm" onClick={() => setEditor({ mode: 'add' })}>
-          <Plus size={14} />
-          添加渠道
-        </Button>
-      </div>
+    <div className="settings-page">
+      <SettingsPageIntro
+        title="渠道"
+        description="管理 AI 供应商、访问凭据和会话可用的模型"
+        action={
+          <Button size="sm" onClick={() => setEditor({ mode: 'add' })}>
+            <Plus size={14} />
+            添加渠道
+          </Button>
+        }
+      />
 
       <div className="channel-settings-summary" aria-live="polite">
         <span>{channels.length} 个渠道</span>
@@ -210,44 +210,50 @@ export function ChannelsSettings(): JSX.Element {
       ) : (
         <>
           {builtin && (
-            <ChannelGroup title="内置服务" description="由 TAgent 提供，无需配置 API Key">
-              <ChannelRow
-                channel={builtin}
-                builtin
-                operation={operations[builtin.id]}
-                busy={busyIds.has(builtin.id)}
-                onEdit={() => setEditor({ mode: 'edit', channel: builtin })}
-                onTest={() => void testChannel(builtin)}
-                onToggle={() => void toggleChannel(builtin)}
-              />
-            </ChannelGroup>
+            <SettingsSection title="内置服务" description="由 TAgent 提供，无需配置 API Key">
+              <SettingsCard>
+                <ChannelRow
+                  channel={builtin}
+                  builtin
+                  operation={operations[builtin.id]}
+                  busy={busyIds.has(builtin.id)}
+                  onEdit={() => setEditor({ mode: 'edit', channel: builtin })}
+                  onTest={() => void testChannel(builtin)}
+                  onToggle={() => void toggleChannel(builtin)}
+                />
+              </SettingsCard>
+            </SettingsSection>
           )}
 
-          <ChannelGroup title="外部服务" description="使用你自己的供应商凭据直连">
-            {externals.length > 0 ? externals.map((channel) => (
-              <ChannelRow
-                key={channel.id}
-                channel={channel}
-                operation={operations[channel.id]}
-                busy={busyIds.has(channel.id)}
-                onEdit={() => setEditor({ mode: 'edit', channel })}
-                onDelete={() => setDeleteTarget(channel)}
-                onTest={() => void testChannel(channel)}
-                onToggle={() => void toggleChannel(channel)}
-              />
-            )) : (
-              <div className="channel-empty">
-                <Server size={20} />
-                <div>
-                  <strong>还没有外部渠道</strong>
-                  <p>添加供应商与 API Key，即可在新会话中选择对应模型。</p>
+          <SettingsSection title="外部服务" description="使用你自己的供应商凭据直连">
+            <SettingsCard divided>
+              {externals.length > 0 ? externals.map((channel) => (
+                <ChannelRow
+                  key={channel.id}
+                  channel={channel}
+                  operation={operations[channel.id]}
+                  busy={busyIds.has(channel.id)}
+                  onEdit={() => setEditor({ mode: 'edit', channel })}
+                  onDelete={() => setDeleteTarget(channel)}
+                  onTest={() => void testChannel(channel)}
+                  onToggle={() => void toggleChannel(channel)}
+                />
+              )) : (
+                <div className="channel-shell-empty">
+                  <div className="channel-shell-empty-copy">
+                    <div className="settings-field-label">还没有外部渠道</div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      添加供应商与 API Key，即可在新会话中选择对应模型。
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => setEditor({ mode: 'add' })}>
+                    <Plus size={14} />
+                    添加第一个渠道
+                  </Button>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => setEditor({ mode: 'add' })}>
-                  添加第一个渠道
-                </Button>
-              </div>
-            )}
-          </ChannelGroup>
+              )}
+            </SettingsCard>
+          </SettingsSection>
         </>
       )}
 
@@ -261,26 +267,6 @@ export function ChannelsSettings(): JSX.Element {
         onConfirm={deleteChannel}
       />
     </div>
-  )
-}
-
-function ChannelGroup({
-  title,
-  description,
-  children,
-}: {
-  title: string
-  description: string
-  children: React.ReactNode
-}): JSX.Element {
-  return (
-    <section className="channel-group">
-      <div className="channel-group-heading">
-        <h3>{title}</h3>
-        <p>{description}</p>
-      </div>
-      <div className="channel-list">{children}</div>
-    </section>
   )
 }
 
@@ -305,23 +291,41 @@ function ChannelRow({
 }): JSX.Element {
   const enabledModels = channel.models.filter((model) => model.enabled)
   return (
-    <article className="channel-row">
-      <div className="channel-row-topline">
-        <div className={`channel-provider-mark ${channel.enabled ? '' : 'channel-provider-mark--muted'}`}>
-          <Server size={15} />
+    <article className="channel-shell-row">
+      <div className="channel-shell-main min-w-0 flex-1">
+        <div className="channel-shell-title">
+          <strong className="channel-shell-name">{channel.name}</strong>
+          {builtin && <span className="channel-shell-tag">内置</span>}
+          <span className={`channel-shell-status${channel.enabled ? ' channel-shell-status--on' : ''}`}>
+            {channel.enabled ? '已启用' : '已停用'}
+          </span>
         </div>
-        <div className="channel-row-identity">
-          <div className="channel-row-title">
-            <strong>{channel.name}</strong>
-            {builtin && <span className="channel-tag">内置</span>}
-            <span className={`channel-status-text ${channel.enabled ? 'channel-status-text--on' : ''}`}>
-              {channel.enabled ? '已启用' : '已停用'}
-            </span>
-          </div>
-          <p title={channel.baseUrl || 'TAgent 内置网关'}>
+        <AppTooltip label={channel.baseUrl || 'TAgent 内置网关'} multiline>
+          <p className="channel-shell-url">
             {PROVIDER_LABELS[channel.provider]} · {channel.baseUrl || 'TAgent 内置网关'}
           </p>
+        </AppTooltip>
+        <div className="channel-shell-details">
+          <span>{enabledModels.length} 个可用模型</span>
+          <span aria-hidden>·</span>
+          <span className="truncate">默认：{channel.defaultModelId || '未设置'}</span>
+          {!builtin && (
+            <>
+              <span aria-hidden>·</span>
+              <span className="channel-shell-credential"><KeyRound size={12} />{channel.apiKey ? '凭据已保存' : '缺少凭据'}</span>
+            </>
+          )}
         </div>
+        {operation && (
+          <div className={`channel-shell-test channel-shell-test--${operation.kind}`} aria-live="polite">
+            {operation.kind === 'testing' && <RefreshCw size={12} className="animate-spin" />}
+            {operation.kind === 'success' && <CheckCircle2 size={12} />}
+            {operation.kind === 'error' && <AlertCircle size={12} />}
+            <span>{operation.message}</span>
+          </div>
+        )}
+      </div>
+      <div className="channel-shell-control shrink-0">
         <Switch
           size="sm"
           checked={channel.enabled}
@@ -329,26 +333,7 @@ function ChannelRow({
           aria-label={`${channel.enabled ? '停用' : '启用'} ${channel.name}`}
           onCheckedChange={onToggle}
         />
-      </div>
-      <div className="channel-row-details">
-        <span>{enabledModels.length} 个可用模型</span>
-        <span aria-hidden>·</span>
-        <span className="truncate">默认：{channel.defaultModelId || '未设置'}</span>
-        {!builtin && (
-          <>
-            <span aria-hidden>·</span>
-            <span className="channel-credential"><KeyRound size={12} />{channel.apiKey ? '凭据已保存' : '缺少凭据'}</span>
-          </>
-        )}
-      </div>
-      <div className="channel-row-footer">
-        <div className={`channel-test-result channel-test-result--${operation?.kind ?? 'idle'}`} aria-live="polite">
-          {operation?.kind === 'testing' && <RefreshCw size={12} className="animate-spin" />}
-          {operation?.kind === 'success' && <CheckCircle2 size={12} />}
-          {operation?.kind === 'error' && <AlertCircle size={12} />}
-          <span>{operation?.message ?? '尚未测试连接'}</span>
-        </div>
-        <div className="channel-row-actions">
+        <div className="channel-shell-actions">
           <Button
             variant="ghost"
             size="sm"
@@ -503,23 +488,21 @@ function ChannelEditor({
   }
 
   return (
-    <div className="settings-page channel-settings-page channel-editor">
+    <div className="settings-page channel-editor">
       <button type="button" className="channel-editor-back" onClick={onCancel}>
         <ArrowLeft size={14} />
         返回渠道列表
       </button>
-      <div className="channel-settings-heading">
-        <div>
-          <h2 className="settings-page-intro-title">{mode === 'add' ? '添加渠道' : `编辑 ${channel?.name ?? '渠道'}`}</h2>
-          <p className="settings-page-intro-desc">
-            {builtin ? '管理内置服务的可用模型与启用状态' : '配置供应商连接、访问凭据与模型'}
-          </p>
-        </div>
-        <div className="channel-editor-enabled">
-          <span>{draft.enabled ? '渠道已启用' : '渠道已停用'}</span>
-          <Switch checked={draft.enabled} onCheckedChange={(enabled) => update({ enabled })} />
-        </div>
-      </div>
+      <SettingsPageIntro
+        title={mode === 'add' ? '添加渠道' : `编辑 ${channel?.name ?? '渠道'}`}
+        description={builtin ? '管理内置服务的可用模型与启用状态' : '配置供应商连接、访问凭据与模型'}
+        action={
+          <div className="channel-editor-enabled">
+            <span>{draft.enabled ? '渠道已启用' : '渠道已停用'}</span>
+            <Switch checked={draft.enabled} onCheckedChange={(enabled) => update({ enabled })} />
+          </div>
+        }
+      />
 
       {notice && (
         <div className={`channel-notice channel-notice--${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>
@@ -528,71 +511,75 @@ function ChannelEditor({
         </div>
       )}
 
-      <EditorSection title="基本信息" description="用于在会话模型选择器中识别该连接">
-        <div className="channel-form-grid">
-          <Field label="渠道名称" error={errors.name}>
-            <input
-              className="channel-input"
-              value={draft.name}
-              placeholder="例如：团队 OpenAI"
-              aria-invalid={Boolean(errors.name)}
-              onChange={(event) => update({ name: event.target.value })}
-            />
-          </Field>
-          <Field label="供应商">
-            <Select
-              value={draft.provider}
-              disabled={builtin}
-              onValueChange={(provider) => changeProvider(provider as ProviderType)}
-            >
-              <SelectTrigger className="channel-input channel-provider-select">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="scrollbar-thin !z-[130]">
-              {builtin && <SelectItem value={KSCC_PROVIDER}>{PROVIDER_LABELS[KSCC_PROVIDER]}</SelectItem>}
-              {!builtin && PROVIDERS.map(([provider, label]) => (
-                <SelectItem key={provider} value={provider}>{label}</SelectItem>
-              ))}
-              </SelectContent>
-            </Select>
-          </Field>
-        </div>
-      </EditorSection>
+      <SettingsSection title="基本信息" description="用于在会话模型选择器中识别该连接">
+        <SettingsCard divided={false} className="channel-form-card">
+          <div className="channel-form-grid">
+            <Field label="渠道名称" error={errors.name}>
+              <input
+                className="channel-input"
+                value={draft.name}
+                placeholder="例如：团队 OpenAI"
+                aria-invalid={Boolean(errors.name)}
+                onChange={(event) => update({ name: event.target.value })}
+              />
+            </Field>
+            <Field label="供应商">
+              <Select
+                value={draft.provider}
+                disabled={builtin}
+                onValueChange={(provider) => changeProvider(provider as ProviderType)}
+              >
+                <SelectTrigger className="channel-input channel-provider-select">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="scrollbar-thin !z-[130]">
+                {builtin && <SelectItem value={KSCC_PROVIDER}>{PROVIDER_LABELS[KSCC_PROVIDER]}</SelectItem>}
+                {!builtin && PROVIDERS.map(([provider, label]) => (
+                  <SelectItem key={provider} value={provider}>{label}</SelectItem>
+                ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+        </SettingsCard>
+      </SettingsSection>
 
       {!builtin && (
-        <EditorSection title="连接配置" description="凭据仅加密保存在本机">
-          <Field label="服务地址" error={errors.baseUrl}>
-            <input
-              className="channel-input channel-input--mono"
-              value={draft.baseUrl}
-              placeholder="https://api.example.com/v1"
-              aria-invalid={Boolean(errors.baseUrl)}
-              onChange={(event) => update({ baseUrl: event.target.value })}
-            />
-          </Field>
-          <Field
-            label={mode === 'edit' ? '替换 API Key' : 'API Key'}
-            hint={mode === 'edit' && channel?.apiKey
-              ? '密钥已加密保存，可直接同步模型；输入新值将替换现有密钥。'
-              : mode === 'edit'
-                ? '当前没有可用凭据，请输入 API Key。'
-                : '不会显示在渠道列表或日志中。'}
-            error={errors.apiKey}
-          >
-            <input
-              type="password"
-              className="channel-input channel-input--mono"
-              value={draft.apiKey}
-              placeholder={mode === 'edit' && channel?.apiKey ? '••••••••••••（已保存）' : '输入供应商 API Key'}
-              autoComplete="new-password"
-              aria-invalid={Boolean(errors.apiKey)}
-              onChange={(event) => update({ apiKey: event.target.value })}
-            />
-          </Field>
-        </EditorSection>
+        <SettingsSection title="连接配置" description="凭据仅加密保存在本机">
+          <SettingsCard divided={false} className="channel-form-card">
+            <Field label="服务地址" error={errors.baseUrl}>
+              <input
+                className="channel-input channel-input--mono"
+                value={draft.baseUrl}
+                placeholder="https://api.example.com/v1"
+                aria-invalid={Boolean(errors.baseUrl)}
+                onChange={(event) => update({ baseUrl: event.target.value })}
+              />
+            </Field>
+            <Field
+              label={mode === 'edit' ? '替换 API Key' : 'API Key'}
+              hint={mode === 'edit' && channel?.apiKey
+                ? '密钥已加密保存，可直接同步模型；输入新值将替换现有密钥。'
+                : mode === 'edit'
+                  ? '当前没有可用凭据，请输入 API Key。'
+                  : '不会显示在渠道列表或日志中。'}
+              error={errors.apiKey}
+            >
+              <input
+                type="password"
+                className="channel-input channel-input--mono"
+                value={draft.apiKey}
+                placeholder={mode === 'edit' && channel?.apiKey ? '••••••••••••（已保存）' : '输入供应商 API Key'}
+                autoComplete="new-password"
+                aria-invalid={Boolean(errors.apiKey)}
+                onChange={(event) => update({ apiKey: event.target.value })}
+              />
+            </Field>
+          </SettingsCard>
+        </SettingsSection>
       )}
 
-      <EditorSection
+      <SettingsSection
         title="可用模型"
         description="仅启用的模型会出现在新会话中；默认模型必须处于启用状态"
         action={!builtin ? (
@@ -602,70 +589,72 @@ function ChannelEditor({
           </Button>
         ) : undefined}
       >
-        <div className="channel-model-add">
-          <input
-            className="channel-input channel-input--mono"
-            value={newModelId}
-            placeholder="手动输入模型 ID"
-            onChange={(event) => setNewModelId(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                addModel()
-              }
-            }}
-          />
-          <Button variant="outline" size="sm" onClick={addModel} disabled={!newModelId.trim()}>
-            <Plus size={14} />
-            添加
-          </Button>
-        </div>
-        {errors.models && <p className="channel-field-error" role="alert">{errors.models}</p>}
-        <div className="channel-model-list channel-model-scroll scrollbar-thin">
-          {draft.models.length === 0 ? (
-            <div className="channel-model-empty">同步供应商模型，或手动添加模型 ID</div>
-          ) : draft.models.map((model) => (
-            <div key={model.id} className="channel-model-row">
-              <AppTooltip
-                label={model.enabled ? '设为默认模型' : '启用后可设为默认'}
-                side="top"
-              >
-                <button
-                  type="button"
-                  className={`channel-default-radio ${draft.defaultModelId === model.id ? 'channel-default-radio--active' : ''}`}
-                  disabled={!model.enabled}
-                  aria-label={`将 ${model.name} 设为默认模型`}
-                  onClick={() => update({ defaultModelId: model.id })}
+        <SettingsCard divided={false} className="channel-form-card">
+          <div className="channel-model-add">
+            <input
+              className="channel-input channel-input--mono"
+              value={newModelId}
+              placeholder="手动输入模型 ID"
+              onChange={(event) => setNewModelId(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  addModel()
+                }
+              }}
+            />
+            <Button variant="outline" size="sm" onClick={addModel} disabled={!newModelId.trim()}>
+              <Plus size={14} />
+              添加
+            </Button>
+          </div>
+          {errors.models && <p className="channel-field-error" role="alert">{errors.models}</p>}
+          <div className="channel-model-list channel-model-scroll scrollbar-thin">
+            {draft.models.length === 0 ? (
+              <div className="channel-model-empty">同步供应商模型，或手动添加模型 ID</div>
+            ) : draft.models.map((model) => (
+              <div key={model.id} className="channel-model-row">
+                <AppTooltip
+                  label={model.enabled ? '设为默认模型' : '启用后可设为默认'}
+                  side="top"
                 >
-                  <span />
-                </button>
-              </AppTooltip>
-              <div className="channel-model-copy">
-                <strong>{model.name}</strong>
-                <span>{model.id}</span>
+                  <button
+                    type="button"
+                    className={`channel-default-radio ${draft.defaultModelId === model.id ? 'channel-default-radio--active' : ''}`}
+                    disabled={!model.enabled}
+                    aria-label={`将 ${model.name} 设为默认模型`}
+                    onClick={() => update({ defaultModelId: model.id })}
+                  >
+                    <span />
+                  </button>
+                </AppTooltip>
+                <div className="channel-model-copy">
+                  <strong>{model.name}</strong>
+                  <span>{model.id}</span>
+                </div>
+                {draft.defaultModelId === model.id && <span className="channel-shell-tag">默认</span>}
+                <Switch
+                  size="sm"
+                  checked={model.enabled}
+                  aria-label={`${model.enabled ? '停用' : '启用'} ${model.name}`}
+                  onCheckedChange={(enabled) => updateModels(
+                    draft.models.map((item) => item.id === model.id ? { ...item, enabled } : item),
+                    draft.defaultModelId,
+                  )}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`移除 ${model.name}`}
+                  onClick={() => updateModels(draft.models.filter((item) => item.id !== model.id), draft.defaultModelId)}
+                >
+                  <Trash2 size={13} />
+                </Button>
               </div>
-              {draft.defaultModelId === model.id && <span className="channel-tag">默认</span>}
-              <Switch
-                size="sm"
-                checked={model.enabled}
-                aria-label={`${model.enabled ? '停用' : '启用'} ${model.name}`}
-                onCheckedChange={(enabled) => updateModels(
-                  draft.models.map((item) => item.id === model.id ? { ...item, enabled } : item),
-                  draft.defaultModelId,
-                )}
-              />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`移除 ${model.name}`}
-                onClick={() => updateModels(draft.models.filter((item) => item.id !== model.id), draft.defaultModelId)}
-              >
-                <Trash2 size={13} />
-              </Button>
-            </div>
-          ))}
-        </div>
-      </EditorSection>
+            ))}
+          </div>
+        </SettingsCard>
+      </SettingsSection>
 
       <div className="channel-editor-actions">
         <Button variant="ghost" onClick={onCancel}>取消</Button>
@@ -674,31 +663,6 @@ function ChannelEditor({
         </Button>
       </div>
     </div>
-  )
-}
-
-function EditorSection({
-  title,
-  description,
-  action,
-  children,
-}: {
-  title: string
-  description: string
-  action?: React.ReactNode
-  children: React.ReactNode
-}): JSX.Element {
-  return (
-    <section className="channel-editor-section">
-      <div className="channel-editor-section-head">
-        <div>
-          <h3>{title}</h3>
-          <p>{description}</p>
-        </div>
-        {action}
-      </div>
-      <div className="channel-editor-section-body">{children}</div>
-    </section>
   )
 }
 

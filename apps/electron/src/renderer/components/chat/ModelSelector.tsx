@@ -10,7 +10,7 @@
  */
 import { useMemo, useState } from 'react'
 import { useAtom, useAtomValue } from 'jotai'
-import { ChevronDown, Cpu, HelpCircle, Network, ShieldCheck, TriangleAlert } from 'lucide-react'
+import { ChevronDown, Cpu, HelpCircle, Network, ShieldCheck, TriangleAlert, Users } from 'lucide-react'
 import {
   AppTooltip,
   Popover,
@@ -19,11 +19,15 @@ import {
   MenuPopoverItem,
   MenuPopoverGroup,
   MenuPopoverSectionLabel,
-  MenuPopoverSeparator,
   SegmentedTabs,
   SegmentedTabsItem,
 } from '@tagent/ui'
-import { type Channel, type ReasoningEffort, PROVIDER_LABELS } from '@tagent/shared'
+import {
+  type Channel,
+  type ReasoningEffort,
+  PROVIDER_LABELS,
+  isMoaModelId,
+} from '@tagent/shared'
 import { cn } from '../../lib/utils'
 import { channelsAtom } from '../../atoms/channel-atoms'
 import {
@@ -66,7 +70,11 @@ export function ModelSelector({
   const [open, setOpen] = useState(false)
   const activeChannel = channels.find((channel) => channel.id === selection?.channelId)
   const activeModel = activeChannel?.models.find((model) => model.id === selection?.modelId)
-  const activeAvailable = Boolean(activeChannel?.enabled && activeModel?.enabled)
+  /** 旧会话可能仍粘着 moa:*；会诊入口已迁到发送键旁 ▾，选择器不再提供预置 */
+  const isMoaSelection = isMoaModelId(selection?.modelId)
+  const activeAvailable = isMoaSelection
+    ? false
+    : Boolean(activeChannel?.enabled && activeModel?.enabled)
   const groups = channels
     .filter((channel) => (
       channel.enabled
@@ -152,7 +160,9 @@ export function ModelSelector({
           aria-label="选择模型"
         >
           {/* 触发器：模型 logo + 名称（渠道名收进弹窗，触发器只留模型名，省空间） */}
-          {activeAvailable && activeModel ? (
+          {isMoaSelection ? (
+            <Users className="size-3.5 shrink-0 text-primary/80" />
+          ) : activeAvailable && activeModel ? (
             <img
               src={getModelLogo(activeModel.id, activeChannel!.provider)}
               alt={activeModel.name}
@@ -164,10 +174,12 @@ export function ModelSelector({
             <Cpu className="size-3.5 shrink-0" />
           )}
           <span className="min-w-0 truncate font-medium text-foreground/85">
-            {activeModel?.name || selection?.modelId || '选择模型'}
+            {isMoaSelection
+              ? '请改选真实模型'
+              : activeModel?.name || selection?.modelId || '选择模型'}
           </span>
-          {/* 非默认档才回显，默认「均衡」保持触发器最短 */}
-          {reasoningEffort && reasoningEffort !== REASONING_DEFAULT ? (
+          {/* 非默认档才回显，默认「均衡」保持触发器最短；会诊模式不适用思考强度 */}
+          {!isMoaSelection && reasoningEffort && reasoningEffort !== REASONING_DEFAULT ? (
             <span className="model-selector__effort shrink-0 text-[10.5px] font-medium text-primary/80">
               {REASONING_LABELS[reasoningEffort]}
             </span>
@@ -190,7 +202,11 @@ export function ModelSelector({
             <div className="min-w-0">
               <div className="text-[11px] font-medium text-muted-foreground">当前模型</div>
               <div className="mt-1.5 flex min-w-0 items-center gap-2.5">
-                {activeAvailable && activeModel ? (
+                {isMoaSelection ? (
+                  <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                    <Users className="size-3.5 text-primary/80" />
+                  </div>
+                ) : activeAvailable && activeModel ? (
                   <img
                     src={getModelLogo(activeModel.id, activeChannel!.provider)}
                     alt={activeModel.name}
@@ -203,10 +219,14 @@ export function ModelSelector({
                 )}
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium text-foreground">
-                    {activeModel?.name || selection?.modelId || '未选择模型'}
+                    {isMoaSelection
+                      ? '会诊已改为发送方式'
+                      : activeModel?.name || selection?.modelId || '未选择模型'}
                   </div>
                   <div className="truncate text-[11px] text-muted-foreground">
-                    {activeChannel?.name || '选择一个可用渠道模型'}
+                    {isMoaSelection
+                      ? '请选下方真实模型；需要会诊时点发送旁 ▾'
+                      : activeChannel?.name || '选择一个可用渠道模型'}
                   </div>
                 </div>
               </div>
@@ -217,8 +237,13 @@ export function ModelSelector({
           </div>
         </div>
 
-        {/* 思考强度：紧跟模型 header，不进下方滚动区，免得选完模型还得往回滚 */}
-        {reasoningEffort && onReasoningEffortChange ? (
+        {/* 思考强度：紧跟模型 header，不进下方滚动区，免得选完模型还得往回滚。
+            会诊模式多模型会商汇总，不适用思考强度 → 隐藏滑块并说明。 */}
+        {isMoaSelection ? (
+          <div className="px-3.5 pb-3 text-[11px] leading-snug text-amber-700/90 dark:text-amber-400/90">
+            会诊请点发送键旁 ▾ 选班底（仅本条）。请先选一个真实模型继续聊天。
+          </div>
+        ) : reasoningEffort && onReasoningEffortChange ? (
           <div className="px-3.5 pb-3">
             <div className="mb-2 text-[11px] font-medium text-muted-foreground">思考强度</div>
             <ReasoningSlider value={reasoningEffort} onChange={onReasoningEffortChange} />
@@ -254,8 +279,8 @@ export function ModelSelector({
           </SegmentedTabs>
         </div>
 
-        {/* 分隔线 */}
-        <MenuPopoverSeparator />
+        {/* 分隔线（不用 MenuPopoverSeparator，避免 HMR/导出偶发未定义） */}
+        <div className="mx-2 my-1 h-px bg-border/40" role="separator" />
 
         <div className="flex items-center gap-1 px-3.5 pb-1 pt-2">
           <span className="text-[11px] font-medium text-muted-foreground">可选模型</span>

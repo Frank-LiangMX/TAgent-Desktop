@@ -15,6 +15,7 @@ import type { ConciseSegment, WorkStageStep } from './concise-timeline-model'
 import {
   getLiveStatusFromSteps,
   getWorkStepLabel,
+  isTrivialThinking,
 } from './concise-timeline-model'
 import { isOneShotTextJump } from './narrative-oneshot'
 import { formatThinkingSummary } from './session-turn-model'
@@ -408,6 +409,41 @@ const DiffHint = memo(function DiffHint({
   )
 })
 
+/**
+ * O2：live 末步思考正文打字机。挂在阶段摘要下、折叠 panel 之外（收起也可见），
+ * 让正在流式的 stage 内思考不再只扫光「正在思考…」。思考结束 hold→淡出再折进 steps。
+ * 复用 useSmoothStream 逐字挤出；空帧用 thinking 全文兜底，避免「…」顶替已显示正文。
+ */
+const LiveThinkingBody = memo(function LiveThinkingBody({
+  thinking,
+  isStreaming,
+  fading,
+}: {
+  thinking: string
+  isStreaming: boolean
+  fading: boolean
+}): JSX.Element | null {
+  const { displayedContent } = useSmoothStream({ content: thinking, isStreaming })
+  const bodyText = (() => {
+    const shown = displayedContent.trim()
+    if (shown) return shown
+    const raw = thinking.trim()
+    if (raw) return raw
+    return isStreaming ? '…' : ''
+  })()
+  if (!bodyText) return null
+  return (
+    <div className={cn('agent-concise-stage__live-thinking', fading && 'is-fading')}>
+      <MessageResponse
+        className="text-[12.5px] leading-[1.55] text-muted-foreground/80"
+        streaming={isStreaming}
+      >
+        {bodyText}
+      </MessageResponse>
+    </div>
+  )
+})
+
 const WorkStageFold = memo(function WorkStageFold({
   summary,
   diffAdd,
@@ -429,11 +465,37 @@ const WorkStageFold = memo(function WorkStageFold({
   // Cursor：live 只露摘要 + 当前动作；明细仅用户展开。禁止 live 灌入步骤再整收。
   const [open, setOpen] = useState(false)
   const stageActive = isStageLive || keepWhileActive
+  // REGRESS-N（产品裁决 3）：折叠 stage 摘要带「· 含思考」——中段有分量的思考（非 trivial）
+  // 不再只埋在折叠 stage 里看不见。仅当含非 trivial 思考才提示（纯「让我看看」级不刷），
+  // 不升独立 ThinkingFold 以免回退 REGRESS-J(J3) 的拆 stage / 思考游离。
+  const hasSubstantiveThinking = steps.some(
+    (s) => s.kind === 'thinking' && !isTrivialThinking(s.thinking),
+  )
   const wasActive = useRef(stageActive)
   const settleTimer = useRef<number | null>(null)
-  const rawLiveStatus = stageActive ? getLiveStatusFromSteps(steps) : undefined
+  // REGRESS-O O2：中段思考并入 stage.steps 后，折叠态只露「正在思考…」扫光，正文打字机
+  // 不外露 → 用户观感「打完就没、只有重启展开执行块才有」。当 stage 仍在流式且末步是思考时，
+  // 把该思考正文作打字机常挂在阶段摘要下（不挂在折叠 panel 的 0fr 网格里，故收起也可见）。
+  // 思考结束（工具跟上 / 回合 settle）不秒卸：hold 旧文 → 淡出 → 再折进 stage.steps（允许折进，
+  // 但须连续，禁止空帧）。不升独立 ThinkingFold 以免回退 REGRESS-J(J3) 的拆 stage / 思考游离。
+  const lastStep = steps[steps.length - 1]
+  const liveTailThinking =
+    stageActive && Boolean(lastStep) && lastStep!.kind === 'thinking'
+  const rawLiveThinking = liveTailThinking
+    ? (lastStep as Extract<WorkStageStep, { kind: 'thinking' }>).thinking
+    : undefined
+  // keepWhileActive=false：思考正文在末步被工具取代即 hold→淡出（不被末阶段 keepWhileActive
+  // 无限挂住），与 live 底栏动作的 hold 语义分开。
+  const { shown: liveThinking, fading: liveThinkingFading } = useLiveStatusHold(
+    rawLiveThinking,
+    false,
+  )
+  // 末步是思考时，底栏扫光让位给正文打字机（不再只扫光「正在思考…」）
+  const rawLiveStatus = stageActive && !liveTailThinking ? getLiveStatusFromSteps(steps) : undefined
+  // 末步是思考时不再 keepWhileActive 挂住旧工具动作扫光（让位给思考正文 → 旧动作 hold→淡出）
+  const statusKeepWhileActive = keepWhileActive && !liveTailThinking
   // hold last live status 再淡出，禁止工具完成瞬间 null 卸 DOM（对齐 Cursor 折进灰字摘要）
-  const { shown: liveStatus, fading } = useLiveStatusHold(rawLiveStatus, keepWhileActive)
+  const { shown: liveStatus, fading } = useLiveStatusHold(rawLiveStatus, statusKeepWhileActive)
 
   // REGRESS-J(J2)：live→idle 不瞬间折叠。阶段激活时武装；结束先 hold ~1.8s 再折回灰字摘要，
   // 与 ThinkingFold settle 一致，panel 常驻（grid 0fr↔1fr），折起后可再点开明细。
@@ -481,6 +543,9 @@ const WorkStageFold = memo(function WorkStageFold({
         <span className="agent-concise-fold__summary">
           {/* 摘要只累积计数、不扫光；扫光留给底部当前动作 */}
           <span>{summary}</span>
+          {hasSubstantiveThinking ? (
+            <span className="text-muted-foreground/45 text-[11px]">· 含思考</span>
+          ) : null}
           <DiffHint add={diffAdd} del={diffDel} />
         </span>
         <CaretRight
@@ -494,6 +559,15 @@ const WorkStageFold = memo(function WorkStageFold({
 
       {/* 子代理挂在阶段摘要下（对齐 Cursor），折叠明细时仍可见 */}
       {extras ? <div className="agent-concise-stage__extras">{extras}</div> : null}
+
+      {/* O2：live 末步思考正文打字机常挂（收起也可见），思考结束 hold→淡出再折进 steps */}
+      {liveThinking ? (
+        <LiveThinkingBody
+          thinking={liveThinking}
+          isStreaming={liveTailThinking}
+          fading={liveThinkingFading}
+        />
+      ) : null}
 
       {/* 收起态：不外挂「✓ 思考了片刻」——思考收回阶段块，展开才见；live 只露底栏当前动作 */}
       {!open && liveStatus ? (
@@ -640,9 +714,11 @@ const StageStepRow = memo(function StageStepRow({
   if (thinkingLive && elapsedMs > 0) {
     frozenLiveSecRef.current = Math.max(1, Math.floor(elapsedMs / 1000))
   }
+  // 思考行用 live/冻结时长；工具行无 durationSec（getWorkStepLabel 仅思考读它），
+  // 故工具分支给 undefined——避免在「tool」变体上访问 step.durationSec（TS 报错）。
   const stepDurationSec = isThinking
     ? (frozenLiveSecRef.current ?? step.durationSec)
-    : step.durationSec
+    : undefined
   const label = getWorkStepLabel(
     isThinking ? { ...step, durationSec: stepDurationSec } : step,
     {
@@ -738,7 +814,7 @@ const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
   tone: 'progress' | 'final'
   smoothStreaming: boolean
   onCaughtUp: () => void
-}): JSX.Element {
+}): JSX.Element | null {
   const { displayedContent } = useSmoothStream({
     content: seed,
     isStreaming: smoothStreaming,
@@ -760,16 +836,19 @@ const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
   const content = displayedContent.trim()
 
   if (tone === 'progress') {
+    // 无内容勿占位（REGRESS-N 必改 3）：流式 seed='' / one-shot 重置帧 content 暂空时，
+    // 不渲染空 div——`.agent-concise-narrative--progress` 有 padding:1px 0，空 div 会留占位
+    // 空白；多个段间 progress 在 live→idle 重投影增删时易叠成「大空白」。无内容直接 null。
+    // hooks 已在上方无条件调用，此处仅控制渲染输出。
+    if (!content) return null
     return (
       <div className="agent-concise-narrative agent-concise-narrative--progress">
-        {content ? (
-          <MessageResponse
-            className="agent-concise-narrative__text"
-            streaming={smoothStreaming}
-          >
-            {displayedContent}
-          </MessageResponse>
-        ) : null}
+        <MessageResponse
+          className="agent-concise-narrative__text"
+          streaming={smoothStreaming}
+        >
+          {displayedContent}
+        </MessageResponse>
       </div>
     )
   }

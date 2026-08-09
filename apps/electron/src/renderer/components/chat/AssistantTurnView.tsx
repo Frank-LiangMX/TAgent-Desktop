@@ -8,6 +8,7 @@
 import { useMemo, useRef } from 'react'
 import { useAtomValue } from 'jotai'
 import {
+  AppTooltip,
   Message,
   MessageContent,
   MessageLoading,
@@ -367,16 +368,17 @@ function TurnEndFooter({
 }): JSX.Element {
   const parts = [label, duration, clock].filter(Boolean)
   return (
-    <span
-      className={cn(
-        'agent-answer-time',
-        kind === 'stopped' && 'agent-answer-time--stopped',
-        kind === 'error' && 'agent-answer-time--error',
-      )}
-      title={parts.join(' · ')}
-    >
-      {parts.join(' · ')}
-    </span>
+    <AppTooltip label={parts.join(' · ')}>
+      <span
+        className={cn(
+          'agent-answer-time',
+          kind === 'stopped' && 'agent-answer-time--stopped',
+          kind === 'error' && 'agent-answer-time--error',
+        )}
+      >
+        {parts.join(' · ')}
+      </span>
+    </AppTooltip>
   )
 }
 

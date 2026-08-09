@@ -52,10 +52,18 @@ export { createXfastStreamFn, type XfastConfig } from "./xfast-stream-fn.ts";
 // M4：MoA 多模型协作
 export {
   runReferenceModels,
+  runAggregatorModel,
   buildAggregatorPrompt,
   buildAggregatorContext,
+  createKsccSeatRunner,
+  createPiHttpSeatRunner,
   type ReferenceModelConfig,
   type ReferenceOutput,
+  type ReferenceSeatStatus,
+  type ReferenceSeatUpdate,
+  type AggregatorOutput,
+  type MoASeatRunner,
+  type MoASeatRunArgs,
 } from "./moa-orchestrator.ts";
 
 // M5：MCP 桥（MCP server 工具 → Pi AgentTool）

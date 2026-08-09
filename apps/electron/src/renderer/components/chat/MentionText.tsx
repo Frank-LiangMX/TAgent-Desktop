@@ -6,6 +6,7 @@
  */
 import { useMemo, type ReactNode } from 'react'
 import { parseMentions } from '@tagent/shared'
+import { AppTooltip } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 
 export type MentionRoleLite = { id: string; displayName: string }
@@ -27,9 +28,11 @@ export function MentionText({
     <span className={cn('mention-text', className)}>
       {parts.map((p, i) =>
         p.kind === 'mention' ? (
-          <span key={`m-${i}-${p.raw}`} className={cn('mention-chip', chipClassName)} title={p.raw}>
-            @{p.displayName}
-          </span>
+          <AppTooltip key={`m-${i}-${p.raw}`} label={p.raw}>
+            <span className={cn('mention-chip', chipClassName)}>
+              @{p.displayName}
+            </span>
+          </AppTooltip>
         ) : (
           <span key={`t-${i}`} className="mention-text__plain">
             {p.text}
@@ -102,9 +105,11 @@ export function MentionChip({
 }): React.ReactElement {
   const name = label.startsWith('@') ? label.slice(1) : label
   return (
-    <span className={cn('mention-chip', className)} title={`@${name}`}>
-      @{name}
-    </span>
+    <AppTooltip label={`@${name}`}>
+      <span className={cn('mention-chip', className)}>
+        @{name}
+      </span>
+    </AppTooltip>
   )
 }
 

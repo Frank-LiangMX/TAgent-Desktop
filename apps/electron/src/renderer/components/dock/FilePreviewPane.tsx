@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react'
 import { useAtomValue } from 'jotai'
 import type { IDockviewPanelProps } from 'dockview'
-import { MessageResponse } from '@tagent/ui'
+import { AppTooltip, MessageResponse } from '@tagent/ui'
 import { highlightToTokens, onHighlighterReady } from '@tagent/core'
 import { filePreviewRequestAtom } from '../../atoms/file-preview'
 
@@ -227,12 +227,11 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
     <div className="flex h-full min-h-0 flex-col">
       {/* 工具条：完整路径 + 外部打开（系统默认程序） */}
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 px-3">
-        <span
-          className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground/70"
-          title={state.absPath}
-        >
-          {state.absPath}
-        </span>
+        <AppTooltip label={state.absPath} multiline>
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground/70">
+            {state.absPath}
+          </span>
+        </AppTooltip>
         <button
           type="button"
           onClick={() => {

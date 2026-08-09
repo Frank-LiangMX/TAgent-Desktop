@@ -9,6 +9,7 @@ import * as React from 'react'
 import { Check, Loader2, X } from 'lucide-react'
 
 import type { StageEntry } from '@tagent/shared'
+import { AppTooltip } from '@tagent/ui'
 import { cn } from '@/lib/utils'
 
 interface StageQueueCardProps {
@@ -120,53 +121,54 @@ export function StageQueueCard({
                 <span>·</span>
                 <span>{new Date(entry.enqueuedAt).toLocaleDateString('zh-CN')}</span>
               </div>
-              <p
-                className="md-text mt-1 line-clamp-2 text-[12px] leading-relaxed"
-                title={entry.pattern}
-              >
-                {entry.pattern}
-              </p>
+              <AppTooltip label={entry.pattern} multiline>
+                <p className="md-text mt-1 line-clamp-2 text-[12px] leading-relaxed">
+                  {entry.pattern}
+                </p>
+              </AppTooltip>
             </div>
             <div className="flex shrink-0 gap-0.5">
-              <button
-                type="button"
-                disabled={acting !== null}
-                onClick={() =>
-                  void run(`accept-${entry.id}`, () =>
-                    window.electronAPI.acceptStageOne(mode, entry.id)
-                  )
-                }
-                className={cn(
-                  'inline-flex size-7 items-center justify-center rounded-full',
-                  'text-emerald-600 hover:bg-emerald-500/10 disabled:opacity-35 dark:text-emerald-400'
-                )}
-                title="接受"
-                aria-label="接受"
-              >
-                {acting === `accept-${entry.id}` ? (
-                  <Loader2 className="size-3 animate-spin" />
-                ) : (
-                  <Check className="size-3.5" strokeWidth={1.75} />
-                )}
-              </button>
-              <button
-                type="button"
-                disabled={acting !== null}
-                onClick={() =>
-                  void run(`reject-${entry.id}`, () =>
-                    window.electronAPI.rejectStageOne(mode, entry.id)
-                  )
-                }
-                className="inline-flex size-7 items-center justify-center rounded-full md-text-variant hover:bg-foreground/[0.05] hover:text-foreground disabled:opacity-35"
-                title="拒绝"
-                aria-label="拒绝"
-              >
-                {acting === `reject-${entry.id}` ? (
-                  <Loader2 className="size-3 animate-spin" />
-                ) : (
-                  <X className="size-3.5" strokeWidth={1.75} />
-                )}
-              </button>
+              <AppTooltip label="接受">
+                <button
+                  type="button"
+                  disabled={acting !== null}
+                  onClick={() =>
+                    void run(`accept-${entry.id}`, () =>
+                      window.electronAPI.acceptStageOne(mode, entry.id)
+                    )
+                  }
+                  className={cn(
+                    'inline-flex size-7 items-center justify-center rounded-full',
+                    'text-emerald-600 hover:bg-emerald-500/10 disabled:opacity-35 dark:text-emerald-400'
+                  )}
+                  aria-label="接受"
+                >
+                  {acting === `accept-${entry.id}` ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <Check className="size-3.5" strokeWidth={1.75} />
+                  )}
+                </button>
+              </AppTooltip>
+              <AppTooltip label="拒绝">
+                <button
+                  type="button"
+                  disabled={acting !== null}
+                  onClick={() =>
+                    void run(`reject-${entry.id}`, () =>
+                      window.electronAPI.rejectStageOne(mode, entry.id)
+                    )
+                  }
+                  className="inline-flex size-7 items-center justify-center rounded-full md-text-variant hover:bg-foreground/[0.05] hover:text-foreground disabled:opacity-35"
+                  aria-label="拒绝"
+                >
+                  {acting === `reject-${entry.id}` ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <X className="size-3.5" strokeWidth={1.75} />
+                  )}
+                </button>
+              </AppTooltip>
             </div>
           </li>
         ))}

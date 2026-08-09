@@ -2108,6 +2108,17 @@ export const AGENT_IPC_CHANNELS = {
   /** 队列消息状态变更通知（主进程 → 渲染进程推送） */
   QUEUED_MESSAGE_STATUS: 'agent:queued-message-status',
 
+  // MoA 会诊预置
+  /** 取全部 MoA 预置（seed 落盘后；缺失则就地 seed） */
+  LIST_MOA_PRESETS: 'agent:list-moa-presets',
+  /**
+   * 写整份 MoA 预置（覆盖式原子写）。
+   * 入参 `MoAPreset[]`；主进程整单校验（`validateMoAPresetList`），
+   * 非法则 reject 中文错、不写盘；合法则 `writeMoaPresets` 后再 `list` 回传。
+   * 仅编辑 stored 预置；synthetic / channel-* 合成预置不进此通道。
+   */
+  SAVE_MOA_PRESETS: 'agent:save-moa-presets',
+
   // 待处理请求恢复（渲染进程重载后查询主进程状态）
   /** 获取所有待处理的交互请求快照 */
   GET_PENDING_REQUESTS: 'agent:get-pending-requests',

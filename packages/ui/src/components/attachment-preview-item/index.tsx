@@ -10,6 +10,7 @@ import { X, Paperclip, Folder } from 'lucide-react'
 import * as React from 'react'
 
 import { ImageLightbox } from '../image-lightbox'
+import { AppTooltip } from '../tooltip'
 import { cn } from '../../lib/utils'
 
 interface AttachmentPreviewItemProps {
@@ -89,32 +90,33 @@ export function AttachmentPreviewItem({
 
   if (mediaType === 'inode/directory') {
     return (
-      <div
-        className={cn(
-          'group/attachment relative flex items-center gap-2 shrink-0',
-          'rounded-glass-popover bg-primary/10 border border-primary/20',
-          'pl-2.5 pr-7 py-1.5 text-[13px] text-primary',
-          'transition-colors hover:bg-primary/15',
-          className
-        )}
-        title={filename}
-      >
-        <Folder className="size-4 shrink-0" />
-        <span className="max-w-[160px] truncate">{truncateName(filename)}</span>
-        <button
-          type="button"
-          onClick={handleRemoveClick}
-          onKeyDown={handleRemoveKeyDown}
+      <AppTooltip label={filename} multiline>
+        <div
           className={cn(
-            'absolute top-1/2 right-1.5 -translate-y-1/2 size-[18px] rounded-full',
-            'flex items-center justify-center',
-            'text-primary/60 hover:text-primary hover:bg-primary/20',
-            'opacity-0 group-hover/attachment:opacity-100 transition-all duration-200'
+            'group/attachment relative flex items-center gap-2 shrink-0',
+            'rounded-glass-popover bg-primary/10 border border-primary/20',
+            'pl-2.5 pr-7 py-1.5 text-[13px] text-primary',
+            'transition-colors hover:bg-primary/15',
+            className
           )}
         >
-          <X className="size-3" />
-        </button>
-      </div>
+          <Folder className="size-4 shrink-0" />
+          <span className="max-w-[160px] truncate">{truncateName(filename)}</span>
+          <button
+            type="button"
+            onClick={handleRemoveClick}
+            onKeyDown={handleRemoveKeyDown}
+            className={cn(
+              'absolute top-1/2 right-1.5 -translate-y-1/2 size-[18px] rounded-full',
+              'flex items-center justify-center',
+              'text-primary/60 hover:text-primary hover:bg-primary/20',
+              'opacity-0 group-hover/attachment:opacity-100 transition-all duration-200'
+            )}
+          >
+            <X className="size-3" />
+          </button>
+        </div>
+      </AppTooltip>
     )
   }
 

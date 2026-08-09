@@ -23,6 +23,7 @@ import {
   Plug,
 } from 'lucide-react'
 import {
+  AppTooltip,
   Button,
   DestructiveConfirmDialog,
   Select,
@@ -347,7 +348,9 @@ function McpServerRow({
               {entry.enabled ? '已启用' : '已停用'}
             </span>
           </div>
-          <p title={summarizeMcpEntry(entry)}>{summarizeMcpEntry(entry)}</p>
+          <AppTooltip label={summarizeMcpEntry(entry)} multiline>
+            <p>{summarizeMcpEntry(entry)}</p>
+          </AppTooltip>
         </div>
         <Switch
           size="sm"

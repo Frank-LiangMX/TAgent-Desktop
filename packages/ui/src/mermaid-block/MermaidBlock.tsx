@@ -22,6 +22,7 @@ import type { DiagramColors, RenderOptions } from 'beautiful-mermaid'
 
 import { cn } from '../lib/utils'
 import { RichFullscreen } from '../rich-content/RichFrame'
+import { AppTooltip } from '../components/tooltip'
 import { MessageRichPreviewContext } from '../rich-content/rich-preview-context'
 
 interface MermaidBlockProps {
@@ -370,30 +371,33 @@ export function MermaidBlock({
       <div className="flex h-[34px] shrink-0 items-center justify-end gap-1 px-2 text-xs text-muted-foreground">
         {renderedSvg ? (
           <div className="mr-auto flex items-center gap-0.5">
-            <button
-              type="button"
-              onClick={handleZoomOut}
-              className="rounded p-0.5 transition-colors hover:bg-foreground/10"
-              title="缩小"
-            >
-              <svg {...ICON_ATTRS}>{zoomOutPath}</svg>
-            </button>
-            <button
-              type="button"
-              onClick={handleZoomReset}
-              className="min-w-[40px] rounded px-1 py-0.5 text-center tabular-nums transition-colors hover:bg-foreground/10"
-              title="适应画布"
-            >
-              {zoomPercent}%
-            </button>
-            <button
-              type="button"
-              onClick={handleZoomIn}
-              className="rounded p-0.5 transition-colors hover:bg-foreground/10"
-              title="放大"
-            >
-              <svg {...ICON_ATTRS}>{zoomInPath}</svg>
-            </button>
+            <AppTooltip label="缩小">
+              <button
+                type="button"
+                onClick={handleZoomOut}
+                className="rounded p-0.5 transition-colors hover:bg-foreground/10"
+              >
+                <svg {...ICON_ATTRS}>{zoomOutPath}</svg>
+              </button>
+            </AppTooltip>
+            <AppTooltip label="适应画布">
+              <button
+                type="button"
+                onClick={handleZoomReset}
+                className="min-w-[40px] rounded px-1 py-0.5 text-center tabular-nums transition-colors hover:bg-foreground/10"
+              >
+                {zoomPercent}%
+              </button>
+            </AppTooltip>
+            <AppTooltip label="放大">
+              <button
+                type="button"
+                onClick={handleZoomIn}
+                className="rounded p-0.5 transition-colors hover:bg-foreground/10"
+              >
+                <svg {...ICON_ATTRS}>{zoomInPath}</svg>
+              </button>
+            </AppTooltip>
           </div>
         ) : (
           <span className="mr-auto select-none text-muted-foreground/70">渲染中…</span>
@@ -425,51 +429,56 @@ export function MermaidBlock({
           <div className="flex items-center gap-1">
             {renderedSvg && (
               <div className="mr-2 flex items-center gap-0.5">
-                <button
-                  type="button"
-                  onClick={handleZoomOut}
-                  className="rounded p-0.5 transition-colors hover:bg-foreground/10"
-                  title="缩小"
-                >
-                  <svg {...ICON_ATTRS}>{zoomOutPath}</svg>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleZoomReset}
-                  className="min-w-[40px] rounded px-1 py-0.5 text-center tabular-nums transition-colors hover:bg-foreground/10"
-                  title="重置缩放"
-                >
-                  {zoomPercent}%
-                </button>
-                <button
-                  type="button"
-                  onClick={handleZoomIn}
-                  className="rounded p-0.5 transition-colors hover:bg-foreground/10"
-                  title="放大"
-                >
-                  <svg {...ICON_ATTRS}>{zoomInPath}</svg>
-                </button>
+                <AppTooltip label="缩小">
+                  <button
+                    type="button"
+                    onClick={handleZoomOut}
+                    className="rounded p-0.5 transition-colors hover:bg-foreground/10"
+                  >
+                    <svg {...ICON_ATTRS}>{zoomOutPath}</svg>
+                  </button>
+                </AppTooltip>
+                <AppTooltip label="重置缩放">
+                  <button
+                    type="button"
+                    onClick={handleZoomReset}
+                    className="min-w-[40px] rounded px-1 py-0.5 text-center tabular-nums transition-colors hover:bg-foreground/10"
+                  >
+                    {zoomPercent}%
+                  </button>
+                </AppTooltip>
+                <AppTooltip label="放大">
+                  <button
+                    type="button"
+                    onClick={handleZoomIn}
+                    className="rounded p-0.5 transition-colors hover:bg-foreground/10"
+                  >
+                    <svg {...ICON_ATTRS}>{zoomInPath}</svg>
+                  </button>
+                </AppTooltip>
               </div>
             )}
             {canOpenSplit ? (
+              <AppTooltip label="在分屏独立标签打开">
+                <button
+                  type="button"
+                  onClick={handleOpenSplit}
+                  className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                >
+                  <svg {...ICON_ATTRS}>{splitPanePath}</svg>
+                  <span>分屏</span>
+                </button>
+              </AppTooltip>
+            ) : null}
+            <AppTooltip label="全屏查看">
               <button
                 type="button"
-                onClick={handleOpenSplit}
-                className="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-                title="在分屏独立标签打开"
+                onClick={() => setFullscreenOpen(true)}
+                className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
               >
-                <svg {...ICON_ATTRS}>{splitPanePath}</svg>
-                <span>分屏</span>
+                <svg {...ICON_ATTRS}>{fullscreenIconPath}</svg>
               </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => setFullscreenOpen(true)}
-              className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-              title="全屏查看"
-            >
-              <svg {...ICON_ATTRS}>{fullscreenIconPath}</svg>
-            </button>
+            </AppTooltip>
             <button
               type="button"
               onClick={handleCopy}

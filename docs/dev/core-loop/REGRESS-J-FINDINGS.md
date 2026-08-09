@@ -55,3 +55,14 @@
 
 1. **REGRESS-B（live progress 持续可见）vs REGRESS-J（idle 不拆）**：两者若同真冲突。裁决——live 流式保留 progress 打字机（B 测试 1/2 不变），**idle** 才把短段间 progress 收敛进合并 work_stage（B 测试 3/4 的 idle 断言更新，见 FIX-NOTES）。
 2. **REGRESS-I「idle 可交付思考升 fold」 vs J3「留在 stage」**：J3 明令改动，`isDeliverableThinking` 升 fold 的 idle 断言被新规格取代（I 加的 live 断言仍保留）。
+
+---
+
+## REGRESS-N 否决注记（2026-08-08 追加）
+
+> 本文件 **J1 / J4** 的核心修法——「idle `isShortIdleProgress → continue` 按长度 ≤20 一刀切丢短段间 progress」——已被 **REGRESS-N** 否决，**不再适用**。详见 `REGRESS-N-FINDINGS.md` / `HANDOFF-2026-08-08.md`。
+
+- **被否决条款**：J1/J4 的 `isShortIdleProgress = !isLive && !isRoundFinal && isShortProgressText(cur.text)` → `continue`（原 `concise-timeline-model.ts:604-605`）。长度阈值无法区分「好的」级 filler 与「正在跑验证」「准备编辑」这类有信息短句，把阶段性总结丢成「流完即消」，并撤销 REGRESS-M 的 `tool_start` commit。
+- **取代规则**：`isFiller = !isRoundFinal && isFillerProgressText(cur.text)` → `continue`（`concise-timeline-model.ts:629-631`）。**仅纯 filler**（好的/嗯/继续…极短无信息过渡词）可吞以合并阶段；**有信息进度句一律常驻** `narrative.progress`。live/idle 同一套 segments 语义（去掉 `!isLive` 门控）。
+- **J2 / J3 / J5 / J6 / J7 仍有效**：J2（WorkStageFold settle）、J3（中段思考并入 `stage.steps`，不升独立 fold）**保留**——REGRESS-N 只动 J1/J4 的 idle 丢弃，并在此基础上给阶段摘要补「· 含思考」提示（`ConciseTimelineView.tsx`），不回退 J3。
+- **测试更新**：`regress-b-progress-live.vitest.test.ts` 的 idle 断言由「只剩 final」改为「2 progress + 1 final」；`concise-timeline-model.vitest.test.ts` 原 J4 用例改为 filler 合并 + 新增「idle ≥2 progress」验收。

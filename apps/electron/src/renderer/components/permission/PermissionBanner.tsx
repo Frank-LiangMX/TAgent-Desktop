@@ -105,30 +105,30 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
                   </span>
                 )}
                 {queuedExtra > 0 && (
-                  <span
-                    className="rounded bg-foreground/10 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-                    title={`另有 ${queuedExtra} 条待确认`}
-                  >
-                    (+{queuedExtra})
-                  </span>
+                  <AppTooltip label={`另有 ${queuedExtra} 条待确认`}>
+                    <span className="rounded bg-foreground/10 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      (+{queuedExtra})
+                    </span>
+                  </AppTooltip>
                 )}
               </div>
               <code className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
                 {command}
               </code>
-              <div
-                className={cn(
-                  'mt-1 flex items-center gap-1 text-[10px]',
-                  countdownUrgent ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground',
-                )}
-                title="未确认将自动拒绝"
-              >
-                <Clock size={12} weight="regular" aria-hidden />
-                <span>{countdownLabel}</span>
-                {countdownUrgent && remainingMs > 0 ? (
-                  <span className="text-[10px]">· 即将超时</span>
-                ) : null}
-              </div>
+              <AppTooltip label="未确认将自动拒绝">
+                <div
+                  className={cn(
+                    'mt-1 flex items-center gap-1 text-[10px]',
+                    countdownUrgent ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground',
+                  )}
+                >
+                  <Clock size={12} weight="regular" aria-hidden />
+                  <span>{countdownLabel}</span>
+                  {countdownUrgent && remainingMs > 0 ? (
+                    <span className="text-[10px]">· 即将超时</span>
+                  ) : null}
+                </div>
+              </AppTooltip>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               <button

@@ -9,6 +9,7 @@ import {
   getLiveStatusFromSteps,
   getWorkStepLabel,
   isDeliverableThinking,
+  isFillerProgressText,
   isShortProgressText,
   isTrivialThinking,
   summarizeToolCluster,
@@ -351,17 +352,17 @@ describe('buildConciseTimeline', () => {
     }
   })
 
-  it('短 progress 短文不拆 stage：tool → 短 text → tool → tool = 1 个 work_stage（REGRESS-J J4）', () => {
-    const shortNote = '正在跑一下验证'
-    expect(isShortProgressText(shortNote)).toBe(true)
+  it('纯 filler 段间短文不拆 stage：tool → filler「好的」→ tool → tool = 1 个 work_stage（REGRESS-N 取代 J4）', () => {
+    const filler = '好的'
+    expect(isFillerProgressText(filler)).toBe(true)
     const process: ProcessEntry[] = [
       tool('Bash', 'b1', { command: 'git status' }),
-      { type: 'text', key: 'p1', text: shortNote },
+      { type: 'text', key: 'p1', text: filler },
       tool('Bash', 'b2', { command: 'ls' }),
       tool('Bash', 'b3', { command: 'pwd' }),
     ]
     const segs = buildConciseTimeline(process)
-    // 只 1 个 work_stage（N=3 条工具合并），短文被忽略不拆 → 消除「运行了 1 条命令」刷屏
+    // filler 被吞，3 条工具合并为 1 个 work_stage；不增加多余 narrative（验收 2）
     expect(segs.map((s) => s.kind)).toEqual(['work_stage'])
     const stage = segs[0]!
     if (stage.kind === 'work_stage') {
@@ -369,6 +370,54 @@ describe('buildConciseTimeline', () => {
       expect(stage.steps.every((s) => s.kind === 'tool')).toBe(true)
       expect(stage.summary).toContain('运行了 3 条命令')
     }
+  })
+
+  it('有信息的短段间 progress 不被 idle 丢：idle 含 ≥2 个 narrative.progress（REGRESS-N 验收 1）', () => {
+    const shortProgress1 = '正在跑验证'
+    const shortProgress2 = '改完核心逻辑'
+    // 短且有信息：旧 isShortIdleProgress 会丢，现常驻 narrative.progress
+    expect(isShortProgressText(shortProgress1)).toBe(true)
+    expect(isShortProgressText(shortProgress2)).toBe(true)
+    expect(isFillerProgressText(shortProgress1)).toBe(false)
+    expect(isFillerProgressText(shortProgress2)).toBe(false)
+    const process: ProcessEntry[] = [
+      { type: 'thinking', key: 't0', thinking: '先摸清再改' },
+      tool('Bash', 'b1', { command: 'git status' }),
+      { type: 'text', key: 'p1', text: shortProgress1 },
+      tool('Bash', 'b2', { command: 'ls' }),
+      { type: 'text', key: 'p2', text: shortProgress2 },
+      tool('Bash', 'b3', { command: 'pwd' }),
+      { type: 'text', key: 'f1', text: '已改完核心逻辑并跑通验证，下面是改动说明与手测步骤。' },
+    ]
+    // live：三段 narrative 全是 progress（打字机即时可见）
+    const live = buildConciseTimeline(process, { isLive: true })
+    expect(
+      live
+        .filter((s) => s.kind === 'narrative' && (s as { tone: string }).tone === 'progress')
+        .map((s) => (s as { text: string }).text),
+    ).toEqual([shortProgress1, shortProgress2, '已改完核心逻辑并跑通验证，下面是改动说明与手测步骤。'])
+    // idle：短有信息句不被丢 → ≥2 个 narrative.progress；末段长结论升 final（验收 1）
+    const done = buildConciseTimeline(process, { isLive: false })
+    expect(done.map((s) => s.kind)).toEqual([
+      'thinking',
+      'work_stage',
+      'narrative',
+      'work_stage',
+      'narrative',
+      'work_stage',
+      'narrative',
+    ])
+    const progress = done.filter(
+      (s) => s.kind === 'narrative' && (s as { tone: string }).tone === 'progress',
+    )
+    expect(progress.length).toBeGreaterThanOrEqual(2)
+    expect(progress.map((s) => (s as { text: string }).text)).toEqual([shortProgress1, shortProgress2])
+    const finalNarrative = done.find(
+      (s) => s.kind === 'narrative' && (s as { tone: string }).tone === 'final',
+    )
+    expect((finalNarrative as { text: string }).text).toBe(
+      '已改完核心逻辑并跑通验证，下面是改动说明与手测步骤。',
+    )
   })
 
   it('较长的实质叙述仍作为阶段边界：work_stage | narrative | work_stage（不吞掉进度叙述）', () => {

@@ -113,16 +113,8 @@ export function SessionErrorBanner({
         </div>
         <div className="flex shrink-0 items-center justify-end gap-1">
           {showRetry ? (
-            <button
-              type="button"
-              disabled={retryDisabled}
-              onClick={() => void handleRetry()}
-              className={cn(
-                'inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors',
-                'bg-destructive/15 text-destructive hover:bg-destructive/25',
-                'disabled:cursor-not-allowed disabled:opacity-45',
-              )}
-              title={
+            <AppTooltip
+              label={
                 !error.retryable
                   ? undefined
                   : !canRetry
@@ -130,14 +122,27 @@ export function SessionErrorBanner({
                     : '重发上一条用户消息'
               }
             >
-              <ArrowsClockwise
-                size={14}
-                weight="bold"
-                className={cn(retrying && 'animate-spin')}
-                aria-hidden
-              />
-              {retrying ? '重试中…' : '重试'}
-            </button>
+              <span className="inline-flex">
+                <button
+                  type="button"
+                  disabled={retryDisabled}
+                  onClick={() => void handleRetry()}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors',
+                    'bg-destructive/15 text-destructive hover:bg-destructive/25',
+                    'disabled:cursor-not-allowed disabled:opacity-45',
+                  )}
+                >
+                  <ArrowsClockwise
+                    size={14}
+                    weight="bold"
+                    className={cn(retrying && 'animate-spin')}
+                    aria-hidden
+                  />
+                  {retrying ? '重试中…' : '重试'}
+                </button>
+              </span>
+            </AppTooltip>
           ) : null}
           <AppTooltip label={copied ? '已复制' : '复制错误'} side="top">
             <button

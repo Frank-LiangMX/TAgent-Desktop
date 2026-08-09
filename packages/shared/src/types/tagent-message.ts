@@ -127,6 +127,44 @@ export type TAgentControlEvent =
   | { kind: 'call_stats'; stats: Record<string, number> }
   | { kind: 'tagent_event'; event: { type: string; [key: string]: unknown } }
 
+// ===== MoA 圆桌卡（控制事件内嵌：tagent_event.type === 'moa_roundtable'） =====
+
+/** MoA 单席状态 */
+export type MoASeatStatus = 'pending' | 'running' | 'ok' | 'failed' | 'cancelled'
+
+/** MoA 圆桌卡上的单个席位（含参考 / 汇总） */
+export interface MoASeatPanel {
+  seatId: string
+  name: string
+  modelId: string
+  role: 'reference' | 'aggregator'
+  status: MoASeatStatus
+  text?: string
+  error?: string
+  latencyMs?: number
+}
+
+/** MoA 圆桌卡完整状态（推送给渲染层的最小契约） */
+export interface MoARoundtablePanel {
+  kind: 'moa_roundtable'
+  /** 本轮圆桌稳定标识：同一轮多张状态卡用此就地 upsert，跨轮不串台 */
+  roundtableId: string
+  presetId: string
+  presetName: string
+  topic: string
+  seats: MoASeatPanel[]
+  phase: 'references' | 'aggregating' | 'done' | 'error' | 'cancelled'
+}
+
+/**
+ * 推渲染层的圆桌卡事件信封：包在 `tagent_event` 里，`event.type === 'moa_roundtable'`，
+ * `event.panel` 携带完整 {@link MoARoundtablePanel}。见 moa-roundtable.ts 的纯函数状态机。
+ */
+export interface MoARoundtableEvent {
+  type: 'moa_roundtable'
+  panel: MoARoundtablePanel
+}
+
 // ===== IPC 流式 payload（主→渲染，统一通道 STREAM_EVENT） =====
 export type TAgentDesktopStreamPayload =
   | { kind: 'sdk_message'; message: TAgentMessage }
