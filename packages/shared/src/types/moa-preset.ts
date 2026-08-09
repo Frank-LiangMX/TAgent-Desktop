@@ -105,6 +105,14 @@ export interface MoAPreset {
   /** 单席超时（ms），默认 120_000 */
   timeoutMsPerSeat?: number
   /**
+   * 圆桌研讨全场轮数上限（仅「圆桌 · 研讨」生效；快速模式 / 会诊忽略）。
+   *
+   * 缺省 = 3（见设计文档 §5.4「防失控」；T9 提前收敛后默认值由 6 降为 3）。
+   * 运行时取值优先级：`ctx.roundLimit` > `preset.roundLimit` > `3`（见 run-moa-discussion.ts）。
+   * 合法区间 1..6 的整数；`isValidMoAPreset` 校验，越界 / 非整数拒（缺省放行）。
+   */
+  roundLimit?: number
+  /**
    * 合成预置来源标记（ephemeral，**不落盘**）。
    * 由 `resolveConsultPresetsForChannel` 对外部渠现场合成：
    * - `channel-default`：外部 ≥2 模，无可用 stored 预置时合成「默认会诊」
@@ -170,6 +178,17 @@ export function isValidMoAPreset(preset: unknown): preset is MoAPreset {
   if (p.aggregatorModelId.startsWith(MOA_MODEL_ID_PREFIX)) return false
   if (p.timeoutMsPerSeat != null) {
     if (typeof p.timeoutMsPerSeat !== 'number' || p.timeoutMsPerSeat <= 0) return false
+  }
+  // roundLimit（圆桌研讨轮数上限）：缺省放行（运行时兜底默认 3）；存在则须为 1..6 的整数
+  if (p.roundLimit != null) {
+    if (
+      typeof p.roundLimit !== 'number' ||
+      !Number.isInteger(p.roundLimit) ||
+      p.roundLimit < 1 ||
+      p.roundLimit > 6
+    ) {
+      return false
+    }
   }
   // channelId：落盘必填（v2）；synthetic 合成预置豁免（ephemeral 不落盘，可无 channelId）。
   // v1 旧条目无 channelId → 服务侧 migrateMoAPresetsV1toV2 绑到 kscc 后再过此校验。
@@ -307,6 +326,7 @@ function buildDraftFromModels(
       ],
       aggregatorModelId: m.id,
       timeoutMsPerSeat: 120_000,
+      roundLimit: 3,
       channelId,
     }
   }
@@ -326,6 +346,7 @@ function buildDraftFromModels(
     ],
     aggregatorModelId: aggregatorId,
     timeoutMsPerSeat: 120_000,
+    roundLimit: 3,
     channelId,
   }
 }

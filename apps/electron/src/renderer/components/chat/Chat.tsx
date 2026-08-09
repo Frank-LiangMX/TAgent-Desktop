@@ -37,9 +37,11 @@ import {
   resolveUiContextWindow,
   migrateReasoningEffort,
   migratePermissionMode,
+  moaDiscussionConsensusUuid,
   type TAgentUsage,
   type MoARoundtablePanel,
   type MoAPreset,
+  type MoADiscussionPanel,
 } from '@tagent/shared'
 import { type ContextUsageSnapshotView } from './ContextUsageBadge'
 import { TokenStatsBar, type SessionTokenTotals } from './TokenStatsBar'
@@ -69,6 +71,8 @@ import {
 import { MessageView } from './MessageView'
 import { AssistantTurnView } from './AssistantTurnView'
 import { MoaRoundtableCard } from './MoaRoundtableCard'
+import { MoaDiscussionCard } from './MoaDiscussionCard'
+import { MoaDiscussionRoom } from './MoaDiscussionRoom'
 import { SendSplitButton } from './ConsultMenu'
 import { SubagentDetailView } from './SubagentDetailView'
 import { ComposerRunTimer } from './ComposerRunTimer'
@@ -173,6 +177,35 @@ interface DisplayItem {
   compactTrigger?: 'auto' | 'manual'
   /** MoA 圆桌卡（moa_roundtable 事件按 roundtableId 就地 upsert） */
   moaRoundtable?: MoARoundtablePanel
+  /** 圆桌讨论入口卡（moa_discussion 事件按 discussionId 就地 upsert） */
+  moaDiscussion?: MoADiscussionPanel
+}
+
+/**
+ * 圆桌讨论入口卡按 discussionId 就地 upsert（同场多张状态卡只保留最新）。
+ *
+ * 新卡落点（T8 重启重放对齐实时落点）：若 items 已有该讨论的共识 assistant（uuid =
+ * `moa-disc-agg-<discussionId>`，由 runMoADiscussion 收口时落盘），把入口卡插到它**前面**——
+ * 与实时运行时「入口卡先于共识 assistant 推送」的天然顺序一致。实时运行时共识 assistant 尚未
+ * 到达 → 找不到 → 末尾追加（行为不变，共识随后追加在其后）。cancelled/error 无共识 assistant /
+ * 历史损坏 → 末尾追加兜底。重放与实时事件共用本函数（按 discussionId 去重），避免双卡。
+ */
+function upsertMoADiscussionItem(prev: DisplayItem[], panel: MoADiscussionPanel): DisplayItem[] {
+  const idx = prev.findIndex((it) => it.moaDiscussion?.discussionId === panel.discussionId)
+  if (idx >= 0) {
+    return prev.map((it, i) => (i === idx ? { ...it, moaDiscussion: panel } : it))
+  }
+  const item: DisplayItem = { key: `disc-${panel.discussionId}`, moaDiscussion: panel }
+  const aggUuid = moaDiscussionConsensusUuid(panel.discussionId)
+  const aggIdx = prev.findIndex(
+    (it) => it.message?.type === 'assistant' && it.message.uuid === aggUuid,
+  )
+  if (aggIdx >= 0) {
+    const next = [...prev]
+    next.splice(aggIdx, 0, item)
+    return next
+  }
+  return [...prev, item]
 }
 
 /** 新会话页提示词默认值见 NewConversationLanding（welcome / compose 两形态共用） */
@@ -361,6 +394,8 @@ export function Chat({
     selection: ModelSelection
     /** MoA 会诊本条（one-shot）preset id：选了预置后追加发送带它；非 sticky */
     moaOneShotPresetId?: string
+    /** 圆桌讨论本条（one-shot）preset id：选了预置后追加发送带它；非 sticky，主进程 runMoADiscussionTurn 消费 */
+    moaDiscussionPresetId?: string
   }>>([])
   /** 待发送附件（输入框暂存，发送后清空） */
   const [pendingAttachments, setPendingAttachments] = useState<Array<{
@@ -469,6 +504,8 @@ export function Chat({
   const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('conservative')
   /** 当前打开的子代理详情（parentToolUseId），非空时全屏切换显示独立会话页 */
   const [subagentDetail, setSubagentDetail] = useState<string | null>(null)
+  /** 当前打开的圆桌讨论（discussionId），非空时全屏切换显示讨论室 */
+  const [openDiscussionId, setOpenDiscussionId] = useState<string | null>(null)
   /** 思考强度（默认 medium；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 SDK query 生效） */
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(DEFAULT_REASONING_EFFORT)
   /** 子代理任务卡片 lookup：parentToolUseId → taskCard（taskCard.toolUseId 即发起它的主线 tool_use id） */
@@ -479,6 +516,19 @@ export function Chat({
     }
     return map
   }, [items])
+
+  /** 当前打开的圆桌讨论 panel（按 discussionId 从 items 查；panel 不在 items 时回退关闭） */
+  const openDiscussionPanel = useMemo(
+    () =>
+      openDiscussionId
+        ? items.find((it) => it.moaDiscussion?.discussionId === openDiscussionId)?.moaDiscussion
+        : undefined,
+    [items, openDiscussionId],
+  )
+  // panel 被移出 items（状态卡理论上不会消失，兜底）→ 关闭讨论室，避免悬空 openDiscussionId
+  useEffect(() => {
+    if (openDiscussionId && !openDiscussionPanel) setOpenDiscussionId(null)
+  }, [openDiscussionId, openDiscussionPanel])
 
   // 会话页入场动画：mount 后一帧加 is-mounted class 触发 CSS transition */
   const [pageMounted, setPageMounted] = useState(false)
@@ -810,6 +860,16 @@ export function Chat({
         }
       } catch {
         /* 回显失败不影响主流程，沿用默认 */
+      }
+      // T8：重放本场会话已落盘的圆桌讨论 → 重建入口卡（主进程读 moa-discussion.jsonl，按 discussionId
+      //   推 moa_discussion 事件，复用上面 upsertMoADiscussionItem；终态卡落点对齐共识 assistant）。
+      //   历史消息已 setItems(irItems) 在先 → 重放卡就地 upsert 不被覆盖；切走会话（cancelled）→
+      //   流式监听器按 sessionIdRef 过滤丢弃，无副作用。
+      if (cancelled) return
+      try {
+        await window.electronAPI.replayMoADiscussions(sessionId)
+      } catch (err) {
+        console.warn('[chat] replayMoADiscussions failed:', err)
       }
     })()
     return () => {
@@ -1404,6 +1464,23 @@ export function Chat({
           }
           bumpRefresh()
         }
+      } else if (evt.type === 'moa_discussion') {
+        // 圆桌讨论入口卡：按 discussionId 就地 upsert（同场多张状态卡只保留最新）。
+        // 用户中途把讨论室打开后也能看到 entries 增量；本任务（T3a）只读版不做插话。
+        // T8 重放与实时事件共用 upsertMoADiscussionItem（按 discussionId 去重 + 终态卡落点对齐共识 assistant）。
+        const panel = (p.event as { panel?: MoADiscussionPanel }).panel
+        if (panel) {
+          setItems((prev) => upsertMoADiscussionItem(prev, panel))
+          // 非终态（discussing / finalizing）→ 标 running；终态由后续 result 收尾
+          const isRunning = panel.phase === 'discussing' || panel.phase === 'finalizing'
+          if (isRunning && !runningRef.current) {
+            adoptSessionRun({
+              id: sessionId,
+              startedAt: runStartedAtPersistRef.current ?? runStartedAtRef.current ?? Date.now(),
+            })
+          }
+          bumpRefresh()
+        }
       } else if (evt.type === 'tool_start' && !evt.parentToolUseId) {
         // 段间 progress 常只活在 streamState.text；工具一开就清 → 阶段性总结打字机秒消。
         // 先 commit 进末条主线 assistant（插到 tool_use 前），再清缓冲；思考仍保留。
@@ -1589,11 +1666,16 @@ export function Chat({
   }
 
   /** 核心发送逻辑：校验渠道 → 保存附件 → IPC sendMessage → materializeTab */
-  const sendQueued = async ({ text, selection, attachments, moaOneShotPresetId }: {
+  const sendQueued = async ({ text, selection, attachments, moaOneShotPresetId, moaDiscussionPresetId }: {
     text: string; selection: ModelSelection;
     attachments?: Array<{ id: string; filename: string; mediaType: string; size: number; previewUrl?: string; data: string }>;
     /** MoA 会诊本条（one-shot）：本轮临时走会诊但不写 sticky moa modelId。SPEC §3 */
     moaOneShotPresetId?: string;
+    /**
+     * 圆桌讨论本条（one-shot）：本轮临时走 runMoADiscussion（多轮讨论+总结人收口）但不写
+     * sticky moa modelId；拼进 sendMessage payload 由主进程 runMoADiscussionTurn 消费。SPEC §3
+     */
+    moaDiscussionPresetId?: string;
   }): Promise<void> => {
     if (!selection) {
       alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
@@ -1606,10 +1688,11 @@ export function Chat({
     setSessionError({ sessionId: sessionIdRef.current, error: null })
     resetStreamState()
     const channel = channels.find((item) => item.id === selection.channelId)
-    // MoA 会诊（sticky 或 one-shot）：modelId 可能是虚拟 moa:<preset> 或 one-shot presetId。
-    // 都不在渠道模型表里——跳过模型启用校验，由主进程 runMoATurn 校验预置 + 参考/汇总模型可用性。
+    // MoA 会诊/圆桌讨论（sticky 或 one-shot）：modelId 可能是虚拟 moa:<preset> 或 one-shot presetId。
+    // 都不在渠道模型表里——跳过模型启用校验，由主进程 runMoATurn / runMoADiscussion 校验预置 + 参考/汇总模型可用性。
     const isMoa = isMoaModelId(selection.modelId)
-    const isOneShot = Boolean(moaOneShotPresetId)
+    // one-shot：会诊 ▾ 或 圆桌讨论 ▾ 选了预置（modelId 仍是真实模型，本轮临时走会诊/讨论但不写 sticky）
+    const isOneShot = Boolean(moaOneShotPresetId || moaDiscussionPresetId)
     const skipModelCheck = isMoa || isOneShot
     const model = skipModelCheck
       ? undefined
@@ -1650,6 +1733,7 @@ export function Chat({
         workspaceId: session.workspaceId,
         ...(savedAttachments.length ? { attachments: savedAttachments } : {}),
         ...(moaOneShotPresetId ? { moaOneShotPresetId } : {}),
+        ...(moaDiscussionPresetId ? { moaDiscussionPresetId } : {}),
         mentionRoleIds:
           executionMode === 'chat' && mentionRoles.length > 0
             ? parseMentions(text, mentionRoles).map((h) => h.roleId)
@@ -1811,6 +1895,52 @@ export function Chat({
     })
   }
 
+  /**
+   * 圆桌讨论本条（one-shot）：取当前输入框文案 + 选中的预置 → 走 sendQueued 带
+   * `moaDiscussionPresetId`。不改 meta.modelId，会话 tab / ModelSelector 仍显示真实模型
+   * （主进程 runMoADiscussionTurn → runMoADiscussion 多轮讨论+总结人收口）。
+   * 输入空 / 无可用预置 / 无渠道：放弃（按钮已禁用，本函数兜底）。
+   */
+  const sendDiscussion = async (presetId: string): Promise<void> => {
+    const text = chatInputRef.current?.getText().trim()
+    if (!text) return
+    if (!effectiveSelection) {
+      alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
+      return
+    }
+    // 复用 send() 的 @ mention / 草稿铭牌同步（与 sendConsult 一致）
+    if (executionMode === 'chat' && mentionRoles.length > 0) {
+      const hits = parseMentions(text, mentionRoles)
+      if (hits.length > 0) {
+        setActiveMentionRoleIds(hits.map((h) => h.roleId))
+        setLiveMentionLabels(hits.map((h) => h.displayName))
+      } else {
+        setLiveMentionLabels(
+          activeMentionRoleIds
+            .map((id) => roleNameById.get(id))
+            .filter((v): v is string => Boolean(v)),
+        )
+      }
+    } else {
+      setLiveMentionLabels([])
+    }
+    chatInputRef.current?.clear()
+    if (running) {
+      // 运行中：入队等本轮结束自动消费；带 presetId 让队列项保留圆桌讨论语义
+      setMessageQueue((q) => [
+        ...q,
+        { text, selection: effectiveSelection, moaDiscussionPresetId: presetId },
+      ])
+      return
+    }
+    await sendQueued({
+      text,
+      selection: effectiveSelection,
+      attachments: pendingAttachments,
+      moaDiscussionPresetId: presetId,
+    })
+  }
+
   /** 运行结束 → 批量消费队列（逐条 await，确保 running 状态正确） */
   useEffect(() => {
     if (running || messageQueue.length === 0) return
@@ -1947,6 +2077,7 @@ export function Chat({
           hasDraft={hasDraft}
           onSend={() => void send()}
           onConsultPreset={(id) => void sendConsult(id)}
+          onDiscussionPreset={(id) => void sendDiscussion(id)}
         />
       )}
     </div>
@@ -2137,6 +2268,11 @@ export function Chat({
                       isLiveTurn={isLiveTurn}
                       isLatestAssistantTurn={isLatestAssistantTurn}
                       streamState={isLiveTurn ? streamState : undefined}
+                      fallbackModelId={
+                        isLiveTurn && effectiveSelection?.modelId && !isMoaModelId(effectiveSelection.modelId)
+                          ? effectiveSelection.modelId
+                          : undefined
+                      }
                       onRefillToInput={pickSuggestion}
                       mentionLabels={
                         isLiveTurn && liveMentionLabels.length > 0
@@ -2147,6 +2283,7 @@ export function Chat({
                       completedDuration={completedDurations[turn.key]}
                       subagentCards={subagentCards}
                       onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+                      onOpenDiscussion={(discussionId) => setOpenDiscussionId(discussionId)}
                       sessionId={sessionId}
                     />
                   )
@@ -2295,10 +2432,13 @@ export function Chat({
                   <div className="composer-footer-bar__left flex h-7 min-w-0 items-center gap-0.5">
                     {/* 加号最左 */}
                     <AppTooltip label="添加附件">
+                      {/* size-7 与 size="icon" 冲突：Tailwind v3.4 里 h/w 排在 size 之后，
+                          size="icon" 的 h-9 w-9 会盖掉 size-7，+ 按钮变成 36px 高出 h-7 底栏，
+                          使同行运行模式 pill 显得偏低。改用 icon-sm（h-7 w-7）与底栏等高。 */}
                       <Button
                         variant="ghost"
-                        size="icon"
-                        className="size-7 shrink-0 rounded-lg text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                        size="icon-sm"
+                        className="shrink-0 rounded-lg text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
                         onClick={handleOpenFileDialog}
                         aria-label="添加附件"
                       >
@@ -2488,6 +2628,7 @@ export function Chat({
                           hasDraft={hasDraft}
                           onSend={() => void send()}
                           onConsultPreset={(id) => void sendConsult(id)}
+                          onDiscussionPreset={(id) => void sendDiscussion(id)}
                         />
                       </div>
                     ) : (
@@ -2497,6 +2638,7 @@ export function Chat({
                         hasDraft={hasDraft}
                         onSend={() => void send()}
                         onConsultPreset={(id) => void sendConsult(id)}
+                        onDiscussionPreset={(id) => void sendDiscussion(id)}
                       />
                     )}
                   </div>
@@ -2558,6 +2700,32 @@ export function Chat({
           />
         </div>
       )}
+
+      {/* 圆桌讨论全屏讨论室：从主时间线入口卡全屏切换（与 SubagentDetailView 同层级覆盖 Chat 区域） */}
+      {openDiscussionId && openDiscussionPanel && (
+        <div className="subagent-detail-overlay">
+          <MoaDiscussionRoom
+            panel={openDiscussionPanel}
+            onBack={() => setOpenDiscussionId(null)}
+            onInterject={(text) => {
+              // 用户插话 → IPC push pending → runMoADiscussion 每轮开始前 drain 注入本轮（§5.3）。
+              // 失败（讨论已结束 / 过期 discussionId）静默 warn：不阻断用户继续输入。
+              const p = window.electronAPI.discussionInterject?.({
+                sessionId,
+                discussionId: openDiscussionId!,
+                text,
+              })
+              p?.catch((err) => console.warn('[discussion] interject failed', err))
+            }}
+            onStop={() => {
+              // 用户喊停 → IPC abort controller → runMoADiscussion cancelled 路径推 cancelled 卡
+              // （主进程另推 turn_end 清 running）；关闭讨论室，主时间线卡显示已取消（§5.3）。
+              void window.electronAPI.discussionStop?.({ sessionId, discussionId: openDiscussionId! })
+              setOpenDiscussionId(null)
+            }}
+          />
+        </div>
+      )}
     </div>
     </MessageFilePathProvider>
     </MessageRichPreviewProvider>
@@ -2570,12 +2738,14 @@ function TurnView({
   isLiveTurn = false,
   isLatestAssistantTurn = false,
   streamState,
+  fallbackModelId,
   onRefillToInput,
   mentionLabels,
   mentionRoles,
   completedDuration,
   subagentCards,
   onOpenSubagent,
+  onOpenDiscussion,
   sessionId,
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
@@ -2583,12 +2753,16 @@ function TurnView({
   /** 当前会话末尾 assistant-turn（简洁模式跑完保持展开用） */
   isLatestAssistantTurn?: boolean
   streamState?: SessionStreamState
+  /** 会话选中模型：开流铭牌兜底 */
+  fallbackModelId?: string
   onRefillToInput?: (text: string) => void
   mentionLabels?: string[]
   mentionRoles?: Array<{ id: string; displayName: string }>
   completedDuration?: TurnDuration
   subagentCards?: Map<string, TaskCardState>
   onOpenSubagent?: (parentToolUseId: string) => void
+  /** 点击圆桌讨论入口卡 → 全屏讨论室（Chat 侧 setOpenDiscussionId） */
+  onOpenDiscussion?: (discussionId: string) => void
   /** 当前会话 id（MoA 圆桌卡建看板 CTA 用） */
   sessionId?: string
 }): JSX.Element {
@@ -2611,6 +2785,7 @@ function TurnView({
           isLiveTurn={isLiveTurn}
           isLatestAssistantTurn={isLatestAssistantTurn}
           streamState={streamState}
+          fallbackModelId={fallbackModelId}
           mentionLabels={mentionLabels}
           completedDuration={completedDuration}
           subagentCards={subagentCards}
@@ -2619,14 +2794,23 @@ function TurnView({
       </div>
     )
   }
-  return <ItemView item={turn.item as DisplayItem} sessionId={sessionId} />
+  return <ItemView item={turn.item as DisplayItem} sessionId={sessionId} onOpenDiscussion={onOpenDiscussion} />
 }
 
-/** 显示项渲染（standalone：压缩行 / 任务卡 / MoA 圆桌卡 / 兜底） */
-function ItemView({ item, sessionId }: { item: DisplayItem; sessionId?: string }): JSX.Element {
+/** 显示项渲染（standalone：压缩行 / 任务卡 / MoA 圆桌卡 / 圆桌讨论入口卡 / 兜底） */
+function ItemView({ item, sessionId, onOpenDiscussion }: { item: DisplayItem; sessionId?: string; onOpenDiscussion?: (discussionId: string) => void }): JSX.Element {
   // MoA 圆桌卡（standalone，挂主时间线）
   if (item.moaRoundtable) {
     return <MoaRoundtableCard panel={item.moaRoundtable} sessionId={sessionId} />
+  }
+  // 圆桌讨论入口卡（standalone，挂主时间线；点击进全屏讨论室）
+  if (item.moaDiscussion) {
+    return (
+      <MoaDiscussionCard
+        panel={item.moaDiscussion}
+        onOpen={() => onOpenDiscussion?.(item.moaDiscussion!.discussionId)}
+      />
+    )
   }
   // 子代理 taskCard 已并入 assistant-turn + SubagentEntryCard，standalone 不再渲染第二张卡
   // （历史兜底：若仍有孤立 taskCard，也静默跳过，避免双卡 + 拆 turn 铭牌污染）

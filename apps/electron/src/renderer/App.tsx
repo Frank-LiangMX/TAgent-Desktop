@@ -72,6 +72,7 @@ import { useGlobalPermissionSync } from './hooks/useGlobalPermissionSync'
 import { useAskUserSync } from './hooks/useAskUserSync'
 import { useInitUpdaterListener } from './atoms/updater'
 import { UpdateBanner } from './components/updater/UpdateBanner'
+import { acknowledgeSessionStatusAtom } from './atoms/session-status-atoms'
 
 declare global {
   interface Window {
@@ -90,6 +91,20 @@ declare global {
         sessionId: string,
         message: string,
       ) => Promise<{ ok: boolean; mode?: 'live' | 'pending_next_turn'; error?: string }>
+      /** 圆桌讨论：用户插话（push 到活跃讨论 pending，每轮开始前 drain 注入本轮参与者 prompt） */
+      discussionInterject: (input: {
+        sessionId: string
+        discussionId: string
+        text: string
+      }) => Promise<{ ok: boolean; error?: string }>
+      /** 圆桌讨论：用户喊停（abort 活跃讨论 controller → cancelled 卡 + turn_end 清 running） */
+      discussionStop: (input: { sessionId: string; discussionId: string }) => Promise<{ ok: boolean; error?: string }>
+      /**
+       * 圆桌讨论重放（T8）：会话打开/切回、历史消息加载后调用。主进程读该会话
+       * moa-discussion.jsonl，把每场已落盘讨论按原 moa_discussion 事件推回，渲染层按
+       * discussionId upsert 成入口卡 + 讨论室回看。返回重放场次（无记录/读失败为 0）。
+       */
+      replayMoADiscussions: (sessionId: string) => Promise<{ ok: boolean; count: number }>
       deleteSession: (sessionId: string) => Promise<{ ok: boolean }>
       listSessions: () => Promise<unknown[]>
       getMessages: (sessionId: string) => Promise<unknown[]>
@@ -347,6 +362,7 @@ export function App(): JSX.Element {
 
   const pushTicker = useSetAtom(pushStatusTickerAtom)
   const notificationPrefs = useAtomValue(notificationPrefsAtom)
+  const acknowledgeSessionStatus = useSetAtom(acknowledgeSessionStatusAtom)
 
   // 启动时把通知偏好同步到主进程
   useEffect(() => {
@@ -434,6 +450,12 @@ export function App(): JSX.Element {
   const splitDockMode = useAtomValue(splitDockModeAtom)
   /** 草稿会话（无 tab 的新会话页）：点「新建会话」设置，发送首条消息时由 Chat 物化为 tab */
   const [draftSession, setDraftSession] = useState<SessionMeta | null>(null)
+
+  // 离开会话页（插件/记忆/角色库/设置）→ 当前会话绿点清灰
+  useEffect(() => {
+    if (activeRail === 'chat' && !showSettings) return
+    if (activeTabId) acknowledgeSessionStatus(activeTabId)
+  }, [activeRail, showSettings, activeTabId, acknowledgeSessionStatus])
 
   const openSettings = (tab: SettingsTab): void => {
     setSettingsInitialTab(tab)

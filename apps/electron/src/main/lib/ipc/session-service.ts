@@ -47,6 +47,7 @@ import {
   createSession,
   listSessions,
   readPanelMessages,
+  readMoADiscussionPanels,
   deleteSession as deleteSessionMeta,
   deleteSessionsByWorkspace,
 } from '../agent/session-store'
@@ -73,8 +74,9 @@ import { findFileByNameCached } from './file-search'
 import { getEnabledMcpServers } from '../mcp/mcp-store'
 import { listMoaPresets, writeMoaPresets, validateMoAPresetList } from '../agent/moa-preset-service'
 import { runMoaTurn } from '../agent/run-moa-turn'
+import { runMoADiscussion, nextMoADiscussionId } from '../agent/run-moa-discussion'
 import { resolveMoADispatch, decideMoaMetaPatch } from '../agent/moa-dispatch'
-import { isMoaModelId, moaModelId, resolveConsultPresetsForChannel, buildResumeHistoryFromPanel, composeMoaPrompt, type MoAPreset } from '@tagent/shared'
+import { isMoaModelId, moaModelId, resolveConsultPresetsForChannel, buildResumeHistoryFromPanel, composeMoaPrompt, extractMoAConclusionFromMessages, panelMessageToHistoryIR, type MoAPreset } from '@tagent/shared'
 import { createKsccSeatRunner, createPiHttpSeatRunner, type MoASeatRunner } from '@tagent/pi-core'
 import {
   PermissionService,
@@ -133,6 +135,12 @@ interface SendMessageInput {
    * 见 docs/dev/moa-roundtable/02-SESSION-UX-SPEC.md §3。
    */
   moaOneShotPresetId?: string
+  /**
+   * 圆桌讨论本条（one-shot）：本轮走 runMoADiscussion（多轮讨论+总结人收口），
+   * 但**不**把 `meta.modelId` 改成 `moa:<presetId>`，会话 tab / ModelSelector 仍显示真实模型
+   * （与会诊 one-shot 一致）。见 docs/dev/moa-roundtable/02-SESSION-UX-SPEC.md §3。
+   */
+  moaDiscussionPresetId?: string
 }
 
 export class SessionService {
@@ -156,6 +164,17 @@ export class SessionService {
    */
   private moaAbortBySession = new Map<string, AbortController>()
   private moaInFlight = new Set<string>()
+
+  /**
+   * 活跃圆桌讨论注册表（§5.3 用户插话/喊停）：按会话存当前讨论的 discussionId + 待注入插话队列 +
+   * AbortController。runMoADiscussionTurn 启动时注册（ctx.interjections.drain 排空 pending），
+   * discussion-interject IPC 据此 push 插话、discussion-stop IPC 据此 abort；讨论结束（finally）删除。
+   * 同会话同时仅一场讨论（moaInFlight 单标记），故按 sessionId 单条即可，discussionId 仅作匹配校验。
+   */
+  private moaDiscussionsBySession = new Map<
+    string,
+    { discussionId: string; pending: string[]; abortController: AbortController }
+  >()
 
   private constructor(
     private readonly getWindow: () => BrowserWindow | null,
@@ -375,6 +394,77 @@ export class SessionService {
       this.sendPayload(sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
       return { ok: true }
     })
+
+    /**
+     * 圆桌讨论用户插话（§5.3）：渲染层讨论室输入框发送 → push 到活跃讨论的 pending 队列，
+     * 由 runMoADiscussion 每轮开始前 drain 注入本轮参与者 prompt（先落 user entry 再追加 [用户插话]）。
+     * discussionId 不匹配 / 无活跃讨论 / 空文本 → { ok:false }（讨论已结束或过期请求）。
+     */
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.DISCUSSION_INTERJECT,
+      async (
+        _e,
+        { sessionId, discussionId, text }: { sessionId: string; discussionId: string; text: string },
+      ): Promise<{ ok: boolean; error?: string }> => {
+        const rec = this.moaDiscussionsBySession.get(sessionId)
+        if (!rec || rec.discussionId !== discussionId || !text) {
+          return { ok: false, error: '没有进行中的圆桌研讨' }
+        }
+        rec.pending.push(text)
+        return { ok: true }
+      },
+    )
+
+    /**
+     * 圆桌讨论用户喊停（§5.3）：渲染层讨论室「结束讨论」→ abort 活跃讨论的 controller，
+     * 触发 runMoADiscussion 现有 cancelled 路径（推 cancelled 卡、保留已发言记录）。
+     * cancelled 路径不推 turn_end（与会诊取消一致），故此处补 turn_end 清渲染层 running 状态
+     * （对齐 STOP_AGENT）；meta idle 由 runMoADiscussionTurn 的 finally 兜底。无活跃讨论 → { ok:false }。
+     */
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.DISCUSSION_STOP,
+      async (
+        _e,
+        { sessionId, discussionId }: { sessionId: string; discussionId: string },
+      ): Promise<{ ok: boolean; error?: string }> => {
+        const rec = this.moaDiscussionsBySession.get(sessionId)
+        if (!rec || rec.discussionId !== discussionId) {
+          return { ok: false, error: '没有进行中的圆桌研讨' }
+        }
+        rec.abortController.abort()
+        this.sendPayload(sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
+        return { ok: true }
+      },
+    )
+
+    /**
+     * 圆桌讨论重放（T8）：会话打开/切回时，渲染层在历史消息加载完成后调用。主进程读该会话
+     * moa-discussion.jsonl，把每场已落盘讨论按原 `moa_discussion` 事件推回渲染层——渲染层
+     * 按 discussionId upsert 成入口卡（终态静态卡：done 显示共识摘要+可进讨论室回看完整 entries；
+     * cancelled/error 同样可进讨论室看已发言）。
+     *
+     * 复用既有 STREAM_EVENT + `moa_discussion` 通道：渲染层 upsert 分支已按 discussionId 去重，
+     * 与运行中实时事件共用同一逻辑，避免双卡。读失败/无记录 → count:0（不报错，不阻断）。
+     */
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.REPLAY_MOA_DISCUSSIONS,
+      async (_e, sessionId: string): Promise<{ ok: boolean; count: number }> => {
+        try {
+          const meta = getSessionMeta(sessionId)
+          const panels = readMoADiscussionPanels(meta?.workspaceId, sessionId)
+          for (const panel of panels) {
+            this.sendPayload(sessionId, {
+              kind: 'tagent_event',
+              event: { type: 'moa_discussion', panel },
+            })
+          }
+          return { ok: true, count: panels.length }
+        } catch (err) {
+          console.warn('[session-service] replayMoADiscussions failed:', err)
+          return { ok: false, count: 0 }
+        }
+      },
+    )
 
     // 响应 AskUserQuestion：渲染层回灌 answers → 注入 updatedInput.answers → resolve allow
     // （SDK 拿到带 answers 的 input 执行，不再发 request_user_dialog 控制帧）
@@ -923,6 +1013,15 @@ export class SessionService {
       return
     }
 
+    // 圆桌讨论本条（one-shot）：渲染层点「圆桌讨论 ▾」选预置后单次走 runMoADiscussion
+    // （多轮讨论+总结人收口）。**不**改 meta.modelId，会话 tab / ModelSelector 仍显示真实模型
+    // （与会诊 one-shot 一致，SPEC §3）。预置/渠道/模型可用性校验在 runMoADiscussionTurn 内
+    // 经 resolveMoADispatch 完成，失败时上报 session_error + turn_end。
+    if (input.moaDiscussionPresetId) {
+      await this.runMoADiscussionTurn(input, channel, input.moaDiscussionPresetId, meta, workspaceId)
+      return
+    }
+
     const modelId = this.resolveModel(channel, rawModel)
     const normalizedInput: SendMessageInput = { ...input, channelId, model: modelId }
 
@@ -1010,25 +1109,43 @@ export class SessionService {
       this.sendPayload(input.sessionId, { kind: 'sdk_message', message: userIR })
     }
 
-    // P0 #1 续聊注入（AUDIT-fresh-session-consult）：会诊不建长驻 kscc、不写 sdkSessionId，
-    // 下一条普通发送 = 新进程零上文（模型回「这个会话没有上文」）。本处在 spawn 前把面板
-    // 近期历史拼进本轮 prompt，让新进程也能引用会诊结论。
-    //   触发条件三合一（缺一不注，避免双上下文）：
-    //   ① isFirst：仅 spawn 路径——长驻续轮（kscc live loop / Pi SessionEntry）上下文在内存，不注入。
-    //   ② !meta?.sdkSessionId：kscc 有 sdkSessionId 时走 resume（下方 resumeSessionId 读 JSONL，
-    //      含会诊落盘），不注入；Pi 从不写 sdkSessionId，此条件恒 true。
-    //   ③ !adapter.hasActiveChannel：Pi 续轮 isFirst 恒 true 但 SessionEntry 仍在（state.messages
-    //      持有上文），此处为否决项——仅当无内存 Agent（会诊后 / 重启 / 切核重建）才注入。
-    //   上方已把本轮 user 落盘为面板末条，buildResumeHistoryFromPanel 默认 excludeTrailingTurn
-    // 排除它，避免与「本轮议题」重复；空历史返回 '' → 不改 prompt（新会话首条无副作用）。
-    if (isFirst && !meta?.sdkSessionId && !adapter.hasActiveChannel?.(input.sessionId)) {
-      const historyText = buildResumeHistoryFromPanel(
-        readPanelMessages(workspaceId, input.sessionId),
-      )
-      if (historyText) {
-        normalizedInput.prompt = composeMoaPrompt(normalizedInput.prompt, historyText)
+    // T7 续聊注入 + P0 #1（AUDIT-fresh-session-consult）：夹中场景「普通轮 → 圆桌（快速/研讨）→ 续聊」
+    // 长驻进程（kscc live loop / Pi SessionEntry）的内存上下文**不含** MoA bare 轮共识——MoA 单发不经
+    // 主会话 entry、不写 kscc resume 文件，共识只落 TAgent 面板 JSONL。续聊时按「进程/Agent 是否已有
+    // 普通轮上下文」分两子况补 MoA 上下文，避免模型回「这个会话没有上文」：
+    //   - LIVE（adapter.hasActiveChannel：kscc live 进程 / Pi 内存 Agent，内存已有普通轮）→ 仅前置 MoA
+    //     结论片段，不重 spawn、不注入全量面板历史（避免与内存普通轮重复）。kscc live 续轮（isFirst=false
+    //     enqueue）+ Pi 内存 Agent 续轮（isFirst=true 但 hasActiveChannel）均走此。
+    //   - RESTART/无进程（!hasActiveChannel）→ 注入全量面板历史（含普通轮+圆桌轮，buildResumeHistoryFromPanel）
+    //     并抑制 resume（不读 kscc resume 文件 → 无双上下文）。面板有 MoA 时即使有 sdkSessionId 也走注入；
+    //     面板无 MoA → 保持现状（原 P0 #1：仅 isFirst && !sdkSessionId && !hasActiveChannel 才注入，有
+    //     sdkSessionId 走 resume 读普通轮）。
+    // 上方已把本轮 user 落盘为面板末条；buildResumeHistoryFromPanel 默认 excludeTrailingTurn 排除它，
+    // extractMoAConclusionFromMessages 只匹配 assistant + moa-agg-*/moa-disc-agg-* uuid（本轮 user 不匹配），均无重复。
+    const moaCtx = this.buildMoaContinuationContext(workspaceId, input.sessionId)
+    const hasActiveChannel = !!adapter.hasActiveChannel?.(input.sessionId)
+    let suppressResume = false
+    if (moaCtx.hasMoAConclusion) {
+      if (hasActiveChannel) {
+        // LIVE：仅前置 MoA 结论片段（不注入全量历史，避免与内存普通轮重复）
+        normalizedInput.prompt = `${moaCtx.conclusionText}\n\n${normalizedInput.prompt}`
         console.log(
-          `[会话 ${input.sessionId}] 续聊注入：无 sdkSessionId/无内存 Agent，拼 ${historyText.length} 字历史进本轮 prompt`,
+          `[会话 ${input.sessionId}] T7 LIVE 注入：活跃进程前置 ${moaCtx.conclusionText.length} 字 MoA 结论进本轮 prompt`,
+        )
+      } else if (moaCtx.historyText) {
+        // RESTART/无进程：注入全量面板历史 + 抑制 resume（不读 kscc resume 文件，无双上下文）
+        normalizedInput.prompt = composeMoaPrompt(normalizedInput.prompt, moaCtx.historyText)
+        suppressResume = true
+        console.log(
+          `[会话 ${input.sessionId}] T7 RESTART 注入：面板含 MoA，忽略 resumeSessionId 走注入路径（${moaCtx.historyText.length} 字历史）`,
+        )
+      }
+    } else if (isFirst && !meta?.sdkSessionId && !hasActiveChannel) {
+      // 无 MoA → 保持现状（原 P0 #1）：首条 spawn 且无 sdkSessionId/无内存 Agent → 拼面板历史补上下文
+      if (moaCtx.historyText) {
+        normalizedInput.prompt = composeMoaPrompt(normalizedInput.prompt, moaCtx.historyText)
+        console.log(
+          `[会话 ${input.sessionId}] 续聊注入：无 sdkSessionId/无内存 Agent，拼 ${moaCtx.historyText.length} 字历史进本轮 prompt`,
         )
       }
     }
@@ -1092,7 +1209,14 @@ export class SessionService {
         },
       })
 
-      await rt.sendMessage(await this.buildQueryOptions(normalizedInput, channel, workspaceId))
+      await rt.sendMessage(
+        await this.buildQueryOptions(
+          normalizedInput,
+          channel,
+          workspaceId,
+          suppressResume ? { suppressResume: true } : undefined,
+        ),
+      )
     } else {
       updateSessionMeta(input.sessionId, {
         channelId,
@@ -1102,7 +1226,7 @@ export class SessionService {
       // 后续：enqueue
       const userMessage: SDKUserMessageInput = {
         type: 'user',
-        message: { role: 'user', content: input.prompt },
+        message: { role: 'user', content: normalizedInput.prompt },
         parent_tool_use_id: null,
       } as unknown as SDKUserMessageInput
       await rt!.sendMessage(
@@ -1249,6 +1373,148 @@ export class SessionService {
     }
   }
 
+  /**
+   * 圆桌讨论本条（one-shot）：渲染层点「圆桌讨论 ▾」选预置后单次走 runMoADiscussion
+   * （多轮讨论+总结人收口）。**不**改 `meta.modelId`，会话 tab / ModelSelector 仍显示真实模型
+   * （与会诊 one-shot 一致，SPEC §3）。
+   *
+   * 与 {@link #runMoATurn} 同构：seat runner 创建路径（kscc bare / Pi HTTP 直连）、预置解析 +
+   * 运行时可用性校验（均经 `resolveMoADispatch(moa:<presetId>, …)`，与会诊 one-shot 同源）、
+   * AbortController + 在途标记、try/catch/finally 收尾全部一致；区别仅在编排函数
+   * （runMoADiscussion 多轮讨论+收口，runMoaTurn 并行交卷单轮）。
+   *
+   * STOP_AGENT 经 moaAbortBySession 中止（与 runMoATurn 共用同一 map），runMoADiscussion
+   * 检测 signal.aborted 后推 cancelled 卡 + 返回 cancelled outcome（见 run-moa-discussion.ts）。
+   * runMoADiscussion 自身经 sendPayload 上报 result / session_error / turn_end，故此处与
+   * runMoATurn 调用处一致：await 后不读返回值，仅 catch 兜底裸异常 + finally 清在途/置 idle。
+   */
+  private async runMoADiscussionTurn(
+    input: SendMessageInput,
+    channel: Channel,
+    discussionPresetId: string,
+    meta: AgentSessionMeta | undefined,
+    workspaceId: string | undefined,
+  ): Promise<void> {
+    // 1. 按 channel.provider 选 seat runner（与 runMoATurn 完全相同：同场不混核，凭据主进程解密）。
+    let seatRunner: MoASeatRunner
+    if (channel.provider === 'kscc-internal') {
+      const ksccPath = resolveKsccPath()
+      if (!ksccPath) {
+        const msg = '未检测到 kscc 命令，请先安装 kscc（内网渠道）'
+        this.sendPayload(input.sessionId, {
+          kind: 'tagent_event',
+          event: { type: 'session_error', message: msg, error: classifyUserFacingError(msg) },
+        })
+        this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
+        return
+      }
+      seatRunner = createKsccSeatRunner({ ksccPath })
+    } else {
+      // 外部渠：主进程解密 apiKey（与 pi-adapter / runMoATurn 同路）；缺失即报错，不发起讨论。
+      const apiKey = getDecryptedApiKey(channel.id)
+      if (!apiKey) {
+        const msg = `渠道「${channel.name}」未配置 API Key，无法发起外部圆桌讨论，请在渠道管理中填写`
+        this.sendPayload(input.sessionId, {
+          kind: 'tagent_event',
+          event: { type: 'session_error', message: msg, error: classifyUserFacingError(msg) },
+        })
+        this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
+        return
+      }
+      seatRunner = createPiHttpSeatRunner({
+        provider: channel.provider,
+        apiKey,
+        baseUrl: channel.baseUrl,
+      })
+    }
+
+    // 2. 预置解析 + 运行时校验（与会诊 one-shot 同源：moa:<presetId> 经 resolveMoADispatch，
+    //    跨渠禁席/模型未启用/预置缺失均在此早失败并返回中文文案）。
+    const storedPresets = listMoaPresets()
+    const dispatchPresets = channel.provider === 'kscc-internal'
+      ? storedPresets
+      : resolveConsultPresetsForChannel(channel, storedPresets)
+    const dispatch = resolveMoADispatch(moaModelId(discussionPresetId), channel, dispatchPresets)
+    if (dispatch.kind !== 'moa') {
+      const msg = dispatch.kind === 'error' ? dispatch.message : '圆桌讨论调度异常'
+      this.sendPayload(input.sessionId, {
+        kind: 'tagent_event',
+        event: { type: 'session_error', message: msg, error: classifyUserFacingError(msg) },
+      })
+      this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
+      return
+    }
+    const preset: MoAPreset = dispatch.preset
+
+    // 3. 记录本轮 meta（one-shot：不改 modelId，与会诊 one-shot 一致）。
+    //    仍写 channelId / workspaceId / turnCount（会话级，与 MoA 无关）。
+    if (!meta) {
+      // 草稿会话首条：用真实 modelId 建会话（不以 moa: 开头，与 runMoATurn one-shot 兜底一致）
+      createSession({
+        id: input.sessionId,
+        title: input.prompt.slice(0, 20) || '新会话',
+        channelId: channel.id,
+        modelId: input.model && !isMoaModelId(input.model) ? input.model : (channel.defaultModelId ?? ''),
+        workspaceId,
+        turnCount: 1,
+        executionMode: input.executionMode,
+      })
+    } else {
+      const patch = decideMoaMetaPatch({
+        sticky: false,
+        moaModelId: moaModelId(discussionPresetId),
+        channelId: channel.id,
+        workspaceId,
+        previousTurnCount: meta.turnCount,
+      })
+      updateSessionMeta(input.sessionId, patch)
+    }
+
+    // 4. 起 AbortController + 在途标记，编排（照 runMoATurn 调用处收尾）。
+    const controller = new AbortController()
+    this.moaAbortBySession.set(input.sessionId, controller)
+    this.moaInFlight.add(input.sessionId)
+    // 4.5 预生成 discussionId 并注册活跃讨论：discussion-interject IPC push pending、discussion-stop
+    //     IPC abort 复用此 controller；ctx.interjections.drain 供 runMoADiscussion 每轮排空插话注入。
+    //    （同会话同时仅一场讨论，moaInFlight 单标记；discussionId 仅作匹配校验防串台/过期请求。）
+    const discussionId = nextMoADiscussionId(input.sessionId)
+    const discussionRec = { discussionId, pending: [] as string[], abortController: controller }
+    this.moaDiscussionsBySession.set(input.sessionId, discussionRec)
+    try {
+      await runMoADiscussion({
+        sessionId: input.sessionId,
+        prompt: input.prompt,
+        channel,
+        preset,
+        workspaceId,
+        seatRunner,
+        signal: controller.signal,
+        sendPayload: (payload) => this.sendPayload(input.sessionId, payload),
+        attachments: input.attachments,
+        discussionId,
+        interjections: { drain: () => discussionRec.pending.splice(0) },
+      })
+    } catch (err) {
+      // runMoADiscussion 自身不应抛（失败经 sendPayload 上报）；兜底防裸异常吞掉
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[runMoADiscussion] 未预期异常:', err)
+      this.sendPayload(input.sessionId, {
+        kind: 'tagent_event',
+        event: { type: 'session_error', message: msg, error: classifyUserFacingError(msg) },
+      })
+      this.sendPayload(input.sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
+    } finally {
+      this.moaAbortBySession.delete(input.sessionId)
+      this.moaInFlight.delete(input.sessionId)
+      this.moaDiscussionsBySession.delete(input.sessionId)
+      try {
+        updateSessionMeta(input.sessionId, { status: 'idle' })
+      } catch {
+        /* meta 缺失时忽略 */
+      }
+    }
+  }
+
   /** 解析模型 ID：input > 渠道默认 > 第一个启用模型 > kscc 兜底 */
   private resolveModel(channel: Channel, inputModel?: string): string {
     const modelId = inputModel
@@ -1269,7 +1535,8 @@ export class SessionService {
   private async buildQueryOptions(
     input: SendMessageInput,
     channel: Channel,
-    workspaceId?: string
+    workspaceId?: string,
+    buildOpts?: { suppressResume?: boolean }
   ): Promise<Parameters<AgentProviderAdapter['query']>[0]> {
     const model = this.resolveModel(channel, input.model)
 
@@ -1384,8 +1651,10 @@ export class SessionService {
         agents: executionMode === 'work' ? buildBuiltinSubagentDefinitions(isClaudeAvailableForChannel(channel)) : undefined,
         // 权限钩子（bypass 模式不挂）
         ...(canUseTool ? { canUseTool } : {}),
-        // 长驻首次 spawn 带 resume 续历史（SDK 读 JSONL 一次），之后靠内存
-        resumeSessionId: meta?.sdkSessionId,
+        // 长驻首次 spawn 带 resume 续历史（SDK 读 JSONL 一次），之后靠内存。
+        // T7 RESTART 注入：面板含 MoA 时 suppressResume=true → 不 resume（避免 resume 普通轮 +
+        // 注入全量面板历史的双上下文），改由注入的 panel 历史单真源补全（含圆桌轮）。
+        resumeSessionId: buildOpts?.suppressResume ? undefined : meta?.sdkSessionId,
         onSessionId: (sdkSessionId: string) => {
           if (sdkSessionId && sdkSessionId !== meta?.sdkSessionId) {
             updateSessionMeta(input.sessionId, { sdkSessionId })
@@ -1601,6 +1870,37 @@ export class SessionService {
   private sendPayload(sessionId: string, payload: TAgentDesktopStreamPayload): void {
     const win = this.getWindow()
     win?.webContents.send(AGENT_IPC_CHANNELS.STREAM_EVENT, { sessionId, payload })
+  }
+
+  /**
+   * T7 续聊注入：读面板一次，派生 MoA 续聊上下文三件物（避免多次读盘）。
+   * - hasMoAConclusion：面板是否含 MoA 圆桌共识（会诊 `moa-agg-*` / 研讨 `moa-disc-agg-*`），
+   *   决定 LIVE / RESTART 两子况是否改写 prompt；本轮 user（type:'user'）不匹配 assistant+uuid，天然排除。
+   * - historyText：全量面板历史（`buildResumeHistoryFromPanel`，排除本轮 user）—— RESTART/无进程注入用。
+   * - conclusionText：仅 MoA 结论片段（`extractMoAConclusionFromMessages`）—— LIVE 前置用。
+   *
+   * 读失败 → 全空（调用方按现状走：不改 prompt、不抑制 resume）。复用 `buildResumeHistoryFromPanel`
+   * 内部的形态归一（SDKMessage / IR 混排）与字符预算；结论检测另走 `panelMessageToHistoryIR` 转 IR
+   * 后喂 `extractMoAConclusionFromMessages`，故两次 IR 转换但仅一次读盘（数组迭代，廉价）。
+   */
+  private buildMoaContinuationContext(
+    workspaceId: string | undefined,
+    sessionId: string,
+  ): { hasMoAConclusion: boolean; historyText: string; conclusionText: string } {
+    try {
+      const rawPanel = readPanelMessages(workspaceId, sessionId)
+      const irs: TAgentMessage[] = []
+      for (const raw of rawPanel) {
+        const ir = panelMessageToHistoryIR(raw)
+        if (ir) irs.push(ir)
+      }
+      const conclusionText = extractMoAConclusionFromMessages(irs)
+      const historyText = buildResumeHistoryFromPanel(rawPanel)
+      return { hasMoAConclusion: conclusionText !== '', historyText, conclusionText }
+    } catch (err) {
+      console.warn('[session-service] buildMoaContinuationContext failed:', err)
+      return { hasMoAConclusion: false, historyText: '', conclusionText: '' }
+    }
   }
 
   /**

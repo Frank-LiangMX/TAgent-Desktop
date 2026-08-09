@@ -1906,6 +1906,15 @@ export const AGENT_IPC_CHANNELS = {
   STOP_AGENT: 'agent:stop',
   /** 引导 Agent（不中断当前轮，在下一轮边界注入用户消息） */
   STEER_AGENT: 'agent:steer',
+  /** 圆桌讨论用户插话（push 到活跃讨论 pending 队列，每轮开始前 drain 注入） */
+  DISCUSSION_INTERJECT: 'agent:discussion-interject',
+  /** 圆桌讨论用户喊停（abort 活跃讨论 controller，走 cancelled 路径） */
+  DISCUSSION_STOP: 'agent:discussion-stop',
+  /**
+   * 圆桌讨论重放（重启/切会话后）：主进程读该会话 moa-discussion.jsonl，把每场已落盘讨论
+   * 按原 moa_discussion 事件推回渲染层，渲染层按 discussionId upsert 成入口卡 + 讨论室回看。
+   */
+  REPLAY_MOA_DISCUSSIONS: 'agent:replay-moa-discussions',
 
   // 后台任务管理
   /** 获取任务输出 */

@@ -84,7 +84,7 @@ export function AgentBehaviorSettings(): JSX.Element {
       const list = await window.electronAPI.listMoaPresets()
       setPresets(list)
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : '无法读取会诊预置')
+      setLoadError(error instanceof Error ? error.message : '无法读取圆桌 · 快速预置')
     } finally {
       setLoading(false)
     }
@@ -188,18 +188,18 @@ export function AgentBehaviorSettings(): JSX.Element {
     <div className="settings-page agent-behavior-page">
       <SettingsPageIntro
         title="Agent 行为"
-        description="配置会诊班底等协作策略；班组与圆桌即将推出。"
+        description="配置圆桌 · 快速班底等协作策略；班组与圆桌 · 研讨即将推出。"
       />
 
       {/* ── 会诊 CRUD（同页编辑；档 channelId 落盘；档切换 = SegmentedTabs）── */}
       <SettingsSection
-        title="会诊"
+        title="圆桌 · 快速"
         description={
           !hasAnyChannel
-            ? '会诊班底按档配置；请先在渠道管理中启用一个渠道。'
+            ? '圆桌 · 快速班底按档配置；请先在渠道管理中启用一个渠道。'
             : isKscc
-              ? '班底用于 kscc 内网会诊。席位无工具，查仓库请用普通发送。'
-              : '班底用于外部渠道会诊（合并所有外部渠模型）；未自定义时发送旁自动合成班底。席位无工具，查仓库请用普通发送。'
+              ? '班底用于 kscc 内网圆桌 · 快速。席位无工具，查仓库请用普通发送。'
+              : '班底用于外部渠道圆桌 · 快速（合并所有外部渠模型）；未自定义时发送旁自动合成班底。席位无工具，查仓库请用普通发送。'
         }
         action={
           editor ? undefined : (
@@ -281,7 +281,7 @@ export function AgentBehaviorSettings(): JSX.Element {
               <SettingsCard divided={false}>
                 <div className="agent-behavior-loading">
                   <RefreshCw size={16} className="animate-spin" />
-                  正在读取会诊预置…
+                  正在读取圆桌 · 快速预置…
                 </div>
               </SettingsCard>
             ) : channelPresets.length === 0 ? (
@@ -292,7 +292,7 @@ export function AgentBehaviorSettings(): JSX.Element {
                       <span>外部渠道暂无可用模型，无法配置班底；请先在渠道管理中启用外部渠道及其模型。</span>
                     ) : (
                       <div className="agent-behavior-empty-cta">
-                        <span>尚未自定义；发送旁会诊将使用自动合成班底。</span>
+                        <span>尚未自定义；发送旁圆桌 · 快速将使用自动合成班底。</span>
                         <Button variant="outline" size="sm" onClick={handleGenerateDraft}>
                           <Sparkles size={14} />
                           基于当前模型生成一版并编辑
@@ -300,7 +300,7 @@ export function AgentBehaviorSettings(): JSX.Element {
                       </div>
                     )
                   ) : (
-                    <span>尚无会诊预置；添加后可在发送旁「会诊」中使用。</span>
+                    <span>尚无圆桌 · 快速预置；添加后可在发送旁「圆桌 · 快速」中使用。</span>
                   )}
                 </div>
               </SettingsCard>
@@ -326,7 +326,7 @@ export function AgentBehaviorSettings(): JSX.Element {
         <p className="text-xs leading-relaxed text-muted-foreground">即将推出</p>
       </SettingsSection>
 
-      <SettingsSection title="圆桌">
+      <SettingsSection title="圆桌 · 研讨">
         <p className="text-xs leading-relaxed text-muted-foreground">即将推出</p>
       </SettingsSection>
 
@@ -335,7 +335,7 @@ export function AgentBehaviorSettings(): JSX.Element {
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         icon={<Trash2 size={15} />}
         title={`删除预置「${deleteTarget?.name ?? ''}」？`}
-        description="该预置将被永久移除。已使用此预置的会诊会话不受影响（运行中/历史的不变）。"
+        description="该预置将被永久移除。已使用此预置的圆桌会话不受影响（运行中/历史的不变）。"
         confirmLabel="删除预置"
         onConfirm={handleDelete}
       />
@@ -392,9 +392,12 @@ function PresetRow({
         </div>
       </div>
 
-      {/* 右：超时 + 启用开关 + 编辑/删 */}
+      {/* 右：超时 + 研讨轮数 + 启用开关 + 编辑/删 */}
       <div className="agent-behavior-row-control shrink-0">
         <span className="agent-behavior-row-meta">超时 {timeoutSec}s</span>
+        {preset.roundLimit != null && preset.roundLimit !== 3 && (
+          <span className="agent-behavior-row-meta">研讨 {preset.roundLimit} 轮</span>
+        )}
         <Switch
           size="sm"
           checked={preset.enabled}
@@ -430,6 +433,11 @@ interface PresetDraft {
   references: MoAReferenceSeat[]
   aggregatorModelId: string
   timeoutMsPerSeat: number
+  /**
+   * 圆桌研讨全场轮数上限（仅「圆桌 · 研讨」生效；快速模式固定单轮，忽略此值）。
+   * `undefined` = 用默认 3（运行时兜底）；存在则须为 1..6 整数（validateDraft 校验）。
+   */
+  roundLimit?: number
   /** 所属渠道 id；保存时随 draft 落盘（SPEC 05 §3） */
   channelId: string
 }
@@ -445,6 +453,7 @@ function createDraft(existingIds: Set<string>, channelId: string): PresetDraft {
     ],
     aggregatorModelId: '',
     timeoutMsPerSeat: 120_000,
+    roundLimit: 3,
     channelId,
   }
 }
@@ -457,6 +466,7 @@ function presetToDraft(preset: MoAPreset): PresetDraft {
     references: preset.references.map((r) => ({ ...r })),
     aggregatorModelId: preset.aggregatorModelId,
     timeoutMsPerSeat: preset.timeoutMsPerSeat ?? 120_000,
+    roundLimit: preset.roundLimit,
     channelId: preset.channelId ?? '',
   }
 }
@@ -469,6 +479,7 @@ function draftToMoAPreset(draft: PresetDraft): MoAPreset {
     references: draft.references,
     aggregatorModelId: draft.aggregatorModelId,
     timeoutMsPerSeat: draft.timeoutMsPerSeat,
+    ...(draft.roundLimit !== undefined ? { roundLimit: draft.roundLimit } : {}),
     channelId: draft.channelId,
   }
 }
@@ -483,6 +494,12 @@ function validateDraft(draft: PresetDraft): string | null {
   }
   if (!draft.aggregatorModelId.trim()) return '请选择汇总模型'
   if (draft.timeoutMsPerSeat <= 0) return '超时须为正数（毫秒）'
+  if (
+    draft.roundLimit != null &&
+    (!Number.isInteger(draft.roundLimit) || draft.roundLimit < 1 || draft.roundLimit > 6)
+  ) {
+    return '研讨轮数须为 1–6 的整数'
+  }
   return null
 }
 
@@ -565,12 +582,12 @@ function PresetEditor({
       <div
         className="agent-behavior-editor"
         role="form"
-        aria-label={mode === 'add' ? '添加会诊预置' : `编辑预置 ${preset?.name ?? ''}`}
+        aria-label={mode === 'add' ? '添加圆桌 · 快速预置' : `编辑预置 ${preset?.name ?? ''}`}
       >
         <div className="agent-behavior-editor-head">
           <div className="agent-behavior-editor-copy">
             <h3 className="agent-behavior-editor-title">
-              {mode === 'add' ? '添加会诊预置' : preset?.name ?? '预置'}
+              {mode === 'add' ? '添加圆桌 · 快速预置' : preset?.name ?? '预置'}
             </h3>
           </div>
           <div className="agent-behavior-editor-enabled">
@@ -668,7 +685,7 @@ function PresetEditor({
             <div className="agent-behavior-form-grid">
               <Field
                 label="汇总模型"
-                hint={!hasChannelModels ? '该渠道暂无已启用模型，可手动输入 modelId（须在会诊时所属渠道启用）' : undefined}
+                hint={!hasChannelModels ? '该渠道暂无已启用模型，可手动输入 modelId（须在圆桌 · 快速时所属渠道启用）' : undefined}
               >
                 <ModelSelect
                   value={draft.aggregatorModelId}
@@ -688,6 +705,34 @@ function PresetEditor({
                   onChange={(e) => {
                     const val = Number(e.target.value)
                     if (!Number.isNaN(val) && val > 0) update({ timeoutMsPerSeat: val })
+                  }}
+                />
+              </Field>
+              <Field
+                label="研讨轮数"
+                hint="仅圆桌 · 研讨生效（1–6 整数）；快速模式固定单轮，忽略此值。留空用默认 3。"
+              >
+                <input
+                  className="agent-behavior-input"
+                  type="number"
+                  min={1}
+                  max={6}
+                  step={1}
+                  value={draft.roundLimit ?? ''}
+                  placeholder="3"
+                  onChange={(e) => {
+                    const raw = e.target.value
+                    if (raw === '') {
+                      update({ roundLimit: undefined })
+                      return
+                    }
+                    const val = Number(raw)
+                    if (Number.isNaN(val)) {
+                      update({ roundLimit: undefined })
+                      return
+                    }
+                    // 保留用户输入（含越界 / 非整数中间态），交 validateDraft 报错
+                    update({ roundLimit: val })
                   }}
                 />
               </Field>

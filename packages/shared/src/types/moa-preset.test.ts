@@ -290,6 +290,29 @@ describe('isValidMoAPreset · synthetic 字段', () => {
   })
 })
 
+describe('isValidMoAPreset · roundLimit 字段', () => {
+  const base = { ...MOA_DEFAULT_PRESETS[0]!, channelId: 'kscc-internal' }
+
+  it('accepts undefined (缺省由运行时兜底默认 3)', () => {
+    expect(isValidMoAPreset({ ...base })).toBe(true)
+    expect(isValidMoAPreset({ ...base, roundLimit: undefined })).toBe(true)
+  })
+
+  it('accepts integers 1..6 (含默认 3)', () => {
+    expect(isValidMoAPreset({ ...base, roundLimit: 3 })).toBe(true)
+    for (const n of [1, 2, 3, 4, 5, 6]) {
+      expect(isValidMoAPreset({ ...base, roundLimit: n })).toBe(true)
+    }
+  })
+
+  it('rejects 0 / 7 / 1.5 / 非整数 / 非数字', () => {
+    expect(isValidMoAPreset({ ...base, roundLimit: 0 })).toBe(false)
+    expect(isValidMoAPreset({ ...base, roundLimit: 7 })).toBe(false)
+    expect(isValidMoAPreset({ ...base, roundLimit: 1.5 })).toBe(false)
+    expect(isValidMoAPreset({ ...base, roundLimit: '3' as unknown as number })).toBe(false)
+  })
+})
+
 /** 渠道构造助手（与 moa-dispatch.test 同形态，精简版） */
 function makeChannel(opts: {
   id?: string
@@ -561,6 +584,7 @@ describe('buildChannelBasedDraftPreset (SPEC 05 §2 空态 CTA)', () => {
     expect(draft!.synthetic).toBeUndefined()
     expect(draft!.references.map((r) => r.modelId)).toEqual(['gpt-4o', 'gpt-4o-mini'])
     expect(draft!.aggregatorModelId).toBe('gpt-4o')
+    expect(draft!.roundLimit).toBe(3)
   })
 
   it('≥2 enabled: aggregator falls back to first enabled when defaultModelId absent', () => {
@@ -625,6 +649,7 @@ describe('buildExternalScopeDraftPreset (SPEC 05 V3 · 外部档合并模型 CTA
     expect(draft!.references.map((r) => r.modelId)).toEqual(['deepseek-chat', 'deepseek-reasoner'])
     // 无单渠 defaultModelId → 汇总取合并列表首个 enabled
     expect(draft!.aggregatorModelId).toBe('deepseek-chat')
+    expect(draft!.roundLimit).toBe(3)
   })
 
   it('=1 merged model: builds channel-same-model form (same modelId + different system)', () => {

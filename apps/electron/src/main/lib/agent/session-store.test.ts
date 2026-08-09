@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import type { SDKMessage } from '@tagent/shared'
+import type { SDKMessage, MoADiscussionPanel } from '@tagent/shared'
+import {
+  createMoADiscussionPanel,
+  appendDiscussionEntry,
+  finalizeMoADiscussion,
+} from '@tagent/shared'
 
 vi.mock('electron', () => ({
   app: { isPackaged: false },
@@ -211,5 +216,117 @@ describe('session-store persistence smoke', () => {
       learnedSafeContextLimit: 180_000,
       lastBurstTokenCount: 256_000,
     })
+  })
+})
+
+describe('session-store moa-discussion persistence (T8)', () => {
+  /** 2 参考席的合法 panel seed（与会诊预置 references≥2 校验对齐） */
+  function seedPanel(discussionId: string, topic: string): MoADiscussionPanel {
+    return createMoADiscussionPanel({
+      discussionId,
+      presetName: '深度圆桌',
+      topic,
+      participants: [
+        { speakerId: 'ref-0', name: '架构师', modelId: 'glm-5.2' },
+        { speakerId: 'ref-1', name: '实战派', modelId: 'kimi-k2.5' },
+      ],
+      roundLimit: 2,
+    })
+  }
+
+  it('appendMoADiscussionPanelRecord → readMoADiscussionPanels 往返重建 panel（含 entries+summary）', async () => {
+    const store = await loadStore()
+    const meta = store.createSession({
+      id: 'session-moa-disc',
+      workspaceId: 'workspace-moa-disc',
+    })
+    const panel = finalizeMoADiscussion(
+      appendDiscussionEntry(
+        appendDiscussionEntry(seedPanel('moa-disc-session-moa-disc-0', '如何拆分模块？'), {
+          speakerId: 'ref-0',
+          text: '架构师建议按 DDD 拆',
+        }),
+        { speakerId: 'ref-1', text: '实战派建议先做 PoC' },
+      ),
+      '共识方案：分两步实施，先 PoC 再 DDD 限界上下文。',
+    )
+
+    store.appendMoADiscussionPanelRecord(meta.workspaceId, meta.id, panel)
+
+    // 文件落在面板 JSONL 同目录
+    expect(
+      existsSync(
+        join(configDir, 'projects', 'workspace-moa-disc', 'session-moa-disc.moa-discussion.jsonl'),
+      ),
+    ).toBe(true)
+
+    // 模块重载（重启语义）后读回 → 重建出等价 panel
+    const reloaded = await loadStore()
+    const panels = reloaded.readMoADiscussionPanels(meta.workspaceId, meta.id)
+    expect(panels).toHaveLength(1)
+    const restored = panels[0]!
+    expect(restored.discussionId).toBe(panel.discussionId)
+    expect(restored.phase).toBe('done')
+    expect(restored.presetName).toBe('深度圆桌')
+    expect(restored.topic).toBe('如何拆分模块？')
+    expect(restored.summary).toBe('共识方案：分两步实施，先 PoC 再 DDD 限界上下文。')
+    expect(restored.entries).toHaveLength(2)
+    expect(restored.entries.map((e) => e.speakerId)).toEqual(['ref-0', 'ref-1'])
+    expect(restored.entries.map((e) => e.text)).toEqual([
+      '架构师建议按 DDD 拆',
+      '实战派建议先做 PoC',
+    ])
+    // speakers 完整（participants + user + moderator 由 createMoADiscussionPanel 自动追加）
+    expect(restored.speakers.map((s) => s.role)).toEqual([
+      'participant',
+      'participant',
+      'user',
+      'moderator',
+    ])
+  })
+
+  it('一行一场：多场按落盘顺序读回', async () => {
+    const store = await loadStore()
+    const meta = store.createSession({ id: 'session-multi', workspaceId: 'ws-multi' })
+    store.appendMoADiscussionPanelRecord(meta.workspaceId, meta.id, seedPanel('d1', '议题一'))
+    store.appendMoADiscussionPanelRecord(meta.workspaceId, meta.id, seedPanel('d2', '议题二'))
+
+    const reloaded = await loadStore()
+    const panels = reloaded.readMoADiscussionPanels(meta.workspaceId, meta.id)
+    expect(panels).toHaveLength(2)
+    expect(panels.map((p) => p.discussionId)).toEqual(['d1', 'd2'])
+    expect(panels.map((p) => p.topic)).toEqual(['议题一', '议题二'])
+  })
+
+  it('readMoADiscussionPanels 跳过坏行，不丢有效记录', async () => {
+    const store = await loadStore()
+    const meta = store.createSession({ id: 'session-bad', workspaceId: 'ws-bad' })
+    store.appendMoADiscussionPanelRecord(meta.workspaceId, meta.id, seedPanel('good', '议题'))
+    const path = join(configDir, 'projects', 'ws-bad', 'session-bad.moa-discussion.jsonl')
+    const { appendFileSync } = await import('node:fs')
+    appendFileSync(path, '{ malformed json }\n', 'utf8')
+
+    const reloaded = await loadStore()
+    const panels = reloaded.readMoADiscussionPanels(meta.workspaceId, meta.id)
+    expect(panels).toHaveLength(1)
+    expect(panels[0]!.discussionId).toBe('good')
+  })
+
+  it('deleteSession 一并清理 moa-discussion.jsonl', async () => {
+    const store = await loadStore()
+    const meta = store.createSession({ id: 'session-del-disc', workspaceId: 'ws-del-disc' })
+    store.appendMoADiscussionPanelRecord(meta.workspaceId, meta.id, seedPanel('d', '议题'))
+    const path = join(
+      configDir,
+      'projects',
+      'ws-del-disc',
+      'session-del-disc.moa-discussion.jsonl',
+    )
+    expect(existsSync(path)).toBe(true)
+
+    store.deleteSession(meta.id)
+
+    expect(existsSync(path)).toBe(false)
+    expect(store.readMoADiscussionPanels(meta.workspaceId, meta.id)).toEqual([])
   })
 })

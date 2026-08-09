@@ -5,7 +5,7 @@
  * 必须是模块级组件（勿写进 Chat 函数体，否则 Popover 因重挂载点不开）。
  */
 import { useState } from 'react'
-import { ArrowUp, ChevronDown, Users } from 'lucide-react'
+import { ArrowUp, ChevronDown, Users, MessagesSquare } from 'lucide-react'
 import {
   AppTooltip,
   Button,
@@ -25,6 +25,11 @@ export interface SendSplitButtonProps {
   onSend: () => void
   /** 会诊本条：选预置后发送 */
   onConsultPreset: (presetId: string) => void
+  /**
+   * 圆桌讨论本条：选预置后发送（多轮讨论后总结人收口）。
+   * 不传时菜单完全隐藏「用圆桌讨论发送」分组，向后兼容旧调用方。
+   */
+  onDiscussionPreset?: (presetId: string) => void
   className?: string
   /** 主发送钮尺寸：默认 size-9；运行中排队槽可用 size-8 */
   size?: 'md' | 'sm'
@@ -43,6 +48,7 @@ export function SendSplitButton({
   hasDraft,
   onSend,
   onConsultPreset,
+  onDiscussionPreset,
   className,
   size = 'md',
   channel,
@@ -53,9 +59,10 @@ export function SendSplitButton({
   const btnSize = size === 'sm' ? 'size-8' : 'size-9'
   const iconSize = size === 'sm' ? 'size-4' : 'size-5'
   const chevronBtn = size === 'sm' ? 'h-8 w-7' : 'h-9 w-8'
+  const showDiscussionGroup = typeof onDiscussionPreset === 'function' && enabled.length > 0
 
-  // 无会诊预置：退回单发送键
-  if (enabled.length === 0) {
+  // 无会诊预置且无圆桌讨论组：退回单发送键（保持向后兼容）
+  if (enabled.length === 0 && !showDiscussionGroup) {
     return (
       <Button
         type="button"
@@ -113,8 +120,8 @@ export function SendSplitButton({
         <AppTooltip
           label={
             hasDraft
-              ? '更多发送方式：用会诊班底发送本条'
-              : '先输入内容，再用会诊方式发送'
+              ? '更多发送方式：用圆桌班底发送本条'
+              : '先输入内容，再用圆桌方式发送'
           }
           side="top"
           disabled={open}
@@ -145,23 +152,33 @@ export function SendSplitButton({
           onOpenAutoFocus={(e) => e.preventDefault()}
         >
           <div className="px-3.5 pt-3 pb-2">
-            <div className="text-[11px] font-medium text-muted-foreground">发送方式</div>
+            <div className="text-[11px] font-medium text-muted-foreground">本轮动作</div>
             <div className="mt-1 text-[10.5px] leading-snug text-muted-foreground/85">
-              左侧箭头 = 当前模型发送。下列为会诊发送：多模型交卷后汇总，仅本条生效。
+              左侧箭头 = 普通发送（当前模型）。下方为其他发送方式。
             </div>
             <div className="mt-0.5 text-[10.5px] leading-snug text-muted-foreground/70">
-              会诊席位无工具；查本地仓库请用左侧 ↑。
+              圆桌快速 / 圆桌研讨席位无工具；查本地仓库请用左侧 ↑。
             </div>
             {isExternal && (
               <div className="mt-1 text-[10.5px] leading-snug text-amber-600 dark:text-amber-400">
-                外部渠会诊：将按预置席位分别计费。
+                外部渠圆桌：将按预置席位分别计费。
               </div>
             )}
           </div>
+          <MenuPopoverItem
+            disabled={!hasDraft}
+            icon={<ArrowUp className="size-4 text-primary/70" />}
+            label="普通发送（当前模型）"
+            onClick={() => {
+              if (!hasDraft) return
+              setOpen(false)
+              onSend()
+            }}
+          />
           <MenuPopoverGroup
             heading={
               <span className="truncate text-[11px] font-medium text-foreground/70">
-                用会诊班底发送
+                圆桌 · 快速（各答各的 → 汇总）
               </span>
             }
           >
@@ -178,7 +195,7 @@ export function SendSplitButton({
                     </span>
                   ) : (
                     <span className="ml-1 px-1.5 py-0.5 text-[9.5px] font-medium text-muted-foreground">
-                      {preset.references.length} 参 + 汇
+                      {preset.references.length} 席 + 汇总
                     </span>
                   )
                 }
@@ -190,6 +207,34 @@ export function SendSplitButton({
               />
             ))}
           </MenuPopoverGroup>
+          {showDiscussionGroup && onDiscussionPreset && (
+            <MenuPopoverGroup
+              heading={
+                <span className="truncate text-[11px] font-medium text-foreground/70">
+                  圆桌 · 研讨（互相讨论 → 共识方案）
+                </span>
+              }
+            >
+              {enabled.map((preset) => (
+                <MenuPopoverItem
+                  key={`discuss-${preset.id}`}
+                  disabled={!hasDraft}
+                  icon={<MessagesSquare className="size-4 text-primary/70" />}
+                  label={preset.name}
+                  trailing={
+                    <span className="ml-1 px-1.5 py-0.5 text-[9.5px] font-medium text-muted-foreground">
+                      {preset.references.length} 席 + 总结人
+                    </span>
+                  }
+                  onClick={() => {
+                    if (!hasDraft) return
+                    setOpen(false)
+                    onDiscussionPreset(preset.id)
+                  }}
+                />
+              ))}
+            </MenuPopoverGroup>
+          )}
         </PopoverContent>
       </Popover>
     </div>

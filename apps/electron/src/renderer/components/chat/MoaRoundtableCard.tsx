@@ -107,7 +107,7 @@ export function MoaRoundtableCard({ panel, sessionId }: MoaRoundtableCardProps):
           <div className="truncate text-[12px] font-medium text-foreground">{panel.presetName}</div>
           <div className="truncate text-[10.5px] text-muted-foreground">
             {!isTerminal
-              ? `会诊中 · 带本会话上下文 · ${referenceSeats.length} 席参考 · 1 席汇总`
+              ? `圆桌进行中 · 带本会话上下文 · ${referenceSeats.length} 席参考 · 1 席汇总`
               : `${referenceSeats.length} 席参考 · 1 席汇总`}
           </div>
         </div>

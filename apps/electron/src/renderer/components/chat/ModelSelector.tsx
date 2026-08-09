@@ -220,12 +220,12 @@ export function ModelSelector({
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium text-foreground">
                     {isMoaSelection
-                      ? '会诊已改为发送方式'
+                      ? '圆桌 · 快速已改为发送方式'
                       : activeModel?.name || selection?.modelId || '未选择模型'}
                   </div>
                   <div className="truncate text-[11px] text-muted-foreground">
                     {isMoaSelection
-                      ? '请选下方真实模型；需要会诊时点发送旁 ▾'
+                      ? '请选下方真实模型；需要圆桌 · 快速时点发送旁 ▾'
                       : activeChannel?.name || '选择一个可用渠道模型'}
                   </div>
                 </div>
@@ -241,7 +241,7 @@ export function ModelSelector({
             会诊模式多模型会商汇总，不适用思考强度 → 隐藏滑块并说明。 */}
         {isMoaSelection ? (
           <div className="px-3.5 pb-3 text-[11px] leading-snug text-amber-700/90 dark:text-amber-400/90">
-            会诊请点发送键旁 ▾ 选班底（仅本条）。请先选一个真实模型继续聊天。
+            圆桌 · 快速请点发送键旁 ▾ 选班底（仅本条）。请先选一个真实模型继续聊天。
           </div>
         ) : reasoningEffort && onReasoningEffortChange ? (
           <div className="px-3.5 pb-3">

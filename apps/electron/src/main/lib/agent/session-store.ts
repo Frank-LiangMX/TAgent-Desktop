@@ -24,7 +24,7 @@ import {
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { rmSyncRobust } from '../fs-robust'
-import type { AgentSessionMeta, ExecutionMode, TAgentPermissionMode } from '@tagent/shared'
+import type { AgentSessionMeta, ExecutionMode, MoADiscussionPanel, TAgentPermissionMode } from '@tagent/shared'
 import { DEFAULT_EXECUTION_MODE, TAGENT_DEFAULT_PERMISSION_MODE } from '@tagent/shared'
 import {
   getAgentSessionsIndexPath,
@@ -33,6 +33,8 @@ import {
   getAgentSessionsDir,
   getProjectSessionPath,
   getProjectMessagesPath,
+  getProjectMoaDiscussionPath,
+  getAgentSessionMoaDiscussionPath,
 } from '../config/config-paths'
 
 /** 索引版本号（与 1.x 一致） */
@@ -151,18 +153,21 @@ export function updateSessionMeta(
   return updated
 }
 
-/** 删除单个会话的 SDK JSONL + 面板消息 JSONL，兼容新旧路径。 */
+/** 删除单个会话的 SDK JSONL + 面板消息 JSONL + 圆桌讨论 JSONL，兼容新旧路径。 */
 function deleteSessionFiles(meta: AgentSessionMeta): void {
   const pathsToDelete = meta.workspaceId
     ? [
         getProjectSessionPath(meta.workspaceId, meta.id),
         getProjectMessagesPath(meta.workspaceId, meta.id),
+        getProjectMoaDiscussionPath(meta.workspaceId, meta.id),
         getAgentSessionMessagesPath(meta.id),
         getAgentSessionPanelMessagesPath(meta.id),
+        getAgentSessionMoaDiscussionPath(meta.id),
       ]
     : [
         getAgentSessionMessagesPath(meta.id),
         getAgentSessionPanelMessagesPath(meta.id),
+        getAgentSessionMoaDiscussionPath(meta.id),
       ]
   for (const msgPath of pathsToDelete) {
     if (existsSync(msgPath)) {
@@ -211,6 +216,14 @@ function resolvePanelMessagesPath(workspaceId: string | undefined, sessionId: st
     return getProjectMessagesPath(workspaceId, sessionId)
   }
   return getAgentSessionPanelMessagesPath(sessionId)
+}
+
+/** 解析圆桌讨论落盘 JSONL 路径（与面板消息 JSONL 同目录） */
+function resolveMoaDiscussionPath(workspaceId: string | undefined, sessionId: string): string {
+  if (workspaceId) {
+    return getProjectMoaDiscussionPath(workspaceId, sessionId)
+  }
+  return getAgentSessionMoaDiscussionPath(sessionId)
 }
 
 /** 确保父目录存在后追加 JSONL 行 */
@@ -311,6 +324,58 @@ export function readPanelMessages(workspaceId: string | undefined, sessionId: st
   }
   // 迁移期：只有 SDK JSONL 时读 SDK 份，避免面板空白
   return readSdkMessages(workspaceId, sessionId)
+}
+
+/** 圆桌讨论终态落盘一行：含 sessionId/discussionId/createdAt + 完整 panel（全部 entries + summary） */
+interface MoADiscussionPanelRecord {
+  v: number
+  sessionId: string
+  discussionId: string
+  createdAt: number
+  panel: MoADiscussionPanel
+}
+
+/**
+ * 追加一场终态圆桌讨论 panel 到 moa-discussion.jsonl（一行一场；只追加，永不压缩）。
+ *
+ * runMoADiscussion 在终态（done/cancelled/error）调用：把含全部发言记录与共识方案的完整 panel
+ * 落盘，供重启/切回会话时 {@link readMoADiscussionPanels} 读回重放为入口卡 + 讨论室回看（T8）。
+ * 中间过程不落盘（已实时推渲染层）；每场讨论终态仅追加一次。
+ */
+export function appendMoADiscussionPanelRecord(
+  workspaceId: string | undefined,
+  sessionId: string,
+  panel: MoADiscussionPanel,
+): void {
+  const record: MoADiscussionPanelRecord = {
+    v: 1,
+    sessionId,
+    discussionId: panel.discussionId,
+    createdAt: Date.now(),
+    panel,
+  }
+  appendJsonl(resolveMoaDiscussionPath(workspaceId, sessionId), [record])
+}
+
+/**
+ * 读回该会话全部已落盘的圆桌讨论 panel（按落盘顺序；坏行/缺 panel 跳过）。
+ * 重放路径（session-service REPLAY_MOA_DISCUSSIONS）用：逐场推 moa_discussion 事件回渲染层。
+ */
+export function readMoADiscussionPanels(
+  workspaceId: string | undefined,
+  sessionId: string,
+): MoADiscussionPanel[] {
+  const records = readJsonlFile(resolveMoaDiscussionPath(workspaceId, sessionId)) as Array<{
+    panel?: MoADiscussionPanel
+  }>
+  const out: MoADiscussionPanel[] = []
+  for (const r of records) {
+    const panel = r?.panel
+    if (panel && typeof panel.discussionId === 'string') {
+      out.push(panel)
+    }
+  }
+  return out
 }
 
 /**

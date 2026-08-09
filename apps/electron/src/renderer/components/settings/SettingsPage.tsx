@@ -26,8 +26,6 @@ import {
   SettingsCard,
   Switch,
   ThreePetalSpiral,
-  Spinner,
-  LoadingIndicator,
   MessageLoading,
   AddonLoader,
 } from '@tagent/ui'
@@ -102,7 +100,7 @@ const ALL_TABS: TabItem[] = [
   {
     id: 'agent',
     label: 'Agent 行为',
-    description: '班组、会诊、圆桌等协作策略',
+    description: '班组、圆桌 · 快速、圆桌 · 研讨等协作策略',
     icon: <Users size={14} strokeWidth={1.75} />,
     group: 'core',
   },
@@ -898,20 +896,6 @@ function AppearanceSettings(): JSX.Element {
                 </div>
                 <span className="tagent-loader-preview-caption">三瓣螺旋</span>
                 <span className="tagent-loader-preview-usage">轻量 · 默认</span>
-              </div>
-              <div className="tagent-loader-preview-item" role="listitem">
-                <div className="tagent-loader-preview-frame">
-                  <Spinner size="default" />
-                </div>
-                <span className="tagent-loader-preview-caption">点阵网格</span>
-                <span className="tagent-loader-preview-usage">通用等待 · 默认</span>
-              </div>
-              <div className="tagent-loader-preview-item" role="listitem">
-                <div className="tagent-loader-preview-frame">
-                  <LoadingIndicator label="思考中" />
-                </div>
-                <span className="tagent-loader-preview-caption">带标签指示器</span>
-                <span className="tagent-loader-preview-usage">可附计时 · 默认</span>
               </div>
               <div className="tagent-loader-preview-item" role="listitem">
                 <div className="tagent-loader-preview-frame">

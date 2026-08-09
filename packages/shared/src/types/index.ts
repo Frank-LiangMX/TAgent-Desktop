@@ -104,6 +104,9 @@ export * from './moa-preset'
 // MoA 圆桌卡纯函数状态机（panel 推/渲染用）
 export * from './moa-roundtable'
 
+// MoA 圆桌讨论（多轮）纯函数状态机 + IR 类型
+export * from './moa-discussion'
+
 // MoA 历史注入纯函数（拼会话上下文块 + 议题前缀）
 export * from './moa-history'
 

@@ -58,6 +58,12 @@ export interface SendMessageInput {
    * 见 docs/dev/moa-roundtable/02-SESSION-UX-SPEC.md §3。
    */
   moaOneShotPresetId?: string
+  /**
+   * 圆桌讨论本条（one-shot）：本轮走 runMoADiscussion（多轮讨论+总结人收口），
+   * 但**不**改 `meta.modelId`，会话 tab / ModelSelector 仍显示真实模型（与会诊 one-shot 一致）。
+   * 见 docs/dev/moa-roundtable/02-SESSION-UX-SPEC.md §3。
+   */
+  moaDiscussionPresetId?: string
 }
 
 const electronAPI = {
@@ -78,6 +84,28 @@ const electronAPI = {
       ok: boolean
       mode?: 'live' | 'pending_next_turn'
       error?: string
+    }>,
+  /** 圆桌讨论：用户插话（push 到活跃讨论 pending 队列，每轮开始前 drain 注入本轮参与者 prompt） */
+  discussionInterject: (input: { sessionId: string; discussionId: string; text: string }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.DISCUSSION_INTERJECT, input) as Promise<{
+      ok: boolean
+      error?: string
+    }>,
+  /** 圆桌讨论：用户喊停（abort 活跃讨论 controller → cancelled 卡 + turn_end 清 running） */
+  discussionStop: (input: { sessionId: string; discussionId: string }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.DISCUSSION_STOP, input) as Promise<{
+      ok: boolean
+      error?: string
+    }>,
+  /**
+   * 圆桌讨论重放（T8）：会话打开/切回、历史消息加载后调用。主进程读该会话
+   * moa-discussion.jsonl，把每场已落盘讨论按原 moa_discussion 事件推回，渲染层按 discussionId
+   * upsert 成入口卡 + 讨论室回看。返回重放场次（无记录/读失败为 0）。
+   */
+  replayMoADiscussions: (sessionId: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.REPLAY_MOA_DISCUSSIONS, sessionId) as Promise<{
+      ok: boolean
+      count: number
     }>,
   /** 保存附件到磁盘 */
   saveAttachment: (input: { sessionId: string; filename: string; mediaType: string; data: string }) =>

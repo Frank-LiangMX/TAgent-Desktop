@@ -23,6 +23,7 @@ import type {
   TAgentUserMessage,
   TurnDuration,
   MoARoundtablePanel,
+  MoADiscussionPanel,
 } from '@tagent/shared'
 import type { ProcessDisplayMode } from './process-group-model'
 import { isSubagentRuntimeTaskType } from './subagent-ui-model'
@@ -40,6 +41,8 @@ export interface TurnSourceItem {
   compactTrigger?: 'auto' | 'manual'
   /** MoA 圆桌卡（主进程 moa_roundtable 事件就地 upsert；standalone 渲染） */
   moaRoundtable?: MoARoundtablePanel
+  /** 圆桌讨论入口卡（主进程 moa_discussion 事件就地 upsert；standalone 渲染，点击进全屏讨论室） */
+  moaDiscussion?: MoADiscussionPanel
 }
 
 // ===== 输出 turn =====
@@ -317,6 +320,13 @@ export function groupItemsIntoTurns(items: TurnSourceItem[]): SessionRenderTurn[
 
     // MoA 圆桌卡：时间线独立占位（不并入 assistant-turn，避免与汇总正文抢铭牌）
     if (item.moaRoundtable) {
+      flush()
+      turns.push({ kind: 'standalone', key: item.key, item })
+      continue
+    }
+
+    // 圆桌讨论入口卡：时间线独立占位（同 moaRoundtable：避免铭牌污染）
+    if (item.moaDiscussion) {
       flush()
       turns.push({ kind: 'standalone', key: item.key, item })
       continue

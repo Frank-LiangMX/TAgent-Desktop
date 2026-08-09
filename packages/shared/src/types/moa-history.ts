@@ -198,6 +198,53 @@ export function panelMessageToHistoryIR(raw: unknown): TAgentMessage | null {
   return message ?? null
 }
 
+/** MoA 圆桌共识结论的落盘 uuid 前缀：会诊 `moa-agg-*` / 研讨 `moa-disc-agg-*` */
+const MOA_CONCLUSION_UUID_PREFIXES = ['moa-agg-', 'moa-disc-agg-'] as const
+
+/** 判断一条 IR 消息是否为 MoA 圆桌共识结论（会诊汇总 / 研讨总结人收口） */
+function isMoAConclusionAssistant(msg: TAgentMessage): boolean {
+  if (msg.type !== 'assistant') return false
+  const uuid = msg.uuid
+  return (
+    typeof uuid === 'string' &&
+    MOA_CONCLUSION_UUID_PREFIXES.some((prefix) => uuid.startsWith(prefix))
+  )
+}
+
+/**
+ * 从面板 IR 消息中提取 MoA 圆桌共识结论（会诊 `moa-agg-*` / 研讨 `moa-disc-agg-*`），拼接为
+ * `【上一轮圆桌结论】\n- <文本>` 多段文本。
+ *
+ * 用途（T7 · 夹中场景：普通轮 → 圆桌（快速/研讨）→ 续聊）：长驻进程（kscc live loop / Pi
+ * SessionEntry）的内存上下文**不含** MoA bare 轮共识——MoA 单发不经主会话 entry、不写 kscc
+ * resume 文件，共识只落 TAgent 面板 JSONL。续聊时把上一轮圆桌结论前置进本轮 prompt，让模型能
+ * 引用会诊/研讨结论，避免回「这个会话没有上文」。
+ *
+ * - 只提取 uuid 以 `moa-agg-` / `moa-disc-agg-` 开头的 assistant 文本块；普通 assistant 不混入
+ *   （uuid 无该前缀 → 跳过），保证「只提取圆桌/快速共识结论，不混普通回复」。
+ * - 多条结论按面板顺序各成一段 `- <文本>`（一轮会诊 / 一场研讨各一条；会诊与研讨同会话混存时全收）。
+ * - 单条文本超 `perTurnMaxChars`（默认 2000）截断，与 {@link extractMoATurnText} 一致。
+ * - 无 MoA 结论 → 返回 ''（调用方不改 prompt，行为不变）。
+ *
+ * 注：本轮 user（面板末条）是 type:'user'，不匹配 assistant+uuid 检测，无需显式排除。uuid 来自
+ * {@link sdkMessageToIR} 对 SDKMessage `uuid` 的透传（moa-persist `buildMoAFinalAssistantSDKMessage`
+ * 写入），故面板原始消息须先经 {@link panelMessageToHistoryIR} 转 IR 再喂入本函数。
+ */
+export function extractMoAConclusionFromMessages(
+  irs: readonly TAgentMessage[],
+  opts: { perTurnMaxChars?: number } = {},
+): string {
+  const perTurnMax = opts.perTurnMaxChars ?? 2000
+  const segments: string[] = []
+  for (const m of irs) {
+    if (!isMoAConclusionAssistant(m)) continue
+    const t = extractMoATurnText(m, { perTurnMaxChars: perTurnMax })
+    if (t?.text) segments.push(`- ${t.text}`)
+  }
+  if (segments.length === 0) return ''
+  return `【上一轮圆桌结论】\n${segments.join('\n')}`
+}
+
 /**
  * 续聊注入：把面板原始消息（SDKMessage / IR 混排）转 IR，再拼 `[会话上下文]…` 历史。
  *

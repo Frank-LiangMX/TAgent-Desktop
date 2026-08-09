@@ -126,6 +126,23 @@ export function getAgentSessionPanelMessagesPath(id: string): string {
   return join(getAgentSessionsDir(), `${id}.messages.jsonl`)
 }
 
+/**
+ * 项目内圆桌讨论落盘文件：~/.tagent[-dev]/projects/{sanitizedPath}/{sessionId}.moa-discussion.jsonl
+ * 与面板消息 JSONL 同目录；一行一场（终态 panel 含全部 entries + summary）。
+ * 重启/切会话时主进程读此文件重放为入口卡 + 讨论室回看（T8）。
+ */
+export function getProjectMoaDiscussionPath(sanitizedPath: string, sessionId: string): string {
+  return join(getProjectDir(sanitizedPath), `${sessionId}.moa-discussion.jsonl`)
+}
+
+/**
+ * 旧路径下的圆桌讨论落盘文件：~/.tagent[-dev]/agent-sessions/{id}.moa-discussion.jsonl
+ * 无 workspaceId 的老会话兼容用。
+ */
+export function getAgentSessionMoaDiscussionPath(id: string): string {
+  return join(getAgentSessionsDir(), `${id}.moa-discussion.jsonl`)
+}
+
 /** 项目记忆目录：~/.tagent[-dev]/projects/{sanitizedPath}/memory/ */
 export function getProjectMemoryDir(sanitizedPath: string): string {
   const dir = join(getProjectDir(sanitizedPath), 'memory')
