@@ -20,6 +20,7 @@
  * 模式对齐 session-status-atoms.ts（Record map + 派生工厂）。Jotai 默认 store。
  */
 import { atom } from 'jotai'
+import { sessionStatusMapAtom } from './session-status-atoms'
 
 /** 单会话运行态条目 */
 export interface SessionRunEntry {
@@ -48,6 +49,15 @@ export const sessionRunAtom = (id: string) =>
 export const startSessionRunAtom = atom(
   null,
   (get, set, payload: { id: string; startedAt: number }) => {
+    // 进入下一轮：清「刚完成」绿点
+    const statusMap = get(sessionStatusMapAtom)
+    const st = statusMap[payload.id]
+    if (st?.status === 'done') {
+      set(sessionStatusMapAtom, {
+        ...statusMap,
+        [payload.id]: { status: 'idle', archived: st.archived },
+      })
+    }
     startedAtMemory.set(payload.id, payload.startedAt)
     const map = { ...get(sessionRunMapAtom) }
     map[payload.id] = { running: true, startedAt: payload.startedAt }
@@ -95,6 +105,15 @@ export const adoptSessionRunAtom = atom(
     // 已在跑且有有效起点 → 保持不动
     if (prev?.running && prev.startedAt != null) {
       return
+    }
+    // 流式恢复/下一轮：清「刚完成」绿点
+    const statusMap = get(sessionStatusMapAtom)
+    const st = statusMap[payload.id]
+    if (st?.status === 'done') {
+      set(sessionStatusMapAtom, {
+        ...statusMap,
+        [payload.id]: { status: 'idle', archived: st.archived },
+      })
     }
     const startedAt =
       prev?.startedAt ?? startedAtMemory.get(payload.id) ?? payload.startedAt

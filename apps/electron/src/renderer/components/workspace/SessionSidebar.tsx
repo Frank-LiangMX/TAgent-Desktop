@@ -39,8 +39,15 @@ import {
   initSessionStatusAtom,
   setSessionStatusAtom,
   setSessionArchivedAtom,
+  acknowledgeSessionStatusAtom,
+  markSessionTurnEndedAtom,
+  resolveSessionUiStatus,
   type SessionStatus,
+  type SessionUiStatus,
 } from '../../atoms/session-status-atoms'
+import { sessionRunMapAtom } from '../../atoms/session-run-atoms'
+import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
+import { allPendingAskUserRequestsAtom } from '../../atoms/ask-user-atoms'
 import { tabsAtom, activeTabIdAtom, closeTab } from '../../atoms/tabs'
 import { dockApiAtom, visibleSessionsAtom } from '../../atoms/dock-api'
 import { splitDockModeAtom } from '../../atoms/feature-flags'
@@ -74,7 +81,13 @@ interface WorkspaceDropIndicator {
 }
 
 /** 状态排序权重:进行中 → 出错 → 其余按时间 */
-const STATUS_RANK: Record<SessionStatus, number> = { running: 0, error: 1, done: 2, idle: 3 }
+const STATUS_RANK: Record<SessionUiStatus, number> = {
+  pending: 0,
+  running: 1,
+  error: 2,
+  done: 3,
+  idle: 4,
+}
 
 /** 列表项进场/重排 spring(对齐现代 UI 丝滑感) */
 const SPRING = { type: 'spring', stiffness: 380, damping: 32, mass: 0.8 } as const
@@ -150,6 +163,11 @@ export function SessionSidebar({
   const initStatus = useSetAtom(initSessionStatusAtom)
   const setStatus = useSetAtom(setSessionStatusAtom)
   const setArchived = useSetAtom(setSessionArchivedAtom)
+  const runMap = useAtomValue(sessionRunMapAtom)
+  const pendingPermissionMap = useAtomValue(pendingPermissionMapAtom)
+  const pendingAskUserMap = useAtomValue(allPendingAskUserRequestsAtom)
+  const markTurnEnded = useSetAtom(markSessionTurnEndedAtom)
+  const acknowledgeStatus = useSetAtom(acknowledgeSessionStatusAtom)
 
   // tabsAtom = 打开的标签工作集；visibleSessions = 分屏主区当前露出的会话。
   // 「打开中」条与列表 is-open：分屏时用可见会话，否则用 tabs 工作集。
@@ -228,7 +246,29 @@ export function SessionSidebar({
     })
   }, [activeSessionId, sessions])
 
-  // 订阅 onStreamEvent:turn_end → done（绿点）、session_error → error(只处理这两类,按 sessionId 更新)
+  // 正在「看」的会话 id 集：单栏 = 当前激活 tab；分屏 = 主区露出的 pane。
+  // 用 ref 给 stream 订阅读，避免每帧重建监听。
+  const viewingIdsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (splitDockMode && visibleSessions.length > 0) {
+      viewingIdsRef.current = new Set(visibleSessions.map((v) => v.sessionId))
+    } else {
+      viewingIdsRef.current = new Set(activeSessionId ? [activeSessionId] : [])
+    }
+  }, [splitDockMode, visibleSessions, activeSessionId])
+
+  // 点开/切到某会话 → 清该会话绿点（未读完成 → 灰）
+  useEffect(() => {
+    if (activeSessionId) acknowledgeStatus(activeSessionId)
+  }, [activeSessionId, acknowledgeStatus])
+
+  // 分屏：新露出的 pane 也算「看过」
+  useEffect(() => {
+    if (!splitDockMode) return
+    for (const v of visibleSessions) acknowledgeStatus(v.sessionId)
+  }, [splitDockMode, visibleSessions, acknowledgeStatus])
+
+  // 订阅 onStreamEvent：turn_end → 正在看则灰 idle，后台则绿 done（未读）；session_error → 红
   useEffect(() => {
     const off = window.electronAPI.onStreamEvent((payload: unknown) => {
       const env = payload as {
@@ -241,7 +281,10 @@ export function SessionSidebar({
       if (env?.payload?.kind !== 'tagent_event') return
       const evt = env.payload.event
       if (!evt || !env.sessionId) return
-      if (evt.type === 'turn_end') setStatus({ id: env.sessionId, status: 'done' })
+      if (evt.type === 'turn_end') {
+        const viewing = viewingIdsRef.current.has(env.sessionId)
+        markTurnEnded({ id: env.sessionId, viewing })
+      }
       else if (evt.type === 'session_error') {
         // 用户打断类文案不当侧栏「出错」
         const raw = `${evt.error?.message ?? ''} ${evt.message ?? ''}`
@@ -253,7 +296,7 @@ export function SessionSidebar({
       }
     })
     return off
-  }, [setStatus])
+  }, [setStatus, markTurnEnded])
 
   const requestDeleteSession = (id: string, e: React.MouseEvent): void => {
     e.stopPropagation()
@@ -412,10 +455,17 @@ export function SessionSidebar({
     }
   }
 
-  // 会话状态(归档行不用色点;非归档按 statusMap 派生,默认 idle)
-  const statusOf = (s: SessionMeta): SessionStatus => {
-    if (s.archived) return 'idle' // 归档行不显色点
-    return statusMap[s.id]?.status ?? 'idle'
+  // 会话 UI 态：归档行不显色点；否则合成 待选择/运行/失败/完成/空闲
+  const statusOf = (s: SessionMeta): SessionUiStatus => {
+    if (s.archived) return 'idle'
+    const awaitingUser =
+      (pendingPermissionMap[s.id]?.length ?? 0) > 0 ||
+      (pendingAskUserMap.get(s.id)?.length ?? 0) > 0
+    return resolveSessionUiStatus({
+      stored: statusMap[s.id]?.status,
+      running: runMap[s.id]?.running === true,
+      awaitingUser,
+    })
   }
 
   const normalizedQuery = query.trim().toLocaleLowerCase()
@@ -757,7 +807,7 @@ export function SessionSidebar({
 /** 会话列表渲染（扁平，无时间分段） */
 function renderBuckets(
   sessions: SessionMeta[],
-  statusOf: (s: SessionMeta) => SessionStatus,
+  statusOf: (s: SessionMeta) => SessionUiStatus,
   openSessionIds: Set<string>,
   tabSessionIds: Set<string>,
   editingId: string | null,
@@ -812,7 +862,7 @@ function SessionRow({
   onCancelRename,
 }: {
   session: SessionMeta
-  status: SessionStatus
+  status: SessionUiStatus
   archived?: boolean
   /** 主区当前可见（分屏组 active pane）→ is-open 样式 */
   isOpen: boolean
@@ -853,13 +903,15 @@ function SessionRow({
         <span
           className={cn(
             'stat-dot',
-            status === 'running'
-              ? 'stream'
-              : status === 'error'
-                ? 'error'
-                : status === 'idle'
-                  ? 'idle'
-                  : 'done',
+            status === 'pending'
+              ? 'pending'
+              : status === 'running'
+                ? 'stream'
+                : status === 'error'
+                  ? 'error'
+                  : status === 'idle'
+                    ? 'idle'
+                    : 'done',
           )}
         />
       )}
@@ -934,7 +986,7 @@ function SessionRow({
 function buildGroups(
   sessions: SessionMeta[],
   workspaces: AgentWorkspace[],
-  statusOf: (s: SessionMeta) => SessionStatus,
+  statusOf: (s: SessionMeta) => SessionUiStatus,
 ): WorkspaceGroup[] {
   const groupMap = new Map<string, WorkspaceGroup>()
   for (const ws of workspaces) {

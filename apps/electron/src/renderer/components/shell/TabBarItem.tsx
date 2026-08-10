@@ -3,26 +3,37 @@
  *
  * 对齐 TAgent_General TabBarItem 形态（图标 + 标题 + × 关闭），自己搭精简。
  * 选中态 tab-item-selected（上圆下直玻璃填充），× hover 显隐。
+ * 状态色点：与侧栏会话列表同源（完成绿 / 运行蓝脉冲 / 失败红 / 待选择黄）。
  */
 import { ChatsCircle } from '@phosphor-icons/react'
 import { X } from 'lucide-react'
 import type { TabItem } from '../../atoms/tabs'
+import type { SessionUiStatus } from '../../atoms/session-status-atoms'
 
 interface TabBarItemProps {
   tab: TabItem
   active: boolean
-  running?: boolean
+  /** 合成后的 UI 状态；idle 不显示色点 */
+  status?: SessionUiStatus
   onActivate: () => void
   onClose: () => void
+}
+
+const STATUS_LABEL: Record<Exclude<SessionUiStatus, 'idle'>, string> = {
+  running: '运行中',
+  done: '已完成',
+  error: '失败',
+  pending: '待选择',
 }
 
 export function TabBarItem({
   tab,
   active,
-  running,
+  status = 'idle',
   onActivate,
   onClose,
 }: TabBarItemProps): JSX.Element {
+  const showStatus = status !== 'idle'
   return (
     <div className="app-workspace-tab-shell group relative" data-active={active || undefined}>
       <button
@@ -30,12 +41,17 @@ export function TabBarItem({
         onClick={onActivate}
         className="app-workspace-tab titlebar-no-drag"
       >
-        {/* 流式状态点 */}
-        {running && <span className="app-workspace-tab-status" />}
+        {showStatus && (
+          <span
+            className="app-workspace-tab-status"
+            data-status={status}
+            title={STATUS_LABEL[status]}
+            aria-label={STATUS_LABEL[status]}
+          />
+        )}
         <ChatsCircle size={14} weight="regular" className="app-workspace-tab__icon shrink-0" />
         <span className="app-workspace-tab__title">{tab.title || '新会话'}</span>
       </button>
-      {/* 关闭按钮 */}
       <button
         type="button"
         onClick={(e) => {

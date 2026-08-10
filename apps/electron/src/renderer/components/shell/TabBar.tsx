@@ -4,6 +4,7 @@
  * 选中态用滑动底板（active-plate）：绝对定位在 tab 列后，JS 测 active tab 位置
  * 驱动 transform 平滑滑动（对齐 TAgent_General updateActivePlate）。
  * tab 本身选中时透明，只 primary 文字/icon；底板显玻璃填充。
+ * 状态色点：与侧栏同源（sessionStatus + run + 权限/AskUser 待选择）。
  */
 import { useAtomValue, useSetAtom } from 'jotai'
 import { useEffect, useRef } from 'react'
@@ -15,20 +16,39 @@ import {
   type TabItem,
 } from '../../atoms/tabs'
 import { dockApiAtom } from '../../atoms/dock-api'
+import {
+  sessionStatusMapAtom,
+  resolveSessionUiStatus,
+  type SessionUiStatus,
+} from '../../atoms/session-status-atoms'
+import { sessionRunMapAtom } from '../../atoms/session-run-atoms'
+import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
+import { allPendingAskUserRequestsAtom } from '../../atoms/ask-user-atoms'
 
-interface TabBarProps {
-  runningSessionIds?: Set<string>
-}
-
-export function TabBar({ runningSessionIds }: TabBarProps): JSX.Element | null {
+export function TabBar(): JSX.Element | null {
   const tabs = useAtomValue(tabsAtom)
   const activeTabId = useAtomValue(activeTabIdAtom)
   const setTabs = useSetAtom(tabsAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
   const dockApi = useAtomValue(dockApiAtom)
+  const statusMap = useAtomValue(sessionStatusMapAtom)
+  const runMap = useAtomValue(sessionRunMapAtom)
+  const pendingPermissionMap = useAtomValue(pendingPermissionMapAtom)
+  const pendingAskUserMap = useAtomValue(allPendingAskUserRequestsAtom)
 
   const listRef = useRef<HTMLDivElement>(null)
   const plateRef = useRef<HTMLDivElement>(null)
+
+  const statusOf = (sessionId: string): SessionUiStatus => {
+    const awaitingUser =
+      (pendingPermissionMap[sessionId]?.length ?? 0) > 0 ||
+      (pendingAskUserMap.get(sessionId)?.length ?? 0) > 0
+    return resolveSessionUiStatus({
+      stored: statusMap[sessionId]?.status,
+      running: runMap[sessionId]?.running === true,
+      awaitingUser,
+    })
+  }
 
   // 测 active tab 位置，驱动 plate 滑动
   useEffect(() => {
@@ -74,7 +94,7 @@ export function TabBar({ runningSessionIds }: TabBarProps): JSX.Element | null {
             key={tab.id}
             tab={tab}
             active={tab.id === activeTabId}
-            running={runningSessionIds?.has(tab.sessionId)}
+            status={statusOf(tab.sessionId)}
             onActivate={() => setActiveTabId(tab.id)}
             onClose={() => handleClose(tab)}
           />

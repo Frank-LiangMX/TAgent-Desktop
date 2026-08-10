@@ -73,6 +73,8 @@ export function RunModeSelector({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
+      {/* 固定 h-7 槽位，与左侧 + / 右侧模型钮垂直对齐 */}
+      <div className="inline-flex h-7 shrink-0 items-center">
       <AppTooltip label={tooltip} side="top" multiline>
         <PopoverTrigger asChild>
           <button
@@ -104,6 +106,7 @@ export function RunModeSelector({
           </button>
         </PopoverTrigger>
       </AppTooltip>
+      </div>
 
       <PopoverContent
         side="top"

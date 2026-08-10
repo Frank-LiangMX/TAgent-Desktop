@@ -13,10 +13,19 @@
  * 未合并到此分支；此处暂不显状态点，合并后补。
  */
 import { useEffect, useState } from 'react'
+import { useAtomValue } from 'jotai'
 import { ChatsCircle, Eye, File, UsersThree } from '@phosphor-icons/react'
 import { X } from 'lucide-react'
 import type { IDockviewPanelHeaderProps } from 'dockview'
 import { AppTooltip } from '@tagent/ui'
+import {
+  sessionStatusMapAtom,
+  resolveSessionUiStatus,
+  type SessionUiStatus,
+} from '../../atoms/session-status-atoms'
+import { sessionRunMapAtom } from '../../atoms/session-run-atoms'
+import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
+import { allPendingAskUserRequestsAtom } from '../../atoms/ask-user-atoms'
 
 type DockPaneType = 'chat' | 'crew' | 'file-preview' | 'rich-preview'
 
@@ -42,10 +51,34 @@ const PANE_ICONS = {
   'rich-preview': Eye,
 } as const
 
+const STATUS_LABEL: Record<SessionUiStatus, string> = {
+  idle: '',
+  running: '运行中',
+  done: '已完成',
+  error: '失败',
+  pending: '待选择',
+}
+
 export function DockTab(props: IDockviewPanelHeaderProps<DockTabParams>): JSX.Element {
   const { api, params } = props
   const paneType = resolvePaneType(api.id, params)
   const Icon = PANE_ICONS[paneType]
+
+  // Dockview panel id = sessionId（chat pane）
+  const sessionId = api.id
+  const statusMap = useAtomValue(sessionStatusMapAtom)
+  const runMap = useAtomValue(sessionRunMapAtom)
+  const pendingPermissionMap = useAtomValue(pendingPermissionMapAtom)
+  const pendingAskUserMap = useAtomValue(allPendingAskUserRequestsAtom)
+  const awaitingUser =
+    (pendingPermissionMap[sessionId]?.length ?? 0) > 0 ||
+    (pendingAskUserMap.get(sessionId)?.length ?? 0) > 0
+  const status = resolveSessionUiStatus({
+    stored: statusMap[sessionId]?.status,
+    running: runMap[sessionId]?.running === true,
+    awaitingUser,
+  })
+  const showStatus = paneType === 'chat' && status !== 'idle'
 
   // 订阅 active / title：Dockview React header 不会因这些事件自动 re-render
   const [active, setActive] = useState(() => api.isActive)
@@ -67,6 +100,14 @@ export function DockTab(props: IDockviewPanelHeaderProps<DockTabParams>): JSX.El
       className="app-workspace-tab-shell group relative"
       data-active={active || undefined}
     >
+      {showStatus && (
+        <span
+          className="app-workspace-tab-status"
+          data-status={status}
+          title={STATUS_LABEL[status]}
+          aria-label={STATUS_LABEL[status]}
+        />
+      )}
       <AppTooltip label={title} side="bottom" sideOffset={8} multiline>
         <button
           type="button"
