@@ -298,7 +298,7 @@
   color: hsl(0 70% 45% / 0.85);
   font-size: 11px;
   line-height: 1.5;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   word-break: break-all;
 }
 

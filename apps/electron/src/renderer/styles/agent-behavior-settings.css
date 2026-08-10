@@ -182,7 +182,7 @@
 .agent-behavior-seat-model {
   overflow: hidden;
   color: var(--spatial-faint);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -606,7 +606,7 @@
   cursor: not-allowed;
 }
 .agent-behavior-input--mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
 }
 /* Select 触发器对齐 input 视觉 */

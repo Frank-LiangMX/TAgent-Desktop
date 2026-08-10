@@ -295,27 +295,31 @@ export function FilePathChip({
           onClick={handleClick}
           data-file-status={fileStatus}
           className={cn(
-            'inline-flex items-center gap-1 rounded-[3px] px-[0.25em] py-0 text-[0.92em] font-medium leading-[1.6]',
+            // 路径芯片：默认无底色/描边，靠主色字 + 小图标；hover 才起底，避免正文路径成色块阵
+            // align-middle：避免 inline-flex + 前置图标时 baseline 落在图标底边，导致文件名比正文低一截
+            'inline-flex items-center gap-0.5 rounded-[2px] px-[0.12em] py-0 text-[0.94em] font-medium leading-none',
             'cursor-pointer transition-colors',
-            'align-baseline not-prose',
+            'align-middle not-prose',
             'border',
-            // 常态只用主色文字，底色留给 hover：正文里连续出现多个路径时不再形成彩色块阵
             fileStatus === 'broken'
               ? 'border-dashed border-muted-foreground/30 text-muted-foreground opacity-50 hover:opacity-70 hover:bg-muted/20'
-              : 'border-transparent text-primary/90 hover:bg-primary/10 hover:text-primary',
+              : 'border-transparent text-primary/85 hover:bg-primary/[0.08] hover:text-primary',
             className
           )}
         >
           {IconComponent ? (
-            <span className="inline-flex shrink-0 opacity-80">
-              <IconComponent name={filename} isDirectory={false} size={12} />
+            <span className="inline-flex shrink-0 self-center leading-none opacity-70" aria-hidden>
+              <IconComponent name={filename} isDirectory={false} size={11} />
             </span>
           ) : (
-            <span className="size-3 inline-flex items-center justify-center rounded-[2px] bg-primary/15 text-primary text-[8px]">
+            <span
+              className="inline-flex size-2.5 shrink-0 items-center justify-center self-center rounded-[2px] bg-primary/12 text-[7px] leading-none text-primary"
+              aria-hidden
+            >
               {filename.slice(0, 1).toUpperCase()}
             </span>
           )}
-          <span className="truncate max-w-[240px]">
+          <span className="max-w-[240px] truncate leading-[inherit]">
             {filename}
             {lineColSuffix}
           </span>

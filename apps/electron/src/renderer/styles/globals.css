@@ -7,8 +7,7 @@
 @import '@tagent/ui/styles/switch.css';
 @import '@tagent/ui/styles/segmented-tabs.css';
 @import '@tagent/ui/styles/rich-content.css';
-/* 加载动画图鉴：Spinner（点阵网格）+ AddonLoader（附加光环）组件样式 */
-@import '@tagent/ui/styles/spinner.css';
+/* 加载动画图鉴：AddonLoader（附加光环）组件样式 */
 @import '@tagent/ui/styles/addon-loader.css';
 @import './chat.css';
 @import './app-shell.css';
@@ -44,8 +43,18 @@
     --session-radius: 12px;
     /* 助手模型名胶囊字号 */
     --turn-title-size: 9px;
-    /* 会话 markdown 正文字号（MessageResponse 的 prose 基准，标题/行内代码按 em 派生） */
-    --md-preview-font-size: 13px;
+    /* 会话 markdown 正文字号（对齐 Codex 阅读舒适度：略大于 UI 控件字） */
+    --md-preview-font-size: 15px;
+    /*
+     * 字体栈对齐 Codex Appearance 默认：
+     * UI: -apple-system, BlinkMacSystemFont, "Segoe UI", …
+     * 代码: ui-monospace, "SF Mono", …
+     * 另补中文回退（Windows YaHei / macOS PingFang），避免仅拉丁栈时 CJK 字形发虚。
+     */
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+      'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+    --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+      'Courier New', monospace;
     /* composer 聚焦态 accent（对齐 TAgent_General --spatial-accent-*，浅色） */
     --spatial-accent-soft: hsl(var(--primary) / 0.1);
     --spatial-accent-line: hsl(var(--primary) / 0.26);
@@ -107,10 +116,18 @@ html {
   background-size: 100% 100%;
 }
 body {
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans);
   margin: 0;
   color: hsl(var(--foreground));
   background: transparent;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+code,
+kbd,
+pre,
+samp {
+  font-family: var(--font-mono);
 }
 #root {
   background: transparent;
@@ -231,4 +248,22 @@ body {
 .prose :where(code):not(:where([class~="not-prose"]))::before,
 .prose :where(code):not(:where([class~="not-prose"]))::after {
   content: none;
+}
+
+/* 列表圆点 / 序号 / 表格线 / 引用竖线：typography 默认 gray-200/300，浅底上几乎看不见或像半透明。
+ * 用前景色半透明，浅/深主题都能跟正文形成可读对比。 */
+.prose {
+  --tw-prose-bullets: hsl(var(--foreground) / 0.72);
+  --tw-prose-counters: hsl(var(--foreground) / 0.72);
+  --tw-prose-th-borders: hsl(var(--foreground) / 0.22);
+  --tw-prose-td-borders: hsl(var(--foreground) / 0.14);
+  --tw-prose-hr: hsl(var(--foreground) / 0.18);
+  --tw-prose-quote-borders: hsl(var(--foreground) / 0.28);
+  --tw-prose-invert-th-borders: hsl(var(--foreground) / 0.28);
+  --tw-prose-invert-td-borders: hsl(var(--foreground) / 0.18);
+  --tw-prose-invert-hr: hsl(var(--foreground) / 0.22);
+  --tw-prose-invert-quote-borders: hsl(var(--foreground) / 0.34);
+}
+.prose :where(li)::marker {
+  color: hsl(var(--foreground) / 0.72);
 }

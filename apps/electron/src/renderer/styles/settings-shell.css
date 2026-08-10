@@ -1317,7 +1317,7 @@
 .settings-env-value {
   overflow: hidden;
   color: var(--spatial-ink);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -1346,7 +1346,7 @@
   opacity: 0.45;
 }
 .settings-about-footer-repo {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: -0.01em;
   opacity: 0.9;
@@ -1740,7 +1740,7 @@
   box-shadow: 0 0 0 3px var(--spatial-accent-soft);
 }
 .channel-input--mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
 }
 .channel-model-add {
@@ -1790,7 +1790,7 @@
 }
 .channel-model-copy span {
   color: var(--spatial-faint);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 9.5px;
 }
 .channel-default-radio {

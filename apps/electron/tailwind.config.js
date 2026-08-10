@@ -11,6 +11,11 @@ export default {
     extend: {
       colors: tokenColors,
       borderRadius: glassBorderRadius,
+      fontFamily: {
+        // 对齐 Codex Appearance 默认 UI / 代码字体（定义见 globals.css :root）
+        sans: ['var(--font-sans)'],
+        mono: ['var(--font-mono)'],
+      },
       keyframes: {
         'slide-in-from-top': {
           from: { transform: 'translateY(-100%)' },

@@ -381,13 +381,11 @@ export const MessageResponse = React.memo(
                 />
               )
             }
-            // 行内代码显式样式：等宽 + 极浅底（不依赖 prose 默认，避免反引号伪元素观感）。
-            // 技术文本里一段能出现十几个行内代码，底色一重整段就成了色块阵；
-            // 等宽字形本身已足够区分，底色只做轻微成组提示。
+            // 行内代码：等宽区分即可，底色极淡（长回答里十几个 chip 会成色块阵，对照 Codex 正文更「一块墨」）。
             return (
               <code
                 className={cn(
-                  'rounded-[3px] bg-foreground/[0.05] px-[0.25em] py-[0.05em] font-mono text-[0.92em]',
+                  'rounded-[2px] bg-foreground/[0.035] px-[0.2em] py-px font-mono text-[0.9em] text-foreground/88',
                   codeClassName,
                 )}
               >
@@ -428,18 +426,16 @@ export const MessageResponse = React.memo(
     return (
       <div
         className={cn(
-          'prose dark:prose-invert max-w-none text-[length:var(--md-preview-font-size,13px)]',
-          'prose-p:my-2 prose-p:leading-[1.65] prose-li:leading-[1.65] prose-pre:my-0 prose-hr:my-4',
-          // UX-final-answer-hierarchy：列表条目间距略增（my-1 → my-1.5），让「1. 加粗标题 + 缩进子项」更透气；
-          // 列表缩进不另加 pl-——base prose 的 ol/ul paddingInlineStart 默认 em(26,16)=1.625em 已可见，嵌套再叠加。
-          'prose-ul:my-2 prose-ol:my-2 prose-li:my-1.5',
-          // 标题不做海报字号，但上间距必须明显大于段间距——分节感全靠这个留白，
-          // 否则长回答会糊成一根连续的灰柱子。
-          'prose-headings:mt-5 prose-headings:mb-2 prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-foreground',
-          'prose-h1:text-[16.5px] prose-h1:leading-snug',
-          'prose-h2:text-[15px] prose-h2:leading-snug',
-          'prose-h3:text-[13.5px] prose-h3:leading-snug',
-          'prose-h4:text-[13px] prose-h4:leading-snug',
+          // 阅读节奏对齐 Codex：略大正文、更疏段/列表、标题层级拉开（非海报字号）
+          'prose dark:prose-invert max-w-none text-[length:var(--md-preview-font-size,15px)]',
+          'prose-p:my-3 prose-p:leading-[1.7] prose-li:leading-[1.7] prose-pre:my-0 prose-hr:my-5',
+          'prose-ul:my-3.5 prose-ol:my-3.5 prose-li:my-2',
+          'prose-headings:mt-7 prose-headings:mb-3 prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-foreground',
+          'prose-h1:text-[19px] prose-h1:leading-snug',
+          'prose-h2:text-[17px] prose-h2:leading-snug',
+          'prose-h3:text-[15.5px] prose-h3:leading-snug',
+          'prose-h4:text-[14.5px] prose-h4:leading-snug',
+          'prose-strong:font-semibold prose-strong:text-foreground',
           '[&_.code-block-wrapper+.code-block-wrapper]:mt-4',
           '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0',
           className

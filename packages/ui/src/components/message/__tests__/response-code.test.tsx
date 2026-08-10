@@ -17,7 +17,7 @@ describe('MessageResponse 代码渲染', () => {
 
     // 代码块外壳存在（CodeBlock 渲染 pre），且未退化成行内 code chip
     expect(container.querySelector('pre')).not.toBeNull()
-    expect(container.querySelector('code.bg-foreground\\/\\[0\\.05\\]')).toBeNull()
+    expect(container.querySelector('code.bg-foreground\\/\\[0\\.035\\]')).toBeNull()
   })
 
   test('行内代码仍走 chip 样式，不产生代码块', () => {
