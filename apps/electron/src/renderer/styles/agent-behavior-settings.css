@@ -463,10 +463,57 @@
   opacity: 0.9;
 }
 
+/* 能力画像行：成本 / 推理 / 视觉 / 适用场景，占满高级行下方，复用 .cli-workers-field 视觉 */
+.cli-workers-cap-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 56px 110px 110px 96px minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: center;
+  margin-top: 2px;
+  padding-top: 7px;
+  border-top: 1px solid color-mix(in srgb, var(--spatial-ink) 6%, transparent);
+}
+.cli-workers-cap-label {
+  color: var(--spatial-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.cli-workers-cap-row .cli-workers-field {
+  min-width: 0;
+}
+.cli-workers-cap-row .cli-workers-check {
+  height: 28px;
+}
+/* 适用场景输入占满剩余空间 */
+.cli-workers-cap-row .cli-workers-field--grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* 成本 / 推理下拉收窄，避免与路径/模型同宽 */
+.cli-workers-cap-select {
+  width: 100%;
+  min-width: 0;
+}
+
 @media (max-width: 640px) {
   .cli-workers-adv-row {
     grid-template-columns: 1fr;
     gap: 6px;
+  }
+  .cli-workers-cap-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .cli-workers-cap-label {
+    grid-column: 1 / -1;
+  }
+  .cli-workers-cap-row .cli-workers-check {
+    grid-column: 1 / -1;
+  }
+  .cli-workers-cap-row .cli-workers-field--grow {
+    grid-column: 1 / -1;
   }
 }
 
