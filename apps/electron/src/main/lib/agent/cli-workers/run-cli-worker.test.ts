@@ -12,12 +12,14 @@ const mocks = vi.hoisted(() => ({
   runGrokWorker: vi.fn(),
   runCodexWorker: vi.fn(),
   runMimoWorker: vi.fn(),
+  runOpencodeWorker: vi.fn(),
 }))
 
 vi.mock('./run-kscc-worker', () => ({ runKsccWorker: mocks.runKsccWorker }))
 vi.mock('./run-grok-worker', () => ({ runGrokWorker: mocks.runGrokWorker }))
 vi.mock('./run-codex-worker', () => ({ runCodexWorker: mocks.runCodexWorker }))
 vi.mock('./run-mimo-worker', () => ({ runMimoWorker: mocks.runMimoWorker }))
+vi.mock('./run-opencode-worker', () => ({ runOpencodeWorker: mocks.runOpencodeWorker }))
 
 import { runCliWorker } from './run-cli-worker'
 import { SUPPORTED_CLI_WORKER_IDS } from '@tagent/shared'
@@ -29,10 +31,12 @@ beforeEach(() => {
   mocks.runGrokWorker.mockClear()
   mocks.runCodexWorker.mockClear()
   mocks.runMimoWorker.mockClear()
+  mocks.runOpencodeWorker.mockClear()
   mocks.runKsccWorker.mockResolvedValue(OK)
   mocks.runGrokWorker.mockResolvedValue(OK)
   mocks.runCodexWorker.mockResolvedValue(OK)
   mocks.runMimoWorker.mockResolvedValue(OK)
+  mocks.runOpencodeWorker.mockResolvedValue(OK)
 })
 
 describe('runCliWorker · 路由', () => {
@@ -83,6 +87,12 @@ describe('runCliWorker · 路由', () => {
     expect(mocks.runMimoWorker).toHaveBeenCalledWith(input)
   })
 
+  it('opencode → runOpencodeWorker', async () => {
+    const input = { worker: { id: 'opencode', enabled: true, bin: 'opencode' }, prompt: 'do', cwd: 'C:\\p' }
+    await runCliWorker(input)
+    expect(mocks.runOpencodeWorker).toHaveBeenCalledWith(input)
+  })
+
   it('未知 id → ok:false 中文 summary，不调任何 runner', async () => {
     const r = await runCliWorker({
       worker: { id: 'mycustom', enabled: true, bin: 'mycustom' },
@@ -96,9 +106,10 @@ describe('runCliWorker · 路由', () => {
     expect(mocks.runGrokWorker).not.toHaveBeenCalled()
     expect(mocks.runCodexWorker).not.toHaveBeenCalled()
     expect(mocks.runMimoWorker).not.toHaveBeenCalled()
+    expect(mocks.runOpencodeWorker).not.toHaveBeenCalled()
   })
 
-  it('SUPPORTED_CLI_WORKER_IDS 含 4 个 id', () => {
-    expect([...SUPPORTED_CLI_WORKER_IDS]).toEqual(['kscc', 'grok', 'codex', 'mimo'])
+  it('SUPPORTED_CLI_WORKER_IDS 含 5 个 id', () => {
+    expect([...SUPPORTED_CLI_WORKER_IDS]).toEqual(['kscc', 'grok', 'codex', 'mimo', 'opencode'])
   })
 })

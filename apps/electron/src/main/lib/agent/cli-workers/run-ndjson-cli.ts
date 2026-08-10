@@ -54,6 +54,12 @@ export interface CliStreamObserver {
   onLine(line: string): CliLineHit
   getSummary(): string
   getToolCallCount(): number
+  /**
+   * 流内错误（如 opencode 0 凭据 / 限流的 `error` 事件）。
+   * 返回非空字符串 → finalize 在 abort/timeout 之后、exitCode 判断之前据此判 ok:false（summary 用 label 前缀 + 该错误信息）；
+   * 不实现 / 返回 undefined → 行为不变（按 exitCode / observer summary 判定）。
+   */
+  getError?(): string | undefined
 }
 
 /** runner 统一返回（与 run-kscc-worker 的 RunKsccWorkerResult 同形，结构兼容） */
@@ -175,7 +181,8 @@ export interface RunNdjsonCliInput {
 /**
  * spawn 并跑 NDJSON CLI；resolve 一次性返回结果（成功 / 失败 / abort 都不抛）。
  *
- * 失败语义（ok:false）：abort / spawn 抛错 / child 'error' / exit≠0 且 observer 无 summary。
+ * 失败语义（ok:false）：abort / 超时 / observer.getError() 有值（流内 error 事件，如 opencode 0 凭据 / 限流） /
+ * spawn 抛错 / child 'error' / exit≠0 且 observer 无 summary。
  */
 export async function runNdjsonCli(input: RunNdjsonCliInput): Promise<RunCliWorkerResult> {
   const startTime = Date.now()
@@ -282,6 +289,7 @@ export async function runNdjsonCli(input: RunNdjsonCliInput): Promise<RunCliWork
       const durationMs = Date.now() - startTime
       const toolCalls = observer.getToolCallCount()
       const observerSummary = observer.getSummary()
+      const observerError = observer.getError?.()
       const stderr = tailStderr(stderrChunks)
       const wasAborted = input.signal?.aborted === true
 
@@ -295,6 +303,10 @@ export async function runNdjsonCli(input: RunNdjsonCliInput): Promise<RunCliWork
         summary =
           observerSummary ||
           `(${input.label} 超时 ${Math.round(timeoutMs / 1000)}s，已强制结束进程)`
+      } else if (observerError) {
+        // observer 报告流内错误（如 opencode 0 凭据 / 限流 error 事件）→ ok:false，summary 用 label 前缀 + 错误信息
+        ok = false
+        summary = `${input.label}: ${observerError}`
       } else if (exitCode === 0) {
         ok = true
         summary = observerSummary || stderr || `(${input.label} 无输出)`

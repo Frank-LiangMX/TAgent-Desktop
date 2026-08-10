@@ -135,8 +135,8 @@ export const CLI_WORKERS_DEFAULT_SEED: CliWorkersConfig = {
  * 发现目录条目：已知 coding CLI 的探测元数据（id / bin 候选 / 是否有 runner / 默认能力）。
  *
  * 启动时 `discoverInstalledCliWorkers` 按目录逐条探测 PATH，命中的即「本机已安装」，
- * 工人池 = 已安装目录项 + 用户自定义。`supported=false` 的 CLI（如 opencode，暂无 runner）
- * 仅在设置页显示「已检测·暂不支持派工」，不参与 task 路由（SLICE-9 再补 runner）。
+ * 工人池 = 已安装目录项 + 用户自定义。`supported=false` 的 CLI（用户自定义 id 不在目录）
+ * 仅在设置页显示「已检测·暂不支持派工」，不参与 task 路由。
  */
 export interface CliWorkerDiscoveryEntry {
   id: string
@@ -160,7 +160,7 @@ export const CLI_WORKER_DISCOVERY_CATALOG: CliWorkerDiscoveryEntry[] = [
   { id: 'grok', bins: ['grok'], supported: true, capability: { cost: 2, reasoning: 'medium', goodFor: '探索 / 对照 / 草稿实现' } },
   { id: 'codex', bins: ['codex'], supported: true, capability: { cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造' } },
   { id: 'mimo', bins: ['mimo'], supported: true, capability: { cost: 1, reasoning: 'low', goodFor: '单测 / 机械改动 / 小包' } },
-  { id: 'opencode', bins: ['opencode'], supported: false, capability: { cost: 2, reasoning: 'medium', goodFor: '通用编码 / 多 Agent 协作' } },
+  { id: 'opencode', bins: ['opencode'], supported: true, capability: { cost: 2, reasoning: 'medium', goodFor: '通用编码 / 多 Agent 协作' } },
 ]
 
 /** 有 runner 的工人 id（resolve 候选过滤 / run-cli-worker 路由 / UI 徽标共用） */

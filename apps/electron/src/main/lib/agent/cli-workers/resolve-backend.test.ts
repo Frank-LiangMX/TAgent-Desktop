@@ -440,8 +440,10 @@ describe('listEnabledCliWorkerCards', () => {
   })
 })
 
-describe('resolveTaskSubagentBackend · SLICE-8 无 runner 工人过滤', () => {
-  it('池内含 opencode（unsupported）且可用 → 路由跳过它选 supported（kscc）', async () => {
+describe('resolveTaskSubagentBackend · 无 runner 工人过滤（用户自定义 id 不在 supported 目录）', () => {
+  // opencode 已在 SLICE-9 转正为 supported；此处改用用户自定义 id（custom-cli，不在目录、bin 可用）
+  // 继续覆盖「unsupported 工人过滤」语义：不参与路由、不注入能力卡。
+  it('池内含 custom-cli（不在 supported 目录）且可用 → 路由跳过它选 supported（kscc）', async () => {
     const { resolveTaskSubagentBackend } = await load()
     writeCfg({
       version: 1,
@@ -449,16 +451,16 @@ describe('resolveTaskSubagentBackend · SLICE-8 无 runner 工人过滤', () => 
       defaultBackend: 'cli',
       defaultCliId: 'kscc',
       workers: [
-        { id: 'opencode', enabled: true, bin: mkBin('opencode.exe'), capability: { cost: 2, reasoning: 'medium' } },
+        { id: 'custom-cli', enabled: true, bin: mkBin('custom-cli.exe'), capability: { cost: 2, reasoning: 'medium' } },
         { id: 'kscc', enabled: true, bin: mkBin('kscc-s8.cmd'), capability: { cost: 3, reasoning: 'high' } },
       ],
     })
     const r = resolveTaskSubagentBackend()
     expect(r.kind).toBe('cli')
-    if (r.kind === 'cli') expect(r.worker.id).toBe('kscc') // opencode 被过滤
+    if (r.kind === 'cli') expect(r.worker.id).toBe('kscc') // custom-cli 不在目录 → 被过滤
   })
 
-  it('池内全 unsupported（仅 opencode 可用）→ in-process', async () => {
+  it('池内全 unsupported（仅 custom-cli 可用，不在 supported 目录）→ in-process', async () => {
     const { resolveTaskSubagentBackend } = await load()
     writeCfg({
       version: 1,
@@ -466,13 +468,13 @@ describe('resolveTaskSubagentBackend · SLICE-8 无 runner 工人过滤', () => 
       defaultBackend: 'cli',
       defaultCliId: 'kscc',
       workers: [
-        { id: 'opencode', enabled: true, bin: mkBin('opencode-only.exe'), capability: { cost: 2, reasoning: 'medium' } },
+        { id: 'custom-cli', enabled: true, bin: mkBin('custom-cli-only.exe'), capability: { cost: 2, reasoning: 'medium' } },
       ],
     })
     expect(resolveTaskSubagentBackend()).toEqual({ kind: 'in-process' })
   })
 
-  it('显式 preferredCliId=opencode（unsupported）→ warn 回落池内 supported', async () => {
+  it('显式 preferredCliId=custom-cli（不在 supported 目录）→ warn 回落池内 supported', async () => {
     const { resolveTaskSubagentBackend } = await load()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     writeCfg({
@@ -481,18 +483,18 @@ describe('resolveTaskSubagentBackend · SLICE-8 无 runner 工人过滤', () => 
       defaultBackend: 'cli',
       defaultCliId: 'kscc',
       workers: [
-        { id: 'opencode', enabled: true, bin: mkBin('opencode-pref.exe'), capability: { cost: 2, reasoning: 'medium' } },
+        { id: 'custom-cli', enabled: true, bin: mkBin('custom-cli-pref.exe'), capability: { cost: 2, reasoning: 'medium' } },
         { id: 'kscc', enabled: true, bin: mkBin('kscc-pref.cmd'), capability: { cost: 3, reasoning: 'high' } },
       ],
     })
-    const r = resolveTaskSubagentBackend({ preferredCliId: 'opencode' })
+    const r = resolveTaskSubagentBackend({ preferredCliId: 'custom-cli' })
     expect(r.kind).toBe('cli')
-    if (r.kind === 'cli') expect(r.worker.id).toBe('kscc') // opencode 显式但无 runner → 回落 kscc
+    if (r.kind === 'cli') expect(r.worker.id).toBe('kscc') // custom-cli 显式但无 runner → 回落 kscc
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('暂不支持派工'))
     warn.mockRestore()
   })
 
-  it('listEnabledCliWorkerCards 不注入 unsupported 工人（opencode 不入能力卡）', async () => {
+  it('listEnabledCliWorkerCards 不注入 unsupported 工人（custom-cli 不入能力卡）', async () => {
     const { listEnabledCliWorkerCards } = await load()
     writeCfg({
       version: 1,
@@ -501,11 +503,11 @@ describe('resolveTaskSubagentBackend · SLICE-8 无 runner 工人过滤', () => 
       defaultCliId: 'kscc',
       workers: [
         { id: 'kscc', enabled: true, bin: mkBin('kscc-card.cmd'), capability: { cost: 3, reasoning: 'high', goodFor: '编排' } },
-        { id: 'opencode', enabled: true, bin: mkBin('opencode-card.exe'), capability: { cost: 2, reasoning: 'medium', goodFor: '通用编码' } },
+        { id: 'custom-cli', enabled: true, bin: mkBin('custom-cli-card.exe'), capability: { cost: 2, reasoning: 'medium', goodFor: '通用编码' } },
       ],
     })
     const card = listEnabledCliWorkerCards()
     expect(card).toContain('kscc — cost 3')
-    expect(card).not.toContain('opencode') // unsupported 不入卡（不向主 Agent 推荐）
+    expect(card).not.toContain('custom-cli') // unsupported 不入卡（不向主 Agent 推荐）
   })
 })

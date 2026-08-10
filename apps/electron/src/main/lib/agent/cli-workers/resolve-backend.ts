@@ -3,7 +3,7 @@
  *
  * 挑选规则（SLICE-5 起支持能力 require/prefer；SLICE-8 起过滤无 runner 工人）：
  * 1. 总开关关 / 后端非 cli / 无启用工人 → in-process
- * 1b. 无 runner 工人（目录 supported=false，如 opencode）永不进入候选；全 unsupported → in-process
+ * 1b. 无 runner 工人（不在 SUPPORTED_CLI_WORKER_IDS，如用户自定义 id）永不进入候选；全 unsupported → in-process
  * 2. 显式 preferredCliId：启用 + supported + 本机可用 + 满足 require → 用之；
  *    不满足 require / 本机不可用 / 无 runner → console.warn 后回落池内（不整单失败、不报错给主 Agent）
  * 3. 候选 = supported 启用池按优先级，先 workerSupportsRequire 硬性过滤（含 prefer.costMax 硬上限），
@@ -62,7 +62,7 @@ export function resolveTaskSubagentBackend(
   const pool = listEnabledWorkersByPriority(cfg)
   if (pool.length === 0) return { kind: 'in-process' }
 
-  // 无 runner 工人（目录 supported=false，如 opencode）永不进入候选：仅设置页显示「已检测·暂不支持派工」，不参与路由
+  // 无 runner 工人（不在 SUPPORTED_CLI_WORKER_IDS，如用户自定义 id）永不进入候选：仅设置页显示「已检测·暂不支持派工」，不参与路由
   const supportedPool = pool.filter((w) => SUPPORTED_CLI_WORKER_IDS.includes(w.id))
   if (supportedPool.length === 0) return { kind: 'in-process' }
 
