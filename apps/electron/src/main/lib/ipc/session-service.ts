@@ -896,8 +896,8 @@ export class SessionService {
       return { ok: true }
     })
 
-    // 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived / 子代理委派积极性 subagentEagerness 等；
-    // status 仅主进程内部写 error/idle，渲染层不直接写）
+    // 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived / 子代理委派积极性 subagentEagerness /
+    // 会话偏好 CLI 工人 cliWorkerId 等；status 仅主进程内部写 error/idle，渲染层不直接写）
     ipcMain.handle(
       AGENT_IPC_CHANNELS.UPDATE_SESSION_META,
       async (
@@ -912,14 +912,20 @@ export class SessionService {
             | 'archived'
             | 'subagentEagerness'
             | 'reasoningEffort'
+            | 'cliWorkerId'
             | 'turnDurations'
           >
         }
       ) => {
-        // 规范化 subagentEagerness（非法值回退默认），其余字段透传 updateSessionMeta 合并写
+        // 规范化 subagentEagerness（非法值回退默认）；cliWorkerId 非字符串或 trim 后为空 → undefined，否则 trim；
+        // 其余字段透传 updateSessionMeta 合并写。cliWorkerId 不校验是否在启用池（resolve 层已有回落）。
         const patch: Partial<AgentSessionMeta> = { ...args.patch }
         if (patch.subagentEagerness !== undefined) {
           patch.subagentEagerness = migrateSubagentEagerness(patch.subagentEagerness)
+        }
+        if (patch.cliWorkerId !== undefined) {
+          const v = patch.cliWorkerId
+          patch.cliWorkerId = typeof v === 'string' && v.trim() ? v.trim() : undefined
         }
         return updateSessionMeta(args.id, patch)
       }

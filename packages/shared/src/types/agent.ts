@@ -1110,6 +1110,13 @@ export interface AgentSessionMeta {
    */
   subagentEagerness?: SubagentEagerness
   /**
+   * 会话偏好的 CLI 工人 id（持久化，重启恢复）。
+   * 未设置 / 空 = 跟随全局（启用池优先级自动挑选）。
+   * 发起 task 且未显式传 cli 时作为 preferredCliId 注入；显式 cli 仍最高优先。
+   * 已禁用/已删除的 id 由 resolve 自动回落池内，不报错。
+   */
+  cliWorkerId?: string
+  /**
    * 思考强度（持久化到磁盘，重启后恢复）。未设置时新会话默认 medium。
    * 控制 Claude extended thinking / adaptive thinking 的深度档位，发送时注入到 SDK query。
    */

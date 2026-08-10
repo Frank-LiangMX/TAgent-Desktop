@@ -209,7 +209,7 @@ const electronAPI = {
   /** 持久化工作区侧栏顺序 */
   reorderWorkspaces: (orderedIds: string[]) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.REORDER_WORKSPACES, orderedIds) as Promise<AgentWorkspace[]>,
-  /** 更新会话元数据（重命名 title / 模型 modelId / 置顶 pinned / 归档 archived / 子代理委派积极性 subagentEagerness / 思考强度 reasoningEffort；status 由主进程内部写，渲染层不直接写） */
+  /** 更新会话元数据（重命名 title / 模型 modelId / 置顶 pinned / 归档 archived / 子代理委派积极性 subagentEagerness / 思考强度 reasoningEffort / 会话偏好 CLI 工人 cliWorkerId；status 由主进程内部写，渲染层不直接写） */
   updateSessionMeta: (id: string, patch: {
     title?: string
     /** 模型 id：moa:* 粘性选择清回渠道默认真实模型时持久化（与 App.tsx 全局声明同口径） */
@@ -218,6 +218,8 @@ const electronAPI = {
     archived?: boolean
     subagentEagerness?: 'never' | 'conservative' | 'balanced' | 'aggressive'
     reasoningEffort?: 'low' | 'medium' | 'high' | 'max'
+    /** 会话偏好 CLI 工人 id（未设置/空 = 跟随全局启用池优先级；主进程 normalize 空串→undefined） */
+    cliWorkerId?: string
   }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_META, { id, patch }) as Promise<unknown>,
   /** 切换会话置顶 */

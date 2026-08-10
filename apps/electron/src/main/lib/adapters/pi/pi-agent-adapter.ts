@@ -86,6 +86,7 @@ async function loadPiAgentCore(): Promise<PiAgentCoreModule> {
 }
 
 import { createTaskTool } from './subagent-task-tool'
+import { getSessionMeta } from '../../agent/session-store'
 
 // ===== 配置类型 =====
 
@@ -1093,6 +1094,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         emitSubagentPayload({ kind: 'tagent_event', event })
       },
       emitSubagentPayload,
+      // 会话偏好 CLI 工人（meta.cliWorkerId）：task 未显式传 cli 时注入路由；显式 cli 仍最高优先。
+      // 已禁用/已删除的 id 由 resolve 层回落池内，不报错。Agent 重建时重读，设置变更后下轮生效。
+      getSessionMeta(sessionId)?.cliWorkerId ?? null,
     )
     const agentTools = [...finalBaseTools, ...mcpTools, taskTool, ...(extraTools ?? [])]
 

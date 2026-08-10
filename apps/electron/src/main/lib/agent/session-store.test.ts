@@ -217,6 +217,25 @@ describe('session-store persistence smoke', () => {
       lastBurstTokenCount: 256_000,
     })
   })
+
+  it('persists cliWorkerId (SLICE-7 会话级 CLI 工人偏好)', async () => {
+    const store = await loadStore()
+    const created = store.createSession({
+      id: 'session-cli-worker',
+      workspaceId: 'workspace-cli-worker',
+    })
+    // 写入会话偏好工人 → 重读一致
+    store.updateSessionMeta(created.id, { cliWorkerId: 'grok' })
+    let reloaded = await loadStore()
+    expect(reloaded.getSessionMeta(created.id)).toMatchObject({
+      id: 'session-cli-worker',
+      cliWorkerId: 'grok',
+    })
+    // 清回 undefined（选「自动」）→ 重读为 undefined，不残留
+    store.updateSessionMeta(created.id, { cliWorkerId: undefined })
+    reloaded = await loadStore()
+    expect(reloaded.getSessionMeta(created.id)?.cliWorkerId).toBeUndefined()
+  })
 })
 
 describe('session-store moa-discussion persistence (T8)', () => {

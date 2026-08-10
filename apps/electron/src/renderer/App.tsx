@@ -151,7 +151,7 @@ declare global {
         dataUrl?: string
         mime?: string
       } | null>
-      // 会话元数据（重命名/置顶/归档/模型 modelId/子代理委派积极性/思考强度；status 由主进程内部写，渲染层不直接写）
+      // 会话元数据（重命名/置顶/归档/模型 modelId/子代理委派积极性/思考强度/会话偏好 CLI 工人；status 由主进程内部写，渲染层不直接写）
       updateSessionMeta: (id: string, patch: {
         title?: string
         /** 模型 id：moa:* 粘性选择清回渠道默认真实模型时持久化（主进程 updateSessionMeta 已支持合并写） */
@@ -160,6 +160,8 @@ declare global {
         archived?: boolean
         subagentEagerness?: 'never' | 'conservative' | 'balanced' | 'aggressive'
         reasoningEffort?: 'low' | 'medium' | 'high' | 'max'
+        /** 会话偏好 CLI 工人 id（未设置/空 = 跟随全局启用池优先级；主进程 normalize 空串→undefined） */
+        cliWorkerId?: string
         /** 各轮完成耗时（key = 该轮最后一条主线 assistant 消息 createdAt） */
         turnDurations?: Record<string, number>
       }) => Promise<unknown>
