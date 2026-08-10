@@ -19,4 +19,6 @@ node node_modules/vitest/dist/cli.js run apps/electron/src/main/lib/agent/cli-wo
 
 ## 用法
 
-设置 → Agent 行为 → 本地 CLI 工人 → 启用 → 默认 CLI 选 kscc/grok/codex/mimo → 外渠会话 `task` 派子代理。
+设置 → Agent 行为 → **子代理** → 默认后端「本机 CLI」→ 启用工人并用 ↑↓ 调优先级 → 外渠会话 `task` 派子代理（可选 `task.cli`）。
+
+> **后续**：硬「默认 CLI」已改为启用池 + 优先级 + `task.cli`。见 [HANDOFF-2026-08-10.md](./HANDOFF-2026-08-10.md) 与 [00-MVP.md](./00-MVP.md)。
