@@ -170,6 +170,17 @@ export const PI_TURN_MAX_RETRIES = 3
 export const PI_TURN_RETRY_BASE_DELAY_MS = 1000
 
 /**
+ * 用户主动中止 / 拒绝类文案（软停、interrupt、取消）——不当「运行出错」。
+ */
+export function isUserAbortMessage(raw: string): boolean {
+  const msg = (raw || '').trim()
+  if (!msg) return false
+  return /aborted|interrupted by user|user rejected|user refused|permission denied by user|cancelled by user|canceled by user|用户取消|用户拒绝|用户中止|用户停止|Request interrupted/i.test(
+    msg,
+  )
+}
+
+/**
  * 判断错误文案是否适合 turn 级重试。
  * 可重试：网络、5xx、超时、429 限流类。
  * 不可重试：鉴权、余额/配额、用户中止/拒绝。
@@ -184,9 +195,7 @@ export function isRetryablePiTurnError(raw: string): boolean {
     /insufficient.*(quota|credit|balance|fund)|payment required|billing|out of credit|余额不足|欠费|额度用尽/.test(
       msg,
     ) ||
-    /aborted|user rejected|user refused|permission denied by user|cancelled by user|canceled by user|用户取消|用户拒绝/.test(
-      msg,
-    )
+    isUserAbortMessage(msg)
   ) {
     return false
   }
@@ -1441,7 +1450,7 @@ function piStreamEventToIR(ev: AssistantMessageEvent, sessionId: string): TAgent
  * 从最后一条 assistant 的 stopReason 推导 result.subtype。
  * result 唯一出口在 agent_end；message_end 不再推 result（避免双 turn_end / 错误被当成功）。
  *
- * - error → error_during_execution + errors[]
+ * - error → error_during_execution + errors[]（用户 abort 文案除外）
  * - length → max_tokens
  * - stop / toolUse / aborted / 缺省 → success（aborted=用户软停，不当错误）
  */
@@ -1452,6 +1461,10 @@ export function mapPiStopReasonToResult(msg?: {
   const reason = msg?.stopReason
   if (reason === 'error') {
     const raw = (msg?.errorMessage ?? '').trim()
+    // stopReason=error 但文案是用户中止（Request aborted 等）→ 当成功收束，勿抬 SessionErrorBanner
+    if (isUserAbortMessage(raw)) {
+      return { subtype: 'success' }
+    }
     return {
       subtype: 'error_during_execution',
       errors: [raw || 'stream error'],
@@ -1576,8 +1589,9 @@ export function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktop
       // stream error 可见气泡：pi-agent-core 吞掉 stream error、走 message_end，错误藏在
       // stopReason='error'+errorMessage。只推友好 assistant 文本，**不**推 result——
       // result 一律由 agent_end 按 stopReason 产出，避免双 turn_end / 错误被当成功。
+      // 用户中止类文案不推气泡（不当「请求失败」）。
       const msg = event.message as { stopReason?: string; errorMessage?: string; role?: string }
-      if (msg?.stopReason === 'error' && msg.errorMessage) {
+      if (msg?.stopReason === 'error' && msg.errorMessage && !isUserAbortMessage(msg.errorMessage)) {
         console.error(`[Pi 适配器 ${sessionId}] stream error 被 Agent 吞掉，已捕获: ${msg.errorMessage.slice(0, 120)}`)
         const errorText = formatStreamErrorForUser(msg.errorMessage)
         results.push({

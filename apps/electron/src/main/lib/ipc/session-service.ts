@@ -272,6 +272,7 @@ export class SessionService {
   /**
    * 本轮正常结束后：若有 pending steer，自动作为下一轮用户消息发送。
    * 仅 Pi 降级路径写入 pending；kscc live enqueue 不经此 Map。
+   * Pi 必须在 onLoopIdle（loop 停稳）调用；不可在 onTurnEnd（仍在 for-await）调用。
    */
   private flushPendingSteer(sessionId: string): void {
     const pending = this.pendingSteerBySession.get(sessionId)
@@ -533,8 +534,8 @@ export class SessionService {
 
         // Pi 核（或 kscc 已无 live）：下一轮注入，避免 agent.steer 静默失效
         this.enqueuePendingSteer(sessionId, text)
-        // 若当前已不在跑（用户停后点引导 / 空闲误触），立刻 flush
-        if (!rt || !rt.isTurnInFlight()) {
+        // 仅当 turn 与 loop 都已停稳才立刻 flush（避免 Pi result 后 generator 未 done 窗口误 enqueue）
+        if (!rt || (!rt.isTurnInFlight() && !rt.isRunning())) {
           this.flushPendingSteer(sessionId)
         }
         return { ok: true, mode: 'pending_next_turn' }
@@ -1249,7 +1250,14 @@ export class SessionService {
           this.flushStreamPersistGateFor(input.sessionId)
           // Phase 2.5：L4 recordSession + evidence sink
           this.recordSessionToMemory(input.sessionId, input.prompt)
-          // Pi pending steer：本轮结束后自动开下一轮（kscc live enqueue 不经此路径）
+          // kscc 长驻：result 后 loop 不退，pending（live 失败降级）须在此 flush。
+          // Pi：不可在此 flush——仍在 for-await 内，会把 turnInFlight 再置真 → 旧 loop 误判崩溃。
+          if (adapterKind === 'kscc') {
+            this.flushPendingSteer(input.sessionId)
+          }
+        },
+        onLoopIdle: () => {
+          // Pi（及 kscc 进程退出）：loop 停稳后再开下一轮，避免假「自动恢复失败」
           this.flushPendingSteer(input.sessionId)
         },
         onError: (err: Error) => {

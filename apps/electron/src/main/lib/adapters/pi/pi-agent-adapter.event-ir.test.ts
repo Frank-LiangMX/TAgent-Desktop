@@ -76,6 +76,15 @@ describe('mapPiStopReasonToResult', () => {
     expect(mapPiStopReasonToResult({ stopReason: 'toolUse' })).toEqual({ subtype: 'success' })
     expect(mapPiStopReasonToResult(undefined)).toEqual({ subtype: 'success' })
   })
+
+  it('error + 用户中止文案 → success（不当运行出错）', () => {
+    expect(mapPiStopReasonToResult({ stopReason: 'error', errorMessage: 'Request aborted' })).toEqual({
+      subtype: 'success',
+    })
+    expect(
+      mapPiStopReasonToResult({ stopReason: 'error', errorMessage: 'Request interrupted by user' }),
+    ).toEqual({ subtype: 'success' })
+  })
 })
 
 describe('piEventToIR 终态收束', () => {

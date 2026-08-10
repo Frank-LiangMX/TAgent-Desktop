@@ -310,6 +310,11 @@ export function Chat({
   const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
   const pushTicker = useSetAtom(pushStatusTickerAtom)
   // turn_end 延迟停止定时器（见 RUN_STOP_GRACE_MS 注释）
+  /**
+   * 用户主动停止后置位：后续迟到的 error_* result / session_error（abort 文案）
+   * 不当「运行出错」，保持已中断语义。新一轮 startRun 清零。
+   */
+  const userStoppedRef = useRef(false)
   const pendingStopTimerRef = useRef<number | null>(null)
   const pendingHardStopTimerRef = useRef<number | null>(null)
   const clearPendingStop = useCallback(() => {
@@ -338,6 +343,7 @@ export function Chat({
   /** 开始一轮运行：写 atom 置 running 并记起始时间戳 */
   const startRun = (): void => {
     clearPendingStop()
+    userStoppedRef.current = false
     const now = Date.now()
     runStartedAtPersistRef.current = now
     startSessionRun({ id: sessionId, startedAt: now })
@@ -353,6 +359,7 @@ export function Chat({
    */
   const userStopRun = (): void => {
     clearPendingStop()
+    userStoppedRef.current = true
     recordCompletion('stopped')
     runStartedAtPersistRef.current = null
     stopRun()
@@ -395,7 +402,7 @@ export function Chat({
   }
   /** 输入框是否有草稿（供发送/停止键同槽复用：运行中且有草稿→仍可追加发送，显示发送键；运行中无草稿→停止键） */
   const [hasDraft, setHasDraft] = useState(false)
-  /** 运行中排队的消息（运行中发送→入队，运行结束→自动消费） */
+  /** 运行中排队的消息（运行中发送→入队；自然结束自动消费；用户停止保留） */
   const [messageQueue, setMessageQueue] = useState<Array<{
     text: string
     selection: ModelSelection
@@ -404,6 +411,13 @@ export function Chat({
     /** 圆桌讨论本条（one-shot）preset id：选了预置后追加发送带它；非 sticky，主进程 runMoADiscussionTurn 消费 */
     moaDiscussionPresetId?: string
   }>>([])
+  /**
+   * 用户点停止后跳过一次「running→false 自动消费队列」：
+   * 停止应保留队列，由「立即发送 / 引导」显式处理，避免误发或丢消息。
+   */
+  const skipQueueAutoConsumeRef = useRef(false)
+  /** 队列「立即发送 / 引导」进行中 */
+  const [queueActionBusy, setQueueActionBusy] = useState(false)
   /** 待发送附件（输入框暂存，发送后清空） */
   const [pendingAttachments, setPendingAttachments] = useState<Array<{
     id: string; filename: string; mediaType: string; size: number; previewUrl?: string; data: string
@@ -1103,6 +1117,10 @@ export function Chat({
 
   // 附件 / 模式 / 消息队列：显式重测（不依赖 RO 是否丢帧）
   useEffect(() => {
+    // 队列清空时立刻压掉抬升量，避免胶囊/下箭头悬在空洞上（等 motion exit 会滞后）
+    if (messageQueue.length === 0) {
+      rootRef.current?.style.setProperty('--session-stack-over-cluster', '0px')
+    }
     return scheduleComposerTopUpdate()
   }, [
     pendingAttachments.length,
@@ -1425,20 +1443,29 @@ export function Chat({
             : subtype === 'error_during_execution'
               ? '执行过程中出错'
               : subtype || '运行出错')
-        const userError = classifyUserFacingError(raw)
-        setSessionError({
-          sessionId: sessionIdRef.current,
-          error: {
-            title: userError.title,
-            message: userError.message || raw,
-            retryable: userError.retryable,
-            code: userError.code,
-            action: userError.action,
-            at: Date.now(),
-          },
-        })
-        recordCompletion('error')
-        stopRun()
+        // 用户刚点停止 / abort 文案：保持「已中断」，勿抬错误条、勿把 endedBy 改成 error
+        const abortLike =
+          userStoppedRef.current ||
+          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止/i.test(raw)
+        if (abortLike) {
+          if (runStartedAtRef.current != null) recordCompletion('stopped')
+          stopRun()
+        } else {
+          const userError = classifyUserFacingError(raw)
+          setSessionError({
+            sessionId: sessionIdRef.current,
+            error: {
+              title: userError.title,
+              message: userError.message || raw,
+              retryable: userError.retryable,
+              code: userError.code,
+              action: userError.action,
+              at: Date.now(),
+            },
+          })
+          recordCompletion('error')
+          stopRun()
+        }
       } else {
         completeRun()
       }
@@ -1594,20 +1621,32 @@ export function Chat({
         // 独立错误条（非 assistant 气泡）：copy / dismiss / retryable→重试
         const userError = (evt as { error?: UserFacingError }).error
         const rawMessage = typeof evt.message === 'string' ? evt.message : ''
-        setSessionError({
-          sessionId: sessionIdRef.current,
-          error: {
-            title: userError?.title ?? '错误',
-            message: userError?.message || rawMessage,
-            retryable: userError?.retryable ?? false,
-            code: userError?.code,
-            action: userError?.action,
-            at: Date.now(),
-          },
-        })
-        clearPendingStop()
-        recordCompletion('error')
-        stopRun()
+        const abortLike =
+          userStoppedRef.current ||
+          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止/i.test(
+            `${userError?.message ?? ''} ${rawMessage}`,
+          )
+        if (abortLike) {
+          // 用户打断：只收口运行态，不展示错误条、不把侧栏打成 error
+          if (runStartedAtRef.current != null) recordCompletion('stopped')
+          clearPendingStop()
+          stopRun()
+        } else {
+          setSessionError({
+            sessionId: sessionIdRef.current,
+            error: {
+              title: userError?.title ?? '错误',
+              message: userError?.message || rawMessage,
+              retryable: userError?.retryable ?? false,
+              code: userError?.code,
+              action: userError?.action,
+              at: Date.now(),
+            },
+          })
+          clearPendingStop()
+          recordCompletion('error')
+          stopRun()
+        }
       } else if (evt.type === 'compacting') {
         setIsCompactingUi(true)
         setItems((prev) => [
@@ -1986,7 +2025,13 @@ export function Chat({
 
   /** 运行结束 → 批量消费队列（逐条 await，确保 running 状态正确） */
   useEffect(() => {
-    if (running || messageQueue.length === 0) return
+    if (running) return
+    // 用户停止：保留队列，跳过本轮自动消费
+    if (skipQueueAutoConsumeRef.current) {
+      skipQueueAutoConsumeRef.current = false
+      return
+    }
+    if (messageQueue.length === 0) return
     const pending = messageQueue
     setMessageQueue([])
     void (async () => {
@@ -2000,7 +2045,83 @@ export function Chat({
   const removeQueueItem = (index: number): void => {
     setMessageQueue((q) => q.filter((_, i) => i !== index))
   }
-  const clearQueue = (): void => setMessageQueue([])
+  const clearQueue = (): void => {
+    setMessageQueue([])
+    rootRef.current?.style.setProperty('--session-stack-over-cluster', '0px')
+    scheduleComposerTopUpdate()
+  }
+
+  /** 立即发送指定条目：打断（若仍在跑）并以该条开新一轮 */
+  const sendQueueItemNow = (index: number): void => {
+    if (queueActionBusy) return
+    const item = messageQueue[index]
+    if (!item) return
+    setMessageQueue((q) => q.filter((_, i) => i !== index))
+    if (messageQueue.length <= 1) {
+      rootRef.current?.style.setProperty('--session-stack-over-cluster', '0px')
+    }
+    scheduleComposerTopUpdate()
+    setQueueActionBusy(true)
+    skipQueueAutoConsumeRef.current = true
+    void (async () => {
+      try {
+        if (running) {
+          userStopRun()
+          await window.electronAPI.stopAgent(sessionIdRef.current)
+        }
+        await sendQueued(item)
+      } finally {
+        setQueueActionBusy(false)
+        scheduleComposerTopUpdate()
+      }
+    })()
+  }
+
+  /** 引导指定条目：不打断；成功后从 UI 队列移除 */
+  const steerQueueItem = (index: number): void => {
+    if (queueActionBusy) return
+    const item = messageQueue[index]
+    if (!item) return
+    setQueueActionBusy(true)
+    void (async () => {
+      try {
+        const res = (await window.electronAPI.steerAgent(
+          sessionIdRef.current,
+          item.text,
+        )) as { ok?: boolean; mode?: string; error?: string } | undefined
+        if (!res?.ok) {
+          pushTicker(
+            makeStatusTickerItem(`引导失败：${res?.error ?? '未知错误'}`, 'error', 5000),
+          )
+          return
+        }
+        setMessageQueue((q) => q.filter((_, i) => i !== index))
+        scheduleComposerTopUpdate()
+        pushTicker(
+          makeStatusTickerItem(
+            res.mode === 'live'
+              ? '已注入引导：将在下一轮边界生效'
+              : '已排队引导：本轮结束后自动发送',
+            'info',
+            4000,
+          ),
+        )
+      } finally {
+        setQueueActionBusy(false)
+      }
+    })()
+  }
+
+  /** 编辑：取出填回输入框，方便改完再发 */
+  const editQueueItem = (index: number): void => {
+    if (queueActionBusy) return
+    const item = messageQueue[index]
+    if (!item) return
+    setMessageQueue((q) => q.filter((_, i) => i !== index))
+    scheduleComposerTopUpdate()
+    chatInputRef.current?.setText(item.text)
+    chatInputRef.current?.focus()
+  }
 
   /** 新会话页：切换工作区（草稿态无 tab → 改 App 的 draftSession；已有 tab → 改 tab） */
   const changeWorkspace = (id: string): void => {
@@ -2106,8 +2227,10 @@ export function Chat({
           size="icon"
           className="size-9 rounded-full text-destructive hover:bg-destructive/10"
           onClick={() => {
+            skipQueueAutoConsumeRef.current = true
             userStopRun()
             void window.electronAPI.stopAgent(sessionIdRef.current)
+            scheduleComposerTopUpdate()
           }}
           aria-label="停止"
         >
@@ -2382,7 +2505,16 @@ export function Chat({
             各自 backdrop-filter，共用这一块，避免两层模糊叠成糊块。z-index:-1 沉到 stack
             内最底（在 token(z1)/输入框(z2) 与 MessageQueue/PermissionBanner 之下）。 */}
         <div className="composer-blur-underlay" aria-hidden="true" />
-        <MessageQueue queue={messageQueue} onRemove={removeQueueItem} onClear={clearQueue} />
+        <MessageQueue
+          queue={messageQueue}
+          onRemove={removeQueueItem}
+          onClear={clearQueue}
+          onSendNow={sendQueueItemNow}
+          onSteer={steerQueueItem}
+          onEdit={editQueueItem}
+          busy={queueActionBusy}
+          running={running}
+        />
         {backgroundCrewBanner && executionMode === 'chat' ? (
           <div
             className="kanban-crew-bg-banner pointer-events-auto mx-3 mb-2 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] leading-snug text-foreground/90 shadow-sm backdrop-blur-md"
@@ -2585,9 +2717,11 @@ export function Chat({
                         size="icon"
                         className="size-9 rounded-full text-destructive hover:bg-destructive/10"
                         onClick={() => {
-                          setMessageQueue([])
+                          // 保留队列：停止后可「立即发送 / 引导」，勿静默丢弃
+                          skipQueueAutoConsumeRef.current = true
                           userStopRun()
                           window.electronAPI.stopAgent(sessionIdRef.current)
+                          scheduleComposerTopUpdate()
                         }}
                         aria-label="停止"
                       >
@@ -2652,7 +2786,8 @@ export function Chat({
                               const text = chatInputRef.current?.getText().trim()
                               if (!text || !effectiveSelection) return
                               chatInputRef.current?.clear()
-                              setMessageQueue([])
+                              // 草稿立即发送：不丢弃已有队列；先打断再发本条，队列仍保留待自然消费或手动发
+                              skipQueueAutoConsumeRef.current = true
                               userStopRun()
                               void (async () => {
                                 await window.electronAPI.stopAgent(sessionIdRef.current)

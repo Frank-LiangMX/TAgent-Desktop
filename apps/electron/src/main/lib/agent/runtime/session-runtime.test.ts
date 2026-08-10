@@ -271,6 +271,69 @@ describe('SessionRuntime steerMessage', () => {
   })
 })
 
+describe('SessionRuntime 引导 flush 竞态（Pi）', () => {
+  it('onTurnEnd 里再 send（模拟 pending steer）→ 旧 loop 退出不报「自动恢复失败」', async () => {
+    const { adapter, calls } = createMock([{ kind: 'ok' }, { kind: 'ok' }])
+    const rt = new SessionRuntime('s-steer-race', adapter)
+    const errors: Error[] = []
+    let settle!: () => void
+    const settled = new Promise<void>((r) => {
+      settle = r
+    })
+    rt.setCallbacks({
+      onTurnEnd: () => {
+        // 模拟旧 bug：在仍 for-await 内立刻发下一轮（enqueue / 再 startLoop）
+        void rt
+          .sendMessage(
+            { sessionId: 's-steer-race', prompt: 'steer-followup' } as QueryInput,
+            {
+              type: 'user',
+              message: { role: 'user', content: 'steer-followup' },
+              parent_tool_use_id: null,
+            } as never,
+          )
+          .catch(() => {})
+      },
+      onLoopIdle: () => {
+        settle()
+      },
+      onError: (e) => {
+        errors.push(e)
+        settle()
+      },
+    })
+    await rt.sendMessage({ sessionId: 's-steer-race', prompt: 'hello' } as QueryInput)
+    await withTimeout(settled)
+    await flush()
+
+    expect(errors.map((e) => e.message).join('\n')).not.toContain('自动恢复失败')
+    expect(errors.length).toBe(0)
+    expect(calls.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('干净 result 后触发 onLoopIdle（供 Pi pending steer flush）', async () => {
+    const { adapter } = createMock([{ kind: 'ok' }])
+    const rt = new SessionRuntime('s-idle', adapter)
+    const idles: number[] = []
+    let settle!: () => void
+    const settled = new Promise<void>((r) => {
+      settle = r
+    })
+    rt.setCallbacks({
+      onTurnEnd: () => {},
+      onLoopIdle: () => {
+        idles.push(1)
+        settle()
+      },
+      onError: () => settle(),
+    })
+    await rt.sendMessage({ sessionId: 's-idle', prompt: 'hello' } as QueryInput)
+    await withTimeout(settled)
+    expect(idles.length).toBe(1)
+    expect(rt.isRunning()).toBe(false)
+  })
+})
+
 describe('SessionRuntime 用户主动 stop', () => {
   it('用户 interrupt 后进程退出 → 不恢复、不报错', async () => {
     let triggerCrash!: () => void

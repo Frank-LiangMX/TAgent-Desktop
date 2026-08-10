@@ -2016,6 +2016,179 @@
 }
 
 /*
+ * 消息队列面板：对齐 .chat-input-glass（同 gutter、同圆角、玻璃填色、左上边缘光）。
+ * 自身不叠 backdrop-filter（与输入框共用底部 blur underlay）。
+ */
+.message-queue {
+  box-sizing: border-box;
+  width: 100%;
+  padding-left: var(--app-shell-session-gutter, 16px);
+  padding-right: var(--app-shell-session-gutter, 16px);
+}
+.message-queue-panel {
+  position: relative;
+  isolation: isolate;
+  margin: 0 0 8px;
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  border-radius: var(--app-shell-composer-radius, 16px);
+  background:
+    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 66%),
+    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.42), rgb(var(--glass-rgb) / 0.28));
+  box-shadow:
+    0 10px 24px -10px rgb(48 59 76 / 0.18),
+    0 3px 10px -4px rgb(48 59 76 / 0.1),
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    inset 1px 0 0 rgb(255 255 255 / 0.14);
+  overflow: hidden;
+}
+.dark .message-queue-panel {
+  border-color: rgb(255 255 255 / 0.1);
+  box-shadow:
+    0 12px 28px -10px rgb(0 0 0 / 0.42),
+    0 4px 12px -4px rgb(0 0 0 / 0.28),
+    inset 0 1px 0 rgb(255 255 255 / 0.28),
+    inset 1px 0 0 rgb(255 255 255 / 0.08);
+}
+.message-queue-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid rgb(var(--glass-rgb) / 0.28);
+}
+.dark .message-queue-panel__head {
+  border-bottom-color: rgb(255 255 255 / 0.06);
+}
+.message-queue-panel__title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--muted-foreground) / 0.88);
+  font-size: 11.5px;
+  font-weight: 560;
+}
+.message-queue-panel__title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-queue-panel__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+}
+.message-queue-panel__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--muted-foreground) / 0.9);
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+.message-queue-panel__btn:hover:not(:disabled) {
+  background: hsl(var(--foreground) / 0.06);
+  color: hsl(var(--foreground) / 0.92);
+}
+.message-queue-panel__btn--primary {
+  color: hsl(var(--primary) / 0.95);
+}
+.message-queue-panel__btn--primary:hover:not(:disabled) {
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+}
+.message-queue-panel__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.message-queue-panel__list {
+  max-height: 8rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+.message-queue-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  transition: background 140ms ease;
+}
+.message-queue-panel__row:hover {
+  background: hsl(var(--foreground) / 0.04);
+}
+.message-queue-panel__idx {
+  flex: none;
+  min-width: 1.15rem;
+  color: hsl(var(--muted-foreground) / 0.55);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-align: center;
+}
+.message-queue-panel__text {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: hsl(var(--foreground) / 0.84);
+  font-size: 12px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-queue-panel__row-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 1px;
+}
+.message-queue-panel__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: hsl(var(--muted-foreground) / 0.72);
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+.message-queue-panel__icon-btn:hover:not(:disabled) {
+  background: hsl(var(--foreground) / 0.08);
+  color: hsl(var(--foreground) / 0.92);
+}
+.message-queue-panel__icon-btn--primary {
+  color: hsl(var(--primary) / 0.9);
+}
+.message-queue-panel__icon-btn--primary:hover:not(:disabled) {
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+}
+.message-queue-panel__icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.message-queue-panel__remove {
+  display: none;
+}
+
+/*
  * Composer 运行计时 pill：发送即开始，完成/出错/用户停止清零。
  * 绝对定位、不参与文档流——不撑高 bottom-stack / blur underlay。
  *

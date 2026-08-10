@@ -231,12 +231,26 @@ export function SessionSidebar({
   // 订阅 onStreamEvent:turn_end → done（绿点）、session_error → error(只处理这两类,按 sessionId 更新)
   useEffect(() => {
     const off = window.electronAPI.onStreamEvent((payload: unknown) => {
-      const env = payload as { sessionId?: string; payload?: { kind: string; event?: { type: string } } }
+      const env = payload as {
+        sessionId?: string
+        payload?: {
+          kind: string
+          event?: { type: string; message?: string; error?: { message?: string } }
+        }
+      }
       if (env?.payload?.kind !== 'tagent_event') return
       const evt = env.payload.event
       if (!evt || !env.sessionId) return
       if (evt.type === 'turn_end') setStatus({ id: env.sessionId, status: 'done' })
-      else if (evt.type === 'session_error') setStatus({ id: env.sessionId, status: 'error' })
+      else if (evt.type === 'session_error') {
+        // 用户打断类文案不当侧栏「出错」
+        const raw = `${evt.error?.message ?? ''} ${evt.message ?? ''}`
+        if (/aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止/i.test(raw)) {
+          setStatus({ id: env.sessionId, status: 'done' })
+        } else {
+          setStatus({ id: env.sessionId, status: 'error' })
+        }
+      }
     })
     return off
   }, [setStatus])

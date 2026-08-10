@@ -47,7 +47,18 @@ export class SessionRuntime {
   /** 流式事件回调（orchestrator 注册，推 IPC 给 UI） */
   private onMessage?: (msg: SDKMessage) => void
   private onTurnEnd?: () => void
+  /**
+   * loop 真正停稳（Pi 每轮 generator done / 软停回 idle）后回调。
+   * 用于 pending steer flush：不可在 onTurnEnd（仍在 for-await 内）立刻 handleSend，
+   * 否则会把 turnInFlight 再置真，旧 loop 退出误判「进程异常退出」。
+   */
+  private onLoopIdle?: () => void
   private onError?: (err: Error) => void
+  /**
+   * startLoop 代数：新 loop 启动时递增。旧 runLoop 退出时若代数已变，
+   * 不得再改 loopRunning/state，也不得走崩溃恢复。
+   */
+  private loopEpoch = 0
 
   /** 用户主动 destroy（关标签页 / 被顶 / 退出）→ 永久关闭，不恢复、不报错 */
   private userClosing = false
@@ -137,10 +148,12 @@ export class SessionRuntime {
   setCallbacks(cb: {
     onMessage?: (msg: SDKMessage) => void
     onTurnEnd?: () => void
+    onLoopIdle?: () => void
     onError?: (err: Error) => void
   }): void {
     this.onMessage = cb.onMessage
     this.onTurnEnd = cb.onTurnEnd
+    this.onLoopIdle = cb.onLoopIdle
     this.onError = cb.onError
   }
 
@@ -223,12 +236,14 @@ export class SessionRuntime {
   private async startLoop(
     queryOptions: Parameters<AgentProviderAdapter['query']>[0]
   ): Promise<void> {
+    this.loopEpoch += 1
+    const epoch = this.loopEpoch
     this.loopRunning = true
     this.turnInFlight = true
     this.state = 'running'
 
     // 异步跑循环，不阻塞 sendMessage
-    void this.runLoop(queryOptions)
+    void this.runLoop(queryOptions, epoch)
   }
 
   /**
@@ -241,7 +256,8 @@ export class SessionRuntime {
    * 外层 while 仅在「可恢复的崩溃」时再转一圈（re-spawn + resume）。
    */
   private async runLoop(
-    initialQueryOptions: Parameters<AgentProviderAdapter['query']>[0]
+    initialQueryOptions: Parameters<AgentProviderAdapter['query']>[0],
+    epoch: number,
   ): Promise<void> {
     let queryOptions = initialQueryOptions
 
@@ -249,10 +265,14 @@ export class SessionRuntime {
     // eslint-disable-next-line no-constant-condition
     while (true) {
       let crashed = false
+      /** 本圈 for-await 内是否已收到成功 result（过长除外） */
+      let sawCleanResult = false
       try {
+        if (epoch !== this.loopEpoch) return
         this.loopRunning = true
         const iterable = this.adapter.query(queryOptions)
         for await (const msg of iterable) {
+          if (epoch !== this.loopEpoch) return
           // pi adapter 实际产 TAgentDesktopStreamPayload（{kind:...}），kscc 产 SDKMessage（{type:...}）。
           // 两者经同一 AsyncIterable<SDKMessage> 契约；此处按形状归一化 result 判定。
           const m = msg as { type?: string; kind?: string; errors?: unknown }
@@ -303,14 +323,17 @@ export class SessionRuntime {
               })
               return
             }
-            // 每轮 result：清 turnInFlight + onTurnEnd（→ IPC turn_end / pending steer flush）
+            // 每轮 result：清 turnInFlight + onTurnEnd（→ IPC turn_end）
             // kscc：for-await 不因 result 结束，继续等下条 enqueue
-            // Pi：generator 在 prompt 结束后 done，下面 for-await 退出 → 干净关闭
+            // Pi：generator 在 prompt 结束后 done，下面 for-await 退出 → onLoopIdle（再 flush steer）
             this.turnInFlight = false
             this.lastInFlightPrompt = undefined
+            sawCleanResult = true
             this.onTurnEnd?.()
           }
         }
+        // 已被更新的 startLoop 接替：旧圈不得改共享状态 / 不得报崩溃
+        if (epoch !== this.loopEpoch) return
         // 循环退出 = 进程退出（iterResult.done）/ abort / Pi 每 turn 正常收尾
         this.loopRunning = false
         // 用户主动关闭 → 永久 closed
@@ -322,11 +345,17 @@ export class SessionRuntime {
         if (this.userStopping) {
           this.userStopping = false
           this.state = 'idle'
+          this.onLoopIdle?.()
+          return
+        }
+        // 本圈已干净 result：即使 onTurnEnd 竞态把 turnInFlight 再置真，也绝不当崩溃。
+        // Pi 常态：turnInFlight 仍为 false → closed + onLoopIdle（pending steer 在此 flush）。
+        if (sawCleanResult) {
+          if (!this.turnInFlight) this.state = 'closed'
+          this.onLoopIdle?.()
           return
         }
         // 进程在 turn 进行中退出（无 result 收尾）→ 视为崩溃，尝试恢复
-        // Pi 核每个 turn 正常 result 后 generator 也会退出，此时 turnInFlight=false，
-        // 走 else 干净关闭（下一轮 sendMessage 自然 re-spawn），不会被误判为崩溃。
         if (this.turnInFlight) {
           // stderr 已命中过长上下文 → 降级提示，不当崩溃恢复
           if (isPromptTooLongMessage(this.stderrBuffer)) {
@@ -341,11 +370,13 @@ export class SessionRuntime {
           }
           crashed = true
         } else {
-          // turn 已正常结束后的退出（Pi 每 turn 常态；kscc 极少见干净退出）→ 关闭，下一轮重建
+          // turn 已正常结束后的退出（无显式 result 标记的干净路径）→ 关闭，下一轮重建
           this.state = 'closed'
+          this.onLoopIdle?.()
           return
         }
       } catch (err) {
+        if (epoch !== this.loopEpoch) return
         // query generator 抛错
         this.loopRunning = false
         if (this.userClosing) {
@@ -355,6 +386,7 @@ export class SessionRuntime {
         if (this.userStopping) {
           this.userStopping = false
           this.state = 'idle'
+          this.onLoopIdle?.()
           return
         }
         const error = err instanceof Error ? err : new Error(String(err))
@@ -367,6 +399,12 @@ export class SessionRuntime {
             if (!recovered) this.onError?.(new Error(formatPromptTooLongError()))
             else this.onTurnEnd?.()
           })
+          return
+        }
+        if (sawCleanResult) {
+          // result 后尾声抛错：不当崩溃；与干净退出一致
+          if (!this.turnInFlight) this.state = 'closed'
+          this.onLoopIdle?.()
           return
         }
         if (this.turnInFlight) {
@@ -382,6 +420,7 @@ export class SessionRuntime {
       }
 
       if (crashed) {
+        if (epoch !== this.loopEpoch) return
         const recovery = this.attemptRecovery(queryOptions)
         if (recovery) {
           queryOptions = recovery
