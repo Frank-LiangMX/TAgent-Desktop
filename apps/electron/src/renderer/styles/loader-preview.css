@@ -197,8 +197,7 @@
 /* 开关关闭：暂停图鉴内所有 CSS 驱动的动画。
    - 有机形变（young-walrus）由组件 data-disabled 暂停（见上）；
    - 三瓣螺旋由 active prop 暂停（JS rAF，不受此规则影响）；
-   - 点阵网格 / 消息弹跳点 / 附加光环为纯 CSS 动画，在此统一暂停。 */
-.tagent-loader-preview-stage[data-disabled] .spinner .spinner-cube,
+   - 消息弹跳点 / 附加光环 / 运行胶囊为纯 CSS 动画，在此统一暂停。 */
 .tagent-loader-preview-stage[data-disabled] .ui-addon-loader__ring,
 .tagent-loader-preview-stage[data-disabled] .ui-addon-loader__letter,
 .tagent-loader-preview-stage[data-disabled] .animate-bounce,

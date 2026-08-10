@@ -155,21 +155,19 @@ import { Button, Dialog, Tooltip, Popover } from '@tagent/ui'
 | `Sheet` | 侧滑抽屉 |
 | `DropdownMenu` | 右键/下拉菜单 |
 
-### 反馈（6 个）
+### 反馈（4 个）
 | 组件 | 用途 |
 |---|---|
 | `Alert` + `AlertTitle` + `AlertDescription` | 内联警示信息 |
 | `Badge` | 徽章/标签 |
-| `Spinner` | 默认轻量加载（3×3 点阵） |
-| `LoadingIndicator` | 带标签/计时的加载指示器 |
-| `AddonLoader` | **附加动画**（Uiverse bright-lizard-8）：旋转光环 + 逐字跳动，强视觉占位；非默认 Spinner |
+| `AddonLoader` | **附加动画**（Uiverse bitter-earwig-55）：多段光环 + 外发光 + 逐字闪烁，强视觉占位 |
 | `Toaster`（薄包装在 `@/components/ui/sonner`） | toast 通知容器，theme 自动注入 |
 
 #### 附加动画 vs 默认加载
 
 | 类型 | 组件 | 何时用 |
 |------|------|--------|
-| 默认 | `Spinner` / `LoadingIndicator` / `ThreePetalSpiral` | 按钮内、列表、行内、常规等待 |
+| 默认 | `ThreePetalSpiral` / `MessageLoading` | 按钮内、列表、行内、常规等待 |
 | **附加动画** | `AddonLoader` | 全屏/大卡片「生成中」、首次初始化等需要更强视觉时 |
 
 ```tsx

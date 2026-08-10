@@ -1,12 +1,13 @@
 /**
  * AddonLoader — 附加加载动画
  *
- * 分类：**附加动画**（非默认 Spinner）
- * 来源：Uiverse.io / dexter-st / bright-lizard-8（MIT）
- * https://uiverse.io/dexter-st/bright-lizard-8
+ * 分类：**附加动画**
+ * 来源：Uiverse.io / joao-canais / bitter-earwig-55（MIT）
+ * https://uiverse.io/joao-canais/bitter-earwig-55
+ * （bright-lizard-8 变体：多段 inset 光环 + 外发光 + 逐字闪烁）
  *
- * 用途：全屏占位、生成中、重操作等待等需要更强视觉的场景。
- * 默认轻量加载请继续用 Spinner / LoadingIndicator / ThreePetalSpiral。
+ * 用途：全屏占位、生成中、重操作等待等强视觉场景。
+ * 默认轻量加载请继续用 ThreePetalSpiral / MessageLoading。
  *
  * 颜色跟随主题 primary；文字继承 currentColor（可用 className 覆盖）。
  *
@@ -46,8 +47,8 @@ export interface AddonLoaderProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 /**
- * 附加动画：旋转 inset 光环 + 逐字跳动。
- * 请勿当作全局默认加载器替换 Spinner。
+ * 附加动画：多段旋转光环 + 外发光 + 逐字闪烁。
+ * 适合重操作占位，不必当作全局默认加载器。
  */
 export function AddonLoader({
   text = '加载中',

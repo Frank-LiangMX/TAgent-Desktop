@@ -1,24 +1,29 @@
 /**
- * AddonLoader — 附加加载动画（非默认 Spinner）
+ * AddonLoader — 附加加载动画
  *
- * 来源：Uiverse.io / dexter-st / bright-lizard-8（MIT）
- * https://uiverse.io/dexter-st/bright-lizard-8
+ * 来源：Uiverse.io / joao-canais / bitter-earwig-55（MIT）
+ * https://uiverse.io/joao-canais/bitter-earwig-55
+ * （bright-lizard-8 的变体：多段 inset 光环 + 外发光 + 逐字闪烁）
  *
  * 分类：附加动画 — 用于全屏占位、生成中、重操作等待等强视觉场景。
- * 默认轻量加载仍用 Spinner / LoadingIndicator / ThreePetalSpiral。
+ * 默认轻量加载仍用 ThreePetalSpiral / MessageLoading。
  *
- * 颜色：inset 光环绑定 --primary，文字继承 currentColor。
+ * 颜色：光环绑定 --primary 系混色（复刻原作蓝阶结构，随主题变）；
+ * 文字继承 currentColor，闪烁时带 primary 高光 text-shadow。
  */
 
 .ui-addon-loader {
   --ui-addon-loader-size: 180px;
   --ui-addon-loader-font: 1.2em;
-  /* 光环三色：亮高光 / primary / 深 primary */
-  --ui-addon-loader-glow-hi: color-mix(in srgb, hsl(var(--primary-foreground)) 88%, white 12%);
-  --ui-addon-loader-glow-mid: hsl(var(--primary) / 0.92);
-  --ui-addon-loader-glow-deep: color-mix(in srgb, hsl(var(--primary)) 52%, black 48%);
-  --ui-addon-loader-glow-alt: color-mix(in srgb, hsl(var(--primary)) 45%, hsl(var(--destructive, 0 72% 51%)) 55%);
-  --ui-addon-loader-glow-alt-deep: color-mix(in srgb, hsl(var(--primary)) 40%, black 60%);
+  /* 多段光环：亮 / 中 / 深 / 交替（对齐 bitter-earwig 四档蓝，映射到 primary） */
+  --ui-addon-loader-c-hi: color-mix(in srgb, hsl(var(--primary)) 42%, white 58%);
+  --ui-addon-loader-c-mid: color-mix(in srgb, hsl(var(--primary)) 78%, white 22%);
+  --ui-addon-loader-c-core: hsl(var(--primary) / 0.95);
+  --ui-addon-loader-c-deep: color-mix(in srgb, hsl(var(--primary)) 48%, black 52%);
+  --ui-addon-loader-c-alt: color-mix(in srgb, hsl(var(--primary)) 62%, hsl(199 89% 48%) 38%);
+  --ui-addon-loader-c-alt-deep: color-mix(in srgb, hsl(var(--primary)) 40%, black 60%);
+  --ui-addon-loader-glow-outer: color-mix(in srgb, hsl(var(--primary)) 55%, white 45%);
+  --ui-addon-loader-letter-glow: color-mix(in srgb, hsl(var(--primary)) 25%, white 75%);
 
   position: relative;
   display: flex;
@@ -43,34 +48,63 @@
   aspect-ratio: 1 / 1;
   border-radius: 50%;
   background-color: transparent;
-  animation: ui-addon-loader-rotate 2s linear infinite;
+  animation: ui-addon-loader-combined 2.3s linear infinite;
   z-index: 0;
   pointer-events: none;
 }
 
-@keyframes ui-addon-loader-rotate {
+/* bitter-earwig-55 loader-combined：四段旋转 + inset 多层 + 外发光 */
+@keyframes ui-addon-loader-combined {
   0% {
     transform: rotate(90deg);
     box-shadow:
-      0 10px 20px 0 var(--ui-addon-loader-glow-hi) inset,
-      0 20px 30px 0 var(--ui-addon-loader-glow-mid) inset,
-      0 60px 60px 0 var(--ui-addon-loader-glow-deep) inset;
+      0 6px 12px 0 var(--ui-addon-loader-c-hi) inset,
+      0 12px 18px 0 var(--ui-addon-loader-c-core) inset,
+      0 36px 36px 0 var(--ui-addon-loader-c-deep) inset,
+      0 0 3px 1.2px color-mix(in srgb, var(--ui-addon-loader-glow-outer) 30%, transparent),
+      0 0 6px 1.8px color-mix(in srgb, var(--ui-addon-loader-c-core) 20%, transparent);
+  }
+
+  25% {
+    transform: rotate(180deg);
+    box-shadow:
+      0 6px 12px 0 var(--ui-addon-loader-c-mid) inset,
+      0 12px 18px 0 var(--ui-addon-loader-c-hi) inset,
+      0 36px 36px 0 var(--ui-addon-loader-c-core) inset,
+      0 0 6px 2.4px color-mix(in srgb, var(--ui-addon-loader-glow-outer) 30%, transparent),
+      0 0 12px 3.6px color-mix(in srgb, var(--ui-addon-loader-c-core) 20%, transparent),
+      0 0 18px 6px color-mix(in srgb, var(--ui-addon-loader-c-deep) 15%, transparent);
   }
 
   50% {
     transform: rotate(270deg);
     box-shadow:
-      0 10px 20px 0 var(--ui-addon-loader-glow-hi) inset,
-      0 20px 10px 0 var(--ui-addon-loader-glow-alt) inset,
-      0 40px 60px 0 var(--ui-addon-loader-glow-alt-deep) inset;
+      0 6px 12px 0 var(--ui-addon-loader-c-hi) inset,
+      0 12px 6px 0 var(--ui-addon-loader-c-alt) inset,
+      0 24px 36px 0 var(--ui-addon-loader-c-core) inset,
+      0 0 3px 1.2px color-mix(in srgb, var(--ui-addon-loader-glow-outer) 30%, transparent),
+      0 0 6px 1.8px color-mix(in srgb, var(--ui-addon-loader-c-core) 20%, transparent);
+  }
+
+  75% {
+    transform: rotate(360deg);
+    box-shadow:
+      0 6px 12px 0 var(--ui-addon-loader-c-core) inset,
+      0 12px 18px 0 var(--ui-addon-loader-c-alt) inset,
+      0 36px 36px 0 var(--ui-addon-loader-c-mid) inset,
+      0 0 6px 2.4px color-mix(in srgb, var(--ui-addon-loader-glow-outer) 30%, transparent),
+      0 0 12px 3.6px color-mix(in srgb, var(--ui-addon-loader-c-core) 20%, transparent),
+      0 0 18px 6px color-mix(in srgb, var(--ui-addon-loader-c-deep) 15%, transparent);
   }
 
   100% {
     transform: rotate(450deg);
     box-shadow:
-      0 10px 20px 0 var(--ui-addon-loader-glow-hi) inset,
-      0 20px 30px 0 var(--ui-addon-loader-glow-mid) inset,
-      0 60px 60px 0 var(--ui-addon-loader-glow-deep) inset;
+      0 6px 12px 0 var(--ui-addon-loader-c-hi) inset,
+      0 12px 18px 0 var(--ui-addon-loader-c-core) inset,
+      0 36px 36px 0 var(--ui-addon-loader-c-deep) inset,
+      0 0 3px 1.2px color-mix(in srgb, var(--ui-addon-loader-glow-outer) 30%, transparent),
+      0 0 6px 1.8px color-mix(in srgb, var(--ui-addon-loader-c-core) 20%, transparent);
   }
 }
 
@@ -78,27 +112,30 @@
   display: inline-block;
   opacity: 0.4;
   transform: translateY(0);
-  animation: ui-addon-loader-letter 2s infinite;
+  animation: ui-addon-loader-letter 2.4s infinite;
   z-index: 1;
   border-radius: 50ch;
   border: none;
 }
 
+/* bitter-earwig-55 letter：闪烁 + 高光 text-shadow（无 scale） */
 @keyframes ui-addon-loader-letter {
   0%,
   100% {
     opacity: 0.4;
     transform: translateY(0);
+    text-shadow: none;
   }
 
   20% {
     opacity: 1;
-    transform: scale(1.15);
+    text-shadow: 0 0 5px var(--ui-addon-loader-letter-glow);
   }
 
   40% {
     opacity: 0.7;
     transform: translateY(0);
+    text-shadow: none;
   }
 }
 
@@ -106,13 +143,15 @@
   .ui-addon-loader__ring {
     animation: none;
     box-shadow:
-      0 10px 20px 0 var(--ui-addon-loader-glow-hi) inset,
-      0 20px 30px 0 var(--ui-addon-loader-glow-mid) inset,
-      0 40px 50px 0 var(--ui-addon-loader-glow-deep) inset;
+      0 6px 12px 0 var(--ui-addon-loader-c-hi) inset,
+      0 12px 18px 0 var(--ui-addon-loader-c-core) inset,
+      0 36px 36px 0 var(--ui-addon-loader-c-deep) inset,
+      0 0 4px 1.5px color-mix(in srgb, var(--ui-addon-loader-glow-outer) 28%, transparent);
   }
 
   .ui-addon-loader__letter {
     animation: none;
     opacity: 0.85;
+    text-shadow: none;
   }
 }
