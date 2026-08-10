@@ -8,9 +8,16 @@ import {
   moveWorkerPriority,
   resolveDefaultWorker,
   resolveWorkerByPreference,
+  resolveWorkerCapability,
   shouldUseCliWorker,
   syncDefaultCliId,
   validateCliWorkersConfig,
+  workerPreferScore,
+  workerSupportsRequire,
+  type CliCapabilityPrefer,
+  type CliCapabilityRequire,
+  type CliWorkerCapability,
+  type CliWorkerEntry,
   type CliWorkersConfig,
 } from './cli-workers'
 
@@ -332,10 +339,28 @@ describe('ensureSeedWorkers', () => {
     // 用户已有 kscc 字段不被覆盖
     expect(merged.workers[0]!.bin).toBe('/my/kscc')
     expect(merged.workers[0]!.defaultModel).toBe('glm-5.2')
-    // 补的三条用 seed 默认
-    expect(merged.workers[1]).toEqual({ id: 'grok', enabled: true, bin: 'grok', defaultModel: undefined })
-    expect(merged.workers[2]).toEqual({ id: 'codex', enabled: true, bin: 'codex', defaultModel: undefined })
-    expect(merged.workers[3]).toEqual({ id: 'mimo', enabled: true, bin: 'mimo', defaultModel: undefined })
+    // 补的三条用 seed 默认（含 SLICE-5 能力画像）
+    expect(merged.workers[1]).toEqual({
+      id: 'grok',
+      enabled: true,
+      bin: 'grok',
+      defaultModel: undefined,
+      capability: { cost: 2, reasoning: 'medium', goodFor: '探索 / 对照 / 草稿实现' },
+    })
+    expect(merged.workers[2]).toEqual({
+      id: 'codex',
+      enabled: true,
+      bin: 'codex',
+      defaultModel: undefined,
+      capability: { cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造' },
+    })
+    expect(merged.workers[3]).toEqual({
+      id: 'mimo',
+      enabled: true,
+      bin: 'mimo',
+      defaultModel: undefined,
+      capability: { cost: 1, reasoning: 'low', goodFor: '单测 / 机械改动 / 小包' },
+    })
     // 其余顶层字段不变
     expect(merged.enabled).toBe(true)
     expect(merged.defaultCliId).toBe('kscc')
@@ -369,5 +394,173 @@ describe('ensureSeedWorkers', () => {
     const merged = ensureSeedWorkers(old)
     // 仍补齐缺的三条 seed 工人
     expect(merged.workers.map((w) => w.id)).toEqual(['kscc', 'grok', 'codex', 'mimo'])
+  })
+})
+
+/** 造一条带能力画像的工人条目（默认 enabled + bin=id） */
+function capWorker(id: string, cap: CliWorkerCapability): CliWorkerEntry {
+  return { id, enabled: true, bin: id, capability: cap }
+}
+
+/** 造一份 seed 形态、唯一工人 kscc 携给定 capability（capability 未知形状交给校验器判断） */
+function cfgWithCapability(cap: unknown): unknown {
+  return {
+    ...seed(),
+    workers: [{ id: 'kscc', enabled: true, bin: 'kscc', capability: cap }],
+  }
+}
+
+describe('CLI_WORKERS_DEFAULT_SEED · 能力画像默认', () => {
+  it('四工人各带 cost / reasoning / goodFor（modalities 缺省 = text-only）', () => {
+    const byId = (id: string) => CLI_WORKERS_DEFAULT_SEED.workers.find((w) => w.id === id)
+    expect(byId('kscc')?.capability).toEqual({ cost: 3, reasoning: 'high', goodFor: '跨层接线 / 编排 / 复杂实现' })
+    expect(byId('grok')?.capability).toEqual({ cost: 2, reasoning: 'medium', goodFor: '探索 / 对照 / 草稿实现' })
+    expect(byId('codex')?.capability).toEqual({ cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造' })
+    expect(byId('mimo')?.capability).toEqual({ cost: 1, reasoning: 'low', goodFor: '单测 / 机械改动 / 小包' })
+    // modalities 均缺省（text-only，由 resolveWorkerCapability 折算）
+    for (const w of CLI_WORKERS_DEFAULT_SEED.workers) {
+      expect(w.capability?.modalities).toBeUndefined()
+    }
+  })
+})
+
+describe('capability 校验', () => {
+  it('接受合法 capability（含 vision 模态）', () => {
+    const ok = cfgWithCapability({ cost: 3, reasoning: 'high', modalities: ['text', 'vision'], goodFor: '编排' })
+    expect(isValidCliWorkersConfig(ok)).toBe(true)
+    expect(validateCliWorkersConfig(ok)).toBeNull()
+  })
+
+  it('接受缺省 capability（旧配置不回归）', () => {
+    expect(
+      isValidCliWorkersConfig({
+        ...seed(),
+        workers: [{ id: 'kscc', enabled: true, bin: 'kscc' }],
+      }),
+    ).toBe(true)
+  })
+
+  it('拒绝 cost 越界（0 / 6 / 非整数）', () => {
+    expect(isValidCliWorkersConfig(cfgWithCapability({ cost: 0, reasoning: 'high' }))).toBe(false)
+    expect(isValidCliWorkersConfig(cfgWithCapability({ cost: 6, reasoning: 'high' }))).toBe(false)
+    expect(isValidCliWorkersConfig(cfgWithCapability({ cost: 3.5, reasoning: 'high' }))).toBe(false)
+  })
+
+  it('拒绝 reasoning 非法', () => {
+    expect(isValidCliWorkersConfig(cfgWithCapability({ cost: 3, reasoning: 'ultra' }))).toBe(false)
+  })
+
+  it('拒绝 modalities 非法元素 / 非数组', () => {
+    expect(isValidCliWorkersConfig(cfgWithCapability({ cost: 3, reasoning: 'high', modalities: ['audio'] }))).toBe(false)
+    expect(isValidCliWorkersConfig(cfgWithCapability({ cost: 3, reasoning: 'high', modalities: 'text' }))).toBe(false)
+  })
+
+  it('拒绝 goodFor 非字符串', () => {
+    expect(isValidCliWorkersConfig(cfgWithCapability({ cost: 3, reasoning: 'high', goodFor: 5 }))).toBe(false)
+  })
+
+  it('validateCliWorkersConfig 对坏 capability 返回中文错（带 label）', () => {
+    expect(validateCliWorkersConfig(cfgWithCapability({ cost: 9, reasoning: 'high' }))).toContain('capability.cost')
+    expect(validateCliWorkersConfig(cfgWithCapability({ cost: 3, reasoning: 'ultra' }))).toContain('reasoning')
+    expect(validateCliWorkersConfig(cfgWithCapability({ cost: 3, reasoning: 'high', modalities: ['audio'] }))).toContain('modalities')
+  })
+})
+
+describe('resolveWorkerCapability', () => {
+  it('有 capability 直接返回', () => {
+    const w = capWorker('kscc', { cost: 2, reasoning: 'low', modalities: ['text', 'vision'] })
+    expect(resolveWorkerCapability(w)).toEqual({ cost: 2, reasoning: 'low', modalities: ['text', 'vision'] })
+  })
+
+  it('无 capability 按中性折算（cost 3 / medium / text）', () => {
+    const w: CliWorkerEntry = { id: 'old', enabled: true, bin: 'old' }
+    expect(resolveWorkerCapability(w)).toEqual({ cost: 3, reasoning: 'medium', modalities: ['text'] })
+  })
+
+  it('有 capability 但无 modalities → modalities 保持 undefined（不强行补 text）', () => {
+    const w = capWorker('kscc', { cost: 3, reasoning: 'high', goodFor: '编排' })
+    expect(resolveWorkerCapability(w).modalities).toBeUndefined()
+  })
+})
+
+describe('workerSupportsRequire', () => {
+  it('无 require 恒 true（含 text-only 与无 capability 工人）', () => {
+    expect(workerSupportsRequire(capWorker('a', { cost: 1, reasoning: 'low' }), null)).toBe(true)
+    expect(workerSupportsRequire(capWorker('a', { cost: 1, reasoning: 'low' }), undefined)).toBe(true)
+    const old: CliWorkerEntry = { id: 'old', enabled: true, bin: 'old' }
+    expect(workerSupportsRequire(old, null)).toBe(true)
+  })
+
+  it('require.vision=true：含 vision 模态 → true，text-only → false', () => {
+    const vision = capWorker('a', { cost: 3, reasoning: 'high', modalities: ['text', 'vision'] })
+    const text = capWorker('b', { cost: 3, reasoning: 'high' })
+    const req: CliCapabilityRequire = { vision: true }
+    expect(workerSupportsRequire(vision, req)).toBe(true)
+    expect(workerSupportsRequire(text, req)).toBe(false)
+  })
+
+  it('require.vision=true：无 capability 旧工人（默认 text）→ false', () => {
+    const old: CliWorkerEntry = { id: 'old', enabled: true, bin: 'old' }
+    expect(workerSupportsRequire(old, { vision: true })).toBe(false)
+  })
+
+  it('reasoningMin 链 low→high：工人档 < 要求 → false，≥ 要求 → true', () => {
+    const low = capWorker('a', { cost: 1, reasoning: 'low' })
+    const med = capWorker('b', { cost: 2, reasoning: 'medium' })
+    const high = capWorker('c', { cost: 3, reasoning: 'high' })
+    expect(workerSupportsRequire(low, { reasoningMin: 'medium' })).toBe(false)
+    expect(workerSupportsRequire(low, { reasoningMin: 'high' })).toBe(false)
+    expect(workerSupportsRequire(med, { reasoningMin: 'medium' })).toBe(true)
+    expect(workerSupportsRequire(med, { reasoningMin: 'high' })).toBe(false)
+    expect(workerSupportsRequire(high, { reasoningMin: 'high' })).toBe(true)
+    expect(workerSupportsRequire(high, { reasoningMin: 'low' })).toBe(true)
+  })
+
+  it('require.vision + reasoningMin 组合：两者都须满足', () => {
+    const ok = capWorker('a', { cost: 3, reasoning: 'high', modalities: ['text', 'vision'] })
+    const lowVision = capWorker('b', { cost: 3, reasoning: 'low', modalities: ['text', 'vision'] })
+    const highText = capWorker('c', { cost: 3, reasoning: 'high' })
+    expect(workerSupportsRequire(ok, { vision: true, reasoningMin: 'high' })).toBe(true)
+    expect(workerSupportsRequire(lowVision, { vision: true, reasoningMin: 'high' })).toBe(false) // vision ok 但推理不足
+    expect(workerSupportsRequire(highText, { vision: true, reasoningMin: 'high' })).toBe(false) // 推理够但无 vision
+  })
+})
+
+describe('workerPreferScore', () => {
+  it('无 prefer → 0（不参与重排，保持数组顺序）', () => {
+    expect(workerPreferScore(capWorker('a', { cost: 1, reasoning: 'low' }), null)).toBe(0)
+    expect(workerPreferScore(capWorker('a', { cost: 1, reasoning: 'low' }), undefined)).toBe(0)
+  })
+
+  it('cost 越低分越高（6 - cost）', () => {
+    const prefer: CliCapabilityPrefer = {}
+    expect(workerPreferScore(capWorker('a', { cost: 1, reasoning: 'low' }), prefer)).toBe(5)
+    expect(workerPreferScore(capWorker('a', { cost: 3, reasoning: 'medium' }), prefer)).toBe(3)
+    expect(workerPreferScore(capWorker('a', { cost: 5, reasoning: 'high' }), prefer)).toBe(1)
+  })
+
+  it('goodFor 关键词命中 worker.goodFor 加 3 分；未命中仅 cost 分', () => {
+    const prefer: CliCapabilityPrefer = { goodFor: '单测' }
+    const hit = capWorker('a', { cost: 1, reasoning: 'low', goodFor: '单测 / 机械改动 / 小包' })
+    const miss = capWorker('b', { cost: 1, reasoning: 'low', goodFor: '探索 / 对照 / 草稿实现' })
+    expect(workerPreferScore(hit, prefer)).toBe(8) // 5 + 3
+    expect(workerPreferScore(miss, prefer)).toBe(5) // 仅 cost
+  })
+
+  it('goodFor 子串匹配（"编排" 命中 "跨层接线 / 编排 / 复杂实现"）', () => {
+    const prefer: CliCapabilityPrefer = { goodFor: '编排' }
+    expect(workerPreferScore(capWorker('a', { cost: 3, reasoning: 'high', goodFor: '跨层接线 / 编排 / 复杂实现' }), prefer)).toBe(6) // 3 + 3
+  })
+
+  it('无 capability 旧工人中性兜底（默认 cost 3 → 3 分；无 goodFor 不命中）', () => {
+    const old: CliWorkerEntry = { id: 'old', enabled: true, bin: 'old' }
+    expect(workerPreferScore(old, { goodFor: '单测' })).toBe(3) // 6-3=3，无 goodFor 命中
+    expect(workerPreferScore(old, {})).toBe(3)
+  })
+
+  it('costMax 不参与打分（仅上限约束，打分仍按 6-cost）', () => {
+    const prefer: CliCapabilityPrefer = { costMax: 2 }
+    expect(workerPreferScore(capWorker('a', { cost: 1, reasoning: 'low' }), prefer)).toBe(5)
+    expect(workerPreferScore(capWorker('a', { cost: 2, reasoning: 'low' }), prefer)).toBe(4)
   })
 })

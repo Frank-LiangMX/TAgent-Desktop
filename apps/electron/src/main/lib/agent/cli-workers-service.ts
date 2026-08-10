@@ -98,6 +98,8 @@ export function writeCliWorkersConfig(cfg: CliWorkersConfig): void {
       enabled: w.enabled,
       bin: w.bin,
       ...(w.defaultModel !== undefined ? { defaultModel: w.defaultModel } : {}),
+      // capability 可选：保留（已由 validateCliWorkersConfig 校验）；旧配置无则不落该字段
+      ...(w.capability !== undefined ? { capability: w.capability } : {}),
     })),
   })
 }

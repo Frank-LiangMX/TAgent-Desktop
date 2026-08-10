@@ -15,6 +15,28 @@
 /** 工人后端形态：in-process（内置 Agent）/ cli（spawn 本机 CLI 当子代理） */
 export type CliWorkerBackend = 'in-process' | 'cli'
 
+/** CLI 工人推理强度档（low < medium < high） */
+export type CliReasoning = 'low' | 'medium' | 'high'
+
+/** CLI 工人输入模态：text 纯文本；vision 支持视觉输入 */
+export type CliModality = 'text' | 'vision'
+
+/**
+ * CLI 工人能力画像。
+ *
+ * 供主 Agent 在 task 调用时按 require（硬性过滤）/ prefer（软性打分）挑选工人，
+ * 而非仅按数组顺序。字段均可缺省：旧配置无 capability 仍合法，按中性折算。
+ */
+export interface CliWorkerCapability {
+  /** 粗略相对成本档：1 最便宜 ~ 5 最贵 */
+  cost: 1 | 2 | 3 | 4 | 5
+  reasoning: CliReasoning
+  /** 输入模态；缺省 ['text']，显式含 'vision' 才支持视觉 */
+  modalities?: CliModality[]
+  /** 适合场景一句话（注入能力卡给主 Agent 自选用） */
+  goodFor?: string
+}
+
 /** 单个 CLI 工人条目（id 为 CLI 标识：kscc / grok / codex / mimo，或任意非黑名单 id） */
 export interface CliWorkerEntry {
   /** 工人 id（kscc / grok / codex / mimo，或任意非黑名单的 id） */
@@ -28,6 +50,8 @@ export interface CliWorkerEntry {
   bin: string
   /** 默认模型 id（如 'glm-5.2'），可选 */
   defaultModel?: string
+  /** 能力画像（可选；旧配置缺省合法，缺省时按中性折算） */
+  capability?: CliWorkerCapability
 }
 
 /**
@@ -67,6 +91,8 @@ export interface CliWorkersFile {
  * 零行为变化：总开关 `enabled: false`、`defaultBackend: 'in-process'`、`defaultCliId: 'kscc'`，
  * 预置 4 个工人（kscc / grok / codex / mimo），kscc 带 `glm-5.2`，其余 defaultModel 留空（用 CLI 各自默认）。
  * 工人 enabled=true 仅表示「可被选中」，待总开关 + 后端就绪后才真正 spawn。
+ * 每个工人带能力画像（cost / reasoning / goodFor；modalities 缺省 = text-only），
+ * 供主 Agent 在 task 里按 require/prefer 挑选，避免只按数组顺序。
  */
 export const CLI_WORKERS_DEFAULT_SEED: CliWorkersConfig = {
   version: 1,
@@ -74,10 +100,34 @@ export const CLI_WORKERS_DEFAULT_SEED: CliWorkersConfig = {
   defaultBackend: 'in-process',
   defaultCliId: 'kscc',
   workers: [
-    { id: 'kscc', enabled: true, bin: 'kscc', defaultModel: 'glm-5.2' },
-    { id: 'grok', enabled: true, bin: 'grok', defaultModel: undefined },
-    { id: 'codex', enabled: true, bin: 'codex', defaultModel: undefined },
-    { id: 'mimo', enabled: true, bin: 'mimo', defaultModel: undefined },
+    {
+      id: 'kscc',
+      enabled: true,
+      bin: 'kscc',
+      defaultModel: 'glm-5.2',
+      capability: { cost: 3, reasoning: 'high', goodFor: '跨层接线 / 编排 / 复杂实现' },
+    },
+    {
+      id: 'grok',
+      enabled: true,
+      bin: 'grok',
+      defaultModel: undefined,
+      capability: { cost: 2, reasoning: 'medium', goodFor: '探索 / 对照 / 草稿实现' },
+    },
+    {
+      id: 'codex',
+      enabled: true,
+      bin: 'codex',
+      defaultModel: undefined,
+      capability: { cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造' },
+    },
+    {
+      id: 'mimo',
+      enabled: true,
+      bin: 'mimo',
+      defaultModel: undefined,
+      capability: { cost: 1, reasoning: 'low', goodFor: '单测 / 机械改动 / 小包' },
+    },
   ],
 }
 
@@ -98,6 +148,64 @@ function basenameOf(p: string): string {
 export function isDeniedCliName(name: string): boolean {
   const base = basenameOf(name).toLowerCase()
   return CLI_WORKER_DENY_LIST.some((d) => base === d)
+}
+
+/** reasoning 合法枚举集合 */
+const CLI_REASONING_VALUES = new Set<CliReasoning>(['low', 'medium', 'high'])
+/** modality 合法枚举集合 */
+const CLI_MODALITY_VALUES = new Set<CliModality>(['text', 'vision'])
+/** cost 合法档（1..5 整数） */
+const CLI_COST_VALUES = new Set<number>([1, 2, 3, 4, 5])
+
+/** capability 是否结构合法（capability 缺省时调用方先判空，这里假定入参非空） */
+function isValidCapability(c: unknown): boolean {
+  if (!c || typeof c !== 'object') return false
+  const cap = c as Partial<CliWorkerCapability>
+  if (typeof cap.cost !== 'number' || !Number.isInteger(cap.cost) || !CLI_COST_VALUES.has(cap.cost)) {
+    return false
+  }
+  if (cap.reasoning == null || !CLI_REASONING_VALUES.has(cap.reasoning)) {
+    return false
+  }
+  if (cap.modalities != null) {
+    if (!Array.isArray(cap.modalities)) return false
+    for (const m of cap.modalities) {
+      if (typeof m !== 'string' || !CLI_MODALITY_VALUES.has(m as CliModality)) return false
+    }
+  }
+  if (cap.goodFor != null && typeof cap.goodFor !== 'string') return false
+  return true
+}
+
+/**
+ * capability 整单校验：结构非法即返回中文错误（带工人 label），全合法返回 null。
+ * 与 `isValidCapability` 同口径，但产出具体中文消息供保存 IPC 拒写时回显。
+ */
+function validateCapability(c: unknown, label: string): string | null {
+  if (!c || typeof c !== 'object') {
+    return `CLI 工人条目「${label}」结构不合法：capability 须为对象`
+  }
+  const cap = c as Partial<CliWorkerCapability>
+  if (typeof cap.cost !== 'number' || !Number.isInteger(cap.cost) || !CLI_COST_VALUES.has(cap.cost)) {
+    return `CLI 工人条目「${label}」结构不合法：capability.cost 须为 1..5 的整数`
+  }
+  if (cap.reasoning == null || !CLI_REASONING_VALUES.has(cap.reasoning)) {
+    return `CLI 工人条目「${label}」结构不合法：capability.reasoning 须为 low / medium / high`
+  }
+  if (cap.modalities != null) {
+    if (!Array.isArray(cap.modalities)) {
+      return `CLI 工人条目「${label}」结构不合法：capability.modalities 须为数组`
+    }
+    for (const m of cap.modalities) {
+      if (typeof m !== 'string' || !CLI_MODALITY_VALUES.has(m as CliModality)) {
+        return `CLI 工人条目「${label}」结构不合法：capability.modalities 元素须为 text / vision`
+      }
+    }
+  }
+  if (cap.goodFor != null && typeof cap.goodFor !== 'string') {
+    return `CLI 工人条目「${label}」结构不合法：capability.goodFor 须为字符串`
+  }
+  return null
 }
 
 /**
@@ -134,6 +242,7 @@ export interface CliWorkersProbeResult {
  * - enabled 布尔、defaultBackend ∈ {'in-process','cli'}
  * - defaultCliId 非空字符串
  * - workers 数组；每条 id/bin 非空字符串、enabled 布尔、defaultModel 可选字符串
+ * - capability（可选）：存在时 cost ∈ 1..5 整数、reasoning ∈ 枚举、modalities 数组元素 ∈ 枚举、goodFor 可选字符串
  * - 黑名单：任一工人 id 或 bin 的 basename 命中 hermes/openclaw → 非法
  */
 export function isValidCliWorkersConfig(cfg: unknown): cfg is CliWorkersConfig {
@@ -151,6 +260,8 @@ export function isValidCliWorkersConfig(cfg: unknown): cfg is CliWorkersConfig {
     if (typeof e.bin !== 'string' || e.bin.length === 0) return false
     if (typeof e.enabled !== 'boolean') return false
     if (e.defaultModel != null && typeof e.defaultModel !== 'string') return false
+    // capability 可选；存在时须结构合法
+    if (e.capability != null && !isValidCapability(e.capability)) return false
     // 黑名单：id 或 bin 的 basename 命中 → 非法
     if (isDeniedCliName(e.id!) || isDeniedCliName(e.bin!)) return false
   }
@@ -201,6 +312,10 @@ export function validateCliWorkersConfig(cfg: unknown): string | null {
     }
     if (e.defaultModel != null && typeof e.defaultModel !== 'string') {
       return `CLI 工人条目「${label}」结构不合法：defaultModel 须为字符串`
+    }
+    if (e.capability != null) {
+      const capErr = validateCapability(e.capability, label)
+      if (capErr) return capErr
     }
     if (isDeniedCliName(e.id) || isDeniedCliName(e.bin)) {
       return `CLI 工人条目「${label}」非法：id 或 bin 的 basename 命中黑名单（hermes / openclaw），禁止配置`
@@ -300,4 +415,82 @@ export function ensureSeedWorkers(cfg: CliWorkersConfig): CliWorkersConfig {
   const missing = CLI_WORKERS_DEFAULT_SEED.workers.filter((w) => !have.has(w.id))
   if (missing.length === 0) return cfg
   return { ...cfg, workers: [...cfg.workers, ...missing.map((w) => ({ ...w }))] }
+}
+
+/**
+ * task 工具 `require` 参数：硬性能力要求。
+ * - vision: true 需工人 modalities 含 'vision'
+ * - reasoningMin: 工人 reasoning 档须 ≥ 此值（low < medium < high）
+ */
+export interface CliCapabilityRequire {
+  vision?: boolean
+  reasoningMin?: CliReasoning
+}
+
+/**
+ * task 工具 `prefer` 参数：软性偏好（仅影响同合格候选排序，不剔除）。
+ * - costMax: 视为硬上限（见 C2 候选过滤，cost > costMax 剔除），不参与打分
+ * - goodFor: 关键词命中 worker.goodFor 时打分加 3
+ */
+export interface CliCapabilityPrefer {
+  costMax?: 1 | 2 | 3 | 4 | 5
+  goodFor?: string
+}
+
+/** reasoning 档位排序：low < medium < high */
+const CLI_REASONING_RANK: Record<CliReasoning, number> = { low: 0, medium: 1, high: 2 }
+
+/**
+ * 解析工人的有效能力画像。
+ * 有 capability 直接返回；缺省按中性折算 `{ cost: 3, reasoning: 'medium', modalities: ['text'] }`，
+ * 避免旧文件（无 capability）整体垫底或顶格。
+ */
+export function resolveWorkerCapability(w: CliWorkerEntry): CliWorkerCapability {
+  return (
+    w.capability ?? { cost: 3, reasoning: 'medium', modalities: ['text'] }
+  )
+}
+
+/**
+ * 硬性过滤：工人是否满足 require。
+ * - 无 require → 恒 true
+ * - require.vision=true 需 modalities 含 'vision'
+ * - require.reasoningMin 按 low<medium<high 比较，工人档 < 要求 → false
+ */
+export function workerSupportsRequire(
+  w: CliWorkerEntry,
+  require?: CliCapabilityRequire | null,
+): boolean {
+  if (!require) return true
+  const cap = resolveWorkerCapability(w)
+  if (require.vision) {
+    const mods = cap.modalities ?? ['text']
+    if (!mods.includes('vision')) return false
+  }
+  if (require.reasoningMin) {
+    if (CLI_REASONING_RANK[cap.reasoning] < CLI_REASONING_RANK[require.reasoningMin]) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * 软性打分：工人对 prefer 的偏好分（越高越优选）。
+ * - 无 prefer → 返回 0（不参与重排，保持数组顺序）
+ * - cost 越低分越高（6 - cost）
+ * - prefer.goodFor 关键词命中 worker.goodFor 加 3 分
+ * - costMax 不参与打分（它是上限约束，见 C2 候选过滤）
+ */
+export function workerPreferScore(
+  w: CliWorkerEntry,
+  prefer?: CliCapabilityPrefer | null,
+): number {
+  if (!prefer) return 0
+  const cap = resolveWorkerCapability(w)
+  let score = 6 - cap.cost
+  if (prefer.goodFor && cap.goodFor && cap.goodFor.includes(prefer.goodFor)) {
+    score += 3
+  }
+  return score
 }

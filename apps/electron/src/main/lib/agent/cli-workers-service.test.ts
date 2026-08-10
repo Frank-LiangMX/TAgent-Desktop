@@ -80,7 +80,13 @@ describe('listCliWorkersConfig', () => {
     // 用户已有 kscc 字段保留，缺的 grok/codex/mimo 补齐
     expect(cfg.workers.map((w) => w.id)).toEqual(['kscc', 'grok', 'codex', 'mimo'])
     expect(cfg.workers[0]!.bin).toBe('/usr/local/bin/kscc')
-    expect(cfg.workers[1]).toEqual({ id: 'grok', enabled: true, bin: 'grok' })
+    // merge 自 seed 的 grok 带 SLICE-5 能力画像（仅内存补齐，不回写盘）
+    expect(cfg.workers[1]).toEqual({
+      id: 'grok',
+      enabled: true,
+      bin: 'grok',
+      capability: { cost: 2, reasoning: 'medium', goodFor: '探索 / 对照 / 草稿实现' },
+    })
     // merge 仅在内存，文件仍是旧 1 条（落盘升级发生在用户下次保存整表）
     const raw = JSON.parse(readFileSync(join(configDir, 'cli-workers.json'), 'utf8'))
     expect(raw.workers.map((w: { id: string }) => w.id)).toEqual(['kscc'])

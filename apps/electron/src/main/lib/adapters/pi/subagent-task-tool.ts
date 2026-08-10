@@ -17,7 +17,7 @@ import {
   resolveSubagentDefinition,
 } from '../../agent/subagent-definitions'
 import {
-  listEnabledCliWorkerIds,
+  listEnabledCliWorkerCards,
   resolveTaskSubagentBackend,
 } from '../../agent/cli-workers/resolve-backend'
 import { runCliWorker } from '../../agent/cli-workers/run-cli-worker'
@@ -43,6 +43,38 @@ const taskSchema = Type.Object({
     Type.String({
       description:
         '本机 CLI 工人 id（如 kscc / grok / codex / mimo）。仅当设置启用了「本机 CLI」后端时有效；省略则按优先级自动挑选。可与其它 task 并行且各选不同 CLI。',
+    }),
+  ),
+  /**
+   * 硬性能力要求：不满足的工人被剔除（含显式 cli 不满足也回落池内）。
+   * - vision: true 需工人支持视觉输入
+   * - reasoningMin: 工人推理档须 ≥ 此值（low < medium < high）
+   */
+  require: Type.Optional(
+    Type.Object({
+      vision: Type.Optional(Type.Boolean()),
+      reasoningMin: Type.Optional(
+        Type.Union([Type.Literal('low'), Type.Literal('medium'), Type.Literal('high')]),
+      ),
+    }),
+  ),
+  /**
+   * 软性偏好：只影响同合格候选排序，不剔除工人（也不剔除显式 cli）。
+   * - costMax: 视为硬上限，cost > costMax 的候选被剔除
+   * - goodFor: 关键词命中工人 goodFor 时排序加分
+   */
+  prefer: Type.Optional(
+    Type.Object({
+      costMax: Type.Optional(
+        Type.Union([
+          Type.Literal(1),
+          Type.Literal(2),
+          Type.Literal(3),
+          Type.Literal(4),
+          Type.Literal(5),
+        ]),
+      ),
+      goodFor: Type.Optional(Type.String()),
     }),
   ),
 })
@@ -138,6 +170,9 @@ export type SubagentBeforeToolCall = (ctx: {
  * @param beforeToolCall - 父会话权限钩子（危险命令 + Chat 只读等）；缺省时退化为 pi-core 危险命令拦截
  * @param onTaskEvent - 进度事件出口（入口卡）；缺省则静默（仅 tool_result）
  * @param emitPayload - 推 IR 到父会话流（CLI 子代理详情 parentToolUseId 消息）；缺省则详情页无过程
+ * @param sessionPreferredCliId - 会话偏好的 CLI 工人 id（来自会话 meta cliWorkerId）。
+ *   task 未显式传 cli 时用它作 preferredCliId 注入路由；显式 cli 仍最高优先。
+ *   已禁用/已删除的 id 由 resolve 自动回落池内，不报错。
  */
 export function createTaskTool(
   parentSessionId: string,
@@ -148,6 +183,7 @@ export function createTaskTool(
   beforeToolCall?: SubagentBeforeToolCall,
   onTaskEvent?: SubagentTaskEventSink,
   emitPayload?: (p: TAgentDesktopStreamPayload) => void,
+  sessionPreferredCliId?: string | null,
 ): AgentTool<typeof taskSchema, TaskToolDetails> {
   // 优先挂父会话 beforeToolCall（含 Chat 硬只读 / plan / 弹窗确认）。
   // 缺口：创建路径若拿不到 PermissionService，仅用 checkToolPermission——
@@ -166,12 +202,11 @@ export function createTaskTool(
       return undefined
     })
 
-  // 描述里带上当前启用池（创建时快照；execute 时再 resolve，允许设置变更后新 task 生效）
-  const enabledAtCreate = listEnabledCliWorkerIds()
-  const cliHint =
-    enabledAtCreate.length > 0
-      ? ` 本机 CLI 后端已开；启用优先级：${enabledAtCreate.join(' > ')}。可用参数 cli 指定其一，省略则按优先级自动选；支持并行多路且各选不同 CLI。`
-      : ' 子代理默认走内置（进程内）；设置中可改用本机 CLI 工人池。'
+  // 描述里带上当前启用池能力卡（创建时快照；execute 时再 resolve，允许设置变更后新 task 生效）
+  const card = listEnabledCliWorkerCards()
+  const cliHint = card
+    ? `\n${card}`
+    : ' 子代理默认走内置（进程内）；设置中可改用本机 CLI 工人池。'
 
   return {
     name: 'task',
@@ -203,8 +238,14 @@ export function createTaskTool(
         (typeof params.description === 'string' && params.description.trim()) ||
         params.prompt.slice(0, 60)
 
-      const preferredCli =
+      // preferredCliId 优先级：params.cli 显式指定 > 会话偏好 sessionPreferredCliId > 启用池优先级（resolve 层兜底）
+      const explicitCli =
         typeof params.cli === 'string' && params.cli.trim() ? params.cli.trim() : undefined
+      const sessionPref =
+        typeof sessionPreferredCliId === 'string' && sessionPreferredCliId.trim()
+          ? sessionPreferredCliId.trim()
+          : undefined
+      const preferredCli = explicitCli ?? sessionPref
 
       console.log(
         `[子代理 ${parentSessionId}] 启动 ${subagentType}（角色投影）: ${description}` +
@@ -221,7 +262,12 @@ export function createTaskTool(
 
       // CLI 工人池：启用 + 优先级排序；task.cli 可指定，否则按序选第一个本机可用的。
       // 同会话多路 parallel task 各自独立 resolve/spawn，可并发且 CLI 可不同。
-      const backend = resolveTaskSubagentBackend({ preferredCliId: preferredCli })
+      // require（硬性过滤）/ prefer（软性打分）按能力画像挑工人，不再只按数组顺序。
+      const backend = resolveTaskSubagentBackend({
+        preferredCliId: preferredCli,
+        require: params.require,
+        prefer: params.prefer,
+      })
       if (backend.kind === 'cli') {
         const workerId = backend.worker.id
         // CLI 无 subagent_type 人格，把角色 system + 用户任务拼成单 prompt
