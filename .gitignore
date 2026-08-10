@@ -48,3 +48,6 @@ release-notes/__generated/
 
 # mimo-ai 工具产物（skills/distill 等）
 .mimocode/
+
+# Claude 本地会话配置（agent 产物，不入库）
+.claude/
