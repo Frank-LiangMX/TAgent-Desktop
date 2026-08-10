@@ -19,11 +19,13 @@ import {
   RefreshCw,
   Sparkles,
   Trash2,
+  X,
 } from 'lucide-react'
 import {
   Button,
   DestructiveConfirmDialog,
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogTitle,
@@ -600,15 +602,25 @@ function BundleDetailDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
+        hideClose
         className="plugin-detail-dialog !gap-0 !p-0 !overflow-hidden"
         aria-describedby="plugin-detail-desc"
       >
         {!bundle ? (
           <div className="plugin-detail-shell" style={{ padding: 24 }}>
-            <DialogTitle className="plugin-detail-title">整合包不存在</DialogTitle>
-            <DialogDescription id="plugin-detail-desc" className="plugin-detail-id">
-              目录中找不到该整合包，可能已被移除。
-            </DialogDescription>
+            <header className="plugin-detail-header" style={{ padding: 0, border: 0 }}>
+              <div className="plugin-detail-titles">
+                <DialogTitle className="plugin-detail-title">整合包不存在</DialogTitle>
+                <DialogDescription id="plugin-detail-desc" className="plugin-detail-id">
+                  目录中找不到该整合包，可能已被移除。
+                </DialogDescription>
+              </div>
+              <div className="plugin-detail-header-actions">
+                <DialogClose className="plugin-detail-close" aria-label="关闭">
+                  <X size={14} strokeWidth={2} />
+                </DialogClose>
+              </div>
+            </header>
           </div>
         ) : (
           <div className="plugin-detail-shell">
@@ -646,6 +658,9 @@ function BundleDetailDialog({
                     {installing ? '安装中…' : '安装'}
                   </Button>
                 )}
+                <DialogClose className="plugin-detail-close" aria-label="关闭">
+                  <X size={14} strokeWidth={2} />
+                </DialogClose>
               </div>
             </header>
 

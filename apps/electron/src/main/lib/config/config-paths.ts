@@ -159,3 +159,8 @@ export function getUserProfilePath(): string {
 export function getMoaPresetsPath(): string {
   return join(getConfigDir(), 'moa-presets.json')
 }
+
+/** CLI 工人配置文件：~/.tagent[-dev]/cli-workers.json（本机 coding CLI 子代理后端） */
+export function getCliWorkersPath(): string {
+  return join(getConfigDir(), 'cli-workers.json')
+}

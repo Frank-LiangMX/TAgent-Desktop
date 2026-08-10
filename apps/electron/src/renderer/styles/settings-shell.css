@@ -2244,6 +2244,27 @@
   align-items: center;
   gap: 8px;
 }
+.plugin-detail-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--spatial-faint);
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+.plugin-detail-close:hover {
+  background: var(--settings-hover-fill);
+  color: var(--spatial-ink);
+}
 .plugin-detail-body {
   display: grid;
   grid-template-columns: 148px minmax(0, 1fr);

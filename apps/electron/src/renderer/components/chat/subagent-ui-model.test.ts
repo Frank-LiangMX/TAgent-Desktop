@@ -16,6 +16,7 @@ import {
   reduceTaskEvent,
   isSubagentRuntimeTaskType,
   canCreateSubagentTaskCard,
+  rehydrateSubagentTaskCardsFromHistory,
   type TaskCardState,
   type TaskCardCarrier,
   type TaskCardEvent,
@@ -47,6 +48,15 @@ describe('resolveEagerness', () => {
 
   it('meta 无字段回退默认 conservative', () => {
     expect(resolveEagerness({})).toBe('conservative')
+  })
+
+  it('meta 无字段时使用全局 fallback', () => {
+    expect(resolveEagerness({}, 'aggressive')).toBe('aggressive')
+    expect(resolveEagerness(undefined, 'never')).toBe('never')
+  })
+
+  it('会话档优先于全局 fallback', () => {
+    expect(resolveEagerness({ subagentEagerness: 'balanced' }, 'aggressive')).toBe('balanced')
   })
 
   it('回显已持久化档位', () => {
@@ -341,5 +351,72 @@ describe('reduceTaskEvent', () => {
     items = reduceTaskEvent(items, { type: 'task_progress', taskId: 't1', lastToolName: 'Grep' }, applyRich)
     expect(items[0]?.kind).toBe('rich')
     expect(items[0]?.taskCard?.lastToolName).toBe('Grep')
+  })
+})
+
+describe('rehydrateSubagentTaskCardsFromHistory', () => {
+  type HistItem = TaskCardCarrier & { message?: TAgentMessage }
+
+  it('从 task tool_use + tool_result 回填 completed 卡与结论摘要', () => {
+    const create = mkFactory()
+    const items: HistItem[] = [
+      {
+        key: 'a1',
+        message: {
+          type: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_1',
+              name: 'task',
+              input: { description: '探索项目', subagent_type: 'explorer', prompt: 'go' },
+            },
+          ],
+        } as TAgentMessage,
+      },
+      {
+        key: 'u1',
+        message: {
+          type: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              toolUseId: 'call_1',
+              content: '这是子代理的完整结论报告，包含目录结构。',
+            },
+          ],
+        } as TAgentMessage,
+      },
+    ]
+    const out = rehydrateSubagentTaskCardsFromHistory(items, create)
+    const card = out.find((i) => i.taskCard?.toolUseId === 'call_1')?.taskCard
+    expect(card).toBeDefined()
+    expect(card?.status).toBe('completed')
+    expect(card?.description).toContain('探索项目')
+    expect(card?.summary).toContain('完整结论报告')
+  })
+
+  it('无 tool_result 时 status=stopped，summary 标明无结论', () => {
+    const create = mkFactory()
+    const items: HistItem[] = [
+      {
+        key: 'a1',
+        message: {
+          type: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_x',
+              name: 'task',
+              input: { description: '半路中断' },
+            },
+          ],
+        } as TAgentMessage,
+      },
+    ]
+    const out = rehydrateSubagentTaskCardsFromHistory(items, create)
+    const card = out.find((i) => i.taskCard?.toolUseId === 'call_x')?.taskCard
+    expect(card?.status).toBe('stopped')
+    expect(card?.summary).toContain('无回传结论')
   })
 })

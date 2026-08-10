@@ -1,0 +1,19 @@
+Reading additional input from stdin...
+2026-08-10T02:19:09.531361Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 94 column 5
+OpenAI Codex v0.146.0
+--------
+workdir: F:\TAgent-Desktop
+model: gpt-5.6-sol
+provider: openai
+approval: on-request
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: none
+session id: 019fe977-8364-7cf3-b508-b29c7b8b742e
+--------
+user
+Reply with exactly: CODEX_OK and nothing else.
+codex
+CODEX_OK
+tokens used
+6,340

@@ -4,7 +4,7 @@
  * - **完整模式**：工具行展开；思考默认只露头栏（「正在思考…」扫光），点开看正文
  * - **简洁模式**：过程区打开时思考同样默认收起；idle 后收成一行摘要
  */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
 import {
   Collapsible,
@@ -254,10 +254,13 @@ export function ProcessGroupView({
 }
 
 /**
- * 思考行：默认只露头栏（对齐 Cursor）；live 头栏「正在思考…」扫光做及时反馈，
- * 正文不自动铺开，点开再看。body 常驻 DOM（`__panel` grid）。
+ * 思考行（full 模式）：默认只露头栏（对齐 Cursor）；live 头栏「正在思考…」扫光做及时反馈，
+ * 正文不自动铺开，点开再看。
+ * **B（lazy mount）**：折叠时**不挂载**完整 reasoning 的 MessageResponse / Markdown parser /
+ * useSmoothStream——只渲染头栏；用户展开后才挂载 {@link ThinkingActivityRowBody} 渲染完整 Markdown，
+ * 关闭后立即卸载重型正文。full 模式展开仍完整展示。导出供 B 行为单测渲染。
  */
-const ThinkingActivityRow = memo(function ThinkingActivityRow({
+export const ThinkingActivityRow = memo(function ThinkingActivityRow({
   thinking,
   isLive,
   durationSec,
@@ -272,11 +275,6 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
   displayMode?: ProcessDisplayMode
 }): JSX.Element {
   void _displayMode
-  const { displayedContent } = useSmoothStream({
-    content: thinking,
-    isStreaming: isLive,
-  })
-  const text = displayedContent.trim()
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
   const open = userExpanded ?? false
   const openRef = useRef(open)
@@ -321,15 +319,6 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
     }
   }, [isLive])
 
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const stickToLatestRef = useRef(true)
-  useEffect(() => {
-    if (!isLive || !open) return
-    const el = bodyRef.current
-    if (!el || !stickToLatestRef.current) return
-    el.scrollTop = el.scrollHeight
-  }, [text, isLive, open])
-
   const effectiveSec = isLive
     ? Math.floor(elapsedMs / 1000)
     : (frozenLiveSecRef.current ?? durationSec)
@@ -338,12 +327,15 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
     liveElapsedSec: Math.floor(elapsedMs / 1000),
   })
 
+  const panelId = useId()
+
   return (
     <div className={cn('agent-thinking-row', isLive && 'is-live')}>
       <button
         type="button"
         className="agent-thinking-row__head"
         aria-expanded={open}
+        aria-controls={panelId}
         onClick={() => {
           if (settleTimerRef.current != null) {
             window.clearTimeout(settleTimerRef.current)
@@ -365,22 +357,55 @@ const ThinkingActivityRow = memo(function ThinkingActivityRow({
           )}
         />
       </button>
+      {/* B：折叠时卸载重型正文（不挂 MessageResponse/Markdown/useSmoothStream）；展开才挂 body */}
       <div className={cn('agent-thinking-row__panel', open && 'is-open')} aria-hidden={!open}>
         <div className="agent-thinking-row__panel-inner">
-          <div
-            ref={bodyRef}
-            className="agent-thinking-row__body"
-            onScroll={(e) => {
-              const el = e.currentTarget
-              stickToLatestRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
-            }}
-          >
-            <MessageResponse className={PROCESS_MD_CLASS} streaming={isLive}>
-              {text || (isLive ? '…' : '')}
-            </MessageResponse>
-          </div>
+          {open ? <ThinkingActivityRowBody thinking={thinking} isLive={isLive} /> : null}
         </div>
       </div>
+    </div>
+  )
+})
+
+/**
+ * ThinkingActivityRow 的重型正文子组件：仅在用户展开（open=true）时挂载。
+ * 挂载时才运行 useSmoothStream + MessageResponse/Markdown parser；关闭即卸载，
+ * 避免折叠态逐帧全量 Markdown 解析（B/D 性能）。full 模式展开仍完整 Markdown。
+ */
+const ThinkingActivityRowBody = memo(function ThinkingActivityRowBody({
+  thinking,
+  isLive,
+}: {
+  thinking: string
+  isLive: boolean
+}): JSX.Element {
+  const { displayedContent } = useSmoothStream({
+    content: thinking,
+    isStreaming: isLive,
+  })
+  const text = displayedContent.trim()
+
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const stickToLatestRef = useRef(true)
+  useEffect(() => {
+    if (!isLive) return
+    const el = bodyRef.current
+    if (!el || !stickToLatestRef.current) return
+    el.scrollTop = el.scrollHeight
+  }, [text, isLive])
+
+  return (
+    <div
+      ref={bodyRef}
+      className="agent-thinking-row__body"
+      onScroll={(e) => {
+        const el = e.currentTarget
+        stickToLatestRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+      }}
+    >
+      <MessageResponse className={PROCESS_MD_CLASS} streaming={isLive}>
+        {text || (isLive ? '…' : '')}
+      </MessageResponse>
     </div>
   )
 })

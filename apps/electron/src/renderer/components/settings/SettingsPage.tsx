@@ -51,6 +51,7 @@ import {
 import { loaderAnimationEnabledAtom, splitDockModeAtom } from '../../atoms/feature-flags'
 import { ChannelsSettings } from './ChannelsSettings'
 import { AgentBehaviorSettings } from './AgentBehaviorSettings'
+import { CliWorkersSettingsSection } from './CliWorkersSettingsSection'
 import { UpdateChecker } from './UpdateChecker'
 import { ComposerRunTimer } from '../chat/ComposerRunTimer'
 import appiconLight from '../../assets/tagent-appicon-light.png'
@@ -59,19 +60,57 @@ import appiconDark from '../../assets/tagent-appicon-dark.png'
 const APP_VERSION =
   typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : '2.0.0-dev.9'
 
-/** 设置页 tab：工作区在侧栏管；插件/MCP 在 Rail 插件页 */
-export type SettingsTab = 'general' | 'appearance' | 'channels' | 'agent' | 'about'
+/**
+ * 设置页 tab。
+ * Agent 行为升为与「核心 / 高级」同级大类，下挂：
+ * 会诊（并行交卷）/ 子代理（内置 + 本机 CLI）/ 班组 / 圆桌（互相对话）。
+ * 兼容旧 id `agent` → 归一为 `agent-roundtable`。
+ *
+ * 用户可见命名约定：
+ * - 会诊 = 各答各的再汇总（非圆桌；id 仍为 agent-roundtable）
+ * - 圆桌 = 多角色互相讨论出共识（id 仍为 agent-discuss）
+ * - 子代理 = 内置进程内 + 可选本机 CLI（id 仍为 agent-cli）
+ */
+export type SettingsTab =
+  | 'general'
+  | 'appearance'
+  | 'channels'
+  | 'agent-roundtable'
+  | 'agent-cli'
+  | 'agent-crew'
+  | 'agent-discuss'
+  | 'about'
+  /** @deprecated 使用 agent-roundtable（会诊） */
+  | 'agent'
+
+/** 打开设置时把历史 tab id 归一到现行 id */
+export function normalizeSettingsTab(tab: SettingsTab | string | undefined): SettingsTab {
+  if (tab === 'agent') return 'agent-roundtable'
+  const known: SettingsTab[] = [
+    'general',
+    'appearance',
+    'channels',
+    'agent-roundtable',
+    'agent-cli',
+    'agent-crew',
+    'agent-discuss',
+    'about',
+  ]
+  if (tab && (known as string[]).includes(tab)) return tab as SettingsTab
+  return 'general'
+}
 
 interface TabItem {
-  id: SettingsTab
+  id: Exclude<SettingsTab, 'agent'>
   label: string
   description: string
   icon: React.ReactNode
-  group: 'core' | 'advanced'
+  group: 'core' | 'agent' | 'advanced'
 }
 
 const TAB_GROUPS: Array<{ key: TabItem['group']; label: string }> = [
   { key: 'core', label: '核心' },
+  { key: 'agent', label: 'Agent 行为' },
   { key: 'advanced', label: '高级' },
 ]
 
@@ -98,11 +137,32 @@ const ALL_TABS: TabItem[] = [
     group: 'core',
   },
   {
-    id: 'agent',
-    label: 'Agent 行为',
-    description: '班组、圆桌 · 快速、圆桌 · 研讨等协作策略',
+    id: 'agent-roundtable',
+    label: '会诊',
+    description: '多模型并行交卷再汇总',
     icon: <Users size={14} strokeWidth={1.75} />,
-    group: 'core',
+    group: 'agent',
+  },
+  {
+    id: 'agent-cli',
+    label: '子代理',
+    description: '内置与本机 CLI 工人',
+    icon: <Cpu size={14} strokeWidth={1.75} />,
+    group: 'agent',
+  },
+  {
+    id: 'agent-crew',
+    label: '班组',
+    description: '长任务派工（即将推出）',
+    icon: <Boxes size={14} strokeWidth={1.75} />,
+    group: 'agent',
+  },
+  {
+    id: 'agent-discuss',
+    label: '圆桌',
+    description: '多角色互相讨论出共识',
+    icon: <BrainCircuit size={14} strokeWidth={1.75} />,
+    group: 'agent',
   },
   {
     id: 'about',
@@ -307,14 +367,61 @@ function StyleCard({
   )
 }
 
+function AgentComingSoonPage({
+  title,
+  blurb,
+}: {
+  title: string
+  blurb: string
+}): JSX.Element {
+  return (
+    <div className="settings-page">
+      <SettingsPageIntro title={title} description={blurb} />
+      <p className="agent-behavior-coming">即将推出，当前请使用「会诊」与「子代理」。</p>
+    </div>
+  )
+}
+
 function renderTabContent(tab: SettingsTab): JSX.Element {
-  switch (tab) {
-    case 'general': return <GeneralSettings />
-    case 'appearance': return <AppearanceSettings />
-    case 'channels': return <ChannelsSettings />
-    case 'agent': return <AgentBehaviorSettings />
-    case 'about': return <AboutSettings />
-    default: return <AppearanceSettings />
+  const t = normalizeSettingsTab(tab)
+  switch (t) {
+    case 'general':
+      return <GeneralSettings />
+    case 'appearance':
+      return <AppearanceSettings />
+    case 'channels':
+      return <ChannelsSettings />
+    case 'agent-roundtable':
+    case 'agent':
+      return <AgentBehaviorSettings />
+    case 'agent-cli':
+      return (
+        <div className="settings-page">
+          <SettingsPageIntro
+            title="子代理"
+            description="委派积极性、内置子代理与可选本机 CLI。默认走内置；切到本机 CLI 后再配置工人与探测。"
+          />
+          <CliWorkersSettingsSection />
+        </div>
+      )
+    case 'agent-crew':
+      return (
+        <AgentComingSoonPage
+          title="班组"
+          blurb="长任务看板派工与工人编排。"
+        />
+      )
+    case 'agent-discuss':
+      return (
+        <AgentComingSoonPage
+          title="圆桌"
+          blurb="多角色互相讨论、出共识；支持插话与喊停。"
+        />
+      )
+    case 'about':
+      return <AboutSettings />
+    default:
+      return <AppearanceSettings />
   }
 }
 
@@ -329,20 +436,23 @@ export function SettingsDialog({
   initialTab?: SettingsTab
   onTabChange?: (tab: SettingsTab) => void
 }): JSX.Element {
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab)
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() =>
+    normalizeSettingsTab(initialTab),
+  )
   const [paneKey, setPaneKey] = useState(0)
 
   useEffect(() => {
     if (!open) return
-    setActiveTab(initialTab)
+    setActiveTab(normalizeSettingsTab(initialTab))
     setPaneKey((key) => key + 1)
   }, [initialTab, open])
 
   const handleTabChange = (tabId: SettingsTab): void => {
-    if (tabId === activeTab) return
-    setActiveTab(tabId)
+    const next = normalizeSettingsTab(tabId)
+    if (next === activeTab) return
+    setActiveTab(next)
     setPaneKey((k) => k + 1)
-    onTabChange?.(tabId)
+    onTabChange?.(next)
   }
 
   return (
@@ -356,9 +466,9 @@ export function SettingsDialog({
             {/* 顶栏 */}
             <header className="settings-shell-topbar">
               <div className="settings-shell-topbar-brand">
-                <span className="settings-shell-topbar-mark" aria-hidden>T</span>
+                <span className="settings-shell-topbar-mark" aria-hidden>S</span>
                 <div className="settings-shell-topbar-copy">
-                  <span className="settings-shell-kicker">PREFERENCES</span>
+                  <span className="settings-shell-kicker">SETTINGS</span>
                   <span className="settings-shell-title">设置</span>
                 </div>
               </div>
@@ -407,7 +517,14 @@ export function SettingsDialog({
                 <div className="settings-shell-scroll scrollbar-thin">
                   <div
                     key={`${activeTab}-${paneKey}`}
-                    className={`settings-shell-content settings-shell-pane ${activeTab === 'channels' || activeTab === 'agent' ? 'settings-shell-content--wide' : ''}`}
+                    className={`settings-shell-content settings-shell-pane ${
+                      activeTab === 'channels' ||
+                      activeTab === 'agent' ||
+                      activeTab === 'agent-roundtable' ||
+                      activeTab === 'agent-cli'
+                        ? 'settings-shell-content--wide'
+                        : ''
+                    }`}
                   >
                     {renderTabContent(activeTab)}
                   </div>

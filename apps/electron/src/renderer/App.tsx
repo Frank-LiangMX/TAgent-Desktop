@@ -23,6 +23,8 @@ import type {
   InstallStoreBundleResult,
   McpServerEntry,
   MoAPreset,
+  CliWorkersConfig,
+  CliWorkersProbeResult,
   NudgeCandidate,
   PluginStoreCatalog,
   StageEntry,
@@ -35,7 +37,11 @@ import { MemoryMonitorPanel, showNudgeToasts } from './components/memory'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
 import { PluginStoreSettings } from './components/settings/PluginStoreSettings'
 import { RolesPage } from './components/roles/RolesPage'
-import { SettingsDialog, type SettingsTab } from './components/settings/SettingsPage'
+import {
+  SettingsDialog,
+  normalizeSettingsTab,
+  type SettingsTab,
+} from './components/settings/SettingsPage'
 import { AppShell } from './components/shell/AppShell'
 import { Rail, type RailItem } from './components/shell/Rail'
 import { TabBar } from './components/shell/TabBar'
@@ -112,6 +118,12 @@ declare global {
       listMoaPresets: () => Promise<MoAPreset[]>
       /** 保存整份 MoA 预置（设置页 CRUD；校验失败 reject 中文错；成功返回重读列表） */
       saveMoaPresets: (presets: MoAPreset[]) => Promise<MoAPreset[]>
+      /** 列出 CLI 工人配置（首次调用主进程就地 seed 默认：总开关 enabled=false，零行为变化） */
+      listCliWorkersConfig: () => Promise<CliWorkersConfig>
+      /** 保存整份 CLI 工人配置（设置页 CRUD；校验失败 reject 中文错；成功返回重读配置） */
+      saveCliWorkersConfig: (cfg: CliWorkersConfig) => Promise<CliWorkersConfig>
+      /** 本机探测 CLI 工人是否可用 */
+      probeCliWorkers: (cfg?: CliWorkersConfig) => Promise<CliWorkersProbeResult>
       onStreamEvent: (cb: (payload: unknown) => void) => () => void
       openPath: (input: { sessionId: string; path: string }) => Promise<{ ok: boolean; error?: string }>
       resolveFile: (input: {
@@ -139,9 +151,11 @@ declare global {
         dataUrl?: string
         mime?: string
       } | null>
-      // 会话元数据（重命名/置顶/归档/子代理委派积极性/思考强度；status 由主进程内部写，渲染层不直接写）
+      // 会话元数据（重命名/置顶/归档/模型 modelId/子代理委派积极性/思考强度；status 由主进程内部写，渲染层不直接写）
       updateSessionMeta: (id: string, patch: {
         title?: string
+        /** 模型 id：moa:* 粘性选择清回渠道默认真实模型时持久化（主进程 updateSessionMeta 已支持合并写） */
+        modelId?: string
         pinned?: boolean
         archived?: boolean
         subagentEagerness?: 'never' | 'conservative' | 'balanced' | 'aggressive'
@@ -458,7 +472,7 @@ export function App(): JSX.Element {
   }, [activeRail, showSettings, activeTabId, acknowledgeSessionStatus])
 
   const openSettings = (tab: SettingsTab): void => {
-    setSettingsInitialTab(tab)
+    setSettingsInitialTab(normalizeSettingsTab(tab))
     setShowSettings(true)
   }
 
@@ -627,11 +641,11 @@ export function App(): JSX.Element {
               setDraftSession(null)
               openSession(s.id, s.title, s.workspaceId, s.channelId, s.modelId)
             }}
-            onNew={() => {
+            onNew={(workspaceId) => {
               setShowSettings(false)
               setActiveRail('chat')
               setSidebarOpen(true)
-              newSession()
+              newSession(workspaceId)
             }}
             onOpenProject={() => void handleOpenProject()}
             onWorkspaceDeleted={handleWorkspaceDeleted}

@@ -95,24 +95,56 @@ function resultText(content: unknown): string {
   }
 }
 
-/** 从单条 tool result 解析 +N -M。优先成对 `+N -M`；缺边时单独识别 +N 或 -M（如只有
- *  "Changed +5" / "removed 3"），都匹配不到才返回 undefined（UI 据此隐藏空占位，见
- *  TurnFilesChangedCard）。REGRESS-J(J5)：放宽单边匹配，避免常见单边文案 add/del 恒 0。 */
+function lineCount(text: string): number {
+  if (!text) return 0
+  return text.split('\n').length
+}
+
+/**
+ * 从工具 input 估算 +/-（对齐 TAgent_General computeDiffStats）：
+ * Edit/StrReplace：old→new 行数；Write：content 行数视为新增。
+ * 兼容 pi（oldText/newText）与 kscc（old_string/new_string）两套字段。
+ */
+export function computeDiffFromInput(
+  toolName: string,
+  input: Record<string, unknown>,
+): { add: number; del: number } | undefined {
+  const name = toolName.trim()
+  if (/^write$/i.test(name)) {
+    const content = input.content ?? input.new_string ?? input.newText
+    if (typeof content !== 'string' || !content) return undefined
+    return { add: lineCount(content), del: 0 }
+  }
+  if (/^(edit|strreplace|search_replace|multiedit)$/i.test(name)) {
+    const oldString = input.old_string ?? input.oldText ?? input.old_str
+    const newString = input.new_string ?? input.newText ?? input.new_str
+    if (typeof oldString !== 'string' || typeof newString !== 'string') return undefined
+    return { add: lineCount(newString), del: lineCount(oldString) }
+  }
+  return undefined
+}
+
+/** 从单条 tool result 解析 +N -M。优先成对 `+N -M`；缺边时单独识别 +N 或 -M；
+ *  结果文案无统计时回退从 input 估算（Write/Edit 实际常只回 "ok"）。
+ *  都得不到才返回 undefined（UI 隐藏空占位）。 */
 export function extractToolDiff(
   tool: ToolProcessEntry,
 ): { add: number; del: number } | undefined {
   if (classifyToolFamily(tool.tool.name) !== 'edit') return undefined
   const text = resultText(tool.result?.content)
-  if (!text) return undefined
-  const both = text.match(/\+(\d+)\s+[^\d-]*-(\d+)/) || text.match(/\+(\d+).*?-(\d+)/)
-  if (both) return { add: Number(both[1]) || 0, del: Number(both[2]) || 0 }
-  const add = text.match(/\+\d+/)
-  const del = text.match(/(?:\s|^)-(\d+)/)
-  if (!add && !del) return undefined
-  return {
-    add: add ? Number(add[0].replace('+', '')) || 0 : 0,
-    del: del ? Number(del[1]) || 0 : 0,
+  if (text) {
+    const both = text.match(/\+(\d+)\s+[^\d-]*-(\d+)/) || text.match(/\+(\d+).*?-(\d+)/)
+    if (both) return { add: Number(both[1]) || 0, del: Number(both[2]) || 0 }
+    const add = text.match(/\+\d+/)
+    const del = text.match(/(?:\s|^)-(\d+)/)
+    if (add || del) {
+      return {
+        add: add ? Number(add[0].replace('+', '')) || 0 : 0,
+        del: del ? Number(del[1]) || 0 : 0,
+      }
+    }
   }
+  return computeDiffFromInput(tool.tool.name, tool.tool.input ?? {})
 }
 
 /** 单族簇摘要（细节/兼容）；阶段行用 summarizeWorkStage */

@@ -18,7 +18,9 @@ import type {
   AgentDefinition,
   SDKUserMessageInput,
   SDKMessage,
+  ReasoningEffort,
 } from '@tagent/shared'
+import { reasoningEffortToSdkEffort } from '@tagent/shared'
 import type {
   Options as SdkOptions,
   SDKUserMessage,
@@ -72,6 +74,12 @@ export interface KsccQueryOptions extends AgentQueryInput {
   persistSession?: boolean
   /** 子代理定义（SDK agents 选项，主 Agent 可调用 Agent/Task 工具派发） */
   agents?: Record<string, AgentDefinition>
+  /**
+   * 思考强度（来自会话 meta.reasoningEffort，已归一化）。映射为 Claude Agent SDK
+   * `effort` query option（low/medium/high/max），配合 adaptive thinking 引导思考深度。
+   * 缺省时不传 effort（由调用方 migrateReasoningEffort 决定，默认 medium）。
+   */
+  reasoningEffort?: ReasoningEffort
 }
 
 /** 活跃会话状态（长驻：一个会话一个进程） */
@@ -179,6 +187,11 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       }),
       ...(options.onStderr && { stderr: options.onStderr }),
       ...(options.persistSession != null && { persistSession: options.persistSession }),
+      // 思考强度：reasoningEffort → SDK effort（low/medium/high/max）。
+      // 配合 adaptive thinking 引导深度；session-service 已 migrateReasoningEffort 归一化（默认 medium）。
+      ...(options.reasoningEffort && {
+        effort: resolveSdkEffort(options.reasoningEffort),
+      }),
       // Phase 2.4：SDK auto-memory 重定向到废目录（主防线是 MEMORY_MANAGEMENT_RULES）
       autoMemoryDirectory: getDiscardedMemoryDir(),
       toolUseConcurrency: 1,
@@ -276,6 +289,15 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
     }
     activeSessions.clear()
   }
+}
+
+/**
+ * 把会话 {@link ReasoningEffort} 解析为 Claude Agent SDK `effort` query option 值。
+ * 导出供单测证明「不同 reasoningEffort → 不同 SDK effort」；buildSdkOptions 据此注入 options.effort。
+ * 入参应先经 `migrateReasoningEffort` 归一化（session-service 已做）。
+ */
+export function resolveSdkEffort(reasoningEffort: ReasoningEffort): SdkOptions['effort'] {
+  return reasoningEffortToSdkEffort(reasoningEffort) as SdkOptions['effort']
 }
 
 /** force-kill 兜底（进程残留时） */

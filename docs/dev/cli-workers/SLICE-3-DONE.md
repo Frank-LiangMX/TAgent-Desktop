@@ -1,0 +1,23 @@
+# SLICE-3 · DONE（设置页「本地 CLI 工人」）
+
+- **改了哪些文件**：
+  - 新增 `apps/electron/src/renderer/components/settings/CliWorkersSettingsSection.tsx`：`CliWorkersSettingsSection` 组件。挂载时 `listCliWorkersConfig()` 读整份 `CliWorkersConfig`；用 `SettingsSection` + `SettingsCard divided` + `SettingsToggle` / `SettingsSegmentedControl` / `SettingsInput` 拼一节：
+    - 行1「启用本地 CLI 工人」`SettingsToggle` → `cfg.enabled`；打开时若后端仍 `in-process`，自动把 `defaultBackend` 切到 `cli`（brief 可选体验，让「开」有意义）。
+    - 行2「子代理后端」`SettingsSegmentedControl`（进程内 | 本地 CLI）→ `cfg.defaultBackend`；`enabled=false` 时 `disabled`。
+    - 行3「kscc 工人」：`SettingsInput`（bin，默认 kscc）+ `SettingsInput`（默认模型，默认 glm-5.2）+ `SettingsToggle`（该工人 enabled）。
+    - notice 复用全局 `agent-behavior-notice--success/--error`（同会诊页样式）；副文案随态变（关：「当前子代理使用进程内引擎。」；开且 `backend=cli`：「子代理将尝试 spawn 本机 kscc；不可用时自动回退进程内。」）。
+  - 改 `apps/electron/src/renderer/components/settings/AgentBehaviorSettings.tsx`：`import { CliWorkersSettingsSection } from './CliWorkersSettingsSection'`；在「圆桌·快速」`</SettingsSection>` 之后、「班组」`<SettingsSection>` 之前插入 `<CliWorkersSettingsSection />`。会诊班底 CRUD 代码零改动。
+- **IPC**：只读/写 SLICE-1 已打通的 `window.electronAPI.listCliWorkersConfig()` / `saveCliWorkersConfig(cfg)`（preload + session-service + App.tsx 全局类型均已就位）。**未新增 IPC、未新增 PROBE**（brief 禁止）。
+- **交互（与 moa toggle 一致：无显式「保存」按钮，改完即时 save 整表）**：
+  - 总开关 / 后端分段 / 工人开关：`onChange` 即时 `save(next)`，乐观更新 → IPC → 用主进程重读值覆盖；失败回滚到上次合法值 + 中文 error notice（IPC 已抛中文，原样回显）。
+  - bin / 默认模型：`onChange` 仅改本地 + 标脏（`dirty`），`onBlur` 才 `save`（避免逐键 IPC）；未改动不触发保存。
+  - 成功 notice 2.5s 自动消失；error notice 持续到下次交互；`save` 期间控件 `disabled={saving}` 防并发竞态。
+  - `cfgRef` 同步 ref + `useCallback` 让 `onBlur` / 回滚读到最新值，不依赖逐 render 重建。
+- **验收对照（brief 勾选）**：
+  - [x] 默认进入设置：开关关、backend 进程内 —— seed `enabled:false` / `defaultBackend:'in-process'`；组件挂载即 `listCliWorkersConfig()`（首次自动 seed）。
+  - [x] 打开开关 + 选本地 CLI + 改模型 → 保存 → 重启设置仍在 —— 任一变更即时 `saveCliWorkersConfig` 整份写 `~/.tagent[-dev]/cli-workers.json`；下次进入 `listCliWorkersConfig` 读回。
+  - [x] 不破坏会诊班底 CRUD —— 仅新增 import + 插入一节，会诊 `list/add/edit/delete/toggle` 与中文报错全保留。
+  - [x] 无 git commit。
+- **禁止项遵守**：未新增 Settings 顶层 tab；未做多 CLI 列表编辑器（`defaultCliId` 固定 `kscc`、`workers` 只编辑 kscc 一条，`pickWorker` 按 `defaultCliId` 命中回退 `workers[0]`）；未改 `task` / runner。
+- **typecheck**：`node node_modules/.bun/typescript@5.9.3/node_modules/typescript/bin/tsc --noEmit -p apps/electron/tsconfig.json` → 仅余 SLICE-1/2 既有 3 处 WIP 报错（`Chat.tsx` `modelId`/`fallbackModelId` ×2、`SessionSidebar.tsx` `onClick` ×1，均非本 slice 引入、所在文件本 slice 未改），本 slice 新增/改动文件 0 报错。
+- **遗留 / 后续**：(1) 未跑真机 Electron 渲染验证（仅 typecheck + 代码审；验收依赖手动开设置页走查）；(2) 未做「测试连接」按钮（brief 明确 MVP 可不做，调 run 太重）；(3) 黑名单（hermes / openclaw）校验在主进程 `validateCliWorkersConfig` 拦，UI 仅回显中文错并回滚，未做前端预检；(4) 多 CLI 接入（grok/codex/mimo 等）需扩 workers 列表编辑器（本期 brief 禁止）；(5) 未 git commit（按要求）。

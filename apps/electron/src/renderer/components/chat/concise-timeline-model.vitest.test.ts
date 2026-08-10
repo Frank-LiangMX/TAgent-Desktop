@@ -502,4 +502,47 @@ describe('collectTurnEditedFiles', () => {
   it('classifies StrReplace as edit', () => {
     expect(classifyToolFamily('StrReplace')).toBe('edit')
   })
+
+  it('falls back to input line counts when result has no +N -M (real Write/Edit)', () => {
+    const process: ProcessEntry[] = [
+      tool(
+        'Edit',
+        'e1',
+        {
+          file_path: 'ChannelsSettings.tsx',
+          old_string: 'a\nb\nc',
+          new_string: 'a\nb\nc\nd\ne',
+        },
+        true,
+        'ok',
+      ),
+      tool(
+        'Write',
+        'w1',
+        {
+          path: 'gen_views.py',
+          content: 'line1\nline2\nline3',
+        },
+        true,
+        'Wrote file',
+      ),
+      tool(
+        'StrReplace',
+        's1',
+        {
+          path: 'view.js',
+          oldText: 'x',
+          newText: 'x\ny',
+        },
+        true,
+        'File updated',
+      ),
+    ]
+    const files = collectTurnEditedFiles(process)
+    expect(files).toEqual([
+      expect.objectContaining({ name: 'ChannelsSettings.tsx', add: 5, del: 3 }),
+      expect.objectContaining({ name: 'gen_views.py', add: 3, del: 0 }),
+      expect.objectContaining({ name: 'view.js', add: 2, del: 1 }),
+    ])
+  })
 })

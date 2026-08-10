@@ -18,6 +18,7 @@ import {
   Trash,
   DotsThreeVertical,
   DotsSixVertical,
+  Plus,
   Archive,
   MagnifyingGlass,
 } from '@phosphor-icons/react'
@@ -73,7 +74,7 @@ interface WorkspaceDropIndicator {
 }
 
 /** 状态排序权重:进行中 → 出错 → 其余按时间 */
-const STATUS_RANK: Record<SessionStatus, number> = { running: 0, error: 1, idle: 2 }
+const STATUS_RANK: Record<SessionStatus, number> = { running: 0, error: 1, done: 2, idle: 3 }
 
 /** 列表项进场/重排 spring(对齐现代 UI 丝滑感) */
 const SPRING = { type: 'spring', stiffness: 380, damping: 32, mass: 0.8 } as const
@@ -108,7 +109,8 @@ export function SessionSidebar({
 }: {
   activeSessionId: string | null
   onSelect: (session: SessionMeta) => void
-  onNew: () => void
+  /** 新建会话；传入 workspaceId 时直接绑定该工作区 */
+  onNew: (workspaceId?: string) => void
   onOpenProject?: () => void
   onWorkspaceDeleted?: (workspaceId: string) => void
 }): JSX.Element {
@@ -226,14 +228,14 @@ export function SessionSidebar({
     })
   }, [activeSessionId, sessions])
 
-  // 订阅 onStreamEvent:turn_end → idle、session_error → error(只处理这两类,按 sessionId 更新)
+  // 订阅 onStreamEvent:turn_end → done（绿点）、session_error → error(只处理这两类,按 sessionId 更新)
   useEffect(() => {
     const off = window.electronAPI.onStreamEvent((payload: unknown) => {
       const env = payload as { sessionId?: string; payload?: { kind: string; event?: { type: string } } }
       if (env?.payload?.kind !== 'tagent_event') return
       const evt = env.payload.event
       if (!evt || !env.sessionId) return
-      if (evt.type === 'turn_end') setStatus({ id: env.sessionId, status: 'idle' })
+      if (evt.type === 'turn_end') setStatus({ id: env.sessionId, status: 'done' })
       else if (evt.type === 'session_error') setStatus({ id: env.sessionId, status: 'error' })
     })
     return off
@@ -437,7 +439,7 @@ export function SessionSidebar({
         </span>
         <span className="title-actions">
           <AppTooltip label="新建会话" side="bottom">
-            <button type="button" className="pill-new" onClick={onNew}>
+            <button type="button" className="pill-new" onClick={() => onNew()}>
               <span className="btn-ico">
                 <ChatsCircle size={15} weight="regular" />
               </span>
@@ -491,7 +493,7 @@ export function SessionSidebar({
       )}
 
       {/* 滚动列表 */}
-      <div className="side-scroll">
+      <div className="side-scroll scrollbar-thin">
         {groups.length === 0 && <div className="px-3 py-2 text-xs text-muted-foreground">暂无会话</div>}
         {groups.map((group) => {
           const isExpanded = effectiveExpandedGroups.has(group.id)
@@ -503,11 +505,12 @@ export function SessionSidebar({
           ).length
           const groupHeaderContent = (
             <>
-              {hasSessions ? (
-                <CaretRight size={12} weight="regular" className="caret" />
-              ) : (
-                <span className="caret caret-placeholder" aria-hidden="true" />
-              )}
+              <CaretRight
+                size={12}
+                weight="regular"
+                className={cn('caret', !hasSessions && 'caret-empty')}
+                aria-hidden
+              />
               {/* 文件夹：折叠 Folder / 展开 FolderOpen，与 caret 状态一致 */}
               {isManagedWorkspace ? (
                 isExpanded ? (
@@ -609,6 +612,21 @@ export function SessionSidebar({
                   {groupHeaderContent}
                 </button>
                 {group.workspace && (
+                  <AppTooltip label={`在「${group.name}」新建会话`} side="right">
+                    <button
+                      type="button"
+                      className="workspace-new-session"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onNew(group.id)
+                      }}
+                      aria-label={`在「${group.name}」新建会话`}
+                    >
+                      <Plus size={14} weight="bold" />
+                    </button>
+                  </AppTooltip>
+                )}
+                {group.workspace && (
                   <DropdownMenu
                     open={workspaceMenuOpenId === group.id}
                     onOpenChange={(open) => setWorkspaceMenuOpenId(open ? group.id : null)}
@@ -662,6 +680,7 @@ export function SessionSidebar({
               type="button"
               className="group-head"
               onClick={() => setArchivedExpanded((v) => !v)}
+              aria-expanded={archivedOpen}
             >
               <CaretRight size={12} weight="regular" className="caret" />
               <span className="gname muted">已归档</span>
@@ -848,13 +867,18 @@ function SessionRow({
           ) : (
             <span className="t">{s.title}</span>
           )}
+          {/* 归档行：内联「已归档」状态贴右，与标题同一基线，单行不落第二行 */}
+          {archived && !editing && <span className="arch-status">已归档</span>}
         </div>
-        <div className="meta">
-          {s.turnCount != null && s.turnCount > 0 && (
-            <span className="m turns">{s.turnCount} 轮</span>
-          )}
-          <span className="m time">{archived ? '已归档' : s.updatedAt ? relTime(s.updatedAt) : ''}</span>
-        </div>
+        {/* meta（轮数 / 时间）第二行仅非归档行渲染；归档状态已内联到 title 行 */}
+        {!archived && (
+          <div className="meta">
+            {s.turnCount != null && s.turnCount > 0 && (
+              <span className="m turns">{s.turnCount} 轮</span>
+            )}
+            <span className="m time">{s.updatedAt ? relTime(s.updatedAt) : ''}</span>
+          </div>
+        )}
       </div>
       {/* 三点菜单:hover 让位展开；打开期间保持展开（is-dots-open） */}
       <DropdownMenu open={dotsOpen} onOpenChange={setDotsOpen}>

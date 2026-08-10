@@ -116,6 +116,12 @@ export type TAgentControlEvent =
       parentToolUseId?: string
       /** 与最终 assistant.uuid 对齐，供渲染层绑定同一流式占位 */
       uuid?: string
+      /**
+       * E（IPC delta）：true=整体替换（resync）。provider 累计快照与上次前缀不匹配时，main 发
+       * replace delta（带全量），renderer 整体替换 streamState.text，不盲目 append（防重复/丢字）。
+       * 缺省/false=append（suffix 增量）。
+       */
+      replace?: boolean
     }
   | {
       kind: 'stream_thinking_delta'
@@ -123,6 +129,8 @@ export type TAgentControlEvent =
       parentToolUseId?: string
       /** 与最终 assistant.uuid 对齐，供渲染层绑定同一流式占位 */
       uuid?: string
+      /** E（IPC delta）：true=整体替换（resync），同 stream_text_delta.replace。 */
+      replace?: boolean
     }
   | { kind: 'call_stats'; stats: Record<string, number> }
   | { kind: 'tagent_event'; event: { type: string; [key: string]: unknown } }

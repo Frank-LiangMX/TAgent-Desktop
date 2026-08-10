@@ -379,8 +379,8 @@
   border-color: hsl(var(--background) / 0.75);
 }
 /*
- * 元信息行：整行与气泡同宽，时间永远贴右；
- * 复制按钮在时间左侧，默认不占宽（避免未 hover 时时间悬在中间）。
+ * 元信息行：整行与气泡同宽，始终占位（避免 hover 时布局跳动）；
+ * 时间 + 复制默认透明，hover（或复制完成态）才显。
  */
 .tagent-thread .agent-user-block__meta {
   display: flex;
@@ -401,6 +401,14 @@
   color: hsl(var(--muted-foreground) / 0.55);
   font-variant-numeric: tabular-nums;
   padding: 0 2px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+.tagent-thread .is-user:hover .agent-user-block__time,
+.tagent-thread .agent-user-block__meta:has(.msg-icon-btn--done) .agent-user-block__time {
+  opacity: 1;
+  pointer-events: auto;
 }
 .tagent-thread .agent-user-block__tools.agent-user-toolbar {
   order: 1;
@@ -482,11 +490,6 @@
 }
 .tagent-thread .agent-answer-toolbar:has(.msg-icon-btn--done),
 .tagent-thread .agent-user-toolbar:has(.msg-icon-btn--done) {
-  opacity: 1;
-  pointer-events: auto;
-}
-/* 句尾完成/中断/出错时间戳始终可见（不依赖 hover） */
-.tagent-thread .agent-answer-toolbar:has(.agent-answer-time) {
   opacity: 1;
   pointer-events: auto;
 }

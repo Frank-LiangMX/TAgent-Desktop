@@ -13,19 +13,39 @@
  * 未合并到此分支；此处暂不显状态点，合并后补。
  */
 import { useEffect, useState } from 'react'
-import { ChatsCircle, UsersThree } from '@phosphor-icons/react'
+import { ChatsCircle, Eye, File, UsersThree } from '@phosphor-icons/react'
 import { X } from 'lucide-react'
 import type { IDockviewPanelHeaderProps } from 'dockview'
+import { AppTooltip } from '@tagent/ui'
+
+type DockPaneType = 'chat' | 'crew' | 'file-preview' | 'rich-preview'
 
 interface DockTabParams {
-  /** pane 类型（addPanel 时 params 带），决定图标：chat → ChatsCircle，crew → UsersThree */
-  paneType?: 'chat' | 'crew'
+  /** pane 类型（addPanel 时 params 带）；缺省时按 panel id 前缀推断 */
+  paneType?: DockPaneType
 }
+
+function resolvePaneType(paneId: string, params?: DockTabParams): DockPaneType {
+  if (params?.paneType) return params.paneType
+  if (paneId.startsWith('crew:')) return 'crew'
+  if (paneId.startsWith('file-preview:')) return 'file-preview'
+  if (paneId.startsWith('rich-preview:') || paneId.startsWith('mermaid-preview:')) {
+    return 'rich-preview'
+  }
+  return 'chat'
+}
+
+const PANE_ICONS = {
+  chat: ChatsCircle,
+  crew: UsersThree,
+  'file-preview': File,
+  'rich-preview': Eye,
+} as const
 
 export function DockTab(props: IDockviewPanelHeaderProps<DockTabParams>): JSX.Element {
   const { api, params } = props
-  const paneType = params?.paneType ?? 'chat'
-  const Icon = paneType === 'crew' ? UsersThree : ChatsCircle
+  const paneType = resolvePaneType(api.id, params)
+  const Icon = PANE_ICONS[paneType]
 
   // 订阅 active / title：Dockview React header 不会因这些事件自动 re-render
   const [active, setActive] = useState(() => api.isActive)
@@ -47,14 +67,16 @@ export function DockTab(props: IDockviewPanelHeaderProps<DockTabParams>): JSX.El
       className="app-workspace-tab-shell group relative"
       data-active={active || undefined}
     >
-      <button
-        type="button"
-        onClick={() => api.setActive?.()}
-        className="app-workspace-tab titlebar-no-drag"
-      >
-        <Icon size={14} weight="regular" className="app-workspace-tab__icon shrink-0" />
-        <span className="app-workspace-tab__title">{title}</span>
-      </button>
+      <AppTooltip label={title} side="bottom" sideOffset={8} multiline>
+        <button
+          type="button"
+          onClick={() => api.setActive?.()}
+          className="app-workspace-tab titlebar-no-drag"
+        >
+          <Icon size={14} weight="regular" className="app-workspace-tab__icon shrink-0" />
+          <span className="app-workspace-tab__title">{title}</span>
+        </button>
+      </AppTooltip>
       <button
         type="button"
         onClick={(e) => {

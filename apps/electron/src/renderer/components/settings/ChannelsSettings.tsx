@@ -347,18 +347,19 @@ function ChannelRow({
             <Pencil size={13} />
             编辑
           </Button>
-          {onDelete && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="text-muted-foreground hover:text-destructive"
-              aria-label={`删除 ${channel.name}`}
-              disabled={busy}
-              onClick={onDelete}
-            >
-              <Trash2 size={13} />
-            </Button>
-          )}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground hover:text-destructive"
+            aria-label={
+              onDelete ? `删除 ${channel.name}` : `${channel.name} 为内置渠道，不可删除`
+            }
+            title={onDelete ? undefined : '内置渠道不可删除'}
+            disabled={busy || !onDelete}
+            onClick={onDelete}
+          >
+            <Trash2 size={13} />
+          </Button>
         </div>
       </div>
     </article>

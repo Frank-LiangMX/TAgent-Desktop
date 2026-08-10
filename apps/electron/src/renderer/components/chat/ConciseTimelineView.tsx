@@ -6,7 +6,7 @@
  *   - 折叠 → 只留 final output（仍保留「运行了」开关以便再展开）
  * 阶段块 live：摘要累积 + 底部当前动作；层级文案扫光
  */
-import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
 import { Message, MessageContent, MessageResponse, useSmoothStream } from '@tagent/ui'
 import { cn } from '../../lib/utils'
@@ -256,7 +256,15 @@ const THINK_SETTLE_MS = 1800
  *  阶段执行结束先 hold 约 1.8s 再折回灰字摘要，禁止 live→idle 瞬间卸掉阶段行。 */
 const WORK_STAGE_SETTLE_MS = 1800
 
-const ThinkingFold = memo(function ThinkingFold({
+/**
+ * ThinkingFold（concise 思考折叠块）。Cursor 式：默认只露一行头（「正在思考…」扫光 /
+ * 「思考了片刻」）；正文不自动铺开，及时反馈靠头栏扫光，点开再看全文。
+ *
+ * **B（lazy mount）**：折叠时**不挂载**完整 reasoning 的 MessageResponse / Markdown parser /
+ * useSmoothStream——只渲染头栏摘要；用户主动展开后才挂载 {@link ThinkingFoldBody} 渲染完整
+ * Markdown，关闭后立即卸载重型正文。已完成与流式中的块都遵守。导出供 B 行为单测渲染。
+ */
+export const ThinkingFold = memo(function ThinkingFold({
   thinking,
   durationSec,
   isLive,
@@ -265,9 +273,6 @@ const ThinkingFold = memo(function ThinkingFold({
   durationSec?: number
   isLive: boolean
 }): JSX.Element {
-  // Cursor 式：默认只露一行头（「正在思考…」扫光 / 「思考了片刻」）；正文不自动铺开，
-  // 及时反馈靠头栏扫光，点开再看全文。避免流式撑版与流完秒卸正文。
-  // 用户手动展开后，live→idle settle ~1.8s 再优雅折回一行（body 常驻 DOM）。
   const [open, setOpen] = useState(false)
   const openRef = useRef(false)
   openRef.current = open
@@ -284,10 +289,6 @@ const ThinkingFold = memo(function ThinkingFold({
   if (isLive && elapsedMs > 0) {
     frozenLiveSecRef.current = Math.max(1, Math.floor(elapsedMs / 1000))
   }
-  const { displayedContent } = useSmoothStream({
-    content: thinking,
-    isStreaming: isLive,
-  })
   // 优先真实观看时长；无 live 样本时才用 annotate 的 durationSec
   const effectiveSec = isLive
     ? Math.floor(elapsedMs / 1000)
@@ -296,21 +297,6 @@ const ThinkingFold = memo(function ThinkingFold({
     live: isLive,
     liveElapsedSec: Math.floor(elapsedMs / 1000),
   })
-
-  // 流式滚动跟随：仅在用户展开时钉底；收起时不滚
-  const bodyRef = useRef<HTMLDivElement | null>(null)
-  const stickRef = useRef(true)
-  const handleBodyScroll = (): void => {
-    const el = bodyRef.current
-    if (!el) return
-    stickRef.current = isNearBottom(el.scrollTop, el.scrollHeight, el.clientHeight)
-  }
-  useEffect(() => {
-    if (!isLive || !open) return
-    const el = bodyRef.current
-    if (!el || !stickRef.current) return
-    el.scrollTop = el.scrollHeight
-  }, [displayedContent, isLive, open])
 
   // live 时不强制展开；live→idle 仅当用户已展开才 settle 折回一行。
   useEffect(() => {
@@ -337,6 +323,7 @@ const ThinkingFold = memo(function ThinkingFold({
     }
   }, [isLive])
 
+  const panelId = useId()
   const handleToggle = (): void => {
     if (settleTimer.current != null) {
       window.clearTimeout(settleTimer.current)
@@ -345,15 +332,6 @@ const ThinkingFold = memo(function ThinkingFold({
     setOpen((v) => !v)
   }
 
-  // 流式竞态偶发 displayed 被清空时，勿用「…」顶替已有思考正文
-  const bodyText = (() => {
-    const shown = displayedContent.trim()
-    if (shown) return shown
-    const raw = thinking.trim()
-    if (raw) return raw
-    return isLive ? '…' : ''
-  })()
-
   return (
     <div className={cn('agent-concise-fold', isLive && 'is-live')}>
       <button
@@ -361,6 +339,7 @@ const ThinkingFold = memo(function ThinkingFold({
         className="agent-concise-fold__head"
         onClick={handleToggle}
         aria-expanded={open}
+        aria-controls={panelId}
       >
         <span className={cn('agent-concise-fold__summary', isLive && 'agent-concise-shimmer')}>
           {summary}
@@ -373,22 +352,69 @@ const ThinkingFold = memo(function ThinkingFold({
           )}
         />
       </button>
-      {/* body 常驻 DOM：grid 0fr↔1fr + opacity 过渡折起，不 null 卸载；折起后点开仍见全文 */}
+      {/* B：折叠时卸载重型正文（不挂 MessageResponse/Markdown/useSmoothStream）；展开才挂 ThinkingFoldBody */}
       <div
+        id={panelId}
         className={cn('agent-concise-fold__panel', open && 'is-open')}
         aria-hidden={!open}
       >
         <div className="agent-concise-fold__panel-inner">
-          <div className="agent-concise-fold__body" ref={bodyRef} onScroll={handleBodyScroll}>
-            <MessageResponse
-              className="text-[12.5px] leading-[1.55] text-muted-foreground/80"
-              streaming={isLive}
-            >
-              {bodyText}
-            </MessageResponse>
-          </div>
+          {open ? <ThinkingFoldBody thinking={thinking} isLive={isLive} /> : null}
         </div>
       </div>
+    </div>
+  )
+})
+
+/**
+ * ThinkingFold 的重型正文子组件：仅在用户展开（open=true）时挂载。
+ * 挂载时才运行 useSmoothStream + MessageResponse/Markdown parser；关闭即卸载，
+ * 避免折叠态下逐帧全量 Markdown 解析与 O(N) 字符串拼接（B/D 性能）。
+ * 流式中展开：以当前完整 thinking 为起点续写（不从头打字机重播）。
+ */
+const ThinkingFoldBody = memo(function ThinkingFoldBody({
+  thinking,
+  isLive,
+}: {
+  thinking: string
+  isLive: boolean
+}): JSX.Element {
+  const { displayedContent } = useSmoothStream({
+    content: thinking,
+    isStreaming: isLive,
+  })
+  // 流式滚动跟随：仅展开时钉底
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  const stickRef = useRef(true)
+  const handleBodyScroll = (): void => {
+    const el = bodyRef.current
+    if (!el) return
+    stickRef.current = isNearBottom(el.scrollTop, el.scrollHeight, el.clientHeight)
+  }
+  useEffect(() => {
+    if (!isLive) return
+    const el = bodyRef.current
+    if (!el || !stickRef.current) return
+    el.scrollTop = el.scrollHeight
+  }, [displayedContent, isLive])
+
+  // 流式竞态偶发 displayed 被清空时，勿用「…」顶替已有思考正文
+  const bodyText = (() => {
+    const shown = displayedContent.trim()
+    if (shown) return shown
+    const raw = thinking.trim()
+    if (raw) return raw
+    return isLive ? '…' : ''
+  })()
+
+  return (
+    <div className="agent-concise-fold__body" ref={bodyRef} onScroll={handleBodyScroll}>
+      <MessageResponse
+        className="text-[12.5px] leading-[1.55] text-muted-foreground/80"
+        streaming={isLive}
+      >
+        {bodyText}
+      </MessageResponse>
     </div>
   )
 })

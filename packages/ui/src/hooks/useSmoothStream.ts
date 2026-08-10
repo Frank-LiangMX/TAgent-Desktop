@@ -43,6 +43,25 @@ const segmenter = new Intl.Segmenter([
   'ru-RU',
 ])
 
+/**
+ * D（实时 Markdown 性能）：size-aware flush cadence。
+ * 小内容用 {@link UseSmoothStreamOptions.minDelay}（默认 10ms，丝滑逐字）；当已显示正文超过
+ * {@link LARGE_BODY_CHARS} 时，按长度线性放宽 flush 间隔（每超 512 字符 +1ms），上限
+ * {@link MAX_BODY_FLUSH_DELAY_MS}。大段 reasoning（如 40K）下，MessageResponse 不再逐帧对增长中的
+ * 全串做 Markdown 重解析——render 次数受控（~12.5–15fps 上限）而非逐帧无界增长，UI 仍明显实时。
+ * 队列（chunkQueueRef）本身即 chunk buffer：门控期间 delta 累积在队列，到 cadence 才 drain。
+ */
+const LARGE_BODY_CHARS = 8192
+const BODY_DELAY_STEP_CHARS = 512
+const MAX_BODY_FLUSH_DELAY_MS = 80
+
+/** 依已显示长度计算本帧 flush 间隔（ms）。导出供单测。 */
+export function resolveFlushDelay(displayedLen: number, minDelay: number): number {
+  if (displayedLen <= LARGE_BODY_CHARS) return minDelay
+  const extra = Math.floor((displayedLen - LARGE_BODY_CHARS) / BODY_DELAY_STEP_CHARS)
+  return Math.min(MAX_BODY_FLUSH_DELAY_MS, minDelay + extra)
+}
+
 /** 用 Intl.Segmenter 将文本拆分为字符数组 */
 function segmentText(text: string): string[] {
   return Array.from(segmenter.segment(text)).map((s) => s.segment)
@@ -108,8 +127,10 @@ export function useSmoothStream({
         return
       }
 
-      // 最小延迟控制
-      if (currentTime - lastRenderTimeRef.current < minDelay) {
+      // 最小延迟控制（D：size-aware cadence）。大内容放宽 flush 间隔，避免逐帧全串 concat +
+      // 触发 MessageResponse 重解析；队列本身即 buffer，门控期 delta 累积，到 cadence 才 drain。
+      const effectiveMinDelay = resolveFlushDelay(displayedRef.current.length, minDelay)
+      if (currentTime - lastRenderTimeRef.current < effectiveMinDelay) {
         rafRef.current = requestAnimationFrame(renderLoop)
         return
       }

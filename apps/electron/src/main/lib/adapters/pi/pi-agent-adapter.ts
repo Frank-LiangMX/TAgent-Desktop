@@ -1065,6 +1065,14 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     // 注册 task 工具（子代理）+ extraTools（看板等）
     // 把主会话 beforeToolCall 传给子 Agent，避免子代理裸奔（危险命令 / Chat 只读）
     // onTaskEvent：进度进入口卡；execute 时 entryRef 已就绪，优先 emitLive，否则暂存
+    /** 子代理生命周期 + CLI 详情消息统一出口（进父会话流 / 落盘） */
+    const emitSubagentPayload = (payload: TAgentDesktopStreamPayload): void => {
+      if (entryRef?.emitLive) {
+        entryRef.emitLive(payload)
+      } else {
+        entryRef?.pendingSystemMessages.push(payload)
+      }
+    }
     const taskTool = createTaskTool(
       sessionId,
       channelConfig,
@@ -1073,13 +1081,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       piAgentCore,
       beforeToolCall,
       (event) => {
-        const payload: TAgentDesktopStreamPayload = { kind: 'tagent_event', event }
-        if (entryRef?.emitLive) {
-          entryRef.emitLive(payload)
-        } else {
-          entryRef?.pendingSystemMessages.push(payload)
-        }
+        emitSubagentPayload({ kind: 'tagent_event', event })
       },
+      emitSubagentPayload,
     )
     const agentTools = [...finalBaseTools, ...mcpTools, taskTool, ...(extraTools ?? [])]
 

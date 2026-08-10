@@ -95,3 +95,16 @@ export {
   IDLE_WATCHDOG_TIMEOUT_MS,
   shouldForceIdle,
 } from './idle-watchdog'
+
+// 流式 delta 协议（E）：累计快照 → 增量 suffix delta + resync + 落盘快照校准
+export {
+  computeDelta,
+  extractBlockSnapshot,
+  DeltaTracker,
+  stripPartialAssistantBody,
+  shouldDeltaTrackAssistant,
+  type BlockDelta,
+  type BlockSnapshot,
+  type DeltaContentBlock,
+  type StreamDeltaEmission,
+} from './streaming-delta-protocol'

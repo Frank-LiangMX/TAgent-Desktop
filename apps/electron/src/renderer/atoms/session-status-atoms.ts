@@ -1,17 +1,18 @@
 /**
- * 会话生命状态（Jotao）
+ * 会话生命状态（Jotai）
  *
  * 跨组件共享：SessionSidebar（状态色点）+ onStreamEvent 订阅（写入）。
  * 状态来源：
  *   - error / archived：来自 listSessions 落盘的 meta（重启保留）
  *   - running：主进程 runtimes 内存，挂载/刷新时批量 getSessionStatus 拉取（不落盘）
- * 实时更新：onStreamEvent turn_end → idle、session_error → error。
+ *   - done：仅渲染层；turn_end 后绿点，离开会话页 acknowledge → idle（不落盘）
+ * 实时更新：onStreamEvent turn_end → done、session_error → error。
  * 用 Jotai 默认 store（无需 Provider），与项目约定一致。
  */
 import { atom } from 'jotai'
 
-/** 会话生命状态（侧栏色点用；running 是瞬时态，不持久化） */
-export type SessionStatus = 'idle' | 'running' | 'error'
+/** 会话生命状态（侧栏色点用；running/done 是瞬时态，不持久化） */
+export type SessionStatus = 'idle' | 'running' | 'error' | 'done'
 
 /** 单会话状态条目 */
 export interface SessionStatusEntry {
@@ -66,7 +67,7 @@ export const initSessionStatusAtom = atom(
 
 /**
  * 单点更新会话状态（write-only，来自 onStreamEvent）。
- * turn_end → idle、session_error → error。保留原有 archived。
+ * turn_end → done、session_error → error。保留原有 archived。
  */
 export const setSessionStatusAtom = atom(
   null,
@@ -77,6 +78,18 @@ export const setSessionStatusAtom = atom(
     set(sessionStatusMapAtom, map)
   }
 )
+
+/**
+ * 确认/清除会话绿点（write-only）。
+ * 仅 done → idle；running / error 不动（离开会话页时由 App 调用）。
+ */
+export const acknowledgeSessionStatusAtom = atom(null, (get, set, id: string) => {
+  const map = { ...get(sessionStatusMapAtom) }
+  const prev = map[id]
+  if (!prev || prev.status !== 'done') return
+  map[id] = { status: 'idle', archived: prev.archived }
+  set(sessionStatusMapAtom, map)
+})
 
 /** 单点更新归档态（write-only，归档切换后调）。保留原有 status。 */
 export const setSessionArchivedAtom = atom(

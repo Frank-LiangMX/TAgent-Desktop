@@ -51,13 +51,19 @@ export const SUBAGENT_EAGERNESS_CONFIG: Record<SubagentEagerness, SubagentEagern
 }
 
 /**
- * 从会话 meta 解析委派积极性（缺省 / 非法值回退默认 conservative）。
- * 用于 Chat 挂载时回显持久化档位。
+ * 从会话 meta 解析委派积极性。
+ * - meta 有合法档位 → 用会话档（per-session 覆盖）
+ * - meta 缺省 → 用 fallback（全局默认，设置页「子代理」可配；再缺则 conservative）
+ * - meta 非法 → migrate 回 conservative（不静默吃 fallback，避免脏 meta 伪装成用户默认）
  */
 export function resolveEagerness(
   meta?: { subagentEagerness?: SubagentEagerness },
+  fallback: SubagentEagerness = migrateSubagentEagerness(undefined),
 ): SubagentEagerness {
-  return migrateSubagentEagerness(meta?.subagentEagerness)
+  if (meta?.subagentEagerness !== undefined) {
+    return migrateSubagentEagerness(meta.subagentEagerness)
+  }
+  return migrateSubagentEagerness(fallback)
 }
 
 // ===== 文本摘要（子代理折叠头 / minimap 复用） =====
@@ -105,6 +111,10 @@ export interface TaskCardState {
   summary?: string
   /** 进度文案（来自 description / lastToolName）；收口后清空 */
   progressText?: string
+  /** 开始时间（ms）；task_started / 历史回填写入，供详情页耗时，避免「运行了 0.0s」 */
+  startedAt?: number
+  /** 结束时间（ms）；notification / 历史 tool_result 写入 */
+  endedAt?: number
 }
 
 /**
@@ -160,6 +170,128 @@ export function canCreateSubagentTaskCard(event: {
   taskType?: string
 }): boolean {
   return isSubagentRuntimeTaskType(event.taskType)
+}
+
+/** 主线 launcher 工具名（与 session-turn-model.isSubagentLauncherTool 对齐） */
+function isHistorySubagentLauncher(name: string): boolean {
+  const n = name.trim().toLowerCase()
+  return n === 'agent' || n === 'task'
+}
+
+/**
+ * 从已落盘历史回填子代理入口卡（纯函数）。
+ *
+ * 产品契约（用户可接受「详情过程不落盘」，但必须有）：
+ * 1. **派过** = 主线 assistant 上的 tool_use（task/Agent）
+ * 2. **结论** = 对应 tool_result 正文
+ *
+ * 运行时 taskCard 只靠 tagent_event（不落盘），重启后入口会「没了」。
+ * 加载历史时用 launcher + tool_result 合成 completed/failed 卡，挂在发起该 task 的 assistant 后。
+ */
+export function rehydrateSubagentTaskCardsFromHistory<
+  T extends TaskCardCarrier & { message?: TAgentMessage },
+>(
+  items: readonly T[],
+  apply: (existing: T | undefined, card: TaskCardState) => T,
+): T[] {
+  // 先扫一遍 tool_result：toolUseId → 结论文本
+  const conclusions = new Map<string, { text: string; isError: boolean }>()
+  for (const it of items) {
+    const m = it.message
+    if (!m || m.type !== 'user') continue
+    for (const b of m.content) {
+      if (b.type !== 'tool_result') continue
+      const tr = b as {
+        toolUseId?: string
+        content?: unknown
+        isError?: boolean
+      }
+      const id = typeof tr.toolUseId === 'string' ? tr.toolUseId : ''
+      if (!id) continue
+      let text = ''
+      if (typeof tr.content === 'string') text = tr.content
+      else if (Array.isArray(tr.content)) {
+        text = tr.content
+          .map((x) =>
+            x && typeof x === 'object' && (x as { type?: string }).type === 'text'
+              ? String((x as { text?: string }).text ?? '')
+              : '',
+          )
+          .join('')
+      } else if (tr.content != null) {
+        try {
+          text = JSON.stringify(tr.content)
+        } catch {
+          text = String(tr.content)
+        }
+      }
+      conclusions.set(id, { text, isError: tr.isError === true })
+    }
+  }
+
+  const out: T[] = []
+  const seen = new Set<string>()
+  for (const it of items) {
+    out.push(it)
+    // 已有运行时卡则不重复造
+    if (it.taskCard?.toolUseId) seen.add(it.taskCard.toolUseId)
+
+    const m = it.message
+    if (!m || m.type !== 'assistant' || m.parentToolUseId) continue
+    for (const b of m.content) {
+      if (b.type !== 'tool_use') continue
+      const tu = b as {
+        id?: string
+        name?: string
+        input?: Record<string, unknown>
+      }
+      const id = typeof tu.id === 'string' ? tu.id : ''
+      const name = typeof tu.name === 'string' ? tu.name : ''
+      if (!id || !isHistorySubagentLauncher(name) || seen.has(id)) continue
+      seen.add(id)
+
+      const input = tu.input ?? {}
+      const descRaw =
+        (typeof input.description === 'string' && input.description.trim()) ||
+        (typeof input.prompt === 'string' && input.prompt.trim()) ||
+        '子代理任务'
+      const description = descRaw.replace(/\s+/g, ' ').slice(0, 140)
+      const subType =
+        typeof input.subagent_type === 'string' && input.subagent_type.trim()
+          ? input.subagent_type.trim()
+          : 'local_agent'
+      const conc = conclusions.get(id)
+      const summaryText = conc?.text?.replace(/\s+/g, ' ').trim() ?? ''
+      // 结论消息时间：扫 user tool_result 的 createdAt
+      let resultAt: number | undefined
+      for (const it2 of items) {
+        const m2 = it2.message
+        if (!m2 || m2.type !== 'user') continue
+        for (const b2 of m2.content) {
+          if (b2.type === 'tool_result' && (b2 as { toolUseId?: string }).toolUseId === id) {
+            if (typeof m2.createdAt === 'number') resultAt = m2.createdAt
+          }
+        }
+      }
+      const card: TaskCardState = {
+        taskId: id,
+        toolUseId: id,
+        taskType: subType,
+        description,
+        status: conc ? (conc.isError ? 'failed' : 'completed') : 'stopped',
+        summary: summaryText
+          ? summaryText.length > 160
+            ? `${summaryText.slice(0, 160)}…`
+            : summaryText
+          : '（无回传结论）',
+        // 历史：起点用发起 task 的 assistant 时间戳
+        startedAt: typeof m.createdAt === 'number' ? m.createdAt : undefined,
+        endedAt: resultAt,
+      }
+      out.push(apply(undefined, card))
+    }
+  }
+  return out
 }
 
 /**
@@ -238,6 +370,7 @@ export function reduceTaskEvent<T extends TaskCardCarrier>(
         description: event.description,
         status: 'running',
         progressText: event.description.trim() ? event.description.trim() : '启动中…',
+        startedAt: Date.now(),
       }
       const existing = idx >= 0 ? items[idx] : undefined
       if (existing) {
@@ -246,6 +379,8 @@ export function reduceTaskEvent<T extends TaskCardCarrier>(
           ...card,
           lastToolName: prev?.lastToolName,
           taskType: event.taskType ?? prev?.taskType,
+          // 保留更早的 startedAt，避免 progress 重建冲掉
+          startedAt: prev?.startedAt ?? card.startedAt,
         }
         return items.map((it, i) => (i === idx ? apply(it, merged) : it))
       }
@@ -293,6 +428,7 @@ export function reduceTaskEvent<T extends TaskCardCarrier>(
           status: event.status,
           summary,
           progressText: undefined,
+          endedAt: Date.now(),
         }
         return items.map((it, i) => (i === idx ? apply(it, merged) : it))
       }
@@ -305,6 +441,7 @@ export function reduceTaskEvent<T extends TaskCardCarrier>(
         description: '',
         status: event.status,
         summary,
+        endedAt: Date.now(),
       }
       return [...items, apply(undefined, card)]
     }

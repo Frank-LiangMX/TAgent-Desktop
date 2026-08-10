@@ -383,7 +383,7 @@ export function WorkspaceDock(): JSX.Element {
       id: paneId,
       title: `预览 · ${fileName}`,
       component: 'file-preview',
-      params: { sessionId },
+      params: { sessionId, paneType: 'file-preview' },
       ...(chatPanel ? { position: { direction: 'right', referencePanel: chatPanel } } : {}),
     })
   }, [apiReady, filePreviewReq])
@@ -406,7 +406,7 @@ export function WorkspaceDock(): JSX.Element {
       id: paneId,
       title: `预览 · ${label}`,
       component: 'rich-preview',
-      params: { sessionId },
+      params: { sessionId, paneType: 'rich-preview' },
       ...(chatPanel ? { position: { direction: 'right', referencePanel: chatPanel } } : {}),
     })
   }, [apiReady, richPreviewReq])

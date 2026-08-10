@@ -25,12 +25,30 @@ export function applyTextDelta(state: SessionStreamState, delta: string): Sessio
   return { ...state, text: state.text + delta }
 }
 
+/**
+ * E（IPC delta resync）：整体替换 streamState.text（前缀不匹配时 main 发 replace delta 带全量）。
+ * 不盲目 append，防重复/丢字。
+ */
+export function applyTextReplace(state: SessionStreamState, text: string): SessionStreamState {
+  return { ...state, text }
+}
+
 export function applyThinkingDeltaToState(
   state: SessionStreamState,
   delta: string,
 ): SessionStreamState {
   if (!delta) return state
   return { ...state, thinking: state.thinking + delta }
+}
+
+/**
+ * E（IPC delta resync）：整体替换 streamState.thinking（同 {@link applyTextReplace}）。
+ */
+export function applyThinkingReplaceToState(
+  state: SessionStreamState,
+  text: string,
+): SessionStreamState {
+  return { ...state, thinking: text }
 }
 
 export function clearSessionStreamState(): SessionStreamState {

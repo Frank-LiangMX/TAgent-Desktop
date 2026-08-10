@@ -61,14 +61,14 @@
   backdrop-filter: blur(8px);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
 }
-/* 大胶囊:新建会话,带 ChatsCircle 图标 + 文字,primary 描边克制态 */
+/* 大胶囊:新建会话,带 ChatsCircle 图标 + 文字；无描边，靠底色 + 字色 */
 .pill-new {
   display: flex;
   align-items: center;
   gap: 5px;
   height: 26px;
   padding: 0 11px 0 8px;
-  border: 1px solid hsl(var(--primary) / 0.32);
+  border: 1px solid transparent;
   border-radius: 999px;
   cursor: pointer;
   font: inherit;
@@ -77,12 +77,11 @@
   letter-spacing: -0.01em;
   color: hsl(var(--primary));
   background: hsl(var(--primary) / 0.1);
-  transition: background 0.16s, border-color 0.16s, color 0.16s,
+  transition: background 0.16s, color 0.16s,
     transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 .pill-new:hover {
   background: hsl(var(--primary) / 0.18);
-  border-color: hsl(var(--primary) / 0.5);
   transform: scale(1.04);
 }
 .pill-new:active {
@@ -171,7 +170,8 @@
   background: rgb(var(--glass-rgb) / 0.4);
 }
 
-/* ===== 打开中：纵向陈列（无交互，避免横向裁切） ===== */
+/* ===== 打开中：纵向陈列（无交互，避免横向裁切） =====
+ * 置顶栏是列表内嵌表面，不是浮岛 —— 边缘光克制，勿用 composer/sidebar 级顶光。 */
 .open-rail {
   position: relative;
   z-index: 2;
@@ -180,7 +180,7 @@
   gap: 4px;
   margin: 0 4px 4px;
   padding: 5px;
-  border: 1px solid rgb(var(--glass-rgb) / 0.42);
+  border: 1px solid rgb(var(--glass-rgb) / 0.32);
   border-radius: 12px;
   background:
     radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.05), transparent 66%),
@@ -189,9 +189,7 @@
       rgb(var(--glass-rgb) / 0.42),
       rgb(var(--glass-rgb) / 0.22)
     );
-  box-shadow:
-    0 8px 20px -14px rgb(23 30 40 / 0.18),
-    inset 0 1px 0 rgb(255 255 255 / 0.42);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.14);
   -webkit-backdrop-filter: blur(22px) saturate(1.06);
   backdrop-filter: blur(22px) saturate(1.06);
   max-height: min(28vh, 168px);
@@ -201,14 +199,14 @@
 }
 .dark .open-rail {
   border-color: rgb(255 255 255 / 0.07);
-  box-shadow:
-    0 8px 20px -14px rgb(0 0 0 / 0.38),
-    inset 0 1px 0 rgb(255 255 255 / 0.06);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
 }
 .open-rail::-webkit-scrollbar {
   display: none;
 }
 .open-chip {
+  position: relative;
+  isolation: isolate;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -216,12 +214,21 @@
   height: 28px;
   padding: 0 10px 0 8px;
   border-radius: 9px;
-  border: 1px solid rgb(var(--glass-rgb) / 0.28);
+  border: 1px solid rgb(var(--glass-rgb) / 0.22);
   background: rgb(var(--glass-rgb) / 0.34);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.1);
+}
+.open-chip > * {
+  position: relative;
+  z-index: 1;
 }
 .light .open-chip {
   background: rgb(255 255 255 / 0.72);
   border-color: rgb(255 255 255 / 0.78);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28);
+}
+.dark .open-chip {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
 }
 .open-chip .pm {
   flex: none;
@@ -278,7 +285,13 @@
   /* 不用 contain:paint / translateZ:会把列表裁在自己盒内,脚下叠层透不出会话 */
 }
 .side-scroll::-webkit-scrollbar {
-  width: 0;
+  width: 5px;
+  height: 5px;
+}
+.side-scroll::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }
 /* 有归档底栏时:底部留白,末条可滚出脚下;列表仍画到脚底下供透出 */
 .app-nav-sidebar:has(.arch-foot) .side-scroll {
@@ -328,6 +341,7 @@
   min-width: 0;
 }
 .workspace-drag-handle,
+.workspace-new-session,
 .workspace-menu-button {
   position: absolute;
   z-index: 2;
@@ -357,16 +371,36 @@
 .workspace-drag-handle:active {
   cursor: grabbing;
 }
+.workspace-new-session {
+  right: 26px;
+  cursor: pointer;
+}
 .workspace-menu-button {
   right: 4px;
   cursor: pointer;
 }
 .workspace-group-head:hover .workspace-drag-handle,
+.workspace-group-head:hover .workspace-new-session,
 .workspace-group-head:hover .workspace-menu-button,
+.workspace-group-head.is-dots-open .workspace-new-session,
 .workspace-group-head.is-dots-open .workspace-menu-button,
-.workspace-group-head:has(.workspace-drag-handle:focus-visible, .workspace-menu-button:focus-visible)
+.workspace-group-head:has(
+    .workspace-drag-handle:focus-visible,
+    .workspace-new-session:focus-visible,
+    .workspace-menu-button:focus-visible
+  )
   .workspace-drag-handle,
-.workspace-group-head:has(.workspace-drag-handle:focus-visible, .workspace-menu-button:focus-visible)
+.workspace-group-head:has(
+    .workspace-drag-handle:focus-visible,
+    .workspace-new-session:focus-visible,
+    .workspace-menu-button:focus-visible
+  )
+  .workspace-new-session,
+.workspace-group-head:has(
+    .workspace-drag-handle:focus-visible,
+    .workspace-new-session:focus-visible,
+    .workspace-menu-button:focus-visible
+  )
   .workspace-menu-button {
   opacity: 0.68;
   pointer-events: auto;
@@ -380,23 +414,37 @@
   pointer-events: auto;
 }
 .workspace-drag-handle:hover,
+.workspace-new-session:hover,
 .workspace-menu-button:hover,
 .workspace-menu-button[data-state='open'] {
   color: hsl(var(--foreground) / 0.86);
   background: hsl(var(--foreground) / 0.06);
 }
-.workspace-drag-handle:hover {
+.workspace-drag-handle:hover,
+.workspace-new-session:hover {
   transform: translateY(-50%) scale(1.04);
 }
-/* hover 出拖柄/菜单时：只让位 caret 与数量角标；文件夹图标保持可见（分区身份） */
+.workspace-new-session:hover {
+  color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.1);
+}
+/* hover 出拖柄/加号/菜单时：只让位 caret 与数量角标；文件夹图标保持可见（分区身份） */
 .workspace-group-head:hover > .group-head .caret,
 .workspace-group-head:hover > .group-head .ws-badge,
 .workspace-group-head.is-dots-open > .group-head .caret,
 .workspace-group-head.is-dots-open > .group-head .ws-badge,
-.workspace-group-head:has(.workspace-drag-handle:focus-visible, .workspace-menu-button:focus-visible)
+.workspace-group-head:has(
+    .workspace-drag-handle:focus-visible,
+    .workspace-new-session:focus-visible,
+    .workspace-menu-button:focus-visible
+  )
   > .group-head
   .caret,
-.workspace-group-head:has(.workspace-drag-handle:focus-visible, .workspace-menu-button:focus-visible)
+.workspace-group-head:has(
+    .workspace-drag-handle:focus-visible,
+    .workspace-new-session:focus-visible,
+    .workspace-menu-button:focus-visible
+  )
   > .group-head
   .ws-badge {
   opacity: 0;
@@ -480,10 +528,11 @@
   display: grid;
   place-items: center;
 }
-.caret-placeholder {
-  visibility: hidden;
+/* 无会话：仍显示箭头占位对齐，弱化表示不可展开 */
+.caret.caret-empty {
+  opacity: 0.35;
 }
-.group.open .caret {
+.group.open .caret:not(.caret-empty) {
   transform: rotate(90deg);
 }
 /* 工作区名：section label，与会话标题 12.5/500 拉开 */
@@ -808,7 +857,7 @@
   padding: 4px 4px 8px;
   /* 滚动裁切放在内层，外层保持 visible，供伪元素采样完整 backdrop。 */
   overflow: visible;
-  border-radius: 16px 16px 0 0;
+  border-radius: 12px 12px 0 0;
   border: 1px solid rgb(var(--glass-rgb) / 0.5);
   border-bottom: 0;
   background: transparent !important;
@@ -947,30 +996,34 @@
 .arch-foot .group-archived:not(.open) > .rows {
   padding: 0;
 }
-/* 归档行:紧凑 + 灰化(只作用在行上,不作用在外包容器) */
+/* 归档行:单行紧凑 —— arch-mark + 标题(ellipsis) + 内联「已归档」状态同一基线；
+   隐藏原 meta 第二行；hover/选中沿用 .row 通用态，不另设独立视觉系统。 */
 .row-archived {
-  min-height: 40px;
-  padding-top: 5px;
-  padding-bottom: 5px;
-  margin-top: 2px;
-  margin-bottom: 2px;
+  min-height: 30px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  margin-top: 1px;
+  margin-bottom: 1px;
+  border-radius: 8px;
 }
 .row-archived .t {
   color: hsl(var(--foreground) / 0.42);
   font-weight: 500;
 }
-.row-archived .meta .m {
-  color: hsl(var(--muted-foreground) / 0.5);
+/* 状态已内联到 title 行：归档行不再渲染第二行 meta（结构性保证不落第二行） */
+.row-archived .meta {
+  display: none;
 }
-.row-archived:hover {
-  background: rgb(var(--glass-rgb) / 0.28);
-  border-color: transparent;
-  box-shadow: none;
-}
-.light .row-archived:hover {
-  background: rgb(var(--glass-rgb) / 0.28);
-  border-color: transparent;
-  box-shadow: none;
+/* 内联「已归档」状态:贴右、muted 文字(非纯色语义)、与标题同一基线 */
+.row-archived .arch-status {
+  flex: none;
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 10.5px;
+  line-height: 18px;
+  color: hsl(var(--muted-foreground) / 0.62);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .row-archived .arch-mark {
   flex: none;

@@ -100,7 +100,8 @@ export function SubagentDetailView({
     return undefined
   }, [subagentItems])
 
-  // 时间对齐主会话 turn 头部：运行中显示耗时，完成态显示完成时间（顶部一次）
+  // 时间：优先 taskCard.startedAt（task_started 写入），避免「全文一次性落盘」时
+  // first/last createdAt 相同 → 运行了 0.0s
   const firstCreatedAt = useMemo(() => {
     for (const it of subagentItems) {
       const m = it.message
@@ -123,8 +124,18 @@ export function SubagentDetailView({
   } else {
     liveFallbackRef.current = null
   }
-  const startedAt = firstCreatedAt ?? liveFallbackRef.current ?? undefined
-  const elapsedMs = useLiveElapsedMs(startedAt, isRunning)
+  const startedAt =
+    (typeof card?.startedAt === 'number' ? card.startedAt : undefined) ??
+    firstCreatedAt ??
+    liveFallbackRef.current ??
+    undefined
+  const liveElapsedMs = useLiveElapsedMs(startedAt, isRunning)
+  // 完成态：card.endedAt > 消息时间 > startedAt，避免一次落盘同戳 → 0.0s
+  const endAt =
+    (typeof card?.endedAt === 'number' ? card.endedAt : undefined) ?? finishedAt
+  const completedElapsedMs =
+    startedAt != null && endAt != null && endAt >= startedAt ? endAt - startedAt : 0
+  const elapsedMs = isRunning ? liveElapsedMs : completedElapsedMs
   const statusText = isRunning
     ? `运行 ${formatElapsedDuration(elapsedMs)}`
     : finishedAt
@@ -232,6 +243,7 @@ export function SubagentDetailView({
                 segments={conciseSegments}
                 isLive={isRunning}
                 isLatestTurn
+                workedMs={elapsedMs}
               />
             ) : null
           ) : (

@@ -42,6 +42,8 @@ import type {
   WorkspaceMcpConfig,
   WorkspacePluginBundleRecord,
   MoAPreset,
+  CliWorkersConfig,
+  CliWorkersProbeResult,
 } from '@tagent/shared'
 
 export interface SendMessageInput {
@@ -135,6 +137,18 @@ const electronAPI = {
    */
   saveMoaPresets: (presets: MoAPreset[]) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.SAVE_MOA_PRESETS, presets) as Promise<MoAPreset[]>,
+  /** 列出 CLI 工人配置（首次调用主进程就地 seed 默认：总开关 enabled=false，零行为变化） */
+  listCliWorkersConfig: () =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_CLI_WORKERS) as Promise<CliWorkersConfig>,
+  /**
+   * 保存整份 CLI 工人配置（覆盖式写；设置页 CRUD）。
+   * 整单校验失败主进程 reject（中文错），调用方 catch 回显；成功返回重读后的配置。
+   */
+  saveCliWorkersConfig: (cfg: CliWorkersConfig) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.SAVE_CLI_WORKERS, cfg) as Promise<CliWorkersConfig>,
+  /** 本机探测各 CLI 工人是否在 PATH / 配置路径可用（每台机器环境不同） */
+  probeCliWorkers: (cfg?: CliWorkersConfig) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.PROBE_CLI_WORKERS, cfg) as Promise<CliWorkersProbeResult>,
   /** 读会话历史消息（JSONL） */
   getMessages: (sessionId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_SDK_MESSAGES, sessionId),
@@ -195,9 +209,11 @@ const electronAPI = {
   /** 持久化工作区侧栏顺序 */
   reorderWorkspaces: (orderedIds: string[]) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.REORDER_WORKSPACES, orderedIds) as Promise<AgentWorkspace[]>,
-  /** 更新会话元数据（重命名 title / 置顶 pinned / 归档 archived / 子代理委派积极性 subagentEagerness / 思考强度 reasoningEffort；status 由主进程内部写，渲染层不直接写） */
+  /** 更新会话元数据（重命名 title / 模型 modelId / 置顶 pinned / 归档 archived / 子代理委派积极性 subagentEagerness / 思考强度 reasoningEffort；status 由主进程内部写，渲染层不直接写） */
   updateSessionMeta: (id: string, patch: {
     title?: string
+    /** 模型 id：moa:* 粘性选择清回渠道默认真实模型时持久化（与 App.tsx 全局声明同口径） */
+    modelId?: string
     pinned?: boolean
     archived?: boolean
     subagentEagerness?: 'never' | 'conservative' | 'balanced' | 'aggressive'

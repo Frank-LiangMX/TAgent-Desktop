@@ -203,6 +203,284 @@
   opacity: 1;
 }
 
+/* ── 子代理（内置 + 本机 CLI，紧凑块） ── */
+.cli-workers-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cli-workers-inline-hint {
+  margin: 0;
+  padding: 0 2px;
+  color: var(--spatial-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.cli-workers-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px;
+}
+.cli-workers-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--spatial-ink) 12%, transparent);
+  border-radius: 8px;
+  background: var(--settings-chip-fill, transparent);
+  color: var(--spatial-ink);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+.cli-workers-btn:hover:not(:disabled) {
+  background: var(--settings-hover-fill, color-mix(in srgb, var(--spatial-ink) 6%, transparent));
+}
+.cli-workers-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cli-workers-toolbar-hint {
+  color: var(--spatial-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.cli-workers-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid color-mix(in srgb, var(--spatial-ink) 10%, transparent);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--settings-chip-fill, transparent);
+}
+.cli-workers-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--spatial-ink) 8%, transparent);
+}
+.cli-workers-row:last-child {
+  border-bottom: none;
+}
+.cli-workers-row.is-default {
+  background: color-mix(in srgb, var(--spatial-ink) 4%, transparent);
+}
+.cli-workers-row.is-off {
+  opacity: 0.55;
+}
+.cli-workers-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.cli-workers-prio {
+  flex-shrink: 0;
+  min-width: 1.6em;
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--spatial-faint);
+}
+.cli-workers-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.cli-workers-move {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cli-workers-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--spatial-ink) 10%, transparent);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--spatial-muted);
+  cursor: pointer;
+}
+.cli-workers-icon-btn:hover:not(:disabled) {
+  background: var(--settings-hover-fill, color-mix(in srgb, var(--spatial-ink) 6%, transparent));
+  color: var(--spatial-ink);
+}
+.cli-workers-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.cli-workers-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--spatial-ink);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.cli-workers-tag {
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: color-mix(in srgb, var(--spatial-ink) 10%, transparent);
+  color: var(--spatial-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+.cli-workers-badge {
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.cli-workers-badge.is-ok {
+  background: color-mix(in srgb, #22c55e 18%, transparent);
+  color: color-mix(in srgb, #16a34a 80%, var(--spatial-ink));
+}
+.cli-workers-badge.is-miss {
+  background: color-mix(in srgb, #f59e0b 16%, transparent);
+  color: color-mix(in srgb, #d97706 85%, var(--spatial-ink));
+}
+.cli-workers-badge.is-unknown,
+.cli-workers-badge.is-pending {
+  background: color-mix(in srgb, var(--spatial-ink) 8%, transparent);
+  color: var(--spatial-muted);
+}
+.cli-workers-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--spatial-muted);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  flex: 0 0 auto;
+}
+.cli-workers-check input {
+  margin: 0;
+  accent-color: var(--spatial-ink);
+}
+.cli-workers-advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: var(--spatial-muted);
+  padding: 4px 2px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.cli-workers-advanced-toggle svg {
+  transition: transform 0.15s ease;
+}
+.cli-workers-advanced-toggle.is-open svg {
+  transform: rotate(180deg);
+}
+.cli-workers-advanced {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid color-mix(in srgb, var(--spatial-ink) 10%, transparent);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--settings-chip-fill, transparent);
+}
+/* 紧凑行：id + 两列输入，避免 SettingsInput 左右大留白 */
+.cli-workers-adv-row {
+  display: grid;
+  grid-template-columns: 56px 1fr 1fr;
+  gap: 8px 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--spatial-ink) 8%, transparent);
+}
+.cli-workers-adv-row:last-child {
+  border-bottom: none;
+}
+.cli-workers-adv-id {
+  color: var(--spatial-ink);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.cli-workers-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.cli-workers-field-lab {
+  flex: 0 0 auto;
+  color: var(--spatial-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.cli-workers-field-inp {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  border: 1px solid color-mix(in srgb, var(--spatial-ink) 12%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--spatial-ink) 3%, transparent);
+  color: var(--spatial-ink);
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 28px;
+  outline: none;
+}
+.cli-workers-field-inp:focus {
+  border-color: color-mix(in srgb, var(--spatial-ink) 28%, transparent);
+}
+.cli-workers-field-inp:disabled {
+  opacity: 0.55;
+}
+.cli-workers-field-inp::placeholder {
+  color: var(--spatial-muted);
+  opacity: 0.75;
+}
+/* 探测路径单独占满一行，贴在该 CLI 行下方 */
+.cli-workers-adv-row .cli-workers-path {
+  grid-column: 1 / -1;
+  margin-top: -2px;
+  color: var(--spatial-muted);
+  font-size: 10px;
+  line-height: 1.35;
+  word-break: break-all;
+  opacity: 0.9;
+}
+
+@media (max-width: 640px) {
+  .cli-workers-adv-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
+
+/* ── 页底「即将推出」合并条 ── */
+.agent-behavior-coming {
+  margin: 4px 2px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--spatial-ink) 4%, transparent);
+  color: var(--spatial-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 /* ── 编辑器：SettingsCard 内同页表单（表面由 settings-card 提供，这里只留内距与节奏） ── */
 .agent-behavior-editor {
   display: flex;

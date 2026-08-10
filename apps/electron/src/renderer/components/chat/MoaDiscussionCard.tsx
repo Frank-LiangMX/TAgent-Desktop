@@ -88,7 +88,7 @@ export function MoaDiscussionCard({ panel, onOpen }: MoaDiscussionCardProps): JS
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <span className="text-[10.5px] font-medium uppercase tracking-wide text-primary/70">
-                圆桌研讨
+                圆桌
               </span>
               <span className="truncate text-[12px] font-medium text-foreground">
                 {panel.presetName}

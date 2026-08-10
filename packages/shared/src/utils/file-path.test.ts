@@ -62,6 +62,13 @@ describe('isAbsoluteFilePath', () => {
     expect(isAbsoluteFilePath('/home/user/bin/tool')).toBe(true)
     expect(isAbsoluteFilePath('/tmp/out.log')).toBe(true)
   })
+
+  test('省略号截断路径不升 FileChip（D:/proj/...）', () => {
+    expect(isAbsoluteFilePath('D:/sword3-products/...')).toBe(false)
+    expect(isAbsoluteFilePath('D:\\sword3-products\\...')).toBe(false)
+    expect(isAbsoluteFilePath('D:/sword3-products/.../a.ts')).toBe(false)
+    expect(isAbsoluteFilePath('/home/user/…/a.ts')).toBe(false)
+  })
 })
 
 describe('getFileName', () => {
@@ -133,6 +140,11 @@ describe('isRelativeFilePath', () => {
   test('正斜杠相对路径仍识别', () => {
     expect(isRelativeFilePath('py/parse_mesh.py')).toBe(true)
     expect(isRelativeFilePath('src/a.ts:42')).toBe(true)
+  })
+
+  test('省略号截断相对路径不升 FileChip', () => {
+    expect(isRelativeFilePath('src/.../a.ts')).toBe(false)
+    expect(isRelativeFilePath('…/config.js')).toBe(false)
   })
 })
 

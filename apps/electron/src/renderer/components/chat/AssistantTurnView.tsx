@@ -57,6 +57,11 @@ interface AssistantTurnViewProps {
   isLatestAssistantTurn?: boolean
   /** 会话级流式缓冲（live 轮 delta 累积，不绑 DisplayItem） */
   streamState?: TurnStreamState
+  /**
+   * live 轮当前选中模型（effectiveSelection.modelId，非 moa:*）：流式中 assistant 消息尚无 modelId 时
+   * 作为回退，让 SpeakerHeader 立刻显示「哪个模型在生成」，而非等终态。完成 Chat 既有 fallbackModelId 透传。
+   */
+  fallbackModelId?: string
   /** Chat @ 本轮点名角色展示名（顺序） */
   mentionLabels?: string[]
   /** 完成耗时（发送→idle 全程 + 结束方式；仅结束后由 Chat 传入）。复制栏/标题行显示耗时 */
@@ -72,6 +77,7 @@ export function AssistantTurnView({
   isLiveTurn = false,
   isLatestAssistantTurn = false,
   streamState,
+  fallbackModelId,
   mentionLabels,
   completedDuration,
   subagentCards,
@@ -227,9 +233,12 @@ export function AssistantTurnView({
   const filesCard =
     editedFiles.length > 0 ? <TurnFilesChangedCard files={editedFiles} /> : null
 
-  const speakerName = resolveSpeakerName(mentionLabels, presentation.modelId)
+  // 回退模型 id：流式中 assistant 消息尚无 modelId 时用 effectiveSelection 的当前选中模型，
+  // 让 SpeakerHeader 立刻显示「谁在生成」（完成 Chat 既有 fallbackModelId 透传）。
+  const turnModelId = presentation.modelId ?? fallbackModelId
+  const speakerName = resolveSpeakerName(mentionLabels, turnModelId)
   const showSpeakerRow =
-    Boolean(presentation.modelId) ||
+    Boolean(turnModelId) ||
     Boolean(statusLabel) ||
     Boolean(mentionLabels && mentionLabels.length > 0) ||
     presentation.process.length > 0 ||
@@ -240,7 +249,7 @@ export function AssistantTurnView({
       {showSpeakerRow ? (
         <SpeakerHeader
           name={speakerName}
-          modelId={presentation.modelId}
+          modelId={turnModelId}
           statusLabel={statusLabel || undefined}
           isLive={isLiveTurn}
           handoffLabels={mentionLabels}

@@ -112,3 +112,6 @@ export * from './moa-history'
 
 // MoA 落盘 shape 纯函数（汇总 final assistant SDKMessage 构造）
 export * from './moa-persist'
+
+// CLI 工人配置（本机 coding CLI 子代理后端；类型 + 校验 + seed + helpers）
+export * from './cli-workers'

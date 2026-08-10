@@ -87,7 +87,9 @@ import {
   applySdkMessageToItems,
   applySdkMessageToStreamState,
   applyTextDelta,
+  applyTextReplace,
   applyThinkingDeltaToState,
+  applyThinkingReplaceToState,
   clearSessionStreamState,
   commitStreamThinkingToLastAssistant,
   commitStreamTextToLastAssistant,
@@ -104,6 +106,7 @@ import { NewConversationLanding } from './NewConversationLanding'
 import {
   resolveEagerness,
   reduceTaskEvent,
+  rehydrateSubagentTaskCardsFromHistory,
   type TaskCardState,
   type TaskCardEvent,
 } from './subagent-ui-model'
@@ -111,6 +114,10 @@ import { MessageFilePathProvider, MessageRichPreviewProvider, type RichPreviewKi
 import { filePreviewRequestAtom } from '../../atoms/file-preview'
 import { richPreviewRequestAtom } from '../../atoms/rich-preview'
 import { splitDockModeAtom } from '../../atoms/feature-flags'
+import {
+  readSubagentEagernessDefault,
+  subagentEagernessDefaultAtom,
+} from '../../atoms/subagent-prefs'
 import { PermissionBanner } from '../permission/PermissionBanner'
 import { AskUserQuestionBanner } from './AskUserQuestionBanner'
 import { ExecutionModeSuggestionBanner } from './ExecutionModeSuggestionBanner'
@@ -500,7 +507,11 @@ export function Chat({
     ready: number
     pending: number
   } | null>(null)
-  /** 子代理委派积极性（默认 conservative；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 kscc 生效） */
+  /**
+   * 子代理委派积极性（会话级）。
+   * 挂载时：meta 有值用会话档；否则用设置页全局默认（再缺省 conservative）。
+   * 未写过 meta 的会话会把解析结果落盘一次，保证主进程注入与 UI 一致。
+   */
   const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('conservative')
   /** 当前打开的子代理详情（parentToolUseId），非空时全屏切换显示独立会话页 */
   const [subagentDetail, setSubagentDetail] = useState<string | null>(null)
@@ -805,17 +816,19 @@ export function Chat({
         }
       }
       if (cancelled) return
-      setItems(irItems)
+      // 子代理入口卡：运行时 taskCard 不落盘；从历史 tool_use(task)+tool_result 回填「派过 + 结论」
+      const rehydrated = rehydrateSubagentTaskCardsFromHistory(irItems, taskCardApply)
+      setItems(rehydrated)
       // 从历史 assistant.usage 回填底栏（最近一条有 usage 的 assistant）
-      for (let i = irItems.length - 1; i >= 0; i--) {
-        const m = irItems[i]?.message
+      for (let i = rehydrated.length - 1; i >= 0; i--) {
+        const m = rehydrated[i]?.message
         if (m?.type === 'assistant' && m.usage && (m.usage.inputTokens ?? 0) > 0) {
           applyUsage(m.usage)
           break
         }
       }
       setScrollReady(true)
-      // 回显持久化的子代理委派积极性（新会话无 meta → resolveEagerness 回退默认 conservative）
+      // 回显子代理委派积极性：会话 meta → 设置页全局默认 → conservative
       try {
         const metas = (await window.electronAPI.listSessions()) as Array<{
           id: string
@@ -838,7 +851,18 @@ export function Chat({
           if (Object.keys(backfilled).length > 0) {
             setCompletedDurations((prev) => ({ ...prev, ...backfilled }))
           }
-          setSubagentEagerness(resolveEagerness(persisted))
+          // 全局默认从 store 即时读，避免把 eagernessDefault 放进 deps 导致整页重载
+          const globalDefault = readSubagentEagernessDefault(
+            getDefaultStore().get(subagentEagernessDefaultAtom),
+          )
+          const resolvedEagerness = resolveEagerness(persisted, globalDefault)
+          setSubagentEagerness(resolvedEagerness)
+          // 会话从未单独设过 → 把解析结果落盘，主进程注入与 UI 对齐
+          if (persisted.subagentEagerness === undefined) {
+            void window.electronAPI.updateSessionMeta(sessionId, {
+              subagentEagerness: resolvedEagerness,
+            })
+          }
           setReasoningEffort(migrateReasoningEffort(persisted.reasoningEffort))
           // 旧会话无字段 → migrate 为 work，避免突然只读
           setExecutionMode(migrateExecutionMode(persisted.executionMode))
@@ -938,8 +962,13 @@ export function Chat({
             }
           }
           if (sessionIdRef.current !== sid) return
-          itemIdxRef.current = Math.max(itemIdxRef.current, irItems.length)
-          setItems(irItems)
+          const rehydrated = rehydrateSubagentTaskCardsFromHistory(irItems, (existing, card) =>
+            existing
+              ? { ...existing, taskCard: card }
+              : { key: `h${idx++}`, taskCard: card },
+          )
+          itemIdxRef.current = Math.max(itemIdxRef.current, idx, rehydrated.length)
+          setItems(rehydrated)
         } catch {
           /* 回流刷新失败不影响主流程 */
         }
@@ -1417,10 +1446,24 @@ export function Chat({
     } else if (p.kind === 'stream_text_delta') {
       // 子代理流式正文不进主会话（详情页靠落盘 parentToolUseId 消息回放）
       if (p.parentToolUseId) return
-      setStreamState((prev) => applyTextDelta(prev, p.text))
+      // E：replace = resync（前缀不匹配，main 发全量），整体替换；否则 append(suffix)
+      setStreamState((prev) =>
+        p.replace ? applyTextReplace(prev, p.text) : applyTextDelta(prev, p.text),
+      )
     } else if (p.kind === 'stream_thinking_delta') {
       // 子代理思考流不进主会话
       if (p.parentToolUseId) return
+      // E：replace = resync，立即整体替换（不走 rAF append 合帧，并清掉未 flush 的 append 缓冲）
+      if (p.replace) {
+        if (thinkingFlushRafRef.current != null) {
+          cancelAnimationFrame(thinkingFlushRafRef.current)
+          thinkingFlushRafRef.current = null
+        }
+        pendingThinkingRef.current = ''
+        pendingThinkingUuidRef.current = undefined
+        setStreamState((prev) => applyThinkingReplaceToState(prev, p.text))
+        return
+      }
       // Pi message_start 的空 delta：无需改 state
       if (p.text === '') return
       // 非空 delta 按帧合并（Pi 每 token 一事件），避免高频 setState

@@ -37,6 +37,9 @@ import {
   buildChatModeBlockUserError,
   classifyUserFacingError,
   sdkMessageToIR,
+  DeltaTracker,
+  stripPartialAssistantBody,
+  shouldDeltaTrackAssistant,
 } from '@tagent/shared'
 import type { KsccQueryOptions } from '../adapters/claude/claude-agent-adapter'
 import {
@@ -73,10 +76,12 @@ import { resolveWorkspaceForSession } from '../workspace/workspace-manager'
 import { findFileByNameCached } from './file-search'
 import { getEnabledMcpServers } from '../mcp/mcp-store'
 import { listMoaPresets, writeMoaPresets, validateMoAPresetList } from '../agent/moa-preset-service'
+import { listCliWorkersConfig, writeCliWorkersConfig } from '../agent/cli-workers-service'
+import { probeCliWorkers } from '../agent/cli-workers/probe-cli-workers'
 import { runMoaTurn } from '../agent/run-moa-turn'
 import { runMoADiscussion, nextMoADiscussionId } from '../agent/run-moa-discussion'
 import { resolveMoADispatch, decideMoaMetaPatch } from '../agent/moa-dispatch'
-import { isMoaModelId, moaModelId, resolveConsultPresetsForChannel, buildResumeHistoryFromPanel, composeMoaPrompt, extractMoAConclusionFromMessages, panelMessageToHistoryIR, type MoAPreset } from '@tagent/shared'
+import { isMoaModelId, moaModelId, resolveConsultPresetsForChannel, buildResumeHistoryFromPanel, composeMoaPrompt, extractMoAConclusionFromMessages, panelMessageToHistoryIR, validateCliWorkersConfig, type MoAPreset, type CliWorkersConfig } from '@tagent/shared'
 import { createKsccSeatRunner, createPiHttpSeatRunner, type MoASeatRunner } from '@tagent/pi-core'
 import {
   PermissionService,
@@ -104,6 +109,8 @@ import {
   isExecutionModeChangeSource,
   type ExecutionModeChangeSource,
   parseMentions,
+  migrateReasoningEffort,
+  reasoningEffortToPiThinkingLevel,
 } from '@tagent/shared'
 import { loadRoles, resolveRole } from '../role/agent-role-service'
 import { composeRoleSystemPrompt } from '../role/role-projection'
@@ -159,6 +166,14 @@ export class SessionService {
   private streamPersistGateBySession = new Map<string, StreamPersistGateState>()
 
   /**
+   * E（IPC delta）：per-session DeltaTracker。把 kscc 累计 partial assistant 快照转成增量 suffix delta
+   * （前缀不匹配 → replace resync），partial 的 sdk_message 剥掉 thinking/text 主体后发 renderer，
+   * IPC 不再每帧重传全串（O(N²)→O(N)）。落盘仍走原始全量 msg（stream-persist-gate），不受影响。
+   * 仅 kscc 路径（handleSdkStreamMessage）使用；Pi 路径自管 _partial，不经此。
+   */
+  private deltaTrackerBySession = new Map<string, DeltaTracker>()
+
+  /**
    * MoA 会诊在途状态：runMoaTurn 期间存 AbortController（STOP 时 abort 杀未完成 bare 进程）
    * + 在途标记（getStatus 据此回 running；MoA 不经 SessionRuntime，无 isTurnInFlight）。
    */
@@ -210,6 +225,16 @@ export class SessionService {
       this.streamPersistGateBySession.set(sessionId, s)
     }
     return s
+  }
+
+  /** 取/建会话的 delta 追踪器（E）。 */
+  private getDeltaTracker(sessionId: string): DeltaTracker {
+    let t = this.deltaTrackerBySession.get(sessionId)
+    if (!t) {
+      t = new DeltaTracker()
+      this.deltaTrackerBySession.set(sessionId, t)
+    }
+    return t
   }
 
   /** Phase 1.2 双写：先面板（保可见）再 SDK（resume）。 */
@@ -810,6 +835,31 @@ export class SessionService {
       },
     )
 
+    // CLI 工人配置（本机 coding CLI 子代理后端）：无文件则 list 就地 seed 默认（enabled=false）。
+    ipcMain.handle(AGENT_IPC_CHANNELS.LIST_CLI_WORKERS, async () => {
+      return listCliWorkersConfig()
+    })
+
+    // 保存整份 CLI 工人配置（设置页 CRUD）：整单校验失败 reject 中文错、不写盘；
+    // 合法则 writeCliWorkersConfig 后再 list 回传（与 moa 预置保存同口径）。
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.SAVE_CLI_WORKERS,
+      async (_e, cfg: CliWorkersConfig): Promise<CliWorkersConfig> => {
+        const err = validateCliWorkersConfig(cfg)
+        if (err) throw new Error(err)
+        writeCliWorkersConfig(cfg)
+        return listCliWorkersConfig()
+      },
+    )
+
+    // 本机探测 CLI 是否在 PATH（每台机器环境不同）；可选传入当前编辑中的 cfg
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.PROBE_CLI_WORKERS,
+      async (_e, cfg?: CliWorkersConfig) => {
+        return probeCliWorkers(cfg)
+      },
+    )
+
     ipcMain.handle(AGENT_IPC_CHANNELS.LIST_SESSIONS, async () => {
       const sessions = listSessions()
       console.log(`[会话] listSessions 返回 ${sessions.length} 个会话，isArray=${Array.isArray(sessions)}`)
@@ -834,6 +884,9 @@ export class SessionService {
       PermissionService.clearWhitelist(sessionId)
       // 清待处理 AskUser 请求（resolve deny「会话已结束」）
       askUserService.clearSessionPending(sessionId)
+      // E/落盘闸口：清会话级 delta 追踪器 + 落盘闸口，防 Map 无界增长
+      this.deltaTrackerBySession.delete(sessionId)
+      this.streamPersistGateBySession.delete(sessionId)
       deleteSessionMeta(sessionId)
       // Phase 2.5：记忆层标记会话已删（L0/L2/L3/L5 行加 deleted:1）
       void nudgeService.markSessionDeleted(sessionId).catch((err) => {
@@ -853,6 +906,7 @@ export class SessionService {
           patch: Pick<
             Partial<AgentSessionMeta>,
             | 'title'
+            | 'modelId'
             | 'pinned'
             | 'archived'
             | 'subagentEagerness'
@@ -1566,6 +1620,10 @@ export class SessionService {
       // 每次发送都重新读取，UI 改完下次发送即生效（kscc 长驻进程 system prompt 在 spawn 时定稿，
       // 切换积极性需重建进程才完全生效；非首次发送走 resume，沿用上一次注入的策略）。
       const eagerness = migrateSubagentEagerness(meta?.subagentEagerness)
+      // 思考强度：读会话 meta（持久化，默认 medium），映射到 Claude Agent SDK effort。
+      // 每次发送都重新读取；kscc 长驻进程 effort 在 spawn 时定稿，切换需重建进程才完全生效
+      // （非首次发送走 resume，沿用上一次注入的 effort）。
+      const reasoningEffort = migrateReasoningEffort(meta?.reasoningEffort)
       // Phase 2.2：记忆管理规则 + Frozen 记忆快照（createSession/spawn 时注入，会话内不刷新）
       const sessionMode: MemoryMode = meta?.mode === 'ta' ? 'ta' : 'general'
       const snap = memoryLayerService.readMemorySnapshot(sessionMode)
@@ -1612,6 +1670,8 @@ export class SessionService {
         sdkCliPath: ksccPath,
         env: { ...process.env } as Record<string, string | undefined>,
         maxTurns: 50,
+        // 思考强度 → SDK effort（low/medium/high/max），ClaudeAgentAdapter.buildSdkOptions 注入
+        reasoningEffort,
         // 接上 resolveSdkPermissionModeForTAgent：auto/bypassPermissions → 'default'，
         // 让 SDK 把每次工具调用都交给 TAgent canUseTool 审批，而非叠 SDK 自己的权限闸
         // （之前硬编码 'bypassPermissions' + allowDangerouslySkipPermissions:false 的组合，
@@ -1693,6 +1753,9 @@ export class SessionService {
         )
       : undefined
     const piMeta = getSessionMeta(input.sessionId)
+    // Pi 核思考强度：reasoningEffort → thinkingLevel（thinkingEnabled=false 时为 no-op，不回归既有行为）。
+    // 仅当渠道后续开启 thinking 时该档位才生效；当前默认关闭，思考强度实际生效在 kscc/ClaudeAgentAdapter。
+    const piReasoningEffort = migrateReasoningEffort(piMeta?.reasoningEffort)
     // Pi 核 systemPrompt 为整体替换：注入执行形态段落（避免仅靠工具层无文案）
     const piExecutionMode = this.getExecutionMode(input.sessionId)
     const piExecutionPrompt = [
@@ -1739,7 +1802,7 @@ export class SessionService {
         modelId: model,
         // thinking 控制：默认关闭，后续可加 UI toggle
         thinkingEnabled: false,
-        thinkingLevel: 'medium' as const,
+        thinkingLevel: reasoningEffortToPiThinkingLevel(piReasoningEffort) as 'minimal' | 'low' | 'medium' | 'high',
         // Phase 1.1：注入真实 contextWindow（替代 buildPlaceholderModel 旧的 128k 硬编码）
         contextWindow: resolveModelContextWindow(channel, model),
       },
@@ -1812,19 +1875,54 @@ export class SessionService {
     ;(msg as any).createdAt = (msg as any).createdAt ?? Date.now()
     const { message, event } = sdkMessageToIR(msg)
     const msgType = (msg as { type?: string }).type
-    if (message) {
-      // REGRESS-G 落盘闸口：替原「isPartial 一刀切跳过」为「同 uuid 去重 + 内容放行」。
-      // kscc/glm 每 content 块为独立 uuid 且 stop_reason 始终 null，旧规则全标 _partial 全跳过 → 段间短文/工具/思考落盘全丢。
-      // 详见 stream-persist-gate.ts。live 推流（sendPayload）不受影响——闸口只管落盘。
+    // E（IPC delta）：把 kscc 累计 partial assistant 快照转成增量 suffix delta（前缀不匹配 → replace resync）。
+    // partial 的 sdk_message 剥掉 thinking/text 主体后发 renderer，IPC 不再每帧重传全串（O(N²)→O(N)）；
+    // final 发全量校准。落盘仍走原始全量 msg（下方 feedStreamPersistGate），不受 delta 影响。
+    let irMessage = message
+    // E（IPC delta）只服务主线 assistant（40K reasoning O(N) 优化）：剥主体 + 发 suffix delta。
+    // 子代理 assistant（parentToolUseId）正文进 SubagentDetailView 的 items 渲染（不进主 streamState，
+    // Chat 对 parentToolUseId delta 直接 return），剥离主体会让详情页流式变空 → 子代理保持全量 sdk_message。
+    if (shouldDeltaTrackAssistant(message)) {
+      const isFinal = message._partial !== true
+      const deltas = this.getDeltaTracker(sessionId).feedAssistant(
+        message.uuid,
+        message.content,
+        { isFinal, parentToolUseId: message.parentToolUseId ?? undefined },
+      )
+      for (const d of deltas) {
+        this.sendPayload(sessionId, {
+          kind: d.kind,
+          text: d.text,
+          ...(d.replace ? { replace: true } : {}),
+          ...(d.uuid ? { uuid: d.uuid } : {}),
+          ...(d.parentToolUseId ? { parentToolUseId: d.parentToolUseId } : {}),
+        } as TAgentDesktopStreamPayload)
+      }
+      // partial：剥掉 body 主体（保块结构与 blockIndex 稳定）；final：发全量校准
+      if (!isFinal) {
+        irMessage = { ...message, content: stripPartialAssistantBody(message.content) }
+      }
+    }
+    if (irMessage) {
+      // REGRESS-G 落盘闸口：落盘走原始全量 msg（不受 delta/剥离影响）；同 uuid 去重留最新=final。
       const toPersist = feedStreamPersistGate(this.getStreamPersistGate(sessionId), msg)
       this.persistStreamMessages(workspaceId, sessionId, toPersist)
-      this.sendPayload(sessionId, { kind: 'sdk_message', message })
+      this.sendPayload(sessionId, { kind: 'sdk_message', message: irMessage })
     } else if (msgType === 'result') {
       // result 不带 message 但标志轮结束：先 flush 待提交 assistant，再走下方 result 事件
       const toPersist = flushStreamPersistGate(this.getStreamPersistGate(sessionId))
       this.persistStreamMessages(workspaceId, sessionId, toPersist)
+      this.getDeltaTracker(sessionId).resetAll() // E: 轮结束清追踪，防串块/串会话
     }
     if (event) {
+      // 单一权威 delta 源（风险1）：主线原生 stream_event delta 即权威 live delta——标记本轮
+      // nativeDeltaActive，后续主线 assistant 快照不再经 DeltaTracker 发派生 delta（防双 append）。
+      // 仅主线 delta（无 parentToolUseId）服务主 streamState；子代理 delta 在 renderer 被 return，不标记。
+      if (event.kind === 'stream_text_delta' || event.kind === 'stream_thinking_delta') {
+        if (!event.parentToolUseId) {
+          this.getDeltaTracker(sessionId).markNativeDeltaActive()
+        }
+      }
       this.sendPayload(sessionId, event)
     }
     // Phase 4：result 后跑软重置阈值（廉价清理 / 影子 / 切换）

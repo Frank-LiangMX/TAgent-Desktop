@@ -116,4 +116,30 @@ describe('stream-persist-gate（REGRESS-G 落盘闸口）', () => {
     expect(persisted).toHaveLength(1)
     expect((persisted[0] as { message: { content: Array<{ text: string }> } }).message.content[0]!.text).toBe('完成。')
   })
+
+  it('final assistant（stop_reason）含完整 thinking+text+tool → 原样完整落盘（delta/剥离路径不侵入落盘）', () => {
+    // 风险1/4：delta 协议只剥 live sdk_message 主体（减 IPC）；落盘走原始全量 msg，final 完整不丢。
+    const persisted = runSequence([
+      {
+        type: 'assistant',
+        uuid: 'u-final',
+        message: {
+          content: [
+            { type: 'thinking', thinking: '完整思考' },
+            { type: 'text', text: '完整正文' },
+            { type: 'tool_use', id: 't1', name: 'Bash', input: {} },
+          ],
+          stop_reason: 'tool_use',
+        },
+      },
+    ])
+    expect(persisted).toHaveLength(1)
+    const content = (persisted[0] as {
+      message: { content: Array<{ type: string; thinking?: string; text?: string }> }
+    }).message.content
+    // final 完整落盘：thinking / text 主体未被 delta 剥离路径吃掉
+    expect((content.find((b) => b.type === 'thinking') as { thinking: string }).thinking).toBe('完整思考')
+    expect((content.find((b) => b.type === 'text') as { text: string }).text).toBe('完整正文')
+    expect(content.some((b) => b.type === 'tool_use')).toBe(true)
+  })
 })

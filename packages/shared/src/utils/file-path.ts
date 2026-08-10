@@ -181,6 +181,14 @@ export function cleanFilePathInput(filePath: string): string {
 }
 
 /**
+ * 截断占位路径（`D:/proj/...`、`src/…/a.ts`）：不是真实文件，勿升 FileChip。
+ * Agent / 用户常把长路径写成省略号摘要。
+ */
+function isEllipsisPlaceholderPath(clean: string): boolean {
+  return /(?:^|[\\/])\.\.\.(?:[\\/]|$)/.test(clean) || clean.includes('…')
+}
+
+/**
  * 检测文本是否为绝对文件路径
  *
  * Windows 同时接受：
@@ -195,6 +203,7 @@ export function isAbsoluteFilePath(text: string): boolean {
   if (trimmed.length < 2) return false
 
   const { path: clean } = stripLineCol(trimmed)
+  if (isEllipsisPlaceholderPath(clean)) return false
 
   if (clean.startsWith('/')) {
     // Anthropic `/v1/messages`、REST `/api/...` 等：不是本地文件
@@ -239,6 +248,7 @@ export function isRelativeFilePath(text: string): boolean {
   if (trimmed.length < 3) return false
 
   const { path: clean } = stripLineCol(trimmed)
+  if (isEllipsisPlaceholderPath(clean)) return false
 
   const ext = getExtension(clean)
   if (!ext || !ALL_PREVIEWABLE_EXTS.has(ext)) return false

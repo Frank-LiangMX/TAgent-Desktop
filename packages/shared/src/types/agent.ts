@@ -227,6 +227,67 @@ export function migrateReasoningEffort(value: string | undefined): ReasoningEffo
 }
 
 /**
+ * Claude Agent SDK query options.effort 档位。
+ * 即 `@anthropic-ai/claude-agent-sdk` 的 `EffortLevel`（sdk.d.ts:488-496, 1565-1576）。
+ * TAgent 仅暴露 low|medium|high|max（不引入 xhigh）；映射见 {@link reasoningEffortToSdkEffort}。
+ * 与 ThinkingConfig（adaptive/enabled/disabled）正交：effort 配合 adaptive thinking 引导思考深度。
+ */
+export type SdkEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+/**
+ * 把会话 {@link ReasoningEffort} 映射到 Claude Agent SDK `effort` query option。
+ *
+ * - TAgent 枚举是 SDK EffortLevel 的子集，1:1 直传（low/medium/high/max）。
+ * - `max` → `max`：仅 select models（Opus 4.6+ / Sonnet 4.6 等）支持；SDK 会按所选模型
+ *   静默降级（sdk.d.ts:174），TAgent 侧无需自行降级。
+ * - 不暴露 `xhigh`（ultracode 专用档，UI 不开放）。
+ * - 入参应先经 {@link migrateReasoningEffort} 归一化；default 分支兜底 medium。
+ *
+ * 证据：`ClaudeAgentAdapter.buildSdkOptions` 注入 `options.effort`；SDK 在 sdk.mjs 运行时引用
+ * effort（spawn/query 路径），kscc 为 claude-code 兼容 CLI 由 SDK 驱动。
+ */
+export function reasoningEffortToSdkEffort(effort: ReasoningEffort): SdkEffortLevel {
+  switch (effort) {
+    case 'low':
+      return 'low'
+    case 'medium':
+      return 'medium'
+    case 'high':
+      return 'high'
+    case 'max':
+      return 'max'
+    default:
+      return 'medium'
+  }
+}
+
+/**
+ * Pi 核 thinkingLevel 档位（@earendil-works/pi-ai / pi-agent-core）。
+ * Pi 没有 `max`；TAgent `max` 降级到 `high`。
+ */
+export type PiThinkingLevel = 'minimal' | 'low' | 'medium' | 'high'
+
+/**
+ * 把会话 {@link ReasoningEffort} 映射到 Pi 核 thinkingLevel。
+ * low→low / medium→medium / high→high / max→high（Pi 无 max）。
+ * 仅当渠道开启 thinking（thinkingEnabled）时才生效；默认关闭时该值为 no-op（不回归既有行为）。
+ */
+export function reasoningEffortToPiThinkingLevel(effort: ReasoningEffort): PiThinkingLevel {
+  switch (effort) {
+    case 'low':
+      return 'low'
+    case 'medium':
+      return 'medium'
+    case 'high':
+      return 'high'
+    case 'max':
+      return 'high'
+    default:
+      return 'medium'
+  }
+}
+
+/**
  * 自定义子代理定义
  *
  * 通过 SDK 的 agents 选项注册可被 Agent 工具调用的自定义子代理。
@@ -861,6 +922,10 @@ export type AgentStreamPayload =
       text: string
       /** SubAgent 父 tool_use_id（顶层 Agent 为 undefined） */
       parentToolUseId?: string
+      /** E：block 标识（assistant.uuid），校准/绑定用 */
+      uuid?: string
+      /** E：true=整体替换（resync）；缺省=append(suffix) */
+      replace?: boolean
     }
   | {
       kind: 'stream_thinking_delta'
@@ -868,6 +933,10 @@ export type AgentStreamPayload =
       text: string
       /** SubAgent 父 tool_use_id（顶层 Agent 为 undefined） */
       parentToolUseId?: string
+      /** E：block 标识（assistant.uuid），校准/绑定用 */
+      uuid?: string
+      /** E：true=整体替换（resync）；缺省=append(suffix) */
+      replace?: boolean
     }
 
 /** 本轮 Agent 调用统计（仅统计本轮运行期间已观测到的调用） */
@@ -2127,6 +2196,21 @@ export const AGENT_IPC_CHANNELS = {
    * 仅编辑 stored 预置；synthetic / channel-* 合成预置不进此通道。
    */
   SAVE_MOA_PRESETS: 'agent:save-moa-presets',
+
+  // CLI 工人配置（本机 coding CLI 子代理后端；第一期仅 kscc）
+  /** 取 CLI 工人配置（无文件则就地 seed 默认：总开关 enabled=false，零行为变化） */
+  LIST_CLI_WORKERS: 'agent:list-cli-workers',
+  /**
+   * 保存整份 CLI 工人配置（覆盖式原子写）。
+   * 入参 `CliWorkersConfig`（扁平 v1）；主进程整单校验（`validateCliWorkersConfig`），
+   * 非法则 reject 中文错、不写盘；合法则 `writeCliWorkersConfig` 后再 `list` 回传。
+   */
+  SAVE_CLI_WORKERS: 'agent:save-cli-workers',
+  /**
+   * 本机探测 CLI 工人是否在 PATH / 配置路径可用（每台机器环境不同）。
+   * 入参可选 `CliWorkersConfig`（缺省则用当前落盘配置）；返回 `CliWorkersProbeResult`。
+   */
+  PROBE_CLI_WORKERS: 'agent:probe-cli-workers',
 
   // 待处理请求恢复（渲染进程重载后查询主进程状态）
   /** 获取所有待处理的交互请求快照 */

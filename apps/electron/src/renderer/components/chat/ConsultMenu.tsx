@@ -1,6 +1,6 @@
 /**
- * 分裂发送键：主按钮 = 普通发送；旁侧 ▾ = 用会诊班底发送本条。
- * 会诊是「发送方式」变体，不是常开选项/模式。
+ * 发送键 + 旁侧 ▾（会诊 / 圆桌等发送方式）。
+ * 有内容时：主钮实心圆；▾ 独立轻量 ghost，避免「胶囊切开」的粗分割线。
  *
  * 必须是模块级组件（勿写进 Chat 函数体，否则 Popover 因重挂载点不开）。
  */
@@ -14,6 +14,8 @@ import {
   PopoverTrigger,
   MenuPopoverGroup,
   MenuPopoverItem,
+  MenuPopoverSectionLabel,
+  MenuPopoverSeparator,
 } from '@tagent/ui'
 import type { MoAPreset, Channel } from '@tagent/shared'
 import { cn } from '../../lib/utils'
@@ -58,70 +60,49 @@ export function SendSplitButton({
   const isExternal = channel != null && channel.provider !== 'kscc-internal'
   const btnSize = size === 'sm' ? 'size-8' : 'size-9'
   const iconSize = size === 'sm' ? 'size-4' : 'size-5'
-  const chevronBtn = size === 'sm' ? 'h-8 w-7' : 'h-9 w-8'
+  const chevronBtn = size === 'sm' ? 'h-8 w-6' : 'h-9 w-7'
   const showDiscussionGroup = typeof onDiscussionPreset === 'function' && enabled.length > 0
 
-  // 无会诊预置且无圆桌讨论组：退回单发送键（保持向后兼容）
-  if (enabled.length === 0 && !showDiscussionGroup) {
-    return (
+  const sendButton = (
+    <AppTooltip
+      label={hasDraft ? '发送（当前模型）' : '先输入内容再发送'}
+      side="top"
+      disabled={open}
+    >
       <Button
         type="button"
         variant={hasDraft ? 'default' : 'ghost'}
         size="icon"
-        className={cn(btnSize, 'rounded-full', className)}
+        className={cn(
+          btnSize,
+          'rounded-full',
+          hasDraft && 'shadow-sm',
+          !hasDraft && 'text-muted-foreground',
+        )}
         disabled={!hasDraft}
         onClick={onSend}
         aria-label="发送"
       >
         <ArrowUp className={iconSize} />
       </Button>
-    )
+    </AppTooltip>
+  )
+
+  // 无会诊预置且无圆桌讨论组：退回单发送键（保持向后兼容）
+  if (enabled.length === 0 && !showDiscussionGroup) {
+    return <div className={cn('inline-flex', className)}>{sendButton}</div>
   }
 
   return (
-    <div
-      className={cn(
-        'inline-flex items-stretch overflow-hidden rounded-full',
-        hasDraft ? 'bg-primary text-primary-foreground' : 'bg-transparent',
-        className,
-      )}
-    >
-      <AppTooltip
-        label={hasDraft ? '发送（当前模型）' : '先输入内容再发送'}
-        side="top"
-        disabled={open}
-      >
-        <Button
-          type="button"
-          variant={hasDraft ? 'default' : 'ghost'}
-          size="icon"
-          className={cn(
-            btnSize,
-            'rounded-none rounded-l-full',
-            hasDraft && 'hover:bg-primary/90',
-          )}
-          disabled={!hasDraft}
-          onClick={onSend}
-          aria-label="发送"
-        >
-          <ArrowUp className={iconSize} />
-        </Button>
-      </AppTooltip>
-
-      <div
-        className={cn(
-          'w-px self-stretch',
-          hasDraft ? 'bg-primary-foreground/25' : 'bg-border/50',
-        )}
-        aria-hidden
-      />
+    <div className={cn('inline-flex items-center gap-0.5', className)}>
+      {sendButton}
 
       <Popover open={open} onOpenChange={setOpen}>
         <AppTooltip
           label={
             hasDraft
-              ? '更多发送方式：用圆桌班底发送本条'
-              : '先输入内容，再用圆桌方式发送'
+              ? '更多发送方式：用会诊 / 圆桌班底发送本条'
+              : '先输入内容，再用会诊或圆桌方式发送'
           }
           side="top"
           disabled={open}
@@ -129,17 +110,17 @@ export function SendSplitButton({
           <PopoverTrigger asChild>
             <Button
               type="button"
-              variant={hasDraft ? 'default' : 'ghost'}
+              variant="ghost"
               size="icon"
               className={cn(
                 chevronBtn,
-                'rounded-none rounded-r-full',
-                hasDraft && 'hover:bg-primary/90',
+                'rounded-full text-muted-foreground hover:text-foreground',
+                open && 'bg-accent text-foreground',
               )}
               aria-label="更多发送方式"
               aria-expanded={open}
             >
-              <ChevronDown className="size-3.5 opacity-90" />
+              <ChevronDown className="size-3.5 opacity-80" />
             </Button>
           </PopoverTrigger>
         </AppTooltip>
@@ -148,38 +129,39 @@ export function SendSplitButton({
           side="top"
           sideOffset={8}
           collisionPadding={12}
-          className="w-[280px] overflow-hidden p-0"
+          className="w-[248px] overflow-hidden p-1.5"
           onOpenAutoFocus={(e) => e.preventDefault()}
         >
-          <div className="px-3.5 pt-3 pb-2">
-            <div className="text-[11px] font-medium text-muted-foreground">本轮动作</div>
-            <div className="mt-1 text-[10.5px] leading-snug text-muted-foreground/85">
-              左侧箭头 = 普通发送（当前模型）。下方为其他发送方式。
+          <div className="px-2.5 pb-1 pt-1.5">
+            <div className="text-[11px] font-semibold tracking-tight text-foreground/85">
+              发送方式
             </div>
-            <div className="mt-0.5 text-[10.5px] leading-snug text-muted-foreground/70">
-              圆桌快速 / 圆桌研讨席位无工具；查本地仓库请用左侧 ↑。
-            </div>
-            {isExternal && (
-              <div className="mt-1 text-[10.5px] leading-snug text-amber-600 dark:text-amber-400">
-                外部渠圆桌：将按预置席位分别计费。
-              </div>
-            )}
           </div>
+
           <MenuPopoverItem
             disabled={!hasDraft}
             icon={<ArrowUp className="size-4 text-primary/70" />}
-            label="普通发送（当前模型）"
+            label="普通发送"
+            description="当前模型 · 可调用工具"
             onClick={() => {
               if (!hasDraft) return
               setOpen(false)
               onSend()
             }}
           />
+
+          <MenuPopoverSeparator />
+
           <MenuPopoverGroup
             heading={
-              <span className="truncate text-[11px] font-medium text-foreground/70">
-                圆桌 · 快速（各答各的 → 汇总）
-              </span>
+              <MenuPopoverSectionLabel uppercase={false} className="m-0 w-full px-0 py-0">
+                <span className="min-w-0">
+                  <span className="block">会诊</span>
+                  <span className="mt-0.5 block font-normal normal-case tracking-normal text-muted-foreground/65">
+                    各答各的，再汇总
+                  </span>
+                </span>
+              </MenuPopoverSectionLabel>
             }
           >
             {enabled.map((preset) => (
@@ -188,16 +170,10 @@ export function SendSplitButton({
                 disabled={!hasDraft}
                 icon={<Users className="size-4 text-primary/70" />}
                 label={preset.name}
-                trailing={
-                  preset.synthetic === 'channel-same-model' ? (
-                    <span className="ml-1 px-1.5 py-0.5 text-[9.5px] font-medium text-amber-600 dark:text-amber-400">
-                      同模
-                    </span>
-                  ) : (
-                    <span className="ml-1 px-1.5 py-0.5 text-[9.5px] font-medium text-muted-foreground">
-                      {preset.references.length} 席 + 汇总
-                    </span>
-                  )
+                description={
+                  preset.synthetic === 'channel-same-model'
+                    ? `同模 · ${preset.references.length} 席`
+                    : `${preset.references.length} 席`
                 }
                 onClick={() => {
                   if (!hasDraft) return
@@ -207,12 +183,18 @@ export function SendSplitButton({
               />
             ))}
           </MenuPopoverGroup>
+
           {showDiscussionGroup && onDiscussionPreset && (
             <MenuPopoverGroup
               heading={
-                <span className="truncate text-[11px] font-medium text-foreground/70">
-                  圆桌 · 研讨（互相讨论 → 共识方案）
-                </span>
+                <MenuPopoverSectionLabel uppercase={false} className="m-0 w-full px-0 py-0">
+                  <span className="min-w-0">
+                    <span className="block">圆桌</span>
+                    <span className="mt-0.5 block font-normal normal-case tracking-normal text-muted-foreground/65">
+                      互相讨论，出共识
+                    </span>
+                  </span>
+                </MenuPopoverSectionLabel>
               }
             >
               {enabled.map((preset) => (
@@ -221,11 +203,7 @@ export function SendSplitButton({
                   disabled={!hasDraft}
                   icon={<MessagesSquare className="size-4 text-primary/70" />}
                   label={preset.name}
-                  trailing={
-                    <span className="ml-1 px-1.5 py-0.5 text-[9.5px] font-medium text-muted-foreground">
-                      {preset.references.length} 席 + 总结人
-                    </span>
-                  }
+                  description={`${preset.references.length} 席`}
                   onClick={() => {
                     if (!hasDraft) return
                     setOpen(false)
@@ -235,6 +213,12 @@ export function SendSplitButton({
               ))}
             </MenuPopoverGroup>
           )}
+
+          {isExternal ? (
+            <div className="px-2.5 pb-1.5 pt-0.5 text-[10px] leading-snug text-muted-foreground/80">
+              外部渠按席位分别计费
+            </div>
+          ) : null}
         </PopoverContent>
       </Popover>
     </div>

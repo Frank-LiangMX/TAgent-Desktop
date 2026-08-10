@@ -1228,6 +1228,8 @@
   backdrop-filter: blur(var(--surface-blur-elevated)) saturate(var(--surface-saturate));
   border-radius: var(--radius-glass-modal);
   box-shadow: var(--surface-shadow-chip, none);
+  /* 裁切行 hover 直角底，避免四角溢出圆角卡面（渠道 / Agent 行为等同壳列表） */
+  overflow: hidden;
 }
 
 [data-material='soft'] .settings-card,

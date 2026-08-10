@@ -1,0 +1,4 @@
+Reading additional input from stdin...
+2026-08-10T02:20:09.427366Z ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 94 column 5
+2026-08-10T02:20:22.671735Z ERROR codex_core::exec: exec error: windows sandbox: CreateProcessWithLogonW failed: 1385
+2026-08-10T02:20:22.672179Z ERROR codex_core::tools::router: error=execution error: Io(Custom { kind: Other, error: "windows sandbox: CreateProcessWithLogonW failed: 1385" })

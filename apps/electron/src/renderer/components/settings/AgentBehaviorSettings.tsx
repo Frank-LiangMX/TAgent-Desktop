@@ -1,11 +1,11 @@
 /**
- * 设置 · Agent 行为（协作策略板）— V3 双档 + 扁平名册
+ * 设置 · Agent 行为 → 会诊（协作策略板）— V3 双档 + 扁平名册
  *
  * 重设计（去「汇」流程图）：会诊列表改为名册行（轻分隔 hairline，无左竖条 / 无卡片渐变），
  * 顶部仅两档 pill（kscc 内网 | 外部渠道；选中描边+字重+浅 fill，非整颗纯黑/紫块）；
  * 外部渠道档合并所有已启用非 kscc 渠模型（按 id 去重），channelId 落盘 = 'external' 哨兵。
- * 座位由「参考 chip → 汇圆 → 箭头 → 汇总 chip」改为单行 `名·模型 · … → 汇总 模型`，
- * 班组/圆桌由两个大虚线占位轨合并为页底两行小字「即将推出」。
+ * 座位由「参考 chip → 汇圆 → 箭头 → 汇总 chip」改为单行 `名·模型 · … → 汇总 模型`。
+ * 本页仅「会诊」班底 CRUD（各答各的再汇总，非圆桌讨论）；子代理 / 班组 / 圆桌在侧栏独立分页。
  * 逻辑 CRUD / IPC / 校验**不变**：list / add / edit / delete / toggle / 中文报错全部保留。
  */
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
@@ -84,7 +84,7 @@ export function AgentBehaviorSettings(): JSX.Element {
       const list = await window.electronAPI.listMoaPresets()
       setPresets(list)
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : '无法读取圆桌 · 快速预置')
+      setLoadError(error instanceof Error ? error.message : '无法读取会诊预置')
     } finally {
       setLoading(false)
     }
@@ -187,19 +187,23 @@ export function AgentBehaviorSettings(): JSX.Element {
   return (
     <div className="settings-page agent-behavior-page">
       <SettingsPageIntro
-        title="Agent 行为"
-        description="配置圆桌 · 快速班底等协作策略；班组与圆桌 · 研讨即将推出。"
+        title="会诊"
+        description={
+          !hasAnyChannel
+            ? '多模型并行交卷再汇总（各答各的，互不讨论）。请先在「渠道」中启用至少一个渠道。'
+            : isKscc
+              ? '配置 kscc 内网会诊班底。各席独立作答再汇总；席位无工具，查仓库请用普通发送。'
+              : '配置外部渠道会诊班底（合并已启用外渠模型）。各席独立作答再汇总；席位无工具，查仓库请用普通发送。'
+        }
       />
 
       {/* ── 会诊 CRUD（同页编辑；档 channelId 落盘；档切换 = SegmentedTabs）── */}
       <SettingsSection
-        title="圆桌 · 快速"
+        title="班底"
         description={
-          !hasAnyChannel
-            ? '圆桌 · 快速班底按档配置；请先在渠道管理中启用一个渠道。'
-            : isKscc
-              ? '班底用于 kscc 内网圆桌 · 快速。席位无工具，查仓库请用普通发送。'
-              : '班底用于外部渠道圆桌 · 快速（合并所有外部渠模型）；未自定义时发送旁自动合成班底。席位无工具，查仓库请用普通发送。'
+          isKscc
+            ? '发送旁「会诊」会使用下列预置。'
+            : '未自定义时发送旁可自动合成班底；有自定义则优先用下列预置。'
         }
         action={
           editor ? undefined : (
@@ -281,7 +285,7 @@ export function AgentBehaviorSettings(): JSX.Element {
               <SettingsCard divided={false}>
                 <div className="agent-behavior-loading">
                   <RefreshCw size={16} className="animate-spin" />
-                  正在读取圆桌 · 快速预置…
+                  正在读取会诊预置…
                 </div>
               </SettingsCard>
             ) : channelPresets.length === 0 ? (
@@ -292,7 +296,7 @@ export function AgentBehaviorSettings(): JSX.Element {
                       <span>外部渠道暂无可用模型，无法配置班底；请先在渠道管理中启用外部渠道及其模型。</span>
                     ) : (
                       <div className="agent-behavior-empty-cta">
-                        <span>尚未自定义；发送旁圆桌 · 快速将使用自动合成班底。</span>
+                        <span>尚未自定义；发送旁会诊将使用自动合成班底。</span>
                         <Button variant="outline" size="sm" onClick={handleGenerateDraft}>
                           <Sparkles size={14} />
                           基于当前模型生成一版并编辑
@@ -300,7 +304,7 @@ export function AgentBehaviorSettings(): JSX.Element {
                       </div>
                     )
                   ) : (
-                    <span>尚无圆桌 · 快速预置；添加后可在发送旁「圆桌 · 快速」中使用。</span>
+                    <span>尚无会诊预置；添加后可在发送旁「会诊」中使用。</span>
                   )}
                 </div>
               </SettingsCard>
@@ -321,21 +325,12 @@ export function AgentBehaviorSettings(): JSX.Element {
         )}
       </SettingsSection>
 
-      {/* ── 班组 / 圆桌：各一 SettingsSection，一句「即将推出」── */}
-      <SettingsSection title="班组">
-        <p className="text-xs leading-relaxed text-muted-foreground">即将推出</p>
-      </SettingsSection>
-
-      <SettingsSection title="圆桌 · 研讨">
-        <p className="text-xs leading-relaxed text-muted-foreground">即将推出</p>
-      </SettingsSection>
-
       <DestructiveConfirmDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         icon={<Trash2 size={15} />}
         title={`删除预置「${deleteTarget?.name ?? ''}」？`}
-        description="该预置将被永久移除。已使用此预置的圆桌会话不受影响（运行中/历史的不变）。"
+        description="该预置将被永久移除。已使用此预置的会诊会话不受影响（运行中/历史的不变）。"
         confirmLabel="删除预置"
         onConfirm={handleDelete}
       />
@@ -434,7 +429,7 @@ interface PresetDraft {
   aggregatorModelId: string
   timeoutMsPerSeat: number
   /**
-   * 圆桌研讨全场轮数上限（仅「圆桌 · 研讨」生效；快速模式固定单轮，忽略此值）。
+   * 圆桌研讨全场轮数上限（仅「圆桌」生效；会诊固定单轮，忽略此值）。
    * `undefined` = 用默认 3（运行时兜底）；存在则须为 1..6 整数（validateDraft 校验）。
    */
   roundLimit?: number
@@ -582,12 +577,12 @@ function PresetEditor({
       <div
         className="agent-behavior-editor"
         role="form"
-        aria-label={mode === 'add' ? '添加圆桌 · 快速预置' : `编辑预置 ${preset?.name ?? ''}`}
+        aria-label={mode === 'add' ? '添加会诊预置' : `编辑预置 ${preset?.name ?? ''}`}
       >
         <div className="agent-behavior-editor-head">
           <div className="agent-behavior-editor-copy">
             <h3 className="agent-behavior-editor-title">
-              {mode === 'add' ? '添加圆桌 · 快速预置' : preset?.name ?? '预置'}
+              {mode === 'add' ? '添加会诊预置' : preset?.name ?? '预置'}
             </h3>
           </div>
           <div className="agent-behavior-editor-enabled">
@@ -685,7 +680,7 @@ function PresetEditor({
             <div className="agent-behavior-form-grid">
               <Field
                 label="汇总模型"
-                hint={!hasChannelModels ? '该渠道暂无已启用模型，可手动输入 modelId（须在圆桌 · 快速时所属渠道启用）' : undefined}
+                hint={!hasChannelModels ? '该渠道暂无已启用模型，可手动输入 modelId（须在会诊时所属渠道启用）' : undefined}
               >
                 <ModelSelect
                   value={draft.aggregatorModelId}
@@ -710,7 +705,7 @@ function PresetEditor({
               </Field>
               <Field
                 label="研讨轮数"
-                hint="仅圆桌 · 研讨生效（1–6 整数）；快速模式固定单轮，忽略此值。留空用默认 3。"
+                hint="仅圆桌生效（1–6 整数）；会诊固定单轮，忽略此值。留空用默认 3。"
               >
                 <input
                   className="agent-behavior-input"

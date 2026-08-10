@@ -677,6 +677,7 @@
   position: relative;
   z-index: 2;
   isolation: isolate;
+  overflow: visible; /* 压过 glass.css overflow:hidden，外影不被裁 */
   border: 1px solid rgb(var(--glass-rgb) / 0.5);
   border-radius: var(--app-shell-composer-radius, 16px);
   /* 玻璃底：极透（消息可从下方滚过透出），靠底部统一模糊带 (.composer-blur-underlay)
@@ -684,12 +685,12 @@
   background:
     radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 66%),
     linear-gradient(145deg, rgb(var(--glass-rgb) / 0.42), rgb(var(--glass-rgb) / 0.28)) !important;
-  /* 向下柔影 + 顶高光（厚度感） */
+  /* 克制外影（对齐 sidebar/rail 浮岛语言）+ 顶/左高光 */
   box-shadow:
-    0 10px 30px -10px rgb(23 30 40 / 0.18),
-    0 2px 6px -2px rgb(23 30 40 / 0.08),
+    0 12px 28px -10px rgb(48 59 76 / 0.22),
+    0 4px 12px -4px rgb(48 59 76 / 0.12),
     inset 0 1px 0 rgb(255 255 255 / 0.5),
-    inset 1px 0 0 rgb(255 255 255 / 0.14);
+    inset 1px 0 0 rgb(255 255 255 / 0.14) !important;
   /* 去掉自身 backdrop-filter：与底部统一模糊带共用一块 blur，避免两层叠加。
      !important 压过 glass.css 基础类 / neonav 规则。 */
   -webkit-backdrop-filter: none !important;
@@ -697,6 +698,14 @@
   transition:
     border-color 180ms var(--app-shell-motion),
     box-shadow 220ms var(--app-shell-motion);
+}
+
+.dark .app-shell-content-stage .chat-input-glass {
+  box-shadow:
+    0 14px 32px -10px rgb(0 0 0 / 0.48),
+    0 4px 14px -4px rgb(0 0 0 / 0.3),
+    inset 0 1px 0 rgb(255 255 255 / 0.32),
+    inset 1px 0 0 rgb(255 255 255 / 0.08) !important;
 }
 
 /* 输入区：12px / 1.55 / 最小 52px（textarea 旧路径 + contentEditable 芯片路径） */
@@ -756,22 +765,25 @@
   z-index: 1;
 }
 
-/* focus：只加 rim / ring，禁 translateY */
+/* focus：只加 rim / ring，禁 translateY；保留浮岛外影 */
 .app-shell-content-stage .chat-input-glass:focus-within {
   border-color: var(--spatial-accent-line);
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.5),
+    inset 1px 0 0 rgb(255 255 255 / 0.14),
     0 0 0 2px var(--spatial-accent-soft),
-    0 10px 30px -10px rgb(23 30 40 / 0.18),
-    0 2px 6px -2px rgb(23 30 40 / 0.08);
+    0 12px 28px -10px rgb(48 59 76 / 0.22),
+    0 4px 12px -4px rgb(48 59 76 / 0.12) !important;
   transform: none;
 }
 
 .dark .app-shell-content-stage .chat-input-glass:focus-within {
   box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    inset 0 1px 0 rgb(255 255 255 / 0.32),
+    inset 1px 0 0 rgb(255 255 255 / 0.08),
     0 0 0 2px var(--spatial-accent-soft),
-    0 10px 30px -10px rgb(0 0 0 / 0.4);
+    0 14px 32px -10px rgb(0 0 0 / 0.48),
+    0 4px 14px -4px rgb(0 0 0 / 0.3) !important;
   transform: none;
 }
 
@@ -993,49 +1005,41 @@
   opacity: 0.55;
 }
 
-/* Chat —— 主色（只读讨论） */
+/* Chat —— 主色（只读讨论）；无描边，靠底色 + 字色区分档位 */
 .composer-run-mode--chat {
   color: hsl(var(--primary));
   background: hsl(var(--primary) / 0.1);
-  border-color: hsl(var(--primary) / 0.22);
 }
 /* Work 按权限档换色：绿=默认安全 / 紫=克制规划 / 橙=放权激进 */
 .composer-run-mode--auto {
   color: hsl(142 60% 32%);
   background: hsl(142 60% 42% / 0.1);
-  border-color: hsl(142 60% 42% / 0.25);
 }
 .composer-run-mode--plan {
   color: hsl(245 60% 50%);
   background: hsl(245 60% 55% / 0.1);
-  border-color: hsl(245 60% 55% / 0.25);
 }
 .composer-run-mode--bypassPermissions {
   color: hsl(28 80% 48%);
   background: hsl(28 80% 55% / 0.1);
-  border-color: hsl(28 80% 55% / 0.28);
 }
 
 .composer-run-mode:hover:not(:disabled),
 .composer-run-mode--open {
   filter: brightness(1.04);
-  border-color: currentColor;
 }
 
 .dark .composer-run-mode--auto {
   color: hsl(142 55% 62%);
   background: hsl(142 55% 50% / 0.14);
-  border-color: hsl(142 55% 50% / 0.3);
 }
 .dark .composer-run-mode--plan {
   color: hsl(245 70% 72%);
   background: hsl(245 70% 60% / 0.16);
-  border-color: hsl(245 70% 60% / 0.32);
 }
 .dark .composer-run-mode--bypassPermissions {
   color: hsl(28 85% 65%);
   background: hsl(28 85% 55% / 0.16);
-  border-color: hsl(28 85% 55% / 0.34);
 }
 
 /* 分段选择器（子代理委派 / 思考强度共用） */
@@ -1249,8 +1253,9 @@
   background:
     radial-gradient(120% 86% at 12% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 66%),
     linear-gradient(155deg, rgb(var(--glass-rgb) / 0.28), rgb(var(--glass-rgb) / 0.12)) !important;
+  /* 边缘光泽跟齐 sidebar（inset 顶/左，沿圆角顺滑） */
   box-shadow:
-    inset 0 1.5px 0 rgb(255 255 255 / 0.44),
+    inset 0 1px 0 rgb(255 255 255 / 0.4),
     inset 1px 0 0 rgb(255 255 255 / 0.12),
     0 12px 28px rgb(48 59 76 / 0.1);
   -webkit-backdrop-filter: blur(18px) saturate(1.08);
@@ -1259,7 +1264,8 @@
 .dark .app-rail-island {
   border-color: rgb(255 255 255 / 0.06);
   box-shadow:
-    inset 0 1.5px 0 rgb(255 255 255 / 0.06),
+    inset 0 1px 0 rgb(255 255 255 / 0.32),
+    inset 1px 0 0 rgb(255 255 255 / 0.08),
     0 12px 28px rgb(0 0 0 / 0.3);
 }
 
@@ -1364,14 +1370,16 @@
   z-index: 0;
   height: 32px;
   border-radius: 11px;
-  border: 1px solid rgb(var(--glass-rgb) / 0.5);
-  /* 玻璃填充（对齐旧版 --surface-role-tab-fill 0.62*0.78≈0.48，避开 calc 嵌套）+ scene-a 顶光 */
+  /* 边框压淡，光线感交给非对称 inset（左上亮 / 右下暗） */
+  border: 1px solid rgb(var(--glass-rgb) / 0.36);
   background:
-    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
-    rgb(var(--glass-rgb) / 0.48);
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.1), transparent 64%),
+    rgb(var(--glass-rgb) / 0.72);
   box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.5),
-    0 8px 18px -10px rgb(23 30 40 / 0.12);
+    inset 0 1px 0 rgb(255 255 255 / 0.55),
+    inset 1px 0 0 rgb(255 255 255 / 0.18),
+    inset 0 -1px 0 rgb(0 0 0 / 0.08),
+    inset -1px 0 0 rgb(0 0 0 / 0.05);
   opacity: 0;
   pointer-events: none;
   transition:
@@ -1380,11 +1388,15 @@
     opacity 140ms ease-out;
 }
 .dark .app-workspace-tab-active-plate {
-  border-color: rgb(255 255 255 / 0.06);
+  border-color: rgb(255 255 255 / 0.08);
   background:
-    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 64%),
-    rgb(var(--glass-rgb) / 0.4);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.12), transparent 64%),
+    rgb(var(--glass-rgb) / 0.62);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.36),
+    inset 1px 0 0 rgb(255 255 255 / 0.12),
+    inset 0 -1px 0 rgb(0 0 0 / 0.28),
+    inset -1px 0 0 rgb(0 0 0 / 0.16);
 }
 
 .app-workspace-tab-shell {
