@@ -582,23 +582,25 @@ describe('CLI_WORKER_DISCOVERY_CATALOG', () => {
     }
   })
 
-  it('按目录顺序含 kscc / grok / codex / mimo / opencode', () => {
+  it('按目录顺序含 kscc / grok / codex / mimo / opencode / claude', () => {
     expect(CLI_WORKER_DISCOVERY_CATALOG.map((e) => e.id)).toEqual([
       'kscc',
       'grok',
       'codex',
       'mimo',
       'opencode',
+      'claude',
     ])
   })
 
-  it('opencode supported=true（SLICE-9 转正为可派工）；五项均 supported=true', () => {
+  it('opencode supported=true（SLICE-9 转正）；claude supported=true（SLICE-10 转正）；六项均 supported=true', () => {
     const byId = (id: string) => CLI_WORKER_DISCOVERY_CATALOG.find((e) => e.id === id)
     expect(byId('kscc')?.supported).toBe(true)
     expect(byId('grok')?.supported).toBe(true)
     expect(byId('codex')?.supported).toBe(true)
     expect(byId('mimo')?.supported).toBe(true)
     expect(byId('opencode')?.supported).toBe(true)
+    expect(byId('claude')?.supported).toBe(true)
   })
 
   it('每项目录项可构造为合法 worker（capability 结构合法、id 不命中黑名单）', () => {
@@ -624,13 +626,13 @@ describe('CLI_WORKER_DISCOVERY_CATALOG', () => {
 })
 
 describe('SUPPORTED_CLI_WORKER_IDS', () => {
-  it('=== [kscc, grok, codex, mimo, opencode]（含 opencode，SLICE-9 转正）', () => {
-    expect([...SUPPORTED_CLI_WORKER_IDS]).toEqual(['kscc', 'grok', 'codex', 'mimo', 'opencode'])
+  it('=== [kscc, grok, codex, mimo, opencode, claude]（SLICE-10 含 claude）', () => {
+    expect([...SUPPORTED_CLI_WORKER_IDS]).toEqual(['kscc', 'grok', 'codex', 'mimo', 'opencode', 'claude'])
   })
 
   it('是 readonly 数组（不可 push）', () => {
     // readonly 语义：类型层面禁写；运行时仍是数组，仅做存在性断言
     expect(Array.isArray(SUPPORTED_CLI_WORKER_IDS)).toBe(true)
-    expect(SUPPORTED_CLI_WORKER_IDS.length).toBe(5)
+    expect(SUPPORTED_CLI_WORKER_IDS.length).toBe(6)
   })
 })

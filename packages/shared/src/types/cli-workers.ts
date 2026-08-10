@@ -161,6 +161,7 @@ export const CLI_WORKER_DISCOVERY_CATALOG: CliWorkerDiscoveryEntry[] = [
   { id: 'codex', bins: ['codex'], supported: true, capability: { cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造' } },
   { id: 'mimo', bins: ['mimo'], supported: true, capability: { cost: 1, reasoning: 'low', goodFor: '单测 / 机械改动 / 小包' } },
   { id: 'opencode', bins: ['opencode'], supported: true, capability: { cost: 2, reasoning: 'medium', goodFor: '通用编码 / 多 Agent 协作' } },
+  { id: 'claude', bins: ['claude'], supported: true, capability: { cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造 / 重构' } },
 ]
 
 /** 有 runner 的工人 id（resolve 候选过滤 / run-cli-worker 路由 / UI 徽标共用） */

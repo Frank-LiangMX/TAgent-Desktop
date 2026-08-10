@@ -7,6 +7,7 @@
  * - codex → runCodexWorker（经 runNdjsonCli + CodexStreamObserver）
  * - mimo → runMimoWorker（经 runNdjsonCli + MimoStreamObserver）
  * - opencode → runOpencodeWorker（经 runNdjsonCli + OpencodeStreamObserver）
+ * - claude → runClaudeWorker（经 runNdjsonCli + ClaudeStreamObserver；与 kscc 同族协议）
  * - 未知 id → ok:false 中文 summary（不 spawn）
  *
  * 调用方（subagent-task-tool）只与此入口交互；详情 emitPayload / 进度回调签名四者一致。
@@ -18,6 +19,7 @@ import { runGrokWorker } from './run-grok-worker'
 import { runCodexWorker } from './run-codex-worker'
 import { runMimoWorker } from './run-mimo-worker'
 import { runOpencodeWorker } from './run-opencode-worker'
+import { runClaudeWorker } from './run-claude-worker'
 import type { CliToolResultHit, CliToolUseHit, RunCliWorkerResult } from './run-ndjson-cli'
 
 export interface RunCliWorkerInput {
@@ -54,6 +56,8 @@ export async function runCliWorker(input: RunCliWorkerInput): Promise<RunCliWork
       return runMimoWorker(input)
     case 'opencode':
       return runOpencodeWorker(input)
+    case 'claude':
+      return runClaudeWorker(input)
     default:
       return {
         ok: false,
