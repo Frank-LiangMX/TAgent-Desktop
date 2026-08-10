@@ -77,8 +77,10 @@ describe('buildRichOutputFixPrompt', () => {
 })
 
 describe('W8 output style + rich content gate', () => {
-  it('buildOutputStylePrompt 含输出风格标题', () => {
-    expect(buildOutputStylePrompt()).toContain('输出风格')
+  it('buildOutputStylePrompt 含输出风格标题与禁装饰 emoji', () => {
+    const prompt = buildOutputStylePrompt()
+    expect(prompt).toContain('输出风格')
+    expect(prompt).toContain('装饰 emoji')
   })
 
   it('buildRichContentSystemPrompt 含按需门槛', () => {
