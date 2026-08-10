@@ -131,6 +131,43 @@ export const CLI_WORKERS_DEFAULT_SEED: CliWorkersConfig = {
   ],
 }
 
+/**
+ * 发现目录条目：已知 coding CLI 的探测元数据（id / bin 候选 / 是否有 runner / 默认能力）。
+ *
+ * 启动时 `discoverInstalledCliWorkers` 按目录逐条探测 PATH，命中的即「本机已安装」，
+ * 工人池 = 已安装目录项 + 用户自定义。`supported=false` 的 CLI（如 opencode，暂无 runner）
+ * 仅在设置页显示「已检测·暂不支持派工」，不参与 task 路由（SLICE-9 再补 runner）。
+ */
+export interface CliWorkerDiscoveryEntry {
+  id: string
+  /** bin 候选（按序探测，首个命中者采用） */
+  bins: string[]
+  /** 是否有对应 runner；false = 仅显示「已检测·暂不支持派工」，不参与路由 */
+  supported: boolean
+  defaultModel?: string
+  capability?: CliWorkerCapability
+}
+
+/**
+ * 已知 coding CLI 发现目录。
+ *
+ * 顺序即探测顺序；`bins` 按序探测，首个本机命中者采用。`supported` 决定是否有 runner：
+ * - true：可被 task 路由派工（run-cli-worker 已有 runner）。
+ * - false：仅显示「已检测·暂不支持派工」，resolve 候选池过滤剔除，永不 spawn。
+ */
+export const CLI_WORKER_DISCOVERY_CATALOG: CliWorkerDiscoveryEntry[] = [
+  { id: 'kscc', bins: ['kscc'], supported: true, defaultModel: 'glm-5.2', capability: { cost: 3, reasoning: 'high', goodFor: '跨层接线 / 编排 / 复杂实现' } },
+  { id: 'grok', bins: ['grok'], supported: true, capability: { cost: 2, reasoning: 'medium', goodFor: '探索 / 对照 / 草稿实现' } },
+  { id: 'codex', bins: ['codex'], supported: true, capability: { cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造' } },
+  { id: 'mimo', bins: ['mimo'], supported: true, capability: { cost: 1, reasoning: 'low', goodFor: '单测 / 机械改动 / 小包' } },
+  { id: 'opencode', bins: ['opencode'], supported: false, capability: { cost: 2, reasoning: 'medium', goodFor: '通用编码 / 多 Agent 协作' } },
+]
+
+/** 有 runner 的工人 id（resolve 候选过滤 / run-cli-worker 路由 / UI 徽标共用） */
+export const SUPPORTED_CLI_WORKER_IDS: readonly string[] = CLI_WORKER_DISCOVERY_CATALOG.filter(
+  (e) => e.supported,
+).map((e) => e.id)
+
 /** id / bin 黑名单：basename 命中即非法（大小写不敏感）。禁配其它 reserved CLI。 */
 const CLI_WORKER_DENY_LIST = ['hermes', 'openclaw'] as const
 

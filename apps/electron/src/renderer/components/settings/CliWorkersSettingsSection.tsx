@@ -24,6 +24,7 @@ import {
   moveWorkerPriority,
   resolveWorkerCapability,
   syncDefaultCliId,
+  SUPPORTED_CLI_WORKER_IDS,
   type CliReasoning,
   type CliWorkerBackend,
   type CliWorkerCapability,
@@ -103,7 +104,17 @@ export function CliWorkersSettingsSection(): JSX.Element {
     }
   }, [])
 
-  /** 仅用户点击时探测——进页不扫 */
+  const reload = useCallback(async (): Promise<void> => {
+    setLoadError('')
+    try {
+      const loaded = await window.electronAPI.listCliWorkersConfig()
+      setCfg(loaded)
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : '无法读取子代理配置')
+    }
+  }, [setCfg])
+
+  /** 仅用户点击时探测——进页不扫；后端先对账落盘（新增已安装 / 移除未安装占位 / 保留自定义），再探测并拉回对账后的工人列表 */
   const runProbe = useCallback(async (): Promise<void> => {
     setProbing(true)
     showNotice(null)
@@ -114,6 +125,8 @@ export function CliWorkersSettingsSection(): JSX.Element {
       const map: Record<string, CliWorkerProbeItem> = {}
       for (const w of snap.workers) map[w.id] = w
       setProbeMap(map)
+      // 后端对账可能新增/移除工人行：拉回对账后的配置，保证 probe 徽标与列表行对齐
+      await reload()
       const ok = snap.workers.filter((w) => w.available).length
       const total = snap.workers.length
       showNotice({
@@ -128,17 +141,7 @@ export function CliWorkersSettingsSection(): JSX.Element {
     } finally {
       setProbing(false)
     }
-  }, [showNotice])
-
-  const reload = useCallback(async (): Promise<void> => {
-    setLoadError('')
-    try {
-      const loaded = await window.electronAPI.listCliWorkersConfig()
-      setCfg(loaded)
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : '无法读取子代理配置')
-    }
-  }, [setCfg])
+  }, [showNotice, reload])
 
   useEffect(() => {
     void reload()
@@ -357,9 +360,10 @@ export function CliWorkersSettingsSection(): JSX.Element {
         <SettingsSection
           title="本机 CLI 工人池"
           description={
+            '工人池 = 启动时自动探测本机已安装的 coding CLI + 手动添加的自定义工人；未找到的目录项不再占位。' +
             (enabledOrder.length > 0
-              ? `启用顺序即优先级：${enabledOrder.join(' > ')}。主会话可用 task.cli 指定；省略则按此序选第一个本机可用的。`
-              : '至少启用一个 CLI。列表越靠上优先级越高；主会话也可在 task 里用 cli 参数指定。') +
+              ? ` 启用顺序即优先级：${enabledOrder.join(' > ')}；主会话可用 task.cli 指定，省略则按此序选第一个本机可用的。`
+              : ' 至少启用一个 CLI；列表越靠上优先级越高。') +
             ' 高级里可编辑各工人能力画像（成本 / 推理 / 视觉 / 适用场景），主会话 task 按 require / prefer 挑选。'
           }
         >
@@ -374,7 +378,7 @@ export function CliWorkersSettingsSection(): JSX.Element {
               {probing ? '检测中…' : '检测本机'}
             </button>
             <span className="cli-workers-toolbar-hint">
-              不自动扫，避免进设置卡顿；需要时再点。
+              先对账本机已安装（新增 / 移除占位）再检测可用性。
             </span>
           </div>
 
@@ -384,10 +388,13 @@ export function CliWorkersSettingsSection(): JSX.Element {
               const priorityRank = w.enabled
                 ? enabledOrder.indexOf(w.id) + 1
                 : 0
+              const supported = SUPPORTED_CLI_WORKER_IDS.includes(w.id)
               let badge: { cls: string; text: string }
               if (probing) badge = { cls: 'is-pending', text: '…' }
               else if (!probe) badge = { cls: 'is-unknown', text: '未检测' }
-              else if (probe.available) badge = { cls: 'is-ok', text: '可用' }
+              else if (probe.available && supported) badge = { cls: 'is-ok', text: '可用' }
+              else if (probe.available && !supported)
+                badge = { cls: 'is-miss', text: '已检测·暂不支持派工' }
               else badge = { cls: 'is-miss', text: '未找到' }
 
               return (
@@ -402,6 +409,11 @@ export function CliWorkersSettingsSection(): JSX.Element {
                     </span>
                     <span className="cli-workers-name">
                       {workerLabel(w.id)}
+                      {!supported && (
+                        <span className="cli-workers-tag" title="已检测但暂无 runner，不参与 task 路由">
+                          暂不支持
+                        </span>
+                      )}
                       {w.enabled && priorityRank === 1 && (
                         <span className="cli-workers-tag">优先</span>
                       )}

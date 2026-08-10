@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CLI_WORKER_DISCOVERY_CATALOG,
   CLI_WORKERS_DEFAULT_SEED,
+  SUPPORTED_CLI_WORKER_IDS,
   ensureSeedWorkers,
   isDeniedCliName,
   isValidCliWorkersConfig,
@@ -562,5 +564,73 @@ describe('workerPreferScore', () => {
     const prefer: CliCapabilityPrefer = { costMax: 2 }
     expect(workerPreferScore(capWorker('a', { cost: 1, reasoning: 'low' }), prefer)).toBe(5)
     expect(workerPreferScore(capWorker('a', { cost: 2, reasoning: 'low' }), prefer)).toBe(4)
+  })
+})
+
+describe('CLI_WORKER_DISCOVERY_CATALOG', () => {
+  it('目录非空且每项 id 唯一', () => {
+    expect(CLI_WORKER_DISCOVERY_CATALOG.length).toBeGreaterThan(0)
+    const ids = CLI_WORKER_DISCOVERY_CATALOG.map((e) => e.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('每项 bins 非空（按序探测）、supported 为布尔', () => {
+    for (const e of CLI_WORKER_DISCOVERY_CATALOG) {
+      expect(e.bins.length).toBeGreaterThan(0)
+      for (const b of e.bins) expect(typeof b).toBe('string')
+      expect(typeof e.supported).toBe('boolean')
+    }
+  })
+
+  it('按目录顺序含 kscc / grok / codex / mimo / opencode', () => {
+    expect(CLI_WORKER_DISCOVERY_CATALOG.map((e) => e.id)).toEqual([
+      'kscc',
+      'grok',
+      'codex',
+      'mimo',
+      'opencode',
+    ])
+  })
+
+  it('opencode supported=false（暂无 runner，下一刀 SLICE-9）；其余四个 supported=true', () => {
+    const byId = (id: string) => CLI_WORKER_DISCOVERY_CATALOG.find((e) => e.id === id)
+    expect(byId('kscc')?.supported).toBe(true)
+    expect(byId('grok')?.supported).toBe(true)
+    expect(byId('codex')?.supported).toBe(true)
+    expect(byId('mimo')?.supported).toBe(true)
+    expect(byId('opencode')?.supported).toBe(false)
+  })
+
+  it('每项目录项可构造为合法 worker（capability 结构合法、id 不命中黑名单）', () => {
+    for (const e of CLI_WORKER_DISCOVERY_CATALOG) {
+      const cfg: CliWorkersConfig = {
+        version: 1,
+        enabled: false,
+        defaultBackend: 'in-process',
+        defaultCliId: 'kscc',
+        workers: [
+          {
+            id: e.id,
+            enabled: true,
+            bin: e.bins[0]!,
+            ...(e.defaultModel !== undefined ? { defaultModel: e.defaultModel } : {}),
+            ...(e.capability !== undefined ? { capability: e.capability } : {}),
+          },
+        ],
+      }
+      expect(validateCliWorkersConfig(cfg)).toBeNull()
+    }
+  })
+})
+
+describe('SUPPORTED_CLI_WORKER_IDS', () => {
+  it('=== [kscc, grok, codex, mimo]（仅 supported 工人，不含 opencode）', () => {
+    expect([...SUPPORTED_CLI_WORKER_IDS]).toEqual(['kscc', 'grok', 'codex', 'mimo'])
+  })
+
+  it('是 readonly 数组（不可 push）', () => {
+    // readonly 语义：类型层面禁写；运行时仍是数组，仅做存在性断言
+    expect(Array.isArray(SUPPORTED_CLI_WORKER_IDS)).toBe(true)
+    expect(SUPPORTED_CLI_WORKER_IDS.length).toBe(4)
   })
 })

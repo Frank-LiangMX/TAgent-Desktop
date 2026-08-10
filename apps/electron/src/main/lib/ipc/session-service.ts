@@ -76,7 +76,7 @@ import { resolveWorkspaceForSession } from '../workspace/workspace-manager'
 import { findFileByNameCached } from './file-search'
 import { getEnabledMcpServers } from '../mcp/mcp-store'
 import { listMoaPresets, writeMoaPresets, validateMoAPresetList } from '../agent/moa-preset-service'
-import { listCliWorkersConfig, writeCliWorkersConfig } from '../agent/cli-workers-service'
+import { listCliWorkersConfig, writeCliWorkersConfig, discoverAndReconcileCliWorkers } from '../agent/cli-workers-service'
 import { probeCliWorkers } from '../agent/cli-workers/probe-cli-workers'
 import { runMoaTurn } from '../agent/run-moa-turn'
 import { runMoADiscussion, nextMoADiscussionId } from '../agent/run-moa-discussion'
@@ -854,10 +854,16 @@ export class SessionService {
     )
 
     // 本机探测 CLI 是否在 PATH（每台机器环境不同）；可选传入当前编辑中的 cfg
+    // 先对账落盘（新增已安装 / 移除未安装占位 / 保留自定义），再探测对账后的配置
     ipcMain.handle(
       AGENT_IPC_CHANNELS.PROBE_CLI_WORKERS,
-      async (_e, cfg?: CliWorkersConfig) => {
-        return probeCliWorkers(cfg)
+      async (_e, _cfg?: CliWorkersConfig) => {
+        try {
+          discoverAndReconcileCliWorkers()
+        } catch (err) {
+          console.warn('[cli-workers] 检测前对账失败：', err)
+        }
+        return probeCliWorkers()
       },
     )
 

@@ -1,11 +1,12 @@
 /**
  * resolveTaskSubagentBackend：读 CLI 工人配置 → 决定 Pi `task` 走 in-process 还是 cli。
  *
- * 挑选规则（SLICE-5 起支持能力 require/prefer）：
+ * 挑选规则（SLICE-5 起支持能力 require/prefer；SLICE-8 起过滤无 runner 工人）：
  * 1. 总开关关 / 后端非 cli / 无启用工人 → in-process
- * 2. 显式 preferredCliId：启用 + 本机可用 + 满足 require → 用之；
- *    不满足 require 或本机不可用 → console.warn 后回落池内（不整单失败、不报错给主 Agent）
- * 3. 候选 = 启用池按优先级，先 workerSupportsRequire 硬性过滤（含 prefer.costMax 硬上限），
+ * 1b. 无 runner 工人（目录 supported=false，如 opencode）永不进入候选；全 unsupported → in-process
+ * 2. 显式 preferredCliId：启用 + supported + 本机可用 + 满足 require → 用之；
+ *    不满足 require / 本机不可用 / 无 runner → console.warn 后回落池内（不整单失败、不报错给主 Agent）
+ * 3. 候选 = supported 启用池按优先级，先 workerSupportsRequire 硬性过滤（含 prefer.costMax 硬上限），
  *    再 workerPreferScore 软性打分降序（同分保持数组顺序）
  * 4. 从排序后候选逐个找本机 bin 可用者；全挂 → in-process
  * 5. 无 require/prefer 时行为与现状完全一致（按优先级取第一个本机可用）
@@ -18,6 +19,7 @@ import {
   shouldUseCliWorker,
   workerPreferScore,
   workerSupportsRequire,
+  SUPPORTED_CLI_WORKER_IDS,
   type CliCapabilityPrefer,
   type CliCapabilityRequire,
   type CliWorkerEntry,
@@ -60,9 +62,13 @@ export function resolveTaskSubagentBackend(
   const pool = listEnabledWorkersByPriority(cfg)
   if (pool.length === 0) return { kind: 'in-process' }
 
-  // 2. 显式 preferredCliId：启用 + 本机可用 + 满足 require → 用之；否则 warn 回落池内
+  // 无 runner 工人（目录 supported=false，如 opencode）永不进入候选：仅设置页显示「已检测·暂不支持派工」，不参与路由
+  const supportedPool = pool.filter((w) => SUPPORTED_CLI_WORKER_IDS.includes(w.id))
+  if (supportedPool.length === 0) return { kind: 'in-process' }
+
+  // 2. 显式 preferredCliId：启用 + supported + 本机可用 + 满足 require → 用之；否则 warn 回落池内
   if (preferred) {
-    const pref = pool.find((w) => w.id === preferred)
+    const pref = supportedPool.find((w) => w.id === preferred)
     if (pref) {
       if (!workerSupportsRequire(pref, require)) {
         console.warn(`[cli-workers] 显式 cli=${preferred} 不满足 require，回落池内`)
@@ -71,12 +77,17 @@ export function resolveTaskSubagentBackend(
       } else {
         return { kind: 'cli', worker: pref }
       }
+    } else {
+      // preferred 不在 supported 池：启用但无 runner → warn 回落（与 require 不满足同路径）；未启用 / 未知 id → 静默回落
+      const enabled = pool.find((w) => w.id === preferred)
+      if (enabled && !SUPPORTED_CLI_WORKER_IDS.includes(preferred)) {
+        console.warn(`[cli-workers] 显式 cli=${preferred} 暂不支持派工（无 runner），回落池内`)
+      }
     }
-    // pref 未在启用池（未启用 / 未知 id）→ 静默回落（与现状一致，不报错给主 Agent）
   }
 
-  // 3. 候选 = 启用池按优先级，先 require 硬性过滤（含 prefer.costMax 硬上限），再 prefer 软性打分降序（同分保持数组顺序）
-  let candidates = pool.filter((w) => workerSupportsRequire(w, require))
+  // 3. 候选 = supported 启用池按优先级，先 require 硬性过滤（含 prefer.costMax 硬上限），再 prefer 软性打分降序（同分保持数组顺序）
+  let candidates = supportedPool.filter((w) => workerSupportsRequire(w, require))
   if (prefer?.costMax != null) {
     const max = prefer.costMax
     candidates = candidates.filter((w) => resolveWorkerCapability(w).cost <= max)
@@ -100,12 +111,14 @@ export function resolveTaskSubagentBackend(
   return { kind: 'in-process' }
 }
 
-/** 当前启用池 id 列表（给 task 工具描述 / 日志用；不探测 bin） */
+/** 当前启用池 id 列表（给 task 工具描述 / 日志用；不探测 bin；仅含 supported 工人） */
 export function listEnabledCliWorkerIds(): string[] {
   try {
     const cfg = listCliWorkersConfig()
     if (!shouldUseCliWorker(cfg)) return []
-    return listEnabledWorkersByPriority(cfg).map((w) => w.id)
+    return listEnabledWorkersByPriority(cfg)
+      .filter((w) => SUPPORTED_CLI_WORKER_IDS.includes(w.id))
+      .map((w) => w.id)
   } catch {
     return []
   }
@@ -130,7 +143,10 @@ export function listEnabledCliWorkerCards(): string {
   if (!shouldUseCliWorker(cfg)) return ''
   const pool = listEnabledWorkersByPriority(cfg)
   if (pool.length === 0) return ''
-  const lines = pool.map((w) => {
+  // 仅注入 supported 工人能力卡（无 runner 工人不参与路由，不向主 Agent 推荐）
+  const supportedPool = pool.filter((w) => SUPPORTED_CLI_WORKER_IDS.includes(w.id))
+  if (supportedPool.length === 0) return ''
+  const lines = supportedPool.map((w) => {
     const cap = resolveWorkerCapability(w)
     const mods = (cap.modalities ?? ['text']).join('+')
     const tail = cap.goodFor ? ` · ${cap.goodFor}` : ''

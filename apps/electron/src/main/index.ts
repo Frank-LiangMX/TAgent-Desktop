@@ -16,6 +16,7 @@ import { UserProfileService } from './lib/ipc/user-profile-service'
 import { BalanceService } from './lib/ipc/balance-service'
 import { PermissionService } from './lib/permission/permission-service'
 import { seedBuiltinChannels, migrateModelWindows } from './lib/channel/channel-store'
+import { discoverAndReconcileCliWorkers } from './lib/agent/cli-workers-service'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
 import { createTray, destroyTray, getTray, updateTrayTheme } from './tray'
 import { initAutoUpdater, configureUpdater, cleanupUpdater, registerUpdaterIpc } from './lib/updater'
@@ -295,6 +296,15 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) createWindow()
     else focusMainWindow()
+  })
+
+  // CLI 工人启动对账：后台探测本机已安装 coding CLI + 对账落盘（不阻塞启动，失败仅 warn）
+  setImmediate(() => {
+    try {
+      discoverAndReconcileCliWorkers()
+    } catch (err) {
+      console.warn('[cli-workers] 启动对账失败：', err)
+    }
   })
 })
 

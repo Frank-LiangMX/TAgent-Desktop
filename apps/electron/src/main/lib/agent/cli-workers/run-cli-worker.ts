@@ -11,6 +11,7 @@
  * 调用方（subagent-task-tool）只与此入口交互；详情 emitPayload / 进度回调签名四者一致。
  */
 import type { CliWorkerEntry } from '@tagent/shared'
+import { SUPPORTED_CLI_WORKER_IDS } from '@tagent/shared'
 import { runKsccWorker } from './run-kscc-worker'
 import { runGrokWorker } from './run-grok-worker'
 import { runCodexWorker } from './run-codex-worker'
@@ -27,9 +28,6 @@ export interface RunCliWorkerInput {
   onToolResult?: (t: CliToolResultHit) => void
   onTextChunk?: (text: string) => void
 }
-
-/** 已支持的 CLI 工人 id */
-export const SUPPORTED_CLI_WORKER_IDS = ['kscc', 'grok', 'codex', 'mimo'] as const
 
 export async function runCliWorker(input: RunCliWorkerInput): Promise<RunCliWorkerResult> {
   switch (input.worker.id) {

@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { CLI_WORKERS_DEFAULT_SEED, type CliWorkersConfig } from '@tagent/shared'
+import { CLI_WORKER_DISCOVERY_CATALOG, CLI_WORKERS_DEFAULT_SEED, validateCliWorkersConfig, type CliWorkerDiscoveryEntry, type CliWorkersConfig } from '@tagent/shared'
 
 // electron mock：config-paths.ts isAppPackaged 用
 vi.mock('electron', () => ({
@@ -45,26 +45,21 @@ function validEnabledCfg(): CliWorkersConfig {
 }
 
 describe('listCliWorkersConfig', () => {
-  it('seeds default (enabled false) and writes the file when none exists', async () => {
+  it('returns default in-memory (enabled false, 0 workers) and does NOT write when none exists', async () => {
     const { listCliWorkersConfig } = await loadService()
     const cfg = listCliWorkersConfig()
     expect(cfg.version).toBe(1)
     expect(cfg.enabled).toBe(false)
     expect(cfg.defaultBackend).toBe('in-process')
     expect(cfg.defaultCliId).toBe('kscc')
-    expect(cfg.workers.map((w) => w.id)).toEqual(['kscc', 'grok', 'codex', 'mimo'])
+    expect(cfg.workers).toEqual([])
 
-    // seed 文件已落盘（含 4 个工人）
+    // 纯读：首次落盘由 discoverAndReconcileCliWorkers 负责，list 不写盘
     const filePath = join(configDir, 'cli-workers.json')
-    expect(existsSync(filePath)).toBe(true)
-    const raw = JSON.parse(readFileSync(filePath, 'utf8'))
-    expect(raw.version).toBe(1)
-    expect(raw.enabled).toBe(false)
-    expect(raw.workers.map((w: { id: string }) => w.id)).toEqual(['kscc', 'grok', 'codex', 'mimo'])
-    expect(raw.workers[0].id).toBe('kscc')
+    expect(existsSync(filePath)).toBe(false)
   })
 
-  it('returns the existing valid config with missing seed workers merged in', async () => {
+  it('returns the existing valid config as-is (no seed merge)', async () => {
     const { listCliWorkersConfig, writeCliWorkersConfig } = await loadService()
     // 旧配置：仅 1 条 kscc，bin 已自定义
     writeCliWorkersConfig({
@@ -77,22 +72,15 @@ describe('listCliWorkersConfig', () => {
     const cfg = listCliWorkersConfig()
     expect(cfg.enabled).toBe(true)
     expect(cfg.defaultBackend).toBe('cli')
-    // 用户已有 kscc 字段保留，缺的 grok/codex/mimo 补齐
-    expect(cfg.workers.map((w) => w.id)).toEqual(['kscc', 'grok', 'codex', 'mimo'])
+    // 纯读：原样返回，不再 ensureSeedWorkers 占位补齐 grok/codex/mimo
+    expect(cfg.workers.map((w) => w.id)).toEqual(['kscc'])
     expect(cfg.workers[0]!.bin).toBe('/usr/local/bin/kscc')
-    // merge 自 seed 的 grok 带 SLICE-5 能力画像（仅内存补齐，不回写盘）
-    expect(cfg.workers[1]).toEqual({
-      id: 'grok',
-      enabled: true,
-      bin: 'grok',
-      capability: { cost: 2, reasoning: 'medium', goodFor: '探索 / 对照 / 草稿实现' },
-    })
-    // merge 仅在内存，文件仍是旧 1 条（落盘升级发生在用户下次保存整表）
+    // 文件仍是旧 1 条（纯读不回写）
     const raw = JSON.parse(readFileSync(join(configDir, 'cli-workers.json'), 'utf8'))
     expect(raw.workers.map((w: { id: string }) => w.id)).toEqual(['kscc'])
   })
 
-  it('falls back to seed when the file is structurally invalid', async () => {
+  it('returns default in-memory when the file is structurally invalid (does not overwrite)', async () => {
     const { listCliWorkersConfig } = await loadService()
     const filePath = join(configDir, 'cli-workers.json')
     writeFileSync(filePath, JSON.stringify({ version: 99, garbage: true }), 'utf8')
@@ -100,14 +88,14 @@ describe('listCliWorkersConfig', () => {
     const cfg = listCliWorkersConfig()
     expect(cfg.enabled).toBe(false)
     expect(cfg.version).toBe(1)
-    // 文件被 seed 覆盖（4 工人）
+    expect(cfg.workers).toEqual([])
+    // 纯读：不覆盖坏文件（自愈/首次落盘由 discoverAndReconcileCliWorkers 负责）
     const raw = JSON.parse(readFileSync(filePath, 'utf8'))
-    expect(raw.version).toBe(1)
-    expect(raw.enabled).toBe(false)
-    expect(raw.workers.map((w: { id: string }) => w.id)).toEqual(['kscc', 'grok', 'codex', 'mimo'])
+    expect(raw.version).toBe(99)
+    expect(raw.garbage).toBe(true)
   })
 
-  it('falls back to seed when the file contains a deny-list worker', async () => {
+  it('returns default in-memory when the file contains a deny-list worker (does not overwrite)', async () => {
     const { listCliWorkersConfig } = await loadService()
     const filePath = join(configDir, 'cli-workers.json')
     writeFileSync(
@@ -123,9 +111,13 @@ describe('listCliWorkersConfig', () => {
     )
 
     const cfg = listCliWorkersConfig()
-    // 命中黑名单 → 当坏文件 → seed 覆盖回零行为
+    // 命中黑名单 → 当坏文件 → 返回内存默认（不覆盖）
     expect(cfg.enabled).toBe(false)
     expect(cfg.defaultCliId).toBe('kscc')
+    expect(cfg.workers).toEqual([])
+    // 文件原样保留（纯读）
+    const raw = JSON.parse(readFileSync(filePath, 'utf8'))
+    expect(raw.defaultCliId).toBe('hermes')
   })
 })
 
@@ -180,8 +172,8 @@ describe('writeCliWorkersConfig', () => {
     const raw = JSON.parse(readFileSync(join(configDir, 'cli-workers.json'), 'utf8'))
     expect(raw.workers.map((w: { id: string }) => w.id)).toEqual(['kscc'])
     expect(raw.workers[0].bin).toBe('/usr/local/bin/kscc')
-    // list 回读会 merge 补齐缺的 seed 工人 → 4 工人，但 kscc 仍是合法那份
-    expect(reloaded.workers.map((w) => w.id)).toEqual(['kscc', 'grok', 'codex', 'mimo'])
+    // list 纯读原样返回（不再 merge 补齐 seed 工人）→ 仍 1 条 kscc
+    expect(reloaded.workers.map((w) => w.id)).toEqual(['kscc'])
   })
 
   it('throws Chinese error for deny-list bin basename (openclaw) and does NOT write', async () => {
@@ -227,5 +219,142 @@ describe('writeCliWorkersConfig', () => {
     } as CliWorkersConfig)
     const loaded = listCliWorkersConfig()
     expect(loaded.enabled).toBe(false)
+  })
+})
+
+/** 取目录项 by id（测试构造已安装集合用） */
+function cat(id: string): CliWorkerDiscoveryEntry | undefined {
+  return CLI_WORKER_DISCOVERY_CATALOG.find((e) => e.id === id)
+}
+
+describe('discoverAndReconcileCliWorkers', () => {
+  it('无配置文件 → 落盘 = 仅本机已安装目录项（codex 未装则无 codex 行）', async () => {
+    const { discoverAndReconcileCliWorkers, listCliWorkersConfig } = await loadService()
+    // 模拟本机已安装 kscc / grok / mimo（codex 未装）
+    const installed: Array<{ entry: CliWorkerDiscoveryEntry; resolvedBin: string }> = [
+      { entry: cat('kscc')!, resolvedBin: 'C:\\kscc.cmd' },
+      { entry: cat('grok')!, resolvedBin: 'C:\\grok.cmd' },
+      { entry: cat('mimo')!, resolvedBin: 'C:\\mimo.cmd' },
+    ]
+    const cfg = discoverAndReconcileCliWorkers(() => installed)
+    // 落盘 = 已安装 3 行（无 codex），总开关关，defaultCliId=首个已安装 supported（kscc）
+    expect(cfg.enabled).toBe(false)
+    expect(cfg.defaultBackend).toBe('in-process')
+    expect(cfg.defaultCliId).toBe('kscc')
+    expect(cfg.workers.map((w) => w.id)).toEqual(['kscc', 'grok', 'mimo'])
+    // bin 为命中绝对路径
+    expect(cfg.workers[0]!.bin).toBe('C:\\kscc.cmd')
+    // kscc 带 defaultModel + capability（自目录）
+    expect(cfg.workers[0]!.defaultModel).toBe('glm-5.2')
+    expect(cfg.workers[0]!.capability).toEqual({
+      cost: 3,
+      reasoning: 'high',
+      goodFor: '跨层接线 / 编排 / 复杂实现',
+    })
+    // 文件已落盘
+    const raw = JSON.parse(readFileSync(join(configDir, 'cli-workers.json'), 'utf8'))
+    expect(raw.workers.map((w: { id: string }) => w.id)).toEqual(['kscc', 'grok', 'mimo'])
+    // list 回读一致
+    expect(listCliWorkersConfig().workers.map((w) => w.id)).toEqual(['kscc', 'grok', 'mimo'])
+    // 对账后配置合法
+    expect(validateCliWorkersConfig(cfg)).toBeNull()
+  })
+
+  it('无配置文件且无已安装 → 落盘空工人（defaultCliId=kscc 兜底）', async () => {
+    const { discoverAndReconcileCliWorkers } = await loadService()
+    const cfg = discoverAndReconcileCliWorkers(() => [])
+    expect(cfg.workers).toEqual([])
+    expect(cfg.enabled).toBe(false)
+    expect(cfg.defaultCliId).toBe('kscc')
+    expect(validateCliWorkersConfig(cfg)).toBeNull()
+    const raw = JSON.parse(readFileSync(join(configDir, 'cli-workers.json'), 'utf8'))
+    expect(raw.workers).toEqual([])
+  })
+
+  it('已有配置 → 追加新发现（opencode）、移除默认 bin+未安装占位（codex）、保留自定义 id / 改过 bin 的行', async () => {
+    const { discoverAndReconcileCliWorkers, listCliWorkersConfig, writeCliWorkersConfig } =
+      await loadService()
+    // 既有配置：kscc(已安装,bare) + codex(未安装,bare=默认→待移除) + grok(未安装但改过 bin→保留) + mycustom(自定义 id→保留)
+    writeCliWorkersConfig({
+      version: 1,
+      enabled: true,
+      defaultBackend: 'cli',
+      defaultCliId: 'kscc',
+      workers: [
+        { id: 'kscc', enabled: true, bin: 'kscc', defaultModel: 'glm-5.2' },
+        { id: 'codex', enabled: false, bin: 'codex' },
+        { id: 'grok', enabled: true, bin: '/custom/grok' },
+        { id: 'mycustom', enabled: true, bin: '/my/custom' },
+      ],
+    })
+    // 模拟本机已安装 kscc + opencode（codex/grok 未装）
+    const installed: Array<{ entry: CliWorkerDiscoveryEntry; resolvedBin: string }> = [
+      { entry: cat('kscc')!, resolvedBin: 'C:\\kscc.cmd' },
+      { entry: cat('opencode')!, resolvedBin: 'C:\\opencode.exe' },
+    ]
+    const cfg = discoverAndReconcileCliWorkers(() => installed)
+    // kscc 保留（已安装）原样不动；codex 移除（默认 bin + 未装）；grok 保留（改过 bin）；mycustom 保留（自定义 id）；opencode 追加
+    expect(cfg.workers.map((w) => w.id)).toEqual(['kscc', 'grok', 'mycustom', 'opencode'])
+    // kscc 原样（bin 仍 bare，未被改写为绝对路径——保留用户配置不动）
+    expect(cfg.workers.find((w) => w.id === 'kscc')!.bin).toBe('kscc')
+    // grok 保留改过的 bin
+    expect(cfg.workers.find((w) => w.id === 'grok')!.bin).toBe('/custom/grok')
+    // opencode 追加：enabled true，bin=命中绝对路径，带 capability，无 defaultModel
+    const oc = cfg.workers.find((w) => w.id === 'opencode')!
+    expect(oc.enabled).toBe(true)
+    expect(oc.bin).toBe('C:\\opencode.exe')
+    expect(oc.capability).toEqual({ cost: 2, reasoning: 'medium', goodFor: '通用编码 / 多 Agent 协作' })
+    expect(oc.defaultModel).toBeUndefined()
+    // 顶层总开关 / 后端保留（对账不动用户总开关）
+    expect(cfg.enabled).toBe(true)
+    expect(cfg.defaultBackend).toBe('cli')
+    // 文件已落盘 + list 回读一致
+    const raw = JSON.parse(readFileSync(join(configDir, 'cli-workers.json'), 'utf8'))
+    expect(raw.workers.map((w: { id: string }) => w.id)).toEqual(['kscc', 'grok', 'mycustom', 'opencode'])
+    expect(listCliWorkersConfig().workers.map((w) => w.id)).toEqual([
+      'kscc',
+      'grok',
+      'mycustom',
+      'opencode',
+    ])
+    // 对账后配置合法
+    expect(validateCliWorkersConfig(cfg)).toBeNull()
+  })
+
+  it('已有配置 + 目录项 bin 被用户改过且未安装 → 保留（不因未装移除）', async () => {
+    const { discoverAndReconcileCliWorkers, writeCliWorkersConfig } = await loadService()
+    writeCliWorkersConfig({
+      version: 1,
+      enabled: true,
+      defaultBackend: 'cli',
+      defaultCliId: 'kscc',
+      workers: [{ id: 'kscc', enabled: true, bin: '/my/kscc', defaultModel: 'glm-5.2' }],
+    })
+    // 本机什么都没装
+    const cfg = discoverAndReconcileCliWorkers(() => [])
+    // kscc bin 被改过（非默认 'kscc'）→ 保留不动（不因未装移除）
+    expect(cfg.workers.map((w) => w.id)).toEqual(['kscc'])
+    expect(cfg.workers[0]!.bin).toBe('/my/kscc')
+  })
+
+  it('已有配置 + 目录项默认 bin 未安装 → 移除占位（不残留未找到行）', async () => {
+    const { discoverAndReconcileCliWorkers, writeCliWorkersConfig } = await loadService()
+    writeCliWorkersConfig({
+      version: 1,
+      enabled: true,
+      defaultBackend: 'cli',
+      defaultCliId: 'kscc',
+      workers: [
+        { id: 'kscc', enabled: true, bin: 'kscc', defaultModel: 'glm-5.2' },
+        { id: 'codex', enabled: true, bin: 'codex' },
+        { id: 'mimo', enabled: false, bin: 'mimo' },
+      ],
+    })
+    // 本机仅装 kscc
+    const cfg = discoverAndReconcileCliWorkers(() => [
+      { entry: cat('kscc')!, resolvedBin: 'C:\\kscc.cmd' },
+    ])
+    // codex/mimo 均默认 bin + 未装 → 移除；仅留 kscc
+    expect(cfg.workers.map((w) => w.id)).toEqual(['kscc'])
   })
 })

@@ -19,7 +19,8 @@ vi.mock('./run-grok-worker', () => ({ runGrokWorker: mocks.runGrokWorker }))
 vi.mock('./run-codex-worker', () => ({ runCodexWorker: mocks.runCodexWorker }))
 vi.mock('./run-mimo-worker', () => ({ runMimoWorker: mocks.runMimoWorker }))
 
-import { runCliWorker, SUPPORTED_CLI_WORKER_IDS } from './run-cli-worker'
+import { runCliWorker } from './run-cli-worker'
+import { SUPPORTED_CLI_WORKER_IDS } from '@tagent/shared'
 
 const OK = { ok: true, summary: 'OK', toolCalls: 0, durationMs: 10, exitCode: 0 }
 
