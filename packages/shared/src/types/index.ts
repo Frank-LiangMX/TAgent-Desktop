@@ -118,3 +118,6 @@ export * from './cli-workers'
 
 // 主会话无进展防循环（No-Progress Guard）公共类型契约
 export * from './no-progress'
+
+// Agent 圆桌 / 班组 设置偏好（类型 + 默认 + 校验）
+export * from './agent-discuss-crew-prefs'

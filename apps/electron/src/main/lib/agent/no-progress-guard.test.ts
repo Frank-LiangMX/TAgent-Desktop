@@ -410,6 +410,13 @@ describe('resolveNoProgressGuardMode（§23.1 白名单归一）', () => {
     expect(resolveNoProgressGuardMode({})).toBe(NO_PROGRESS_GUARD_DEFAULT_MODE)
     expect(resolveNoProgressGuardMode(undefined)).toBe(NO_PROGRESS_GUARD_DEFAULT_MODE)
   })
+  it('落盘偏好在无 env 时生效；env 仍优先', () => {
+    expect(resolveNoProgressGuardMode({}, 'shadow')).toBe('shadow')
+    expect(resolveNoProgressGuardMode({}, 'off')).toBe('off')
+    expect(
+      resolveNoProgressGuardMode({ TAGENT_NO_PROGRESS_GUARD_MODE: 'enforce' }, 'shadow'),
+    ).toBe('enforce')
+  })
   it('默认模式为 enforce（产品默认真正防死循环）', () => {
     expect(NO_PROGRESS_GUARD_DEFAULT_MODE).toBe('enforce')
   })

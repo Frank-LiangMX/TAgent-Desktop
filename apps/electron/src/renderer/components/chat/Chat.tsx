@@ -1537,8 +1537,26 @@ export function Chat({
         } else if (npEvt.phase === 'paused') {
           clearPendingStop()
           stopRun() // 清运行态/计时/停止键；不报错、不抬错误条（§11.3）
+          pushTicker(
+            makeStatusTickerItem(
+              npEvt.summary?.trim() || '已暂停：连续多次操作未获得新进展',
+              'warn',
+              12000,
+            ),
+          )
+        } else if (npEvt.phase === 'warning' || npEvt.phase === 'reflection') {
+          pushTicker(
+            makeStatusTickerItem(
+              npEvt.summary?.trim() ||
+                (npEvt.phase === 'reflection'
+                  ? '连续无进展，已要求策略复盘'
+                  : '检测到重复失败，正在重新评估策略'),
+              'warn',
+              8000,
+            ),
+          )
         }
-        // 'cleared' 暂无 UI 需清理（v1 未展示 warning/reflection 条）；'warning'/'reflection' 留作后续 NoProgress 组件
+        // 'cleared'：暂无 UI
       }
       if (evt.type === 'moa_roundtable') {
         // MoA 圆桌卡：按 roundtableId 就地 upsert（同轮多张状态卡只保留最新）。

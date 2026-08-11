@@ -25,6 +25,8 @@ import type {
   MoAPreset,
   CliWorkersConfig,
   CliWorkersProbeResult,
+  AgentDiscussPrefs,
+  AgentCrewPrefs,
   NudgeCandidate,
   PluginStoreCatalog,
   StageEntry,
@@ -124,6 +126,24 @@ declare global {
       saveCliWorkersConfig: (cfg: CliWorkersConfig) => Promise<CliWorkersConfig>
       /** 本机探测 CLI 工人是否可用 */
       probeCliWorkers: (cfg?: CliWorkersConfig) => Promise<CliWorkersProbeResult>
+      getNoProgressGuardMode: () => Promise<{
+        effective: 'off' | 'shadow' | 'enforce'
+        stored: 'off' | 'shadow' | 'enforce' | null
+        envOverride: 'off' | 'shadow' | 'enforce' | null
+      }>
+      setNoProgressGuardMode: (mode: 'off' | 'shadow' | 'enforce') => Promise<{
+        effective: 'off' | 'shadow' | 'enforce'
+        stored: 'off' | 'shadow' | 'enforce' | null
+        envOverride: 'off' | 'shadow' | 'enforce' | null
+      }>
+      /** 读圆桌（agent-discuss）偏好（缺失/损坏 → 默认） */
+      getAgentDiscussPrefs: () => Promise<AgentDiscussPrefs>
+      /** 写圆桌偏好（整单校验，非法 reject 中文错；成功返回落盘后的偏好） */
+      setAgentDiscussPrefs: (prefs: AgentDiscussPrefs) => Promise<AgentDiscussPrefs>
+      /** 读班组（agent-crew）偏好（缺失/损坏 → 默认） */
+      getAgentCrewPrefs: () => Promise<AgentCrewPrefs>
+      /** 写班组偏好（整单校验，非法 reject 中文错；成功返回落盘后的偏好） */
+      setAgentCrewPrefs: (prefs: AgentCrewPrefs) => Promise<AgentCrewPrefs>
       onStreamEvent: (cb: (payload: unknown) => void) => () => void
       openPath: (input: { sessionId: string; path: string }) => Promise<{ ok: boolean; error?: string }>
       resolveFile: (input: {

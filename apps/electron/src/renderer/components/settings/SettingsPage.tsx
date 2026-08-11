@@ -52,6 +52,9 @@ import { loaderAnimationEnabledAtom, splitDockModeAtom } from '../../atoms/featu
 import { ChannelsSettings } from './ChannelsSettings'
 import { AgentBehaviorSettings } from './AgentBehaviorSettings'
 import { CliWorkersSettingsSection } from './CliWorkersSettingsSection'
+import { NoProgressGuardSettings } from './NoProgressGuardSettings'
+import { AgentDiscussSettings } from './AgentDiscussSettings'
+import { AgentCrewSettings } from './AgentCrewSettings'
 import { UpdateChecker } from './UpdateChecker'
 import { ComposerRunTimer } from '../chat/ComposerRunTimer'
 import appiconLight from '../../assets/tagent-appicon-light.png'
@@ -153,7 +156,7 @@ const ALL_TABS: TabItem[] = [
   {
     id: 'agent-crew',
     label: '班组',
-    description: '长任务派工（即将推出）',
+    description: '长任务派工与工人编排',
     icon: <Boxes size={14} strokeWidth={1.75} />,
     group: 'agent',
   },
@@ -367,21 +370,6 @@ function StyleCard({
   )
 }
 
-function AgentComingSoonPage({
-  title,
-  blurb,
-}: {
-  title: string
-  blurb: string
-}): JSX.Element {
-  return (
-    <div className="settings-page">
-      <SettingsPageIntro title={title} description={blurb} />
-      <p className="agent-behavior-coming">即将推出，当前请使用「会诊」与「子代理」。</p>
-    </div>
-  )
-}
-
 function renderTabContent(tab: SettingsTab): JSX.Element {
   const t = normalizeSettingsTab(tab)
   switch (t) {
@@ -401,23 +389,14 @@ function renderTabContent(tab: SettingsTab): JSX.Element {
             title="子代理"
             description="委派积极性、内置子代理与可选本机 CLI。默认走内置；切到本机 CLI 后再配置工人与探测。"
           />
+          <NoProgressGuardSettings />
           <CliWorkersSettingsSection />
         </div>
       )
     case 'agent-crew':
-      return (
-        <AgentComingSoonPage
-          title="班组"
-          blurb="长任务看板派工与工人编排。"
-        />
-      )
+      return <AgentCrewSettings />
     case 'agent-discuss':
-      return (
-        <AgentComingSoonPage
-          title="圆桌"
-          blurb="多角色互相讨论、出共识；支持插话与喊停。"
-        />
-      )
+      return <AgentDiscussSettings />
     case 'about':
       return <AboutSettings />
     default:

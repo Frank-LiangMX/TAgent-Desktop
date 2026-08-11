@@ -115,6 +115,13 @@ import {
 } from '@tagent/shared'
 import { loadRoles, resolveRole } from '../role/agent-role-service'
 import { composeRoleSystemPrompt } from '../role/role-projection'
+import {
+  readNoProgressGuardModePref,
+  writeNoProgressGuardModePref,
+} from '../agent/no-progress-guard-prefs'
+import { readAgentDiscussPrefs, writeAgentDiscussPrefs } from '../agent/agent-discuss-prefs'
+import { readAgentCrewPrefs, writeAgentCrewPrefs } from '../agent/agent-crew-prefs'
+import type { NoProgressGuardMode, AgentDiscussPrefs, AgentCrewPrefs } from '@tagent/shared'
 
 interface SendMessageInput {
   sessionId: string
@@ -865,6 +872,62 @@ export class SessionService {
           console.warn('[cli-workers] 检测前对账失败：', err)
         }
         return probeCliWorkers()
+      },
+    )
+
+    // No-Progress Guard 模式：返回 { effective, stored, envOverride }；设置只写落盘，env 仍可覆盖。
+    ipcMain.handle(AGENT_IPC_CHANNELS.GET_NO_PROGRESS_GUARD_MODE, async () => {
+      const stored = readNoProgressGuardModePref()
+      const envRaw = process.env.TAGENT_NO_PROGRESS_GUARD_MODE
+      const envOverride =
+        envRaw === 'off' || envRaw === 'shadow' || envRaw === 'enforce' ? envRaw : null
+      const effective = resolveNoProgressGuardMode(process.env, stored)
+      return { effective, stored, envOverride } as {
+        effective: NoProgressGuardMode
+        stored: NoProgressGuardMode | null
+        envOverride: NoProgressGuardMode | null
+      }
+    })
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.SET_NO_PROGRESS_GUARD_MODE,
+      async (_e, mode: NoProgressGuardMode) => {
+        writeNoProgressGuardModePref(mode)
+        const stored = readNoProgressGuardModePref()
+        const envRaw = process.env.TAGENT_NO_PROGRESS_GUARD_MODE
+        const envOverride =
+          envRaw === 'off' || envRaw === 'shadow' || envRaw === 'enforce' ? envRaw : null
+        return {
+          effective: resolveNoProgressGuardMode(process.env, stored),
+          stored,
+          envOverride,
+        }
+      },
+    )
+
+    // 圆桌（agent-discuss）偏好：读缺失/损坏 → 默认；写整单校验非法即 reject 中文错。
+    // 本期部分字段运行时闸未接（maxAgentMentionDepth），仅落盘 + UI（见 FINDINGS）。
+    ipcMain.handle(AGENT_IPC_CHANNELS.GET_DISCUSS_PREFS, async (): Promise<AgentDiscussPrefs> => {
+      return readAgentDiscussPrefs()
+    })
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.SET_DISCUSS_PREFS,
+      async (_e, prefs: unknown): Promise<AgentDiscussPrefs> => {
+        // writeAgentDiscussPrefs 内部 validate + 抛中文错 → ipc reject → renderer catch 回显
+        writeAgentDiscussPrefs(prefs)
+        return readAgentDiscussPrefs()
+      },
+    )
+
+    // 班组（agent-crew）偏好：读缺失/损坏 → 默认；写整单校验非法即 reject 中文错。
+    // 本期部分字段运行时闸未接（maxParallelWorkers 调度 / showFlowAsGraph 阶段3），仅落盘 + UI（见 FINDINGS）。
+    ipcMain.handle(AGENT_IPC_CHANNELS.GET_CREW_PREFS, async (): Promise<AgentCrewPrefs> => {
+      return readAgentCrewPrefs()
+    })
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.SET_CREW_PREFS,
+      async (_e, prefs: unknown): Promise<AgentCrewPrefs> => {
+        writeAgentCrewPrefs(prefs)
+        return readAgentCrewPrefs()
       },
     )
 
@@ -1627,9 +1690,12 @@ export class SessionService {
       ? migratePermissionMode(metaForMode.permissionMode)
       : TAGENT_DEFAULT_PERMISSION_MODE
 
-    // 无进展守卫（§20.1 / §23.1）：读环境变量归一，默认 shadow（首发不强制）。
-    // per-send 解析便于运行时回滚（TAGENT_NO_PROGRESS_GUARD_MODE=off|shadow|enforce）。
-    const noProgressGuardMode = resolveNoProgressGuardMode()
+  // 无进展守卫（§20.1 / §23.1）：env > 落盘偏好 > 默认 enforce。
+  // per-send 解析便于运行时改偏好后下次发送即生效。
+  const noProgressGuardMode = resolveNoProgressGuardMode(
+    process.env,
+    readNoProgressGuardModePref(),
+  )
     // 守卫阶段事件 → IPC 推 renderer（§20.4）。shadow 事件带 shadow=true，UI 忽略。
     const onNoProgressEvent = (event: NoProgressEvent): void => {
       this.sendPayload(input.sessionId, { kind: 'tagent_event', event })

@@ -2224,6 +2224,29 @@ export const AGENT_IPC_CHANNELS = {
    */
   PROBE_CLI_WORKERS: 'agent:probe-cli-workers',
 
+  /** 读 No-Progress Guard 模式（env 覆盖后的有效值 + 落盘偏好） */
+  GET_NO_PROGRESS_GUARD_MODE: 'agent:get-no-progress-guard-mode',
+  /** 写 No-Progress Guard 落盘偏好（env 仍可覆盖） */
+  SET_NO_PROGRESS_GUARD_MODE: 'agent:set-no-progress-guard-mode',
+
+  // 圆桌（agent-discuss）偏好
+  /** 读圆桌偏好（缺失/损坏 → 默认；见 agent-discuss-crew-prefs 契约） */
+  GET_DISCUSS_PREFS: 'agent:get-discuss-prefs',
+  /**
+   * 写圆桌偏好（整单校验，非法 reject 中文错、不写盘；合法则落盘后回读）。
+   * 入参 `AgentDiscussPrefs`；本期部分字段运行时闸未接（见 FINDINGS）。
+   */
+  SET_DISCUSS_PREFS: 'agent:set-discuss-prefs',
+
+  // 班组（agent-crew）偏好
+  /** 读班组偏好（缺失/损坏 → 默认；见 agent-discuss-crew-prefs 契约） */
+  GET_CREW_PREFS: 'agent:get-crew-prefs',
+  /**
+   * 写班组偏好（整单校验，非法 reject 中文错、不写盘；合法则落盘后回读）。
+   * 入参 `AgentCrewPrefs`；本期部分字段运行时闸未接（见 FINDINGS）。
+   */
+  SET_CREW_PREFS: 'agent:set-crew-prefs',
+
   // 待处理请求恢复（渲染进程重载后查询主进程状态）
   /** 获取所有待处理的交互请求快照 */
   GET_PENDING_REQUESTS: 'agent:get-pending-requests',

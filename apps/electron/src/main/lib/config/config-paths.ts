@@ -164,3 +164,13 @@ export function getMoaPresetsPath(): string {
 export function getCliWorkersPath(): string {
   return join(getConfigDir(), 'cli-workers.json')
 }
+
+/** 圆桌（agent-discuss）偏好文件：~/.tagent[-dev]/agent-discuss-prefs.json */
+export function getAgentDiscussPrefsPath(): string {
+  return join(getConfigDir(), 'agent-discuss-prefs.json')
+}
+
+/** 班组（agent-crew）偏好文件：~/.tagent[-dev]/agent-crew-prefs.json */
+export function getAgentCrewPrefsPath(): string {
+  return join(getConfigDir(), 'agent-crew-prefs.json')
+}

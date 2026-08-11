@@ -44,6 +44,8 @@ import type {
   MoAPreset,
   CliWorkersConfig,
   CliWorkersProbeResult,
+  AgentDiscussPrefs,
+  AgentCrewPrefs,
 } from '@tagent/shared'
 
 export interface SendMessageInput {
@@ -149,6 +151,38 @@ const electronAPI = {
   /** 本机探测各 CLI 工人是否在 PATH / 配置路径可用（每台机器环境不同） */
   probeCliWorkers: (cfg?: CliWorkersConfig) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.PROBE_CLI_WORKERS, cfg) as Promise<CliWorkersProbeResult>,
+  /** 读 No-Progress Guard 模式（effective / stored / envOverride） */
+  getNoProgressGuardMode: () =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_NO_PROGRESS_GUARD_MODE) as Promise<{
+      effective: 'off' | 'shadow' | 'enforce'
+      stored: 'off' | 'shadow' | 'enforce' | null
+      envOverride: 'off' | 'shadow' | 'enforce' | null
+    }>,
+  /** 写 No-Progress Guard 落盘偏好 */
+  setNoProgressGuardMode: (mode: 'off' | 'shadow' | 'enforce') =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.SET_NO_PROGRESS_GUARD_MODE, mode) as Promise<{
+      effective: 'off' | 'shadow' | 'enforce'
+      stored: 'off' | 'shadow' | 'enforce' | null
+      envOverride: 'off' | 'shadow' | 'enforce' | null
+    }>,
+  /** 读圆桌（agent-discuss）偏好（缺失/损坏 → 默认） */
+  getAgentDiscussPrefs: () =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_DISCUSS_PREFS) as Promise<AgentDiscussPrefs>,
+  /**
+   * 写圆桌偏好（整单校验，非法 reject 中文错；成功返回落盘后的偏好）。
+   * 本期部分字段运行时闸未接（见 FINDINGS）。
+   */
+  setAgentDiscussPrefs: (prefs: AgentDiscussPrefs) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.SET_DISCUSS_PREFS, prefs) as Promise<AgentDiscussPrefs>,
+  /** 读班组（agent-crew）偏好（缺失/损坏 → 默认） */
+  getAgentCrewPrefs: () =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_CREW_PREFS) as Promise<AgentCrewPrefs>,
+  /**
+   * 写班组偏好（整单校验，非法 reject 中文错；成功返回落盘后的偏好）。
+   * 本期部分字段运行时闸未接（见 FINDINGS）。
+   */
+  setAgentCrewPrefs: (prefs: AgentCrewPrefs) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.SET_CREW_PREFS, prefs) as Promise<AgentCrewPrefs>,
   /** 读会话历史消息（JSONL） */
   getMessages: (sessionId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_SDK_MESSAGES, sessionId),
