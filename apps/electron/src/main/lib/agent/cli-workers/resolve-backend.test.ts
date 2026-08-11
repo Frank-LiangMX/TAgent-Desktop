@@ -1,8 +1,11 @@
 /**
  * resolveTaskSubagentBackend 单测：配置 → in-process/cli 判定链。
  *
- * 覆盖：默认 disabled→in-process；enabled+cli+kscc(bare bin)→cli；默认工人 codex(非 kscc)→cli（SLICE-4 去 kscc 硬限制）；
+ * 覆盖：默认 disabled→in-process；enabled+cli+kscc→cli；默认工人 codex(非 kscc)→cli（SLICE-4 去 kscc 硬限制）；
  * 绝对 bin 不存在→in-process；绝对 bin 存在→cli；默认工人被禁用→in-process。
+ *
+ * 注意：bin 可用性依赖本机 PATH/文件；凡期望 kind=cli 的用例必须用 configDir 下的假绝对路径，
+ * 勿依赖 bare 名（CI 上通常无 kscc）。bare PATH 解析见 resolve-bin-on-path / probe-cli-workers 单测。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -62,20 +65,22 @@ describe('resolveTaskSubagentBackend', () => {
     expect(resolveTaskSubagentBackend()).toEqual({ kind: 'in-process' })
   })
 
-  it('enabled + cli + kscc(bare bin) → cli', async () => {
+  it('enabled + cli + kscc → cli', async () => {
     const { resolveTaskSubagentBackend } = await load()
+    const fakeBin = join(configDir, 'kscc.cmd')
+    writeFileSync(fakeBin, '@echo off', 'utf8')
     writeCfg({
       version: 1,
       enabled: true,
       defaultBackend: 'cli',
       defaultCliId: 'kscc',
-      workers: [{ id: 'kscc', enabled: true, bin: 'kscc', defaultModel: 'glm-5.2' }],
+      workers: [{ id: 'kscc', enabled: true, bin: fakeBin, defaultModel: 'glm-5.2' }],
     })
     const r = resolveTaskSubagentBackend()
     expect(r.kind).toBe('cli')
     if (r.kind === 'cli') {
       expect(r.worker.id).toBe('kscc')
-      expect(r.worker.bin).toBe('kscc')
+      expect(r.worker.bin).toBe(fakeBin)
       expect(r.worker.defaultModel).toBe('glm-5.2')
     }
   })
