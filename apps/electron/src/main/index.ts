@@ -6,6 +6,7 @@
 import { app, BrowserWindow, Menu, ipcMain, nativeImage, nativeTheme } from 'electron'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 import { SessionService } from './lib/ipc/session-service'
 import { ChannelService } from './lib/ipc/channel-service'
 import { WorkspaceService } from './lib/ipc/workspace-service'
@@ -46,6 +47,20 @@ let permissionService: PermissionService | null = null
 // Chromium 命令行开关必须在 app ready 之前设置，热更新无法使其生效。
 if (process.platform === 'win32') {
   app.commandLine.appendSwitch('disable-lcd-text')
+}
+
+// macOS：首次启动时自动清除 quarantine 隔离属性
+// 用户从 GitHub Releases / 浏览器下载的 .zip/.dmg 会被 macOS 标记为"已下载的应用"，
+// 导致 Gatekeeper 拦截显示"TAgent 已损坏，无法打开"。
+// 此处以静默方式移除自身 quarantine 属性，避免用户手动执行 xattr 命令。
+if (process.platform === 'darwin' && app.isPackaged) {
+  try {
+    const appBundlePath = path.join(process.execPath, '..', '..', '..')
+    execSync(`xattr -cr "${appBundlePath}"`, { timeout: 5000 })
+    console.log('[启动] 已自动清除 macOS quarantine 隔离属性')
+  } catch (err) {
+    console.warn('[启动] 清除 quarantine 属性失败（可忽略）:', (err as Error).message)
+  }
 }
 
 /**
