@@ -667,14 +667,14 @@ function GeneralSettings(): JSX.Element {
         </div>
       </SettingsSection>
 
-      <SettingsSection title="实验功能">
+      <SettingsSection title="工作台">
         <SettingsCard>
           <div className="settings-row">
             <div className="settings-row-main min-w-0 flex-1">
               <span className="settings-field-label">分屏工作台</span>
               <div className="settings-row-bottom mt-1">
                 <span className="text-xs leading-relaxed text-muted-foreground">
-                  拖会话标签到主区边缘自动分屏，多会话同屏独立运行
+                  默认开启。拖会话标签到主区边缘自动分屏，多会话同屏独立运行；可随时关闭回单会话视图
                 </span>
               </div>
             </div>

@@ -3,6 +3,23 @@
 本项目变更记录，遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.0.0-dev.2] - 2026-08-11
+
+相对 `dev.1`：MOA 会诊/圆桌、CLI 工人池、No-Progress Guard，以及聊天与安装体验打磨。完整对外文案见 [release-notes/v2.0.0-dev.2.md](./release-notes/v2.0.0-dev.2.md)。
+
+### 新增
+- **会诊 / 圆桌（MOA）** — 并行交卷与多轮研讨；设置页双子模块 + 共用班底。
+- **No-Progress Guard** — 默认 enforce；提醒 / 复盘 / 软暂停；设置可切 shadow/off。
+- **本机 CLI 工人池** — 自动探测、能力画像、require/prefer、会话级选择；含 opencode / Claude Code runner。
+- **聊天布局** — 过程折叠、文件预览、AskUser、多 speaker；会话状态色点。
+- **Windows 安装器品牌** — NSIS 图标与侧栏资源。
+
+### 体验
+- 过程显示默认 concise（v2 偏好键）；分屏工作台默认开启（v2 键）；侧栏可见会话 open-rail；会话左 gutter；加载动画图鉴暂隐。
+
+### 修复
+- GLM 流式收尾保留回复；队列引导 / 用户中断误报；CI typecheck 与 resolve-backend 无本机 kscc 环境。
+
 ## [2.0.0-dev.1] - 2026-08-07
 
 首个公开预发布版本。双核可拔插 + 会话进程长驻 + 模块化 monorepo，含子代理、Cursor 式时间线、自动更新、权限体系等完整桌面体验。

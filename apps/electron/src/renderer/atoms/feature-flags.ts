@@ -8,14 +8,14 @@ import { atom } from 'jotai'
 import { atomWithStorage, type RESET } from 'jotai/utils'
 
 /**
- * 分屏工作台模式（实验）：
+ * 分屏工作台模式：
  * on → 主区用 Dockview 画布（拖会话 tab 到边缘自动分屏，多 Chat 并存独立流式）；
- * off → 现有 TabBar + SessionRouter 单 tab 路径（默认，零回归）。
- * 两条路径并存，flag 可随时退回。
+ * off → TabBar + SessionRouter 单 tab 路径。
+ * 默认开启（v2 键）；旧 `tagent:splitDockMode=false` 不再读取，避免把新产品默认钉死在关。
  */
 export const splitDockModeAtom = atomWithStorage<boolean>(
-  'tagent:splitDockMode',
-  false,
+  'tagent:splitDockMode:v2',
+  true,
 )
 
 /** 便捷 setter（写 atom） */

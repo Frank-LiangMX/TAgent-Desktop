@@ -482,7 +482,7 @@ export function App(): JSX.Element {
   const setLastActiveWorkspaceId = useSetAtom(lastActiveWorkspaceIdAtom)
   const setPendingSuggestion = useSetAtom(pendingSuggestionAtom)
   const dockApi = useAtomValue(dockApiAtom)
-  // 分屏工作台（实验）：on → 主区用 Dockview，拖会话 tab 到边缘自动分屏
+  // 分屏工作台：on → 主区用 Dockview，拖会话 tab 到边缘自动分屏（默认开）
   const splitDockMode = useAtomValue(splitDockModeAtom)
   /** 草稿会话（无 tab 的新会话页）：点「新建会话」设置，发送首条消息时由 Chat 物化为 tab */
   const [draftSession, setDraftSession] = useState<SessionMeta | null>(null)
