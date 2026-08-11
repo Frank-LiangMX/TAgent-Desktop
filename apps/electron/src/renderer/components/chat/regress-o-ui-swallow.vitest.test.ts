@@ -23,7 +23,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { buildTurnPresentation } from './session-turn-model'
-import { buildConciseTimeline } from './concise-timeline-model'
+import { buildConciseTimeline, getLiveStatusFromSteps } from './concise-timeline-model'
 import {
   applySdkMessageToItems,
   applyTextDelta,
@@ -247,8 +247,8 @@ describe('REGRESS-O O1：narrative key 跨 stream→partial→commit 稳定（�
   })
 })
 
-describe('REGRESS-O O2：中段 live 思考并入 stage.steps，末步思考可被视图外挂（模型契约）', () => {
-  it('live：tool → thinking（末步）并入同一 work_stage，思考为末步 step（视图据此外挂打字机）', () => {
+describe('REGRESS-O O2（回退）：中段 live 思考并入 stage.steps，末步思考由底栏「正在思考…」扫光提示，不流式全文', () => {
+  it('live：tool → thinking（末步）并入同一 work_stage；末步思考只走底栏扫光，不外挂打字机正文', () => {
     const deliverable =
       'Proma 我看了结构——它不是外围扩展，而是拿 **pi / Claude Agent SDK** 当内核，改造深度明显更激进。'
     const process: Parameters<typeof buildConciseTimeline>[0] = [
@@ -259,10 +259,14 @@ describe('REGRESS-O O2：中段 live 思考并入 stage.steps，末步思考可�
     expect(segs.map((s) => s.kind)).toEqual(['work_stage'])
     const stage = segs[0]!
     if (stage.kind === 'work_stage') {
-      // 末步是思考 → 视图 liveTailThinking 检测命中，正文打字机外挂
+      // 末步是思考 → 视图 WorkStageFold 底栏走 getLiveStatusFromSteps → 「正在思考…」扫光，
+      // 不再把末步思考正文作打字机外挂（REGRESS-O O2 已回退：concise = 阶段总结，不流式完整思考链）。
+      // 思考全文留在 stage.steps，展开 stage 可回看。
       const last = stage.steps[stage.steps.length - 1]!
       expect(last.kind).toBe('thinking')
       if (last.kind === 'thinking') expect(last.thinking).toBe(deliverable)
+      // 锁定回退后的底栏文案：末步思考 → 「正在思考…」，不是 deliverable 正文流式
+      expect(getLiveStatusFromSteps(stage.steps)).toBe('正在思考…')
     }
   })
 })

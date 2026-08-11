@@ -435,41 +435,6 @@ const DiffHint = memo(function DiffHint({
   )
 })
 
-/**
- * O2：live 末步思考正文打字机。挂在阶段摘要下、折叠 panel 之外（收起也可见），
- * 让正在流式的 stage 内思考不再只扫光「正在思考…」。思考结束 hold→淡出再折进 steps。
- * 复用 useSmoothStream 逐字挤出；空帧用 thinking 全文兜底，避免「…」顶替已显示正文。
- */
-const LiveThinkingBody = memo(function LiveThinkingBody({
-  thinking,
-  isStreaming,
-  fading,
-}: {
-  thinking: string
-  isStreaming: boolean
-  fading: boolean
-}): JSX.Element | null {
-  const { displayedContent } = useSmoothStream({ content: thinking, isStreaming })
-  const bodyText = (() => {
-    const shown = displayedContent.trim()
-    if (shown) return shown
-    const raw = thinking.trim()
-    if (raw) return raw
-    return isStreaming ? '…' : ''
-  })()
-  if (!bodyText) return null
-  return (
-    <div className={cn('agent-concise-stage__live-thinking', fading && 'is-fading')}>
-      <MessageResponse
-        className="text-[12.5px] leading-[1.55] text-muted-foreground/80"
-        streaming={isStreaming}
-      >
-        {bodyText}
-      </MessageResponse>
-    </div>
-  )
-})
-
 const WorkStageFold = memo(function WorkStageFold({
   summary,
   diffAdd,
@@ -499,29 +464,14 @@ const WorkStageFold = memo(function WorkStageFold({
   )
   const wasActive = useRef(stageActive)
   const settleTimer = useRef<number | null>(null)
-  // REGRESS-O O2：中段思考并入 stage.steps 后，折叠态只露「正在思考…」扫光，正文打字机
-  // 不外露 → 用户观感「打完就没、只有重启展开执行块才有」。当 stage 仍在流式且末步是思考时，
-  // 把该思考正文作打字机常挂在阶段摘要下（不挂在折叠 panel 的 0fr 网格里，故收起也可见）。
-  // 思考结束（工具跟上 / 回合 settle）不秒卸：hold 旧文 → 淡出 → 再折进 stage.steps（允许折进，
-  // 但须连续，禁止空帧）。不升独立 ThinkingFold 以免回退 REGRESS-J(J3) 的拆 stage / 思考游离。
-  const lastStep = steps[steps.length - 1]
-  const liveTailThinking =
-    stageActive && Boolean(lastStep) && lastStep!.kind === 'thinking'
-  const rawLiveThinking = liveTailThinking
-    ? (lastStep as Extract<WorkStageStep, { kind: 'thinking' }>).thinking
-    : undefined
-  // keepWhileActive=false：思考正文在末步被工具取代即 hold→淡出（不被末阶段 keepWhileActive
-  // 无限挂住），与 live 底栏动作的 hold 语义分开。
-  const { shown: liveThinking, fading: liveThinkingFading } = useLiveStatusHold(
-    rawLiveThinking,
-    false,
-  )
-  // 末步是思考时，底栏扫光让位给正文打字机（不再只扫光「正在思考…」）
-  const rawLiveStatus = stageActive && !liveTailThinking ? getLiveStatusFromSteps(steps) : undefined
-  // 末步是思考时不再 keepWhileActive 挂住旧工具动作扫光（让位给思考正文 → 旧动作 hold→淡出）
-  const statusKeepWhileActive = keepWhileActive && !liveTailThinking
+  // 底栏当前动作扫光（对齐 Cursor「Editing X」「Grepping」「Thought briefly」）：
+  // 末步是思考时回「正在思考…」，不外露思考正文——concise = 阶段总结，不流式完整思考链
+  // （REGRESS-O O2 回退：原把末步思考正文作打字机常挂在阶段摘要下，违反 CURSOR-CONCISE §1
+  // 「不自动展开步骤；底下一行族级当前动作可扫光」，用户观感「完整思考链流式输出再自折叠」）。
+  // 思考全文收进 stage.steps，展开 stage 可回看；不升独立 ThinkingFold 以免回退 J3 拆 stage。
+  const rawLiveStatus = stageActive ? getLiveStatusFromSteps(steps) : undefined
   // hold last live status 再淡出，禁止工具完成瞬间 null 卸 DOM（对齐 Cursor 折进灰字摘要）
-  const { shown: liveStatus, fading } = useLiveStatusHold(rawLiveStatus, statusKeepWhileActive)
+  const { shown: liveStatus, fading } = useLiveStatusHold(rawLiveStatus, keepWhileActive)
 
   // REGRESS-J(J2)：live→idle 不瞬间折叠。阶段激活时武装；结束先 hold ~1.8s 再折回灰字摘要，
   // 与 ThinkingFold settle 一致，panel 常驻（grid 0fr↔1fr），折起后可再点开明细。
@@ -585,15 +535,6 @@ const WorkStageFold = memo(function WorkStageFold({
 
       {/* 子代理挂在阶段摘要下（对齐 Cursor），折叠明细时仍可见 */}
       {extras ? <div className="agent-concise-stage__extras">{extras}</div> : null}
-
-      {/* O2：live 末步思考正文打字机常挂（收起也可见），思考结束 hold→淡出再折进 steps */}
-      {liveThinking ? (
-        <LiveThinkingBody
-          thinking={liveThinking}
-          isStreaming={liveTailThinking}
-          fading={liveThinkingFading}
-        />
-      ) : null}
 
       {/* 收起态：不外挂「✓ 思考了片刻」——思考收回阶段块，展开才见；live 只露底栏当前动作 */}
       {!open && liveStatus ? (

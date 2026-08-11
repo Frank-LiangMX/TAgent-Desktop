@@ -224,6 +224,148 @@ describe('applySdkMessageToItems：uuid 原地 upsert（S2.1 单真源）', () =
     }
   })
 
+  it('commitStreamThinking 填充空 thinking 壳；后到剥空 partial 不抹掉（同会话思考不消失）', () => {
+    let items: StreamItemLike[] = [
+      {
+        key: 'm0',
+        message: {
+          type: 'assistant',
+          uuid: 'u-think',
+          _partial: true,
+          content: [{ type: 'thinking', thinking: '' }],
+        },
+        streaming: true,
+      },
+    ]
+    items = commitStreamThinkingToLastAssistant(items, '已落盘的完整思考')
+    let m = items[0]?.message
+    expect(m?.type).toBe('assistant')
+    if (m?.type === 'assistant') {
+      expect(m.content[0]).toMatchObject({ type: 'thinking', thinking: '已落盘的完整思考' })
+    }
+    // 模拟后到 stripPartial 空壳 upsert
+    items = applySdkMessageToItems(
+      items,
+      {
+        type: 'assistant',
+        uuid: 'u-think',
+        _partial: true,
+        content: [{ type: 'thinking', thinking: '' }],
+      },
+      alloc,
+    )
+    m = items[0]?.message
+    if (m?.type === 'assistant') {
+      expect(m.content.find((b) => b.type === 'thinking' && 'thinking' in b)?.thinking).toBe(
+        '已落盘的完整思考',
+      )
+    }
+  })
+
+  it('preserve 剥空 partial 不抹掉已 commit 的段间 progress text（kscc 多阶段不并块）', () => {
+    let items = applySdkMessageToItems<StreamItemLike>(
+      [],
+      {
+        type: 'assistant',
+        uuid: 'u1',
+        _partial: true,
+        content: [
+          { type: 'thinking', thinking: '' },
+          { type: 'text', text: '' },
+        ],
+      },
+      alloc,
+    )
+    items = commitStreamThinkingToLastAssistant(items, '段思考')
+    items = commitStreamTextToLastAssistant(items, '我先摸清项目骨架。')
+    // tool-only 后到（会走 preserve）
+    items = applySdkMessageToItems(
+      items,
+      {
+        type: 'assistant',
+        uuid: 'u1',
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }],
+      },
+      alloc,
+    )
+    const m = items[0]?.message
+    expect(m?.type).toBe('assistant')
+    if (m?.type === 'assistant') {
+      const types = m.content.map((b) => b.type)
+      expect(types).toContain('thinking')
+      expect(types).toContain('text')
+      expect(types).toContain('tool_use')
+      expect(m.content.find((b) => b.type === 'thinking' && 'thinking' in b)?.thinking).toBe('段思考')
+      expect(m.content.find((b) => b.type === 'text' && 'text' in b)?.text).toBe('我先摸清项目骨架。')
+    }
+  })
+
+  it('剥空 text 壳 upsert 不抹掉已有 progress', () => {
+    let items: StreamItemLike[] = [
+      {
+        key: 'm0',
+        message: {
+          type: 'assistant',
+          uuid: 'u1',
+          _partial: true,
+          content: [{ type: 'text', text: '骨架清楚了：bun monorepo' }],
+        },
+        streaming: true,
+      },
+    ]
+    items = applySdkMessageToItems(
+      items,
+      {
+        type: 'assistant',
+        uuid: 'u1',
+        _partial: true,
+        content: [{ type: 'text', text: '' }],
+      },
+      alloc,
+    )
+    const m = items[0]?.message
+    if (m?.type === 'assistant') {
+      expect(m.content[0]).toMatchObject({ type: 'text', text: '骨架清楚了：bun monorepo' })
+    }
+  })
+
+  it('commitStreamThinking 末条已有思考时仍可落到更早的空壳（多段思考不丢）', () => {
+    let items: StreamItemLike[] = [
+      {
+        key: 'm0',
+        message: {
+          type: 'assistant',
+          uuid: 'u1',
+          _partial: true,
+          content: [{ type: 'thinking', thinking: '' }],
+        },
+      },
+      {
+        key: 'm1',
+        message: {
+          type: 'assistant',
+          uuid: 'u2',
+          stop_reason: 'tool_use',
+          content: [
+            { type: 'thinking', thinking: '第一段思考' },
+            { type: 'tool_use', id: 't1', name: 'Bash', input: {} },
+          ],
+        },
+      },
+    ]
+    items = commitStreamThinkingToLastAssistant(items, '第二段思考应填到 u1 空壳')
+    const m0 = items[0]?.message
+    expect(m0?.type).toBe('assistant')
+    if (m0?.type === 'assistant') {
+      expect(m0.content[0]).toMatchObject({ type: 'thinking', thinking: '第二段思考应填到 u1 空壳' })
+    }
+    const m1 = items[1]?.message
+    if (m1?.type === 'assistant') {
+      expect(m1.content[0]).toMatchObject({ type: 'thinking', thinking: '第一段思考' })
+    }
+  })
+
   it('commitStreamTextToLastAssistant 插到 tool_use 前（段间 progress 不因 tool_start 秒消）', () => {
     let items: StreamItemLike[] = [
       {

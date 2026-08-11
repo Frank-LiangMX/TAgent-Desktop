@@ -120,6 +120,23 @@ describe('extractDiffHint / live status', () => {
       getLiveStatusFromSteps([{ kind: 'tool', key: 'e1', tool: pending }]),
     ).toBe('编辑 ComposerRunTimer.tsx')
   })
+
+  it('末步是思考时 live status 回「正在思考…」，不外露思考正文（concise 不流式完整思考链）', () => {
+    // 回退 REGRESS-O O2：中段思考并入 stage.steps 后，末步思考只由底栏扫光提示，
+    // 不再把思考正文作打字机常挂在阶段摘要下。展开 stage 才见全文。
+    const deliverable =
+      'Proma 我看了结构——它不是外围扩展，而是拿 **pi / Claude Agent SDK** 当内核，改造深度明显更激进。'
+    const readTool = tool('Read', 'r1', { file_path: 'a.ts' }) as Extract<
+      ProcessEntry,
+      { type: 'tool' }
+    >
+    expect(
+      getLiveStatusFromSteps([
+        { kind: 'tool', key: 'r1', tool: readTool },
+        { kind: 'thinking', key: 't1', thinking: deliverable },
+      ]),
+    ).toBe('正在思考…')
+  })
 })
 
 describe('buildConciseTimeline', () => {
