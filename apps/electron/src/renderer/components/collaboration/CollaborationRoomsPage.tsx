@@ -32,7 +32,10 @@ import type {
   CollaborationRun,
 } from '@tagent/shared'
 import { ChatInput, type ChatInputHandle } from '../chat/ChatInput'
+import { CollaborationTextPrompt } from './CollaborationTextPrompt'
 import { cn } from '../../lib/utils'
+
+type TextPromptKind = 'add-member' | 'rename' | null
 
 /** 房间状态 → 中文标签 */
 function roomStatusLabel(status: CollaborationRoomStatus): string {
@@ -117,6 +120,7 @@ export function CollaborationRoomsPage({
   const [runs, setRuns] = useState<CollaborationRun[]>([])
   const [cancellingId, setCancellingId] = useState<string | null>(null)
   const [addingMember, setAddingMember] = useState(false)
+  const [textPrompt, setTextPrompt] = useState<TextPromptKind>(null)
   const inputRef = useRef<ChatInputHandle>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -207,32 +211,37 @@ export function CollaborationRoomsPage({
     [room, onRoomsChanged],
   )
 
-  const handleAddMember = useCallback(async (): Promise<void> => {
-    if (!room) return
-    const name = window.prompt('添加成员（输入显示名，自动绑定默认渠道）', '')
-    if (!name || name.trim() === '') return
-    setAddingMember(true)
-    try {
-      await window.electronAPI.addCollaborationMember({ roomId: room.id, displayName: name.trim() })
-      onRoomsChanged()
-    } catch (err) {
-      window.alert(`添加成员失败：${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setAddingMember(false)
-    }
-  }, [room, onRoomsChanged])
+  const confirmAddMember = useCallback(
+    async (name: string): Promise<void> => {
+      if (!room) return
+      setTextPrompt(null)
+      setAddingMember(true)
+      try {
+        await window.electronAPI.addCollaborationMember({ roomId: room.id, displayName: name })
+        onRoomsChanged()
+      } catch (err) {
+        console.error('[协作室] 添加成员失败:', err)
+      } finally {
+        setAddingMember(false)
+      }
+    },
+    [room, onRoomsChanged],
+  )
 
-  const handleRename = useCallback(async (): Promise<void> => {
-    if (!room) return
-    const next = window.prompt('重命名协作室', room.title)
-    if (!next || next.trim() === '' || next.trim() === room.title) return
-    try {
-      await window.electronAPI.updateCollaborationRoom({ roomId: room.id, title: next.trim() })
-      onRoomsChanged()
-    } catch (err) {
-      window.alert(`重命名失败：${err instanceof Error ? err.message : String(err)}`)
-    }
-  }, [room, onRoomsChanged])
+  const confirmRename = useCallback(
+    async (next: string): Promise<void> => {
+      if (!room) return
+      setTextPrompt(null)
+      if (next === room.title) return
+      try {
+        await window.electronAPI.updateCollaborationRoom({ roomId: room.id, title: next })
+        onRoomsChanged()
+      } catch (err) {
+        console.error('[协作室] 重命名失败:', err)
+      }
+    },
+    [room, onRoomsChanged],
+  )
 
   const handleTogglePause = useCallback(async (): Promise<void> => {
     if (!room) return
@@ -311,7 +320,7 @@ export function CollaborationRoomsPage({
             type="button"
             className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
             aria-label="重命名"
-            onClick={() => void handleRename()}
+            onClick={() => setTextPrompt('rename')}
           >
             <PencilSimple size={14} />
           </button>
@@ -328,7 +337,7 @@ export function CollaborationRoomsPage({
             className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
             aria-label="添加成员"
             disabled={addingMember || archived}
-            onClick={() => void handleAddMember()}
+            onClick={() => setTextPrompt('add-member')}
           >
             <UserPlus size={14} />
           </button>
@@ -428,6 +437,24 @@ export function CollaborationRoomsPage({
           />
         )}
       </div>
+
+      <CollaborationTextPrompt
+        open={textPrompt === 'add-member'}
+        title="添加成员"
+        label="输入显示名，将自动绑定当前可用渠道（kscc 优先）"
+        placeholder="例如：开发"
+        confirmLabel="添加"
+        onCancel={() => setTextPrompt(null)}
+        onConfirm={(name) => void confirmAddMember(name)}
+      />
+      <CollaborationTextPrompt
+        open={textPrompt === 'rename'}
+        title="重命名协作室"
+        defaultValue={room.title}
+        confirmLabel="保存"
+        onCancel={() => setTextPrompt(null)}
+        onConfirm={(title) => void confirmRename(title)}
+      />
     </div>
   )
 }

@@ -27,6 +27,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@tagent/ui'
+import { CollaborationTextPrompt } from './CollaborationTextPrompt'
 
 /** 房间状态 → 中文标签（Stage 1 房间不运行，只有 active/paused/archived/completed） */
 function roomStatusLabel(status: CollaborationRoomStatus): string {
@@ -92,19 +93,22 @@ export function CollaborationRoomSidebar({
   const activeRooms = rooms.filter((r) => r.status !== 'archived')
   const archivedRooms = rooms.filter((r) => r.status === 'archived')
 
-  /** 重命名 */
-  const handleRename = useCallback(
-    async (room: CollaborationRoom): Promise<void> => {
-      const next = window.prompt('重命名协作室', room.title)
-      if (!next || next.trim() === '' || next.trim() === room.title) return
+  const [renameTarget, setRenameTarget] = useState<CollaborationRoom | null>(null)
+
+  /** 重命名确认（Electron 不支持 window.prompt） */
+  const confirmRename = useCallback(
+    async (next: string): Promise<void> => {
+      const room = renameTarget
+      setRenameTarget(null)
+      if (!room || next === room.title) return
       try {
-        await window.electronAPI.updateCollaborationRoom({ roomId: room.id, title: next.trim() })
+        await window.electronAPI.updateCollaborationRoom({ roomId: room.id, title: next })
         onRoomsChanged()
       } catch (err) {
-        window.alert(`重命名失败：${err instanceof Error ? err.message : String(err)}`)
+        console.error('[协作室侧栏] 重命名失败:', err)
       }
     },
-    [onRoomsChanged],
+    [renameTarget, onRoomsChanged],
   )
 
   /** 暂停 / 恢复（active ↔ paused） */
@@ -176,7 +180,7 @@ export function CollaborationRoomSidebar({
                 room={room}
                 active={room.id === activeRoomId}
                 onSelect={() => onSelectRoom(room)}
-                onRename={() => void handleRename(room)}
+                onRename={() => setRenameTarget(room)}
                 onTogglePause={() => void handleTogglePause(room)}
                 onArchive={() => void handleArchive(room)}
               />
@@ -226,6 +230,15 @@ export function CollaborationRoomSidebar({
           ) : null}
         </div>
       ) : null}
+
+      <CollaborationTextPrompt
+        open={renameTarget != null}
+        title="重命名协作室"
+        defaultValue={renameTarget?.title ?? ''}
+        confirmLabel="保存"
+        onCancel={() => setRenameTarget(null)}
+        onConfirm={(title) => void confirmRename(title)}
+      />
     </div>
   )
 }
