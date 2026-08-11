@@ -326,10 +326,13 @@ export class SessionRuntime {
             // 每轮 result：清 turnInFlight + onTurnEnd（→ IPC turn_end）
             // kscc：for-await 不因 result 结束，继续等下条 enqueue
             // Pi：generator 在 prompt 结束后 done，下面 for-await 退出 → onLoopIdle（再 flush steer）
+            // 单真源终态（No-Progress Guard §20.5）：首轮终态才 onTurnEnd，重复终态只标记 sawCleanResult，
+            // 不再次 onTurnEnd（适配器已把 paused_no_progress 等归一为唯一终态）。
+            const wasInFlight = this.turnInFlight
             this.turnInFlight = false
             this.lastInFlightPrompt = undefined
             sawCleanResult = true
-            this.onTurnEnd?.()
+            if (wasInFlight) this.onTurnEnd?.()
           }
         }
         // 已被更新的 startLoop 接替：旧圈不得改共享状态 / 不得报崩溃

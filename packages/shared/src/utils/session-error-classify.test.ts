@@ -156,4 +156,18 @@ describe('chat mode block user-facing errors', () => {
     expect(err.code).toBe('chat_mode_blocked')
     expect(err.message).toMatch(/讨论模式（Chat）/)
   })
+
+  test('classifyUserFacingError 把 maxTurns 当保护性停止，不当崩溃「运行出错」（§11.3）', () => {
+    const err = classifyUserFacingError('已达最大工具循环轮次（50），本轮已停止。')
+    expect(err.title).not.toBe('运行出错')
+    expect(err.title).toContain('已停止')
+    expect(err.retryable).toBe(false)
+  })
+
+  test('classifyUserFacingError 防御性归类 pause 文案为非崩溃（§20.5 勿把 pause 当 error）', () => {
+    const err = classifyUserFacingError('已暂停：连续多次操作未获得新进展。会话保留，可继续发送。')
+    expect(err.title).toContain('已暂停')
+    expect(err.title).not.toBe('运行出错')
+    expect(err.retryable).toBe(false)
+  })
 })

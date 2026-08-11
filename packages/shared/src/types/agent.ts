@@ -10,6 +10,7 @@ import type {
   ExecutionModeHistoryEntry,
   ExecutionModeSuggestion,
 } from './execution-mode'
+import type { NoProgressEvent } from './no-progress'
 
 // ===== 记忆 IPC 通道 =====
 
@@ -462,6 +463,8 @@ export interface SDKResultMessage {
     | 'error_max_turns'
     | 'error_max_budget_usd'
     | 'error_during_execution'
+    /** No-Progress Guard 安全暂停（§7.3 / §20.5）：非错误，会话可继续，不触发崩溃恢复 */
+    | 'paused_no_progress'
     | (string & {})
   usage: {
     input_tokens: number
@@ -907,6 +910,8 @@ export type TAgentEvent =
       /** 打开后默认激活的 view id（#view-{id}） */
       activeView?: string
     }
+  // No-Progress Guard 阶段事件（§20.4）：warning / reflection / paused / cleared
+  | NoProgressEvent
 
 /** 外部入口触发 Agent 运行的来源 */
 export type AgentExternalRunSource = 'feishu' | 'dingtalk' | 'wechat' | 'bridge'

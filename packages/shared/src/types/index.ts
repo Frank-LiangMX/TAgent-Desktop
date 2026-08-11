@@ -115,3 +115,6 @@ export * from './moa-persist'
 
 // CLI 工人配置（本机 coding CLI 子代理后端；类型 + 校验 + seed + helpers）
 export * from './cli-workers'
+
+// 主会话无进展防循环（No-Progress Guard）公共类型契约
+export * from './no-progress'

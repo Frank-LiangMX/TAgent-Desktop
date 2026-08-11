@@ -183,8 +183,7 @@ const USER_FACING_CLASSIFIERS: ReadonlyArray<{
     pattern: /api[- ]?key|authentication|未设置或解密失败|认证失败|登录失败|invalid.*token|unauthorized|401/i,
     retryable: true,
     action: 'settings',
-  },
-  {
+  },  {
     code: 'billing',
     title: '账户余额不足',
     pattern: /billing|insufficient|余额不足|账单|欠费|402|billing_error/i,
@@ -232,6 +231,26 @@ const USER_FACING_CLASSIFIERS: ReadonlyArray<{
 ]
 
 /**
+ * 保护性终止分类（§11.3 / §20.5）：No-Progress Guard 安全暂停 / maxTurns 兜底
+ * 均非崩溃——前者会话可继续，后者为保护性停止。不得显示为「运行出错」式崩溃。
+ *
+ * 暂停文案通常经 result subtype `paused_no_progress` 走 completeRun（不经本函数），
+ * 此处为防御性兜底（万一文案经 session_error 流入也能正确归类，不被当 crash）。
+ */
+const PROTECTIVE_STOP_PAUSE_RE = /已?暂停[：:]?\s*连续.*(未获得新进展|无进展)|paused[_ ]no[_ ]progress/i
+const PROTECTIVE_STOP_MAX_TURNS_RE = /已达最大工具循环轮次|max(?:imum)?\s*tool\s*(?:loop|turn)s|error[_ ]max[_ ]turns/i
+
+function classifyProtectiveStop(text: string): UserFacingError | undefined {
+  if (PROTECTIVE_STOP_PAUSE_RE.test(text)) {
+    return { code: 'unknown', title: '已暂停（连续无进展）', message: text, retryable: false, action: 'none' }
+  }
+  if (PROTECTIVE_STOP_MAX_TURNS_RE.test(text)) {
+    return { code: 'unknown', title: '已停止（达到工具循环上限）', message: text, retryable: false, action: 'none' }
+  }
+  return undefined
+}
+
+/**
  * 把一条错误文案分类为用户可见错误。
  * 过长上下文优先复用 isPromptTooLongMessage 的识别（多形态匹配），其余走模式表。
  */
@@ -242,6 +261,10 @@ export function classifyUserFacingError(message: string): UserFacingError {
   if (isChatModeBlockMessage(text)) {
     return buildChatModeBlockUserError()
   }
+
+  // 保护性终止优先于通用错误表（§11.3：pause / maxTurns 不当 crash）
+  const protective = classifyProtectiveStop(text)
+  if (protective) return protective
 
   if (isPromptTooLongMessage(text)) {
     return {

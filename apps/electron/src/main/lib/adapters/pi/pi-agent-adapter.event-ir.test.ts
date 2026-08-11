@@ -21,7 +21,9 @@ import {
   piEventToIR,
   piTurnRetryDelayMs,
   PI_TURN_RETRY_BASE_DELAY_MS,
+  piAfterToolCallToObservation,
 } from './pi-agent-adapter'
+import { NoProgressGuard } from '../../agent/no-progress-guard'
 
 const emptyUsage: Usage = {
   input: 0,
@@ -420,5 +422,76 @@ describe('piAssistantToIR partial/final（S1 单真源流式）', () => {
     const partial = piAssistantToIR(makeThinkingAssistant('想'), 'sess-1', { partial: true })
     const final = piAssistantToIR(makeThinkingAssistant('想'), 'sess-1')
     expect((partial as { uuid?: string }).uuid).toBe((final as { uuid?: string }).uuid)
+  })
+})
+
+/**
+ * No-Progress Guard Pi 接线（§10.3 / §14.3）。
+ * afterToolCall→observe 翻译 + 与 KSCC 同序列同语义（双核一致）。
+ */
+describe('No-Progress Guard Pi 接线', () => {
+  it('piAfterToolCallToObservation 把 afterToolCall 上下文翻成单调用批次', () => {
+    const obs = piAfterToolCallToObservation(
+      {
+        toolCall: { id: 'tc-1', name: 'Bash', arguments: { command: 'npm test' } },
+        args: { command: 'npm test' },
+        result: { content: [{ type: 'text', text: 'all tests passed' }], isError: false },
+        isError: false,
+      },
+      { turnId: 't1' },
+      's1',
+      1000,
+    )
+    expect(obs.provider).toBe('pi')
+    expect(obs.observedAt).toBe(1000)
+    expect(obs.calls).toHaveLength(1)
+    expect(obs.calls[0]).toMatchObject({
+      toolUseId: 'tc-1',
+      toolName: 'Bash',
+      input: { command: 'npm test' },
+      output: 'all tests passed',
+    })
+    expect(obs.calls[0].error).toBeUndefined()
+  })
+
+  it('失败结果：isError → error 字段携带结果文本（供守卫解析退出码/超时）', () => {
+    const obs = piAfterToolCallToObservation(
+      {
+        toolCall: { id: 'tc-2', name: 'Bash', arguments: { command: 'node a0.js' } },
+        result: { content: [{ type: 'text', text: 'Command timed out after 30s' }], isError: true },
+        isError: true,
+      },
+      { turnId: 't1' },
+      's1',
+      2000,
+    )
+    expect(obs.calls[0].error).toContain('timed out')
+    expect(obs.calls[0].output).toContain('timed out')
+  })
+
+  it('与 KSCC 同序列得到相同 decision（§14.3 双核语义一致）', () => {
+    const cmd = 'node tools/a0.js'
+    const emptyErr = 'Command timed out after 30s (exit code 124)'
+    const run = (provider: 'kscc' | 'pi') => {
+      const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+      g.resetForNewTurn(0)
+      const mk = (at: number, success: boolean) => ({
+        sessionId: 's', turnId: 't', provider, observedAt: at,
+        calls: [{
+          toolUseId: `c-${at}`, toolName: 'Bash', input: { command: cmd },
+          output: success ? 'ok' : '', error: success ? undefined : emptyErr,
+        }],
+      })
+      return [
+        g.observe(mk(100, false)),
+        g.observe(mk(200, false)), // warn (2 次空超时)
+        g.observe(mk(300, false)),
+      ]
+    }
+    const kscc = run('kscc')
+    const pi = run('pi')
+    expect(pi.map((d) => d.kind)).toEqual(kscc.map((d) => d.kind))
+    expect(pi.map((d) => d.emitPhase)).toEqual(kscc.map((d) => d.emitPhase))
+    expect(pi[1].kind).toBe('warn')
   })
 })

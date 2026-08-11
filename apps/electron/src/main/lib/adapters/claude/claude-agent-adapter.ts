@@ -18,9 +18,14 @@ import type {
   AgentDefinition,
   SDKUserMessageInput,
   SDKMessage,
+  SDKResultMessage,
   ReasoningEffort,
+  NoProgressGuardMode,
+  NoProgressEvent,
+  ToolBatchObservation,
+  NoProgressDecision,
 } from '@tagent/shared'
-import { reasoningEffortToSdkEffort } from '@tagent/shared'
+import { reasoningEffortToSdkEffort, NO_PROGRESS_GUARD_DEFAULT_MODE } from '@tagent/shared'
 import type {
   Options as SdkOptions,
   SDKUserMessage,
@@ -30,6 +35,7 @@ import type {
 import { createMessageChannel, type MessageChannel } from '../shared/message-channel'
 import { getDiscardedMemoryDir } from '../../memory/discarded-memory'
 import { spawnKscc } from './spawn-kscc'
+import { NoProgressGuard, buildNoProgressEventFromDecision } from '../../agent/no-progress-guard'
 
 /** kscc 核查询选项（扩展 AgentQueryInput） */
 export interface KsccQueryOptions extends AgentQueryInput {
@@ -80,6 +86,16 @@ export interface KsccQueryOptions extends AgentQueryInput {
    * 缺省时不传 effort（由调用方 migrateReasoningEffort 决定，默认 medium）。
    */
   reasoningEffort?: ReasoningEffort
+  /**
+   * 无进展守卫运行模式（§20.1 / §23.1）。缺省 shadow（首发不强制）。
+   * session-service 读 TAGENT_NO_PROGRESS_GUARD_MODE 归一后注入。
+   */
+  noProgressGuardMode?: NoProgressGuardMode
+  /**
+   * 无进展阶段事件回调（§20.4）。适配层把守卫 decision 翻成 NoProgressEvent 推这里，
+   * 由 session-service sendPayload 转发 renderer。shadow 模式也发（带 shadow=true），UI 忽略。
+   */
+  onNoProgressEvent?: (event: NoProgressEvent) => void
 }
 
 /** 活跃会话状态（长驻：一个会话一个进程） */
@@ -90,6 +106,25 @@ interface ActiveSession {
   query: AsyncIterable<SDKMessage>
   /** 子进程 pid（force-kill 兜底用） */
   pid?: number
+  /** 无进展守卫上下文（per-session，per-turn reset） */
+  np?: NoProgressCtx
+}
+
+/**
+ * 无进展守卫接线上下文（§10.2）。
+ * hooks 与 sendQueuedMessage 共用：PostToolBatch→observe、PreToolUse→onPreToolUse、
+ * 暂停→interrupt + 终态归一化。
+ */
+interface NoProgressCtx {
+  guard: NoProgressGuard
+  mode: NoProgressGuardMode
+  onNoProgressEvent?: (event: NoProgressEvent) => void
+  /** 本轮 turn id（观察回放/日志用，guard 不依赖） */
+  turnId: string
+  /** 已触发暂停、待终态归一化的标志（单真源终态闸口，§20.5） */
+  pendingPauseNoProgress: boolean
+  /** 停止当前 turn（保进程）：query.interrupt()，由 query() 创建后回填 */
+  interrupt?: () => void
 }
 
 const activeSessions = new Map<string, ActiveSession>()
@@ -114,15 +149,37 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
     } as SDKUserMessage)
 
     const sdk = await import('@anthropic-ai/claude-agent-sdk')
-    const sdkOptions = this.buildSdkOptions(input, controller, channel)
+
+    // 无进展守卫（per-session；首 turn reset；后续 turn 由 sendQueuedMessage reset）
+    const npMode = input.noProgressGuardMode ?? NO_PROGRESS_GUARD_DEFAULT_MODE
+    const np: NoProgressCtx = {
+      guard: new NoProgressGuard({ mode: npMode }),
+      mode: npMode,
+      onNoProgressEvent: input.onNoProgressEvent,
+      turnId: `${input.sessionId}-t1`,
+      pendingPauseNoProgress: false,
+    }
+    np.guard.resetForNewTurn() // fresh guard = observing，首 turn 无 cleared 事件
+
+    const sdkOptions = this.buildSdkOptions(input, controller, channel, np)
 
     const queryIterable = sdk.query({ prompt: channel.generator, options: sdkOptions })
     const queryIterator = queryIterable[Symbol.asyncIterator]()
+    // 回填停止函数（保进程的软中断，§22 Step 0/4：不用 continue:false 杀长驻）
+    np.interrupt = () => {
+      const q = queryIterable as unknown as { interrupt?: () => Promise<void> }
+      try {
+        void q.interrupt?.()
+      } catch {
+        /* 忽略 */
+      }
+    }
 
     activeSessions.set(input.sessionId, {
       controller,
       channel,
       query: queryIterable,
+      np,
     })
 
     try {
@@ -138,7 +195,15 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
           input.onSessionId?.(msgAny.session_id)
         }
 
-        yield msg
+        // 单真源终态归一化（§20.5）：暂停触发后，底层 result（error_max_turns /
+        // error_during_execution / 乃至 success）一律归一为 paused_no_progress，且只一次。
+        const out =
+          msg.type === 'result' && np.pendingPauseNoProgress
+            ? normalizeResultToPausedNoProgress(msg)
+            : msg
+        np.pendingPauseNoProgress = false
+
+        yield out
 
         // 长驻核心：result 后不 close，循环继续，等下条 enqueue 触发新轮
         // （旧版在这里 channel.close() + break，杀进程。新版不这么做。）
@@ -158,7 +223,8 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
   private buildSdkOptions(
     input: KsccQueryOptions,
     controller: AbortController,
-    channel: MessageChannel
+    channel: MessageChannel,
+    np: NoProgressCtx
   ): SdkOptions {
     const options = input
     return {
@@ -192,6 +258,9 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       ...(options.reasoningEffort && {
         effort: resolveSdkEffort(options.reasoningEffort),
       }),
+      // 无进展守卫 hooks（§10.2）：PostToolBatch→observe 注入复盘 / PreToolUse→final_response_only 拦截。
+      // shadow 模式只发诊断事件（带 shadow=true），不改行为；enforce 才注入 / 拦截 / 暂停。
+      ...buildNoProgressHooks(options.sessionId, np),
       // Phase 2.4：SDK auto-memory 重定向到废目录（主防线是 MEMORY_MANAGEMENT_RULES）
       autoMemoryDirectory: getDiscardedMemoryDir(),
       toolUseConcurrency: 1,
@@ -220,6 +289,11 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
     const sess = activeSessions.get(sessionId)
     if (!sess) {
       throw new Error(`[kscc adapter] 无活跃会话可注入: ${sessionId}`)
+    }
+    // 新一轮用户消息 → 守卫重置为 observing（§8）；上一轮非 observing 则发 cleared 清 UI 提示
+    if (sess.np) {
+      const cleared = sess.np.guard.resetForNewTurn()
+      emitNoProgressFromDecision(sess.np, cleared)
     }
     sess.channel.enqueue(message as SDKUserMessage)
   }
@@ -298,6 +372,134 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
  */
 export function resolveSdkEffort(reasoningEffort: ReasoningEffort): SdkOptions['effort'] {
   return reasoningEffortToSdkEffort(reasoningEffort) as SdkOptions['effort']
+}
+
+// ===== 无进展守卫接线（§10.2 / §20） =====
+
+/**
+ * SDK PostToolBatch hook input（sdk.d.ts PostToolBatchHookInput 精简镜像，避免直接依赖私有类型）。
+ * 导出供单测构造观察输入。
+ */
+export interface PostToolBatchHookInputLike {
+  tool_calls: Array<{ tool_name: string; tool_input: unknown; tool_use_id: string; tool_response?: unknown }>
+}
+
+/** PreToolUse hook input 精简镜像（单测用） */
+export interface PreToolUseHookInputLike {
+  tool_name: string
+  tool_input: unknown
+  tool_use_id: string
+}
+
+/**
+ * 把 SDK PostToolBatch hook 输入翻成统一观察（§20.2）。
+ * 纯函数，导出供单测：证明 hook 输入 → ToolBatchObservation 翻译正确。
+ */
+export function ksccPostToolBatchToObservation(
+  hookInput: PostToolBatchHookInputLike,
+  sessionId: string,
+  turnId: string,
+  observedAt: number,
+): ToolBatchObservation {
+  return {
+    sessionId,
+    turnId,
+    provider: 'kscc',
+    observedAt,
+    calls: (hookInput.tool_calls ?? []).map((tc) => ({
+      toolUseId: tc.tool_use_id,
+      toolName: tc.tool_name,
+      input: tc.tool_input,
+      output: tc.tool_response,
+    })),
+  }
+}
+
+/** 把守卫 decision 翻成 IPC 事件并下发（emitPhase 非空才发；shadow 带 shadow=true） */
+function emitNoProgressFromDecision(
+  np: NoProgressCtx,
+  decision: NoProgressDecision,
+): void {
+  if (!decision.emitPhase) return
+  np.onNoProgressEvent?.(buildNoProgressEventFromDecision(decision, np.mode))
+}
+
+/**
+ * 把底层终态 result 归一化为唯一的 `paused_no_progress`（§20.5）。
+ * 抑制 error_max_turns / error_during_execution 等重复终态；errors 用友好暂停文案。
+ */
+export function normalizeResultToPausedNoProgress(msg: SDKMessage): SDKMessage {
+  if (msg.type !== 'result') return msg
+  const r = msg as SDKResultMessage
+  return {
+    ...r,
+    subtype: 'paused_no_progress',
+    errors: ['已暂停：连续多次操作未获得新进展。会话与历史保留，可在原会话继续发送消息。'],
+    // 清掉可能误导的 terminal_reason / 后台任务终态分类
+    terminal_reason: undefined,
+  } as SDKResultMessage
+}
+
+/**
+ * 注册无进展守卫的 PostToolBatch + PreToolUse hooks（§10.2）。
+ *
+ * - PostToolBatch：整批工具完成后翻成观察喂守卫；enforce 下 warn/require_reflection 注入 additionalContext；
+ *   pause 触发时置 pendingPauseNoProgress 并 query.interrupt()（保进程），终态在 query() 归一化。
+ * - PreToolUse：final_response_only 阶段拦截工具（permissionDecision:'deny' + 复盘原因）；
+ *   2 次违规 → pause（同上 interrupt）。
+ * - shadow：只发诊断事件（带 shadow=true），不改行为（不注入 / 不拦截 / 不暂停）。
+ */
+function buildNoProgressHooks(
+  sessionId: string,
+  np: NoProgressCtx,
+): Pick<SdkOptions, 'hooks'> {
+  if (np.mode === 'off') return {} // 紧急回滚：完全不注册
+  const postToolBatch = async (hookInput: PostToolBatchHookInputLike) => {
+    const observation = ksccPostToolBatchToObservation(hookInput, sessionId, np.turnId, Date.now())
+    const decision = np.guard.observe(observation)
+    emitNoProgressFromDecision(np, decision)
+    if (np.mode === 'enforce') {
+      if (decision.kind === 'pause') {
+        np.pendingPauseNoProgress = true
+        np.interrupt?.()
+        return {}
+      }
+      if (decision.modelContext) {
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PostToolBatch',
+            additionalContext: decision.modelContext,
+          },
+        }
+      }
+    }
+    return {}
+  }
+  const preToolUse = async (hookInput: PreToolUseHookInputLike) => {
+    if (np.mode !== 'enforce') return {}
+    const advice = np.guard.onPreToolUse(hookInput.tool_name, hookInput.tool_input)
+    if (advice.allow) return {}
+    if (advice.pause) {
+      np.pendingPauseNoProgress = true
+      if (advice.decision) emitNoProgressFromDecision(np, advice.decision)
+      np.interrupt?.()
+    }
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny' as const,
+        permissionDecisionReason: advice.blockReason ?? '',
+      },
+    }
+  }
+  // SDK HookCallback 签名为 (input: HookInput, toolUseID, options) => Promise<HookJSONOutput>；
+  // 这里按事件名窄化入参，整体 as 适配，避免 HookInput 大联合的类型摩擦。
+  return {
+    hooks: {
+      PostToolBatch: [{ hooks: [postToolBatch as never] }],
+      PreToolUse: [{ hooks: [preToolUse as never] }],
+    } as unknown as SdkOptions['hooks'],
+  } as Pick<SdkOptions, 'hooks'>
 }
 
 /** force-kill 兜底（进程残留时） */

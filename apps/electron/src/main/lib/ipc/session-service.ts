@@ -96,7 +96,7 @@ import {
   injectKanbanMcpServer,
 } from '../kanban/kanban-agent-tools'
 import { listBoards, listTasksByBoard } from '../kanban/kanban-store'
-import type { ExecutionMode, TAgentPermissionMode } from '@tagent/shared'
+import type { ExecutionMode, TAgentPermissionMode, NoProgressEvent } from '@tagent/shared'
 import {
   TAGENT_DEFAULT_PERMISSION_MODE,
   migratePermissionMode,
@@ -111,6 +111,7 @@ import {
   parseMentions,
   migrateReasoningEffort,
   reasoningEffortToPiThinkingLevel,
+  resolveNoProgressGuardMode,
 } from '@tagent/shared'
 import { loadRoles, resolveRole } from '../role/agent-role-service'
 import { composeRoleSystemPrompt } from '../role/role-projection'
@@ -1626,6 +1627,14 @@ export class SessionService {
       ? migratePermissionMode(metaForMode.permissionMode)
       : TAGENT_DEFAULT_PERMISSION_MODE
 
+    // 无进展守卫（§20.1 / §23.1）：读环境变量归一，默认 shadow（首发不强制）。
+    // per-send 解析便于运行时回滚（TAGENT_NO_PROGRESS_GUARD_MODE=off|shadow|enforce）。
+    const noProgressGuardMode = resolveNoProgressGuardMode()
+    // 守卫阶段事件 → IPC 推 renderer（§20.4）。shadow 事件带 shadow=true，UI 忽略。
+    const onNoProgressEvent = (event: NoProgressEvent): void => {
+      this.sendPayload(input.sessionId, { kind: 'tagent_event', event })
+    }
+
     // 工作区 MCP 配置（无 workspace → 空，pi-core buildMcpTools 自动跳过）
     const enabledMcpServers = sanitizedPath ? getEnabledMcpServers(sanitizedPath) : {}
     const mcpConfig = { servers: enabledMcpServers }
@@ -1723,6 +1732,9 @@ export class SessionService {
             .join('\n\n'),
         },
         persistSession: true,
+        // 无进展守卫（KSCC：PostToolBatch 注入 / PreToolUse 拦截 / interrupt 暂停）
+        noProgressGuardMode,
+        onNoProgressEvent,
         mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
         // 子代理定义：仅 Work 注册（Chat 硬拦 Task，注册无意义）。
         // claudeAvailable 按渠道判定（isClaudeAvailableForChannel）：非 Anthropic 系（kscc-internal 等）
@@ -1809,6 +1821,9 @@ export class SessionService {
       ...(beforeToolCall ? { beforeToolCall } : {}),
       // 执行形态 + Work 看板说明
       systemPromptAppend: piExecutionPrompt,
+      // 无进展守卫（Pi：afterToolCall observe / beforeToolCall 拦截 / abort 暂停）
+      noProgressGuardMode,
+      onNoProgressEvent,
       // Work：看板 AgentTool
       ...(kanbanExtra.length > 0 ? { extraTools: kanbanExtra } : {}),
       // Phase 2.2：记忆模式透传（Frozen 快照 / L-rag）

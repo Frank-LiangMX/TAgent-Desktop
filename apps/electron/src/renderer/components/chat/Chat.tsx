@@ -1524,6 +1524,22 @@ export function Chat({
         lastToolName?: string
         parentToolUseId?: string
       }
+      // No-Progress Guard 阶段事件（§20.4 / §11）：非错误，不抬 SessionErrorBanner。
+      // shadow 事件仅诊断，UI 忽略；enforce 下 paused → 清 running（result 的 paused_no_progress 也会 completeRun，幂等）。
+      if (evt.type === 'no_progress') {
+        const npEvt = p.event as {
+          phase?: 'warning' | 'reflection' | 'paused' | 'cleared'
+          shadow?: boolean
+          summary?: string
+        }
+        if (npEvt.shadow) {
+          // 影子模式：只发诊断，不改 UI
+        } else if (npEvt.phase === 'paused') {
+          clearPendingStop()
+          stopRun() // 清运行态/计时/停止键；不报错、不抬错误条（§11.3）
+        }
+        // 'cleared' 暂无 UI 需清理（v1 未展示 warning/reflection 条）；'warning'/'reflection' 留作后续 NoProgress 组件
+      }
       if (evt.type === 'moa_roundtable') {
         // MoA 圆桌卡：按 roundtableId 就地 upsert（同轮多张状态卡只保留最新）。
         const panel = (p.event as { panel?: MoARoundtablePanel }).panel

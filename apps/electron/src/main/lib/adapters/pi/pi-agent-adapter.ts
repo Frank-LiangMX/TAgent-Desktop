@@ -29,11 +29,15 @@ import type {
   TAgentUsage,
   TAgentControlEvent,
   TAgentDesktopStreamPayload,
+  NoProgressGuardMode,
+  NoProgressEvent,
+  ToolBatchObservation,
 } from '@tagent/shared'
 import {
   buildOutputStylePrompt,
   buildRichContentSystemPrompt,
   isPromptTooLongMessage,
+  NO_PROGRESS_GUARD_DEFAULT_MODE,
 } from '@tagent/shared'
 import {
   buildMemoryPromptSections,
@@ -87,6 +91,7 @@ async function loadPiAgentCore(): Promise<PiAgentCoreModule> {
 
 import { createTaskTool } from './subagent-task-tool'
 import { getSessionMeta } from '../../agent/session-store'
+import { NoProgressGuard, buildNoProgressEventFromDecision } from '../../agent/no-progress-guard'
 
 // ===== 配置类型 =====
 
@@ -159,6 +164,16 @@ export interface PiQueryOptions extends AgentQueryInput {
    * 超限产 error_max_turns 并结束本轮，防止死循环。
    */
   maxTurns?: number
+  /**
+   * 无进展守卫运行模式（§20.1 / §23.1）。缺省 shadow（首发不强制）。
+   * session-service 读 TAGENT_NO_PROGRESS_GUARD_MODE 归一后注入。
+   */
+  noProgressGuardMode?: NoProgressGuardMode
+  /**
+   * 无进展阶段事件回调（§20.4）。适配层把守卫 decision 翻成 NoProgressEvent 推这里，
+   * 由 session-service sendPayload 转发 renderer。shadow 模式也发（带 shadow=true），UI 忽略。
+   */
+  onNoProgressEvent?: (event: NoProgressEvent) => void
 }
 
 // ===== 稳定性常量（turn 重试 / maxTurns）=====
@@ -301,6 +316,23 @@ interface SessionEntry {
   turnCount: number
   /** 是否因 maxTurns 强制结束（result → error_max_turns） */
   maxTurnsHit: boolean
+  /** 是否因无进展守卫安全暂停（result → paused_no_progress；优先级高于 maxTurnsHit，§20.5） */
+  pausedNoProgressHit: boolean
+  /** 无进展守卫上下文（per-session；query() 起每轮 reset） */
+  np?: NoProgressCtx
+}
+
+/**
+ * Pi 无进展守卫接线上下文（§10.3）。
+ * afterToolCall→observe、beforeToolCall→onPreToolUse 拦截、暂停→abort + 终态归一化。
+ * 复用与 KSCC 相同的守卫实例与阈值（§10.3 不为两内核维护两套语义）。
+ */
+interface NoProgressCtx {
+  guard: NoProgressGuard
+  mode: NoProgressGuardMode
+  onNoProgressEvent?: (event: NoProgressEvent) => void
+  /** 本轮 turn id（观察/日志用，guard 不依赖） */
+  turnId: string
 }
 
 /** 计算工具/执行形态指纹，供 Chat↔Work 热切换判断 */
@@ -355,6 +387,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       abortSignal,
       sessionMode,
       maxTurns: maxTurnsOpt,
+      noProgressGuardMode,
+      onNoProgressEvent,
     } = input
 
     // 创建或复用 Agent 实例。
@@ -374,6 +408,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         sessionMode,
         systemPromptAppend,
         extraTools,
+        noProgressGuardMode,
+        onNoProgressEvent,
       )
       this.sessions.set(sessionId, entry)
     } else {
@@ -398,6 +434,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           sessionMode,
           systemPromptAppend,
           extraTools,
+          noProgressGuardMode,
+          onNoProgressEvent,
         )
         ;(entry.agent.state as { messages: typeof previousMessages }).messages = previousMessages
         previousEntry.agent.abort()
@@ -417,6 +455,15 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       typeof maxTurnsOpt === 'number' && maxTurnsOpt > 0 ? Math.floor(maxTurnsOpt) : DEFAULT_PI_MAX_TURNS
     entry.turnCount = 0
     entry.maxTurnsHit = false
+    entry.pausedNoProgressHit = false
+    // 无进展守卫：新用户回合重置为 observing（§8）；上一轮非 observing 则发 cleared
+    if (entry.np) {
+      const cleared = entry.np.guard.resetForNewTurn()
+      entry.np.turnId = `${sessionId}-t${Date.now()}`
+      if (cleared.emitPhase) {
+        entry.np.onNoProgressEvent?.(buildNoProgressEventFromDecision(cleared, entry.np.mode))
+      }
+    }
 
     // 如果外部有 AbortSignal，联动到内部 controller
     if (abortSignal) {
@@ -484,8 +531,23 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       }
     }
 
-    const remapResultIfMaxTurns = (p: TAgentControlEvent): TAgentControlEvent => {
-      if (!entry.maxTurnsHit || p.kind !== 'result') return p
+    /**
+     * 终态归一化（§20.5 单真源终态闸口）。
+     * pausedNoProgressHit 优先于 maxTurnsHit：二者不可共存，
+     * 暂停归一为 paused_no_progress（非错误），maxTurns 归一为 error_max_turns。
+     */
+    const remapTerminal = (p: TAgentControlEvent): TAgentControlEvent => {
+      if (p.kind !== 'result') return p
+      if (entry.pausedNoProgressHit) {
+        return {
+          kind: 'result',
+          subtype: 'paused_no_progress',
+          usage: p.usage,
+          totalCostUsd: p.totalCostUsd,
+          errors: ['已暂停：连续多次操作未获得新进展。会话与历史保留，可在原会话继续发送消息。'],
+        }
+      }
+      if (!entry.maxTurnsHit) return p
       return {
         kind: 'result',
         subtype: 'error_max_turns',
@@ -623,10 +685,11 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             }
           }
 
-          // agent_end result：maxTurns 覆盖；可重试错误暂扣
+          // agent_end result：终态归一化（paused_no_progress 优先 / maxTurns 覆盖）；可重试错误暂扣
           if (event.type === 'agent_end' && p.kind === 'result') {
-            const remapped = remapResultIfMaxTurns(p)
-            if (entry.maxTurnsHit) {
+            const remapped = remapTerminal(p)
+            // 暂停 / maxTurns：终态已归一，直接推，不走重试
+            if (entry.pausedNoProgressHit || entry.maxTurnsHit) {
               retryGate.heldErrorAssistant = null
               retryGate.heldResult = null
               retryGate.lastEndRetryableError = null
@@ -1023,8 +1086,20 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     sessionMode: MemoryMode = 'general',
     systemPromptAppend?: string,
     extraTools?: AgentTool[],
+    noProgressGuardMode?: NoProgressGuardMode,
+    onNoProgressEvent?: (event: NoProgressEvent) => void,
   ): Promise<SessionEntry> {
     const controller = new AbortController()
+
+    // 无进展守卫上下文（per-session；query() 起每轮 reset）
+    const npMode = noProgressGuardMode ?? NO_PROGRESS_GUARD_DEFAULT_MODE
+    const np: NoProgressCtx = {
+      guard: new NoProgressGuard({ mode: npMode }),
+      mode: npMode,
+      onNoProgressEvent,
+      turnId: `${sessionId}-t1`,
+    }
+    np.guard.resetForNewTurn()
 
     // 动态加载 ESM-only 包
     const [piCore, piAgentCore] = await Promise.all([loadPiCore(), loadPiAgentCore()])
@@ -1276,9 +1351,39 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       },
       streamFn,
       toolExecution: 'sequential',
-      ...(beforeToolCall ? { beforeToolCall } : {}),
-      // maxTurns 兜底：本轮工具批结束后若已达上限则 terminate，避免再开一轮 LLM
-      afterToolCall: async () => {
+      // 无进展守卫 final_response_only 拦截（§7.2 / §7.3.1）：复合在权限 beforeToolCall 之前。
+      // guard 命中 final_response_only → 拦工具并回灌复盘原因；2 次违规 → 暂停（abort）。
+      beforeToolCall: async (ctx: { toolCall: { name: string; arguments: Record<string, unknown> } }) => {
+        if (entryRef?.np && entryRef.np.mode === 'enforce') {
+          const advice = entryRef.np.guard.onPreToolUse(ctx.toolCall.name, ctx.toolCall.arguments)
+          if (!advice.allow) {
+            if (advice.pause) {
+              entryRef.pausedNoProgressHit = true
+              if (advice.decision) {
+                entryRef.np.onNoProgressEvent?.(buildNoProgressEventFromDecision(advice.decision, entryRef.np.mode))
+              }
+              entryRef.agent.abort() // 软停（保 Agent+messages），终态在 agent_end 归一为 paused_no_progress
+            }
+            return { block: true, reason: advice.blockReason ?? '' }
+          }
+        }
+        return beforeToolCall?.(ctx)
+      },
+      // maxTurns 兜底 + 无进展守卫：本轮工具批结束后判定。
+      afterToolCall: async (actx: import('@earendil-works/pi-agent-core').AfterToolCallContext) => {
+        // 无进展守卫（§7）：喂观察；enforce 下 pause → terminate + 标记终态归一化
+        if (entryRef?.np && entryRef.np.mode !== 'off') {
+          const observation = piAfterToolCallToObservation(actx, entryRef.np, sessionId)
+          const decision = entryRef.np.guard.observe(observation)
+          if (decision.emitPhase) {
+            entryRef.np.onNoProgressEvent?.(buildNoProgressEventFromDecision(decision, entryRef.np.mode))
+          }
+          if (entryRef.np.mode === 'enforce' && decision.kind === 'pause') {
+            entryRef.pausedNoProgressHit = true
+            return { terminate: true }
+          }
+        }
+        // maxTurns 兜底（§7.4 最终保险）：本轮工具批结束后若已达上限则 terminate，避免再开一轮 LLM
         if (entryRef && entryRef.turnCount >= entryRef.maxTurns) {
           entryRef.maxTurnsHit = true
           return { terminate: true }
@@ -1299,6 +1404,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       maxTurns: DEFAULT_PI_MAX_TURNS,
       turnCount: 0,
       maxTurnsHit: false,
+      pausedNoProgressHit: false,
+      np,
     }
     entryRef = entry
     return entry
@@ -1478,6 +1585,49 @@ export function mapPiStopReasonToResult(msg?: {
     return { subtype: 'max_tokens' }
   }
   return { subtype: 'success' }
+}
+
+/**
+ * 把 Pi `afterToolCall` 上下文翻成统一观察（§20.2）。
+ * Pi sequential 执行：每个 afterToolCall 即一个单调用批次。导出供单测。
+ *
+ * result.content（TextContent[]）取文本为 output；isError 时同时作 error（供守卫解析退出码 / 超时）。
+ */
+export function piAfterToolCallToObservation(
+  ctx: {
+    toolCall: { id?: string; name: string; arguments?: Record<string, unknown> }
+    args?: unknown
+    result?: { content?: Array<{ type: string; text?: string }>; isError?: boolean }
+    isError: boolean
+  },
+  np: { turnId: string },
+  sessionId: string,
+  observedAt: number = Date.now(),
+): ToolBatchObservation {
+  const tc = ctx.toolCall
+  const content = ctx.result?.content
+  const text = Array.isArray(content)
+    ? content
+        .filter((c): c is { type: string; text: string } => c?.type === 'text' && typeof c.text === 'string')
+        .map((c) => c.text)
+        .join('\n')
+    : ''
+  const isError = ctx.isError || ctx.result?.isError === true
+  return {
+    sessionId,
+    turnId: np.turnId,
+    provider: 'pi',
+    observedAt,
+    calls: [
+      {
+        toolUseId: tc.id ?? '',
+        toolName: tc.name,
+        input: tc.arguments ?? (ctx.args as Record<string, unknown>) ?? {},
+        output: text || undefined,
+        error: isError ? text || `${tc.name} failed` : undefined,
+      },
+    ],
+  }
 }
 
 /**
