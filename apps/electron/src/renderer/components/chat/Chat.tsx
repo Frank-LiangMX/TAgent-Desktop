@@ -1430,6 +1430,14 @@ export function Chat({
       if (pendingThink) {
         setItems((prev) => commitStreamThinkingToLastAssistant(prev, pendingThink))
       }
+      // REGRESS-G（正文对称思考）：GLM 把每个 content 块拆成独立 uuid 的 assistant 且 stop_reason 始终 null，
+      // 永不发非 partial 终态快照校准 → 正文只活在 streamState.text，边界不提交则 resetStreamState 丢弃，
+      // 回合结束后只剩空壳（重开会话读 JSONL 才恢复）。此处把正文写入末条主线 assistant，与思考提交对称。
+      // 累计快照（Claude/Pi）的 final（带 stop_reason）已清 streamState.text → trim()='' no-op，不重复落字。
+      const pendingText = streamStateRef.current.text.trim()
+      if (pendingText) {
+        setItems((prev) => commitStreamTextToLastAssistant(prev, pendingText))
+      }
       resetStreamState()
       // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
       setItems((prev) => {
@@ -1620,6 +1628,14 @@ export function Chat({
         const pendingThink = (streamStateRef.current.thinking + pendingDelta).trim()
         if (pendingThink) {
           setItems((prev) => commitStreamThinkingToLastAssistant(prev, pendingThink))
+        }
+        // REGRESS-G（正文对称思考）：GLM 独立块无终态快照校准，正文只活在 streamState.text；
+        // 边界不提交则 resetStreamState 丢弃 → 回合结束后只剩空壳。把正文写入末条主线 assistant。
+        // 累计快照（Claude/Pi）final 已清 streamState.text → trim()='' no-op。STOP / Chat 拦截只推
+        // turn_end（无 result），故此处是它们唯一兜底提交点。
+        const pendingText = streamStateRef.current.text.trim()
+        if (pendingText) {
+          setItems((prev) => commitStreamTextToLastAssistant(prev, pendingText))
         }
         resetStreamState()
         // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
