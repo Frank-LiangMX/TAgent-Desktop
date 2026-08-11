@@ -7,8 +7,8 @@
  * 覆盖：
  * - 显式外部 channelId → external 配置（带解密 apiKey + baseUrl）
  * - 显式 kscc-internal channelId → kscc 配置（带 ksccPath）
- * - 未绑定 channelId → 第一个 enabled 外部渠道
- * - 未绑定 + 无外部渠道 → MemberBackendResolveError('NO_EXTERNAL_CHANNEL')
+ * - 未绑定 channelId → 优先 kscc（本机可用），否则第一个 enabled 外部渠道
+ * - 未绑定 + 无任何可用渠道 → MemberBackendResolveError('NO_CHANNEL_BACKEND')
  * - 渠道已删除 / 未启用 / 无 apiKey / 无模型 → 各自错误码
  * - runTurn：把 systemPrompt/prompt/modelId/signal 透传给 seat runner 并返回正文
  */
@@ -154,31 +154,55 @@ describe('resolveChannelBackendConfig', () => {
     )
   })
 
-  test('未绑定 channelId → 第一个 enabled 外部渠道', () => {
+  test('未绑定 channelId → 优先 enabled 且本机可用的 kscc', () => {
     channelState.channels = [
       fakeChannel({ id: 'disabled', provider: 'openai', enabled: false, models: [fakeModel('m')] }),
       fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm')] }),
       fakeChannel({ id: 'ext1', provider: 'deepseek', baseUrl: 'https://api.deepseek.com/anthropic', models: [fakeModel('deepseek-chat')] }),
     ]
     channelState.decrypted = { ext1: 'dk-key' }
+    ksccState.path = '/fake/kscc'
+
+    const cfg = resolveChannelBackendConfig({})
+    expect(cfg.kind).toBe('kscc')
+    expect(cfg.ksccPath).toBe('/fake/kscc')
+    expect(cfg.modelId).toBe('glm')
+  })
+
+  test('未绑定 + kscc 不可用 → 回落第一个 enabled 外部渠道', () => {
+    channelState.channels = [
+      fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm')] }),
+      fakeChannel({ id: 'ext1', provider: 'deepseek', baseUrl: 'https://api.deepseek.com/anthropic', models: [fakeModel('deepseek-chat')] }),
+    ]
+    channelState.decrypted = { ext1: 'dk-key' }
+    ksccState.path = undefined
 
     const cfg = resolveChannelBackendConfig({})
     expect(cfg.kind).toBe('external')
     expect(cfg.provider).toBe('deepseek')
     expect(cfg.apiKey).toBe('dk-key')
-    // 跳过 disabled 与 kscc-internal
-    expect(cfg.channelName).toBe('deepseek')
   })
 
-  test('未绑定 + 无 enabled 外部渠道 → NO_EXTERNAL_CHANNEL', () => {
+  test('未绑定 + 仅 kscc 且本机可用 → kscc（不必外部渠道）', () => {
+    channelState.channels = [
+      fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm-5.2')] }),
+    ]
+    ksccState.path = '/usr/bin/kscc'
+    const cfg = resolveChannelBackendConfig({})
+    expect(cfg.kind).toBe('kscc')
+    expect(cfg.modelId).toBe('glm-5.2')
+  })
+
+  test('未绑定 + 无任何可用渠道 → NO_CHANNEL_BACKEND', () => {
     channelState.channels = [
       fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm')] }),
       fakeChannel({ id: 'nokey', provider: 'openai', models: [fakeModel('m')] }),
     ]
-    // nokey 无 apiKey → 跳过
+    // kscc 未装 + 外部无 apiKey
+    ksccState.path = undefined
     channelState.decrypted = {}
     expect(() => resolveChannelBackendConfig({})).toThrowError(
-      /NO_EXTERNAL_CHANNEL|请先配置外部渠道/,
+      /NO_CHANNEL_BACKEND|没有可用的渠道/,
     )
   })
 

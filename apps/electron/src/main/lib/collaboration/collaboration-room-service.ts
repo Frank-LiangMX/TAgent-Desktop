@@ -61,7 +61,11 @@ import {
   upsertRun,
   findRunByIdempotencyKey,
 } from './collaboration-room-repository'
-import { createChannelBackendAdapter, MemberBackendResolveError } from './member-backend-adapter'
+import {
+  createChannelBackendAdapter,
+  MemberBackendResolveError,
+  pickDefaultMemberChannelBinding,
+} from './member-backend-adapter'
 
 /** CHANGED 广播类型（主进程 → renderer） */
 export type CollaborationRoomBroadcast = (
@@ -614,6 +618,11 @@ function buildMember(
   now: number,
 ): CollaborationMember {
   const displayName = spec.displayName.trim()
+  // 未显式绑渠道时：自动绑 kscc（可用）或首个可用外部渠道，保证「新建即能聊」
+  const autoBind =
+    !spec.channelId && (spec.backend === undefined || spec.backend === 'channel')
+      ? pickDefaultMemberChannelBinding()
+      : null
   return {
     id: genId(COLLABORATION_MEMBER_ID_PREFIX),
     roomId,
@@ -621,8 +630,8 @@ function buildMember(
     roleId: spec.roleId,
     roleSnapshot: spec.roleSnapshot ?? { roleId: spec.roleId, displayName },
     backend: spec.backend ?? 'channel',
-    channelId: spec.channelId,
-    modelId: spec.modelId,
+    channelId: spec.channelId ?? autoBind?.channelId,
+    modelId: spec.modelId ?? autoBind?.modelId,
     cliWorkerId: spec.cliWorkerId,
     logicalSessionId: genId(COLLABORATION_LOGICAL_SESSION_ID_PREFIX),
     permissionProfile: spec.permissionProfile ?? 'read-only',

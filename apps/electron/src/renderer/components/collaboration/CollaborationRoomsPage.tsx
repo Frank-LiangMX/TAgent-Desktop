@@ -211,7 +211,7 @@ export function CollaborationRoomsPage({
           <div>
             <h2 className="text-lg font-semibold text-foreground">Agent 协作室</h2>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              在一个持久房间里与协调者和多个成员协作。Stage 2：发消息后协调者用真实外部渠道模型回复，可取消，重启后无假
+              在一个持久房间里与协调者和多个成员协作。发消息后协调者用本机可用渠道回复（优先 kscc，否则外部渠道），可取消，重启后无假
               running；多成员并行与 A2A 留待后续阶段。
             </p>
           </div>
@@ -320,7 +320,7 @@ export function CollaborationRoomsPage({
           <ChatInput
             ref={inputRef}
             onSubmit={() => void send()}
-            placeholder="输入消息…（Enter 发送。协调者会用外部渠道模型回复）"
+            placeholder="输入消息…（Enter 发送。协调者会用 kscc 或已配置的外部渠道回复）"
           />
         )}
       </div>
