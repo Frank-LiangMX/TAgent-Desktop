@@ -1,14 +1,14 @@
 /**
- * 设置 · Agent 行为 → 圆桌（agent-discuss）
+ * 设置 · MOA → 圆桌偏好
  *
  * 落盘 ~/.tagent[-dev]/agent-discuss-prefs.json；主进程整单校验，非法 reject 中文错。
- * 视觉对齐 AgentBehaviorSettings / NoProgressGuardSettings（agent-behavior-* 样式）。
  *
- * 与「会诊」班底的关系：会诊班底 `roundLimit` 仍可在班底里单独覆盖；
- * 此处 `defaultRoundLimit` 仅作「未显式指定轮数时」的研讨默认。
+ * variant:
+ * - `page`：独立页（旧深链兜底；现已并入 MoaSettings）
+ * - `module`：作为 MoaSettings 双子模块之一，无 intro / 无外层 SettingsSection
  *
- * 本期：仅落盘 + UI；`maxAgentMentionDepth` 运行时闸暂为 stub
- * （见 docs/dev/moa-roundtable/IMPLEMENT-AGENT-DISCUSS-CREW-SETTINGS-FINDINGS.md）。
+ * 班底 `roundLimit` 可按预置覆盖；此处 `defaultRoundLimit` 仅作未指定时的默认。
+ * 本期：`maxAgentMentionDepth` 运行时闸暂为 stub。
  */
 import { useCallback, useEffect, useState } from 'react'
 import { AlertCircle, CheckCircle2 } from 'lucide-react'
@@ -40,7 +40,15 @@ const DEPTH_OPTIONS = Array.from(
   (_, i) => i + AGENT_DISCUSS_MENTION_DEPTH_MIN,
 ).map((n) => ({ value: String(n), label: `${n} 层` }))
 
-export function AgentDiscussSettings(): JSX.Element {
+export function AgentDiscussSettings({
+  variant = 'page',
+  /** @deprecated 使用 variant="module"；保留兼容 MoaSettings 早期 hideIntro */
+  hideIntro = false,
+}: {
+  variant?: 'page' | 'module'
+  hideIntro?: boolean
+}): JSX.Element {
+  const mode: 'page' | 'module' = hideIntro ? 'module' : variant
   const [prefs, setPrefs] = useState<AgentDiscussPrefs | null>(null)
   const [error, setError] = useState('')
   const [ok, setOk] = useState('')
@@ -62,13 +70,11 @@ export function AgentDiscussSettings(): JSX.Element {
 
   const save = useCallback(
     async (patch: Partial<AgentDiscussPrefs>): Promise<void> => {
-      // 首次尚未读到 prefs 时不应触发（控件 disabled 兜底）
       if (!prefs) return
       const next: AgentDiscussPrefs = { ...prefs, ...patch }
       setSaving(true)
       setOk('')
       setError('')
-      // 乐观更新：先把 UI 切到新值，失败再回滚并回显
       setPrefs(next)
       try {
         const saved = await window.electronAPI.setAgentDiscussPrefs(next)
@@ -87,15 +93,11 @@ export function AgentDiscussSettings(): JSX.Element {
   const ready = Boolean(prefs)
   const roundLimit = prefs?.defaultRoundLimit ?? AGENT_DISCUSS_PREFS_DEFAULT.defaultRoundLimit
   const mentionDepth = prefs?.maxAgentMentionDepth ?? AGENT_DISCUSS_PREFS_DEFAULT.maxAgentMentionDepth
-  const routeComposer = prefs?.routeComposerWhileDiscussing ?? AGENT_DISCUSS_PREFS_DEFAULT.routeComposerWhileDiscussing
+  const routeComposer =
+    prefs?.routeComposerWhileDiscussing ?? AGENT_DISCUSS_PREFS_DEFAULT.routeComposerWhileDiscussing
 
-  return (
-    <div className="settings-page agent-behavior-page">
-      <SettingsPageIntro
-        title="圆桌"
-        description="多角色互相讨论、出共识；支持插话与喊停。下列为研讨默认偏好，会诊班底仍可单独覆盖轮数。"
-      />
-
+  const notices = (
+    <>
       {error ? (
         <div className="agent-behavior-notice agent-behavior-notice--error" role="alert">
           <AlertCircle size={15} />
@@ -108,42 +110,62 @@ export function AgentDiscussSettings(): JSX.Element {
           <span className="agent-behavior-notice-copy">{ok}</span>
         </div>
       ) : null}
+    </>
+  )
 
-      <SettingsSection
-        title="研讨默认"
-        description="未在班底里显式指定轮数时，圆桌研讨采用下列默认。"
-      >
-        <SettingsCard divided>
-          <SettingsSelect
-            label="默认研讨轮数"
-            description="1–6 整数。会诊班底的 roundLimit 仍可覆盖此默认值。"
-            value={String(roundLimit)}
-            onValueChange={(v) => void save({ defaultRoundLimit: Number(v) })}
-            options={ROUND_OPTIONS}
-            disabled={saving || !ready}
-          />
-          <SettingsSelect
-            label="@ 链式深度上限"
-            description="本期仅落盘 + UI，运行时闸暂未接（开关已生效但尚不拦截越深 @ 链）。"
-            value={String(mentionDepth)}
-            onValueChange={(v) => void save({ maxAgentMentionDepth: Number(v) })}
-            options={DEPTH_OPTIONS}
-            disabled={saving || !ready}
-          />
-          <SettingsToggle
-            label="讨论中把主会话输入路由到圆桌"
-            description="默认关闭：讨论进行中主会话输入仍进讨论室（插话），不抢路由到圆桌编排。开启后主会话输入改走圆桌。"
-            checked={routeComposer}
-            onCheckedChange={(v) => void save({ routeComposerWhileDiscussing: v })}
-            disabled={saving || !ready}
-          />
-        </SettingsCard>
+  const fields = (
+    <SettingsCard divided className="moa-mode-card">
+      <div className="moa-mode-panel moa-mode-panel--compact">
+        <p className="moa-mode-panel__lead">互相讨论 · 多轮</p>
+        <p className="moa-mode-panel__body">
+          使用共用班底里的席位与模型；下列为圆桌全局默认，可被单个班底预置的研讨轮数覆盖。
+        </p>
+      </div>
+      <SettingsSelect
+        label="默认研讨轮数"
+        description="1–6。班底预置若写了 roundLimit，以预置为准。"
+        value={String(roundLimit)}
+        onValueChange={(v) => void save({ defaultRoundLimit: Number(v) })}
+        options={ROUND_OPTIONS}
+        disabled={saving || !ready}
+      />
+      <SettingsSelect
+        label="@ 链式深度上限"
+        description="本期仅落盘 + UI，运行时闸暂未接。"
+        value={String(mentionDepth)}
+        onValueChange={(v) => void save({ maxAgentMentionDepth: Number(v) })}
+        options={DEPTH_OPTIONS}
+        disabled={saving || !ready}
+      />
+      <SettingsToggle
+        label="讨论中把主会话输入路由到圆桌"
+        description="默认关闭：讨论中主会话输入仍进讨论室（插话）。开启后改走圆桌编排。"
+        checked={routeComposer}
+        onCheckedChange={(v) => void save({ routeComposerWhileDiscussing: v })}
+        disabled={saving || !ready}
+      />
+    </SettingsCard>
+  )
+
+  if (mode === 'module') {
+    return (
+      <div className="moa-mode-module">
+        {notices}
+        {fields}
+      </div>
+    )
+  }
+
+  return (
+    <div className="settings-page agent-behavior-page">
+      <SettingsPageIntro
+        title="圆桌"
+        description="多角色互相讨论出共识；与会诊对等，共用 MOA 班底。"
+      />
+      {notices}
+      <SettingsSection title="圆桌" description="全局默认；班底预置可覆盖研讨轮数。">
+        {fields}
       </SettingsSection>
-
-      <p className="agent-behavior-field-hint">
-        与「会诊」班底的关系：会诊是各答各的再汇总（单轮），圆桌是多角色互相讨论出共识（多轮）。
-        研讨轮数可在会诊班底里按班底单独覆盖；此处仅作未指定时的默认。
-      </p>
     </div>
   )
 }

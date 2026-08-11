@@ -1,11 +1,11 @@
 /**
- * 设置 · Agent 行为 → 会诊（协作策略板）— V3 双档 + 扁平名册
+ * 设置 · Agent 行为 → MOA 班底（会诊 / 圆桌共用）— V3 双档 + 扁平名册
  *
  * 重设计（去「汇」流程图）：会诊列表改为名册行（轻分隔 hairline，无左竖条 / 无卡片渐变），
  * 顶部仅两档 pill（kscc 内网 | 外部渠道；选中描边+字重+浅 fill，非整颗纯黑/紫块）；
  * 外部渠道档合并所有已启用非 kscc 渠模型（按 id 去重），channelId 落盘 = 'external' 哨兵。
  * 座位由「参考 chip → 汇圆 → 箭头 → 汇总 chip」改为单行 `名·模型 · … → 汇总 模型`。
- * 本页仅「会诊」班底 CRUD（各答各的再汇总，非圆桌讨论）；子代理 / 班组 / 圆桌在侧栏独立分页。
+ * 本页为 MOA 班底 CRUD（会诊 / 圆桌共用）；hideIntro 时内嵌于 MoaSettings，去独立 intro。子代理 / 班组在侧栏独立分页。
  * 逻辑 CRUD / IPC / 校验**不变**：list / add / edit / delete / toggle / 中文报错全部保留。
  */
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
@@ -66,7 +66,7 @@ type Notice = { kind: 'info' | 'error' | 'success'; message: string }
 
 // ── 主组件 ──
 
-export function AgentBehaviorSettings(): JSX.Element {
+export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boolean }): JSX.Element {
   const ksccChannel = useAtomValue(ksccChannelAtom)
   const externalChannels = useAtomValue(externalChannelsAtom)
   const loadChannels = useSetAtom(loadChannelsAtom)
@@ -84,7 +84,7 @@ export function AgentBehaviorSettings(): JSX.Element {
       const list = await window.electronAPI.listMoaPresets()
       setPresets(list)
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : '无法读取会诊预置')
+      setLoadError(error instanceof Error ? error.message : '无法读取 MOA 班底预置')
     } finally {
       setLoading(false)
     }
@@ -185,25 +185,27 @@ export function AgentBehaviorSettings(): JSX.Element {
   }
 
   return (
-    <div className="settings-page agent-behavior-page">
-      <SettingsPageIntro
-        title="会诊"
-        description={
-          !hasAnyChannel
-            ? '多模型并行交卷再汇总（各答各的，互不讨论）。请先在「渠道」中启用至少一个渠道。'
-            : isKscc
-              ? '配置 kscc 内网会诊班底。各席独立作答再汇总；席位无工具，查仓库请用普通发送。'
-              : '配置外部渠道会诊班底（合并已启用外渠模型）。各席独立作答再汇总；席位无工具，查仓库请用普通发送。'
-        }
-      />
+    <div className={hideIntro ? 'agent-behavior-page' : 'settings-page agent-behavior-page'}>
+      {!hideIntro && (
+        <SettingsPageIntro
+          title="共用班底"
+          description={
+            !hasAnyChannel
+              ? '会诊与圆桌共用下列班底。请先在「渠道」中启用至少一个渠道。'
+              : isKscc
+                ? '配置 kscc 内网班底。席位无工具，查仓库请用普通发送。'
+                : '配置外部渠道班底（合并已启用外渠模型）。席位无工具，查仓库请用普通发送。'
+          }
+        />
+      )}
 
-      {/* ── 会诊 CRUD（同页编辑；档 channelId 落盘；档切换 = SegmentedTabs）── */}
+      {/* ── 共用班底 CRUD（会诊 / 圆桌对等使用；档 channelId 落盘）── */}
       <SettingsSection
-        title="班底"
+        title="共用班底"
         description={
           isKscc
-            ? '发送旁「会诊」会使用下列预置。'
-            : '未自定义时发送旁可自动合成班底；有自定义则优先用下列预置。'
+            ? '会诊与圆桌共用下列预置：参考席、汇总/主持模型、超时；研讨轮数仅圆桌读取。'
+            : '未自定义时发送旁可自动合成；有自定义则优先用下列预置（会诊与圆桌共用）。'
         }
         action={
           editor ? undefined : (
@@ -285,7 +287,7 @@ export function AgentBehaviorSettings(): JSX.Element {
               <SettingsCard divided={false}>
                 <div className="agent-behavior-loading">
                   <RefreshCw size={16} className="animate-spin" />
-                  正在读取会诊预置…
+                  正在读取共用班底预置…
                 </div>
               </SettingsCard>
             ) : channelPresets.length === 0 ? (
@@ -296,7 +298,7 @@ export function AgentBehaviorSettings(): JSX.Element {
                       <span>外部渠道暂无可用模型，无法配置班底；请先在渠道管理中启用外部渠道及其模型。</span>
                     ) : (
                       <div className="agent-behavior-empty-cta">
-                        <span>尚未自定义；发送旁会诊将使用自动合成班底。</span>
+                        <span>尚未自定义；会诊与圆桌发送旁将使用自动合成班底。</span>
                         <Button variant="outline" size="sm" onClick={handleGenerateDraft}>
                           <Sparkles size={14} />
                           基于当前模型生成一版并编辑
@@ -304,7 +306,7 @@ export function AgentBehaviorSettings(): JSX.Element {
                       </div>
                     )
                   ) : (
-                    <span>尚无会诊预置；添加后可在发送旁「会诊」中使用。</span>
+                    <span>尚无共用班底预置；添加后会诊与圆桌均可选用。</span>
                   )}
                 </div>
               </SettingsCard>
@@ -330,7 +332,7 @@ export function AgentBehaviorSettings(): JSX.Element {
         onOpenChange={(open) => !open && setDeleteTarget(null)}
         icon={<Trash2 size={15} />}
         title={`删除预置「${deleteTarget?.name ?? ''}」？`}
-        description="该预置将被永久移除。已使用此预置的会诊会话不受影响（运行中/历史的不变）。"
+        description="该预置将被永久移除。已使用此预置的会诊 / 圆桌会话不受影响（运行中/历史的不变）。"
         confirmLabel="删除预置"
         onConfirm={handleDelete}
       />
@@ -381,7 +383,7 @@ function PresetRow({
             →
           </span>
           <span className="agent-behavior-seat-token agent-behavior-seat-token--agg">
-            <span className="agent-behavior-seat-name">汇总</span>
+            <span className="agent-behavior-seat-name">汇总/主持</span>
             <span className="agent-behavior-seat-model">{preset.aggregatorModelId}</span>
           </span>
         </div>
@@ -487,7 +489,7 @@ function validateDraft(draft: PresetDraft): string | null {
     if (!ref.name.trim()) return '参考席名称不能为空'
     if (!ref.modelId.trim()) return '参考席模型不能为空'
   }
-  if (!draft.aggregatorModelId.trim()) return '请选择汇总模型'
+  if (!draft.aggregatorModelId.trim()) return '请选择汇总/主持模型'
   if (draft.timeoutMsPerSeat <= 0) return '超时须为正数（毫秒）'
   if (
     draft.roundLimit != null &&
@@ -577,12 +579,12 @@ function PresetEditor({
       <div
         className="agent-behavior-editor"
         role="form"
-        aria-label={mode === 'add' ? '添加会诊预置' : `编辑预置 ${preset?.name ?? ''}`}
+        aria-label={mode === 'add' ? '添加 MOA 班底预置' : `编辑预置 ${preset?.name ?? ''}`}
       >
         <div className="agent-behavior-editor-head">
           <div className="agent-behavior-editor-copy">
             <h3 className="agent-behavior-editor-title">
-              {mode === 'add' ? '添加会诊预置' : preset?.name ?? '预置'}
+              {mode === 'add' ? '添加 MOA 班底预置' : preset?.name ?? '预置'}
             </h3>
           </div>
           <div className="agent-behavior-editor-enabled">
@@ -674,18 +676,18 @@ function PresetEditor({
             </div>
           </div>
 
-          {/* 汇总与超时 */}
+          {/* 汇总/主持与超时 */}
           <div className="agent-behavior-editor-group">
-            <div className="agent-behavior-editor-group-label">汇总与超时</div>
+            <div className="agent-behavior-editor-group-label">汇总/主持与超时</div>
             <div className="agent-behavior-form-grid">
               <Field
-                label="汇总模型"
-                hint={!hasChannelModels ? '该渠道暂无已启用模型，可手动输入 modelId（须在会诊时所属渠道启用）' : undefined}
+                label="汇总/主持模型"
+                hint={!hasChannelModels ? '该渠道暂无已启用模型，可手动输入 modelId（须在所属渠道启用）' : undefined}
               >
                 <ModelSelect
                   value={draft.aggregatorModelId}
                   channelModels={channelModels}
-                  placeholder={hasChannelModels ? '选择汇总模型' : '输入汇总 modelId'}
+                  placeholder={hasChannelModels ? '选择汇总/主持模型' : '输入 modelId'}
                   onChange={(modelId) => update({ aggregatorModelId: modelId })}
                 />
               </Field>

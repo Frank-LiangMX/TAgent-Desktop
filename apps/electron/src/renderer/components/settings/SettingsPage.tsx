@@ -50,10 +50,9 @@ import {
 } from '../../atoms/notification-prefs'
 import { loaderAnimationEnabledAtom, splitDockModeAtom } from '../../atoms/feature-flags'
 import { ChannelsSettings } from './ChannelsSettings'
-import { AgentBehaviorSettings } from './AgentBehaviorSettings'
+import { MoaSettings } from './MoaSettings'
 import { CliWorkersSettingsSection } from './CliWorkersSettingsSection'
 import { NoProgressGuardSettings } from './NoProgressGuardSettings'
-import { AgentDiscussSettings } from './AgentDiscussSettings'
 import { AgentCrewSettings } from './AgentCrewSettings'
 import { UpdateChecker } from './UpdateChecker'
 import { ComposerRunTimer } from '../chat/ComposerRunTimer'
@@ -65,14 +64,13 @@ const APP_VERSION =
 
 /**
  * 设置页 tab。
- * Agent 行为升为与「核心 / 高级」同级大类，下挂：
- * 会诊（并行交卷）/ 子代理（内置 + 本机 CLI）/ 班组 / 圆桌（互相对话）。
- * 兼容旧 id `agent` → 归一为 `agent-roundtable`。
+ * Agent 行为下挂：MOA（会诊 + 圆桌合并）/ 子代理 / 班组。
+ * 兼容旧 id `agent` / `agent-discuss` → 归一为 `agent-roundtable`（MOA）。
  *
  * 用户可见命名约定：
- * - 会诊 = 各答各的再汇总（非圆桌；id 仍为 agent-roundtable）
- * - 圆桌 = 多角色互相讨论出共识（id 仍为 agent-discuss）
+ * - MOA = 会诊（各答各的再汇总）+ 圆桌（多角色互相讨论出共识）共用班底；id 仍为 agent-roundtable
  * - 子代理 = 内置进程内 + 可选本机 CLI（id 仍为 agent-cli）
+ * - 班组 = 长任务派工与工人编排（id 仍为 agent-crew）
  */
 export type SettingsTab =
   | 'general'
@@ -81,14 +79,15 @@ export type SettingsTab =
   | 'agent-roundtable'
   | 'agent-cli'
   | 'agent-crew'
+  /** @deprecated 已并入 agent-roundtable（MOA）；normalizeSettingsTab 归一 */
   | 'agent-discuss'
   | 'about'
-  /** @deprecated 使用 agent-roundtable（会诊） */
+  /** @deprecated 使用 agent-roundtable（MOA） */
   | 'agent'
 
-/** 打开设置时把历史 tab id 归一到现行 id */
+/** 打开设置时把历史 tab id 归一到现行 id（agent / agent-discuss → agent-roundtable 即 MOA） */
 export function normalizeSettingsTab(tab: SettingsTab | string | undefined): SettingsTab {
-  if (tab === 'agent') return 'agent-roundtable'
+  if (tab === 'agent' || tab === 'agent-discuss') return 'agent-roundtable'
   const known: SettingsTab[] = [
     'general',
     'appearance',
@@ -96,7 +95,6 @@ export function normalizeSettingsTab(tab: SettingsTab | string | undefined): Set
     'agent-roundtable',
     'agent-cli',
     'agent-crew',
-    'agent-discuss',
     'about',
   ]
   if (tab && (known as string[]).includes(tab)) return tab as SettingsTab
@@ -141,8 +139,8 @@ const ALL_TABS: TabItem[] = [
   },
   {
     id: 'agent-roundtable',
-    label: '会诊',
-    description: '多模型并行交卷再汇总',
+    label: 'MOA',
+    description: '会诊与圆桌对等协作，共用班底',
     icon: <Users size={14} strokeWidth={1.75} />,
     group: 'agent',
   },
@@ -158,13 +156,6 @@ const ALL_TABS: TabItem[] = [
     label: '班组',
     description: '长任务派工与工人编排',
     icon: <Boxes size={14} strokeWidth={1.75} />,
-    group: 'agent',
-  },
-  {
-    id: 'agent-discuss',
-    label: '圆桌',
-    description: '多角色互相讨论出共识',
-    icon: <BrainCircuit size={14} strokeWidth={1.75} />,
     group: 'agent',
   },
   {
@@ -380,8 +371,7 @@ function renderTabContent(tab: SettingsTab): JSX.Element {
     case 'channels':
       return <ChannelsSettings />
     case 'agent-roundtable':
-    case 'agent':
-      return <AgentBehaviorSettings />
+      return <MoaSettings />
     case 'agent-cli':
       return (
         <div className="settings-page">
@@ -395,8 +385,6 @@ function renderTabContent(tab: SettingsTab): JSX.Element {
       )
     case 'agent-crew':
       return <AgentCrewSettings />
-    case 'agent-discuss':
-      return <AgentDiscussSettings />
     case 'about':
       return <AboutSettings />
     default:
@@ -498,7 +486,6 @@ export function SettingsDialog({
                     key={`${activeTab}-${paneKey}`}
                     className={`settings-shell-content settings-shell-pane ${
                       activeTab === 'channels' ||
-                      activeTab === 'agent' ||
                       activeTab === 'agent-roundtable' ||
                       activeTab === 'agent-cli'
                         ? 'settings-shell-content--wide'
@@ -891,6 +878,9 @@ function AppearanceSettings(): JSX.Element {
   /** 运行胶囊图鉴锚点：固定起点，预览里实时走字（关开关只暂停动画，不卸 DOM） */
   const [runCapsulePreviewAt] = useState(() => Date.now() - 12_000)
 
+  /** 暂时隐藏外观页「加载动画」图鉴；改 true 即恢复 */
+  const SHOW_LOADER_ANIMATION_SECTION = false
+
   const isAuto = themeMode === 'system'
 
   /** 深浅翻转：退出自动，落到明确 light/dark */
@@ -955,6 +945,7 @@ function AppearanceSettings(): JSX.Element {
               ))}
             </div>
           </div>
+          {SHOW_LOADER_ANIMATION_SECTION ? (
           <div className="tagent-loader-section">
             <div className="settings-row">
               <div className="settings-row-main min-w-0 flex-1">
@@ -1019,6 +1010,7 @@ function AppearanceSettings(): JSX.Element {
               </div>
             </div>
           </div>
+          ) : null}
           <div className="settings-row">
             <div className="settings-row-main min-w-0 flex-1">
               <span className="settings-field-label">动态背景</span>

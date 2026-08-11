@@ -1,9 +1,90 @@
 /* ===== Agent 行为（协作策略板）— 同壳：SettingsSection + SettingsCard + SegmentedTabs =====
- * 对齐通用 / 外观：会诊档切换 = SegmentedTabs（与设置其它分段同族）；预置列表 = SettingsCard divided 行；
- * 预置行 = 左名 + 座位摘要 / 右 Switch + 编辑 + 删；编辑态同页表单进 SettingsCard；
- * 班组 / 圆桌 = 各一 SettingsSection「即将推出」。无 kicker、无自绘 pill、无大虚线轨。
+ * 对齐通用 / 外观：档切换 = SegmentedTabs；预置列表 = SettingsCard divided 行；
+ * 预置行 = 左名 + 座位摘要 / 右 Switch + 编辑 + 删；编辑态同页表单进 SettingsCard。
+ * MOA 页：会诊 | 圆桌双子模块对等，共用班底在下。
  * 仅消费 settings-shell 既有 CSS 变量（--spatial-* / --settings-*-fill），浅 / 深随 shell 切换。
  */
+
+/* ── MOA：会诊 / 圆桌对等双子模块（同高拉伸，底边对齐）── */
+.moa-mode-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: stretch;
+  margin-bottom: 4px;
+}
+@media (max-width: 720px) {
+  .moa-mode-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.moa-mode-grid > .settings-block {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+.moa-mode-grid .settings-block-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.moa-mode-grid .settings-block-body > .moa-mode-card,
+.moa-mode-grid .settings-block-body > .moa-mode-module {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.moa-mode-module {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.moa-mode-module > .moa-mode-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.moa-mode-card {
+  height: 100%;
+}
+.moa-mode-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+}
+.moa-mode-panel--compact {
+  flex: 0 0 auto;
+  height: auto;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--spatial-line);
+}
+.moa-mode-panel__lead {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--spatial-ink);
+  letter-spacing: 0.01em;
+}
+.moa-mode-panel__body {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--spatial-muted);
+}
+.moa-mode-panel__note {
+  margin: auto 0 0;
+  padding-top: 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--spatial-faint);
+}
 
 /* ── 会诊区正文：多卡（通知 / 档行 / 名册 / 编辑器）纵向间距 ── */
 .agent-behavior-stack {

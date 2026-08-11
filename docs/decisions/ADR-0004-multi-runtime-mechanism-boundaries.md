@@ -20,6 +20,8 @@ TAgent-Desktop 协作层采用 **四种调度语法**，共享角色库契约，
 **经典 MoA** 定义为并行独立作答 + 聚合；默认第一轮席位不互聊。  
 **用户参与的圆桌** 走 @ 讨论，不走 MoA。
 
+**2026-08-11 补充**：Agent 协作室不是第五种“会话内调度语法”，而是独立一级容器。它可以引用角色库、看板任务和 CLI worker，但拥有自己的 room/member/message/mailbox/run 生命周期；详见 [ADR-0007](./ADR-0007-agent-collaboration-room.md)。
+
 硬禁止（摘要）：
 
 - Chat 下看板派工  

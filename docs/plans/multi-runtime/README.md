@@ -6,6 +6,8 @@
 > **用途**：协作层（Chat/Work、角色库、看板、SubAgent、MoA、@ 讨论）的**唯一入口文档族**。回溯时先读本页。  
 > **续作交接**：[09-handoff-2026-08-03.md](./09-handoff-2026-08-03.md)（含当日对话决策记忆）
 
+> **新增一级容器（2026-08-11）**：持久多 Agent 聊天与 A2A 不属于普通会话内机制，采用独立 Rail 入口。见 [Agent 协作室总纲](../agent-collaboration-room/00-MASTER.md) 与 [ADR-0007](../../decisions/ADR-0007-agent-collaboration-room.md)。
+
 ---
 
 ## 0. 这个模块解决什么
@@ -36,6 +38,8 @@ TAgent-Desktop 2.0 不只是「单会话 Agent」，还要：
 | ⑧ | [07 实现阶段与验收](./07-implementation-phases.md) | 排期、DoD、回归点 |
 | ⑨ | [08 FAQ 与反模式](./08-faq-and-anti-patterns.md) | 扯皮/回溯速查 |
 | ⑩ | [09 交接 2026-08-03](./09-handoff-2026-08-03.md) | **公司电脑续作必读**：现状/坑/下一步/对话记忆 |
+| ⑪ | [10 会话内 Agent 行为编排](./10-session-agent-behavior-orchestration.md) | 普通会话内“说/议/干”；不含协作室 |
+| ⑫ | [Agent 协作室文档族](../agent-collaboration-room/00-MASTER.md) | 独立房间、多成员运行时与 A2A |
 
 **入口摘要（一页版）**仍保留：  
 [`../2026-08-02-multi-runtime-chat-work-design.md`](../2026-08-02-multi-runtime-chat-work-design.md)  
@@ -51,6 +55,7 @@ TAgent-Desktop 2.0 不只是「单会话 Agent」，还要：
 | [ADR-0004](../../decisions/ADR-0004-multi-runtime-mechanism-boundaries.md) | SubAgent / 看板 / MoA / @ 边界 | 四种调度语法，禁止混用语义 |
 | [ADR-0005](../../decisions/ADR-0005-user-owned-mode-switch.md) | 模式切换用户主权 | Agent 只建议，确认后系统切换 |
 | [ADR-0006](../../decisions/ADR-0006-role-vs-soul.md) | 角色库 vs SOUL | 岗位契约 vs 全局身份；主会话默认不绑岗 |
+| [ADR-0007](../../decisions/ADR-0007-agent-collaboration-room.md) | Agent 协作室独立入口 | 独立 Rail、房间真值与结构化 A2A；不伪装成会话模式 |
 
 相关但不属于本模块：
 
@@ -78,6 +83,7 @@ TAgent-Desktop 2.0 不只是「单会话 Agent」，还要：
 | D13 | 看板主路径=会话右栏；独立大页非必须 | 06 |
 | D14 | kscc 一渠多模=默认会诊池 | 05 |
 | D15 | 布局先可拖分栏；mosaic 仅可选工作台 | 06 |
+| D16 | 持久多 Agent 协作是独立 Rail/房间容器；普通会话只可显式创建或打开 | ADR-0007 + Agent 协作室文档族 |
 
 ---
 
@@ -104,7 +110,7 @@ TAgent-Desktop 2.0 不只是「单会话 Agent」，还要：
 | TAgent_General | `docs/plans/2026-07-16-kanban-digital-crew-ux.md` | 右栏班组、少独立大页 |
 | TAgent_General | `docs/plans/2026-07-03-hermes-borrow-plan.md` | goal/judge；当时缓做完整 MoA |
 | Frakio | `docs/multi-agent-collaboration.md` | chat 不碰看板；work 才编排 |
-| Hermes | 本地仓库可能为空；机制见 General borrow 文档 | dispatcher、防死锁、MoA 定义 |
+| Hermes Studio | `F:\hermes-studio` group-chat | room/member/message、独立逻辑 session、mention depth、并行扇出；不照搬服务端架构 |
 
 ---
 
@@ -118,6 +124,7 @@ TAgent-Desktop 2.0 不只是「单会话 Agent」，还要：
 | 「主会话要不要角色？」 | ADR-0006 + 04 |
 | 「kscc 怎么组圆桌？」 | 05 |
 | 「看板还要不要单独一页？」 | 06 + D13 |
+| 「多个独立 Agent 怎么在同一聊天室协作？」 | Agent 协作室总纲 + ADR-0007 |
 | 「实现做到哪了？」 | 07 阶段勾选 + CHANGELOG |
 | 「这个算不算违规组合？」 | 03 合法/禁止表 + 08 反模式 |
 
@@ -136,3 +143,4 @@ TAgent-Desktop 2.0 不只是「单会话 Agent」，还要：
 | --- | --- | --- |
 | 2026-08-02 | v1.0 | 单文件宪章 `2026-08-02-multi-runtime-chat-work-design.md` |
 | 2026-08-02 | v1.1 | 拆成 multi-runtime 文档族 + ADR-0003～0006，便于回溯 |
+| 2026-08-11 | v1.2 | 增补协作室独立一级容器与 ADR-0007，明确不属于普通会话模式 |
