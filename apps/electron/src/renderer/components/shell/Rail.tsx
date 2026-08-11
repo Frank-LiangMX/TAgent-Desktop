@@ -2,7 +2,7 @@
  * Rail — 左导航轨图标内容（仅内容，外壳由 NavIsland 包 app-nav-rail）
  * 与 General FunctionalRail 一致：children 进 app-nav-rail-content。
  */
-import { Brain, ChatsCircle, PuzzlePiece, UsersThree } from '@phosphor-icons/react'
+import { Brain, ChatsCircle, CirclesThreePlus, PuzzlePiece, UsersThree } from '@phosphor-icons/react'
 import { useAtomValue } from 'jotai'
 import { AppTooltip } from '@tagent/ui'
 import { userProfileAtom } from '../../atoms/user-profile'
@@ -10,11 +10,12 @@ import { cn } from '../../lib/utils'
 
 const RAIL_ICON = { size: 18, weight: 'regular' as const }
 
-export type RailItem = 'chat' | 'plugins' | 'memory' | 'roles' | 'settings'
+export type RailItem = 'chat' | 'collaboration' | 'plugins' | 'memory' | 'roles' | 'settings'
 
 interface RailProps {
   active?: RailItem
   onChat?: () => void
+  onCollaboration?: () => void
   onPlugins?: () => void
   onMemory?: () => void
   onRoles?: () => void
@@ -24,6 +25,7 @@ interface RailProps {
 export function Rail({
   active = 'chat',
   onChat,
+  onCollaboration,
   onPlugins,
   onMemory,
   onRoles,
@@ -35,7 +37,7 @@ export function Rail({
 
   return (
     <>
-      {/* 上胶囊：会话 + 插件 + 记忆 + 角色库 */}
+      {/* 上胶囊：会话 + 协作 + 插件 + 记忆 + 角色库 */}
       <div className="app-rail-island">
         <RailIcon
           railId="chat"
@@ -43,6 +45,13 @@ export function Rail({
           label="会话"
           active={active === 'chat'}
           onClick={onChat}
+        />
+        <RailIcon
+          railId="collaboration"
+          icon={<CirclesThreePlus {...RAIL_ICON} />}
+          label="协作"
+          active={active === 'collaboration'}
+          onClick={onCollaboration}
         />
         <RailIcon
           railId="plugins"

@@ -13,6 +13,7 @@ import {
   AGENT_ROLE_IPC_CHANNELS,
   BALANCE_IPC_CHANNELS,
   CHANNEL_IPC_CHANNELS,
+  COLLABORATION_ROOM_IPC_CHANNELS,
   KANBAN_IPC_CHANNELS,
   MEMORY_IPC_CHANNELS,
   USER_PROFILE_IPC_CHANNELS,
@@ -27,6 +28,12 @@ import type {
   ChannelCreateInput,
   ChannelUpdateInput,
   ChannelTestResult,
+  CollaborationMember,
+  CollaborationMessage,
+  CollaborationRoom,
+  CreateCollaborationRoomInput,
+  UpdateCollaborationRoomInput,
+  AppendCollaborationUserMessageInput,
   DeleteRolesResult,
   FetchModelsInput,
   FetchModelsForChannelInput,
@@ -550,6 +557,32 @@ const electronAPI = {
   // ===== 渠道余额 =====
   getChannelBalance: (channelId: string) =>
     ipcRenderer.invoke(BALANCE_IPC_CHANNELS.GET, channelId) as Promise<ChannelBalanceResult>,
+
+  // ===== 协作室（Stage 1：房间壳 + 静态成员 + 静态消息，不运行 Agent） =====
+  /** 列出全部协作室房间（默认不含已归档） */
+  listCollaborationRooms: (input?: { includeArchived?: boolean }) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST, input) as Promise<CollaborationRoom[]>,
+  /** 创建协作室房间（含可选静态成员） */
+  createCollaborationRoom: (input: CreateCollaborationRoomInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.CREATE, input) as Promise<CollaborationRoom>,
+  /** 获取单个房间（不存在返回 null） */
+  getCollaborationRoom: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.GET, { roomId }) as Promise<CollaborationRoom | null>,
+  /** 更新房间（rename / pause / archive / complete / resume / 调整上限） */
+  updateCollaborationRoom: (input: UpdateCollaborationRoomInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.UPDATE, input) as Promise<CollaborationRoom>,
+  /** 列出某房间全部消息（按时间升序，只显示已存消息） */
+  listCollaborationMessages: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MESSAGES, { roomId }) as Promise<CollaborationMessage[]>,
+  /** 追加静态用户消息（只落盘 + 刷新，不触发 Agent） */
+  appendCollaborationUserMessage: (input: AppendCollaborationUserMessageInput) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.APPEND_USER_MESSAGE,
+      input,
+    ) as Promise<CollaborationMessage>,
+  /** 列出某房间全部成员（静态身份，S2+ 才有运行状态） */
+  listCollaborationMembers: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MEMBERS, { roomId }) as Promise<CollaborationMember[]>,
 
   // ===== 自动更新 =====
   updater: {

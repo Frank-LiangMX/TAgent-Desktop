@@ -174,3 +174,25 @@ export function getAgentDiscussPrefsPath(): string {
 export function getAgentCrewPrefsPath(): string {
   return join(getConfigDir(), 'agent-crew-prefs.json')
 }
+
+/** 协作室数据目录：~/.tagent[-dev]/collaboration/（不存在则建） */
+export function getCollaborationDir(): string {
+  const dir = join(getConfigDir(), 'collaboration')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** 协作室房间索引：~/.tagent[-dev]/collaboration/rooms.json */
+export function getCollaborationRoomsPath(): string {
+  return join(getCollaborationDir(), 'rooms.json')
+}
+
+/** 协作室成员索引：~/.tagent[-dev]/collaboration/members.json */
+export function getCollaborationMembersPath(): string {
+  return join(getCollaborationDir(), 'members.json')
+}
+
+/** 协作室消息索引：~/.tagent[-dev]/collaboration/messages.json */
+export function getCollaborationMessagesPath(): string {
+  return join(getCollaborationDir(), 'messages.json')
+}

@@ -121,3 +121,7 @@ export * from './no-progress'
 
 // Agent 圆桌 / 班组 设置偏好（类型 + 默认 + 校验）
 export * from './agent-discuss-crew-prefs'
+
+// Collaboration Room 多人协作房间相关类型（Stage 1：房间壳 + 静态成员 + 静态消息）
+export * from './collaboration-room'
+export * from './collaboration-room-channels'
