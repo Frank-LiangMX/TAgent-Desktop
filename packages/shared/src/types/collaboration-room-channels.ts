@@ -5,14 +5,15 @@
  * main/lib/collaboration/collaboration-ipc.ts 注册处理器。
  * 通道命名与 kanban/automation 一致：动词:名词 形式，CHANGED 为 main→renderer 广播。
  *
- * Stage 1 只实现 LIST / CREATE / GET / UPDATE / LIST_MESSAGES / APPEND_USER_MESSAGE /
- * LIST_MEMBERS；CHANGED 为 S2+ 事件订阅占位（Stage 1 渲染层在变更后主动重新拉取）。
+ * Stage 2：在 Stage 1 的 7 个通道基础上新增 LIST_RUNS / CANCEL_RUN，并启用 CHANGED
+ * 广播（run/member/message 变更时主进程主动推送，渲染层据此重新拉取）。
  */
 
 import type {
   CollaborationRoom,
   CollaborationMember,
   CollaborationMessage,
+  CollaborationRun,
   CreateCollaborationRoomInput,
   UpdateCollaborationRoomInput,
   AppendCollaborationUserMessageInput,
@@ -29,11 +30,15 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   UPDATE: 'collaboration-room:update',
   /** 列出某房间全部消息（按 createdAt 升序） */
   LIST_MESSAGES: 'collaboration-room:list-messages',
-  /** 追加静态用户消息（Stage 1：只落盘+刷新，不触发 Agent） */
+  /** 追加用户消息（Stage 2：落盘后异步触发成员 run） */
   APPEND_USER_MESSAGE: 'collaboration-room:append-user-message',
-  /** 列出某房间全部成员（静态身份，S2+ 才有运行状态） */
+  /** 列出某房间全部成员（静态身份 + 运行状态） */
   LIST_MEMBERS: 'collaboration-room:list-members',
-  /** 房间数据变更事件（main → renderer，S2+ 广播占位，Stage 1 不发送） */
+  /** 列出某房间全部 run（按 createdAt 升序，Stage 2） */
+  LIST_RUNS: 'collaboration-room:list-runs',
+  /** 取消某 run（abort 后端调用 + 置 cancelled，Stage 2） */
+  CANCEL_RUN: 'collaboration-room:cancel-run',
+  /** 房间数据变更事件（main → renderer，Stage 2 起广播） */
   CHANGED: 'collaboration-room:changed',
 } as const
 
@@ -61,16 +66,41 @@ export interface ListCollaborationMembersInput {
   roomId: string
 }
 
+/** 列出某房间 run 输入（Stage 2） */
+export interface ListCollaborationRunsInput {
+  /** 房间 ID */
+  roomId: string
+}
+
+/** 取消某 run 输入（Stage 2） */
+export interface CancelCollaborationRunInput {
+  /** 房间 ID */
+  roomId: string
+  /** run ID */
+  runId: string
+}
+
 /**
- * 房间数据变更事件 payload（main → renderer，S2+）
+ * 房间数据变更事件 payload（main → renderer，Stage 2 起广播）
  *
- * Stage 1 不发送此事件；渲染层在 CREATE/UPDATE/APPEND 后主动重新 LIST/GET。
+ * 渲染层收到后重新 LIST/GET/LIST_MESSAGES/LIST_MEMBERS/LIST_RUNS 该房间即可，
+ * 不依赖 kind 做增量更新（payload 仅用于日志/过滤）。
  */
 export interface CollaborationRoomChangedPayload {
   /** 发生变更的房间 ID */
   roomId: string
   /** 变更类型 */
-  kind: 'created' | 'updated' | 'archived' | 'message-appended'
+  kind:
+    | 'created'
+    | 'updated'
+    | 'archived'
+    | 'message-appended'
+    | 'member-message-appended'
+    | 'run-started'
+    | 'run-finished'
+    | 'run-cancelled'
+  /** 发生时间戳 */
+  at: number
 }
 
 // ===== 复用领域输入类型作为 IPC payload =====
@@ -88,6 +118,8 @@ export interface CollaborationRoomChangedPayload {
 //   - LIST_MESSAGES     → CollaborationMessage[]
 //   - APPEND_USER_MESSAGE → CollaborationMessage
 //   - LIST_MEMBERS      → CollaborationMember[]
+//   - LIST_RUNS         → CollaborationRun[]
+//   - CANCEL_RUN         → CollaborationRun | null
 
 /** 重新导出领域输入类型，便于 handler / preload / 渲染层统一引用 */
 export type {
@@ -97,4 +129,5 @@ export type {
   CollaborationRoom,
   CollaborationMember,
   CollaborationMessage,
+  CollaborationRun,
 }

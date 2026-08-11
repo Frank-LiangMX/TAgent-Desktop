@@ -75,7 +75,7 @@ export type CollaborationMessageVisibility = 'room' | 'participants' | 'user_onl
 
 // ===== Run / Mailbox / RoomTask 占位状态枚举（S2+ 运行时用） =====
 
-/** Run 状态机（02-RUNTIME-A2A-SPEC §2.4），Stage 1 不产生 run */
+/** Run 状态机（02-RUNTIME-A2A-SPEC §2.4），Stage 2 起产生真实 run */
 export type CollaborationRunStatus =
   | 'queued'
   | 'running'
@@ -85,6 +85,20 @@ export type CollaborationRunStatus =
   | 'failed'
   | 'cancelled'
   | 'blocked'
+
+/** 判断是否为合法 run 状态 */
+export function isCollaborationRunStatus(value: unknown): value is CollaborationRunStatus {
+  return (
+    value === 'queued' ||
+    value === 'running' ||
+    value === 'awaiting_peer' ||
+    value === 'awaiting_user' ||
+    value === 'done' ||
+    value === 'failed' ||
+    value === 'cancelled' ||
+    value === 'blocked'
+  )
+}
 
 /** Mailbox 信封状态（02-RUNTIME-A2A-SPEC §2.5），Stage 1 不产生信箱 */
 export type CollaborationMailboxState = 'pending' | 'delivered' | 'answered' | 'cancelled' | 'expired'
@@ -167,6 +181,59 @@ export interface CollaborationSerializedRunError {
   code?: string
   /** 堆栈（可选） */
   stack?: string
+}
+
+// ===== 成员后端适配器（02-RUNTIME-A2A-SPEC §12，Stage 2 简化版） =====
+
+/**
+ * 一次成员 turn 的输入（宿主组装，不含任何安全字段模型可伪造）。
+ *
+ * Stage 2 简化：上下文投影为已拼好的 systemPrompt + prompt 两个字符串（近期对话 +
+ * 触发消息），不实现完整 §7 投影（角色快照/摘要/信箱投影留 S3+）。
+ */
+export interface MemberTurnInput {
+  /** 房间 ID */
+  roomId: string
+  /** 成员 ID */
+  memberId: string
+  /** run ID */
+  runId: string
+  /** 触发消息 ID */
+  triggerMessageId: string
+  /** 成员绑定的渠道 ID（缺省时 adapter 取第一个 enabled 外部渠道） */
+  channelId?: string
+  /** 成员绑定的模型 ID（缺省时 adapter 取渠道默认模型） */
+  modelId?: string
+  /** 已组装的 system prompt（角色 + 房间目标 + 规则） */
+  systemPrompt: string
+  /** 已组装的 user prompt（近期对话 + 触发消息） */
+  prompt: string
+  /** 取消信号；abort 即代表用户取消，runTurn 应回抛错 */
+  signal: AbortSignal
+  /** 可选流式增量回调（S2 暂不接 renderer，留 S3+） */
+  onTextDelta?: (delta: string) => void
+}
+
+/** 一次成员 turn 的结果 */
+export interface MemberTurnResult {
+  /** 成员回复文本 */
+  text: string
+  /** 用量（可选） */
+  usage?: CollaborationUsageRecord
+}
+
+/**
+ * 成员后端适配器接口（02-RUNTIME-A2A-SPEC §12）。
+ *
+ * Stage 2 简化：`runTurn` 返回 `Promise<MemberTurnResult>` 而非 `AsyncIterable<MemberEvent>`，
+ * 一次 turn 真实调用外部渠道模型并返回正文。S3+ 再按需升级为流式事件枚举。
+ * 实现见 apps/electron/src/main/lib/collaboration/member-backend-adapter.ts。
+ */
+export interface MemberBackendAdapter {
+  /** 后端能力（S2 默认全 false：无 resume/工具/实时输入） */
+  capabilities(): CollaborationMemberCapabilities
+  /** 执行一次 turn；signal abort 抛错代表取消 */
+  runTurn(input: MemberTurnInput): Promise<MemberTurnResult>
 }
 
 // ===== 实体：Room =====
@@ -297,10 +364,11 @@ export interface CollaborationMessage {
 /**
  * 协作室 run（collaboration_runs 的一行，S2+）
  *
- * 一次成员 turn 的执行记录。Stage 1 不产生。
+ * 一次成员 turn 的执行记录。Stage 1 不产生；Stage 2 起由 appendUserMessage 触发，
+ * 状态机 queued → running → done | failed | cancelled。
  */
 export interface CollaborationRun {
-  /** run ID */
+  /** run ID，格式 run_xxxx */
   id: string
   /** 所属房间 ID */
   roomId: string
@@ -308,6 +376,13 @@ export interface CollaborationRun {
   memberId: string
   /** 触发消息 ID */
   triggerMessageId: string
+  /**
+   * 幂等键：`{triggerMessageId}:{memberId}`（见 collaborationRunIdempotencyKey）。
+   *
+   * 同一触发消息对同一成员只产生一个 run，无论触发多少次（02-RUNTIME-A2A-SPEC §8）。
+   * 重启恢复时不据此自动重放（避免重复副作用），仅用于入队去重。
+   */
+  idempotencyKey: string
   /** 关联 task ID（可选） */
   taskId?: string
   /** run 状态 */
@@ -320,7 +395,7 @@ export interface CollaborationRun {
   finishedAt?: number
   /** 用量 */
   usage?: CollaborationUsageRecord
-  /** 错误 */
+  /** 错误（status === 'failed' 时；code='INTERRUPTED' 表示重启时发现的假 running） */
   error?: CollaborationSerializedRunError
 }
 
@@ -400,6 +475,18 @@ export const COLLABORATION_MEMBER_ID_PREFIX = 'cm_'
 export const COLLABORATION_MESSAGE_ID_PREFIX = 'msg_'
 /** 逻辑会话 ID 前缀 */
 export const COLLABORATION_LOGICAL_SESSION_ID_PREFIX = 'ls_'
+/** run ID 前缀 */
+export const COLLABORATION_RUN_ID_PREFIX = 'run_'
+
+/**
+ * 计算 run 幂等键：同一触发消息对同一成员只产生一个 run。
+ *
+ * 用于 appendUserMessage 触发入队时去重，以及重启恢复时识别「同一消息已有 run」。
+ * 不含时间戳，纯由 (triggerMessageId, memberId) 决定，保证跨调用稳定。
+ */
+export function collaborationRunIdempotencyKey(triggerMessageId: string, memberId: string): string {
+  return `${triggerMessageId}:${memberId}`
+}
 
 // ===== 创建/更新输入 =====
 

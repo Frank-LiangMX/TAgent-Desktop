@@ -4,8 +4,11 @@ import {
   COLLABORATION_ROOM_DEFAULT_MAX_CONCURRENT_RUNS,
   COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH,
   COLLABORATION_ROOM_MAX_MEMBERS,
+  COLLABORATION_RUN_ID_PREFIX,
+  collaborationRunIdempotencyKey,
   isCollaborationMemberStatus,
   isCollaborationRoomStatus,
+  isCollaborationRunStatus,
   validateCreateCollaborationRoomInput,
   type CreateCollaborationRoomInput,
 } from './collaboration-room'
@@ -16,6 +19,46 @@ describe('collaboration-room 常量', () => {
     expect(COLLABORATION_ROOM_DEFAULT_MAX_A2A_DEPTH).toBe(4)
     expect(COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH).toBe(10)
     expect(COLLABORATION_ROOM_MAX_MEMBERS).toBe(6)
+  })
+
+  test('run ID 前缀对齐', () => {
+    expect(COLLABORATION_RUN_ID_PREFIX).toBe('run_')
+  })
+})
+
+describe('isCollaborationRunStatus', () => {
+  test('合法 run 状态', () => {
+    expect(isCollaborationRunStatus('queued')).toBe(true)
+    expect(isCollaborationRunStatus('running')).toBe(true)
+    expect(isCollaborationRunStatus('done')).toBe(true)
+    expect(isCollaborationRunStatus('failed')).toBe(true)
+    expect(isCollaborationRunStatus('cancelled')).toBe(true)
+    expect(isCollaborationRunStatus('blocked')).toBe(true)
+  })
+
+  test('非法 run 状态', () => {
+    expect(isCollaborationRunStatus('active')).toBe(false)
+    expect(isCollaborationRunStatus('interrupted')).toBe(false)
+    expect(isCollaborationRunStatus(undefined)).toBe(false)
+    expect(isCollaborationRunStatus(123)).toBe(false)
+  })
+})
+
+describe('collaborationRunIdempotencyKey', () => {
+  test('由 triggerMessageId + memberId 稳定派生（不含时间戳）', () => {
+    const key1 = collaborationRunIdempotencyKey('msg_a', 'cm_b')
+    const key2 = collaborationRunIdempotencyKey('msg_a', 'cm_b')
+    expect(key1).toBe('msg_a:cm_b')
+    expect(key1).toBe(key2)
+  })
+
+  test('不同触发或不同成员得到不同键', () => {
+    expect(collaborationRunIdempotencyKey('msg_a', 'cm_b')).not.toBe(
+      collaborationRunIdempotencyKey('msg_b', 'cm_b'),
+    )
+    expect(collaborationRunIdempotencyKey('msg_a', 'cm_b')).not.toBe(
+      collaborationRunIdempotencyKey('msg_a', 'cm_c'),
+    )
   })
 })
 

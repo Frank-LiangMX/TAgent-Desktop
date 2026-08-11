@@ -1,12 +1,15 @@
 /**
- * 协作室主区页面 — Stage 1
+ * 协作室主区页面 — Stage 2
  *
- * 选中房间 → 头部（标题/状态/目标/成员数 + 重命名/暂停/归档）+ 时间线（只显示已存消息）+ 输入框。
- * 输入框发送的是**静态用户消息**：只落盘 + 刷新，不触发 Agent（S2+ 才接入 MemberBackendAdapter）。
- * 未选中房间 → 空态引导（新建或从左侧选择）。
+ * 选中房间 → 头部（标题/状态/目标/成员数 + 重命名/暂停/归档）+ 时间线（用户/成员/系统消息）+ 输入框。
+ * Stage 2：发消息 → 主进程异步触发成员 run → CHANGED 广播 → 本页重新拉取，实时看到
+ *   ① 用户消息 ② 成员「思考中」指示 + 取消 ③ 成员回复气泡。
  *
  * 复用 ChatInput（仅 onSubmit + placeholder），不复用 Chat 的 session 编排/流式/工具过程。
- * 时间线 Stage 1 用简单气泡（plain text）；Markdown/附件渲染留 S2+。
+ * 时间线 Stage 1/2 用简单气泡（plain text）；Markdown/附件渲染留 S6+。
+ *
+ * 数据通过 window.electronAPI.collaborationRoom.* IPC（见 preload）。
+ * 变更后调 onRoomsChanged 通知 App bump refreshKey；run/member 变更由 CHANGED 广播驱动 bump。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
@@ -15,12 +18,14 @@ import {
   Pause,
   PencilSimple,
   Play,
+  StopCircle,
 } from '@phosphor-icons/react'
 import type {
   CollaborationMember,
   CollaborationMessage,
   CollaborationRoom,
   CollaborationRoomStatus,
+  CollaborationRun,
 } from '@tagent/shared'
 import { ChatInput, type ChatInputHandle } from '../chat/ChatInput'
 import { cn } from '../../lib/utils'
@@ -36,6 +41,28 @@ function roomStatusLabel(status: CollaborationRoomStatus): string {
       return '已归档'
     case 'completed':
       return '已完成'
+  }
+}
+
+/** run 状态 → 中文标签 */
+function runStatusLabel(status: CollaborationRun['status']): string {
+  switch (status) {
+    case 'queued':
+      return '排队中'
+    case 'running':
+      return '思考中'
+    case 'done':
+      return '已完成'
+    case 'failed':
+      return '失败'
+    case 'cancelled':
+      return '已取消'
+    case 'awaiting_peer':
+      return '等待成员'
+    case 'awaiting_user':
+      return '等待用户'
+    case 'blocked':
+      return '阻塞'
   }
 }
 
@@ -59,7 +86,8 @@ export function CollaborationRoomsPage({
   const [room, setRoom] = useState<CollaborationRoom | null>(null)
   const [messages, setMessages] = useState<CollaborationMessage[]>([])
   const [members, setMembers] = useState<CollaborationMember[]>([])
-  const [sending, setSending] = useState(false)
+  const [runs, setRuns] = useState<CollaborationRun[]>([])
+  const [cancelling, setCancelling] = useState(false)
   const inputRef = useRef<ChatInputHandle>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -71,24 +99,28 @@ export function CollaborationRoomsPage({
         setRoom(null)
         setMessages([])
         setMembers([])
+        setRuns([])
         return
       }
       try {
-        const [r, msgs, mems] = await Promise.all([
+        const [r, msgs, mems, rs] = await Promise.all([
           window.electronAPI.getCollaborationRoom(roomId),
           window.electronAPI.listCollaborationMessages(roomId),
           window.electronAPI.listCollaborationMembers(roomId),
+          window.electronAPI.listCollaborationRuns(roomId),
         ])
         if (cancelled) return
         setRoom(r ?? null)
         setMessages(Array.isArray(msgs) ? msgs : [])
         setMembers(Array.isArray(mems) ? mems : [])
+        setRuns(Array.isArray(rs) ? rs : [])
       } catch (err) {
         if (cancelled) return
         console.error('[协作室主区] 加载失败:', err)
         setRoom(null)
         setMessages([])
         setMembers([])
+        setRuns([])
       }
     })()
     return () => {
@@ -100,23 +132,40 @@ export function CollaborationRoomsPage({
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [messages.length])
+  }, [messages.length, runs.length])
+
+  // 最近一个活跃 run（running/queued）— S2 单成员，至多一个
+  const activeRun =
+    [...runs].reverse().find((r) => r.status === 'running' || r.status === 'queued') ?? null
+  const activeRunMember = activeRun
+    ? members.find((m) => m.id === activeRun.memberId) ?? null
+    : null
 
   const send = useCallback(async (): Promise<void> => {
     if (!room || room.status === 'archived') return
     const text = inputRef.current?.getText().trim() ?? ''
     if (!text) return
-    setSending(true)
     try {
       await window.electronAPI.appendCollaborationUserMessage({ roomId: room.id, content: text })
       inputRef.current?.clear()
       onRoomsChanged()
     } catch (err) {
       window.alert(`发送失败：${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setSending(false)
     }
   }, [room, onRoomsChanged])
+
+  const handleCancelRun = useCallback(async (): Promise<void> => {
+    if (!room || !activeRun) return
+    setCancelling(true)
+    try {
+      await window.electronAPI.cancelCollaborationRun({ roomId: room.id, runId: activeRun.id })
+      onRoomsChanged()
+    } catch (err) {
+      window.alert(`取消失败：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setCancelling(false)
+    }
+  }, [room, activeRun, onRoomsChanged])
 
   const handleRename = useCallback(async (): Promise<void> => {
     if (!room) return
@@ -162,8 +211,8 @@ export function CollaborationRoomsPage({
           <div>
             <h2 className="text-lg font-semibold text-foreground">Agent 协作室</h2>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              在一个持久房间里与协调者和多个成员协作。Stage 1 为静态房间壳：可创建房间、发送静态用户消息、重启后数据仍在；
-              成员运行与 A2A 留待后续阶段。
+              在一个持久房间里与协调者和多个成员协作。Stage 2：发消息后协调者用真实外部渠道模型回复，可取消，重启后无假
+              running；多成员并行与 A2A 留待后续阶段。
             </p>
           </div>
           <button
@@ -181,6 +230,7 @@ export function CollaborationRoomsPage({
   }
 
   const archived = room.status === 'archived'
+  const paused = room.status === 'paused'
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -235,15 +285,23 @@ export function CollaborationRoomsPage({
 
       {/* 时间线 */}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        {messages.length === 0 ? (
+        {messages.length === 0 && !activeRun ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
             还没有消息。在下方输入并发送一条消息试试。
           </div>
         ) : (
           <ul className="flex flex-col gap-2.5">
             {messages.map((m) => (
-              <MessageBubble key={m.id} message={m} />
+              <MessageBubble key={m.id} message={m} members={members} />
             ))}
+            {activeRun ? (
+              <ThinkingBubble
+                memberName={activeRunMember?.displayName ?? '成员'}
+                status={activeRun.status}
+                cancelling={cancelling}
+                onCancel={() => void handleCancelRun()}
+              />
+            ) : null}
           </ul>
         )}
       </div>
@@ -254,15 +312,15 @@ export function CollaborationRoomsPage({
           <div className="rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
             已归档房间不再发送新消息。可在侧栏「已归档」中恢复。
           </div>
+        ) : paused ? (
+          <div className="rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
+            房间已暂停，不会启动新运行。恢复运行后可继续发送。
+          </div>
         ) : (
           <ChatInput
             ref={inputRef}
             onSubmit={() => void send()}
-            placeholder={
-              sending
-                ? '发送中…'
-                : '输入消息…（Enter 发送。Stage 1：仅落盘静态消息，不触发 Agent）'
-            }
+            placeholder="输入消息…（Enter 发送。协调者会用外部渠道模型回复）"
           />
         )}
       </div>
@@ -270,8 +328,19 @@ export function CollaborationRoomsPage({
   )
 }
 
-/** 单条消息气泡（Stage 1：plain text；user 右对齐，member/system 左/居中） */
-function MessageBubble({ message }: { message: CollaborationMessage }): JSX.Element {
+/** 成员名查找（member 气泡显示作者名） */
+function memberDisplayName(authorId: string, members: CollaborationMember[]): string {
+  return members.find((m) => m.id === authorId)?.displayName ?? '成员'
+}
+
+/** 单条消息气泡（user 右对齐，member/system 左/居中） */
+function MessageBubble({
+  message,
+  members,
+}: {
+  message: CollaborationMessage
+  members: CollaborationMember[]
+}): JSX.Element {
   if (message.authorType === 'user') {
     return (
       <li className="flex justify-end">
@@ -294,9 +363,52 @@ function MessageBubble({ message }: { message: CollaborationMessage }): JSX.Elem
   return (
     <li className="flex justify-start">
       <div className="max-w-[80%]">
-        <div className="mb-0.5 text-[11px] text-muted-foreground">{message.authorId}</div>
+        <div className="mb-0.5 text-[11px] text-muted-foreground">
+          {memberDisplayName(message.authorId, members)}
+        </div>
         <div className="whitespace-pre-wrap rounded-2xl rounded-bl-sm bg-muted px-3.5 py-2 text-sm text-foreground">
           {message.content}
+        </div>
+      </div>
+    </li>
+  )
+}
+
+/** 成员「思考中」气泡 + 取消按钮（活跃 run 时显示在时间线末尾） */
+function ThinkingBubble({
+  memberName,
+  status,
+  cancelling,
+  onCancel,
+}: {
+  memberName: string
+  status: CollaborationRun['status']
+  cancelling: boolean
+  onCancel: () => void
+}): JSX.Element {
+  return (
+    <li className="flex justify-start">
+      <div className="max-w-[80%]">
+        <div className="mb-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span>{memberName}</span>
+          <span className="inline-block size-1.5 animate-pulse rounded-full bg-emerald-500" />
+          <span>{runStatusLabel(status)}…</span>
+        </div>
+        <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-3.5 py-2 text-sm text-muted-foreground">
+          <span className="flex gap-1">
+            <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.3s]" />
+            <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.15s]" />
+            <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60" />
+          </span>
+          <button
+            type="button"
+            className="ml-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+            onClick={onCancel}
+            disabled={cancelling}
+          >
+            <StopCircle size={12} />
+            {cancelling ? '取消中…' : '取消'}
+          </button>
         </div>
       </div>
     </li>

@@ -19,6 +19,7 @@ import type {
   CollaborationMember,
   CollaborationMessage,
   CollaborationRoom,
+  CollaborationRun,
   CreateCollaborationRoomInput,
   UpdateCollaborationRoomInput,
   AppendCollaborationUserMessageInput,
@@ -375,6 +376,10 @@ declare global {
         input: AppendCollaborationUserMessageInput,
       ) => Promise<CollaborationMessage>
       listCollaborationMembers: (roomId: string) => Promise<CollaborationMember[]>
+      // 协作室（Stage 2：run 状态机 + 取消 + CHANGED 广播）
+      listCollaborationRuns: (roomId: string) => Promise<CollaborationRun[]>
+      cancelCollaborationRun: (input: { roomId: string; runId: string }) => Promise<CollaborationRun | null>
+      onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => () => void
       // 自动更新
       updater?: {
         checkForUpdates: () => Promise<void>
@@ -431,16 +436,27 @@ export function App(): JSX.Element {
     setSidebarOpen(true)
   }, [])
 
-  /** 新建协作室（空白团队，默认名「新协作室」，可在头部重命名） */
+  /** 新建协作室（默认带一个协调者成员，S2 即可发消息触发真实 turn；可在头部重命名） */
   const newCollaborationRoom = useCallback(async (): Promise<void> => {
     try {
-      const created = await window.electronAPI.createCollaborationRoom({ title: '新协作室' })
+      const created = await window.electronAPI.createCollaborationRoom({
+        title: '新协作室',
+        members: [{ displayName: '协调者', isCoordinator: true }],
+      })
       setActiveCollaborationRoomId(created.id)
       setSidebarOpen(true)
       bumpCollab()
     } catch (err) {
       window.alert(`创建协作室失败：${err instanceof Error ? err.message : String(err)}`)
     }
+  }, [bumpCollab])
+
+  // 协作室 CHANGED 广播：run/member/message 变更时 bump，侧栏 + 主区重新拉取（实时刷新）
+  useEffect(() => {
+    const off = window.electronAPI.onCollaborationRoomChanged(() => {
+      bumpCollab()
+    })
+    return off
   }, [bumpCollab])
 
   const pushTicker = useSetAtom(pushStatusTickerAtom)

@@ -272,9 +272,9 @@ app.whenReady().then(async () => {
   registerKanbanIpc()
   const { bootstrapKanban } = await import('./lib/kanban/kanban-bootstrap')
   bootstrapKanban(() => mainWindow)
-  // 协作室 IPC（Stage 1：房间壳 + 静态成员 + 静态消息，不运行 Agent / 不 A2A / 不调度）
+  // 协作室 IPC（Stage 2：房间壳 + 静态成员 + 单成员真实 turn；run 状态机 + 取消 + 重启恢复）
   const { registerCollaborationRoomIpc } = await import('./lib/collaboration/collaboration-ipc')
-  registerCollaborationRoomIpc()
+  registerCollaborationRoomIpc(() => mainWindow)
   // 通知偏好 IPC（通用设置 ↔ 主进程系统通知）
   const {
     loadNotificationPrefs,

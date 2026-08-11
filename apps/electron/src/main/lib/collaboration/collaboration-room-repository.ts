@@ -1,14 +1,17 @@
 /**
- * 协作室持久化仓库（atomic-json，Stage 1）
+ * 协作室持久化仓库（atomic-json）
  *
- * 三份独立 JSON 文件，均放在 ~/.tagent[-dev]/collaboration/ 下：
+ * 四份独立 JSON 文件，均放在 ~/.tagent[-dev]/collaboration/ 下：
  * - rooms.json    { version, rooms:    CollaborationRoom[]    }
  * - members.json  { version, members: CollaborationMember[] }
  * - messages.json { version, messages: CollaborationMessage[] }
+ * - runs.json     { version, runs:    CollaborationRun[]     }
  *
  * 读写均走 atomic-json（tmp + .bak + rename），损坏自愈从 .bak 恢复。
- * Stage 1 为单用户本地骨架，三文件各自原子写；createRoom 先写 rooms 再写 members，
+ * Stage 1 为单用户本地骨架，各文件各自原子写；createRoom 先写 rooms 再写 members，
  * 若 members 写失败则房间已落盘、成员缺失（可接受降级，S2+ 再补事务/回滚）。
+ * Stage 2 新增 runs.json：run 状态机由 service 驱动，重启时 sweep 假 running（见
+ * collaboration-room-service.recoverInterruptedRuns）。
  *
  * 设计参考：apps/electron/src/main/lib/channel/channel-store.ts（CRUD + atomic-json）
  */
@@ -16,12 +19,14 @@ import type {
   CollaborationRoom,
   CollaborationMember,
   CollaborationMessage,
+  CollaborationRun,
 } from '@tagent/shared'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import {
   getCollaborationRoomsPath,
   getCollaborationMembersPath,
   getCollaborationMessagesPath,
+  getCollaborationRunsPath,
 } from '../config/config-paths'
 
 /** 配置版本号 */
@@ -123,6 +128,20 @@ export function listMembersByRoom(roomId: string): CollaborationMember[] {
   return loadMembers(roomId)
 }
 
+/** 取单个成员（全局搜索） */
+export function getMember(memberId: string): CollaborationMember | undefined {
+  return readMembersConfig().members.find((m) => m.id === memberId)
+}
+
+/** upsert 单个成员（按 id；用于状态机更新 status） */
+export function upsertMember(member: CollaborationMember): void {
+  const config = readMembersConfig()
+  const idx = config.members.findIndex((m) => m.id === member.id)
+  if (idx === -1) config.members.push(member)
+  else config.members[idx] = member
+  writeMembersConfig(config)
+}
+
 // ===== messages.json =====
 
 interface MessagesConfig {
@@ -160,4 +179,79 @@ export function appendMessage(message: CollaborationMessage): void {
   const config = readMessagesConfig()
   config.messages.push(message)
   writeMessagesConfig(config)
+}
+
+// ===== runs.json =====
+
+interface RunsConfig {
+  version: number
+  runs: CollaborationRun[]
+}
+
+function readRunsConfig(): RunsConfig {
+  const parsed = readJsonSafe<RunsConfig | null>(getCollaborationRunsPath(), null)
+  if (!parsed || !Array.isArray(parsed.runs)) {
+    return { version: CONFIG_VERSION, runs: [] }
+  }
+  return parsed
+}
+
+function writeRunsConfig(config: RunsConfig): void {
+  try {
+    writeJsonAtomic(getCollaborationRunsPath(), config)
+  } catch (err) {
+    console.error('[协作室存储] 写入 runs.json 失败:', err)
+    throw new Error('写入协作室运行数据失败')
+  }
+}
+
+/** 读取全部 run（可选按房间过滤） */
+export function loadRuns(roomId?: string): CollaborationRun[] {
+  const all = readRunsConfig().runs
+  return roomId ? all.filter((r) => r.roomId === roomId) : all
+}
+
+/** 全量写回 run 列表 */
+export function saveRuns(runs: CollaborationRun[]): void {
+  writeRunsConfig({ version: CONFIG_VERSION, runs })
+}
+
+/** upsert 单个 run（按 id） */
+export function upsertRun(run: CollaborationRun): void {
+  const config = readRunsConfig()
+  const idx = config.runs.findIndex((r) => r.id === run.id)
+  if (idx === -1) config.runs.push(run)
+  else config.runs[idx] = run
+  writeRunsConfig(config)
+}
+
+/** 取单个 run */
+export function getRun(runId: string): CollaborationRun | undefined {
+  return readRunsConfig().runs.find((r) => r.id === runId)
+}
+
+/** 列出某房间全部 run（按 createdAt 升序，即入队顺序） */
+export function listRunsByRoom(roomId: string): CollaborationRun[] {
+  // run 无 createdAt 字段，用 startedAt 兜底；都无则保持插入顺序（稳定）
+  return loadRuns(roomId).slice().sort((a, b) => {
+    const ta = a.startedAt ?? 0
+    const tb = b.startedAt ?? 0
+    return ta - tb
+  })
+}
+
+/** 列出某成员全部 run */
+export function listRunsByMember(memberId: string): CollaborationRun[] {
+  return loadRuns().filter((r) => r.memberId === memberId)
+}
+
+/** 按幂等键查 run（入队去重用；返回首个匹配，不分状态） */
+export function findRunByIdempotencyKey(idempotencyKey: string): CollaborationRun | undefined {
+  return readRunsConfig().runs.find((r) => r.idempotencyKey === idempotencyKey)
+}
+
+/** 列出处于指定状态集合的 run（重启恢复用：找出假 running/queued） */
+export function listRunsByStatus(statuses: CollaborationRun['status'][]): CollaborationRun[] {
+  const set = new Set(statuses)
+  return readRunsConfig().runs.filter((r) => set.has(r.status))
 }

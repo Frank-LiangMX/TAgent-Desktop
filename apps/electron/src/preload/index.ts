@@ -31,6 +31,7 @@ import type {
   CollaborationMember,
   CollaborationMessage,
   CollaborationRoom,
+  CollaborationRun,
   CreateCollaborationRoomInput,
   UpdateCollaborationRoomInput,
   AppendCollaborationUserMessageInput,
@@ -583,6 +584,18 @@ const electronAPI = {
   /** 列出某房间全部成员（静态身份，S2+ 才有运行状态） */
   listCollaborationMembers: (roomId: string) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MEMBERS, { roomId }) as Promise<CollaborationMember[]>,
+  /** 列出某房间全部 run（按入队顺序，Stage 2） */
+  listCollaborationRuns: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_RUNS, { roomId }) as Promise<CollaborationRun[]>,
+  /** 取消某 run（abort 后端 + 置 cancelled；终态 run 返回其当前状态） */
+  cancelCollaborationRun: (input: { roomId: string; runId: string }) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.CANCEL_RUN, input) as Promise<CollaborationRun | null>,
+  /** 房间数据变更事件（main → renderer，run/member/message 变更时广播） */
+  onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => {
+    const handler = (_e: unknown, payload: { roomId: string; kind: string; at: number }): void => cb(payload)
+    ipcRenderer.on(COLLABORATION_ROOM_IPC_CHANNELS.CHANGED, handler)
+    return () => ipcRenderer.removeListener(COLLABORATION_ROOM_IPC_CHANNELS.CHANGED, handler)
+  },
 
   // ===== 自动更新 =====
   updater: {

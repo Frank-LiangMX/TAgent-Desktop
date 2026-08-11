@@ -196,3 +196,8 @@ export function getCollaborationMembersPath(): string {
 export function getCollaborationMessagesPath(): string {
   return join(getCollaborationDir(), 'messages.json')
 }
+
+/** 协作室 run 索引：~/.tagent[-dev]/collaboration/runs.json */
+export function getCollaborationRunsPath(): string {
+  return join(getCollaborationDir(), 'runs.json')
+}
