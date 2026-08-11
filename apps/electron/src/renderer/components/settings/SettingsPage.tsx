@@ -60,7 +60,7 @@ import appiconLight from '../../assets/tagent-appicon-light.png'
 import appiconDark from '../../assets/tagent-appicon-dark.png'
 
 const APP_VERSION =
-  typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : '2.0.0-dev.1'
+  typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : '2.0.0-dev.2'
 
 /**
  * 设置页 tab。
