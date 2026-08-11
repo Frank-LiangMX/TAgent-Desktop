@@ -256,9 +256,8 @@ describe('applySdkMessageToItems：uuid 原地 upsert（S2.1 单真源）', () =
     )
     m = items[0]?.message
     if (m?.type === 'assistant') {
-      expect(m.content.find((b) => b.type === 'thinking' && 'thinking' in b)?.thinking).toBe(
-        '已落盘的完整思考',
-      )
+      const think = m.content.find((b) => b.type === 'thinking')
+      expect(think && think.type === 'thinking' ? think.thinking : '').toBe('已落盘的完整思考')
     }
   })
 
@@ -296,8 +295,10 @@ describe('applySdkMessageToItems：uuid 原地 upsert（S2.1 单真源）', () =
       expect(types).toContain('thinking')
       expect(types).toContain('text')
       expect(types).toContain('tool_use')
-      expect(m.content.find((b) => b.type === 'thinking' && 'thinking' in b)?.thinking).toBe('段思考')
-      expect(m.content.find((b) => b.type === 'text' && 'text' in b)?.text).toBe('我先摸清项目骨架。')
+      const think = m.content.find((b) => b.type === 'thinking')
+      const text = m.content.find((b) => b.type === 'text')
+      expect(think && think.type === 'thinking' ? think.thinking : '').toBe('段思考')
+      expect(text && text.type === 'text' ? text.text : '').toBe('我先摸清项目骨架。')
     }
   })
 

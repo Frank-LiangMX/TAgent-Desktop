@@ -337,6 +337,9 @@ const electronAPI = {
   },
   askUserRespond: (response: AskUserResponse) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.ASK_USER_RESPOND, response),
+  /** 用户关闭选项卡：deny 取消选择（不当运行出错） */
+  askUserDismiss: (requestId: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.ASK_USER_DISMISS, requestId),
   // 热切换指定会话的权限模式（持久化 meta + 通知运行时）
   setSessionPermissionMode: (sessionId: string, mode: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_PERMISSION_MODE, { sessionId, mode }) as Promise<{ ok: boolean; error?: string }>,

@@ -228,6 +228,8 @@ declare global {
       onAskUserRequest: (cb: (request: AskUserRequest) => void) => () => void
       onAskUserResolved: (cb: (e: { requestId: string }) => void) => () => void
       askUserRespond: (response: AskUserResponse) => Promise<void>
+      /** 关闭 AskUser 选项卡（用户取消，非提交答案） */
+      askUserDismiss?: (requestId: string) => Promise<void>
       // 热切换会话权限模式
       setSessionPermissionMode: (sessionId: string, mode: string) => Promise<{ ok: boolean; error?: string }>
       /** 热切换 Chat|Work（仅用户源） */

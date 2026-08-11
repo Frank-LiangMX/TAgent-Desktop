@@ -2183,7 +2183,9 @@ export const AGENT_IPC_CHANNELS = {
   ASK_USER_REQUEST: 'agent:ask-user:request',
   /** AskUser 响应（渲染进程 → 主进程） */
   ASK_USER_RESPOND: 'agent:ask-user:respond',
-  /** AskUser 已决（主进程 → 渲染进程：用户 respond / 会话清理，渲染层按 requestId 出队） */
+  /** AskUser 用户关闭选项卡（渲染 → 主进程：deny「用户取消选择」+ interrupt，不当运行错误） */
+  ASK_USER_DISMISS: 'agent:ask-user:dismiss',
+  /** AskUser 已决（主进程 → 渲染进程：用户 respond / dismiss / 会话清理，渲染层按 requestId 出队） */
   ASK_USER_RESOLVED: 'agent:ask-user:resolved',
 
   // ExitPlanMode 计划审批

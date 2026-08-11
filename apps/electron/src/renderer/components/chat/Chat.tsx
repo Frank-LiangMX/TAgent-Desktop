@@ -1512,7 +1512,9 @@ export function Chat({
         // 用户刚点停止 / abort 文案：保持「已中断」，勿抬错误条、勿把 endedBy 改成 error
         const abortLike =
           userStoppedRef.current ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止/i.test(raw)
+          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|用户取消选择|操作已中止|会话已结束/i.test(
+            raw,
+          )
         if (abortLike) {
           if (runStartedAtRef.current != null) recordCompletion('stopped')
           stopRun()
@@ -1728,7 +1730,7 @@ export function Chat({
         const rawMessage = typeof evt.message === 'string' ? evt.message : ''
         const abortLike =
           userStoppedRef.current ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止/i.test(
+          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|用户取消选择|操作已中止|会话已结束/i.test(
             `${userError?.message ?? ''} ${rawMessage}`,
           )
         if (abortLike) {
@@ -2744,7 +2746,7 @@ export function Chat({
           onRetry={retryLastUserPrompt}
         />
         <PermissionBanner sessionId={sessionId} />
-        <AskUserQuestionBanner sessionId={sessionId} />
+        <AskUserQuestionBanner sessionId={sessionId} onUserStop={userStopRun} />
         <div
           ref={composerClusterRef}
           className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''}`}

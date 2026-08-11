@@ -15,7 +15,11 @@ import { MemoryService } from './lib/ipc/memory-service'
 import { UserProfileService } from './lib/ipc/user-profile-service'
 import { BalanceService } from './lib/ipc/balance-service'
 import { PermissionService } from './lib/permission/permission-service'
-import { seedBuiltinChannels, migrateModelWindows } from './lib/channel/channel-store'
+import {
+  seedBuiltinChannels,
+  migrateModelWindows,
+  syncKsccChannelAvailability,
+} from './lib/channel/channel-store'
 import { discoverAndReconcileCliWorkers } from './lib/agent/cli-workers-service'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
 import { createTray, destroyTray, getTray, updateTrayTheme } from './tray'
@@ -232,6 +236,8 @@ app.whenReady().then(async () => {
 
   createWindow()
   seedBuiltinChannels()
+  // 无本机 kscc 时强制停用内置渠道，避免用户无脑打开后发送才失败
+  syncKsccChannelAvailability()
   migrateModelWindows()
 
   // Phase 2：全局记忆 L5 服务启动 wiring

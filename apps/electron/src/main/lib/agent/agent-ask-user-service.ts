@@ -27,6 +27,8 @@ type PermissionResult =
   | {
       behavior: 'deny'
       message: string
+      /** true：让 SDK/适配层硬停本轮，避免软 deny 后模型当失败重试 */
+      interrupt?: boolean
     }
 
 /** 待处理的 AskUser 请求 */
@@ -103,6 +105,25 @@ export class AgentAskUserService {
     pending.resolve({
       behavior: 'allow' as const,
       updatedInput,
+    })
+    this.pendingRequests.delete(requestId)
+    return sessionId
+  }
+
+  /**
+   * 用户关闭选项卡 / 取消作答（非选择提交）。
+   * resolve deny「用户取消选择」并清 pending；调用方通常再 interrupt 本轮。
+   * 文案须可被 renderer abortLike 识别为用户中断，避免抬「运行出错」。
+   */
+  dismissToAskUser(requestId: string): string | null {
+    const pending = this.pendingRequests.get(requestId)
+    if (!pending) return null
+    const sessionId = pending.request.sessionId
+    pending.resolve({
+      behavior: 'deny',
+      message: '用户取消选择',
+      // 硬停本轮：避免软 deny 后模型当工具失败再试 / 刷 error_*
+      interrupt: true,
     })
     this.pendingRequests.delete(requestId)
     return sessionId

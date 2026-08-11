@@ -122,8 +122,17 @@ export function ChannelsSettings(): JSX.Element {
   const toggleChannel = async (channel: Channel): Promise<void> => {
     setBusy(channel.id, true)
     try {
+      // 启用 kscc 时主进程会 resolveKsccPath；无 CLI 则抛错，不落盘 enabled=true
       await window.electronAPI.updateChannel(channel.id, { enabled: !channel.enabled })
       await reload()
+      if (!channel.enabled) {
+        // 刚启用成功：清错误提示
+        setOperations((current) => {
+          const next = { ...current }
+          delete next[channel.id]
+          return next
+        })
+      }
     } catch (error) {
       setOperations((current) => ({
         ...current,
@@ -132,6 +141,8 @@ export function ChannelsSettings(): JSX.Element {
           message: error instanceof Error ? error.message : '状态更新失败',
         },
       }))
+      // 失败时 reload 确保开关回弹到真实 enabled（避免 UI 与磁盘不一致）
+      await reload().catch(() => {})
     } finally {
       setBusy(channel.id, false)
     }
@@ -300,9 +311,17 @@ function ChannelRow({
             {channel.enabled ? '已启用' : '已停用'}
           </span>
         </div>
-        <AppTooltip label={channel.baseUrl || 'TAgent 内置网关'} multiline>
+        <AppTooltip
+          label={
+            builtin
+              ? '依赖本机 kscc 命令；未安装时不可启用。点「测试」可检测环境。'
+              : channel.baseUrl || '外部渠道'
+          }
+          multiline
+        >
           <p className="channel-shell-url">
-            {PROVIDER_LABELS[channel.provider]} · {channel.baseUrl || 'TAgent 内置网关'}
+            {PROVIDER_LABELS[channel.provider]} ·{' '}
+            {builtin ? '需本机安装 kscc' : channel.baseUrl || '外部网关'}
           </p>
         </AppTooltip>
         <div className="channel-shell-details">
