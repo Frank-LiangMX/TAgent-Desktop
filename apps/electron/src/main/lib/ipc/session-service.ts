@@ -1698,7 +1698,12 @@ export class SessionService {
   )
     // 守卫阶段事件 → IPC 推 renderer（§20.4）。shadow 事件带 shadow=true，UI 忽略。
     const onNoProgressEvent = (event: NoProgressEvent): void => {
-      this.sendPayload(input.sessionId, { kind: 'tagent_event', event })
+      // NoProgressEvent 结构上满足 tagent_event 的松散信封（{ type: string; [key: string]: unknown }），
+      // 仅缺索引签名声明；TS 不接受单层 as，经 unknown 中转对齐信封，不改运行时对象。
+      this.sendPayload(
+        input.sessionId,
+        { kind: 'tagent_event', event: event as unknown as { type: string; [key: string]: unknown } },
+      )
     }
 
     // 工作区 MCP 配置（无 workspace → 空，pi-core buildMcpTools 自动跳过）

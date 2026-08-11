@@ -451,7 +451,7 @@ describe('No-Progress Guard Pi 接线', () => {
       input: { command: 'npm test' },
       output: 'all tests passed',
     })
-    expect(obs.calls[0].error).toBeUndefined()
+    expect(obs.calls[0]!.error).toBeUndefined()
   })
 
   it('失败结果：isError → error 字段携带结果文本（供守卫解析退出码/超时）', () => {
@@ -465,8 +465,8 @@ describe('No-Progress Guard Pi 接线', () => {
       's1',
       2000,
     )
-    expect(obs.calls[0].error).toContain('timed out')
-    expect(obs.calls[0].output).toContain('timed out')
+    expect(obs.calls[0]!.error).toContain('timed out')
+    expect(obs.calls[0]!.output).toContain('timed out')
   })
 
   it('与 KSCC 同序列得到相同 decision（§14.3 双核语义一致）', () => {
@@ -492,6 +492,6 @@ describe('No-Progress Guard Pi 接线', () => {
     const pi = run('pi')
     expect(pi.map((d) => d.kind)).toEqual(kscc.map((d) => d.kind))
     expect(pi.map((d) => d.emitPhase)).toEqual(kscc.map((d) => d.emitPhase))
-    expect(pi[1].kind).toBe('warn')
+    expect(pi[1]!.kind).toBe('warn')
   })
 })

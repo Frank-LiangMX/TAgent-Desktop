@@ -171,8 +171,8 @@ function digest(text: string): string {
 export function normalizePath(p: unknown): string {
   if (typeof p !== 'string' || !p) return ''
   let s = p.trim()
-  // Windows 盘符小写
-  if (/^[A-Za-z]:[\\/]/.test(s)) s = s[0].toLowerCase() + s.slice(1)
+  // Windows 盘符小写（正则已保证 s 以盘符开头，charAt 不会越界）
+  if (/^[A-Za-z]:[\\/]/.test(s)) s = s.charAt(0).toLowerCase() + s.slice(1)
   s = s.replace(/\\/g, '/')
   // 折叠 ./ 与重复斜杠
   s = s.replace(/\/\.\//g, '/').replace(/\/+/g, '/')
@@ -227,7 +227,8 @@ function splitMcpName(toolName: string): { server: string; tool: string } | unde
   if (!toolName.startsWith('mcp__')) return undefined
   const parts = toolName.slice(5).split('__')
   if (parts.length < 2) return undefined
-  return { server: parts[0], tool: parts.slice(1).join('__') }
+  // parts.length >= 2 已保证 parts[0] 存在
+  return { server: parts[0]!, tool: parts.slice(1).join('__') }
 }
 
 /** 稳定输入串：JSON 排序键 + 去噪 + 截断（MCP / 未知工具用） */

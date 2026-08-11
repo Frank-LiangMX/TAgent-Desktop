@@ -94,7 +94,7 @@ describe('No-Progress Guard UnrealTagManager 回放（SPEC §14.4）', () => {
   it('第 2 次空输出超时进入一级提醒（warn / reflection_required）', () => {
     const r = replay('kscc')
     // 第 3 步（index 2）= 第 2 次空输出超时
-    const warnDecision = r.decisions[2]
+    const warnDecision = r.decisions[2]!
     expect(warnDecision.kind).toBe('warn')
     expect(warnDecision.emitPhase).toBe('warning')
     expect(warnDecision.reasonCodes).toContain('empty_timeout_repeated')
@@ -110,7 +110,7 @@ describe('No-Progress Guard UnrealTagManager 回放（SPEC §14.4）', () => {
   it('最终状态为 paused（→ adapter 归一化为 paused_no_progress，非 error_max_turns）', () => {
     const r = replay('kscc')
     expect(r.phase).toBe('paused')
-    const last = r.decisions[r.decisions.length - 1]
+    const last = r.decisions[r.decisions.length - 1]!
     expect(last.kind).toBe('pause')
     expect(last.emitPhase).toBe('paused')
     expect(last.reasonCodes).toContain('reflection_ignored')
@@ -123,10 +123,12 @@ describe('No-Progress Guard UnrealTagManager 回放（SPEC §14.4）', () => {
     expect(pi.phase).toBe(kscc.phase)
     expect(pi.batches).toBe(kscc.batches)
     for (let i = 0; i < kscc.decisions.length; i++) {
-      expect(pi.decisions[i].kind).toBe(kscc.decisions[i].kind)
-      expect(pi.decisions[i].emitPhase).toBe(kscc.decisions[i].emitPhase)
-      expect(pi.decisions[i].reasonCodes).toEqual(kscc.decisions[i].reasonCodes)
-      expect(pi.decisions[i].phase).toBe(kscc.decisions[i].phase)
+      const kd = kscc.decisions[i]!
+      const pd = pi.decisions[i]!
+      expect(pd.kind).toBe(kd.kind)
+      expect(pd.emitPhase).toBe(kd.emitPhase)
+      expect(pd.reasonCodes).toEqual(kd.reasonCodes)
+      expect(pd.phase).toBe(kd.phase)
     }
   })
 
