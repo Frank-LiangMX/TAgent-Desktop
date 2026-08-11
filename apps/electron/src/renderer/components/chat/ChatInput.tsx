@@ -43,6 +43,8 @@ interface ChatInputProps {
   attachments?: PendingAttachment[]
   onAttachmentsChange?: (attachments: PendingAttachment[]) => void
   onOpenFileDialog?: () => void
+  /** 点击非图片待发附件 → 分屏预览 */
+  onPreviewAttachment?: (attachment: PendingAttachment) => void
   mentionRoles?: MentionRoleOption[]
   topBar?: React.ReactNode
   /** @ 选择面板开合变化：true=弹出（输入框上方浮层），false=关闭。供调用方让位重叠 UI */
@@ -178,6 +180,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     attachments = [],
     onAttachmentsChange,
     onOpenFileDialog,
+    onPreviewAttachment,
     mentionRoles,
     topBar,
     onMentionOpenChange,
@@ -529,6 +532,11 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
                   mediaType={att.mediaType}
                   previewUrl={att.previewUrl}
                   onRemove={() => removeAttachment(att.id)}
+                  onClick={
+                    !att.mediaType.startsWith('image/') && att.mediaType !== 'inode/directory'
+                      ? () => onPreviewAttachment?.(att)
+                      : undefined
+                  }
                 />
               ))}
             </div>

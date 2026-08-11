@@ -204,6 +204,14 @@ export class SessionRuntime {
       if (userMessage) {
         const c = userMessage.message?.content
         if (typeof c === 'string' && c.trim()) prompt = c
+        else if (Array.isArray(c)) {
+          const text = c
+            .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+            .map((b) => b.text)
+            .join('\n')
+            .trim()
+          if (text) prompt = text
+        }
       }
       this.lastInFlightPrompt = prompt
       this.spawnToolingFingerprint = nextFp
@@ -227,7 +235,16 @@ export class SessionRuntime {
     if (!userMessage) {
       throw new Error(`[session ${this.sessionId}] 后续消息需提供 userMessage`)
     }
-    this.lastInFlightPrompt = userMessage.message.content
+    {
+      const c = userMessage.message.content
+      this.lastInFlightPrompt =
+        typeof c === 'string'
+          ? c
+          : c
+              .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+              .map((b) => b.text)
+              .join('\n')
+    }
     this.turnInFlight = true
     await this.adapter.sendQueuedMessage?.(this.sessionId, userMessage)
   }

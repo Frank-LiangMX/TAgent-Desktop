@@ -107,6 +107,33 @@ function toError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+/** base64 → UTF-8 文本（renderer 侧解码附件正文） */
+function base64ToUtf8(b64: string): string {
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return new TextDecoder('utf-8').decode(bytes)
+}
+
+/** 由文件名推断 MIME（附件预览兜底） */
+function mimeFromFilename(name: string): string {
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  const map: Record<string, string> = {
+    md: 'text/markdown',
+    markdown: 'text/markdown',
+    txt: 'text/plain',
+    json: 'application/json',
+    pdf: 'application/pdf',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+  }
+  return map[ext] ?? 'application/octet-stream'
+}
+
 export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams>): JSX.Element {
   const sessionId = props.params?.sessionId
   const req = useAtomValue(filePreviewRequestAtom)
@@ -124,6 +151,55 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
     setState({ kind: 'loading' })
     void (async () => {
       try {
+        // 输入框待发附件：内存 base64，尚未写入 ~/.tagent/attachments/
+        if (target.pendingAttachment) {
+          const { filename, mediaType, data } = target.pendingAttachment
+          const mime = mediaType || mimeFromFilename(filename)
+          if (mime.startsWith('image/') || mime === 'application/pdf') {
+            setState({
+              kind: 'ready',
+              absPath: `待发：${filename}`,
+              dataUrl: `data:${mime};base64,${data}`,
+              mime,
+            })
+            return
+          }
+          setState({
+            kind: 'ready',
+            absPath: `待发：${filename}`,
+            content: base64ToUtf8(data),
+            mime,
+          })
+          return
+        }
+
+        // 会话附件：~/.tagent/attachments/ 下，不走工作区 resolve/read
+        if (target.attachmentLocalPath) {
+          const [b64, abs] = await Promise.all([
+            window.electronAPI.readAttachment(target.attachmentLocalPath),
+            window.electronAPI.resolveAttachmentPath(target.attachmentLocalPath),
+          ])
+          if (cancelled) return
+          const fileName = target.title ?? target.path
+          const mime = target.attachmentMediaType ?? mimeFromFilename(fileName)
+          if (mime.startsWith('image/') || mime === 'application/pdf') {
+            setState({
+              kind: 'ready',
+              absPath: abs,
+              dataUrl: `data:${mime};base64,${b64}`,
+              mime,
+            })
+            return
+          }
+          setState({
+            kind: 'ready',
+            absPath: abs,
+            content: base64ToUtf8(b64),
+            mime,
+          })
+          return
+        }
+
         const abs = await window.electronAPI.resolveFile({
           sessionId: target.sessionId,
           path: target.path,
@@ -162,7 +238,17 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
     return () => {
       cancelled = true
     }
-  }, [target?.sessionId, target?.path, target?.bases])
+  }, [
+    target?.sessionId,
+    target?.path,
+    target?.bases,
+    target?.attachmentLocalPath,
+    target?.attachmentMediaType,
+    target?.pendingAttachment?.filename,
+    target?.pendingAttachment?.mediaType,
+    target?.pendingAttachment?.data,
+    target?.title,
+  ])
 
   // ===== 渲染分发 =====
 
@@ -190,7 +276,7 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
   }
 
   const mime = state.mime
-  const fileName = target.path.split(/[\\/]/).pop() ?? target.path
+  const fileName = target.title ?? target.path.split(/[\\/]/).pop() ?? target.path
   const ext = fileName.split('.').pop()?.toLowerCase() ?? ''
 
   // 内容体（按类型分发）
@@ -232,15 +318,17 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
             {state.absPath}
           </span>
         </AppTooltip>
-        <button
-          type="button"
-          onClick={() => {
-            void window.electronAPI.openPath({ sessionId, path: state.absPath })
-          }}
-          className="shrink-0 rounded px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-        >
-          外部打开
-        </button>
+        {!target.pendingAttachment ? (
+          <button
+            type="button"
+            onClick={() => {
+              void window.electronAPI.openPath({ sessionId, path: state.absPath })
+            }}
+            className="shrink-0 rounded px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+          >
+            外部打开
+          </button>
+        ) : null}
       </div>
       <div className="min-h-0 flex-1">{body}</div>
     </div>

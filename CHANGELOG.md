@@ -18,6 +18,7 @@
 - 过程显示默认 concise（v2 偏好键）；分屏工作台默认开启（v2 键）；侧栏可见会话 open-rail；会话左 gutter；加载动画图鉴暂隐。
 
 ### 修复
+- **附件进核** — prompt 注入附件绝对路径；kscc 图片走 image content block。
 - GLM 流式收尾保留回复；队列引导 / 用户中断误报；CI typecheck 与 resolve-backend 无本机 kscc 环境。
 
 ## [2.0.0-dev.1] - 2026-08-07

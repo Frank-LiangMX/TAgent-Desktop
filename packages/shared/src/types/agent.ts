@@ -2133,6 +2133,8 @@ export const AGENT_IPC_CHANNELS = {
   SAVE_ATTACHMENT: 'agent:save-attachment',
   /** 读取附件为 base64 */
   READ_ATTACHMENT: 'agent:read-attachment',
+  /** 解析会话附件相对路径为绝对路径（~/.tagent/attachments/ 下） */
+  RESOLVE_ATTACHMENT_PATH: 'agent:resolve-attachment-path',
   /** 打开系统文件选择器 */
   OPEN_FILE_DIALOG: 'agent:open-file-dialog',
   /** 用系统默认程序打开文件（消息内文件 chip 点击；相对路径按会话工作区解析） */

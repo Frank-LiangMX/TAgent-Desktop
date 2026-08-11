@@ -117,6 +117,9 @@ const electronAPI = {
   /** 读取附件为 base64 */
   readAttachment: (localPath: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.READ_ATTACHMENT, localPath),
+  /** 解析会话附件相对路径为绝对路径 */
+  resolveAttachmentPath: (localPath: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.RESOLVE_ATTACHMENT_PATH, localPath) as Promise<string>,
   /** 打开系统文件选择器 */
   openFileDialog: () =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.OPEN_FILE_DIALOG),

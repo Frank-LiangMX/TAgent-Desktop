@@ -35,7 +35,9 @@ import type {
 import { createMessageChannel, type MessageChannel } from '../shared/message-channel'
 import { getDiscardedMemoryDir } from '../../memory/discarded-memory'
 import { spawnKscc } from './spawn-kscc'
-import { NoProgressGuard, buildNoProgressEventFromDecision } from '../../agent/no-progress-guard'
+import {
+  attachImageBlocksToText,
+} from '../../agent/build-user-content-with-attachments'
 
 /** kscc 核查询选项（扩展 AgentQueryInput） */
 export interface KsccQueryOptions extends AgentQueryInput {
@@ -140,11 +142,12 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
     const controller = new AbortController()
     const channel = createMessageChannel(controller.signal)
 
-    // 入队首条 user message
+    // 入队首条 user message（有图则多模态 content；prompt 侧已含路径附录）
+    const firstContent = attachImageBlocksToText(input.prompt, input.attachments)
     channel.enqueue({
       type: 'user',
       session_id: input.sessionId,
-      message: { role: 'user', content: input.prompt },
+      message: { role: 'user', content: firstContent },
       parent_tool_use_id: null,
     } as SDKUserMessage)
 

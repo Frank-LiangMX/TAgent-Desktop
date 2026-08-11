@@ -82,6 +82,11 @@ export function readAttachmentAsBase64(localPath: string): string {
   return buffer.toString('base64')
 }
 
+/** 附件绝对路径（供注入 prompt / Read 工具；越界抛错） */
+export function getAttachmentAbsolutePath(localPath: string): string {
+  return resolveAttachmentPath(localPath)
+}
+
 /** 删除单个附件 */
 export function deleteAttachment(localPath: string): void {
   const filePath = resolveAttachmentPath(localPath)

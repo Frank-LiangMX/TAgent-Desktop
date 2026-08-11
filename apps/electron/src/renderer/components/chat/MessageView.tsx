@@ -12,6 +12,7 @@ import type {
   TAgentMessage,
   TAgentToolResultBlock,
   TAgentTextBlock,
+  FileAttachment,
 } from '@tagent/shared'
 import { DEFAULT_USER_NAME } from '@tagent/shared'
 
@@ -45,12 +46,15 @@ export function MessageView({
   message,
   onRefillToInput,
   mentionRoles,
+  onOpenAttachment,
 }: {
   message: TAgentMessage
   /** 用户消息：填入输入框以便改写重发 */
   onRefillToInput?: (text: string) => void
   /** 用于把 @角色 渲染成圆角芯片（与发送解析一致） */
   mentionRoles?: Array<{ id: string; displayName: string }>
+  /** 点击文本/文件附件 → 分屏预览 */
+  onOpenAttachment?: (attachment: FileAttachment) => void
 }): React.ReactElement {
   if (message.type === 'user') {
     return (
@@ -58,6 +62,7 @@ export function MessageView({
         message={message}
         onRefillToInput={onRefillToInput}
         mentionRoles={mentionRoles}
+        onOpenAttachment={onOpenAttachment}
       />
     )
   }
@@ -70,10 +75,12 @@ function UserView({
   message,
   onRefillToInput,
   mentionRoles,
+  onOpenAttachment,
 }: {
   message: Extract<TAgentMessage, { type: 'user' }>
   onRefillToInput?: (text: string) => void
   mentionRoles?: Array<{ id: string; displayName: string }>
+  onOpenAttachment?: (attachment: FileAttachment) => void
 }): React.ReactElement {
   const profile = useAtomValue(userProfileAtom)
   const userName = (profile.userName || DEFAULT_USER_NAME).trim() || DEFAULT_USER_NAME
@@ -102,9 +109,10 @@ function UserView({
               <MessageAttachments
                 attachments={message.attachments}
                 onReadAttachment={async (localPath) => {
-                  const base64 = await (window as any).electronAPI.readAttachment(localPath)
+                  const base64 = await window.electronAPI.readAttachment(localPath)
                   return base64
                 }}
+                onOpenAttachment={onOpenAttachment}
               />
             ) : null}
             {textBlocks.length > 0 && (

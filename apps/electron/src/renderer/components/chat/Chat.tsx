@@ -25,6 +25,7 @@ import type {
   AgentSessionMeta,
   TurnDuration,
   UserFacingError,
+  FileAttachment,
 } from '@tagent/shared'
 import { migrateExecutionMode, DEFAULT_EXECUTION_MODE, parseMentions, classifyUserFacingError, isMoaModelId } from '@tagent/shared'
 import {
@@ -99,7 +100,7 @@ import {
   shouldClearStreamThinking,
   type SessionStreamState,
 } from './stream-item-model'
-import { ChatInput, type ChatInputHandle } from './ChatInput'
+import { ChatInput, type ChatInputHandle, type PendingAttachment } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
 import { WorkspaceSelector } from './WorkspaceSelector'
 import { NewConversationLanding } from './NewConversationLanding'
@@ -402,10 +403,13 @@ export function Chat({
   }
   /** 输入框是否有草稿（供发送/停止键同槽复用：运行中且有草稿→仍可追加发送，显示发送键；运行中无草稿→停止键） */
   const [hasDraft, setHasDraft] = useState(false)
-  /** 运行中排队的消息（运行中发送→入队；自然结束自动消费；用户停止保留） */
   const [messageQueue, setMessageQueue] = useState<Array<{
     text: string
     selection: ModelSelection
+    /** 待发附件（运行中入队时快照；drain 时 sendQueued 保存到磁盘并透传主进程）。
+     *  不带则队列项只发文本——历史回归：运行中带附件发送会丢附件（队列引导改动 53dd1b0 引入，
+     *  入队只放 {text,selection} 且不清空 pendingAttachments，预览残留“像发出”但核侧从未收到）。 */
+    attachments?: Array<{ id: string; filename: string; mediaType: string; size: number; previewUrl?: string; data: string }>
     /** MoA 会诊本条（one-shot）preset id：选了预置后追加发送带它；非 sticky */
     moaOneShotPresetId?: string
     /** 圆桌讨论本条（one-shot）preset id：选了预置后追加发送带它；非 sticky，主进程 runMoADiscussionTurn 消费 */
@@ -422,6 +426,8 @@ export function Chat({
   const [pendingAttachments, setPendingAttachments] = useState<Array<{
     id: string; filename: string; mediaType: string; size: number; previewUrl?: string; data: string
   }>>([])
+  /** 可发送：有文字草稿，或仅有附件 */
+  const hasSendable = hasDraft || pendingAttachments.length > 0
   /** MoA 会诊预置（发送键旁 ▾「发送方式」）。挂载拉一次。 */
   const [consultPresets, setConsultPresets] = useState<MoAPreset[]>([])
   useEffect(() => {
@@ -1894,7 +1900,11 @@ export function Chat({
         setSentCoreKind(coreKind)
         const sid = sessionIdRef.current
         // 与主进程 createSession 对齐：首条 prompt 前 20 字作为标题（草稿仍是「新会话」）
-        const tabTitle = text.slice(0, 20) || session.title || '新会话'
+        const tabTitle =
+          text.slice(0, 20) ||
+          attachments?.[0]?.filename.slice(0, 20) ||
+          session.title ||
+          '新会话'
         const exists = tabs.some((t) => t.sessionId === sid)
         if (!exists) {
           const { tabs: nextTabs, activeTabId } = materializeTab(
@@ -1960,8 +1970,8 @@ export function Chat({
 
   /** 用户发送：空闲→立即发；运行中→入队 */
   const send = async (): Promise<void> => {
-    const text = chatInputRef.current?.getText().trim()
-    if (!text) return
+    const text = chatInputRef.current?.getText().trim() ?? ''
+    if (!text && pendingAttachments.length === 0) return
     // Chat @：本轮有 @ → 切换 activeSpeaker；无 @ → 保持上一个（follow）。铭牌按 effective 角色展示。
     if (executionMode === 'chat' && mentionRoles.length > 0) {
       const hits = parseMentions(text, mentionRoles)
@@ -1983,8 +1993,17 @@ export function Chat({
     if (running) {
       // 运行中 → 入队，等当前轮结束自动消费
       if (effectiveSelection) {
-        setMessageQueue((q) => [...q, { text, selection: effectiveSelection }])
+        setMessageQueue((q) => [
+          ...q,
+          {
+            text,
+            selection: effectiveSelection,
+            ...(pendingAttachments.length ? { attachments: pendingAttachments } : {}),
+          },
+        ])
       }
+      // 入队即清空输入框附件（已快照进队列项；drain 时 sendQueued 保存到磁盘并 revoke previewUrl）
+      setPendingAttachments([])
       return
     }
     // 空闲 → 立即发
@@ -2001,8 +2020,8 @@ export function Chat({
    * 输入空 / 无可用预置 / 无渠道：放弃（按钮已禁用，本函数兜底）。
    */
   const sendConsult = async (presetId: string): Promise<void> => {
-    const text = chatInputRef.current?.getText().trim()
-    if (!text) return
+    const text = chatInputRef.current?.getText().trim() ?? ''
+    if (!text && pendingAttachments.length === 0) return
     if (!effectiveSelection) {
       alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
       return
@@ -2028,8 +2047,14 @@ export function Chat({
       // 运行中：入队等本轮结束自动消费；带 presetId 让队列项保留会诊语义
       setMessageQueue((q) => [
         ...q,
-        { text, selection: effectiveSelection, moaOneShotPresetId: presetId },
+        {
+          text,
+          selection: effectiveSelection,
+          moaOneShotPresetId: presetId,
+          ...(pendingAttachments.length ? { attachments: pendingAttachments } : {}),
+        },
       ])
+      setPendingAttachments([])
       return
     }
     await sendQueued({
@@ -2047,8 +2072,8 @@ export function Chat({
    * 输入空 / 无可用预置 / 无渠道：放弃（按钮已禁用，本函数兜底）。
    */
   const sendDiscussion = async (presetId: string): Promise<void> => {
-    const text = chatInputRef.current?.getText().trim()
-    if (!text) return
+    const text = chatInputRef.current?.getText().trim() ?? ''
+    if (!text && pendingAttachments.length === 0) return
     if (!effectiveSelection) {
       alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
       return
@@ -2074,8 +2099,14 @@ export function Chat({
       // 运行中：入队等本轮结束自动消费；带 presetId 让队列项保留圆桌讨论语义
       setMessageQueue((q) => [
         ...q,
-        { text, selection: effectiveSelection, moaDiscussionPresetId: presetId },
+        {
+          text,
+          selection: effectiveSelection,
+          moaDiscussionPresetId: presetId,
+          ...(pendingAttachments.length ? { attachments: pendingAttachments } : {}),
+        },
       ])
+      setPendingAttachments([])
       return
     }
     await sendQueued({
@@ -2183,6 +2214,8 @@ export function Chat({
     setMessageQueue((q) => q.filter((_, i) => i !== index))
     scheduleComposerTopUpdate()
     chatInputRef.current?.setText(item.text)
+    // 还原附件到输入框（previewUrl 仍有效；未落盘，发送时 sendQueued 再 saveAttachment）
+    if (item.attachments?.length) setPendingAttachments(item.attachments)
     chatInputRef.current?.focus()
   }
 
@@ -2310,29 +2343,13 @@ export function Chat({
         <SendSplitButton
           presets={consultPresetsForMenu}
           channel={selectionChannel}
-          hasDraft={hasDraft}
+          hasDraft={hasSendable}
           onSend={() => void send()}
           onConsultPreset={(id) => void sendConsult(id)}
           onDiscussionPreset={(id) => void sendDiscussion(id)}
         />
       )}
     </div>
-  )
-
-  const landingComposer = (
-    <ChatInput
-      ref={chatInputRef}
-      onSubmit={() => void send()}
-      placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
-      onDraftChange={setHasDraft}
-      attachments={pendingAttachments}
-      onAttachmentsChange={setPendingAttachments}
-      onOpenFileDialog={handleOpenFileDialog}
-      mentionRoles={executionMode === 'chat' ? mentionRoles : undefined}
-      topBar={activeMentionBar}
-      footer={landingFooter}
-      onMentionOpenChange={setMentionPickerOpen}
-    />
   )
 
   /** 新会话页：输入框下方的工作区选择容器（独立卡片）。WorkspaceSelector 自带文件夹图标，左侧只放纯文字标签。 */
@@ -2401,6 +2418,56 @@ export function Chat({
       getSessionId: () => sessionIdRef.current,
     }
   }, [workspaceDirectory, setFilePreviewRequest, setSplitDockMode, splitDockMode])
+
+  /** 消息内文本/文件附件 chip → 分屏预览（附件在 ~/.tagent/attachments/，不走工作区读文件） */
+  const openAttachmentPreview = useCallback(
+    (attachment: FileAttachment): void => {
+      if (!splitDockMode) setSplitDockMode(true)
+      setFilePreviewRequest({
+        sessionId: sessionIdRef.current,
+        path: attachment.filename,
+        title: attachment.filename,
+        attachmentLocalPath: attachment.localPath,
+        attachmentMediaType: attachment.mediaType,
+      })
+    },
+    [setFilePreviewRequest, setSplitDockMode, splitDockMode],
+  )
+
+  /** 输入框待发附件 chip → 分屏预览（尚未落盘，用内存 base64） */
+  const openPendingAttachmentPreview = useCallback(
+    (attachment: PendingAttachment): void => {
+      if (!splitDockMode) setSplitDockMode(true)
+      setFilePreviewRequest({
+        sessionId: sessionIdRef.current,
+        path: attachment.filename,
+        title: attachment.filename,
+        pendingAttachment: {
+          filename: attachment.filename,
+          mediaType: attachment.mediaType,
+          data: attachment.data,
+        },
+      })
+    },
+    [setFilePreviewRequest, setSplitDockMode, splitDockMode],
+  )
+
+  const landingComposer = (
+    <ChatInput
+      ref={chatInputRef}
+      onSubmit={() => void send()}
+      placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
+      onDraftChange={setHasDraft}
+      attachments={pendingAttachments}
+      onAttachmentsChange={setPendingAttachments}
+      onOpenFileDialog={handleOpenFileDialog}
+      onPreviewAttachment={openPendingAttachmentPreview}
+      mentionRoles={executionMode === 'chat' ? mentionRoles : undefined}
+      topBar={activeMentionBar}
+      footer={landingFooter}
+      onMentionOpenChange={setMentionPickerOpen}
+    />
+  )
 
   const richPreviewProviderValue = useMemo(
     () => ({
@@ -2521,6 +2588,7 @@ export function Chat({
                       onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
                       onOpenDiscussion={(discussionId) => setOpenDiscussionId(discussionId)}
                       sessionId={sessionId}
+                      onOpenAttachment={openAttachmentPreview}
                     />
                   )
                 })
@@ -2663,6 +2731,7 @@ export function Chat({
               attachments={pendingAttachments}
               onAttachmentsChange={setPendingAttachments}
               onOpenFileDialog={handleOpenFileDialog}
+              onPreviewAttachment={openPendingAttachmentPreview}
               mentionRoles={executionMode === 'chat' ? mentionRoles : undefined}
               topBar={activeMentionBar}
               onMentionOpenChange={setMentionPickerOpen}
@@ -2788,7 +2857,7 @@ export function Chat({
                       · 空闲 + 有草稿 → 发送键（enabled，立即发）
                       · 空闲 + 无草稿 → 发送键（disabled）
                     */}
-                    {running && !hasDraft ? (
+                    {running && !hasSendable ? (
                       <Button
                         variant="ghost"
                         size="icon"
@@ -2804,7 +2873,7 @@ export function Chat({
                       >
                         <Square className="size-4 fill-current" />
                       </Button>
-                    ) : running && hasDraft ? (
+                    ) : running && hasSendable ? (
                       <div className="flex items-center gap-1">
                         <AppTooltip label="引导：不中断当前轮；本轮结束后 Agent 看到此消息（kscc 入队 / Pi 自动续发）">
                           <Button
@@ -2860,15 +2929,19 @@ export function Chat({
                             size="icon"
                             className="size-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
                             onClick={() => {
-                              const text = chatInputRef.current?.getText().trim()
-                              if (!text || !effectiveSelection) return
+                              const text = chatInputRef.current?.getText().trim() ?? ''
+                              if ((!text && pendingAttachments.length === 0) || !effectiveSelection) return
                               chatInputRef.current?.clear()
                               // 草稿立即发送：不丢弃已有队列；先打断再发本条，队列仍保留待自然消费或手动发
                               skipQueueAutoConsumeRef.current = true
                               userStopRun()
                               void (async () => {
                                 await window.electronAPI.stopAgent(sessionIdRef.current)
-                                await sendQueued({ text, selection: effectiveSelection })
+                                await sendQueued({
+                                  text,
+                                  selection: effectiveSelection,
+                                  attachments: pendingAttachments,
+                                })
                               })()
                             }}
                             aria-label="立即发送"
@@ -2880,7 +2953,7 @@ export function Chat({
                           size="sm"
                           presets={consultPresetsForMenu}
                           channel={selectionChannel}
-                          hasDraft={hasDraft}
+                          hasDraft={hasSendable}
                           onSend={() => void send()}
                           onConsultPreset={(id) => void sendConsult(id)}
                           onDiscussionPreset={(id) => void sendDiscussion(id)}
@@ -2890,7 +2963,7 @@ export function Chat({
                       <SendSplitButton
                         presets={consultPresetsForMenu}
                         channel={selectionChannel}
-                        hasDraft={hasDraft}
+                        hasDraft={hasSendable}
                         onSend={() => void send()}
                         onConsultPreset={(id) => void sendConsult(id)}
                         onDiscussionPreset={(id) => void sendDiscussion(id)}
@@ -3002,6 +3075,7 @@ function TurnView({
   onOpenSubagent,
   onOpenDiscussion,
   sessionId,
+  onOpenAttachment,
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
@@ -3020,6 +3094,7 @@ function TurnView({
   onOpenDiscussion?: (discussionId: string) => void
   /** 当前会话 id（MoA 圆桌卡建看板 CTA 用） */
   sessionId?: string
+  onOpenAttachment?: (attachment: FileAttachment) => void
 }): JSX.Element {
   if (turn.kind === 'user') {
     return (
@@ -3028,6 +3103,7 @@ function TurnView({
           message={turn.message}
           onRefillToInput={onRefillToInput}
           mentionRoles={mentionRoles}
+          onOpenAttachment={onOpenAttachment}
         />
       </div>
     )
@@ -3049,11 +3125,21 @@ function TurnView({
       </div>
     )
   }
-  return <ItemView item={turn.item as DisplayItem} sessionId={sessionId} onOpenDiscussion={onOpenDiscussion} />
+  return <ItemView item={turn.item as DisplayItem} sessionId={sessionId} onOpenDiscussion={onOpenDiscussion} onOpenAttachment={onOpenAttachment} />
 }
 
 /** 显示项渲染（standalone：压缩行 / 任务卡 / MoA 圆桌卡 / 圆桌讨论入口卡 / 兜底） */
-function ItemView({ item, sessionId, onOpenDiscussion }: { item: DisplayItem; sessionId?: string; onOpenDiscussion?: (discussionId: string) => void }): JSX.Element {
+function ItemView({
+  item,
+  sessionId,
+  onOpenDiscussion,
+  onOpenAttachment,
+}: {
+  item: DisplayItem
+  sessionId?: string
+  onOpenDiscussion?: (discussionId: string) => void
+  onOpenAttachment?: (attachment: FileAttachment) => void
+}): JSX.Element {
   // MoA 圆桌卡（standalone，挂主时间线）
   if (item.moaRoundtable) {
     return <MoaRoundtableCard panel={item.moaRoundtable} sessionId={sessionId} />
@@ -3100,7 +3186,7 @@ function ItemView({ item, sessionId, onOpenDiscussion }: { item: DisplayItem; se
   if (item.message) {
     return (
       <div data-message-id={item.key}>
-        <MessageView message={item.message} />
+        <MessageView message={item.message} onOpenAttachment={onOpenAttachment} />
       </div>
     )
   }

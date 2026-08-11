@@ -575,6 +575,8 @@ interface MessageAttachmentsProps extends HTMLAttributes<HTMLDivElement> {
   onReadAttachment?: (localPath: string) => Promise<string>
   /** 保存图片的回调 */
   onSaveImage?: (localPath: string, filename: string) => void
+  /** 点击非图片附件 → 打开预览 */
+  onOpenAttachment?: (attachment: FileAttachment) => void
 }
 
 /** 消息附件容器 */
@@ -583,6 +585,7 @@ export function MessageAttachments({
   className,
   onReadAttachment,
   onSaveImage,
+  onOpenAttachment,
   ...props
 }: MessageAttachmentsProps): React.ReactElement {
   const imageAttachments = attachments.filter((att) => att.mediaType.startsWith('image/'))
@@ -607,7 +610,11 @@ export function MessageAttachments({
       {fileAttachments.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {fileAttachments.map((att) => (
-            <MessageAttachmentFile key={att.id} attachment={att} />
+            <MessageAttachmentFile
+              key={att.id}
+              attachment={att}
+              onOpenAttachment={onOpenAttachment}
+            />
           ))}
         </div>
       )}
@@ -708,18 +715,44 @@ function MessageAttachmentImage({
 
 interface MessageAttachmentFileProps {
   attachment: FileAttachment
+  onOpenAttachment?: (attachment: FileAttachment) => void
 }
 
-/** 文件附件展示（标签样式） */
-function MessageAttachmentFile({ attachment }: MessageAttachmentFileProps): React.ReactElement {
+/** 文件附件展示（标签样式，可点击预览） */
+function MessageAttachmentFile({
+  attachment,
+  onOpenAttachment,
+}: MessageAttachmentFileProps): React.ReactElement {
   const displayName =
     attachment.filename.length > 20 ? attachment.filename.slice(0, 17) + '...' : attachment.filename
 
+  const handleOpen = React.useCallback((): void => {
+    onOpenAttachment?.(attachment)
+  }, [attachment, onOpenAttachment])
+
+  if (!onOpenAttachment) {
+    return (
+      <div className="flex items-center gap-2 rounded-glass-popover bg-[#37a5aa]/10 border border-[#37a5aa]/20 px-3 py-1.5 text-[13px] text-[#37a5aa] shrink-0">
+        <Paperclip className="size-4" />
+        <span>{displayName}</span>
+      </div>
+    )
+  }
+
   return (
-    <div className="flex items-center gap-2 rounded-glass-popover bg-[#37a5aa]/10 border border-[#37a5aa]/20 px-3 py-1.5 text-[13px] text-[#37a5aa] shrink-0">
+    <button
+      type="button"
+      onClick={handleOpen}
+      title={attachment.filename}
+      className={cn(
+        'flex items-center gap-2 rounded-glass-popover bg-[#37a5aa]/10 border border-[#37a5aa]/20',
+        'px-3 py-1.5 text-[13px] text-[#37a5aa] shrink-0',
+        'transition-colors hover:bg-[#37a5aa]/15 hover:border-[#37a5aa]/30 cursor-pointer',
+      )}
+    >
       <Paperclip className="size-4" />
       <span>{displayName}</span>
-    </div>
+    </button>
   )
 }
 

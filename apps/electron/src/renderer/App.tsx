@@ -151,6 +151,10 @@ declare global {
         path: string
         bases?: string[]
       }) => Promise<string | null>
+      /** 读取会话附件为 base64（localPath 相对 ~/.tagent/attachments/） */
+      readAttachment: (localPath: string) => Promise<string>
+      /** 解析会话附件相对路径为绝对路径 */
+      resolveAttachmentPath: (localPath: string) => Promise<string>
       // 渠道
       listChannels: () => Promise<Channel[]>
       createChannel: (input: ChannelCreateInput) => Promise<Channel>

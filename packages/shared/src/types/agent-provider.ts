@@ -11,7 +11,19 @@ import type { SDKMessage } from './agent'
 /** SDK 用户消息（队列消息注入用，匹配 SDK SDKUserMessage 结构） */
 export interface SDKUserMessageInput {
   type: 'user'
-  message: { role: 'user'; content: string }
+  /**
+   * content：纯文本，或 Anthropic 多模态块数组（含 image / text）。
+   * 附件注入时图片走 image block，路径说明走 text。
+   */
+  message: {
+    role: 'user'
+    content:
+      | string
+      | Array<
+          | { type: 'text'; text: string }
+          | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+        >
+  }
   parent_tool_use_id: null
   priority?: 'now' | 'next' | 'later'
   uuid?: string
@@ -27,8 +39,19 @@ export interface SDKUserMessageInput {
 export interface AgentQueryInput {
   /** 会话 ID */
   sessionId: string
-  /** 用户 prompt（已包含上下文注入） */
+  /** 用户 prompt（已包含上下文注入；有附件时应已含路径附录） */
   prompt: string
+  /**
+   * 本轮已落盘附件（相对 attachments 根的 localPath）。
+   * kscc 首轮可据此打成 image content block；Pi 主要依赖 prompt 路径附录。
+   */
+  attachments?: Array<{
+    id?: string
+    filename: string
+    mediaType: string
+    localPath: string
+    size?: number
+  }>
   /** 模型 ID */
   model?: string
   /** Agent 工作目录 */

@@ -28,6 +28,10 @@ import type {
 } from '@tagent/shared'
 import { AGENT_IPC_CHANNELS, MEMORY_IPC_CHANNELS, msysPathToWindowsDrivePath } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
+import {
+  appendAttachmentPathsToPrompt,
+  attachImageBlocksToText,
+} from '../agent/build-user-content-with-attachments'
 import { askUserService } from '../agent/agent-ask-user-service'
 import { getAdapter, PiAgentAdapter, type ChannelKind } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
@@ -561,6 +565,11 @@ export class SessionService {
     ipcMain.handle(AGENT_IPC_CHANNELS.READ_ATTACHMENT, async (_e, localPath: string) => {
       const { readAttachmentAsBase64 } = await import('../attachment-service')
       return readAttachmentAsBase64(localPath)
+    })
+
+    ipcMain.handle(AGENT_IPC_CHANNELS.RESOLVE_ATTACHMENT_PATH, async (_e, localPath: string) => {
+      const { getAttachmentAbsolutePath } = await import('../attachment-service')
+      return getAttachmentAbsolutePath(localPath)
     })
 
     ipcMain.handle(AGENT_IPC_CHANNELS.OPEN_FILE_DIALOG, async () => {
@@ -1281,6 +1290,15 @@ export class SessionService {
       }
     }
 
+    // 附件：面板 JSONL 已带 attachments 元数据；此处必须注入运行核可见内容，
+    // 否则 Agent 只看到纯文本（UI「已发送」≠ 核侧收到）。
+    if (normalizedInput.attachments?.length) {
+      normalizedInput.prompt = appendAttachmentPathsToPrompt(
+        normalizedInput.prompt,
+        normalizedInput.attachments,
+      )
+    }
+
     if (isFirst) {
       // 首条或进程重建：记录本轮真实使用的渠道和模型。
       if (!meta) {
@@ -1361,10 +1379,13 @@ export class SessionService {
         modelId,
         turnCount: (meta?.turnCount ?? 0) + 1,
       })
-      // 后续：enqueue
+      // 后续：enqueue。prompt 已含路径附录；图片再打成 image block。
       const userMessage: SDKUserMessageInput = {
         type: 'user',
-        message: { role: 'user', content: normalizedInput.prompt },
+        message: {
+          role: 'user',
+          content: attachImageBlocksToText(normalizedInput.prompt, input.attachments),
+        },
         parent_tool_use_id: null,
       } as unknown as SDKUserMessageInput
       await rt!.sendMessage(
@@ -1482,7 +1503,7 @@ export class SessionService {
     try {
       await runMoaTurn({
         sessionId: input.sessionId,
-        prompt: input.prompt,
+        prompt: appendAttachmentPathsToPrompt(input.prompt, input.attachments),
         channel,
         preset,
         workspaceId,
@@ -1621,7 +1642,7 @@ export class SessionService {
     try {
       await runMoADiscussion({
         sessionId: input.sessionId,
-        prompt: input.prompt,
+        prompt: appendAttachmentPathsToPrompt(input.prompt, input.attachments),
         channel,
         preset,
         workspaceId,
@@ -1764,6 +1785,7 @@ export class SessionService {
       const opts: KsccQueryOptions = {
         sessionId: input.sessionId,
         prompt: input.prompt,
+        attachments: input.attachments,
         model,
         cwd,
         executionMode,
@@ -1883,6 +1905,7 @@ export class SessionService {
     const opts = {
       sessionId: input.sessionId,
       prompt: input.prompt,
+      attachments: input.attachments,
       model,
       cwd,
       executionMode: piExecutionMode,
