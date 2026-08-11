@@ -35,17 +35,14 @@ export const TAGENT_NO_PROGRESS_GUARD_MODE_ENV = 'TAGENT_NO_PROGRESS_GUARD_MODE'
 /**
  * 规范化运行模式。
  *
- * 优先级：环境变量显式值 > 落盘偏好（stored）> {@link NO_PROGRESS_GUARD_DEFAULT_MODE}。
- * 纯函数；`stored` 由主进程 prefs 注入，单测可直接传。
+ * 优先级：`env` 显式值 > 落盘偏好（stored）> {@link NO_PROGRESS_GUARD_DEFAULT_MODE}。
+ * 纯函数、不依赖 Node 全局：主进程传入 `process.env`，单测传 plain Record。
  */
 export function resolveNoProgressGuardMode(
-  env?: Record<string, string | undefined> | NodeJS.ProcessEnv,
+  env?: Record<string, string | undefined> | null,
   stored?: NoProgressGuardMode | null,
 ): NoProgressGuardMode {
-  const source = env ?? (typeof process !== 'undefined' ? process.env : undefined)
-  const raw = source
-    ? (source as Record<string, string | undefined>)[TAGENT_NO_PROGRESS_GUARD_MODE_ENV]
-    : undefined
+  const raw = env?.[TAGENT_NO_PROGRESS_GUARD_MODE_ENV]
   if (raw === 'off' || raw === 'shadow' || raw === 'enforce') return raw
   if (stored === 'off' || stored === 'shadow' || stored === 'enforce') return stored
   return NO_PROGRESS_GUARD_DEFAULT_MODE
