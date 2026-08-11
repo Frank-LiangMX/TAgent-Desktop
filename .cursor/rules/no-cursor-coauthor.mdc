@@ -1,0 +1,13 @@
+---
+description: Never attribute commits to Cursor Agent (no Co-authored-by trailer)
+alwaysApply: true
+---
+
+# No Cursor co-author on commits
+
+When creating git commits or PRs:
+
+- Do **not** add `Co-authored-by: Cursor` / `cursoragent@cursor.com` / `--trailer` attribution.
+- Do **not** add "Made with Cursor" trailers.
+- Prefer plain `git commit -m "..."` with no attribution flags.
+- Author stays the user's configured git identity only.
