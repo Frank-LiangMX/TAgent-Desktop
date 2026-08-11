@@ -186,7 +186,12 @@ function createWindow(): void {
   const isDev = !app.isPackaged
   if (isDev) {
     void win.loadURL('http://localhost:5174')
-    win.webContents.openDevTools()
+    // DevTools 必须在页面加载完成后再开：本窗口 sandbox 默认开启（contextIsolation + !nodeIntegration），
+    // 若在 did-finish-load 前就 openDevTools，会与 sandboxed_renderer.bundle.js 启动竞态，触发一次性报错
+    // `Cannot destructure property 'preloadScripts' of 'binding.startupData' as it is null`（噪音，不影响后续加载）。
+    win.webContents.once('did-finish-load', () => {
+      if (!win.isDestroyed()) win.webContents.openDevTools()
+    })
   } else {
     void win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
   }

@@ -35,6 +35,7 @@ import type {
 import { createMessageChannel, type MessageChannel } from '../shared/message-channel'
 import { getDiscardedMemoryDir } from '../../memory/discarded-memory'
 import { spawnKscc } from './spawn-kscc'
+import { NoProgressGuard, buildNoProgressEventFromDecision } from '../../agent/no-progress-guard'
 import {
   attachImageBlocksToText,
 } from '../../agent/build-user-content-with-attachments'
