@@ -37,11 +37,27 @@ win:
         - x64
   artifactName: TAgent-${version}-${arch}.${ext}
 
+# ── NSIS 安装器品牌化（素材/脚本见 resources/installer/README.md）──
+# oneClick:false = 辅助向导；保留 per-user/per-machine 选择 + 可改目录。
+# installerLanguages:[zh_CN] = 中文为默认（且唯一）语言；silent/update 不受影响。
+# include = installer.nsh：仅 MUI 文案 + 静默守卫的欢迎页，无 nsDialogs/MessageBox。
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   createStartMenuShortcut: true
+  # 图标（多尺寸 .ico，同时用于卸载器，保持视觉一致）
+  installerIcon: installer/installerIcon.ico
+  uninstallerIcon: installer/uninstallerIcon.ico
+  # 辅助向导页眉右侧小标（150x57，安装选项/目录/进度页）
+  installerHeader: installer/installerHeader.bmp
+  # 欢迎/完成页侧图（164x314，安装器与卸载器同源）
+  installerSidebar: installer/installerSidebar.bmp
+  uninstallerSidebar: installer/uninstallerSidebar.bmp
+  installerLanguages:
+    - zh_CN
+  language: "2052"
+  include: installer/installer.nsh
 
 portable:
   artifactName: TAgent-${version}-${arch}-portable.${ext}

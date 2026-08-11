@@ -4,6 +4,7 @@ import { createJSONStorage } from 'jotai/utils'
 import {
   CHAT_PROCESS_DISPLAY_MODES,
   CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY,
+  CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY_V1,
   chatProcessDisplayModeAtom,
   DEFAULT_CHAT_PROCESS_DISPLAY_MODE,
 } from './chat-display-prefs'
@@ -24,14 +25,22 @@ describe('chatProcessDisplayModeAtom 默认与持久化', () => {
     expect(DEFAULT_CHAT_PROCESS_DISPLAY_MODE).toBe('concise')
   })
 
-  test('显式保存为完整 → 仍为完整，默认不强制覆盖', () => {
+  test('v1 残留的完整不影响 v2：仍回退默认简洁', () => {
     const mem = makeMemStorage()
     const storage = createJSONStorage(() => mem)
-    // 空存储 → 回退默认 concise
+    // 模拟升级前写在 v1 key 的 full
+    mem.setItem(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY_V1, JSON.stringify('full'))
     expect(
       storage.getItem(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY, DEFAULT_CHAT_PROCESS_DISPLAY_MODE),
     ).toBe('concise')
-    // 已显式存为完整 → 读到完整，默认不覆盖
+  })
+
+  test('v2 显式保存为完整 → 仍为完整，默认不强制覆盖', () => {
+    const mem = makeMemStorage()
+    const storage = createJSONStorage(() => mem)
+    expect(
+      storage.getItem(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY, DEFAULT_CHAT_PROCESS_DISPLAY_MODE),
+    ).toBe('concise')
     mem.setItem(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY, JSON.stringify('full'))
     expect(
       storage.getItem(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY, DEFAULT_CHAT_PROCESS_DISPLAY_MODE),
@@ -45,14 +54,14 @@ describe('chatProcessDisplayModeAtom 默认与持久化', () => {
     expect(mem.getItem(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY)).toBe(JSON.stringify('concise'))
     storage.setItem(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY, 'full')
     expect(mem.getItem(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY)).toBe(JSON.stringify('full'))
-    // 读回与写入一致
     expect(
       storage.getItem(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY, DEFAULT_CHAT_PROCESS_DISPLAY_MODE),
     ).toBe('full')
   })
 
-  test('持久化 key 不变，保留老用户已存偏好（旧配置回退）', () => {
-    expect(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY).toBe('tagent:chatProcessDisplayMode')
+  test('持久化 key 为 v2，刻意不读 v1（避免旧默认 full 残留）', () => {
+    expect(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY).toBe('tagent:chatProcessDisplayMode:v2')
+    expect(CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY_V1).toBe('tagent:chatProcessDisplayMode')
   })
 
   test('完整模式仍可手动选择，未隐藏/删除', () => {

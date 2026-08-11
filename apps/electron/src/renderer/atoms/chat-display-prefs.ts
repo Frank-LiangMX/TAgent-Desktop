@@ -15,20 +15,24 @@ export const CHAT_PROCESS_DISPLAY_MODES = ['concise', 'full'] as const
 /**
  * 无显式选择 / 旧配置缺失时的默认展示模式。
  * 设为「简洁」：默认收起一行摘要、点开再看完整过程（对齐 Cursor）。
- * 已显式保存为「完整」的偏好由 localStorage 持久化值保留，不被此默认覆盖。
  */
 export const DEFAULT_CHAT_PROCESS_DISPLAY_MODE: ChatProcessDisplayMode = 'concise'
 
 /**
- * localStorage 持久化 key。勿改：改名会让已保存偏好的老用户读不到旧值、
- * 回退到默认，等于静默丢弃其显式选择。
+ * localStorage 持久化 key（v2）。
+ * v1（`tagent:chatProcessDisplayMode`）时代默认是 full，许多用户磁盘里残留 full，
+ * 导致升级默认 concise 后仍每次启动回到「完整」。v2 刻意换 key：全体回到默认简洁；
+ * 之后用户若再选手动「完整」会写到 v2 key，跨启动保留。
  */
-export const CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY = 'tagent:chatProcessDisplayMode'
+export const CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY = 'tagent:chatProcessDisplayMode:v2'
+
+/** 仅供清理/文档：v1 key，运行时不再读取 */
+export const CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY_V1 = 'tagent:chatProcessDisplayMode'
 
 /**
  * full — live 自动展开思考全文 + 工具行
  * concise — 默认收起一行摘要，点开再看完整过程（对齐 Cursor）
- * 默认 concise；atomWithStorage 读取时存储值优先于默认，故显式选过完整的用户保持完整。
+ * 默认 concise；atomWithStorage 读取时存储值优先于默认。
  */
 export const chatProcessDisplayModeAtom = atomWithStorage<ChatProcessDisplayMode>(
   CHAT_PROCESS_DISPLAY_MODE_STORAGE_KEY,

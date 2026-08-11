@@ -274,8 +274,8 @@ export function ModelSelector({
             value={processDisplayMode}
             onValueChange={(v) => setProcessDisplayMode(v as ChatProcessDisplayMode)}
           >
-            <SegmentedTabsItem value="full">完整过程</SegmentedTabsItem>
             <SegmentedTabsItem value="concise">简洁</SegmentedTabsItem>
+            <SegmentedTabsItem value="full">完整过程</SegmentedTabsItem>
           </SegmentedTabs>
         </div>
 

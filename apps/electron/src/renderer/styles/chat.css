@@ -15,8 +15,22 @@
   max-width: var(--conversation-max, 1037px);
   margin-inline: auto;
   padding-top: 22px;
-  padding-left: 5px;
-  padding-right: 5px;
+  /* 左右对称即可；刻度轨占位由外层 .session-conversation-pad 承担 */
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+/*
+ * 消息区左右 gutter：左侧为 ScrollMinimap 刻度轨（left≈10px + w-7≈28px）留槽，
+ * 再加与右侧同量级的呼吸边距，避免正文贴刻度（对照 Codex 左 gutter）。
+ */
+.session-conversation-pad {
+  --session-minimap-rail-reserve: 28px;
+  --session-minimap-rail-gap: 14px;
+  padding-left: calc(
+    var(--session-minimap-rail-reserve) + var(--session-minimap-rail-gap) + 0.75rem
+  ); /* ≈28+14+12 = 54px */
+  padding-right: 1.25rem; /* 20px */
 }
 
 /*

@@ -54,7 +54,17 @@ export function TabBarItem({
       </button>
       <button
         type="button"
+        // 与 DockTab 一致：按下阶段就拦住激活，避免关非当前标签时先跳过去
+        onPointerDown={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+        }}
+        onMouseDown={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+        }}
         onClick={(e) => {
+          e.preventDefault()
           e.stopPropagation()
           onClose()
         }}

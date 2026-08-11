@@ -2,7 +2,7 @@
  * 会话列表侧栏 — D 方案(形态重构 + 状态色点 + 工作区分组 + 已归档 + 动效)
  *
  * 结构:顶行 → 搜索行 → 打开中（纯展示页面可见会话）→ 滚动列表 → 已归档底栏
- * 打开中：分屏下为各组当前露出的 chat，不是全部标签；无点击/关闭。
+ * 打开中：主区当前看得见的 chat（分屏=各组 active pane；非分屏=当前激活 tab），不是全部标签；无点击/关闭。
  * 列表 is-open 与打开中同源；点击仍 open+focus（幂等）。
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
@@ -50,6 +50,7 @@ import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
 import { allPendingAskUserRequestsAtom } from '../../atoms/ask-user-atoms'
 import { tabsAtom, activeTabIdAtom, closeTab } from '../../atoms/tabs'
 import { dockApiAtom, visibleSessionsAtom } from '../../atoms/dock-api'
+import { resolveVisibleSessionChips } from './resolve-visible-session-chips'
 import { splitDockModeAtom } from '../../atoms/feature-flags'
 
 interface SessionMeta {
@@ -169,8 +170,8 @@ export function SessionSidebar({
   const markTurnEnded = useSetAtom(markSessionTurnEndedAtom)
   const acknowledgeStatus = useSetAtom(acknowledgeSessionStatusAtom)
 
-  // tabsAtom = 打开的标签工作集；visibleSessions = 分屏主区当前露出的会话。
-  // 「打开中」条与列表 is-open：分屏时用可见会话，否则用 tabs 工作集。
+  // tabsAtom = 打开的标签工作集（可含后台 tab）；visibleSessions = 分屏各组当前露出的会话。
+  // 「打开中」条与列表 is-open：只跟主区看得见的会话，不跟整份 tabs 工作集。
   const openTabs = useAtomValue(tabsAtom)
   const activeTabId = useAtomValue(activeTabIdAtom)
   const setTabs = useSetAtom(tabsAtom)
@@ -178,19 +179,13 @@ export function SessionSidebar({
   const dockApi = useAtomValue(dockApiAtom)
   const splitDockMode = useAtomValue(splitDockModeAtom)
   const visibleSessions = useAtomValue(visibleSessionsAtom)
-  const titleByTabId = new Map(openTabs.map((t) => [t.sessionId, t.title]))
-  const activeSessionChips =
-    splitDockMode && visibleSessions.length > 0
-      ? visibleSessions.map((v) => ({
-          id: v.sessionId,
-          sessionId: v.sessionId,
-          title: titleByTabId.get(v.sessionId) ?? v.title,
-        }))
-      : openTabs.map((t) => ({
-          id: t.id,
-          sessionId: t.sessionId,
-          title: t.title,
-        }))
+  const activeSessionChips = resolveVisibleSessionChips({
+    splitDockMode,
+    visibleSessions,
+    openTabs,
+    activeTabId,
+    activeSessionId,
+  })
   const openSessionIds = new Set(activeSessionChips.map((t) => t.sessionId))
   /** 标签工作集（含同组后台 tab）；删会话/工作区判断用，不等于页面可见集 */
   const tabSessionIds = new Set(openTabs.map((t) => t.sessionId))
@@ -540,9 +535,9 @@ export function SessionSidebar({
         </div>
       </div>
 
-      {/* 打开中：纯展示「页面可见」会话（分屏=各组 active pane；非分屏=tabs 工作集） */}
+      {/* 打开中：纯展示主区当前看得见的会话（分屏=各组 active pane；非分屏=当前激活 tab） */}
       {activeSessionChips.length > 0 && (
-        <div className="open-rail" aria-label="活跃会话">
+        <div className="open-rail" aria-label="当前可见会话">
           {activeSessionChips.map((tab, i) => (
             <AppTooltip key={tab.id} label={tab.title} side="bottom" multiline>
               <div className="open-chip">

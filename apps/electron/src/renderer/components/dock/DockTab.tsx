@@ -9,8 +9,8 @@
  * 自动刷新。必须订阅 api.onDidActiveChange / onDidTitleChange 才能让 data-active
  * 与标题跟原 TabBar 一样实时更新。
  *
- * 注意：原 TabBar 有运行状态点（sessionRunMapAtom），但该 atom 在 feat/run-timer 分支
- * 未合并到此分支；此处暂不显状态点，合并后补。
+ * 关闭：× 在 pointerdown 上 preventDefault+stopPropagation（对齐 DockviewDefaultTab），
+ * 避免 Dockview 先激活再关闭导致「关非当前标签时内容弹跳」。
  */
 import { useEffect, useState } from 'react'
 import { useAtomValue } from 'jotai'
@@ -120,7 +120,18 @@ export function DockTab(props: IDockviewPanelHeaderProps<DockTabParams>): JSX.El
       </AppTooltip>
       <button
         type="button"
+        // 对齐 DockviewDefaultTab：× 的 pointerdown 必须 preventDefault，
+        // 否则 Dockview 会先 setActive 再 close → 关非当前标签时内容/底板弹跳。
+        onPointerDown={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+        }}
+        onMouseDown={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+        }}
         onClick={(e) => {
+          e.preventDefault()
           e.stopPropagation()
           api.close()
         }}

@@ -2412,7 +2412,7 @@ export function Chat({
               effectiveScrollReady && !streamTransitioning ? 'smooth' : 'instant'
             }
           >
-            <ConversationContent className="session-conversation-pad px-4 pt-2 pb-44">
+            <ConversationContent className="session-conversation-pad pt-2 pb-44">
               <div className="tagent-thread">
               {/* 虚拟化加载提示：未全挂时常驻显示（说清楚在加载、剩多少条），不闪烁 */}
               {!fullyMounted && items.length > 0 && (

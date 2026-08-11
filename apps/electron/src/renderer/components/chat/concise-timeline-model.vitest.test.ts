@@ -79,6 +79,15 @@ describe('summarizeWorkStage', () => {
       '编辑了 2 个文件，探索了 1 个文件，2 次搜索，运行了 1 条命令',
     )
   })
+
+  it('single-file edit uses filename (Cursor Edited Foo.tsx), not「编辑了 1 个文件」', () => {
+    const tools = [
+      tool('Edit', 'e1', {
+        file_path: 'apps/electron/src/renderer/components/settings/CliWorkersSettingsSection.tsx',
+      }, true, 'Updated +5 -5'),
+    ] as Extract<ProcessEntry, { type: 'tool' }>[]
+    expect(summarizeWorkStage(tools)).toBe('编辑了 CliWorkersSettingsSection.tsx')
+  })
 })
 
 describe('extractDiffHint / live status', () => {
@@ -189,7 +198,7 @@ describe('buildConciseTimeline', () => {
       if (mid.kind === 'thinking') expect(mid.thinking).toContain('**pi')
       expect(stage.diffAdd).toBe(10)
       expect(stage.diffDel).toBe(2)
-      expect(getWorkStepLabel(stage.steps[3]!)).toBe('编辑 a.ts')
+      expect(getWorkStepLabel(stage.steps[3]!)).toBe('编辑了 a.ts')
     }
   })
 

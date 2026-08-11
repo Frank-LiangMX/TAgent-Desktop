@@ -193,15 +193,11 @@ export function summarizeToolCluster(
   return pending ? `正在执行 ${tools.length} 步` : `执行了 ${tools.length} 步`
 }
 
-function countUniqueFiles(tools: ToolProcessEntry[]): number {
-  const names = tools.map((t) => toolFileHint(t)).filter(Boolean) as string[]
-  return new Set(names).size || tools.length
-}
-
 /**
  * 阶段摘要：编辑了 N 个文件，探索了 M 个文件，K 次搜索，运行了 C 条命令
  * 对齐 Cursor「Edited 7 files, explored 2 files…」——live 也用完成态措辞，
  * 只累积计数，避免顶栏「正在…」随工具切换掠过。
+ * 单文件编辑例外：写「编辑了 Foo.tsx」，对齐 Cursor「Edited Foo.tsx +N -M」。
  */
 export function summarizeWorkStage(tools: ToolProcessEntry[]): string {
   if (tools.length === 0) return '执行'
@@ -218,8 +214,16 @@ export function summarizeWorkStage(tools: ToolProcessEntry[]): string {
 
   const parts: string[] = []
   if (buckets.edit.length) {
-    const n = countUniqueFiles(buckets.edit)
-    parts.push(`编辑了 ${n} 个文件`)
+    const names = buckets.edit
+      .map((t) => toolFileHint(t))
+      .filter(Boolean) as string[]
+    const unique = [...new Set(names)]
+    // 单文件：直接「编辑了 Foo.tsx」，对齐 Cursor「Edited Foo.tsx +N -M」；勿写「编辑了 1 个文件」
+    if (unique.length === 1) {
+      parts.push(`编辑了 ${unique[0]}`)
+    } else {
+      parts.push(`编辑了 ${unique.length || buckets.edit.length} 个文件`)
+    }
   }
   if (buckets.explore.length) {
     const n = buckets.explore.length
@@ -359,7 +363,8 @@ export function getWorkStepLabel(
     return short ? `搜索 ${short}` : '搜索'
   }
   if (family === 'edit') {
-    return file ? `编辑 ${file}` : '编辑文件'
+    // 对齐 Cursor「Edited Foo.tsx」；+N -M 由 StageStepRow DiffHint 另挂
+    return file ? `编辑了 ${file}` : '编辑了文件'
   }
   if (family === 'explore' && /^read$/i.test(name)) {
     const offset = typeof input.offset === 'number' ? input.offset : undefined

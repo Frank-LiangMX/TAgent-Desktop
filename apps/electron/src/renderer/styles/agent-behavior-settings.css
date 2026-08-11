@@ -358,19 +358,16 @@
   background: color-mix(in srgb, var(--spatial-ink) 8%, transparent);
   color: var(--spatial-muted);
 }
-.cli-workers-check {
+.cli-workers-enable {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+}
+.cli-workers-enable-lab {
   color: var(--spatial-muted);
   font-size: 11px;
-  cursor: pointer;
+  font-weight: 500;
   user-select: none;
-  flex: 0 0 auto;
-}
-.cli-workers-check input {
-  margin: 0;
-  accent-color: var(--spatial-ink);
 }
 .cli-workers-advanced-toggle {
   display: inline-flex;
@@ -391,129 +388,75 @@
 .cli-workers-advanced-toggle.is-open svg {
   transform: rotate(180deg);
 }
-.cli-workers-advanced {
+
+/* ── 高级：按工人卡片（对齐 agent-behavior-editor-group） ── */
+.cli-workers-adv-cards {
   display: flex;
   flex-direction: column;
+  gap: 10px;
+}
+.cli-workers-adv-hint {
+  margin: 0;
+  padding: 0 2px;
+  color: var(--spatial-faint);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.cli-workers-adv-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 12px 14px;
   border: 1px solid color-mix(in srgb, var(--spatial-ink) 10%, transparent);
   border-radius: 12px;
-  overflow: hidden;
   background: var(--settings-chip-fill, transparent);
 }
-/* 紧凑行：id + 两列输入，避免 SettingsInput 左右大留白 */
-.cli-workers-adv-row {
-  display: grid;
-  grid-template-columns: 56px 1fr 1fr;
-  gap: 8px 10px;
+.cli-workers-adv-card-head {
+  display: flex;
   align-items: center;
-  padding: 8px 10px;
-  border-bottom: 1px solid color-mix(in srgb, var(--spatial-ink) 8%, transparent);
+  justify-content: space-between;
+  gap: 10px;
 }
-.cli-workers-adv-row:last-child {
-  border-bottom: none;
-}
-.cli-workers-adv-id {
+.cli-workers-adv-card-title {
   color: var(--spatial-ink);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
   letter-spacing: -0.01em;
 }
-.cli-workers-field {
+.cli-workers-adv-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cli-workers-adv-cap-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 12px;
+}
+.cli-workers-adv-switch-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-width: 0;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
 }
-.cli-workers-field-lab {
-  flex: 0 0 auto;
-  color: var(--spatial-muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.cli-workers-field-inp {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 28px;
-  border: 1px solid color-mix(in srgb, var(--spatial-ink) 12%, transparent);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--spatial-ink) 3%, transparent);
-  color: var(--spatial-ink);
-  padding: 0 8px;
-  font-size: 12px;
-  line-height: 28px;
-  outline: none;
-}
-.cli-workers-field-inp:focus {
-  border-color: color-mix(in srgb, var(--spatial-ink) 28%, transparent);
-}
-.cli-workers-field-inp:disabled {
-  opacity: 0.55;
-}
-.cli-workers-field-inp::placeholder {
-  color: var(--spatial-muted);
-  opacity: 0.75;
-}
-/* 探测路径单独占满一行，贴在该 CLI 行下方 */
-.cli-workers-adv-row .cli-workers-path {
-  grid-column: 1 / -1;
-  margin-top: -2px;
+.cli-workers-path {
+  margin: 0;
   color: var(--spatial-muted);
   font-size: 10px;
   line-height: 1.35;
   word-break: break-all;
   opacity: 0.9;
 }
-
-/* 能力画像行：成本 / 推理 / 视觉 / 适用场景，占满高级行下方，复用 .cli-workers-field 视觉 */
-.cli-workers-cap-row {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: 56px 110px 110px 96px minmax(0, 1fr);
-  gap: 8px 10px;
-  align-items: center;
-  margin-top: 2px;
-  padding-top: 7px;
-  border-top: 1px solid color-mix(in srgb, var(--spatial-ink) 6%, transparent);
-}
-.cli-workers-cap-label {
-  color: var(--spatial-muted);
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  white-space: nowrap;
-}
-.cli-workers-cap-row .cli-workers-field {
-  min-width: 0;
-}
-.cli-workers-cap-row .cli-workers-check {
-  height: 28px;
-}
-/* 适用场景输入占满剩余空间 */
-.cli-workers-cap-row .cli-workers-field--grow {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-/* 成本 / 推理下拉收窄，避免与路径/模型同宽 */
-.cli-workers-cap-select {
-  width: 100%;
-  min-width: 0;
+/* Input 组件默认 UA 类与 agent-behavior-input 并用时，以后者为准 */
+.cli-workers-adv-card .agent-behavior-input {
+  height: 34px;
+  box-shadow: none;
 }
 
 @media (max-width: 640px) {
-  .cli-workers-adv-row {
+  .cli-workers-adv-cap-grid {
     grid-template-columns: 1fr;
-    gap: 6px;
-  }
-  .cli-workers-cap-row {
-    grid-template-columns: 1fr 1fr;
-  }
-  .cli-workers-cap-label {
-    grid-column: 1 / -1;
-  }
-  .cli-workers-cap-row .cli-workers-check {
-    grid-column: 1 / -1;
-  }
-  .cli-workers-cap-row .cli-workers-field--grow {
-    grid-column: 1 / -1;
   }
 }
 

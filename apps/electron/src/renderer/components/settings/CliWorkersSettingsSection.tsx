@@ -5,6 +5,7 @@
  * - 委派积极性（全局默认；会话可单独覆盖）
  * - 默认后端：内置（进程内）| 本机 CLI
  * - 本机 CLI 时：启用池 + 优先级排序（列表顺序）；主会话 task 可指定 cli，省略则按序自动选
+ * - 高级：按工人卡片编辑路径 / 模型 / 能力画像（控件对齐会诊页，不用原生 select/checkbox）
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAtom } from 'jotai'
@@ -16,9 +17,16 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import {
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   SettingsCard,
   SettingsSelect,
   SettingsSection,
+  Switch,
 } from '@tagent/ui'
 import {
   moveWorkerPriority,
@@ -45,13 +53,41 @@ import {
 
 type Notice = { kind: 'success' | 'error'; message: string } | null
 
+type ProbeBadge = { cls: string; text: string }
+
 function workerLabel(id: string): string {
   return id
+}
+
+function probeBadgeOf(
+  probe: CliWorkerProbeItem | undefined,
+  supported: boolean,
+  probing: boolean,
+): ProbeBadge {
+  if (probing) return { cls: 'is-pending', text: '…' }
+  if (!probe) return { cls: 'is-unknown', text: '未检测' }
+  if (probe.available && supported) return { cls: 'is-ok', text: '可用' }
+  if (probe.available && !supported) return { cls: 'is-miss', text: '已检测·暂不支持派工' }
+  return { cls: 'is-miss', text: '未找到' }
 }
 
 const BACKEND_OPTIONS: Array<{ value: CliWorkerBackend; label: string }> = [
   { value: 'in-process', label: '内置子代理' },
   { value: 'cli', label: '本机 CLI' },
+]
+
+const COST_OPTIONS = [
+  { value: '1', label: '最便宜' },
+  { value: '2', label: '较便宜' },
+  { value: '3', label: '适中' },
+  { value: '4', label: '较贵' },
+  { value: '5', label: '最贵' },
+]
+
+const REASONING_OPTIONS: Array<{ value: CliReasoning; label: string }> = [
+  { value: 'low', label: '低 · 轻量任务' },
+  { value: 'medium', label: '中 · 常规' },
+  { value: 'high', label: '高 · 难推理' },
 ]
 
 export function CliWorkersSettingsSection(): JSX.Element {
@@ -62,7 +98,7 @@ export function CliWorkersSettingsSection(): JSX.Element {
   const [dirty, setDirty] = useState(false)
   const [probeMap, setProbeMap] = useState<Record<string, CliWorkerProbeItem>>({})
   const [probing, setProbing] = useState(false)
-  /** 高级：路径 / 模型 */
+  /** 高级：路径 / 模型 / 能力 */
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [eagernessRaw, setEagernessRaw] = useAtom(subagentEagernessDefaultAtom)
   const eagerness = readSubagentEagernessDefault(eagernessRaw)
@@ -114,7 +150,7 @@ export function CliWorkersSettingsSection(): JSX.Element {
     }
   }, [setCfg])
 
-  /** 仅用户点击时探测——进页不扫；后端先对账落盘（新增已安装 / 移除未安装占位 / 保留自定义），再探测并拉回对账后的工人列表 */
+  /** 仅用户点击时探测——进页不扫；后端先对账落盘，再探测并拉回对账后的工人列表 */
   const runProbe = useCallback(async (): Promise<void> => {
     setProbing(true)
     showNotice(null)
@@ -125,7 +161,6 @@ export function CliWorkersSettingsSection(): JSX.Element {
       const map: Record<string, CliWorkerProbeItem> = {}
       for (const w of snap.workers) map[w.id] = w
       setProbeMap(map)
-      // 后端对账可能新增/移除工人行：拉回对账后的配置，保证 probe 徽标与列表行对齐
       await reload()
       const ok = snap.workers.filter((w) => w.available).length
       const total = snap.workers.length
@@ -171,11 +206,6 @@ export function CliWorkersSettingsSection(): JSX.Element {
     [setCfg, showNotice],
   )
 
-  /**
-   * 默认后端：内置 ↔ 本机 CLI。
-   * 内置：enabled=false + in-process。
-   * 本机 CLI：enabled=true + cli（task 从启用池按优先级/指定 cli 挑选）。
-   */
   const handleBackendChange = useCallback(
     (backend: string): void => {
       const cur = cfgRef.current
@@ -240,13 +270,6 @@ export function CliWorkersSettingsSection(): JSX.Element {
     void save(cur, '已保存')
   }, [dirty, save])
 
-  /**
-   * 能力画像编辑（成本 / 推理 / 视觉 / 适用场景）。
-   * 基础 = resolveWorkerCapability(w)：旧配置无 capability 时给中性默认
-   * （cost 3 / medium / text），编辑即落显式 capability 字段，保证对象完整。
-   * cost / reasoning / goodFor 走 onChange + onBlur 保存（复用 updateWorkerField 模式）；
-   * vision 开关无 blur，单独 handleWorkerVisionToggle 直接 save。
-   */
   const updateWorkerCapability = useCallback(
     (id: string, patch: Partial<CliWorkerCapability>): void => {
       const cur = cfgRef.current
@@ -264,28 +287,32 @@ export function CliWorkersSettingsSection(): JSX.Element {
     [setCfg],
   )
 
-  /** 视觉开关：checkbox 无 blur，onChange 直接落盘（镜像 handleWorkerToggle 模式）。 */
-  const handleWorkerVisionToggle = useCallback(
-    (id: string, vision: boolean): void => {
+  /** 能力字段即时落盘（Select / Switch 无可靠 blur） */
+  const saveWorkerCapability = useCallback(
+    (id: string, patch: Partial<CliWorkerCapability>): void => {
       const cur = cfgRef.current
       if (!cur) return
       const next: CliWorkersConfig = {
         ...cur,
         workers: cur.workers.map((x) =>
           x.id === id
-            ? {
-                ...x,
-                capability: {
-                  ...resolveWorkerCapability(x),
-                  modalities: vision ? ['text', 'vision'] : ['text'],
-                },
-              }
+            ? { ...x, capability: { ...resolveWorkerCapability(x), ...patch } }
             : x,
         ),
       }
+      setDirty(false)
       void save(next, '已保存')
     },
     [save],
+  )
+
+  const handleWorkerVisionToggle = useCallback(
+    (id: string, vision: boolean): void => {
+      saveWorkerCapability(id, {
+        modalities: vision ? ['text', 'vision'] : ['text'],
+      })
+    },
+    [saveWorkerCapability],
   )
 
   if (!cfg) {
@@ -360,11 +387,9 @@ export function CliWorkersSettingsSection(): JSX.Element {
         <SettingsSection
           title="本机 CLI 工人池"
           description={
-            '工人池 = 启动时自动探测本机已安装的 coding CLI + 手动添加的自定义工人；未找到的目录项不再占位。' +
-            (enabledOrder.length > 0
-              ? ` 启用顺序即优先级：${enabledOrder.join(' > ')}；主会话可用 task.cli 指定，省略则按此序选第一个本机可用的。`
-              : ' 至少启用一个 CLI；列表越靠上优先级越高。') +
-            ' 高级里可编辑各工人能力画像（成本 / 推理 / 视觉 / 适用场景），主会话 task 按 require / prefer 挑选。'
+            enabledOrder.length > 0
+              ? `检测本机已安装的 coding CLI；启用顺序即优先级（当前 ${enabledOrder.join(' › ')}）。`
+              : '检测本机已安装的 coding CLI；至少启用一个，列表越靠上优先级越高。'
           }
         >
           <div className="cli-workers-toolbar">
@@ -378,7 +403,7 @@ export function CliWorkersSettingsSection(): JSX.Element {
               {probing ? '检测中…' : '检测本机'}
             </button>
             <span className="cli-workers-toolbar-hint">
-              先对账本机已安装（新增 / 移除占位）再检测可用性。
+              对账已安装项后检测可用性；高级里可改路径、模型与能力画像。
             </span>
           </div>
 
@@ -389,13 +414,7 @@ export function CliWorkersSettingsSection(): JSX.Element {
                 ? enabledOrder.indexOf(w.id) + 1
                 : 0
               const supported = SUPPORTED_CLI_WORKER_IDS.includes(w.id)
-              let badge: { cls: string; text: string }
-              if (probing) badge = { cls: 'is-pending', text: '…' }
-              else if (!probe) badge = { cls: 'is-unknown', text: '未检测' }
-              else if (probe.available && supported) badge = { cls: 'is-ok', text: '可用' }
-              else if (probe.available && !supported)
-                badge = { cls: 'is-miss', text: '已检测·暂不支持派工' }
-              else badge = { cls: 'is-miss', text: '未找到' }
+              const badge = probeBadgeOf(probe, supported, probing)
 
               return (
                 <div
@@ -441,15 +460,16 @@ export function CliWorkersSettingsSection(): JSX.Element {
                         <ChevronDown size={14} />
                       </button>
                     </div>
-                    <label className="cli-workers-check">
-                      <input
-                        type="checkbox"
+                    <div className="cli-workers-enable">
+                      <span className="cli-workers-enable-lab">启用</span>
+                      <Switch
+                        size="sm"
                         checked={w.enabled}
                         disabled={saving}
-                        onChange={(e) => handleWorkerToggle(w.id, e.target.checked)}
+                        aria-label={`${w.enabled ? '停用' : '启用'} ${w.id}`}
+                        onCheckedChange={(on) => handleWorkerToggle(w.id, on)}
                       />
-                      <span>启用</span>
-                    </label>
+                    </div>
                   </div>
                 </div>
               )
@@ -466,105 +486,124 @@ export function CliWorkersSettingsSection(): JSX.Element {
           </button>
 
           {advancedOpen && (
-            <div className="cli-workers-advanced">
+            <div className="cli-workers-adv-cards">
+              <p className="cli-workers-adv-hint">
+                相对成本越大越贵；推理越高越吃重任务。主会话 task 会按这些档位挑选工人。
+              </p>
               {cfg.workers.map((w) => {
                 const probe = probeMap[w.id]
+                const supported = SUPPORTED_CLI_WORKER_IDS.includes(w.id)
+                const badge = probeBadgeOf(probe, supported, probing)
                 const cap = resolveWorkerCapability(w)
                 const hasVision = (cap.modalities ?? ['text']).includes('vision')
+
                 return (
-                  <div key={w.id} className="cli-workers-adv-row">
-                    <div className="cli-workers-adv-id">{workerLabel(w.id)}</div>
-                    <label className="cli-workers-field">
-                      <span className="cli-workers-field-lab">路径</span>
-                      <input
-                        className="cli-workers-field-inp"
-                        value={w.bin}
-                        onChange={(e) => updateWorkerField(w.id, { bin: e.target.value })}
-                        onBlur={handleWorkerBlur}
-                        placeholder={w.id}
-                        disabled={saving}
-                        spellCheck={false}
-                      />
-                    </label>
-                    <label className="cli-workers-field">
-                      <span className="cli-workers-field-lab">模型</span>
-                      <input
-                        className="cli-workers-field-inp"
-                        value={w.defaultModel ?? ''}
-                        onChange={(e) =>
-                          updateWorkerField(w.id, {
-                            defaultModel: e.target.value || undefined,
-                          })
-                        }
-                        onBlur={handleWorkerBlur}
-                        placeholder="CLI 默认"
-                        disabled={saving}
-                        spellCheck={false}
-                      />
-                    </label>
-                    {probe?.resolvedPath && probe.resolvedPath !== w.bin && (
-                      <div className="cli-workers-path" title={probe.resolvedPath}>
-                        探测到 {probe.resolvedPath}
-                      </div>
-                    )}
-                    <div className="cli-workers-cap-row">
-                      <span
-                        className="cli-workers-cap-label"
-                        title="成本：1 最便宜 ~ 5 最贵（相对档，task prefer.costMax 过滤、prefer 打分越低越优）；推理：require.reasoningMin 过滤；视觉：require.vision 过滤；适用场景：注入能力卡供主 Agent 自选"
-                      >
-                        能力
-                      </span>
-                      <label className="cli-workers-field">
-                        <span className="cli-workers-field-lab">成本</span>
-                        <select
-                          className="cli-workers-field-inp cli-workers-cap-select"
-                          value={String(cap.cost)}
-                          onChange={(e) =>
-                            updateWorkerCapability(w.id, {
-                              cost: Number(e.target.value) as CliWorkerCapability['cost'],
-                            })
-                          }
+                  <div key={w.id} className="cli-workers-adv-card">
+                    <div className="cli-workers-adv-card-head">
+                      <span className="cli-workers-adv-card-title">{workerLabel(w.id)}</span>
+                      <span className={`cli-workers-badge ${badge.cls}`}>{badge.text}</span>
+                    </div>
+
+                    {/* 扁平字段：不再叠「运行时 / 能力画像」中间标题 */}
+                    <div className="cli-workers-adv-stack">
+                      <label className="agent-behavior-field">
+                        <span className="agent-behavior-field-label">可执行路径</span>
+                        <Input
+                          className="agent-behavior-input agent-behavior-input--mono"
+                          value={w.bin}
+                          onChange={(e) => updateWorkerField(w.id, { bin: e.target.value })}
                           onBlur={handleWorkerBlur}
+                          placeholder={w.id}
                           disabled={saving}
-                        >
-                          {[1, 2, 3, 4, 5].map((n) => (
-                            <option key={n} value={String(n)}>
-                              {n}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="cli-workers-field">
-                        <span className="cli-workers-field-lab">推理</span>
-                        <select
-                          className="cli-workers-field-inp cli-workers-cap-select"
-                          value={cap.reasoning}
-                          onChange={(e) =>
-                            updateWorkerCapability(w.id, {
-                              reasoning: e.target.value as CliReasoning,
-                            })
-                          }
-                          onBlur={handleWorkerBlur}
-                          disabled={saving}
-                        >
-                          <option value="low">低</option>
-                          <option value="medium">中</option>
-                          <option value="high">高</option>
-                        </select>
-                      </label>
-                      <label className="cli-workers-check">
-                        <input
-                          type="checkbox"
-                          checked={hasVision}
-                          onChange={(e) => handleWorkerVisionToggle(w.id, e.target.checked)}
-                          disabled={saving}
+                          spellCheck={false}
                         />
-                        <span>视觉</span>
+                        {probe?.resolvedPath && probe.resolvedPath !== w.bin && (
+                          <span className="cli-workers-path" title={probe.resolvedPath}>
+                            探测到 {probe.resolvedPath}
+                          </span>
+                        )}
                       </label>
-                      <label className="cli-workers-field cli-workers-field--grow">
-                        <span className="cli-workers-field-lab">适用场景</span>
-                        <input
-                          className="cli-workers-field-inp"
+                      <label className="agent-behavior-field">
+                        <span className="agent-behavior-field-label">默认模型</span>
+                        <Input
+                          className="agent-behavior-input agent-behavior-input--mono"
+                          value={w.defaultModel ?? ''}
+                          onChange={(e) =>
+                            updateWorkerField(w.id, {
+                              defaultModel: e.target.value || undefined,
+                            })
+                          }
+                          onBlur={handleWorkerBlur}
+                          placeholder="留空则用 CLI 自带默认"
+                          disabled={saving}
+                          spellCheck={false}
+                        />
+                      </label>
+
+                      <div className="cli-workers-adv-cap-grid">
+                        <label className="agent-behavior-field">
+                          <span className="agent-behavior-field-label">相对成本</span>
+                          <Select
+                            value={String(cap.cost)}
+                            onValueChange={(v) =>
+                              saveWorkerCapability(w.id, {
+                                cost: Number(v) as CliWorkerCapability['cost'],
+                              })
+                            }
+                            disabled={saving}
+                          >
+                            <SelectTrigger className="agent-behavior-input agent-behavior-select">
+                              <SelectValue placeholder="选择成本档" />
+                            </SelectTrigger>
+                            <SelectContent className="scrollbar-thin !z-[130]">
+                              {COST_OPTIONS.map((o) => (
+                                <SelectItem key={o.value} value={o.value}>
+                                  {o.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </label>
+                        <label className="agent-behavior-field">
+                          <span className="agent-behavior-field-label">推理强度</span>
+                          <Select
+                            value={cap.reasoning}
+                            onValueChange={(v) =>
+                              saveWorkerCapability(w.id, {
+                                reasoning: v as CliReasoning,
+                              })
+                            }
+                            disabled={saving}
+                          >
+                            <SelectTrigger className="agent-behavior-input agent-behavior-select">
+                              <SelectValue placeholder="选择强度" />
+                            </SelectTrigger>
+                            <SelectContent className="scrollbar-thin !z-[130]">
+                              {REASONING_OPTIONS.map((o) => (
+                                <SelectItem key={o.value} value={o.value}>
+                                  {o.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </label>
+                      </div>
+
+                      <div className="cli-workers-adv-switch-row">
+                        <span className="agent-behavior-field-label">支持看图（视觉）</span>
+                        <Switch
+                          size="sm"
+                          checked={hasVision}
+                          disabled={saving}
+                          aria-label={`${hasVision ? '关闭' : '开启'} ${w.id} 视觉`}
+                          onCheckedChange={(on) => handleWorkerVisionToggle(w.id, on)}
+                        />
+                      </div>
+
+                      <label className="agent-behavior-field">
+                        <span className="agent-behavior-field-label">一句话适用场景</span>
+                        <Input
+                          className="agent-behavior-input"
                           value={cap.goodFor ?? ''}
                           onChange={(e) =>
                             updateWorkerCapability(w.id, {
@@ -572,7 +611,7 @@ export function CliWorkersSettingsSection(): JSX.Element {
                             })
                           }
                           onBlur={handleWorkerBlur}
-                          placeholder="一句话适用场景"
+                          placeholder="例如：改前端、跑命令、长上下文读代码"
                           disabled={saving}
                           spellCheck={false}
                         />

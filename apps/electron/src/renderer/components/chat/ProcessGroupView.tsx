@@ -70,7 +70,7 @@ export function ProcessGroupView({
   isLive,
   isStreaming = false,
   autoExpandWhenLive = true,
-  displayMode = 'full',
+  displayMode = 'concise',
   thinkingDurationSec,
   hasFinalOutput = false,
 }: ProcessGroupViewProps): JSX.Element | null {
@@ -264,7 +264,7 @@ export const ThinkingActivityRow = memo(function ThinkingActivityRow({
   thinking,
   isLive,
   durationSec,
-  displayMode: _displayMode = 'full',
+  displayMode: _displayMode = 'concise',
 }: {
   thinking: string
   /** 本段是当前正在写的思考（整轮 live 时只有最后一段为真） */

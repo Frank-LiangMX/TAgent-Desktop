@@ -8,8 +8,8 @@
 | 概念 | 真相源 | UI |
 |------|--------|-----|
 | 标签工作集 | `tabsAtom`（可含同组后台 tab） | Dockview 各 group 的 tab 条；关 tab 走 Dock × / TabBar × |
-| 页面可见会话 | `visibleSessionsAtom` = 各 `group.activePanel`（chat） | 侧栏「打开中」纵向芯片（**纯展示**，无点击/关闭） |
-| 列表标注 | 与「打开中」同源（分屏下=可见会话） | `.row.is-open` 玻璃底，**不再叠 is-active** |
+| 页面可见会话 | 分屏：`visibleSessionsAtom` = 各 `group.activePanel`；非分屏：当前 `activeTabId` 对应 tab | 侧栏「打开中」纵向芯片（**纯展示**，无点击/关闭） |
+| 列表标注 | 与「打开中」同源（只标主区看得见的，不含后台 tab） | `.row.is-open` 玻璃底，**不再叠 is-active**；出错红点（`stat-dot.error`）只表示状态，不是打开态 |
 
 ## 同步要点
 
