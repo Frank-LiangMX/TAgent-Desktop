@@ -33,6 +33,7 @@ import type {
   CollaborationRoom,
   CollaborationRun,
   CreateCollaborationRoomInput,
+  AddCollaborationMemberInput,
   UpdateCollaborationRoomInput,
   AppendCollaborationUserMessageInput,
   DeleteRolesResult,
@@ -581,9 +582,12 @@ const electronAPI = {
       COLLABORATION_ROOM_IPC_CHANNELS.APPEND_USER_MESSAGE,
       input,
     ) as Promise<CollaborationMessage>,
-  /** 列出某房间全部成员（静态身份，S2+ 才有运行状态） */
+  /** 列出某房间全部成员（静态身份 + 运行状态） */
   listCollaborationMembers: (roomId: string) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MEMBERS, { roomId }) as Promise<CollaborationMember[]>,
+  /** 向已有房间追加一个成员（displayName + 自动绑默认渠道，Stage 3） */
+  addCollaborationMember: (input: AddCollaborationMemberInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.ADD_MEMBER, input) as Promise<CollaborationMember>,
   /** 列出某房间全部 run（按入队顺序，Stage 2） */
   listCollaborationRuns: (roomId: string) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_RUNS, { roomId }) as Promise<CollaborationRun[]>,

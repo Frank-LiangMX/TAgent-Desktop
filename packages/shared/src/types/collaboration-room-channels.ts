@@ -7,6 +7,7 @@
  *
  * Stage 2：在 Stage 1 的 7 个通道基础上新增 LIST_RUNS / CANCEL_RUN，并启用 CHANGED
  * 广播（run/member/message 变更时主进程主动推送，渲染层据此重新拉取）。
+ * Stage 3：新增 ADD_MEMBER（向已有房间追加成员，「添加成员」按钮用）。
  */
 
 import type {
@@ -15,6 +16,7 @@ import type {
   CollaborationMessage,
   CollaborationRun,
   CreateCollaborationRoomInput,
+  CreateCollaborationMemberInput,
   UpdateCollaborationRoomInput,
   AppendCollaborationUserMessageInput,
 } from './collaboration-room'
@@ -34,6 +36,8 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   APPEND_USER_MESSAGE: 'collaboration-room:append-user-message',
   /** 列出某房间全部成员（静态身份 + 运行状态） */
   LIST_MEMBERS: 'collaboration-room:list-members',
+  /** 向已有房间追加一个成员（Stage 3：「添加成员」按钮；displayName + 自动绑默认渠道） */
+  ADD_MEMBER: 'collaboration-room:add-member',
   /** 列出某房间全部 run（按 createdAt 升序，Stage 2） */
   LIST_RUNS: 'collaboration-room:list-runs',
   /** 取消某 run（abort 后端调用 + 置 cancelled，Stage 2） */
@@ -65,6 +69,12 @@ export interface ListCollaborationMembersInput {
   /** 房间 ID */
   roomId: string
 }
+
+/** 追加成员输入（Stage 3）；复用 CreateCollaborationMemberInput 字段，加 roomId */
+export type AddCollaborationMemberInput = {
+  /** 房间 ID */
+  roomId: string
+} & CreateCollaborationMemberInput
 
 /** 列出某房间 run 输入（Stage 2） */
 export interface ListCollaborationRunsInput {
@@ -118,8 +128,9 @@ export interface CollaborationRoomChangedPayload {
 //   - LIST_MESSAGES     → CollaborationMessage[]
 //   - APPEND_USER_MESSAGE → CollaborationMessage
 //   - LIST_MEMBERS      → CollaborationMember[]
+//   - ADD_MEMBER        → CollaborationMember
 //   - LIST_RUNS         → CollaborationRun[]
-//   - CANCEL_RUN         → CollaborationRun | null
+//   - CANCEL_RUN        → CollaborationRun | null
 
 /** 重新导出领域输入类型，便于 handler / preload / 渲染层统一引用 */
 export type {

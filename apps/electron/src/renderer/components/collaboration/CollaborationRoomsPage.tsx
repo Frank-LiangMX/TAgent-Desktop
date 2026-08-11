@@ -1,12 +1,15 @@
 /**
- * 协作室主区页面 — Stage 2
+ * 协作室主区页面 — Stage 3
  *
- * 选中房间 → 头部（标题/状态/目标/成员数 + 重命名/暂停/归档）+ 时间线（用户/成员/系统消息）+ 输入框。
- * Stage 2：发消息 → 主进程异步触发成员 run → CHANGED 广播 → 本页重新拉取，实时看到
- *   ① 用户消息 ② 成员「思考中」指示 + 取消 ③ 成员回复气泡。
+ * 选中房间 → 头部（标题/状态/目标/成员数/并发 x/y/排队/重命名/暂停/归档/添加成员）+
+ * 成员状态条（空闲/思考中/排队中）+ 时间线（用户/成员/系统消息 + 多条「思考中」）+ 输入框。
+ *
+ * Stage 3：发消息 → 主进程解析 @mention → 多目标并行 run（受 maxConcurrentRuns + 成员串行限制）→
+ *   CHANGED 广播 → 本页重新拉取，实时看到①用户消息②多条「XX 思考中 / 排队中」+ 各自取消③成员回复气泡。
+ *   一方失败不影响另一方（各 run 独立落盘）。
  *
  * 复用 ChatInput（仅 onSubmit + placeholder），不复用 Chat 的 session 编排/流式/工具过程。
- * 时间线 Stage 1/2 用简单气泡（plain text）；Markdown/附件渲染留 S6+。
+ * 时间线 Stage 1–3 用简单气泡（plain text）；Markdown/附件渲染留 S6+。
  *
  * 数据通过 window.electronAPI.collaborationRoom.* IPC（见 preload）。
  * 变更后调 onRoomsChanged 通知 App bump refreshKey；run/member 变更由 CHANGED 广播驱动 bump。
@@ -19,6 +22,7 @@ import {
   PencilSimple,
   Play,
   StopCircle,
+  UserPlus,
 } from '@phosphor-icons/react'
 import type {
   CollaborationMember,
@@ -66,6 +70,30 @@ function runStatusLabel(status: CollaborationRun['status']): string {
   }
 }
 
+/** 成员显示状态：以 runs 为准（running/queued），否则看成员 status（idle/offline） */
+function memberDisplayStatus(
+  member: CollaborationMember,
+  runs: CollaborationRun[],
+): 'running' | 'queued' | 'idle' | 'offline' {
+  if (runs.some((r) => r.memberId === member.id && r.status === 'running')) return 'running'
+  if (runs.some((r) => r.memberId === member.id && r.status === 'queued')) return 'queued'
+  return member.status === 'offline' ? 'offline' : 'idle'
+}
+
+/** 成员显示状态 → 中文标签 */
+function memberStatusLabel(status: ReturnType<typeof memberDisplayStatus>): string {
+  switch (status) {
+    case 'running':
+      return '思考中'
+    case 'queued':
+      return '排队中'
+    case 'idle':
+      return '空闲'
+    case 'offline':
+      return '离线'
+  }
+}
+
 interface CollaborationRoomsPageProps {
   /** 当前选中房间 ID（null = 未选中 → 空态） */
   roomId: string | null
@@ -87,7 +115,8 @@ export function CollaborationRoomsPage({
   const [messages, setMessages] = useState<CollaborationMessage[]>([])
   const [members, setMembers] = useState<CollaborationMember[]>([])
   const [runs, setRuns] = useState<CollaborationRun[]>([])
-  const [cancelling, setCancelling] = useState(false)
+  const [cancellingId, setCancellingId] = useState<string | null>(null)
+  const [addingMember, setAddingMember] = useState(false)
   const inputRef = useRef<ChatInputHandle>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -134,12 +163,20 @@ export function CollaborationRoomsPage({
     if (el) el.scrollTop = el.scrollHeight
   }, [messages.length, runs.length])
 
-  // 最近一个活跃 run（running/queued）— S2 单成员，至多一个
-  const activeRun =
-    [...runs].reverse().find((r) => r.status === 'running' || r.status === 'queued') ?? null
-  const activeRunMember = activeRun
-    ? members.find((m) => m.id === activeRun.memberId) ?? null
-    : null
+  // 活跃 run（running 优先，queued 随后）— S3 多成员可同时多个
+  const activeRuns = runs
+    .filter((r) => r.status === 'running' || r.status === 'queued')
+    .sort((a, b) => {
+      const rank = (r: CollaborationRun) => (r.status === 'running' ? 0 : 1)
+      if (rank(a) !== rank(b)) return rank(a) - rank(b)
+      return (a.startedAt ?? 0) - (b.startedAt ?? 0)
+    })
+  // 房间并发统计（头部 x/y + 排队）
+  const runningCount = runs.filter((r) => r.status === 'running').length
+  const queuedCount = runs.filter((r) => r.status === 'queued').length
+  const maxConcurrent = room?.maxConcurrentRuns ?? 0
+  const memberName = (memberId: string): string =>
+    members.find((m) => m.id === memberId)?.displayName ?? '成员'
 
   const send = useCallback(async (): Promise<void> => {
     if (!room || room.status === 'archived') return
@@ -154,18 +191,36 @@ export function CollaborationRoomsPage({
     }
   }, [room, onRoomsChanged])
 
-  const handleCancelRun = useCallback(async (): Promise<void> => {
-    if (!room || !activeRun) return
-    setCancelling(true)
+  const handleCancelRun = useCallback(
+    async (runId: string): Promise<void> => {
+      if (!room) return
+      setCancellingId(runId)
+      try {
+        await window.electronAPI.cancelCollaborationRun({ roomId: room.id, runId })
+        onRoomsChanged()
+      } catch (err) {
+        window.alert(`取消失败：${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        setCancellingId(null)
+      }
+    },
+    [room, onRoomsChanged],
+  )
+
+  const handleAddMember = useCallback(async (): Promise<void> => {
+    if (!room) return
+    const name = window.prompt('添加成员（输入显示名，自动绑定默认渠道）', '')
+    if (!name || name.trim() === '') return
+    setAddingMember(true)
     try {
-      await window.electronAPI.cancelCollaborationRun({ roomId: room.id, runId: activeRun.id })
+      await window.electronAPI.addCollaborationMember({ roomId: room.id, displayName: name.trim() })
       onRoomsChanged()
     } catch (err) {
-      window.alert(`取消失败：${err instanceof Error ? err.message : String(err)}`)
+      window.alert(`添加成员失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
-      setCancelling(false)
+      setAddingMember(false)
     }
-  }, [room, activeRun, onRoomsChanged])
+  }, [room, onRoomsChanged])
 
   const handleRename = useCallback(async (): Promise<void> => {
     if (!room) return
@@ -211,8 +266,9 @@ export function CollaborationRoomsPage({
           <div>
             <h2 className="text-lg font-semibold text-foreground">Agent 协作室</h2>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              在一个持久房间里与协调者和多个成员协作。发消息后协调者用本机可用渠道回复（优先 kscc，否则外部渠道），可取消，重启后无假
-              running；多成员并行与 A2A 留待后续阶段。
+              在一个持久房间里与协调者和多个成员协作。不 @ 时协调者回复；<code className="rounded bg-muted px-1">@成员名</code>{' '}
+              点名指定成员（可多个，并行扇出）；<code className="rounded bg-muted px-1">@all</code> 唤醒全部。受房间并发上限与成员内串行约束，可取消，重启后无假
+              running。
             </p>
           </div>
           <button
@@ -269,6 +325,15 @@ export function CollaborationRoomsPage({
           </button>
           <button
             type="button"
+            className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+            aria-label="添加成员"
+            disabled={addingMember || archived}
+            onClick={() => void handleAddMember()}
+          >
+            <UserPlus size={14} />
+          </button>
+          <button
+            type="button"
             className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
             aria-label="归档"
             onClick={() => void handleArchive()}
@@ -279,29 +344,68 @@ export function CollaborationRoomsPage({
         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
           {room.goal ? <span className="truncate" title={room.goal}>目标：{room.goal}</span> : null}
           <span>成员：{members.length}</span>
+          <span title={`当前运行 ${runningCount} / 并发上限 ${maxConcurrent}`}>
+            并发 {runningCount}/{maxConcurrent}
+          </span>
+          {queuedCount > 0 ? (
+            <span className="text-amber-600" title="排队等待启动的 run">排队 {queuedCount}</span>
+          ) : null}
           {room.workspaceId ? <span>工作区：{room.workspaceId}</span> : null}
         </div>
+        {/* 成员状态条 */}
+        {members.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+            {members.map((m) => {
+              const st = memberDisplayStatus(m, runs)
+              return (
+                <span
+                  key={m.id}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px]',
+                    st === 'running' && 'bg-emerald-500/15 text-emerald-600',
+                    st === 'queued' && 'bg-amber-500/15 text-amber-600',
+                    (st === 'idle' || st === 'offline') && 'bg-muted text-muted-foreground',
+                  )}
+                  title={`${m.displayName}：${memberStatusLabel(st)}${m.isCoordinator ? '（协调者）' : ''}`}
+                >
+                  <span
+                    className={cn(
+                      'inline-block size-1.5 rounded-full',
+                      st === 'running' && 'animate-pulse bg-emerald-500',
+                      st === 'queued' && 'bg-amber-500',
+                      st === 'idle' && 'bg-muted-foreground/40',
+                      st === 'offline' && 'bg-muted-foreground/20',
+                    )}
+                  />
+                  {m.displayName}
+                  {m.isCoordinator ? <span className="opacity-60">·协调</span> : null}
+                </span>
+              )
+            })}
+          </div>
+        ) : null}
       </header>
 
       {/* 时间线 */}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        {messages.length === 0 && !activeRun ? (
+        {messages.length === 0 && activeRuns.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            还没有消息。在下方输入并发送一条消息试试。
+            还没有消息。在下方输入并发送一条消息试试（可 @成员名 点名）。
           </div>
         ) : (
           <ul className="flex flex-col gap-2.5">
             {messages.map((m) => (
               <MessageBubble key={m.id} message={m} members={members} />
             ))}
-            {activeRun ? (
+            {activeRuns.map((r) => (
               <ThinkingBubble
-                memberName={activeRunMember?.displayName ?? '成员'}
-                status={activeRun.status}
-                cancelling={cancelling}
-                onCancel={() => void handleCancelRun()}
+                key={r.id}
+                memberName={memberName(r.memberId)}
+                status={r.status}
+                cancelling={cancellingId === r.id}
+                onCancel={() => void handleCancelRun(r.id)}
               />
-            ) : null}
+            ))}
           </ul>
         )}
       </div>
@@ -320,7 +424,7 @@ export function CollaborationRoomsPage({
           <ChatInput
             ref={inputRef}
             onSubmit={() => void send()}
-            placeholder="输入消息…（Enter 发送。协调者会用 kscc 或已配置的外部渠道回复）"
+            placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@all 唤醒全部）"
           />
         )}
       </div>
@@ -386,20 +490,30 @@ function ThinkingBubble({
   cancelling: boolean
   onCancel: () => void
 }): JSX.Element {
+  const queued = status === 'queued'
   return (
     <li className="flex justify-start">
       <div className="max-w-[80%]">
         <div className="mb-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <span>{memberName}</span>
-          <span className="inline-block size-1.5 animate-pulse rounded-full bg-emerald-500" />
+          <span
+            className={cn(
+              'inline-block size-1.5 rounded-full',
+              queued ? 'bg-amber-500' : 'animate-pulse bg-emerald-500',
+            )}
+          />
           <span>{runStatusLabel(status)}…</span>
         </div>
         <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-3.5 py-2 text-sm text-muted-foreground">
-          <span className="flex gap-1">
-            <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.3s]" />
-            <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.15s]" />
-            <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60" />
-          </span>
+          {queued ? (
+            <span className="text-xs">等待空闲 slot…</span>
+          ) : (
+            <span className="flex gap-1">
+              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.3s]" />
+              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.15s]" />
+              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60" />
+            </span>
+          )}
           <button
             type="button"
             className="ml-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"

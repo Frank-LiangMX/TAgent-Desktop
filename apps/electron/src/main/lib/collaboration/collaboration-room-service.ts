@@ -1,15 +1,21 @@
 /**
- * 协作室服务（Stage 2：单成员真实运行闭环）
+ * 协作室服务（Stage 3：多成员并行 + 协调者路由）
  *
- * 在 repository 之上做：输入校验、ID 生成、默认值、状态转换、协调者解析、run 触发与状态机。
+ * 在 repository 之上做：输入校验、ID 生成、默认值、状态转换、mention 解析、run 触发与调度。
  *
- * Stage 2 新增：
- * - appendUserMessage 落盘用户消息后，若房间 active（未 paused/archived/completed），
- *   异步触发一个 run（target=显式点名 → 否则协调者 → 否则首成员），不阻塞 IPC。
+ * Stage 3 新增（在 S2 单成员闭环之上）：
+ * - appendUserMessage 落盘用户消息前用 parseCollaborationMentions 把 @displayName 解析为
+ *   targetMemberIds（@all → 全部成员；无 @ → []，由 trigger 路由协调者）。
+ * - triggerRunForMessage 按解析目标创建多个 run（各幂等键含 memberId+messageId），经
+ *   RoomScheduler 启动：房间级 maxConcurrentRuns + 成员内串行 + FIFO 公平队列。
+ * - 多目标并行扇出；一方 failed 不取消另一方；结果各自落盘 member 消息。
+ * - addMember：向已有房间加成员（displayName + 自动绑默认渠道）。
+ *
+ * Stage 2 保留：
  * - run 状态机：queued → running → done | failed | cancelled（CAS 转换，race-safe）。
  * - run 完成后落盘成员消息（done）或系统警告（failed），并广播 CHANGED。
- * - cancelRun：abort 后端调用 + 置 cancelled。
- * - recoverInterruptedRuns：启动时把遗留 queued/running run 标记为 failed(INTERRUPTED)，
+ * - cancelRun：排队中→dequeue；running→abort 后端调用；均置 cancelled + 同步成员状态。
+ * - recoverInterruptedRuns：启动时把遗留 queued/running run 标为 failed(INTERRUPTED)，
  *   避免重启后「假 running」（02-RUNTIME-A2A-SPEC §14；不自动重放，避免重复副作用）。
  * - 幂等：同一 (triggerMessageId, memberId) 只产生一个 run（collaborationRunIdempotencyKey）。
  *
@@ -25,9 +31,11 @@ import {
   COLLABORATION_ROOM_DEFAULT_MAX_A2A_DEPTH,
   COLLABORATION_ROOM_DEFAULT_MAX_CONCURRENT_RUNS,
   COLLABORATION_ROOM_ID_PREFIX,
+  COLLABORATION_ROOM_MAX_MEMBERS,
   COLLABORATION_RUN_ID_PREFIX,
   collaborationRunIdempotencyKey,
   isCollaborationRoomStatus,
+  parseCollaborationMentions,
   validateCreateCollaborationRoomInput,
   type CollaborationMember,
   type CollaborationMemberCapabilities,
@@ -66,6 +74,7 @@ import {
   MemberBackendResolveError,
   pickDefaultMemberChannelBinding,
 } from './member-backend-adapter'
+import { RoomScheduler, type RoomSchedulerEntry } from './collaboration-room-scheduler'
 
 /** CHANGED 广播类型（主进程 → renderer） */
 export type CollaborationRoomBroadcast = (
@@ -103,6 +112,8 @@ function noopBroadcast(): void {
 export class CollaborationRoomService {
   private readonly adapter: MemberBackendAdapter
   private readonly broadcast: CollaborationRoomBroadcast
+  /** 房间运行调度器（房间并发 + 成员串行 + FIFO 队列） */
+  private readonly scheduler: RoomScheduler
   /** 运行中 run 的 AbortController（cancelRun 用） */
   private readonly abortControllers: Map<string, AbortController> = new Map()
   /** 运行中 run 的执行 Promise（测试可 await；完成后自动清除） */
@@ -111,10 +122,30 @@ export class CollaborationRoomService {
   private constructor(opts: CollaborationRoomServiceOptions) {
     this.adapter = opts.adapter ?? createChannelBackendAdapter()
     this.broadcast = opts.broadcast ?? noopBroadcast
+    this.scheduler = this.createScheduler()
   }
 
   static create(opts?: CollaborationRoomServiceOptions): CollaborationRoomService {
     return new CollaborationRoomService(opts ?? {})
+  }
+
+  /** 构造默认调度器：读 room.maxConcurrentRuns；start 回调 fire-and-forget executeRun + 记 inflight */
+  private createScheduler(): RoomScheduler {
+    return new RoomScheduler({
+      getMaxConcurrentRuns: (roomId) => {
+        const room = getRoom(roomId)
+        return Math.max(1, room?.maxConcurrentRuns ?? COLLABORATION_ROOM_DEFAULT_MAX_CONCURRENT_RUNS)
+      },
+      start: (entry: RoomSchedulerEntry) => {
+        const exec = this.executeRun(entry.room, entry.member, entry.run, entry.triggerMessage).catch(
+          (err) => {
+            // executeRun 内部已处理所有终态；此处兜底防止 unhandledRejection
+            console.error(`[协作室] executeRun 未捕获错误 run=${entry.run.id}:`, err)
+          },
+        )
+        this.inflight.set(entry.run.id, exec)
+      },
+    })
   }
 
   // ===== Room =====
@@ -226,8 +257,10 @@ export class CollaborationRoomService {
   }
 
   /**
-   * 追加用户消息（Stage 2：落盘后异步触发成员 run）。
+   * 追加用户消息（Stage 3：落盘前解析 @mention → targetMemberIds，落盘后异步触发多成员 run）。
    *
+   * - 目标解析：显式 input.targetMemberIds 优先（程序化调用）；否则从文本 @displayName / @all
+   *   解析（parseCollaborationMentions）。无 @ 命中 → targetMemberIds=[]，由 trigger 路由协调者。
    * - 房间 active：落盘用户消息 → 异步 triggerRunForMessage（不阻塞 IPC，返回即结束）。
    * - 房间 paused/archived/completed：只落盘消息，不触发 run（pause 后不启动新 run）。
    *
@@ -244,6 +277,11 @@ export class CollaborationRoomService {
       throw new Error('消息内容不能为空')
     }
 
+    // 目标成员解析（S3）：显式 targetMemberIds 优先；否则从文本 @mention 解析（@all → 全部成员）
+    const explicitTargets =
+      input.targetMemberIds && input.targetMemberIds.length > 0 ? input.targetMemberIds : null
+    const targetMemberIds = explicitTargets ?? parseCollaborationMentions(text, loadMembers(input.roomId))
+
     const now = Date.now()
     const id = genId(COLLABORATION_MESSAGE_ID_PREFIX)
     const message: CollaborationMessage = {
@@ -254,7 +292,7 @@ export class CollaborationRoomService {
       kind: 'chat',
       content: text,
       visibility: 'room',
-      targetMemberIds: input.targetMemberIds ?? [],
+      targetMemberIds,
       replyToMessageId: input.replyToMessageId,
       rootMessageId: id,
       depth: 0,
@@ -287,7 +325,9 @@ export class CollaborationRoomService {
   }
 
   /**
-   * 取消某 run：abort 后端调用 + 置 cancelled。
+   * 取消某 run（Stage 3：区分排队中 / 运行中）。
+   * - 排队中（仍在调度器队列、未占 slot）：dequeue 移除 + 置 cancelled + 同步成员状态。
+   * - 运行中：abort 后端调用；executeRun 的 finally 负责 release + 同步成员状态。
    * 已终态（done/failed/cancelled）的 run 不再变更，返回其当前状态。
    */
   cancelRun(runId: string): CollaborationRun | undefined {
@@ -295,17 +335,20 @@ export class CollaborationRoomService {
     if (!run) return undefined
     if (run.status !== 'queued' && run.status !== 'running') return run
 
-    // 1) 置 cancelled（CAS：仅 queued/running 可转）
+    // 置 cancelled（CAS：仅 queued/running 可转）
     const now = Date.now()
     const updated: CollaborationRun = { ...run, status: 'cancelled', finishedAt: now }
     upsertRun(updated)
 
-    // 2) abort 后端调用（executeRun 的 await 抛错 → 走 cancelled 分支，CAS 不覆盖）
-    const ctrl = this.abortControllers.get(runId)
-    if (ctrl) ctrl.abort()
-
-    // 3) 成员回 idle（可再被触发）
-    this.setMemberStatus(run.memberId, 'idle')
+    if (this.scheduler.dequeue(runId)) {
+      // 仍在队列（未占 slot）：移除即可，executeRun 不会被调用，无需 release。
+      // 同步成员状态（若仍有其他排队 run → queued，否则 idle）
+      this.syncMemberStatus(run.memberId)
+    } else {
+      // 已 running：abort 后端调用；executeRun finally 会 release + syncMemberStatus
+      const ctrl = this.abortControllers.get(runId)
+      if (ctrl) ctrl.abort()
+    }
 
     this.broadcast(run.roomId, 'run-cancelled')
     return updated
@@ -327,66 +370,79 @@ export class CollaborationRoomService {
     }
     for (const run of stuck) {
       upsertRun({ ...run, status: 'failed', finishedAt: now, error })
-      this.setMemberStatus(run.memberId, 'idle')
+      this.syncMemberStatus(run.memberId)
     }
     console.log(`[协作室] 启动恢复：${stuck.length} 个遗留 run 标记为 interrupted/failed`)
     return stuck.length
   }
 
   /**
-   * 为一条用户消息触发一个 run（幂等）。
+   * 为一条用户消息触发 run（Stage 3：多目标并行扇出，幂等）。
    *
-   * - 解析目标成员：显式 targetMemberIds[0] → 否则协调者 → 否则首成员。
-   * - 幂等：若 (triggerMessageId, memberId) 已有 run，跳过（无论状态）。
-   * - 创建 run（queued）→ 异步 executeRun（不阻塞调用方）。
+   * - 解析目标成员：message.targetMemberIds 非空 → 这些成员（按顺序去重，跳过未知 ID）；
+   *   否则 → 协调者（无协调者则首成员）；空团队返回 []。
+   * - 每个目标创建一个 queued run（幂等键 triggerMessageId:memberId；已存在则跳过）。
+   * - 经 scheduler 入队：房间级 maxConcurrentRuns + 成员内串行 + FIFO；超容量则排队。
+   * - 一方 failed 不取消其他目标（各 run 独立状态机，结果各自落盘）。
    *
-   * 房间无成员时落一条系统警告消息并返回 undefined（不创建 run）。
+   * 返回本次新建的 run 列表（幂等跳过的不含；空团队返回 []）。
    */
   triggerRunForMessage(
     room: CollaborationRoom,
     triggerMessage: CollaborationMessage,
-  ): CollaborationRun | undefined {
+  ): CollaborationRun[] {
     const members = loadMembers(room.id)
-    const targetMember = resolveTargetMember(room, triggerMessage, members)
-    if (!targetMember) {
+    const targets = resolveTargetMembers(room, triggerMessage, members)
+    if (targets.length === 0) {
       // 空白团队：无成员可回复，静默跳过（不创建 run、不写消息）。
-      // demo 房间经 newCollaborationRoom 默认带协调者，此处仅 S1 风格空白团队命中。
+      // demo 房间经 newCollaborationRoom 默认带成员，此处仅 S1 风格空白团队命中。
       console.warn(`[协作室] 房间 ${room.id} 无成员可回复，跳过 run 触发`)
-      return undefined
+      return []
     }
 
-    // 幂等：同一 (trigger, member) 已有 run 则跳过
-    const idempotencyKey = collaborationRunIdempotencyKey(triggerMessage.id, targetMember.id)
-    if (findRunByIdempotencyKey(idempotencyKey)) {
-      return undefined
-    }
+    const created: CollaborationRun[] = []
+    for (const target of targets) {
+      // 幂等：同一 (trigger, member) 已有 run 则跳过（无论状态）
+      const idempotencyKey = collaborationRunIdempotencyKey(triggerMessage.id, target.id)
+      if (findRunByIdempotencyKey(idempotencyKey)) continue
 
-    const now = Date.now()
-    const run: CollaborationRun = {
-      id: genId(COLLABORATION_RUN_ID_PREFIX),
-      roomId: room.id,
-      memberId: targetMember.id,
-      triggerMessageId: triggerMessage.id,
-      idempotencyKey,
-      status: 'queued',
-      attempt: 0,
-    }
-    upsertRun(run)
+      const run: CollaborationRun = {
+        id: genId(COLLABORATION_RUN_ID_PREFIX),
+        roomId: room.id,
+        memberId: target.id,
+        triggerMessageId: triggerMessage.id,
+        idempotencyKey,
+        status: 'queued',
+        attempt: 0,
+      }
+      upsertRun(run)
+      created.push(run)
 
-    // 异步执行（fire-and-forget）；inflight 供测试 await
-    const exec = this.executeRun(room, targetMember, run, triggerMessage).catch((err) => {
-      // executeRun 内部已处理所有终态；此处兜底防止 unhandledRejection
-      console.error(`[协作室] executeRun 未捕获错误 run=${run.id}:`, err)
-    })
-    this.inflight.set(run.id, exec)
-    return run
+      this.scheduler.enqueue({
+        runId: run.id,
+        roomId: room.id,
+        memberId: target.id,
+        room,
+        member: target,
+        run,
+        triggerMessage,
+      })
+
+      // 入队后若该成员未在 running，标记 queued（让 UI 看到"排队中"；
+      // 若调度器已立即启动，executeRun 同步前缀已置 running，此处跳过不覆盖）
+      if (!this.scheduler.isMemberRunning(target.id)) {
+        this.setMemberStatus(target.id, 'queued')
+      }
+    }
+    return created
   }
 
   /**
-   * 执行一次 turn（异步，由 triggerRunForMessage fire-and-forget 启动）。
+   * 执行一次 turn（异步，由 scheduler 在容量允许时 fire-and-forget 启动）。
    *
    * 状态机：queued → running → done | failed | cancelled（CAS 转换，race-safe）。
-   * 完成后落盘成员消息（done）或系统警告（failed），广播 CHANGED，清理 inflight/abortController。
+   * 完成后落盘成员消息（done）或系统警告（failed），广播 CHANGED。
+   * finally 释放调度器 slot（drain 后续排队 run）并同步成员状态；无论成功/失败/取消/被抢占都执行。
    */
   private async executeRun(
     room: CollaborationRoom,
@@ -399,9 +455,8 @@ export class CollaborationRoomService {
     const startedAt = Date.now()
 
     try {
-      // queued → running
+      // queued → running（scheduler 启动后；若已被取消则 CAS 失败 → 退出，finally 仍 release）
       if (!this.casRun(run.id, 'queued', 'running', { startedAt })) {
-        // 已被取消（cancelRun 在 queued 阶段拦截）→ 不执行
         return
       }
       this.setMemberStatus(member.id, 'running')
@@ -424,10 +479,9 @@ export class CollaborationRoomService {
       }
       const result = await this.adapter.runTurn(input)
 
-      // 被取消则不写成员消息
+      // 被取消则不写成员消息（cancelRun 已置 cancelled；此处 CAS 不覆盖，仅兜底）
       if (controller.signal.aborted) {
         this.casRun(run.id, 'running', 'cancelled', { finishedAt: Date.now() })
-        this.setMemberStatus(member.id, 'idle')
         this.broadcast(room.id, 'run-cancelled')
         return
       }
@@ -439,17 +493,15 @@ export class CollaborationRoomService {
         usage: result.usage ?? { wallTimeMs: finishedAt - startedAt },
       })
       this.appendMemberMessage(room, member, triggerMessage, result.text, run.id)
-      this.setMemberStatus(member.id, 'idle')
       this.broadcast(room.id, 'run-finished')
     } catch (err) {
       if (controller.signal.aborted) {
         // 取消（cancelRun 已置 cancelled；此处 CAS 不覆盖，仅兜底）
         this.casRun(run.id, 'running', 'cancelled', { finishedAt: Date.now() })
-        this.setMemberStatus(member.id, 'idle')
         this.broadcast(room.id, 'run-cancelled')
         return
       }
-      // running → failed + 系统警告
+      // running → failed + 系统警告（一方失败不影响其他目标 run）
       const error = serializeRunError(err)
       this.casRun(run.id, 'running', 'failed', { finishedAt: Date.now(), error })
       const reason = err instanceof Error ? err.message : String(err)
@@ -457,17 +509,32 @@ export class CollaborationRoomService {
         room.id,
         `成员「${member.displayName}」回复失败：${reason}`,
       )
-      this.setMemberStatus(member.id, 'idle')
       this.broadcast(room.id, 'run-finished')
     } finally {
       this.abortControllers.delete(run.id)
       this.inflight.delete(run.id)
+      // 释放调度器 slot → drain 启动后续排队 run；再同步成员状态（queued/idle）
+      this.scheduler.release(run.id, room.id, member.id)
+      this.syncMemberStatus(member.id)
     }
   }
 
-  /** 等待所有在飞 run 完成（测试用） */
+  /**
+   * 等待所有 run 终态（含排队中 → 启动 → 完成；测试用）。
+   *
+   * 循环到调度器空闲（无排队、无 running）：每轮 await 当前在飞 run；它们完成时 finally
+   * 会 release → drain 启动排队 run（新增 inflight），下一轮继续 await，直到 isIdle。
+   */
   async awaitAllRuns(): Promise<void> {
-    await Promise.all([...this.inflight.values()])
+    while (!this.scheduler.isIdle()) {
+      const snapshot = [...this.inflight.values()]
+      if (snapshot.length === 0) {
+        // 仅有排队但无 running（容量被占？理论不应发生；让出避免死循环）
+        await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      } else {
+        await Promise.allSettled(snapshot)
+      }
+    }
   }
 
   // ===== Member =====
@@ -475,6 +542,39 @@ export class CollaborationRoomService {
   /** 列出某房间全部成员 */
   listMembers(roomId: string): CollaborationMember[] {
     return listMembersByRoom(roomId)
+  }
+
+  /**
+   * 向已有房间追加一个成员（Stage 3：「添加成员」最小按钮用）。
+   *
+   * - displayName 必填非空；房间须存在且未归档。
+   * - 成员数含新增不超过 COLLABORATION_ROOM_MAX_MEMBERS。
+   * - 未显式绑渠道时自动绑默认渠道（kscc 优先，再外部），与 createRoom 一致。
+   * - 不影响协调者；新成员初始 status='offline'，发消息点名后才转入 queued/running。
+   */
+  addMember(roomId: string, input: CreateCollaborationMemberInput): CollaborationMember {
+    const room = getRoom(roomId)
+    if (!room) {
+      throw new Error('房间不存在')
+    }
+    if (room.status === 'archived') {
+      throw new Error('已归档房间不能添加成员')
+    }
+    const displayName = input.displayName?.trim()
+    if (!displayName) {
+      throw new Error('成员显示名不能为空')
+    }
+    const existing = loadMembers(roomId)
+    if (existing.length >= COLLABORATION_ROOM_MAX_MEMBERS) {
+      throw new Error(`成员数已达上限 ${COLLABORATION_ROOM_MAX_MEMBERS}`)
+    }
+
+    const now = Date.now()
+    const member = buildMember(roomId, { ...input, displayName }, now)
+    appendMembers([member])
+
+    this.broadcast(roomId, 'updated')
+    return member
   }
 
   // ===== 内部辅助 =====
@@ -498,6 +598,23 @@ export class CollaborationRoomService {
     const member = getMember(memberId)
     if (!member) return
     upsertMember({ ...member, status, updatedAt: Date.now() })
+  }
+
+  /**
+   * run 终态后同步成员状态（Stage 3）：
+   * - 该成员仍有 running run（被调度器刚启动）→ 保持 running（由对应 executeRun 设置，不覆盖）
+   * - 否则有排队 run → queued
+   * - 否则 → idle
+   * 在 executeRun finally / cancelRun（排队取消）/ recoverInterruptedRuns 中调用。
+   */
+  private syncMemberStatus(memberId: string): void {
+    if (this.scheduler.isMemberRunning(memberId)) return
+    const member = getMember(memberId)
+    if (!member) return
+    const next = this.scheduler.hasQueuedForMember(memberId) ? 'queued' : 'idle'
+    if (member.status !== next) {
+      upsertMember({ ...member, status: next, updatedAt: Date.now() })
+    }
   }
 
   /** 追加成员消息（done 后） */
@@ -547,23 +664,40 @@ export class CollaborationRoomService {
   }
 }
 
-/** 解析目标成员：显式点名[0] → 协调者 → 首成员 */
-function resolveTargetMember(
+/**
+ * 解析一条用户消息的目标成员列表（Stage 3 路由）。
+ *
+ * - message.targetMemberIds 非空 → 按顺序解析为成员（去重，跳过未知 ID）。
+ *   （targetMemberIds 由 appendUserMessage 从 @mention 解析落盘，或程序化传入）
+ * - 否则（无 @ 命中）→ 协调者（无协调者则首成员）；空团队返回 []。
+ *
+ * 纯函数（不读 DB）；members 由调用方传入。幂等：同输入同输出。
+ */
+function resolveTargetMembers(
   room: CollaborationRoom,
   triggerMessage: CollaborationMessage,
   members: CollaborationMember[],
-): CollaborationMember | undefined {
-  if (members.length === 0) return undefined
+): CollaborationMember[] {
+  if (members.length === 0) return []
   if (triggerMessage.targetMemberIds.length > 0) {
-    const targetId = triggerMessage.targetMemberIds[0]!
-    const explicit = members.find((m) => m.id === targetId)
-    if (explicit) return explicit
+    const seen = new Set<string>()
+    const out: CollaborationMember[] = []
+    for (const id of triggerMessage.targetMemberIds) {
+      if (seen.has(id)) continue
+      const m = members.find((mm) => mm.id === id)
+      if (m) {
+        seen.add(id)
+        out.push(m)
+      }
+    }
+    return out
   }
+  // 无点名 → 协调者 → 首成员
   if (room.coordinatorMemberId) {
     const coord = members.find((m) => m.id === room.coordinatorMemberId)
-    if (coord) return coord
+    if (coord) return [coord]
   }
-  return members[0]
+  return members.slice(0, 1)
 }
 
 /**

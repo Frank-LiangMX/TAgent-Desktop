@@ -1,9 +1,9 @@
 /**
- * 协作室 IPC 注册（Stage 2）
+ * 协作室 IPC 注册（Stage 3）
  *
- * 注册 COLLABORATION_ROOM_IPC_CHANNELS 的 9 个请求/响应通道：
+ * 注册 COLLABORATION_ROOM_IPC_CHANNELS 的 10 个请求/响应通道：
  * LIST / CREATE / GET / UPDATE / LIST_MESSAGES / APPEND_USER_MESSAGE / LIST_MEMBERS /
- * LIST_RUNS / CANCEL_RUN。
+ * ADD_MEMBER / LIST_RUNS / CANCEL_RUN。
  *
  * CHANGED 为 main → renderer 广播：run/member/message 变更时 service 调 broadcast，
  * 此处包装成 `getWindow()?.webContents.send(CHANGED, { roomId, kind, at })`（对齐
@@ -20,6 +20,7 @@
 import { BrowserWindow, ipcMain } from 'electron'
 import {
   COLLABORATION_ROOM_IPC_CHANNELS,
+  type AddCollaborationMemberInput,
   type AppendCollaborationUserMessageInput,
   type CancelCollaborationRunInput,
   type CollaborationMember,
@@ -107,6 +108,13 @@ export function registerCollaborationRoomIpc(
   )
 
   ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.ADD_MEMBER,
+    async (_e, input: AddCollaborationMemberInput): Promise<CollaborationMember> => {
+      return service.addMember(input.roomId, input)
+    },
+  )
+
+  ipcMain.handle(
     COLLABORATION_ROOM_IPC_CHANNELS.LIST_RUNS,
     async (_e, input: ListCollaborationRunsInput): Promise<CollaborationRun[]> => {
       return service.listRuns(input.roomId)
@@ -124,6 +132,6 @@ export function registerCollaborationRoomIpc(
   )
 
   console.log(
-    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/list-runs/cancel-run；Stage 2 真实运行单成员 turn）',
+    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/list-runs/cancel-run；Stage 3 多成员并行 + 协调者路由）',
   )
 }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import {
+  COLLABORATION_MENTION_ALL,
   COLLABORATION_ROOM_DEFAULT_MAX_A2A_DEPTH,
   COLLABORATION_ROOM_DEFAULT_MAX_CONCURRENT_RUNS,
   COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH,
@@ -9,9 +10,34 @@ import {
   isCollaborationMemberStatus,
   isCollaborationRoomStatus,
   isCollaborationRunStatus,
+  parseCollaborationMentions,
   validateCreateCollaborationRoomInput,
+  type CollaborationMember,
   type CreateCollaborationRoomInput,
 } from './collaboration-room'
+
+/** 构造最小成员（只供 mention 解析用） */
+function mkMember(id: string, displayName: string): CollaborationMember {
+  return {
+    id,
+    roomId: 'cr_x',
+    displayName,
+    roleSnapshot: { displayName },
+    backend: 'channel',
+    logicalSessionId: 'ls_' + id,
+    permissionProfile: 'read-only',
+    capabilities: {
+      supportsResume: false,
+      supportsLiveInput: false,
+      supportsToolBridge: false,
+      supportsStructuredEvents: false,
+    },
+    status: 'idle',
+    isCoordinator: false,
+    createdAt: 0,
+    updatedAt: 0,
+  }
+}
 
 describe('collaboration-room 常量', () => {
   test('默认并发与 A2A 深度对齐 02-RUNTIME-A2A-SPEC §9', () => {
@@ -156,5 +182,72 @@ describe('validateCreateCollaborationRoomInput', () => {
     expect(
       validateCreateCollaborationRoomInput({ title: 't', maxA2ADepth: COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH + 1 }),
     ).toContain(`maxA2ADepth 须在 1–${COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH}`)
+  })
+})
+
+describe('parseCollaborationMentions', () => {
+  test('无 @ 返回空数组（调用方回落协调者）', () => {
+    const members = [mkMember('cm_coord', '协调者'), mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('你好，帮我看下', members)).toEqual([])
+    expect(parseCollaborationMentions('', members)).toEqual([])
+  })
+
+  test('@displayName 精确命中（忽略大小写）', () => {
+    const members = [mkMember('cm_coord', '协调者'), mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@开发 做点事', members)).toEqual(['cm_dev'])
+    expect(parseCollaborationMentions('@协调者 @开发 两人都来', members)).toEqual([
+      'cm_coord',
+      'cm_dev',
+    ])
+  })
+
+  test('英文 displayName 忽略大小写匹配', () => {
+    const members = [mkMember('cm_a', 'Alice'), mkMember('cm_b', 'Bob')]
+    expect(parseCollaborationMentions('@alice @BOB', members)).toEqual(['cm_a', 'cm_b'])
+  })
+
+  test('@all → 全部成员（含协调者，按成员顺序去重）', () => {
+    const members = [
+      mkMember('cm_coord', '协调者'),
+      mkMember('cm_dev', '开发'),
+      mkMember('cm_qa', '测试'),
+    ]
+    expect(parseCollaborationMentions('@all 一起上', members)).toEqual([
+      'cm_coord',
+      'cm_dev',
+      'cm_qa',
+    ])
+    // @ALL 忽略大小写
+    expect(parseCollaborationMentions('@ALL', members)).toEqual([
+      'cm_coord',
+      'cm_dev',
+      'cm_qa',
+    ])
+  })
+
+  test('@all 与具体点名共存：去重后仍为全部成员', () => {
+    const members = [mkMember('cm_coord', '协调者'), mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@all @开发', members)).toEqual(['cm_coord', 'cm_dev'])
+  })
+
+  test('无匹配的 @ 忽略（不报错、不影响其他命中）', () => {
+    const members = [mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@不存在', members)).toEqual([])
+    expect(parseCollaborationMentions('@不存在 @开发', members)).toEqual(['cm_dev'])
+  })
+
+  test('末尾标点被剥掉（@开发。 → 开发）', () => {
+    const members = [mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@开发。', members)).toEqual(['cm_dev'])
+    expect(parseCollaborationMentions('@开发, @开发；', members)).toEqual(['cm_dev'])
+  })
+
+  test('同一成员多次 @ 仅记录一次', () => {
+    const members = [mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@开发 @开发 @开发', members)).toEqual(['cm_dev'])
+  })
+
+  test('@all 特殊常量值为 all', () => {
+    expect(COLLABORATION_MENTION_ALL).toBe('all')
   })
 })

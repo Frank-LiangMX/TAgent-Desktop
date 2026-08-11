@@ -488,6 +488,61 @@ export function collaborationRunIdempotencyKey(triggerMessageId: string, memberI
   return `${triggerMessageId}:${memberId}`
 }
 
+// ===== Mention 解析（Stage 3） =====
+
+/** @all 特殊 mention（忽略大小写）：路由到房间全部成员（含协调者） */
+export const COLLABORATION_MENTION_ALL = 'all'
+
+/** 匹配 @token（非空白、非 @ 的连续字符）；用 matchAll 逐个扫描 */
+const MENTION_REGEX = /@([^\s@]+)/gu
+/** @token 末尾常见标点（中英文），匹配成员名前剥掉，避免「@开发。」误判 */
+const MENTION_TRAILING_PUNCT = /[.,;:!?，。；！？、）》]+$/u
+
+/**
+ * 从用户消息文本解析 @mention，返回命中的成员 ID 列表（按出现顺序去重）。
+ *
+ * - `@all`（忽略大小写）→ 全部成员（含协调者；即全部 CollaborationMember）
+ * - `@displayName` → 精确匹配成员 displayName（忽略大小写）；无匹配则忽略
+ * - 未命中任何 @ → 返回空数组（调用方据此回落协调者）
+ *
+ * 纯函数，不读 DB、不依赖时间；members 由调用方传入。Stage 3 路由的文本侧入口，
+ * service.appendUserMessage 调它把 @displayName 解析为 targetMemberIds 落盘。
+ *
+ * 设计参考：00-MASTER §5「显式路由」、03-IMPLEMENTATION-PHASES §5「无点名消息路由协调者；多点名并行扇出」。
+ */
+export function parseCollaborationMentions(
+  text: string,
+  members: CollaborationMember[],
+): string[] {
+  if (!text) return []
+  // displayName 小写 → member（忽略大小写精确匹配）
+  const byLowerName = new Map<string, CollaborationMember>()
+  for (const m of members) byLowerName.set(m.displayName.toLowerCase(), m)
+
+  const matched: string[] = []
+  const seen = new Set<string>()
+  for (const raw of text.matchAll(MENTION_REGEX)) {
+    const name = (raw[1] ?? '').replace(MENTION_TRAILING_PUNCT, '')
+    if (!name) continue
+    if (name.toLowerCase() === COLLABORATION_MENTION_ALL) {
+      // @all → 全部成员（保持成员顺序，去重）
+      for (const m of members) {
+        if (!seen.has(m.id)) {
+          seen.add(m.id)
+          matched.push(m.id)
+        }
+      }
+      continue
+    }
+    const m = byLowerName.get(name.toLowerCase())
+    if (m && !seen.has(m.id)) {
+      seen.add(m.id)
+      matched.push(m.id)
+    }
+  }
+  return matched
+}
+
 // ===== 创建/更新输入 =====
 
 /** 创建静态成员的输入（Stage 1：仅身份，不执行） */

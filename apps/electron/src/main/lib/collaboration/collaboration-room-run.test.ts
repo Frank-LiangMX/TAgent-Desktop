@@ -168,7 +168,7 @@ describe('CollaborationRoomService run 行为（Stage 2）', () => {
     // 再次对同一消息触发：应跳过（幂等）
     const room = svc.getRoomById(roomId)!
     const second = svc.triggerRunForMessage(room, msg)
-    expect(second).toBeUndefined()
+    expect(second).toEqual([])
     await svc.awaitAllRuns()
     expect(svc.listRuns(roomId)).toHaveLength(1)
     expect(calls).toHaveLength(1) // adapter 仍只被调用一次
