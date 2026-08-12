@@ -34,6 +34,7 @@ import {
   COLLABORATION_ROOM_MAX_MEMBERS,
   COLLABORATION_RUN_ID_PREFIX,
   collaborationRunIdempotencyKey,
+  collaborationLoopFingerprint,
   isCollaborationDuplicateReply,
   isCollaborationSelfSend,
   isCollaborationRoomStatus,
@@ -502,6 +503,39 @@ export class CollaborationRoomService {
     const parentDepth = this.runDepth(run.id)
     const depthRes = nextCollaborationA2ADepth(parentDepth, room.maxA2ADepth)
     if (!depthRes.ok) return { ok: false, reason: depthRes.reason }
+
+    // 循环指纹：检测 A↔B 近重复问答（02-RUNTIME-A2A-SPEC §9）。
+    // - 正向：A→B 已问过同样问题（指纹碰撞）→ 阻断重复投递
+    // - 反向：B→A 已问过同样问题（A→B→A 循环）→ 阻断
+    const fp = collaborationLoopFingerprint({
+      fromMemberId: fromMember.id,
+      toMemberId: toMember.id,
+      payload: input.question,
+    })
+    const reverseFp = collaborationLoopFingerprint({
+      fromMemberId: toMember.id,
+      toMemberId: fromMember.id,
+      payload: input.question,
+    })
+    const roomEnvelopes = listMailboxByRoom(room.id)
+    const loopHit = roomEnvelopes.some((e) => {
+      if (e.type !== 'question') return false
+      const eFp = collaborationLoopFingerprint({
+        fromMemberId: e.fromMemberId,
+        toMemberId: e.toMemberId,
+        payload: e.payload,
+      })
+      // 正向重复（同 A→B 同问题）或反向循环（B→A 同问题）
+      if (eFp === fp) return true
+      if (eFp === reverseFp && e.fromMemberId === toMember.id && e.toMemberId === fromMember.id) return true
+      return false
+    })
+    if (loopHit) {
+      return {
+        ok: false,
+        reason: '检测到 A↔B 近重复问答循环或重复投递，已阻断（请换一种方式询问或换成员）',
+      }
+    }
 
     const now = Date.now()
     const requestId = genId('req_')

@@ -238,6 +238,44 @@ describe('CollaborationRoomService A2A 信箱 host 侧（Stage 4-2）', () => {
     void coordinatorId
   })
 
+  test('roomAsk：A↔B 近重复问答循环 → 阻断', () => {
+    const svc = createService()
+    const { roomId, coordinatorId, devId } = createRoomWithTwoMembers(svc)
+    const { runId } = triggerRunningRun(svc, roomId)
+
+    // 协调者先 ask 开发"接口对吗"
+    const ask1 = svc.roomAsk({ roomId, fromRunId: runId, toMemberId: devId, question: '接口对吗' })
+    expect(ask1.ok).toBe(true)
+
+    // 模拟开发反向 ask 协调者同样问题（A→B→A 循环）
+    const devMsg = svc.appendUserMessage({ roomId, content: '开发开始', targetMemberIds: [devId] })
+    const devRun = svc.listRuns(roomId).find((r) => r.triggerMessageId === devMsg.id)!
+    const ask2 = svc.roomAsk({
+      roomId,
+      fromRunId: devRun.id,
+      toMemberId: coordinatorId,
+      question: '接口对吗。',
+    })
+    expect(ask2.ok).toBe(false)
+    if (ask2.ok) return
+    expect(ask2.reason).toMatch(/循环|重复|阻断/i)
+  })
+
+  test('roomAsk：正向重复投递（同 A→B 同问题）→ 阻断', () => {
+    const svc = createService()
+    const { roomId, devId } = createRoomWithTwoMembers(svc)
+    const { runId } = triggerRunningRun(svc, roomId)
+
+    const ask1 = svc.roomAsk({ roomId, fromRunId: runId, toMemberId: devId, question: '接口对吗' })
+    expect(ask1.ok).toBe(true)
+
+    // 协调者再次 ask 开发同样问题 → 阻断
+    const ask2 = svc.roomAsk({ roomId, fromRunId: runId, toMemberId: devId, question: '接口对吗！' })
+    expect(ask2.ok).toBe(false)
+    if (ask2.ok) return
+    expect(ask2.reason).toMatch(/循环|重复|阻断/i)
+  })
+
   test('markRunAwaitingPeer：running → awaiting_peer', () => {
     const svc = createService()
     const { roomId } = createRoomWithTwoMembers(svc)
