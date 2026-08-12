@@ -34,9 +34,14 @@ import {
   COLLABORATION_ROOM_MAX_MEMBERS,
   COLLABORATION_RUN_ID_PREFIX,
   collaborationRunIdempotencyKey,
+  isCollaborationDuplicateReply,
+  isCollaborationSelfSend,
   isCollaborationRoomStatus,
+  nextCollaborationA2ADepth,
   parseCollaborationMentions,
+  transitionCollaborationMailboxState,
   validateCreateCollaborationRoomInput,
+  type CollaborationMailboxEnvelope,
   type CollaborationMember,
   type CollaborationMemberCapabilities,
   type CollaborationMessage,
@@ -55,15 +60,20 @@ import {
 import {
   appendMembers,
   appendMessage,
+  appendMailboxEnvelope,
   getMember,
   getRoom,
   getRun,
+  listActiveMailboxForMember,
+  listMailboxByRequest,
+  listMailboxByRoom,
   listMembersByRoom,
   listMessagesByRoom,
   listRunsByRoom,
   listRunsByStatus,
   loadMembers,
   loadRooms,
+  upsertMailboxEnvelope,
   upsertMember,
   upsertRoom,
   upsertRun,
@@ -362,7 +372,8 @@ export class CollaborationRoomService {
    */
   recoverInterruptedRuns(): number {
     const stuck = listRunsByStatus(['queued', 'running'])
-    if (stuck.length === 0) return 0
+    const awaiting = listRunsByStatus(['awaiting_peer'])
+    if (stuck.length === 0 && awaiting.length === 0) return 0
     const now = Date.now()
     const error: CollaborationSerializedRunError = {
       message: '应用重启时发现仍在运行的 run，已标记中断（请重新发送消息以重试）',
@@ -372,8 +383,290 @@ export class CollaborationRoomService {
       upsertRun({ ...run, status: 'failed', finishedAt: now, error })
       this.syncMemberStatus(run.memberId)
     }
-    console.log(`[协作室] 启动恢复：${stuck.length} 个遗留 run 标记为 interrupted/failed`)
-    return stuck.length
+    // 遗留 awaiting_peer：continuation 已丢，标 blocked 要求用户决定重试/完成
+    // （02-RUNTIME-A2A-SPEC §14：未知副作用不可自动重放）
+    for (const run of awaiting) {
+      upsertRun({ ...run, status: 'blocked', finishedAt: now, error })
+      this.syncMemberStatus(run.memberId)
+    }
+    console.log(
+      `[协作室] 启动恢复：${stuck.length} 个遗留 run 标记 interrupted/failed，${awaiting.length} 个 awaiting_peer 标记 blocked`,
+    )
+    return stuck.length + awaiting.length
+  }
+
+  // ===== A2A 信箱（S4 host 侧；02-RUNTIME-A2A-SPEC §5–§9） =====
+  //
+  // 本段实现宿主侧 A2A 协议入口（room_send / room_ask / room_reply）：纯逻辑守卫（S4-1）+
+  // mailbox 落盘 + run 状态机迁移到 awaiting_peer + 广播。**adapter 工具回路（把工具暴露给
+  // 成员 turn、peer reply 唤醒发送者新 turn）留 S4-3**；S4-2 的边界是「信箱语义 + 状态机」可
+  // 独立验证（落盘正确、守卫阻断自环/超深度/重复回复、状态迁移合法）。
+  //
+  // 红线（02-spec §9 / 03-phases §12）：安全字段（rootMessageId/causationId/depth/fromMemberId）
+  // 由宿主补齐，模型不得自行声明；此处 input 由调用方（未来 adapter 工具层）传入 run 上下文，
+  // service 强制用 run 的 memberId 作为 fromMemberId，不接受外部伪造。
+
+  /**
+   * room_send：异步通知另一成员（不暂停发送者）。
+   *
+   * 守卫：自环（A→A）阻断；深度超限 fail closed；房间非 active 拒绝。
+   * 落盘：pending 信封 + 一条 a2a_request 消息（visibility=participants）。
+   * 不迁移 run 状态（send 不阻塞发送者）。
+   */
+  roomSend(input: {
+    roomId: string
+    fromRunId: string
+    toMemberId: string
+    payload: string
+  }): { ok: true; envelopeId: string } | { ok: false; reason: string } {
+    const room = getRoom(input.roomId)
+    if (!room) return { ok: false, reason: '房间不存在' }
+    if (room.status !== 'active') return { ok: false, reason: `房间状态非 active：${room.status}` }
+
+    const run = getRun(input.fromRunId)
+    if (!run) return { ok: false, reason: 'run 不存在' }
+    if (run.status !== 'running' && run.status !== 'awaiting_peer') {
+      return { ok: false, reason: `run 非 running/awaiting_peer：${run.status}` }
+    }
+    const fromMember = getMember(run.memberId)
+    if (!fromMember) return { ok: false, reason: '发送成员不存在' }
+    if (isCollaborationSelfSend(fromMember.id, input.toMemberId)) {
+      return { ok: false, reason: '成员不能给自己发 A2A' }
+    }
+    const toMember = getMember(input.toMemberId)
+    if (!toMember || toMember.roomId !== room.id) {
+      return { ok: false, reason: '接收成员不存在或不属于本房间' }
+    }
+
+    // send 不递增深度（仅 ask/reply 跨成员计深度），但仍校验发送者 run 自身深度未超房间上限，
+    // 避免深层 run 继续向外发散。run 深度未知时按 0 兜底（宿主补齐）。
+    const senderDepth = this.runDepth(run.id)
+    const depthCheck = nextCollaborationA2ADepth(senderDepth, room.maxA2ADepth)
+    if (!depthCheck.ok) return { ok: false, reason: depthCheck.reason }
+
+    const now = Date.now()
+    const rootMessageId = run.triggerMessageId
+    const causationId = run.id
+    const envelope: CollaborationMailboxEnvelope = {
+      id: genId('env_'),
+      roomId: room.id,
+      fromMemberId: fromMember.id,
+      toMemberId: toMember.id,
+      type: 'message',
+      payload: input.payload,
+      rootMessageId,
+      causationId,
+      depth: senderDepth,
+      state: 'pending',
+      createdAt: now,
+    }
+    appendMailboxEnvelope(envelope)
+    this.appendA2AMessage(room, fromMember, 'a2a_request', input.payload, rootMessageId, causationId, run.id, [toMember.id], senderDepth)
+    this.broadcast(room.id, 'mailbox-updated')
+    return { ok: true, envelopeId: envelope.id }
+  }
+
+  /**
+   * room_ask：向另一成员提问；当前 run 可结束为 awaiting_peer 释放执行槽。
+   *
+   * 守卫：自环阻断；深度 = parentDepth+1 超限 fail closed。parentDepth 由宿主从该 run
+   * 已有 A2A 链推导（安全字段，不接受外部传入）。
+   * 落盘：question 信封（pending）+ a2a_request 消息。
+   * 状态机：调用方决定是否把 run 迁移到 awaiting_peer（见 markRunAwaitingPeer）。
+   */
+  roomAsk(input: {
+    roomId: string
+    fromRunId: string
+    toMemberId: string
+    question: string
+  }): { ok: true; envelopeId: string; requestId: string } | { ok: false; reason: string } {
+    const room = getRoom(input.roomId)
+    if (!room) return { ok: false, reason: '房间不存在' }
+    if (room.status !== 'active') return { ok: false, reason: `房间状态非 active：${room.status}` }
+
+    const run = getRun(input.fromRunId)
+    if (!run) return { ok: false, reason: 'run 不存在' }
+    if (run.status !== 'running' && run.status !== 'awaiting_peer') {
+      return { ok: false, reason: `run 非 running/awaiting_peer：${run.status}` }
+    }
+    const fromMember = getMember(run.memberId)
+    if (!fromMember) return { ok: false, reason: '发送成员不存在' }
+    if (isCollaborationSelfSend(fromMember.id, input.toMemberId)) {
+      return { ok: false, reason: '成员不能给自己发 A2A' }
+    }
+    const toMember = getMember(input.toMemberId)
+    if (!toMember || toMember.roomId !== room.id) {
+      return { ok: false, reason: '接收成员不存在或不属于本房间' }
+    }
+
+    const parentDepth = this.runDepth(run.id)
+    const depthRes = nextCollaborationA2ADepth(parentDepth, room.maxA2ADepth)
+    if (!depthRes.ok) return { ok: false, reason: depthRes.reason }
+
+    const now = Date.now()
+    const requestId = genId('req_')
+    const rootMessageId = run.triggerMessageId
+    const causationId = run.id
+    const envelope: CollaborationMailboxEnvelope = {
+      id: genId('env_'),
+      roomId: room.id,
+      fromMemberId: fromMember.id,
+      toMemberId: toMember.id,
+      type: 'question',
+      requestId,
+      payload: input.question,
+      rootMessageId,
+      causationId,
+      depth: depthRes.depth,
+      state: 'pending',
+      createdAt: now,
+    }
+    appendMailboxEnvelope(envelope)
+    this.appendA2AMessage(room, fromMember, 'a2a_request', input.question, rootMessageId, causationId, run.id, [toMember.id], depthRes.depth)
+    this.broadcast(room.id, 'mailbox-updated')
+    return { ok: true, envelopeId: envelope.id, requestId }
+  }
+
+  /**
+   * room_reply：回复一个 ask。幂等——同一 request 已有有效终态回复则阻断。
+   *
+   * 守卫：request 信封必须存在且为激活态（pending/delivered）；重复回复阻断；
+   * 回复者必须是 request 的 toMemberId（防伪造）。
+   * 落盘：reply 信封（置 answered）+ 原 question 信封置 answered + a2a_reply 消息。
+   * 不唤醒发送者 turn（留 S4-3 adapter 接线）；S4-2 仅保证信箱状态机正确。
+   */
+  roomReply(input: {
+    roomId: string
+    fromRunId: string
+    requestId: string
+    answer: string
+  }): { ok: true; envelopeId: string } | { ok: false; reason: string } {
+    const room = getRoom(input.roomId)
+    if (!room) return { ok: false, reason: '房间不存在' }
+
+    const run = getRun(input.fromRunId)
+    if (!run) return { ok: false, reason: 'run 不存在' }
+    const fromMember = getMember(run.memberId)
+    if (!fromMember) return { ok: false, reason: '回复成员不存在' }
+
+    // 找到该 request 的 question 信封
+    const related = listMailboxByRequest(input.requestId)
+    const questionEnv = related.find((e) => e.type === 'question')
+    if (!questionEnv) return { ok: false, reason: 'request 不存在' }
+    if (questionEnv.toMemberId !== fromMember.id) {
+      return { ok: false, reason: '回复者与 request 接收者不匹配' }
+    }
+    if (!transitionCollaborationMailboxState(questionEnv.state, 'answer').ok) {
+      return { ok: false, reason: `question 信封状态不可回复：${questionEnv.state}` }
+    }
+    // 幂等：同 (request, from) 已有活动 reply 或该 request 已 answered → 阻断
+    if (isCollaborationDuplicateReply(input.requestId, fromMember.id, related)) {
+      return { ok: false, reason: '重复回复（该 request 已有有效回复）' }
+    }
+
+    const now = Date.now()
+    const replyEnvelope: CollaborationMailboxEnvelope = {
+      id: genId('env_'),
+      roomId: room.id,
+      fromMemberId: fromMember.id,
+      toMemberId: questionEnv.fromMemberId,
+      type: 'reply',
+      requestId: input.requestId,
+      payload: input.answer,
+      rootMessageId: questionEnv.rootMessageId,
+      causationId: run.id,
+      depth: questionEnv.depth,
+      state: 'answered',
+      createdAt: now,
+    }
+    appendMailboxEnvelope(replyEnvelope)
+    // 原 question 信封 → answered
+    const t = transitionCollaborationMailboxState(questionEnv.state, 'answer')
+    if (t.ok) upsertMailboxEnvelope({ ...questionEnv, state: t.state })
+
+    this.appendA2AMessage(
+      room,
+      fromMember,
+      'a2a_reply',
+      input.answer,
+      questionEnv.rootMessageId,
+      questionEnv.id,
+      run.id,
+      [questionEnv.fromMemberId],
+      questionEnv.depth,
+    )
+    this.broadcast(room.id, 'mailbox-updated')
+    return { ok: true, envelopeId: replyEnvelope.id }
+  }
+
+  /**
+   * 把一个 run 标记为 awaiting_peer（执行槽释放，保留 continuation 供 S4-3 恢复）。
+   * 仅 running → awaiting_peer 合法（CAS）；成员状态同步为 idle（不占槽）。
+   */
+  markRunAwaitingPeer(runId: string): CollaborationRun | undefined {
+    const updated = this.casRun(runId, 'running', 'awaiting_peer', {})
+    if (updated) {
+      this.scheduler.release(runId, updated.roomId, updated.memberId)
+      this.syncMemberStatus(updated.memberId)
+      this.broadcast(updated.roomId, 'run-awaiting-peer')
+    }
+    return updated
+  }
+
+  /** 列出某房间全部信箱信封（renderer 审计视图用） */
+  listMailbox(roomId: string): CollaborationMailboxEnvelope[] {
+    return listMailboxByRoom(roomId)
+  }
+
+  /** 列出某成员仍待处理的信封（pending/delivered） */
+  listPendingMailboxForMember(memberId: string): CollaborationMailboxEnvelope[] {
+    return listActiveMailboxForMember(memberId)
+  }
+
+  /**
+   * 推导一个 run 当前的 A2A 深度（安全字段，宿主补齐）。
+   *
+   * 取该 run 作为 causationId 已落盘信封里的最大 depth；无则 0（首次跨成员调用）。
+   * 用于 room_send/room_ask 的深度守卫，避免模型自行声明深度。
+   */
+  private runDepth(runId: string): number {
+    const envelopes = listMailboxByRoom(getRun(runId)?.roomId ?? '')
+    let max = 0
+    for (const e of envelopes) {
+      if (e.causationId === runId && e.depth > max) max = e.depth
+    }
+    return max
+  }
+
+  /** 落盘一条 A2A 消息（room transcript 投影；visibility=participants） */
+  private appendA2AMessage(
+    room: CollaborationRoom,
+    member: CollaborationMember,
+    kind: 'a2a_request' | 'a2a_reply',
+    content: string,
+    rootMessageId: string,
+    causationId: string,
+    runId: string,
+    targetMemberIds: string[],
+    depth: number,
+  ): void {
+    const message: CollaborationMessage = {
+      id: genId(COLLABORATION_MESSAGE_ID_PREFIX),
+      roomId: room.id,
+      authorType: 'member',
+      authorId: member.id,
+      kind,
+      content,
+      visibility: 'participants',
+      targetMemberIds,
+      replyToMessageId: undefined,
+      rootMessageId,
+      causationId,
+      runId,
+      depth,
+      createdAt: Date.now(),
+    }
+    appendMessage(message)
   }
 
   /**

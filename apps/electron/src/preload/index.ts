@@ -32,6 +32,7 @@ import type {
   CollaborationMessage,
   CollaborationRoom,
   CollaborationRun,
+  CollaborationMailboxEnvelope,
   CreateCollaborationRoomInput,
   AddCollaborationMemberInput,
   UpdateCollaborationRoomInput,
@@ -594,6 +595,9 @@ const electronAPI = {
   /** 取消某 run（abort 后端 + 置 cancelled；终态 run 返回其当前状态） */
   cancelCollaborationRun: (input: { roomId: string; runId: string }) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.CANCEL_RUN, input) as Promise<CollaborationRun | null>,
+  /** 列出某房间全部 A2A 信箱信封（S4 审计视图） */
+  listCollaborationMailbox: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MAILBOX, { roomId }) as Promise<CollaborationMailboxEnvelope[]>,
   /** 房间数据变更事件（main → renderer，run/member/message 变更时广播） */
   onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => {
     const handler = (_e: unknown, payload: { roomId: string; kind: string; at: number }): void => cb(payload)

@@ -42,6 +42,8 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   LIST_RUNS: 'collaboration-room:list-runs',
   /** 取消某 run（abort 后端调用 + 置 cancelled，Stage 2） */
   CANCEL_RUN: 'collaboration-room:cancel-run',
+  /** 列出某房间全部 A2A 信箱信封（S4 审计视图） */
+  LIST_MAILBOX: 'collaboration-room:list-mailbox',
   /** 房间数据变更事件（main → renderer，Stage 2 起广播） */
   CHANGED: 'collaboration-room:changed',
 } as const
@@ -90,6 +92,12 @@ export interface CancelCollaborationRunInput {
   runId: string
 }
 
+/** 列出某房间全部 A2A 信箱信封输入（S4） */
+export interface ListCollaborationMailboxInput {
+  /** 房间 ID */
+  roomId: string
+}
+
 /**
  * 房间数据变更事件 payload（main → renderer，Stage 2 起广播）
  *
@@ -109,6 +117,8 @@ export interface CollaborationRoomChangedPayload {
     | 'run-started'
     | 'run-finished'
     | 'run-cancelled'
+    | 'run-awaiting-peer'
+    | 'mailbox-updated'
   /** 发生时间戳 */
   at: number
 }

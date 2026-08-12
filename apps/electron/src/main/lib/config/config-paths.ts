@@ -201,3 +201,8 @@ export function getCollaborationMessagesPath(): string {
 export function getCollaborationRunsPath(): string {
   return join(getCollaborationDir(), 'runs.json')
 }
+
+/** 协作室 A2A 信箱索引：~/.tagent[-dev]/collaboration/mailbox.json（S4） */
+export function getCollaborationMailboxPath(): string {
+  return join(getCollaborationDir(), 'mailbox.json')
+}

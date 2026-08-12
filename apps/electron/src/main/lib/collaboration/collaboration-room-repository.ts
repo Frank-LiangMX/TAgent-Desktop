@@ -20,6 +20,7 @@ import type {
   CollaborationMember,
   CollaborationMessage,
   CollaborationRun,
+  CollaborationMailboxEnvelope,
 } from '@tagent/shared'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import {
@@ -27,6 +28,7 @@ import {
   getCollaborationMembersPath,
   getCollaborationMessagesPath,
   getCollaborationRunsPath,
+  getCollaborationMailboxPath,
 } from '../config/config-paths'
 
 /** 配置版本号 */
@@ -254,4 +256,78 @@ export function findRunByIdempotencyKey(idempotencyKey: string): CollaborationRu
 export function listRunsByStatus(statuses: CollaborationRun['status'][]): CollaborationRun[] {
   const set = new Set(statuses)
   return readRunsConfig().runs.filter((r) => set.has(r.status))
+}
+
+// ===== mailbox.json（S4 A2A 信箱） =====
+
+interface MailboxConfig {
+  version: number
+  envelopes: CollaborationMailboxEnvelope[]
+}
+
+function readMailboxConfig(): MailboxConfig {
+  const parsed = readJsonSafe<MailboxConfig | null>(getCollaborationMailboxPath(), null)
+  if (!parsed || !Array.isArray(parsed.envelopes)) {
+    return { version: CONFIG_VERSION, envelopes: [] }
+  }
+  return parsed
+}
+
+function writeMailboxConfig(config: MailboxConfig): void {
+  try {
+    writeJsonAtomic(getCollaborationMailboxPath(), config)
+  } catch (err) {
+    console.error('[协作室存储] 写入 mailbox.json 失败:', err)
+    throw new Error('写入协作室信箱数据失败')
+  }
+}
+
+/** 列出某房间全部信封（按 createdAt 升序） */
+export function listMailboxByRoom(roomId: string): CollaborationMailboxEnvelope[] {
+  return readMailboxConfig()
+    .envelopes.filter((e) => e.roomId === roomId)
+    .sort((a, b) => a.createdAt - b.createdAt)
+}
+
+/** 列出投递给某成员、仍处于激活态的信封（pending/delivered），按时间升序 */
+export function listActiveMailboxForMember(memberId: string): CollaborationMailboxEnvelope[] {
+  return readMailboxConfig()
+    .envelopes.filter(
+      (e) => e.toMemberId === memberId && (e.state === 'pending' || e.state === 'delivered'),
+    )
+    .sort((a, b) => a.createdAt - b.createdAt)
+}
+
+/** 按 requestId 列出相关信封（用于重复回复检测） */
+export function listMailboxByRequest(requestId: string): CollaborationMailboxEnvelope[] {
+  return readMailboxConfig().envelopes.filter((e) => e.requestId === requestId)
+}
+
+/** 取单个信封 */
+export function getMailboxEnvelope(envelopeId: string): CollaborationMailboxEnvelope | undefined {
+  return readMailboxConfig().envelopes.find((e) => e.id === envelopeId)
+}
+
+/** 追加单封信封（不做去重，由调用方保证 id 唯一） */
+export function appendMailboxEnvelope(envelope: CollaborationMailboxEnvelope): void {
+  const config = readMailboxConfig()
+  config.envelopes.push(envelope)
+  writeMailboxConfig(config)
+}
+
+/** upsert 单封信封（按 id；状态机迁移用） */
+export function upsertMailboxEnvelope(envelope: CollaborationMailboxEnvelope): void {
+  const config = readMailboxConfig()
+  const idx = config.envelopes.findIndex((e) => e.id === envelope.id)
+  if (idx === -1) config.envelopes.push(envelope)
+  else config.envelopes[idx] = envelope
+  writeMailboxConfig(config)
+}
+
+/** 列出处于指定状态集合的信封（重启恢复用：找出未决 pending/delivered） */
+export function listMailboxByStatus(
+  states: CollaborationMailboxEnvelope['state'][],
+): CollaborationMailboxEnvelope[] {
+  const set = new Set(states)
+  return readMailboxConfig().envelopes.filter((e) => set.has(e.state))
 }

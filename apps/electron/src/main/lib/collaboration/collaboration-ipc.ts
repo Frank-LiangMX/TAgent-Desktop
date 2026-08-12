@@ -23,11 +23,13 @@ import {
   type AddCollaborationMemberInput,
   type AppendCollaborationUserMessageInput,
   type CancelCollaborationRunInput,
+  type CollaborationMailboxEnvelope,
   type CollaborationMember,
   type CollaborationMessage,
   type CollaborationRoom,
   type CollaborationRun,
   type CreateCollaborationRoomInput,
+  type ListCollaborationMailboxInput,
   type ListCollaborationMembersInput,
   type ListCollaborationMessagesInput,
   type ListCollaborationRoomsInput,
@@ -131,7 +133,14 @@ export function registerCollaborationRoomIpc(
     },
   )
 
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.LIST_MAILBOX,
+    async (_e, input: ListCollaborationMailboxInput): Promise<CollaborationMailboxEnvelope[]> => {
+      return service.listMailbox(input.roomId)
+    },
+  )
+
   console.log(
-    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/list-runs/cancel-run；Stage 3 多成员并行 + 协调者路由）',
+    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/list-runs/cancel-run/list-mailbox；Stage 4 A2A 信箱 host 侧）',
   )
 }
