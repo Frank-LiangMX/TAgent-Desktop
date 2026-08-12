@@ -9,6 +9,7 @@
  * 变更后调 onRoomsChanged 通知 App bump refreshKey，触发本侧栏 + 主区页面重新拉取。
  */
 import { useCallback, useEffect, useState } from 'react'
+import { toast } from 'sonner'
 import {
   Archive,
   CaretRight,
@@ -106,6 +107,7 @@ export function CollaborationRoomSidebar({
         onRoomsChanged()
       } catch (err) {
         console.error('[协作室侧栏] 重命名失败:', err)
+        toast.error('重命名失败', { description: err instanceof Error ? err.message : String(err) })
       }
     },
     [renameTarget, onRoomsChanged],
@@ -119,7 +121,9 @@ export function CollaborationRoomSidebar({
         await window.electronAPI.updateCollaborationRoom({ roomId: room.id, status: nextStatus })
         onRoomsChanged()
       } catch (err) {
-        window.alert(`${nextStatus === 'paused' ? '暂停' : '恢复'}失败：${err instanceof Error ? err.message : String(err)}`)
+        toast.error(nextStatus === 'paused' ? '暂停失败' : '恢复失败', {
+          description: err instanceof Error ? err.message : String(err),
+        })
       }
     },
     [onRoomsChanged],
@@ -132,7 +136,7 @@ export function CollaborationRoomSidebar({
         await window.electronAPI.updateCollaborationRoom({ roomId: room.id, status: 'archived' })
         onRoomsChanged()
       } catch (err) {
-        window.alert(`归档失败：${err instanceof Error ? err.message : String(err)}`)
+        toast.error('归档失败', { description: err instanceof Error ? err.message : String(err) })
       }
     },
     [onRoomsChanged],
@@ -145,7 +149,7 @@ export function CollaborationRoomSidebar({
         await window.electronAPI.updateCollaborationRoom({ roomId: room.id, status: 'active' })
         onRoomsChanged()
       } catch (err) {
-        window.alert(`恢复失败：${err instanceof Error ? err.message : String(err)}`)
+        toast.error('恢复失败', { description: err instanceof Error ? err.message : String(err) })
       }
     },
     [onRoomsChanged],

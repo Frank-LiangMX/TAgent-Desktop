@@ -43,6 +43,7 @@ import type {
   WorkspacePluginBundleRecord,
 } from '@tagent/shared'
 import { RichSourceContext, Toaster, TooltipProvider } from '@tagent/ui'
+import { toast } from 'sonner'
 import { MemoryMonitorPanel, showNudgeToasts } from './components/memory'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
 import { PluginStoreSettings } from './components/settings/PluginStoreSettings'
@@ -452,7 +453,7 @@ export function App(): JSX.Element {
       setSidebarOpen(true)
       bumpCollab()
     } catch (err) {
-      window.alert(`创建协作室失败：${err instanceof Error ? err.message : String(err)}`)
+      toast.error('创建协作室失败', { description: err instanceof Error ? err.message : String(err) })
     }
   }, [bumpCollab])
 
@@ -763,6 +764,7 @@ export function App(): JSX.Element {
             refreshKey={collabRefreshKey}
             onRoomsChanged={bumpCollab}
             onNewRoom={() => void newCollaborationRoom()}
+            onOpenSettings={(tab) => openSettings(tab)}
           />
         ) : activeRail === 'plugins' ? (
           <div className="plugins-main-view scrollbar-thin">

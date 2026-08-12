@@ -15,6 +15,7 @@
  * 变更后调 onRoomsChanged 通知 App bump refreshKey；run/member 变更由 CHANGED 广播驱动 bump。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import {
   Archive,
   CirclesThreePlus,
@@ -106,6 +107,8 @@ interface CollaborationRoomsPageProps {
   onRoomsChanged: () => void
   /** 空态「新建协作室」CTA */
   onNewRoom: () => void
+  /** 打开指定设置 tab（如「去渠道设置」CTA 跳转到 channels） */
+  onOpenSettings?: (tab: 'channels') => void
 }
 
 export function CollaborationRoomsPage({
@@ -113,11 +116,13 @@ export function CollaborationRoomsPage({
   refreshKey,
   onRoomsChanged,
   onNewRoom,
+  onOpenSettings,
 }: CollaborationRoomsPageProps): JSX.Element {
   const [room, setRoom] = useState<CollaborationRoom | null>(null)
   const [messages, setMessages] = useState<CollaborationMessage[]>([])
   const [members, setMembers] = useState<CollaborationMember[]>([])
   const [runs, setRuns] = useState<CollaborationRun[]>([])
+  const [channels, setChannels] = useState<Array<{ id: string; name: string }>>([])
   const [cancellingId, setCancellingId] = useState<string | null>(null)
   const [addingMember, setAddingMember] = useState(false)
   const [textPrompt, setTextPrompt] = useState<TextPromptKind>(null)
@@ -161,6 +166,24 @@ export function CollaborationRoomsPage({
     }
   }, [roomId, refreshKey])
 
+  // 挂载时加载渠道列表（用于成员渠道名展示 / 「无渠道」判定）
+  useEffect(() => {
+    let cancelled = false
+    void (async (): Promise<void> => {
+      try {
+        const list = await window.electronAPI.listChannels()
+        if (cancelled) return
+        setChannels(Array.isArray(list) ? list.map((c) => ({ id: c.id, name: c.name })) : [])
+      } catch (err) {
+        if (cancelled) return
+        console.error('[协作室主区] 加载渠道失败:', err)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   // 新消息 → 滚到底
   useEffect(() => {
     const el = scrollRef.current
@@ -182,6 +205,23 @@ export function CollaborationRoomsPage({
   const memberName = (memberId: string): string =>
     members.find((m) => m.id === memberId)?.displayName ?? '成员'
 
+  // 成员是否具备可执行后端：channel 后端需绑定渠道；cli 后端需 cliWorkerId
+  const memberHasExecutableBackend = (m: CollaborationMember): boolean =>
+    m.backend === 'cli' ? Boolean(m.cliWorkerId) : Boolean(m.channelId)
+
+  // 渠道显示名（未找到则回退 channelId）
+  const channelLabel = (m: CollaborationMember): string => {
+    if (m.backend === 'cli') return m.cliWorkerId ? 'CLI' : '未绑定'
+    if (!m.channelId) return '未绑定'
+    return channels.find((c) => c.id === m.channelId)?.name ?? m.channelId
+  }
+
+  // 房间是否存在无可用后端的成员（用于提示去渠道设置）
+  const anyMemberMissingBackend = members.some((m) => !memberHasExecutableBackend(m))
+  // 是否所有成员都无可用后端 → 发消息必然失败，禁发并 CTA
+  const allMembersMissingBackend =
+    members.length > 0 && members.every((m) => !memberHasExecutableBackend(m))
+
   const send = useCallback(async (): Promise<void> => {
     if (!room || room.status === 'archived') return
     const text = inputRef.current?.getText().trim() ?? ''
@@ -191,7 +231,7 @@ export function CollaborationRoomsPage({
       inputRef.current?.clear()
       onRoomsChanged()
     } catch (err) {
-      window.alert(`发送失败：${err instanceof Error ? err.message : String(err)}`)
+      toast.error('发送失败', { description: err instanceof Error ? err.message : String(err) })
     }
   }, [room, onRoomsChanged])
 
@@ -203,7 +243,7 @@ export function CollaborationRoomsPage({
         await window.electronAPI.cancelCollaborationRun({ roomId: room.id, runId })
         onRoomsChanged()
       } catch (err) {
-        window.alert(`取消失败：${err instanceof Error ? err.message : String(err)}`)
+        toast.error('取消失败', { description: err instanceof Error ? err.message : String(err) })
       } finally {
         setCancellingId(null)
       }
@@ -221,6 +261,7 @@ export function CollaborationRoomsPage({
         onRoomsChanged()
       } catch (err) {
         console.error('[协作室] 添加成员失败:', err)
+        toast.error('添加成员失败', { description: err instanceof Error ? err.message : String(err) })
       } finally {
         setAddingMember(false)
       }
@@ -238,6 +279,7 @@ export function CollaborationRoomsPage({
         onRoomsChanged()
       } catch (err) {
         console.error('[协作室] 重命名失败:', err)
+        toast.error('重命名失败', { description: err instanceof Error ? err.message : String(err) })
       }
     },
     [room, onRoomsChanged],
@@ -250,7 +292,7 @@ export function CollaborationRoomsPage({
       await window.electronAPI.updateCollaborationRoom({ roomId: room.id, status: nextStatus })
       onRoomsChanged()
     } catch (err) {
-      window.alert(`操作失败：${err instanceof Error ? err.message : String(err)}`)
+      toast.error('操作失败', { description: err instanceof Error ? err.message : String(err) })
     }
   }, [room, onRoomsChanged])
 
@@ -260,7 +302,7 @@ export function CollaborationRoomsPage({
       await window.electronAPI.updateCollaborationRoom({ roomId: room.id, status: 'archived' })
       onRoomsChanged()
     } catch (err) {
-      window.alert(`归档失败：${err instanceof Error ? err.message : String(err)}`)
+      toast.error('归档失败', { description: err instanceof Error ? err.message : String(err) })
     }
   }, [room, onRoomsChanged])
 
@@ -366,6 +408,7 @@ export function CollaborationRoomsPage({
           <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
             {members.map((m) => {
               const st = memberDisplayStatus(m, runs)
+              const hasBackend = memberHasExecutableBackend(m)
               return (
                 <span
                   key={m.id}
@@ -374,8 +417,9 @@ export function CollaborationRoomsPage({
                     st === 'running' && 'bg-emerald-500/15 text-emerald-600',
                     st === 'queued' && 'bg-amber-500/15 text-amber-600',
                     (st === 'idle' || st === 'offline') && 'bg-muted text-muted-foreground',
+                    !hasBackend && 'ring-1 ring-amber-500/40',
                   )}
-                  title={`${m.displayName}：${memberStatusLabel(st)}${m.isCoordinator ? '（协调者）' : ''}`}
+                  title={`${m.displayName}：${memberStatusLabel(st)}${m.isCoordinator ? '（协调者）' : ''} · 后端：${channelLabel(m)}`}
                 >
                   <span
                     className={cn(
@@ -388,6 +432,11 @@ export function CollaborationRoomsPage({
                   />
                   {m.displayName}
                   {m.isCoordinator ? <span className="opacity-60">·协调</span> : null}
+                  {!hasBackend ? (
+                    <span className="rounded bg-amber-500/15 px-1 font-medium text-amber-600">无渠道</span>
+                  ) : (
+                    <span className="opacity-60">{channelLabel(m)}</span>
+                  )}
                 </span>
               )
             })}
@@ -429,11 +478,36 @@ export function CollaborationRoomsPage({
           <div className="rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
             房间已暂停，不会启动新运行。恢复运行后可继续发送。
           </div>
+        ) : allMembersMissingBackend ? (
+          <div className="flex flex-col items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-3 text-center">
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              所有成员都未绑定可用渠道（kscc / 外部渠道），发送后无法跑起任何回复。
+            </p>
+            <button
+              type="button"
+              className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+              onClick={() => onOpenSettings?.('channels')}
+            >
+              去渠道设置
+            </button>
+          </div>
+        ) : anyMemberMissingBackend ? (
+          <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            <span>部分成员未绑定渠道（@ 到他们时不会回复）。</span>
+            <button
+              type="button"
+              className="rounded-full bg-primary px-2.5 py-0.5 font-medium text-primary-foreground hover:bg-primary/90"
+              onClick={() => onOpenSettings?.('channels')}
+            >
+              去渠道设置
+            </button>
+          </div>
         ) : (
           <ChatInput
             ref={inputRef}
             onSubmit={() => void send()}
             placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@all 唤醒全部）"
+            mentionRoles={members.map((m) => ({ id: m.id, displayName: m.displayName }))}
           />
         )}
       </div>
