@@ -1,0 +1,11 @@
+#!/bin/sh
+# Strip agent co-author trailers (Claude/kscc/Cursor/Copilot) before commit.
+# 跨平台（macOS BSD / Linux GNU）兼容：用 grep -iv，不依赖 sed 的差异。
+MSG_FILE="$1"
+
+if [ -f "$MSG_FILE" ]; then
+  TMP="${MSG_FILE}.stripped"
+  LC_ALL=C grep -iv '^[[:space:]]*co-*authored-by:' "$MSG_FILE" > "$TMP" \
+    && mv "$TMP" "$MSG_FILE"
+fi
+exit 0
