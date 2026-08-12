@@ -27,6 +27,10 @@ import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import { getChannelsPath } from '../config/config-paths'
 import { getDefaultModelsForProvider, KSCC_DEFAULT_MODEL_ID, KSCC_DEFAULT_MODELS } from './default-models'
 import { inferContextWindow } from '@tagent/shared'
+import { resolveKsccPath } from '../adapters/claude/kscc-path'
+
+/** 启用 / 依赖 kscc 内置渠道时的统一错误文案（与 channel-tester / session-service 一致） */
+export const KSCC_MISSING_MESSAGE = '未检测到 kscc 命令，请先安装 kscc（内网渠道）后再启用'
 
 /** kscc 内置渠道 seed 时用的固定 ID（仅 fresh 安装时用；识别 kscc 一律按 provider） */
 const KSCC_BUILTIN_CHANNEL_ID = 'kscc-internal'
@@ -141,6 +145,11 @@ export function updateChannel(id: string, patch: ChannelUpdateInput): Channel | 
   if (!existing) return undefined
 
   const kscc = existing.provider === 'kscc-internal'
+  // 无本机 kscc 时禁止启用内置渠道（避免用户「打开」后发送才炸）
+  if (kscc && patch.enabled === true && !resolveKsccPath()) {
+    throw new Error(KSCC_MISSING_MESSAGE)
+  }
+
   const models = patch.models ?? existing.models
   const updated: Channel = {
     ...existing,
@@ -194,6 +203,7 @@ export function seedBuiltinChannels(): void {
   const exists = config.channels.some((c) => c.provider === 'kscc-internal')
   if (exists) return
   const now = Date.now()
+  const ksccReady = Boolean(resolveKsccPath())
   const kscc: Channel = {
     id: KSCC_BUILTIN_CHANNEL_ID,
     name: 'kscc 内网',
@@ -202,13 +212,40 @@ export function seedBuiltinChannels(): void {
     apiKey: '',
     models: KSCC_DEFAULT_MODELS.map((m) => ({ ...m })),
     defaultModelId: KSCC_DEFAULT_MODEL_ID,
-    enabled: true,
+    // 无本机 kscc 时默认不启用，避免新装机「开箱就能选内网核却必炸」
+    enabled: ksccReady,
     createdAt: now,
     updatedAt: now,
   }
   config.channels.push(kscc)
   writeConfig(config)
-  console.log('[渠道存储] 已 seed kscc-internal 内置渠道')
+  console.log(
+    `[渠道存储] 已 seed kscc-internal 内置渠道（enabled=${ksccReady}${ksccReady ? '' : '，本机无 kscc'}）`,
+  )
+}
+
+/**
+ * 启动时同步 kscc 可用性：本机无 kscc 命令则强制停用所有 kscc-internal 渠道。
+ * 不自动重新启用（用户装好 kscc 后需在设置里手动打开，或点「测试」确认后启用）。
+ * @returns 被强制停用的渠道数
+ */
+export function syncKsccChannelAvailability(): number {
+  const ready = Boolean(resolveKsccPath())
+  if (ready) return 0
+  const config = readConfig()
+  let changed = 0
+  const next = config.channels.map((c) => {
+    if (c.provider !== 'kscc-internal' || !c.enabled) return c
+    changed++
+    return { ...c, enabled: false, updatedAt: Date.now() }
+  })
+  if (changed > 0) {
+    writeConfig({ ...config, channels: next })
+    console.warn(
+      `[渠道存储] 本机未检测到 kscc，已强制停用 ${changed} 个 kscc-internal 渠道`,
+    )
+  }
+  return changed
 }
 
 /**

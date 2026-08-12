@@ -518,6 +518,18 @@ export class SessionService {
       }
     )
 
+    // 用户关闭 AskUser 选项卡：deny「用户取消选择」+ interrupt，随后通常再 STOP_AGENT
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.ASK_USER_DISMISS,
+      async (_e, requestId: string): Promise<void> => {
+        if (!requestId || typeof requestId !== 'string') return
+        const sessionId = askUserService.dismissToAskUser(requestId)
+        if (sessionId) {
+          this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.ASK_USER_RESOLVED, { requestId })
+        }
+      }
+    )
+
     /**
      * 引导 Agent（不中断当前轮）。
      * - kscc + live loop → enqueue，mode:'live'

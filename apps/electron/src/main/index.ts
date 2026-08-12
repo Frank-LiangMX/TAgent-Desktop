@@ -15,7 +15,11 @@ import { MemoryService } from './lib/ipc/memory-service'
 import { UserProfileService } from './lib/ipc/user-profile-service'
 import { BalanceService } from './lib/ipc/balance-service'
 import { PermissionService } from './lib/permission/permission-service'
-import { seedBuiltinChannels, migrateModelWindows } from './lib/channel/channel-store'
+import {
+  seedBuiltinChannels,
+  migrateModelWindows,
+  syncKsccChannelAvailability,
+} from './lib/channel/channel-store'
 import { discoverAndReconcileCliWorkers } from './lib/agent/cli-workers-service'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
 import { createTray, destroyTray, getTray, updateTrayTheme } from './tray'
@@ -186,7 +190,12 @@ function createWindow(): void {
   const isDev = !app.isPackaged
   if (isDev) {
     void win.loadURL('http://localhost:5174')
-    win.webContents.openDevTools()
+    // DevTools 必须在页面加载完成后再开：本窗口 sandbox 默认开启（contextIsolation + !nodeIntegration），
+    // 若在 did-finish-load 前就 openDevTools，会与 sandboxed_renderer.bundle.js 启动竞态，触发一次性报错
+    // `Cannot destructure property 'preloadScripts' of 'binding.startupData' as it is null`（噪音，不影响后续加载）。
+    win.webContents.once('did-finish-load', () => {
+      if (!win.isDestroyed()) win.webContents.openDevTools()
+    })
   } else {
     void win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
   }
@@ -227,6 +236,8 @@ app.whenReady().then(async () => {
 
   createWindow()
   seedBuiltinChannels()
+  // 无本机 kscc 时强制停用内置渠道，避免用户无脑打开后发送才失败
+  syncKsccChannelAvailability()
   migrateModelWindows()
 
   // Phase 2：全局记忆 L5 服务启动 wiring

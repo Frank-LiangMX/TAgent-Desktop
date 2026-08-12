@@ -35,9 +35,11 @@ import type {
 import { createMessageChannel, type MessageChannel } from '../shared/message-channel'
 import { getDiscardedMemoryDir } from '../../memory/discarded-memory'
 import { spawnKscc } from './spawn-kscc'
+import { NoProgressGuard, buildNoProgressEventFromDecision } from '../../agent/no-progress-guard'
 import {
   attachImageBlocksToText,
 } from '../../agent/build-user-content-with-attachments'
+import { NoProgressGuard, buildNoProgressEventFromDecision } from '../../agent/no-progress-guard'
 
 /** kscc 核查询选项（扩展 AgentQueryInput） */
 export interface KsccQueryOptions extends AgentQueryInput {

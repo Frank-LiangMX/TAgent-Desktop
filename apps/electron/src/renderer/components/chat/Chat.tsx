@@ -316,6 +316,8 @@ export function Chat({
    * 不当「运行出错」，保持已中断语义。新一轮 startRun 清零。
    */
   const userStoppedRef = useRef(false)
+  /** 上次用户停止的时间戳：短窗口内到达的 error 视为迟到的 abort 副作用，不弹错误条 */
+  const lastUserStopAtRef = useRef(0)
   const pendingStopTimerRef = useRef<number | null>(null)
   const pendingHardStopTimerRef = useRef<number | null>(null)
   const clearPendingStop = useCallback(() => {
@@ -361,6 +363,7 @@ export function Chat({
   const userStopRun = (): void => {
     clearPendingStop()
     userStoppedRef.current = true
+    lastUserStopAtRef.current = Date.now()
     recordCompletion('stopped')
     runStartedAtPersistRef.current = null
     stopRun()
@@ -1404,16 +1407,58 @@ export function Chat({
       pendingThinkingUuidRef.current = undefined
       const clearThinking = shouldClearStreamThinking(p.message)
 
+      // 段边界思考提交（修同会话 live 思考不显 / 与 reload 不一致）：
+      // 主进程对 partial assistant 调 stripPartialAssistantBody 把 thinking 主体剥成空串再发 renderer
+      // （落盘喂原始全量 msg，不经剥离）→ 同会话内存里 thinking 自己 uuid 的 item 主体为 ''，真实思考
+      // 只活在 streamState.thinking。对 GLM 等无 final 非空 thinking 校准的核心，streamState.thinking
+      // 跨段累积（shouldClearStreamThinking 对剥空块不触发），result/turn_end 时
+      // commitStreamThinkingToLastAssistant 把全程累积的思考 graft 到**末条主线 assistant**（另一 uuid
+      // 的 text/tool item）→ 同会话时间线把所有思考拼到末条、位置错；reload 却每段自带 → 不一致。
+      // 修复（对称 tool_start 的 text 提交）：incoming 是 tool_use/text（当前思考段结束信号）且
+      // streamState 仍有思考 → 先 graft 到末条主线 assistant（对 GLM = thinking 自己那条 uuid 的 item，
+      // 因其 thinking 主体被剥空、排在 tool/text 之前，commitStreamThinkingToLastAssistant 前插其 content），
+      // 再清 streamState.thinking——每段思考落在原位置，对齐落盘 reload。提交+清（非旧版整表 resetStreamState
+      // 只清不提交），思考已落 message 不丢，不重 introduce REGRESS-E。
+      // kscc 累计快照：final 带非空 thinking 经 shouldClearStreamThinking 清过 streamState.thinking →
+      // fullPendingThink='' no-op，不影响。
+      const incomingHasTool =
+        p.message.type === 'assistant' &&
+        p.message.content.some((b) => b.type === 'tool_use')
+      const incomingHasToolOrText =
+        incomingHasTool ||
+        (p.message.type === 'assistant' &&
+          p.message.content.some((b) => b.type === 'text'))
+      const fullPendingThink = (streamStateRef.current.thinking + pendingThinking).trim()
+      const fullPendingText = streamStateRef.current.text.trim()
+      // 思考：tool/text 到达 = 本段思考结束 → 写入 items
+      const commitThinkAtSegment =
+        incomingHasToolOrText && !clearThinking && fullPendingThink.length > 0
+      // 段间 progress 正文：tool 到达（含无 tool_start 事件的 kscc 路径）必须先 commit，
+      // 否则 streamState 在 result 清空后中间 progress 全丢 → 多阶段并成一大块（用户截图）。
+      const commitTextAtSegment = incomingHasTool && fullPendingText.length > 0
+
       // assistant.usage 更新底栏（Pi）；kscc 圆环不展示，但状态可写无害
       if (p.message.type === 'assistant' && p.message.usage) {
         applyUsage(p.message.usage)
       }
-      // 落盘消息推进 items：按 uuid 原地 upsert（S2.1 单真源，集中在 applySdkMessageToItems）；
-      // streamState 按消息内容选择性清（tool-only 保留 thinking）。
-      setItems((prev) =>
-        applySdkMessageToItems(prev, p.message, () => `m${itemIdxRef.current++}`),
-      )
+      // 段边界 commit(thinking/text) + upsert 必须同一次 setItems
+      setItems((prev) => {
+        let next = prev
+        if (commitThinkAtSegment) {
+          next = commitStreamThinkingToLastAssistant(next, fullPendingThink)
+        }
+        if (commitTextAtSegment) {
+          next = commitStreamTextToLastAssistant(next, fullPendingText)
+        }
+        return applySdkMessageToItems(next, p.message, () => `m${itemIdxRef.current++}`)
+      })
       setStreamState((prev) => {
+        let base = prev
+        if (commitThinkAtSegment) base = { ...base, thinking: '' }
+        if (commitTextAtSegment) base = { ...base, text: '' }
+        if (commitThinkAtSegment || commitTextAtSegment) {
+          return applySdkMessageToStreamState(base, p.message)
+        }
         const withPending =
           !clearThinking && pendingThinking
             ? applyThinkingDeltaToState(prev, pendingThinking)
@@ -1433,25 +1478,22 @@ export function Chat({
       pendingThinkingRef.current = ''
       pendingThinkingUuidRef.current = undefined
       const pendingThink = (streamStateRef.current.thinking + pendingDelta).trim()
-      if (pendingThink) {
-        setItems((prev) => commitStreamThinkingToLastAssistant(prev, pendingThink))
-      }
       // REGRESS-G（正文对称思考）：GLM 把每个 content 块拆成独立 uuid 的 assistant 且 stop_reason 始终 null，
       // 永不发非 partial 终态快照校准 → 正文只活在 streamState.text，边界不提交则 resetStreamState 丢弃，
       // 回合结束后只剩空壳（重开会话读 JSONL 才恢复）。此处把正文写入末条主线 assistant，与思考提交对称。
       // 累计快照（Claude/Pi）的 final（带 stop_reason）已清 streamState.text → trim()='' no-op，不重复落字。
       const pendingText = streamStateRef.current.text.trim()
-      if (pendingText) {
-        setItems((prev) => commitStreamTextToLastAssistant(prev, pendingText))
-      }
-      resetStreamState()
-      // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
+      // commit 思考/正文 + 清 streaming 标记一次原子更新，避免分步 setItems 互相覆盖
       setItems((prev) => {
-        const cleaned = prev.map((it) =>
+        let next = prev
+        if (pendingThink) next = commitStreamThinkingToLastAssistant(next, pendingThink)
+        if (pendingText) next = commitStreamTextToLastAssistant(next, pendingText)
+        const cleaned = next.map((it) =>
           it.streaming ? { ...it, streaming: false, streamingText: undefined, streamingThinking: undefined } : it,
         )
         return purgeStreamingItems(cleaned)
       })
+      resetStreamState()
       // result = 整个 run 真正 idle（turn_end 只是单个 SDK turn 结束，工具循环还会继续）。
       clearPendingStop()
       // 收尾「往上折」靠 live 底栏 CSS 过渡；勿立刻 resize=instant，否则高度变化会顿一下。
@@ -1470,10 +1512,15 @@ export function Chat({
             : subtype === 'error_during_execution'
               ? '执行过程中出错'
               : subtype || '运行出错')
-        // 用户刚点停止 / abort 文案：保持「已中断」，勿抬错误条、勿把 endedBy 改成 error
+        // 用户刚点停止 / abort 文案 / 上一轮被停止后迟到的 error result：
+        // 保持「已中断」，勿抬错误条、勿把 endedBy 改成 error
+        const STALE_ABORT_WINDOW_MS = 8000
         const abortLike =
           userStoppedRef.current ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止/i.test(raw)
+          (lastUserStopAtRef.current > 0 && Date.now() - lastUserStopAtRef.current < STALE_ABORT_WINDOW_MS) ||
+          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|用户取消选择|操作已中止|会话已结束/i.test(
+            raw,
+          )
         if (abortLike) {
           if (runStartedAtRef.current != null) recordCompletion('stopped')
           stopRun()
@@ -1632,25 +1679,22 @@ export function Chat({
         pendingThinkingRef.current = ''
         pendingThinkingUuidRef.current = undefined
         const pendingThink = (streamStateRef.current.thinking + pendingDelta).trim()
-        if (pendingThink) {
-          setItems((prev) => commitStreamThinkingToLastAssistant(prev, pendingThink))
-        }
         // REGRESS-G（正文对称思考）：GLM 独立块无终态快照校准，正文只活在 streamState.text；
         // 边界不提交则 resetStreamState 丢弃 → 回合结束后只剩空壳。把正文写入末条主线 assistant。
         // 累计快照（Claude/Pi）final 已清 streamState.text → trim()='' no-op。STOP / Chat 拦截只推
         // turn_end（无 result），故此处是它们唯一兜底提交点。
         const pendingText = streamStateRef.current.text.trim()
-        if (pendingText) {
-          setItems((prev) => commitStreamTextToLastAssistant(prev, pendingText))
-        }
-        resetStreamState()
-        // Pi 核流式 item 此时仍在 streaming:true → 标 false（防后续 turn 误判为流式中）
+        // 与 result 分支一致：commit + 清 streaming 一次原子更新
         setItems((prev) => {
-          const cleaned = prev.map((it) =>
+          let next = prev
+          if (pendingThink) next = commitStreamThinkingToLastAssistant(next, pendingThink)
+          if (pendingText) next = commitStreamTextToLastAssistant(next, pendingText)
+          const cleaned = next.map((it) =>
             it.streaming ? { ...it, streaming: false, streamingText: undefined, streamingThinking: undefined } : it,
           )
           return purgeStreamingItems(cleaned)
         })
+        resetStreamState()
         // 工具循环中 turn_end 只是单轮结束：延迟停止，宽限期内有下一轮 delta → 保持 running
         // （过程区/思考链不闪断收起）；宽限期到且无后续 → 真正停止
         scheduleRunStop()
@@ -1690,13 +1734,15 @@ export function Chat({
         // 独立错误条（非 assistant 气泡）：copy / dismiss / retryable→重试
         const userError = (evt as { error?: UserFacingError }).error
         const rawMessage = typeof evt.message === 'string' ? evt.message : ''
+        const STALE_ABORT_WINDOW_MS = 8000
         const abortLike =
           userStoppedRef.current ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止/i.test(
+          (lastUserStopAtRef.current > 0 && Date.now() - lastUserStopAtRef.current < STALE_ABORT_WINDOW_MS) ||
+          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|用户取消选择|操作已中止|会话已结束/i.test(
             `${userError?.message ?? ''} ${rawMessage}`,
           )
         if (abortLike) {
-          // 用户打断：只收口运行态，不展示错误条、不把侧栏打成 error
+          // 用户打断 / 迟到的上轮错误：只收口运行态，不展示错误条、不把侧栏打成 error
           if (runStartedAtRef.current != null) recordCompletion('stopped')
           clearPendingStop()
           stopRun()
@@ -2708,7 +2754,7 @@ export function Chat({
           onRetry={retryLastUserPrompt}
         />
         <PermissionBanner sessionId={sessionId} />
-        <AskUserQuestionBanner sessionId={sessionId} />
+        <AskUserQuestionBanner sessionId={sessionId} onUserStop={userStopRun} />
         <div
           ref={composerClusterRef}
           className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''}`}

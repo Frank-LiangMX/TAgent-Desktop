@@ -10,13 +10,14 @@ import * as React from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@tagent/ui'
 import {
   getFileName,
-  getExtension,
   stripLineCol,
   existsCacheKey,
   getFileExistsCache,
   joinBasePath,
   normalizeFilePathSeparators,
   msysPathToWindowsDrivePath,
+  fileLangBadgeForName,
+  type FileLangBadgeTone,
 } from '@tagent/shared'
 import { cn } from '../../lib/utils'
 
@@ -81,6 +82,15 @@ const POST_STREAM_RECHECK_DELAYS_MS = [400, 1200, 2500] as const
 /** 测试用：清空负缓存 */
 export function clearFilePathMissingCache(): void {
   confirmedMissingAt.clear()
+}
+
+const BADGE_TONE_CLASS: Record<FileLangBadgeTone, string> = {
+  react: 'bg-[hsl(193_85%_40%/0.18)] text-[hsl(193_85%_32%)]',
+  ts: 'bg-[hsl(211_70%_48%/0.16)] text-[hsl(211_70%_38%)]',
+  css: 'bg-[hsl(187_65%_40%/0.16)] text-[hsl(187_65%_32%)]',
+  md: 'bg-[hsl(25_70%_45%/0.14)] text-[hsl(25_70%_36%)]',
+  code: 'bg-[hsl(215_40%_46%/0.14)] text-[hsl(215_40%_36%)]',
+  text: 'bg-muted-foreground/10 text-muted-foreground/75',
 }
 
 export function FilePathChip({
@@ -285,6 +295,7 @@ export function FilePathChip({
   }, [onOpenFile, cleanPath, candidateBases])
 
   const IconComponent = FileIcon
+  const langBadge = fileLangBadgeForName(filename)
 
   return (
     <Tooltip>
@@ -295,31 +306,32 @@ export function FilePathChip({
           onClick={handleClick}
           data-file-status={fileStatus}
           className={cn(
-            // 路径芯片：默认无底色/描边，靠主色字 + 小图标；hover 才起底，避免正文路径成色块阵
-            // align-middle：避免 inline-flex + 前置图标时 baseline 落在图标底边，导致文件名比正文低一截
-            'inline-flex items-center gap-0.5 rounded-[2px] px-[0.12em] py-0 text-[0.94em] font-medium leading-none',
-            'cursor-pointer transition-colors',
-            'align-middle not-prose',
-            'border',
+            // 路径芯片：轻底 + 语言标；圆角适中（非 pill、非 2px 硬角）
+            // leading 略松：leading-none + truncate(overflow:hidden) 会裁掉 g/p 下沉
+            'inline-flex items-center gap-1 rounded-md border px-1.5 py-[0.2em] text-[0.9em] font-medium leading-[1.35]',
+            'cursor-pointer transition-colors align-middle not-prose',
             fileStatus === 'broken'
-              ? 'border-dashed border-muted-foreground/30 text-muted-foreground opacity-50 hover:opacity-70 hover:bg-muted/20'
-              : 'border-transparent text-primary/85 hover:bg-primary/[0.08] hover:text-primary',
+              ? 'border-dashed border-muted-foreground/30 bg-muted/10 text-muted-foreground opacity-60 hover:bg-muted/20 hover:opacity-80'
+              : 'border-primary/10 bg-primary/[0.07] text-primary/90 hover:border-primary/15 hover:bg-primary/[0.12] hover:text-primary',
             className
           )}
         >
           {IconComponent ? (
-            <span className="inline-flex shrink-0 self-center leading-none opacity-70" aria-hidden>
-              <IconComponent name={filename} isDirectory={false} size={11} />
+            <span className="inline-flex shrink-0 self-center leading-none opacity-80" aria-hidden>
+              <IconComponent name={filename} isDirectory={false} size={12} />
             </span>
           ) : (
             <span
-              className="inline-flex size-2.5 shrink-0 items-center justify-center self-center rounded-[2px] bg-primary/12 text-[7px] leading-none text-primary"
+              className={cn(
+                'inline-flex size-4 shrink-0 items-center justify-center self-center rounded-[4px] text-[7.5px] font-bold leading-none tracking-tight',
+                BADGE_TONE_CLASS[langBadge.tone],
+              )}
               aria-hidden
             >
-              {filename.slice(0, 1).toUpperCase()}
+              {langBadge.label}
             </span>
           )}
-          <span className="max-w-[240px] truncate leading-[inherit]">
+          <span className="max-w-[240px] truncate font-normal leading-[inherit] text-foreground/88">
             {filename}
             {lineColSuffix}
           </span>

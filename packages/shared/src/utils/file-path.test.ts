@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 import {
   cleanFilePathInput,
   existsCacheKey,
+  fileLangBadgeForName,
   getFileName,
   isAbsoluteFilePath,
   isRelativeFilePath,
@@ -183,5 +184,14 @@ describe('existsCacheKey (REGRESS-J J6)', () => {
     expect(existsCacheKey('Foo/Bar.h', ['D:\\UnrealTagManager'])).toBe(
       'Foo/Bar.h\0D:/UnrealTagManager',
     )
+  })
+})
+
+describe('fileLangBadgeForName', () => {
+  test('扩展名映射语言标，不用文件名首字母', () => {
+    expect(fileLangBadgeForName('claude-agent-adapter.ts')).toEqual({ label: 'TS', tone: 'ts' })
+    expect(fileLangBadgeForName('MessageView.tsx')).toEqual({ label: 'R', tone: 'react' })
+    expect(fileLangBadgeForName('chat.css')).toEqual({ label: '#', tone: 'css' })
+    expect(fileLangBadgeForName('index.tsx')).toEqual({ label: 'R', tone: 'react' })
   })
 })

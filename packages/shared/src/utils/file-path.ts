@@ -260,3 +260,29 @@ export function isRelativeFilePath(text: string): boolean {
 
   return true
 }
+
+/** 文件类型徽章色调（与 TurnFilesChangedCard / FilePathChip 共用） */
+export type FileLangBadgeTone = 'react' | 'ts' | 'css' | 'md' | 'code' | 'text'
+
+/**
+ * 由文件名推导语言/类型徽章（≤2 字标签 + 色调）。
+ * 避免 FilePathChip 用文件名首字母（c/M/i）被误读成 git status。
+ */
+export function fileLangBadgeForName(name: string): { label: string; tone: FileLangBadgeTone } {
+  const lower = name.toLowerCase()
+  const ext = (lower.includes('.') ? lower.split('.').pop() : '') || ''
+  if (ext === 'tsx' || ext === 'jsx') return { label: 'R', tone: 'react' }
+  if (ext === 'ts' || ext === 'mts' || ext === 'cts') return { label: 'TS', tone: 'ts' }
+  if (ext === 'js' || ext === 'mjs' || ext === 'cjs') return { label: 'JS', tone: 'ts' }
+  if (ext === 'css' || ext === 'scss' || ext === 'less') return { label: '#', tone: 'css' }
+  if (ext === 'md' || ext === 'mdc' || ext === 'mdx') return { label: 'MD', tone: 'md' }
+  if (ext === 'cpp' || ext === 'cc' || ext === 'cxx') return { label: 'C+', tone: 'code' }
+  if (ext === 'hpp' || ext === 'hh' || ext === 'h') return { label: 'H', tone: 'code' }
+  if (ext === 'c') return { label: 'C', tone: 'code' }
+  if (ext === 'cs' || lower.endsWith('.build.cs')) return { label: 'C#', tone: 'code' }
+  if (ext === 'py') return { label: 'PY', tone: 'code' }
+  if (ext === 'go') return { label: 'GO', tone: 'code' }
+  if (ext === 'rs') return { label: 'RS', tone: 'code' }
+  if (ext === 'json' || ext === 'jsonc') return { label: '{}', tone: 'text' }
+  return { label: '·', tone: 'text' }
+}

@@ -141,55 +141,171 @@ export function purgeStreamingItems<T extends StreamItemLike>(prev: T[]): T[] {
   )
 }
 
+function isNonEmptyThinkingBlock(b: TAgentMessage['content'][number]): boolean {
+  return (
+    b.type === 'thinking' &&
+    typeof (b as { thinking?: string }).thinking === 'string' &&
+    (b as { thinking: string }).thinking.trim().length > 0
+  )
+}
+
+function isNonEmptyTextBlock(b: TAgentMessage['content'][number]): boolean {
+  return (
+    b.type === 'text' &&
+    typeof (b as { text?: string }).text === 'string' &&
+    (b as { text: string }).text.trim().length > 0
+  )
+}
+
+function thinkingBlockText(b: TAgentMessage['content'][number]): string {
+  return b.type === 'thinking' && typeof (b as { thinking?: string }).thinking === 'string'
+    ? (b as { thinking: string }).thinking
+    : ''
+}
+
+function textBlockText(b: TAgentMessage['content'][number]): string {
+  return b.type === 'text' && typeof (b as { text?: string }).text === 'string'
+    ? (b as { text: string }).text
+    : ''
+}
+
 /**
- * 同 uuid upsert 时：若后到消息剥掉了 thinking，保留已有非空思考块（插到 content 前）。
- * kscc partial/final 快照常先带 thinking、后只带 tool_use → 不合并会「最后一段也没了」。
+ * 同 uuid / 流式替换时：后到消息若剥掉 thinking/text 主体（stripPartial 空壳或 tool-only），
+ * 保留 existing 里已有的非空思考与段间 progress 正文。
+ *
+ * 截图回归：kscc 同会话结束后中间 progress 全没、工具并成一大阶段；reload 从 JSONL 又有——
+ * 因 live 曾 commit 的 text 被后到剥空 partial / tool-only upsert 盖掉，而旧逻辑只 preserve thinking。
  */
 export function preserveAssistantThinking(
   existing: TAgentMessage,
   incoming: TAgentMessage,
 ): TAgentMessage {
   if (existing.type !== 'assistant' || incoming.type !== 'assistant') return incoming
-  const incomingHasThinking = incoming.content.some(
-    (b) => b.type === 'thinking' && typeof (b as { thinking?: string }).thinking === 'string' && (b as { thinking: string }).thinking.trim(),
-  )
-  if (incomingHasThinking) return incoming
-  const prevThinking = existing.content.filter(
-    (b) => b.type === 'thinking' && typeof (b as { thinking?: string }).thinking === 'string' && (b as { thinking: string }).thinking.trim(),
-  )
-  if (prevThinking.length === 0) return incoming
-  return {
-    ...incoming,
-    content: [...prevThinking, ...incoming.content],
+
+  const prevThink = existing.content.filter(isNonEmptyThinkingBlock)
+  const prevText = existing.content.filter(isNonEmptyTextBlock)
+  if (prevThink.length === 0 && prevText.length === 0) return incoming
+
+  const incThink = incoming.content.filter(isNonEmptyThinkingBlock)
+  const incText = incoming.content.filter(isNonEmptyTextBlock)
+
+  // 逐块：空壳填 existing；incoming 更短前缀则用 existing 更长
+  let usedThink = 0
+  let usedText = 0
+  const content = incoming.content.map((b) => {
+    if (b.type === 'thinking') {
+      const inc = thinkingBlockText(b).trim()
+      const prev = prevThink[usedThink]
+      if (prev) {
+        const prevT = thinkingBlockText(prev).trim()
+        if (!inc || (prevT.length > inc.length && prevT.startsWith(inc))) {
+          usedThink++
+          return { ...b, thinking: prevT }
+        }
+        if (inc) usedThink++
+      }
+      return b
+    }
+    if (b.type === 'text') {
+      const inc = textBlockText(b).trim()
+      const prev = prevText[usedText]
+      if (prev) {
+        const prevT = textBlockText(prev).trim()
+        if (!inc || (prevT.length > inc.length && prevT.startsWith(inc))) {
+          usedText++
+          return { ...b, text: prevT }
+        }
+        if (inc) usedText++
+      }
+      return b
+    }
+    return b
+  })
+
+  // incoming 完全没有对应块类型时，把 existing 非空块按顺序插回（tool-only 覆盖路径）
+  const outThink = content.filter(isNonEmptyThinkingBlock)
+  const outText = content.filter(isNonEmptyTextBlock)
+  const missingThink = prevThink.slice(outThink.length)
+  const missingText = prevText.slice(outText.length)
+  if (missingThink.length === 0 && missingText.length === 0) {
+    return { ...incoming, content }
   }
+
+  // 插到第一个 tool_use 前，保持 思考/进度 → 工具 顺序
+  const merged = [...content]
+  const toolIdx = merged.findIndex((b) => b.type === 'tool_use')
+  const insertAt = toolIdx >= 0 ? toolIdx : 0
+  merged.splice(insertAt, 0, ...missingThink, ...missingText)
+  return { ...incoming, content: merged }
 }
 
-/** turn_end / result 清 stream 前：把仍只在缓冲里的思考写入末条主线 assistant */
+/**
+ * turn_end / result / 段边界清 stream 前：把仍只在缓冲里的思考写入末条主线 assistant。
+ *
+ * - 优先填充末条「空 thinking 壳」（stripPartial 留下的）
+ * - 否则前插到**尚无非空思考**的末条主线 assistant
+ * - 末条已有相同/前缀思考 → no-op；若缓冲是更长续写则更新该块
+ * - 禁止「末条已有思考就整函数 return」——那会丢掉后续段的 streamState 思考
+ */
 export function commitStreamThinkingToLastAssistant<T extends StreamItemLike>(
   prev: T[],
   thinking: string,
 ): T[] {
   const t = thinking.trim()
   if (!t) return prev
-  for (let i = prev.length - 1; i >= 0; i--) {
-    const m = prev[i]?.message
-    if (m?.type !== 'assistant' || m.parentToolUseId) continue
-    const hasThinking = m.content.some(
-      (b) =>
-        b.type === 'thinking' &&
-        typeof (b as { thinking?: string }).thinking === 'string' &&
-        (b as { thinking: string }).thinking.trim(),
-    )
-    if (hasThinking) return prev
+
+  const patchAt = (i: number, content: TAgentMessage['content']): T[] => {
+    const m = prev[i]!.message!
     const next = [...prev]
     next[i] = {
       ...prev[i]!,
-      message: {
-        ...m,
-        content: [{ type: 'thinking', thinking: t }, ...m.content],
-      },
+      message: { ...m, content },
     }
     return next
+  }
+
+  // 1) 自后向前：填空壳 / 续写已有块 / 落到无思考的 assistant
+  for (let i = prev.length - 1; i >= 0; i--) {
+    const m = prev[i]?.message
+    if (m?.type !== 'assistant' || m.parentToolUseId) continue
+
+    const emptyThinkIdx = m.content.findIndex(
+      (b) => b.type === 'thinking' && !thinkingBlockText(b).trim(),
+    )
+    if (emptyThinkIdx >= 0) {
+      const content = [...m.content]
+      content[emptyThinkIdx] = { type: 'thinking', thinking: t }
+      return patchAt(i, content)
+    }
+
+    const thinkIdx = m.content.findIndex(isNonEmptyThinkingBlock)
+    if (thinkIdx >= 0) {
+      const existing = thinkingBlockText(m.content[thinkIdx]!).trim()
+      // 已含相同或更长 → 本段已落，不再往更早的 assistant 重复写
+      if (existing === t || existing.startsWith(t)) return prev
+      // 缓冲是续写 → 更新该块
+      if (t.startsWith(existing)) {
+        const content = [...m.content]
+        content[thinkIdx] = { type: 'thinking', thinking: t }
+        return patchAt(i, content)
+      }
+      // 末条已有**另一段**思考：跳过，找更早的空位；若没有则在末条再追加一块
+      continue
+    }
+
+    // 无 thinking 块：前插
+    return patchAt(i, [{ type: 'thinking', thinking: t }, ...m.content])
+  }
+
+  // 2) 所有主线 assistant 都已有不同思考：追加到真正的末条主线
+  for (let i = prev.length - 1; i >= 0; i--) {
+    const m = prev[i]?.message
+    if (m?.type !== 'assistant' || m.parentToolUseId) continue
+    const already = m.content.some(
+      (b) => isNonEmptyThinkingBlock(b) && thinkingBlockText(b).trim() === t,
+    )
+    if (already) return prev
+    return patchAt(i, [...m.content, { type: 'thinking', thinking: t }])
   }
   return prev
 }
@@ -210,9 +326,20 @@ export function commitStreamTextToLastAssistant<T extends StreamItemLike>(
   for (let i = prev.length - 1; i >= 0; i--) {
     const m = prev[i]?.message
     if (m?.type !== 'assistant' || m.parentToolUseId) continue
+
+    // 优先填充空 text 壳（stripPartial 留下的）
+    const emptyTextIdx = m.content.findIndex((b) => b.type === 'text' && !textBlockText(b).trim())
+    if (emptyTextIdx >= 0) {
+      const content = [...m.content]
+      content[emptyTextIdx] = { type: 'text', text: t }
+      const next = [...prev]
+      next[i] = { ...prev[i]!, message: { ...m, content } }
+      return next
+    }
+
     for (const b of m.content) {
       if (b.type !== 'text') continue
-      const existing = typeof (b as { text?: string }).text === 'string' ? (b as { text: string }).text.trim() : ''
+      const existing = textBlockText(b).trim()
       if (!existing) continue
       // 已有相同 / 互为前缀 → 视为已落盘，防与随后 sdk_message 双份
       if (existing === t || t.startsWith(existing) || existing.startsWith(t)) return prev

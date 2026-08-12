@@ -66,6 +66,21 @@
   overflow-wrap: anywhere;
 }
 
+/* 附件 + 正文同泡：附件区与正文分隔，避免双层气泡 */
+.tagent-thread .agent-user-bubble--combo .agent-user-bubble__attachments {
+  padding-bottom: 8px;
+}
+.tagent-thread .agent-user-bubble--combo-has-text .agent-user-bubble__attachments {
+  margin-bottom: 8px;
+  border-bottom: 1px solid hsl(var(--foreground) / 0.08);
+}
+.tagent-thread .agent-user-bubble__embedded {
+  width: 100%;
+}
+.tagent-thread .agent-user-bubble__embedded.is-collapsed {
+  padding-bottom: 36px;
+}
+
 /*
  * 折叠长文：底部加 padding，避免「展开全部」压在正文上。
  * （库组件曾用 pb-6，会被上面 padding: 12px 14px 整段覆盖。）
@@ -1108,34 +1123,6 @@
   /* 展开明细时与 step 文案列对齐（icon 12 + gap 6） */
   margin-top: 4px;
   padding-left: 18px;
-}
-
-/* O2：live 末步思考正文打字机（挂在阶段摘要下、折叠 panel 之外，收起也可见）。
- *   思考结束 hold→淡出再折进 steps；淡出只过渡透明度+位移，高度由卸载收（避免长思考被裁剪）。*/
-.agent-concise-stage__live-thinking {
-  margin-top: 4px;
-  padding-left: 18px;
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: hsl(var(--muted-foreground) / 0.8);
-  opacity: 1;
-  transform: translateY(0);
-  transition:
-    opacity 0.38s ease,
-    transform 0.38s ease,
-    margin-top 0.38s ease;
-}
-
-.agent-concise-stage__live-thinking.is-fading {
-  opacity: 0;
-  transform: translateY(-4px);
-  margin-top: 0;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .agent-concise-stage__live-thinking {
-    transition: none;
-  }
 }
 
 /* 消息区 live 扫光：匀速、首尾同色接缝，禁止 ease 在两端「喘一口气」 */

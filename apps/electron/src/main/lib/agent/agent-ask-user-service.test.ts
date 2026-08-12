@@ -67,6 +67,29 @@ describe('AgentAskUserService（REGRESS-H）', () => {
     expect(askUserService.respondToAskUser('not-exist', {})).toBeNull()
   })
 
+  it('dismissToAskUser → deny「用户取消选择」+ interrupt，清 pending', async () => {
+    const ac = new AbortController()
+    const sent: AskUserRequest[] = []
+    const p = askUserService.handleAskUserQuestion(
+      's-dismiss',
+      { questions: [{ question: 'Q?', options: [{ label: 'A' }] }] },
+      ac.signal,
+      (r) => sent.push(r),
+    )
+    const req = sent[0]!
+    const sid = askUserService.dismissToAskUser(req.requestId)
+    expect(sid).toBe('s-dismiss')
+    await expect(p).resolves.toEqual({
+      behavior: 'deny',
+      message: '用户取消选择',
+      interrupt: true,
+    })
+    expect(askUserService.getPendingRequests().some((r) => r.requestId === req.requestId)).toBe(
+      false,
+    )
+    expect(askUserService.dismissToAskUser(req.requestId)).toBeNull()
+  })
+
   it('abort signal → deny「操作已中止」', async () => {
     const ac = new AbortController()
     const p = askUserService.handleAskUserQuestion('s2', { questions: [] }, ac.signal, () => {})
