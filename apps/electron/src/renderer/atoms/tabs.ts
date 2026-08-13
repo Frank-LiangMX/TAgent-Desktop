@@ -40,6 +40,40 @@ export const activeTabAtom = atom<TabItem | null>((get) => {
   return tabs.find((t) => t.id === id) ?? null
 })
 
+/** 顶部会话标签最多同时保留四个，避免标题栏变成横向滚动的工作集。 */
+export const MAX_SESSION_TABS = 4
+
+export interface OpenTabWithLimitResult {
+  tabs: TabItem[]
+  /** 所有标签都在运行时为 null，调用方应保留当前激活标签。 */
+  activeTabId: string | null
+  /** 因容量上限被替换的、最早打开且未运行的标签。 */
+  evictedTab?: TabItem
+  /** true 表示四个标签均在运行，不能安全替换。 */
+  blocked: boolean
+}
+
+/**
+ * 修复历史持久化数据 / 外部布局回填造成的超额标签。
+ * 只移除最早的非运行 tab；绝不为了清理旧数据而中断正在运行的会话。
+ */
+export function trimTabsToLimit(
+  tabs: TabItem[],
+  isRunning: (sessionId: string) => boolean,
+): { tabs: TabItem[]; evictedTabs: TabItem[] } {
+  let next = tabs
+  const evictedTabs: TabItem[] = []
+
+  while (next.length > MAX_SESSION_TABS) {
+    const evicted = next.find((tab) => !isRunning(tab.sessionId))
+    if (!evicted) break
+    evictedTabs.push(evicted)
+    next = next.filter((tab) => tab.id !== evicted.id)
+  }
+
+  return { tabs: next, evictedTabs }
+}
+
 /**
  * 开 tab：已开则激活，未开追加 + 激活。返回新 { tabs, activeTabId }。
  */
@@ -77,6 +111,48 @@ export function openTab(
     ...(modelId ? { modelId } : {}),
   }
   return { tabs: [...tabs, newTab], activeTabId: newTab.id }
+}
+
+/**
+ * 按顶部标签容量打开会话。
+ *
+ * 已存在的会话只激活，不参与容量判断；达到上限时按数组顺序（即打开顺序）
+ * 替换最早的未运行标签。若四个都在运行，返回 blocked 让 UI 给出明确提示。
+ */
+export function openTabWithLimit(
+  tabs: TabItem[],
+  sessionId: string,
+  title: string,
+  isRunning: (sessionId: string) => boolean,
+  workspaceId?: string,
+  channelId?: string,
+  modelId?: string,
+): OpenTabWithLimitResult {
+  const existing = tabs.find((tab) => tab.sessionId === sessionId)
+  if (existing) {
+    const opened = openTab(tabs, sessionId, title, workspaceId, channelId, modelId)
+    return { ...opened, blocked: false }
+  }
+
+  if (tabs.length < MAX_SESSION_TABS) {
+    const opened = openTab(tabs, sessionId, title, workspaceId, channelId, modelId)
+    return { ...opened, blocked: false }
+  }
+
+  const evictedTab = tabs.find((tab) => !isRunning(tab.sessionId))
+  if (!evictedTab) {
+    return { tabs, activeTabId: null, blocked: true }
+  }
+
+  const opened = openTab(
+    tabs.filter((tab) => tab.id !== evictedTab.id),
+    sessionId,
+    title,
+    workspaceId,
+    channelId,
+    modelId,
+  )
+  return { ...opened, evictedTab, blocked: false }
 }
 
 /**

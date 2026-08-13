@@ -111,8 +111,32 @@ function notifyChromeIcon(dark: boolean): void {
   }
 }
 
+let themeDomReady = false
+let activeThemeTransition: { skipTransition?: () => void } | null = null
+
+function prefersReducedMotion(): boolean {
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  } catch {
+    return false
+  }
+}
+
+function commitThemeClasses(targetDark: boolean, targetClass: string | null): void {
+  const html = document.documentElement
+  const currentClass = ALL_THEME_CLASSES.find((c) => html.classList.contains(c)) ?? null
+  if (currentClass !== targetClass) {
+    if (currentClass) html.classList.remove(currentClass)
+    if (targetClass) html.classList.add(targetClass)
+  }
+  html.classList.toggle('dark', targetDark)
+  themeDomReady = true
+}
+
 /**
  * 把主题应用到 DOM：切 .dark + theme-{style}-{light|dark} class（幂等）
+ *
+ * 首次应用立即切，避免启动闪一下；之后换色/换深浅用 View Transition 淡过。
  *
  * @param mode  深浅模式
  * @param style 色系（default 不加 theme- 类，走 :root/.dark）
@@ -133,41 +157,54 @@ export function applyThemeToDOM(
 
   // 幂等：签名未变时仍上报图标（主进程可能尚未收到过）
   if (currentDark === targetDark && currentClass === targetClass) {
+    themeDomReady = true
     notifyChromeIcon(targetDark)
     return
   }
 
-  if (currentClass !== targetClass) {
-    if (currentClass) html.classList.remove(currentClass)
-    if (targetClass) html.classList.add(targetClass)
+  const apply = (): void => {
+    commitThemeClasses(targetDark, targetClass)
+    notifyChromeIcon(targetDark)
   }
-  if (currentDark !== targetDark) {
-    html.classList.toggle('dark', targetDark)
+
+  type ViewTransitionLike = {
+    finished: Promise<void>
+    skipTransition?: () => void
   }
-  notifyChromeIcon(targetDark)
-}
-/** 读当前系统深色：atom（nativeTheme IPC）优先，否则 matchMedia */
-function currentSystemIsDark(): boolean {
-  try {
-    return getDefaultStore().get(systemIsDarkAtom)
-  } catch {
-    return matchMediaDarkSafe()
+  const doc = document as Document & {
+    startViewTransition?: (update: () => void) => ViewTransitionLike
   }
+  if (themeDomReady && !prefersReducedMotion() && typeof doc.startViewTransition === 'function') {
+    activeThemeTransition?.skipTransition?.()
+    const vt = doc.startViewTransition(apply)
+    activeThemeTransition = vt
+    void vt.finished
+      .catch((err: unknown) => {
+        // 连点色卡 / 叠两次 apply 会 skip 上一段过渡，不是故障。
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/skipped|abort/i.test(msg)) return
+        throw err
+      })
+      .finally(() => {
+        if (activeThemeTransition === vt) activeThemeTransition = null
+      })
+    return
+  }
+  apply()
 }
 
-/** 切深浅模式（写 atom + localStorage + 立即应用 DOM + 窗口图标） */
+/** 切深浅模式（写 atom + localStorage；DOM 由 ThemeInitializer 统一应用，避免叠两次过渡） */
 export function setThemeMode(mode: ThemeMode, style: ThemeStyle): void {
   cacheThemeMode(mode)
   getDefaultStore().set(themeModeAtom, mode)
-  const sys = currentSystemIsDark()
-  applyThemeToDOM(mode, style, sys)
-  document.documentElement.style.colorScheme = resolveIsDark(mode, sys) ? 'dark' : 'light'
+  void style
 }
-/** 切色系（写 atom + localStorage + 立即应用 DOM） */
+/** 切色系（写 atom + localStorage；DOM 由 ThemeInitializer 统一应用） */
 export function setThemeStyle(style: ThemeStyle, mode: ThemeMode): void {
   cacheThemeStyle(style)
   getDefaultStore().set(themeStyleAtom, style)
-  applyThemeToDOM(mode, style, currentSystemIsDark())
+  void mode
 }
 
 /** 当前系统是否深色（matchMedia 回退；Electron 内优先信 nativeTheme IPC） */

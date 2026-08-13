@@ -102,6 +102,9 @@ export function MoaDiscussionRoom({
     for (const s of panel.speakers) map.set(s.speakerId, s)
     return map
   }, [panel.speakers])
+  const activeSpeaker = panel.activeSpeakerId
+    ? speakerById.get(panel.activeSpeakerId)
+    : undefined
 
   // 自动跟随最新发言：subagent-detail__body 是滚动容器（overflow-y:auto）。
   // 用户手动上翻时不强制打断 —— 仅在仍贴近底部时跟随。
@@ -234,7 +237,9 @@ export function MoaDiscussionRoom({
         {/* 发言时间线 */}
         <div className="subagent-detail__stream">
           {panel.entries.length === 0 ? (
-            <div className="subagent-detail__empty">讨论即将开始…</div>
+            <div className="subagent-detail__empty">
+              {activeSpeaker ? `${activeSpeaker.name} 正在准备发言…` : '讨论即将开始…'}
+            </div>
           ) : (
             panel.entries.map((entry) => (
               <EntryRow
@@ -245,9 +250,25 @@ export function MoaDiscussionRoom({
             ))
           )}
 
+          {/* 每席调用前由主进程推 activeSpeakerId；让等待状态可见，而不是停在上一条发言。 */}
+          {panel.phase === 'discussing' && activeSpeaker && (
+            <div className="moa-discussion-active-speaker" aria-live="polite">
+              <SpeakerAvatar speaker={activeSpeaker} />
+              <div className="moa-discussion-active-speaker__main">
+                <div className="moa-discussion-active-speaker__label">
+                  <span className="moa-discussion-progress-dot" aria-hidden="true" />
+                  <span>{activeSpeaker.name} 正在发言…</span>
+                </div>
+                <div className="moa-discussion-active-speaker__meta">
+                  第 {panel.currentRound}/{panel.roundLimit} 轮 · {activeSpeaker.modelId}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* 收口中：占位提示（区别于 done 的完整 summary） */}
           {isFinalizing && (
-            <div className="subagent-detail__empty">总结人正在收口成共识方案…</div>
+            <div className="subagent-detail__empty">{activeSpeaker?.name ?? '总结人'}正在收口成共识方案…</div>
           )}
 
           {/* done：底部「共识方案」区（与设计文档 §7.1 一致） */}

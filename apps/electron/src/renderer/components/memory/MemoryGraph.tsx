@@ -2,7 +2,7 @@
  * MemoryGraph - Memory Graph 可视化（P3-MG.2，借鉴 hermes star-map.tsx）
  *
  * d3-force + Canvas radial timeline 渲染。
- * 节点：memory=菱形(diamond)，skill=圆形(circle)。
+ * 节点：memory=菱形(diamond)，session=圆形(circle)。
  * ring 按 day/week/month 桶分组（旧=内核，新=外环）。
  *
  * 详见 docs/plans/2026-07-06-silent-memory-research/TAgent_Memory_Master_Design.md §8.5
@@ -36,7 +36,7 @@ interface SimNode extends GraphNode {
 interface SimEdge {
   source: string | SimNode
   target: string | SimNode
-  type: 'skill-skill' | 'memory-skill'
+  type: 'memory-memory' | 'memory-session'
   weight?: number
 }
 
@@ -48,7 +48,7 @@ const COLORS = {
     L2: '#60a5fa', // blue-400
     L5: '#a78bfa', // violet-400
   },
-  skill: '#34d399', // emerald-400
+  session: '#34d399', // emerald-400
   edge: 'rgba(148, 163, 184, 0.3)', // slate-400/30
   edgeHover: 'rgba(148, 163, 184, 0.7)', // slate-400/70
   background: 'transparent',
@@ -354,13 +354,13 @@ export function MemoryGraph({
                 backgroundColor:
                   selectedNode.kind === 'memory'
                     ? COLORS.memory[selectedNode.source ?? 'L2']
-                    : COLORS.skill,
+                    : COLORS.session,
               }}
             />
             <span className="md-text min-w-0 truncate font-medium">{selectedNode.title}</span>
           </div>
           <div className="md-text-faint text-[10px]">
-            {selectedNode.kind === 'memory' ? selectedNode.source : 'skill'}
+            {selectedNode.kind === 'memory' ? selectedNode.source : '会话'}
           </div>
           <div className="md-text-variant mt-1.5 max-h-[min(160px,28vh)] overflow-y-auto overflow-x-hidden scrollbar-thin pr-1 text-[11px] leading-relaxed break-words">
             {selectedNode.content}
@@ -386,14 +386,14 @@ export function MemoryGraph({
           <span>L5 洞察</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="size-2 rounded-full" style={{ backgroundColor: COLORS.skill }} />
-          <span>Skill</span>
+          <span className="size-2 rounded-full" style={{ backgroundColor: COLORS.session }} />
+          <span>会话</span>
         </div>
       </div>
 
       {/* 统计 */}
       <div className="absolute right-3 top-3 rounded-md bg-background/70 px-2 py-1.5 text-[10px] text-muted-foreground backdrop-blur-sm">
-        {payload.stats.memoryNodes} 记忆 · {payload.stats.skillNodes} 技能 · {payload.stats.edges}{' '}
+        {payload.stats.memoryNodes} 记忆 · {payload.stats.sessionNodes} 会话 · {payload.stats.edges}{' '}
         连接
       </div>
     </div>
@@ -444,7 +444,7 @@ function drawCanvas(
     const isHovered = hovered?.id === node.id
     const isSelected = selected?.id === node.id
 
-    const color = node.kind === 'memory' ? COLORS.memory[node.source ?? 'L2'] : COLORS.skill
+    const color = node.kind === 'memory' ? COLORS.memory[node.source ?? 'L2'] : COLORS.session
 
     if (node.shape === 'diamond') {
       // 菱形（memory 节点）

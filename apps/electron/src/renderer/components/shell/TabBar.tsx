@@ -16,6 +16,7 @@ import {
   type TabItem,
 } from '../../atoms/tabs'
 import { dockApiAtom } from '../../atoms/dock-api'
+import { SessionSummaryTabButton } from '../chat/SessionSummaryTabButton'
 import {
   sessionStatusMapAtom,
   resolveSessionUiStatus,
@@ -99,6 +100,9 @@ export function TabBar(): JSX.Element | null {
             onClose={() => handleClose(tab)}
           />
         ))}
+      </div>
+      <div className="app-workspace-tab-actions titlebar-no-drag">
+        <SessionSummaryTabButton sessionId={activeTabId} />
       </div>
     </div>
   )

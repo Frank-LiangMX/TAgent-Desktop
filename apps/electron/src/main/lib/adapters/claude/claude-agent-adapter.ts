@@ -39,7 +39,6 @@ import { NoProgressGuard, buildNoProgressEventFromDecision } from '../../agent/n
 import {
   attachImageBlocksToText,
 } from '../../agent/build-user-content-with-attachments'
-import { NoProgressGuard, buildNoProgressEventFromDecision } from '../../agent/no-progress-guard'
 
 /** kscc 核查询选项（扩展 AgentQueryInput） */
 export interface KsccQueryOptions extends AgentQueryInput {

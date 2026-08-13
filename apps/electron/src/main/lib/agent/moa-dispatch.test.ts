@@ -8,7 +8,10 @@ import {
 } from './moa-dispatch'
 
 function makeChannel(opts: Partial<Channel> & { provider?: string; enabledModels?: string[] } = {}): Channel {
-  const enabled = opts.enabledModels ?? ['glm-5.2', 'kimi-k2.5', 'glm-5.1', 'mimo-v2.5']
+  const enabled = opts.enabledModels ?? [
+    'glm-5.2', 'kimi-k2.6', 'mimo-v2.5-pro',
+    'deepseek-v4-flash', 'glm-5.1', 'kimi-k2.5', 'mimo-v2.5',
+  ]
   return {
     id: 'kscc-1',
     name: '内网',
@@ -20,6 +23,9 @@ function makeChannel(opts: Partial<Channel> & { provider?: string; enabledModels
     updatedAt: 0,
     models: [
       { id: 'glm-5.2', name: 'GLM 5.2', enabled: enabled.includes('glm-5.2'), contextWindow: 128_000 },
+      { id: 'kimi-k2.6', name: 'Kimi K2.6', enabled: enabled.includes('kimi-k2.6') },
+      { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro', enabled: enabled.includes('mimo-v2.5-pro') },
+      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', enabled: enabled.includes('deepseek-v4-flash') },
       { id: 'kimi-k2.5', name: 'Kimi K2.5', enabled: enabled.includes('kimi-k2.5') },
       { id: 'glm-5.1', name: 'GLM 5.1', enabled: enabled.includes('glm-5.1') },
       { id: 'mimo-v2.5', name: 'Mimo v2.5', enabled: enabled.includes('mimo-v2.5') },
@@ -113,13 +119,13 @@ describe('resolveMoADispatch', () => {
 
   it('rejects when a reference model is disabled in the channel', () => {
     const d = resolveMoADispatch('moa:default', makeChannel({ enabledModels: ['glm-5.2'] }), presets)
-    // default 预置参考含 kimi-k2.5；缺它 → error
+    // default 预置参考含 kimi-k2.6；缺它 → error
     expect(d.kind).toBe('error')
-    if (d.kind === 'error') expect(d.message).toContain('kimi-k2.5')
+    if (d.kind === 'error') expect(d.message).toContain('kimi-k2.6')
   })
 
   it('rejects when the aggregator model is disabled', () => {
-    const d = resolveMoADispatch('moa:default', makeChannel({ enabledModels: ['kimi-k2.5', 'glm-5.1'] }), presets)
+    const d = resolveMoADispatch('moa:default', makeChannel({ enabledModels: ['kimi-k2.6', 'mimo-v2.5-pro'] }), presets)
     // 汇总 glm-5.2 缺 → error
     expect(d.kind).toBe('error')
     if (d.kind === 'error') expect(d.message).toContain('glm-5.2')

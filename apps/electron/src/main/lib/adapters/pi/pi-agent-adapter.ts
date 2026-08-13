@@ -92,6 +92,7 @@ async function loadPiAgentCore(): Promise<PiAgentCoreModule> {
 import { createTaskTool } from './subagent-task-tool'
 import { getSessionMeta } from '../../agent/session-store'
 import { NoProgressGuard, buildNoProgressEventFromDecision } from '../../agent/no-progress-guard'
+import { bashHooksForSession } from '../../agent/session-process-registry'
 
 // ===== 配置类型 =====
 
@@ -1144,7 +1145,11 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     // 如果传了 cwd 且没自定义 tools，把默认 bashTool 替换成 createBashTool(cwd)（避免 process.cwd 串）
     const finalBaseTools =
       cwd && tools == null
-        ? baseTools.map((t) => (t.name === 'Bash' ? piCore.createBashTool(cwd) : t))
+        ? baseTools.map((t) =>
+            t.name === 'Bash'
+              ? piCore.createBashTool(cwd, bashHooksForSession(sessionId))
+              : t,
+          )
         : baseTools
 
     // 注册 task 工具（子代理）+ extraTools（看板等）

@@ -40,9 +40,11 @@ import {
   finalizeMoADiscussion,
   markMoADiscussionCancelled,
   setMoADiscussionPhase,
+  setMoADiscussionActiveSpeaker,
   evaluateDiscussionConvergence,
   updateDiscussionRunningSummary,
   MOA_DISCUSSION_USER_SPEAKER_ID,
+  MOA_DISCUSSION_MODERATOR_SPEAKER_ID,
   moaDiscussionConsensusUuid,
 } from '@tagent/shared'
 import { appendPanelMessages, appendSdkMessages, readPanelMessages, appendMoADiscussionPanelRecord } from './session-store'
@@ -528,6 +530,9 @@ export async function runMoADiscussion(ctx: MoADiscussionContext): Promise<MoADi
       )
       let text: string
       try {
+        // 先把在途席位推给渲染层：串行圆桌在模型首包前可能等待很久，不能只停在上一席发言上。
+        panel = setMoADiscussionActiveSpeaker(panel, speakerId)
+        emitDiscussionCard(ctx, panel)
         text = await ctx.seatRunner.runSeat({
           modelId: seat.modelId,
           prompt,
@@ -628,6 +633,8 @@ export async function runMoADiscussion(ctx: MoADiscussionContext): Promise<MoADi
   const summaryPrompt = buildModeratorPrompt(panel, nameOf, historyText)
   let summary: string
   try {
+    panel = setMoADiscussionActiveSpeaker(panel, MOA_DISCUSSION_MODERATOR_SPEAKER_ID)
+    emitDiscussionCard(ctx, panel)
     summary = await ctx.seatRunner.runSeat({
       modelId: preset.aggregatorModelId,
       prompt: summaryPrompt,

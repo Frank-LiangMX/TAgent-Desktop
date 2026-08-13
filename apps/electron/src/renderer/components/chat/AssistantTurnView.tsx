@@ -7,6 +7,7 @@
  */
 import { useMemo, useRef } from 'react'
 import { useAtomValue } from 'jotai'
+import { CheckCircle, StopCircle, WarningCircle } from '@phosphor-icons/react'
 import {
   AppTooltip,
   Message,
@@ -27,6 +28,7 @@ import { SubagentEntryCard } from './SubagentEntryCard'
 import { TurnFilesChangedCard } from './TurnFilesChangedCard'
 import {
   buildTurnPresentation,
+  capThinkingDurationsToTurn,
   filterSubagentItems,
   findSubagentTaskTool,
   listSubagentEntryIds,
@@ -104,6 +106,11 @@ export function AssistantTurnView({
       displayMode: processDisplayMode,
     },
   )
+
+  // 完成态以主进程记录的整轮耗时作硬上限，阶段估算不得反超总运行时长。
+  if (!isLiveTurn && completedDuration) {
+    capThinkingDurationsToTurn(presentation.process, completedDuration.ms)
+  }
 
   const processLive = isLiveTurn
 
@@ -296,8 +303,12 @@ export function AssistantTurnView({
           {filesCard}
           {!processLive && (copyText || endFooter) ? (
             <div className="agent-answer-toolbar">
-              {copyText ? <MessageCopyButton text={copyText} /> : null}
               {endFooter ? <TurnEndFooter {...endFooter} /> : null}
+              {copyText ? (
+                <span className="agent-answer-toolbar__actions">
+                  <MessageCopyButton text={copyText} />
+                </span>
+              ) : null}
             </div>
           ) : null}
         </>
@@ -353,8 +364,12 @@ export function AssistantTurnView({
           {filesCard}
           {!processLive && (copyText || endFooter) ? (
             <div className="agent-answer-toolbar">
-              {copyText ? <MessageCopyButton text={copyText} /> : null}
               {endFooter ? <TurnEndFooter {...endFooter} /> : null}
+              {copyText ? (
+                <span className="agent-answer-toolbar__actions">
+                  <MessageCopyButton text={copyText} />
+                </span>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -363,7 +378,7 @@ export function AssistantTurnView({
   )
 }
 
-/** 消息句尾：完成 / 已中断 / 出错 + 耗时 + 墙钟时间 */
+/** 消息句尾：视觉上压成「完成 · 时长 · 时分」，完整日期留在 tooltip。 */
 function TurnEndFooter({
   label,
   duration,
@@ -375,17 +390,22 @@ function TurnEndFooter({
   clock?: string
   kind: 'complete' | 'stopped' | 'error'
 }): JSX.Element {
-  const parts = [label, duration, clock].filter(Boolean)
+  const Icon = kind === 'error' ? WarningCircle : kind === 'stopped' ? StopCircle : CheckCircle
+  const clockTime = clock?.split(' ').at(-1)
+  const tooltip = [label, duration ? `用时 ${duration}` : undefined, clock].filter(Boolean).join(' · ')
   return (
-    <AppTooltip label={parts.join(' · ')}>
+    <AppTooltip label={tooltip}>
       <span
         className={cn(
-          'agent-answer-time',
-          kind === 'stopped' && 'agent-answer-time--stopped',
-          kind === 'error' && 'agent-answer-time--error',
+          'agent-turn-outcome',
+          kind === 'stopped' && 'agent-turn-outcome--stopped',
+          kind === 'error' && 'agent-turn-outcome--error',
         )}
       >
-        {parts.join(' · ')}
+        <Icon className="agent-turn-outcome__icon" size={13} weight="bold" aria-hidden />
+        <span className="agent-turn-outcome__label">{label}</span>
+        {duration ? <span className="agent-turn-outcome__detail">{duration}</span> : null}
+        {clockTime ? <span className="agent-turn-outcome__clock">{clockTime}</span> : null}
       </span>
     </AppTooltip>
   )

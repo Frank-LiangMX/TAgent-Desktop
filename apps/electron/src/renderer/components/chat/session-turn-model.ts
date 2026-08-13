@@ -27,6 +27,7 @@ import type {
 } from '@tagent/shared'
 import type { ProcessDisplayMode } from './process-group-model'
 import { isSubagentRuntimeTaskType } from './subagent-ui-model'
+import { formatElapsedDuration } from '../../lib/time-utils'
 
 // ===== 输入侧 DisplayItem 最小形状（避免循环依赖 Chat.tsx） =====
 
@@ -863,6 +864,22 @@ export function annotateThinkingDurations(process: ProcessEntry[]): void {
 }
 
 /**
+ * 过程条目的时间戳只适合做近似值；完成后的单段思考不应超过整轮实际运行时长。
+ * 这同时防御 UI 节点复用或迟到消息造成的阶段时长穿透到下一轮。
+ */
+export function capThinkingDurationsToTurn(
+  process: ProcessEntry[],
+  totalDurationMs: number | undefined,
+): void {
+  if (totalDurationMs == null || !Number.isFinite(totalDurationMs) || totalDurationMs < 0) return
+  const maxSec = Math.max(0, Math.floor(totalDurationMs / 1000))
+  for (const entry of process) {
+    if (entry.type !== 'thinking' || entry.durationSec == null) continue
+    entry.durationSec = Math.min(entry.durationSec, maxSec)
+  }
+}
+
+/**
  * 规范化「秒」时长：防御把 ms 误当秒传入（如 52000 → 52s）。
  * 思考展示很少超过 15 分钟；大于 900 的整数按 ms 再换算。
  */
@@ -894,10 +911,10 @@ export function formatThinkingSummary(
 ): string {
   if (opts?.live) {
     const n = opts.liveElapsedSec
-    if (n != null && n >= 1) return `思考中 ${n}s`
+    if (n != null && n >= 1) return `思考中 ${formatElapsedDuration(n * 1000)}`
     return '正在思考…'
   }
-  if (durationSec != null && durationSec >= 3) return `思考了 ${durationSec}s`
+  if (durationSec != null && durationSec >= 3) return `思考了 ${formatElapsedDuration(durationSec * 1000)}`
   return '思考了片刻'
 }
 

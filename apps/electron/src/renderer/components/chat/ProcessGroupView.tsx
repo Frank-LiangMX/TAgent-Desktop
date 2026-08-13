@@ -283,10 +283,13 @@ export const ThinkingActivityRow = memo(function ThinkingActivityRow({
   // live 墙钟：idle 后冻结秒数，避免退回偏大的字数粗估
   const startRef = useRef<number | null>(null)
   const frozenLiveSecRef = useRef<number | undefined>(undefined)
-  if (isLive && startRef.current == null) {
+  const wasTimingLiveRef = useRef(false)
+  // 同一行可能被流式 key 复用到下一段思考，重新进入 live 必须从本段重新计时。
+  if (isLive && !wasTimingLiveRef.current) {
     startRef.current = Date.now()
     frozenLiveSecRef.current = undefined
   }
+  wasTimingLiveRef.current = isLive
   const elapsedMs = useLiveElapsedMs(startRef.current ?? undefined, isLive)
   if (isLive && elapsedMs > 0) {
     frozenLiveSecRef.current = Math.max(1, Math.floor(elapsedMs / 1000))

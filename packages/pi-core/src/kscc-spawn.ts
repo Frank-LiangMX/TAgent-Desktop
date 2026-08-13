@@ -173,6 +173,8 @@ export function spawnKsccBare(opts: KsccBareSpawnOptions): KsccBareProcess {
     stdio: ["pipe", "pipe", "pipe"],
     ...invocation.options,
   });
+  // 进程刚启动就注册 exit 监听，避免消费者在 stdout 已结束后才 wait 而错过 exit 事件。
+  const completion = waitForChild(child);
 
   // 子进程退出后清理临时目录
   child.on("exit", () => {
@@ -210,7 +212,7 @@ export function spawnKsccBare(opts: KsccBareSpawnOptions): KsccBareProcess {
   const lines = createLineIterator(child);
 
   return {
-    wait: () => waitForChild(child),
+    wait: () => completion,
     kill: () => {
       killChild(child);
       opts.signal?.removeEventListener("abort", onAbort);
@@ -328,12 +330,22 @@ function extractTextFromContent(content: unknown): string {
 
 function killChild(child: ChildProcess): void {
   try {
-    if (!child.killed) {
+    if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGTERM");
-      // 硬杀兜底：1s 后还没死就 SIGKILL
-      setTimeout(() => {
-        if (!child.killed) child.kill("SIGKILL");
+      // child.killed 只代表“已发过 kill 信号”，不代表进程已退出；不能拿它跳过兜底。
+      // Windows 上用 taskkill 确保 .exe 及其子进程树都被终止，避免单席超时后整场圆桌卡住。
+      const forceTimer = setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+        if (process.platform === "win32") {
+          spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+            stdio: "ignore",
+            windowsHide: true,
+          }).unref();
+        } else {
+          child.kill("SIGKILL");
+        }
       }, 1000);
+      forceTimer.unref();
     }
   } catch {
     // 忽略，进程可能已退出

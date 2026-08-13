@@ -15,6 +15,8 @@ interface AppShellProps {
   sidebar?: ReactNode
   sidebarOpen?: boolean
   activeRailItem?: string | null
+  /** 顶栏运行态点击后定位对应会话。 */
+  onOpenLiveSession?: (sessionId: string, title: string) => void
   children?: ReactNode
 }
 
@@ -24,6 +26,7 @@ export function AppShell({
   sidebar,
   sidebarOpen = true,
   activeRailItem = 'chat',
+  onOpenLiveSession,
   children,
 }: AppShellProps): JSX.Element {
   const presence: PanelPresence = sidebarOpen ? 'open' : 'collapsed'
@@ -36,7 +39,7 @@ export function AppShell({
         ) : (
           <div className="w-16 shrink-0" aria-hidden />
         )}
-        <UpdateBanner fallback={<StatusTicker />} />
+        <UpdateBanner fallback={<StatusTicker onOpenSession={onOpenLiveSession} />} />
         <div className="ml-0 shrink-0 titlebar-no-drag">
           <WindowControls />
         </div>

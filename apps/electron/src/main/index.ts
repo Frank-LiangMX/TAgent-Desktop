@@ -33,6 +33,7 @@ import {
   selfRepairService,
   reflectService,
   resolveIdleConsolidationFlag,
+  setMemoryForegroundActivityProbe,
   startIdleConsolidationScheduler,
   stopIdleConsolidationScheduler,
 } from './lib/memory'
@@ -305,6 +306,7 @@ app.whenReady().then(async () => {
   )
   permissionService = PermissionService.create(() => mainWindow)
   sessionService = SessionService.create(() => mainWindow, permissionService)
+  setMemoryForegroundActivityProbe(() => sessionService?.hasActiveAgents() ?? false)
   WorkspaceService.create(
     () => mainWindow,
     (workspaceId) => sessionService?.deleteWorkspaceSessions(workspaceId) ?? 0,

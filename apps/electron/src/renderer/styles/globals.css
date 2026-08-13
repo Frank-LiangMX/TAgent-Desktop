@@ -100,6 +100,22 @@ body,
    * 不会在窗口右侧露原生滚动条（消息区滚动全部在内部容器，body 不滚动） */
   overflow: hidden;
 }
+/*
+ * 主题切换：View Transition 整页淡入淡出。
+ * 只覆盖 root 交叉淡化，时长对齐 --motion-duration-scene。
+ */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--motion-duration-scene, 420ms);
+  animation-timing-function: var(--motion-ease-spatial, cubic-bezier(0.16, 1, 0.3, 1));
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
+}
+
 html {
   /*
    * scene 弥散场：直接用 --scene-*-rgb 拼径向渐变，不依赖 --surface-role-scene-fill

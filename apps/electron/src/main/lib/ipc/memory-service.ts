@@ -2,7 +2,7 @@
  * 记忆系统 IPC（Phase 2.3）
  *
  * 注册 MEMORY_IPC_CHANNELS + AGENT_IPC_CHANNELS 记忆相关通道。
- * Graph 数据：learning-graph-service 尚未移植，GET_GRAPH_DATA 返回空图。
+ * Graph 数据由 learning-graph-service 从已整理记忆与历史会话装配。
  */
 import { ipcMain } from 'electron'
 import {
@@ -147,7 +147,7 @@ export class MemoryService {
           return {
             nodes: [],
             edges: [],
-            stats: { memoryNodes: 0, skillNodes: 0, edges: 0 },
+            stats: { memoryNodes: 0, sessionNodes: 0, edges: 0 },
           }
         }
       },

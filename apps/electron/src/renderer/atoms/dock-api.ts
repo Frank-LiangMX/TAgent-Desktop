@@ -9,6 +9,20 @@ import type { DockviewApi, IDockviewPanel } from 'dockview'
 
 export const dockApiAtom = atom<DockviewApi | null>(null)
 
+/** 顶栏 / 标签栏等全局入口请求打开某会话绑定的班组 pane。 */
+export interface CrewOpenRequest {
+  sessionId: string
+  sessionTitle?: string
+  requestId: number
+  /** true：已开则关；默认只开 */
+  toggle?: boolean
+}
+
+export const crewOpenRequestAtom = atom<CrewOpenRequest | null>(null)
+
+/** 各会话班组面板是否展开（右栏或 dock crew pane），标签栏图标按下态用 */
+export const crewPanelOpenMapAtom = atom<Record<string, boolean>>({})
+
 export interface VisibleSession {
   sessionId: string
   title: string

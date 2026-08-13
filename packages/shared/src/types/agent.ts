@@ -113,7 +113,7 @@ export interface StageEntry {
  */
 export interface GraphNode {
   id: string
-  kind: 'memory' | 'skill'
+  kind: 'memory' | 'session'
   shape: 'diamond' | 'circle'
   source?: 'L0' | 'L2' | 'L5'
   title: string
@@ -128,7 +128,7 @@ export interface GraphNode {
 export interface GraphEdge {
   source: string
   target: string
-  type: 'skill-skill' | 'memory-skill'
+  type: 'memory-memory' | 'memory-session'
   weight?: number
 }
 
@@ -140,7 +140,7 @@ export interface GraphPayload {
   edges: GraphEdge[]
   stats: {
     memoryNodes: number
-    skillNodes: number
+    sessionNodes: number
     edges: number
   }
 }
@@ -2002,6 +2002,12 @@ export const AGENT_IPC_CHANNELS = {
   GET_TASK_OUTPUT: 'agent:get-task-output',
   /** 停止任务 */
   STOP_TASK: 'agent:stop-task',
+  /** 列出本会话仍在跑的后台进程（Bash / CLI 工人） */
+  LIST_SESSION_PROCESSES: 'agent:list-session-processes',
+  /** 杀掉本会话某个后台进程 */
+  KILL_SESSION_PROCESS: 'agent:kill-session-process',
+  /** 主→渲染：本会话后台进程列表变化 */
+  SESSION_PROCESSES_CHANGED: 'agent:session-processes-changed',
 
   // 工作区能力（MCP + Skill）
   /** 触发自动归档 */

@@ -35,6 +35,7 @@ export interface RunClaudeWorkerInput {
   worker: CliWorkerEntry
   prompt: string
   cwd: string
+  sessionId?: string
   signal?: AbortSignal
   onProgress?: (lastToolName: string) => void
   onToolUse?: (t: CliToolUseHit) => void
@@ -78,6 +79,7 @@ export async function runClaudeWorker(input: RunClaudeWorkerInput): Promise<RunC
     plan,
     prompt: input.prompt,
     cwd: input.cwd,
+    sessionId: input.sessionId,
     signal: input.signal,
     observer: new ClaudeStreamObserver(),
     onProgress: input.onProgress,

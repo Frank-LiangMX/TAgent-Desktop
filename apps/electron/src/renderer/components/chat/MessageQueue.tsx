@@ -3,12 +3,12 @@
  *
  * 放在底栏栈内、composer 上方。每条消息各自可：
  * - 引导：不打断，steer 到下一轮边界
- * - 立即发送：打断并以该条开新一轮
  * - 编辑：移回输入框继续改
  * - 移除 / 面板清空
  */
 import { motion, AnimatePresence } from 'motion/react'
-import { X, ListNumbers, Lightning, Compass, PencilSimple } from '@phosphor-icons/react'
+import { X, ListNumbers, ArrowBendDownLeft, PencilSimple } from '@phosphor-icons/react'
+import { AppTooltip } from '@tagent/ui'
 
 export interface QueueItem {
   text: string
@@ -21,8 +21,6 @@ interface MessageQueueProps {
   queue: QueueItem[]
   onRemove: (index: number) => void
   onClear: () => void
-  /** 立即发送指定条目 */
-  onSendNow?: (index: number) => void
   /** 引导指定条目 */
   onSteer?: (index: number) => void
   /** 编辑：取出填回输入框 */
@@ -35,7 +33,6 @@ export function MessageQueue({
   queue,
   onRemove,
   onClear,
-  onSendNow,
   onSteer,
   onEdit,
   busy = false,
@@ -86,56 +83,44 @@ export function MessageQueue({
                     {item.text}
                   </span>
                   <div className="message-queue-panel__row-actions">
-                    {onSteer ? (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => onSteer(i)}
-                        className="message-queue-panel__icon-btn"
-                        title="引导：不中断当前轮；结束后 Agent 自动读取"
-                        aria-label="引导"
-                      >
-                        <Compass size={13} weight="regular" />
-                      </button>
-                    ) : null}
-                    {onSendNow ? (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => onSendNow(i)}
-                        className="message-queue-panel__icon-btn message-queue-panel__icon-btn--primary"
-                        title={
-                          running
-                            ? '立即发送：中断当前轮，以本条开新一轮'
-                            : '立即发送：以本条开新一轮'
-                        }
-                        aria-label="立即发送"
-                      >
-                        <Lightning size={13} weight="fill" />
-                      </button>
+                    {onSteer && running ? (
+                      <AppTooltip label="引导此消息（不中断当前轮）" side="top">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => onSteer(i)}
+                          className="message-queue-panel__icon-btn message-queue-panel__steer-btn"
+                          aria-label="引导此消息"
+                        >
+                          <ArrowBendDownLeft size={14} weight="regular" aria-hidden />
+                          <span>引导</span>
+                        </button>
+                      </AppTooltip>
                     ) : null}
                     {onEdit ? (
+                      <AppTooltip label="编辑此消息" side="top">
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => onEdit(i)}
+                          className="message-queue-panel__icon-btn"
+                          aria-label="编辑此消息"
+                        >
+                          <PencilSimple size={13} weight="regular" />
+                        </button>
+                      </AppTooltip>
+                    ) : null}
+                    <AppTooltip label="删除此消息" side="top">
                       <button
                         type="button"
                         disabled={busy}
-                        onClick={() => onEdit(i)}
+                        onClick={() => onRemove(i)}
                         className="message-queue-panel__icon-btn"
-                        title="编辑：移回输入框"
-                        aria-label="编辑"
+                        aria-label="删除此消息"
                       >
-                        <PencilSimple size={13} weight="regular" />
+                        <X size={13} weight="regular" />
                       </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => onRemove(i)}
-                      className="message-queue-panel__icon-btn"
-                      title="移除"
-                      aria-label="移除"
-                    >
-                      <X size={13} weight="regular" />
-                    </button>
+                    </AppTooltip>
                   </div>
                 </div>
               ))}

@@ -43,6 +43,8 @@ export interface RunKsccWorkerInput {
   prompt: string
   /** 子进程工作目录 */
   cwd: string
+  /** 所属主会话：登记后台进程 */
+  sessionId?: string
   /** 取消信号；abort → kill 进程树 */
   signal?: AbortSignal
   /**
@@ -201,6 +203,16 @@ export async function runKsccWorker(
   let child: ChildProcess
   try {
     child = spawn(plan.command, plan.args, spawnOpts)
+    if (input.sessionId) {
+      const { trackSessionProcess } = await import('../session-process-registry')
+      trackSessionProcess({
+        sessionId: input.sessionId,
+        command: `kscc ${plan.command}`.trim(),
+        source: 'cli-worker',
+        pid: child.pid,
+        child,
+      })
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return {

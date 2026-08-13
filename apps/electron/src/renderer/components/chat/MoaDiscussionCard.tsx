@@ -64,6 +64,9 @@ export function MoaDiscussionCard({ panel, onOpen }: MoaDiscussionCardProps): JS
   const latestName = latestSpeaker ? latestSpeaker.name : '（暂无）'
   const latestRole = latestSpeaker ? roleLabel(latestSpeaker.role) : ''
   const latestText = latestEntry ? truncate(latestEntry.text, 80) : ''
+  const activeSpeaker = panel.activeSpeakerId
+    ? panel.speakers.find((speaker) => speaker.speakerId === panel.activeSpeakerId) ?? null
+    : null
 
   // done 摘要：取前 160 字（不包含总结人全文，全屏看）
   const summaryPreview = panel.summary ? truncate(panel.summary, 160) : ''
@@ -109,7 +112,14 @@ export function MoaDiscussionCard({ panel, onOpen }: MoaDiscussionCardProps): JS
         <div className="mt-2.5">
           {isFinalizing ? (
             <div className="text-[12px] leading-relaxed text-muted-foreground">
-              总结人正在收口成共识方案…
+              {activeSpeaker?.name ?? '总结人'}正在收口成共识方案…
+            </div>
+          ) : activeSpeaker ? (
+            <div className="flex items-center gap-2 text-[12px] leading-relaxed text-foreground/85">
+              <span className="moa-discussion-progress-dot" aria-hidden="true" />
+              <span>
+                第 {panel.currentRound}/{panel.roundLimit} 轮 · <span className="font-medium">{activeSpeaker.name}</span> 正在发言…
+              </span>
             </div>
           ) : panel.phase === 'done' && summaryPreview ? (
             <div className="flex flex-col gap-1">
@@ -124,7 +134,7 @@ export function MoaDiscussionCard({ panel, onOpen }: MoaDiscussionCardProps): JS
             <div className="flex flex-col gap-1">
               <div className="text-[10.5px] text-muted-foreground">
                 <span className="font-medium text-foreground/80">{latestName}</span>
-                {latestRole ? `（${latestRole}）` : ''} 正在发言：
+                {latestRole ? `（${latestRole}）` : ''} 刚刚发言：
               </div>
               <div className="text-[12px] leading-relaxed text-foreground/85">
                 {latestText}

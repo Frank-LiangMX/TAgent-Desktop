@@ -112,7 +112,12 @@ export function createKsccSeatRunner(opts: { ksccPath?: string }): MoASeatRunner
       });
 
       let fullText = "";
-      const timer = setTimeout(() => proc.kill(), args.timeoutMs ?? 120_000);
+      let timedOut = false;
+      const timeoutMs = args.timeoutMs ?? 120_000;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        proc.kill();
+      }, timeoutMs);
       const onAbort = () => proc.kill();
       if (args.signal) {
         if (args.signal.aborted) proc.kill();
@@ -148,8 +153,19 @@ export function createKsccSeatRunner(opts: { ksccPath?: string }): MoASeatRunner
         proc.kill();
       }
 
-      await proc.wait();
-      return fullText.trim();
+      const exitCode = await proc.wait();
+      // 取消不是失败：交给上层按 signal 统一标成“已取消”。
+      if (args.signal?.aborted) return "";
+      if (timedOut) {
+        throw new Error(`单席请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`);
+      }
+      if (exitCode !== 0) {
+        const detail = typeof proc.stderr === "string" ? proc.stderr.trim() : "";
+        throw new Error(detail || `kscc 进程异常退出（退出码 ${exitCode}）`);
+      }
+      const text = fullText.trim();
+      if (!text) throw new Error("模型未返回正文");
+      return text;
     },
   };
 }

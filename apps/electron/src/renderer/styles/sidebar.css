@@ -562,6 +562,11 @@
   border-radius: 5px;
   transition: opacity 0.16s ease;
 }
+/* 会话时间右侧需给 hover 展开的三点菜单留出 8px 视觉尾距。
+   工作区计数沿用这条尾线，避免同一列表的右侧信息上下错位。 */
+.workspace-group-head > .group-head .ws-badge {
+  margin-right: 8px;
+}
 .group.has-stream .ws-badge {
   color: hsl(var(--primary));
   background: hsl(var(--primary) / 0.1);
@@ -588,7 +593,7 @@
   opacity: 0.85;
 }
 .ws-sub .live i:first-child {
-  animation: status-pulse 1.3s ease-in-out infinite;
+  animation: status-pulse 2.6s ease-in-out infinite;
 }
 .ws-sub .err {
   color: hsl(var(--destructive) / 0.9);
@@ -734,6 +739,8 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
+  /* 第二行从标题正文起点开始：跨过左侧状态圆点（8px）与 title gap（6px）。 */
+  padding-left: 15px;
 }
 .row .meta .m {
   font-size: 10.5px;
@@ -770,12 +777,12 @@
 }
 .stat-dot.stream {
   background: rgb(59 130 246);
-  animation: status-pulse 1.3s ease-in-out infinite;
+  animation: status-pulse 2.6s ease-in-out infinite;
 }
 .stat-dot.pending {
   background: rgb(234 179 8);
   --status-pulse-rgb: 234 179 8;
-  animation: status-pulse 1.3s ease-in-out infinite;
+  animation: status-pulse 2.6s ease-in-out infinite;
 }
 .stat-dot.done {
   background: hsl(152 42% 42% / 0.92);

@@ -22,11 +22,19 @@ import { CrewPane } from './CrewPane'
 import { FilePreviewPane } from './FilePreviewPane'
 import { RichPreviewPane } from './RichPreviewPane'
 import { DockTab } from './DockTab'
-import { mountDockActivePlates } from './dockActivePlate'
-import { tabsAtom, activeTabIdAtom, closeTab, type TabItem } from '../../atoms/tabs'
-import { dockApiAtom, visibleSessionsAtom, collectVisibleSessions } from '../../atoms/dock-api'
+import { DockSummaryActions } from './DockSummaryActions'
+import { SessionSummaryTabButton } from '../chat/SessionSummaryTabButton'
+import { MAX_SESSION_TABS, tabsAtom, activeTabIdAtom, closeTab, type TabItem } from '../../atoms/tabs'
+import {
+  dockApiAtom,
+  visibleSessionsAtom,
+  collectVisibleSessions,
+  crewOpenRequestAtom,
+  crewPanelOpenMapAtom,
+} from '../../atoms/dock-api'
 import { filePreviewRequestAtom } from '../../atoms/file-preview'
 import { richPreviewRequestAtom } from '../../atoms/rich-preview'
+import { sessionRunMapAtom } from '../../atoms/session-run-atoms'
 
 const DOCK_LAYOUT_KEY = 'tagent:dockLayout'
 
@@ -154,11 +162,14 @@ function handleWillDrop(e: {
 
 export function WorkspaceDock(): JSX.Element {
   const tabs = useAtomValue(tabsAtom)
+  const sessionRunMap = useAtomValue(sessionRunMapAtom)
   const activeTabId = useAtomValue(activeTabIdAtom)
   const setTabs = useSetAtom(tabsAtom)
   const setActiveTabId = useSetAtom(activeTabIdAtom)
   const setDockApi = useSetAtom(dockApiAtom)
   const setVisibleSessions = useSetAtom(visibleSessionsAtom)
+  const crewOpenRequest = useAtomValue(crewOpenRequestAtom)
+  const setCrewPanelOpenMap = useSetAtom(crewPanelOpenMapAtom)
   const filePreviewReq = useAtomValue(filePreviewRequestAtom)
   const richPreviewReq = useAtomValue(richPreviewRequestAtom)
 
@@ -170,12 +181,12 @@ export function WorkspaceDock(): JSX.Element {
   const activeTabIdRef = useRef<string | null>(activeTabId)
   activeTabIdRef.current = activeTabId
 
-  // 滑动玻璃底板：对齐原 TabBar active-plate（每个 group 的 tabs 容器各一块）
-  // 只在 api 就绪时挂载；后续 tab 增删/切换由 MutationObserver 跟
+  // 旧版曾在 Dockview tab 容器中注入滑动底板；group 增删时其测量坐标会残留，
+  // 留下一条错误的底线。现在选中态由 tab 自身绘制；这里顺手清理热更新遗留节点。
   useEffect(() => {
     const root = rootRef.current
     if (!root || !apiReady) return
-    return mountDockActivePlates(root)
+    root.querySelectorAll('[data-dock-active-plate]').forEach((plate) => plate.remove())
   }, [apiReady])
 
   // tabsAtom → api：补齐缺失 panel；dock 多出的 chat → 回填 tabs（不在此关 panel）。
@@ -217,10 +228,18 @@ export function WorkspaceDock(): JSX.Element {
       }
 
       if (toAdopt.length > 0) {
+        const availableSlots = Math.max(0, MAX_SESSION_TABS - tabs.length)
+        const accepted = toAdopt.slice(0, availableSlots)
+        const rejected = toAdopt.slice(availableSlots)
         setTabs((prev: TabItem[]) => {
           const have = new Set(prev.map((t) => t.sessionId))
-          const add = toAdopt.filter((t) => !have.has(t.sessionId))
+          const add = accepted.filter((t) => !have.has(t.sessionId))
           return add.length ? [...prev, ...add] : prev
+        })
+        // 限额以外的旧 pane 不允许反向回填；非运行会话直接关掉，运行中的保留，
+        // 交给 App 的历史修复逻辑处理，避免后台任务被静默中止。
+        rejected.forEach((tab) => {
+          if (!sessionRunMap[tab.sessionId]?.running) api.getPanel(tab.sessionId)?.api.close()
         })
       }
       setVisibleSessions(collectVisibleSessions(api))
@@ -229,7 +248,7 @@ export function WorkspaceDock(): JSX.Element {
         isReconcilingRef.current = false
       })
     }
-  }, [tabs, apiReady, setTabs, setVisibleSessions])
+  }, [tabs, sessionRunMap, apiReady, setTabs, setVisibleSessions])
 
   // activeTabIdAtom → api：侧栏/外部改激活 tab 时，Dockview 同步 setActive。
   // 原先只有 onDidActivePanelChange → atom（dock→侧栏），缺 atom→dock，
@@ -253,6 +272,41 @@ export function WorkspaceDock(): JSX.Element {
     }
   }, [activeTabId, apiReady, tabs])
 
+  // 顶栏等全局入口请求：直接打开/聚焦绑定会话的班组 pane。
+  useEffect(() => {
+    const api = apiRef.current
+    const request = crewOpenRequest
+    if (!api || !apiReady || !request) return
+
+    const open = (): void => {
+      const crewId = `crew:${request.sessionId}`
+      const existing = api.getPanel(crewId)
+      if (existing) {
+        if (request.toggle) {
+          existing.api.close()
+          setCrewPanelOpenMap((prev) => ({ ...prev, [request.sessionId]: false }))
+          return
+        }
+        existing.api.setActive?.()
+        setCrewPanelOpenMap((prev) => ({ ...prev, [request.sessionId]: true }))
+        return
+      }
+      const chatPanel = api.getPanel(request.sessionId)
+      api.addPanel({
+        id: crewId,
+        title: `班组 · ${request.sessionTitle ?? chatPanel?.title ?? '会话'}`,
+        component: 'crew',
+        params: { sessionId: request.sessionId, paneType: 'crew' },
+        ...(chatPanel ? { position: { direction: 'right', referencePanel: chatPanel } } : {}),
+      })
+      setCrewPanelOpenMap((prev) => ({ ...prev, [request.sessionId]: true }))
+    }
+
+    // 先让 App 的 openSession 完成 tabs → Dockview 同步，再作为右侧 pane 打开。
+    const frame = requestAnimationFrame(open)
+    return () => cancelAnimationFrame(frame)
+  }, [crewOpenRequest?.requestId, apiReady, setCrewPanelOpenMap])
+
   // 事件订阅：api 就绪时挂，卸载时清（onReady 回调返回值会被 Dockview 忽略，故用 effect）
   useEffect(() => {
     const api = apiRef.current
@@ -262,6 +316,10 @@ export function WorkspaceDock(): JSX.Element {
     // tabs 会丢会话，随后 panel 又出现 → 「分屏 3 块、tabs/打开中只有 2」漂移。
     // 延后到下一帧确认 panel 真的不在了再关。
     const dRemove = api.onDidRemovePanel((panel: IDockviewPanel) => {
+      if (panel.id.startsWith('crew:')) {
+        const sid = panel.id.slice('crew:'.length)
+        setCrewPanelOpenMap((prev) => ({ ...prev, [sid]: false }))
+      }
       if (isReconcilingRef.current) return
       if (isNonSessionPane(panel.id)) return
       const sessionId = panel.id
@@ -435,10 +493,16 @@ export function WorkspaceDock(): JSX.Element {
       })
     })
     if (fromLayout.length > 0) {
+      const availableSlots = Math.max(0, MAX_SESSION_TABS - tabs.length)
+      const accepted = fromLayout.slice(0, availableSlots)
+      const rejected = fromLayout.slice(availableSlots)
       setTabs((prev: TabItem[]) => {
         const have = new Set(prev.map((t) => t.sessionId))
-        const toAdd = fromLayout.filter((t) => !have.has(t.sessionId))
+        const toAdd = accepted.filter((t) => !have.has(t.sessionId))
         return toAdd.length ? [...prev, ...toAdd] : prev
+      })
+      rejected.forEach((tab) => {
+        if (!sessionRunMap[tab.sessionId]?.running) e.api.getPanel(tab.sessionId)?.api.close()
       })
     }
     setVisibleSessions(collectVisibleSessions(e.api))
@@ -454,6 +518,9 @@ export function WorkspaceDock(): JSX.Element {
 
   return (
     <div ref={rootRef} className="workspace-dock h-full min-h-0">
+      <div className="workspace-dock__summary titlebar-no-drag">
+        <SessionSummaryTabButton sessionId={activeTabId} />
+      </div>
       <DockviewReact
         onReady={handleReady}
         components={{
@@ -465,6 +532,7 @@ export function WorkspaceDock(): JSX.Element {
           'mermaid-preview': RichPreviewPane,
         }}
         defaultTabComponent={DockTab}
+        rightHeaderActionsComponent={DockSummaryActions}
         theme={dockTheme}
         onWillDrop={handleWillDrop}
         /**

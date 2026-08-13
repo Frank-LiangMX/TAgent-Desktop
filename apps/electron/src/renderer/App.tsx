@@ -39,7 +39,18 @@ import type {
   WorkspaceMcpConfig,
   WorkspacePluginBundleRecord,
 } from '@tagent/shared'
-import { RichSourceContext, Toaster, TooltipProvider } from '@tagent/ui'
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  RichSourceContext,
+  Toaster,
+  TooltipProvider,
+} from '@tagent/ui'
 import { MemoryMonitorPanel, showNudgeToasts } from './components/memory'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
 import { PluginStoreSettings } from './components/settings/PluginStoreSettings'
@@ -58,8 +69,16 @@ import { Chat, type SessionMeta } from './components/chat/Chat'
 import { WelcomeStart } from './components/shell/WelcomeStart'
 import { NewConversationLanding } from './components/chat/NewConversationLanding'
 import { ProjectOnboarding } from './components/chat/ProjectOnboarding'
-import { tabsAtom, activeTabIdAtom, activeTabAtom, openTab } from './atoms/tabs'
-import { dockApiAtom } from './atoms/dock-api'
+import {
+  MAX_SESSION_TABS,
+  tabsAtom,
+  activeTabIdAtom,
+  activeTabAtom,
+  openTabWithLimit,
+  trimTabsToLimit,
+  type TabItem,
+} from './atoms/tabs'
+import { crewOpenRequestAtom, dockApiAtom } from './atoms/dock-api'
 import { splitDockModeAtom } from './atoms/feature-flags'
 import { pendingSuggestionAtom } from './atoms/pending-suggestion'
 import {
@@ -85,6 +104,7 @@ import { useGlobalPermissionSync } from './hooks/useGlobalPermissionSync'
 import { useAskUserSync } from './hooks/useAskUserSync'
 import { useInitUpdaterListener } from './atoms/updater'
 import { acknowledgeSessionStatusAtom } from './atoms/session-status-atoms'
+import { sessionRunMapAtom } from './atoms/session-run-atoms'
 
 declare global {
   interface Window {
@@ -99,6 +119,33 @@ declare global {
         moaOneShotPresetId?: string
       }) => Promise<{ ok: boolean; error?: string }>
       stopAgent: (sessionId: string) => Promise<{ ok: boolean }>
+      listSessionProcesses: (sessionId: string) => Promise<
+        Array<{
+          id: string
+          sessionId: string
+          pid?: number
+          command: string
+          source: 'bash' | 'cli-worker'
+          startedAt: number
+        }>
+      >
+      killSessionProcess: (
+        sessionId: string,
+        id: string,
+      ) => Promise<{ ok: boolean; error?: string }>
+      onSessionProcessesChanged: (
+        cb: (payload: {
+          sessionId: string
+          processes: Array<{
+            id: string
+            sessionId: string
+            pid?: number
+            command: string
+            source: 'bash' | 'cli-worker'
+            startedAt: number
+          }>
+        }) => void,
+      ) => () => void
       steerAgent: (
         sessionId: string,
         message: string,
@@ -416,6 +463,7 @@ export function App(): JSX.Element {
   const pushTicker = useSetAtom(pushStatusTickerAtom)
   const notificationPrefs = useAtomValue(notificationPrefsAtom)
   const acknowledgeSessionStatus = useSetAtom(acknowledgeSessionStatusAtom)
+  const requestCrewOpen = useSetAtom(crewOpenRequestAtom)
 
   // 启动时把通知偏好同步到主进程
   useEffect(() => {
@@ -459,38 +507,9 @@ export function App(): JSX.Element {
     })
   }, [pushTicker])
 
-  // 班组状态 → 顶栏 ticker（若开启）
-  useEffect(() => {
-    const off1 = window.electronAPI.onKanbanChanged?.((payload: unknown) => {
-      if (!getNotificationPrefsSnapshot().titlebarTicker) return
-      const p = payload as { taskId?: string; status?: string }
-      if (!p?.status || !p.taskId) return
-      if (p.status === 'running') {
-        pushTicker(makeStatusTickerItem(`班组：任务开始执行`, 'info', 4000))
-      } else if (p.status === 'done') {
-        pushTicker(makeStatusTickerItem(`班组：任务已完成`, 'success', 5000))
-      } else if (p.status === 'failed') {
-        pushTicker(makeStatusTickerItem(`班组：任务失败`, 'error', 7000))
-      } else if (p.status === 'blocked') {
-        pushTicker(makeStatusTickerItem(`班组：任务阻塞，需处理`, 'warn', 7000))
-      }
-    })
-    const off2 = window.electronAPI.onKanbanBoardCompleted?.((payload: unknown) => {
-      if (!getNotificationPrefsSnapshot().titlebarTicker) return
-      const p = payload as { summary?: { done?: number; total?: number; failed?: number } }
-      const s = p?.summary
-      const text = s
-        ? `班组全部结束：${s.done ?? 0}/${s.total ?? 0} 完成${s.failed ? `，${s.failed} 失败` : ''}`
-        : '班组全部结束'
-      pushTicker(makeStatusTickerItem(text, (s?.failed ?? 0) > 0 ? 'warn' : 'success', 8000))
-    })
-    return () => {
-      off1?.()
-      off2?.()
-    }
-  }, [pushTicker])
   // 多会话 tab
   const tabs = useAtomValue(tabsAtom)
+  const sessionRunMap = useAtomValue(sessionRunMapAtom)
   const activeTabId = useAtomValue(activeTabIdAtom)
   const activeTab = useAtomValue(activeTabAtom)
   const lastActiveWorkspaceId = useAtomValue(lastActiveWorkspaceIdAtom)
@@ -503,6 +522,25 @@ export function App(): JSX.Element {
   const splitDockMode = useAtomValue(splitDockModeAtom)
   /** 草稿会话（无 tab 的新会话页）：点「新建会话」设置，发送首条消息时由 Chat 物化为 tab */
   const [draftSession, setDraftSession] = useState<SessionMeta | null>(null)
+  const [tabCapacityDialogOpen, setTabCapacityDialogOpen] = useState(false)
+
+  // 旧版本的 Dockview 恢复布局可直接回填 tabsAtom，绕过新开会话时的四标签限制。
+  // 启动和布局恢复后统一收口：仅逐出最早的已停止 tab，绝不为了清理历史状态停止任务。
+  useEffect(() => {
+    const result = trimTabsToLimit(
+      tabs,
+      (sessionId) => sessionRunMap[sessionId]?.running === true,
+    )
+    if (result.evictedTabs.length === 0) return
+
+    const retainedIds = new Set(result.tabs.map((tab) => tab.id))
+    setTabs(result.tabs)
+    setActiveTabId((current) =>
+      current && retainedIds.has(current) ? current : (result.tabs.at(-1)?.id ?? null),
+    )
+    // 同步关掉被逐出的 Dockview pane，防止其被布局恢复逻辑再次收编进 tabsAtom。
+    result.evictedTabs.forEach((tab) => dockApi?.getPanel(tab.sessionId)?.api.close())
+  }, [dockApi, sessionRunMap, setActiveTabId, setTabs, tabs])
 
   // 离开会话页（插件/记忆/角色库/设置）→ 当前会话绿点清灰
   useEffect(() => {
@@ -546,7 +584,19 @@ export function App(): JSX.Element {
     }
   }, [activeTab?.workspaceId, setLastActiveWorkspaceId])
 
-  /** 开会话进 tab：已开激活，未开加 tab + 激活 */
+  const showTabCapacityDialog = useCallback(() => {
+    setTabCapacityDialogOpen(true)
+  }, [])
+
+  /** 草稿在发送前预检容量，避免四个运行任务时创建一个无法打开的新会话。 */
+  const canMaterializeTab = useCallback((): boolean => {
+    if (tabs.length < MAX_SESSION_TABS) return true
+    if (tabs.some((tab) => !sessionRunMap[tab.sessionId]?.running)) return true
+    showTabCapacityDialog()
+    return false
+  }, [sessionRunMap, showTabCapacityDialog, tabs])
+
+  /** 开会话进 tab：已开激活；满四个时替换最早的非运行标签。 */
   const openSession = (
     sessionId: string,
     title: string,
@@ -556,19 +606,132 @@ export function App(): JSX.Element {
   ): void => {
     if (workspaceId) setLastActiveWorkspaceId(workspaceId)
     // 函数式更新：避免闭包 tabs 过期覆盖并发 openTab
+    let blocked = false
+    let evictedTab: TabItem | undefined
     setTabs((prev) => {
-      const { tabs: next, activeTabId: nextActive } = openTab(
+      const result = openTabWithLimit(
         prev,
         sessionId,
         title,
+        (id) => sessionRunMap[id]?.running === true,
         workspaceId,
         channelId,
         modelId,
       )
-      setActiveTabId(nextActive)
-      return next
+      if (result.blocked) {
+        blocked = true
+        return prev
+      }
+      evictedTab = result.evictedTab
+      setActiveTabId(result.activeTabId)
+      return result.tabs
     })
+    if (blocked) {
+      showTabCapacityDialog()
+      return
+    }
+    if (evictedTab) {
+      const evictedSessionId = evictedTab.sessionId
+      queueMicrotask(() => dockApi?.getPanel(evictedSessionId)?.api.close())
+    }
   }
+
+  /** 顶栏班组通知 → 定位所属会话，并打开该会话的班组面板。 */
+  const openCrewFromNotification = (input: {
+    taskId?: string
+    boardId?: string
+    parentSessionId?: string
+  }): void => {
+    void (async () => {
+      try {
+        let boardId = input.boardId
+        if (!boardId && input.taskId) {
+          const task = (await window.electronAPI.kanbanGetTask?.(input.taskId)) as
+            | { boardId?: string }
+            | null
+            | undefined
+          boardId = task?.boardId
+        }
+        const board = boardId
+          ? ((await window.electronAPI.kanbanGetBoard(boardId)) as
+              | { parentSessionId?: string; title?: string }
+              | null)
+          : null
+        const sessionId = input.parentSessionId ?? board?.parentSessionId
+        if (!sessionId) {
+          pushTicker(makeStatusTickerItem('该班组未绑定会话，无法打开会话面板', 'warn', 4500))
+          return
+        }
+
+        const sessions = (await window.electronAPI.listSessions()) as Array<SessionMeta>
+        const session = sessions.find((item) => item.id === sessionId)
+        if (!session) {
+          pushTicker(makeStatusTickerItem('关联会话已不存在', 'warn', 4500))
+          return
+        }
+
+        setShowSettings(false)
+        setActiveRail('chat')
+        setSidebarOpen(true)
+        setDraftSession(null)
+        openSession(session.id, session.title, session.workspaceId, session.channelId, session.modelId)
+        requestCrewOpen({
+          sessionId: session.id,
+          sessionTitle: board?.title ?? session.title,
+          requestId: Date.now(),
+        })
+      } catch {
+        pushTicker(makeStatusTickerItem('打开班组失败，请稍后重试', 'error', 4500))
+      }
+    })()
+  }
+
+  // 班组状态 → 顶栏 ticker（若开启）；点击通知会直接打开对应班组。
+  useEffect(() => {
+    const action = (input: { taskId?: string; boardId?: string; parentSessionId?: string }) => ({
+      onClick: () => openCrewFromNotification(input),
+      actionLabel: '点击打开对应班组面板',
+      coalesceKey: input.taskId ? `kanban-task:${input.taskId}` : `kanban-board:${input.boardId ?? ''}`,
+    })
+    const off1 = window.electronAPI.onKanbanChanged?.((payload: unknown) => {
+      if (!getNotificationPrefsSnapshot().titlebarTicker) return
+      const p = payload as { taskId?: string; status?: string }
+      if (!p?.status || !p.taskId) return
+      if (p.status === 'running') {
+        pushTicker(makeStatusTickerItem('班组：任务开始执行', 'info', 4000, action(p)))
+      } else if (p.status === 'done') {
+        pushTicker(makeStatusTickerItem('班组：任务已完成', 'success', 5000, action(p)))
+      } else if (p.status === 'failed') {
+        pushTicker(makeStatusTickerItem('班组：任务失败', 'error', 7000, action(p)))
+      } else if (p.status === 'blocked') {
+        pushTicker(makeStatusTickerItem('班组：任务阻塞，需处理', 'warn', 7000, action(p)))
+      }
+    })
+    const off2 = window.electronAPI.onKanbanBoardCompleted?.((payload: unknown) => {
+      if (!getNotificationPrefsSnapshot().titlebarTicker) return
+      const p = payload as {
+        boardId?: string
+        parentSessionId?: string
+        summary?: { done?: number; total?: number; failed?: number }
+      }
+      const s = p?.summary
+      const text = s
+        ? `班组全部结束：${s.done ?? 0}/${s.total ?? 0} 完成${s.failed ? `，${s.failed} 失败` : ''}`
+        : '班组全部结束'
+      pushTicker(
+        makeStatusTickerItem(
+          text,
+          (s?.failed ?? 0) > 0 ? 'warn' : 'success',
+          8000,
+          action(p),
+        ),
+      )
+    })
+    return () => {
+      off1?.()
+      off2?.()
+    }
+  }, [pushTicker, requestCrewOpen])
 
   /** 打开项目目录并注册为工作区；从新建会话入口调用时直接绑定新会话 */
   const handleOpenProject = async (startSession = false): Promise<void> => {
@@ -656,6 +819,14 @@ export function App(): JSX.Element {
         topbar={null}
         sidebarOpen={activeRail === 'chat' && sidebarOpen}
         activeRailItem={activeRail === 'chat' ? 'chat' : activeRail}
+        onOpenLiveSession={(sessionId, title) => {
+          const tab = tabs.find((item) => item.sessionId === sessionId)
+          setShowSettings(false)
+          setActiveRail('chat')
+          setSidebarOpen(true)
+          setDraftSession(null)
+          openSession(sessionId, title, tab?.workspaceId, tab?.channelId, tab?.modelId)
+        }}
         rail={
           <Rail
             active={railActive}
@@ -731,6 +902,10 @@ export function App(): JSX.Element {
                     }}
                     onBack={() => setDraftSession(null)}
                     onMaterialized={() => setDraftSession(null)}
+                    canMaterializeTab={canMaterializeTab}
+                    onTabEvicted={(tab) => {
+                      queueMicrotask(() => dockApi?.getPanel(tab.sessionId)?.api.close())
+                    }}
                   />
                 </motion.div>
               ) : (
@@ -782,6 +957,21 @@ export function App(): JSX.Element {
         onOpenChange={setShowSettings}
         onTabChange={setSettingsInitialTab}
       />
+      <Dialog open={tabCapacityDialogOpen} onOpenChange={setTabCapacityDialogOpen}>
+        <DialogContent className="w-[min(380px,calc(100vw-32px))] gap-5 p-5 sm:max-w-none" hideClose>
+          <DialogHeader className="space-y-2 text-left">
+            <DialogTitle className="text-[15px]">正在运行的会话已占满标签栏</DialogTitle>
+            <DialogDescription className="text-[12.5px] leading-5">
+              最多可打开 {MAX_SESSION_TABS} 个会话。请等待任一会话完成或停止后，再打开新的会话。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button size="sm" onClick={() => setTabCapacityDialogOpen(false)}>
+              知道了
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {/* 面板 Toast：受通用设置「面板悬浮」开关；进度类默认走顶栏 */}
       {notificationPrefs.panelToast ? (
         <Toaster position="top-center" richColors closeButton visibleToasts={2} />

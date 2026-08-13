@@ -698,7 +698,7 @@
   --theme-glow: hsl(220 14% 68%);
 }
 .tagent-style-card[data-style='slate-light'] {
-  --theme-glow: hsl(25 32% 56%);
+  --theme-glow: hsl(32 12% 52%);
 }
 .tagent-style-card[data-style='ocean-light'] {
   --theme-glow: hsl(191 46% 48%);
@@ -707,13 +707,13 @@
   --theme-glow: hsl(148 32% 48%);
 }
 .tagent-style-card[data-style='orange-light'] {
-  --theme-glow: hsl(22 42% 54%);
+  --theme-glow: hsl(30 64% 48%);
 }
 .tagent-style-card[data-style='purple-light'] {
   --theme-glow: hsl(275 38% 56%);
 }
 .tagent-style-card[data-style='slate-dark'] {
-  --theme-glow: hsl(27 36% 66%);
+  --theme-glow: hsl(32 14% 64%);
 }
 .tagent-style-card[data-style='ocean-dark'] {
   --theme-glow: hsl(191 48% 68%);
@@ -722,7 +722,7 @@
   --theme-glow: hsl(148 32% 64%);
 }
 .tagent-style-card[data-style='orange-dark'] {
-  --theme-glow: hsl(24 42% 62%);
+  --theme-glow: hsl(32 62% 58%);
 }
 .tagent-style-card[data-style='purple-dark'] {
   --theme-glow: hsl(275 40% 70%);
@@ -1095,13 +1095,13 @@
     linear-gradient(155deg, hsl(220 10% 30%) 0%, hsl(220 10% 23%) 52%, hsl(220 10% 17%) 100%);
 }
 
-/* slate-light · 云絮 */
+/* slate-light · 暖砂 */
 .tagent-theme-cloud-dancer {
   background:
-    radial-gradient(ellipse 42% 48% at 36% 10%, rgb(210 190 158 / 0.55), transparent 70%),
-    radial-gradient(ellipse 40% 46% at 12% 92%, rgb(172 168 160 / 0.4), transparent 72%),
-    radial-gradient(ellipse 52% 58% at 82% 78%, rgb(162 182 204 / 0.45), transparent 72%),
-    linear-gradient(135deg, rgb(236 232 224) 0%, rgb(236 232 224) 42%, rgb(224 218 208) 100%);
+    radial-gradient(ellipse 42% 48% at 22% 8%, rgb(191 179 164 / 0.5), transparent 70%),
+    radial-gradient(ellipse 40% 46% at 12% 92%, rgb(168 163 156 / 0.4), transparent 72%),
+    radial-gradient(ellipse 52% 58% at 88% 86%, rgb(176 184 191 / 0.42), transparent 72%),
+    linear-gradient(135deg, rgb(232 228 222) 0%, rgb(232 228 222) 42%, rgb(216 212 206) 100%);
 }
 
 /* ocean-light · 碧海 */
@@ -1125,10 +1125,10 @@
 /* orange-light · 琥珀 */
 .tagent-theme-terracotta-dawn {
   background:
-    radial-gradient(ellipse 38% 42% at 18% 10%, rgb(216 176 118 / 0.55), transparent 70%),
-    radial-gradient(ellipse 74% 38% at 55% 100%, rgb(176 170 156 / 0.35), transparent 72%),
-    radial-gradient(ellipse 36% 40% at 86% 82%, rgb(168 186 210 / 0.4), transparent 70%),
-    linear-gradient(135deg, rgb(238 234 224) 0%, rgb(238 234 224) 42%, rgb(236 214 180) 100%);
+    radial-gradient(ellipse 42% 46% at 16% 8%, rgb(224 158 64 / 0.58), transparent 70%),
+    radial-gradient(ellipse 74% 38% at 52% 100%, rgb(186 168 130 / 0.38), transparent 72%),
+    radial-gradient(ellipse 38% 42% at 86% 80%, rgb(204 118 71 / 0.42), transparent 70%),
+    linear-gradient(135deg, rgb(242 228 204) 0%, rgb(242 228 204) 42%, rgb(232 196 140) 100%);
 }
 
 /* purple-light · 紫藤 */
@@ -1140,13 +1140,13 @@
     linear-gradient(135deg, rgb(234 233 238) 0%, rgb(234 233 238) 42%, rgb(220 216 236) 100%);
 }
 
-/* slate-dark · 石板暮 */
+/* slate-dark · 暖砂夜 */
 .tagent-theme-morandi-night {
   background:
-    radial-gradient(ellipse 42% 48% at 22% 8%, rgb(180 150 110 / 0.42), transparent 68%),
-    radial-gradient(ellipse 40% 38% at 12% 92%, rgb(120 112 104 / 0.28), transparent 70%),
-    radial-gradient(ellipse 40% 44% at 88% 86%, rgb(110 130 160 / 0.36), transparent 68%),
-    linear-gradient(155deg, hsl(30 12% 34%) 0%, hsl(28 11% 26%) 52%, hsl(26 10% 20%) 100%);
+    radial-gradient(ellipse 42% 48% at 22% 8%, rgb(130 116 98 / 0.36), transparent 68%),
+    radial-gradient(ellipse 40% 38% at 12% 92%, rgb(110 106 100 / 0.26), transparent 70%),
+    radial-gradient(ellipse 40% 44% at 88% 86%, rgb(90 100 112 / 0.34), transparent 68%),
+    linear-gradient(155deg, hsl(32 7% 28%) 0%, hsl(32 6% 22%) 52%, hsl(32 6% 16%) 100%);
 }
 
 /* ocean-dark · 深海 */
@@ -1170,10 +1170,10 @@
 /* orange-dark · 熔金 */
 .tagent-theme-terracotta-night {
   background:
-    radial-gradient(ellipse 42% 46% at 18% 10%, rgb(220 160 90 / 0.42), transparent 68%),
-    radial-gradient(ellipse 76% 40% at 55% 100%, rgb(120 90 70 / 0.28), transparent 70%),
-    radial-gradient(ellipse 40% 42% at 86% 82%, rgb(100 120 150 / 0.3), transparent 68%),
-    linear-gradient(168deg, hsl(24 22% 34%) 0%, hsl(22 20% 26%) 52%, hsl(20 18% 19%) 100%);
+    radial-gradient(ellipse 42% 46% at 16% 8%, rgb(200 130 50 / 0.46), transparent 68%),
+    radial-gradient(ellipse 76% 40% at 52% 100%, rgb(120 80 50 / 0.3), transparent 70%),
+    radial-gradient(ellipse 40% 42% at 86% 80%, rgb(140 70 48 / 0.32), transparent 68%),
+    linear-gradient(168deg, hsl(28 28% 26%) 0%, hsl(24 24% 18%) 52%, hsl(22 22% 13%) 100%);
 }
 
 /* purple-dark · 雾紫 */

@@ -414,7 +414,7 @@ describe('applySdkMessageToItems：uuid 原地 upsert（S2.1 单真源）', () =
         message: {
           type: 'assistant',
           uuid: 'u1',
-          stop_reason: null,
+          stop_reason: undefined,
           content: [{ type: 'thinking', thinking: '想' }],
         },
       },

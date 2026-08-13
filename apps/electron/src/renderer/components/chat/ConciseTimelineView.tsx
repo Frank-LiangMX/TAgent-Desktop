@@ -281,10 +281,13 @@ export const ThinkingFold = memo(function ThinkingFold({
   const startRef = useRef<number | null>(null)
   // live 墙钟：idle 后 useLiveElapsedMs 归零，需冻结最后一秒数，避免退回偏大的字数粗估
   const frozenLiveSecRef = useRef<number | undefined>(undefined)
-  if (isLive && startRef.current == null) {
+  const wasTimingLiveRef = useRef(false)
+  // stream-thinking key 会复用；新一段进入 live 时不可沿用上一段的起点。
+  if (isLive && !wasTimingLiveRef.current) {
     startRef.current = Date.now()
     frozenLiveSecRef.current = undefined
   }
+  wasTimingLiveRef.current = isLive
   const elapsedMs = useLiveElapsedMs(startRef.current ?? undefined, isLive)
   if (isLive && elapsedMs > 0) {
     frozenLiveSecRef.current = Math.max(1, Math.floor(elapsedMs / 1000))
@@ -671,10 +674,12 @@ const StageStepRow = memo(function StageStepRow({
   const frozenLiveSecRef = useRef<number | undefined>(undefined)
   const isThinking = step.kind === 'thinking'
   const thinkingLive = isThinking && isStreaming
-  if (thinkingLive && startRef.current == null) {
+  const wasTimingLiveRef = useRef(false)
+  if (thinkingLive && !wasTimingLiveRef.current) {
     startRef.current = Date.now()
     frozenLiveSecRef.current = undefined
   }
+  wasTimingLiveRef.current = thinkingLive
   // tool pending 也算 streaming；思考行用 live 计时，idle 后冻结避免退回字数粗估
   const elapsedMs = useLiveElapsedMs(
     isThinking ? (startRef.current ?? undefined) : undefined,

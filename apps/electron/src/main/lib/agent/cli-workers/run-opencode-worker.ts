@@ -33,6 +33,7 @@ export interface RunOpencodeWorkerInput {
   worker: CliWorkerEntry
   prompt: string
   cwd: string
+  sessionId?: string
   signal?: AbortSignal
   onProgress?: (lastToolName: string) => void
   onToolUse?: (t: CliToolUseHit) => void
@@ -70,6 +71,7 @@ export async function runOpencodeWorker(input: RunOpencodeWorkerInput): Promise<
     plan,
     prompt: input.prompt,
     cwd: input.cwd,
+    sessionId: input.sessionId,
     signal: input.signal,
     observer: new OpencodeStreamObserver(),
     onProgress: input.onProgress,

@@ -43,7 +43,7 @@ export {
   type AntmlToolResult,
   type ToolSchemaDescriptor,
 } from "./antml-protocol.ts";
-export { readTool, writeTool, editTool, bashTool, createBashTool, defaultTools, defaultToolDescriptors, type BashToolDetails } from "./tools.ts";
+export { readTool, writeTool, editTool, bashTool, createBashTool, defaultTools, defaultToolDescriptors, type BashToolDetails, type BashProcessHooks } from "./tools.ts";
 export { checkToolPermission, checkBashPermission, type PermissionCheckResult } from "./permissions.ts";
 
 // M3：Xfast 竞争调度

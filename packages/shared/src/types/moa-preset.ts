@@ -136,7 +136,8 @@ export const MOA_DEFAULT_PRESETS: readonly MoAPreset[] = [
     enabled: true,
     references: [
       { name: '架构师', modelId: 'glm-5.2' },
-      { name: '实战派', modelId: 'kimi-k2.5' },
+      { name: '实战派', modelId: 'kimi-k2.6' },
+      { name: '评审官', modelId: 'mimo-v2.5-pro' },
     ],
     aggregatorModelId: 'glm-5.2',
     timeoutMsPerSeat: 120_000,
@@ -146,10 +147,10 @@ export const MOA_DEFAULT_PRESETS: readonly MoAPreset[] = [
     name: '省并发',
     enabled: true,
     references: [
-      { name: '省并发·甲', modelId: 'glm-5.1' },
-      { name: '省并发·乙', modelId: 'mimo-v2.5' },
+      { name: '快速拆解', modelId: 'deepseek-v4-flash' },
+      { name: '省并发·乙', modelId: 'kimi-k2.5' },
     ],
-    aggregatorModelId: 'glm-5.2',
+    aggregatorModelId: 'deepseek-v4-flash',
     timeoutMsPerSeat: 120_000,
   },
 ] as const

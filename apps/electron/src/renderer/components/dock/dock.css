@@ -26,6 +26,17 @@
   min-height: 0;
 }
 
+/* 摘要固定在标签条右上，不走 Dockview header actions（其 react-part 百分比尺寸会塌成 0） */
+.workspace-dock__summary {
+  position: absolute;
+  top: calc(var(--shell-band-inset-top, 16px) + 6px);
+  right: var(--app-shell-session-gutter, 16px);
+  z-index: 20;
+  display: flex;
+  height: 32px;
+  align-items: center;
+}
+
 /* ===== 覆盖 abyss 主题变量 → 玻璃胶囊 ===== */
 .workspace-dock .dv-dockview {
   /* group/content 必须 transparent：会话区直透 scene 背景，勿用玻璃底填实 */
@@ -96,8 +107,10 @@
 .workspace-dock .dv-tabs-and-actions-container {
   box-sizing: border-box;
   height: var(--dv-tabs-and-actions-container-height);
-  /* 顶 = band-inset-top + 原 strip 的 6px 顶垫；左右 = session-gutter；底 6px 与原 strip 一致 */
-  padding: calc(var(--shell-band-inset-top, 16px) + 6px) var(--app-shell-session-gutter, 16px) 6px;
+  /* 顶 = band-inset-top + 原 strip 的 6px 顶垫；右给摘要图标留位 */
+  padding: calc(var(--shell-band-inset-top, 16px) + 6px)
+    calc(var(--app-shell-session-gutter, 16px) + 36px) 6px
+    var(--app-shell-session-gutter, 16px);
   margin-top: 0; /* 覆盖任何继承的 margin，避免被 overflow 切 */
   border-bottom: 1px solid var(--spatial-line, color-mix(in srgb, hsl(var(--foreground)) 8%, transparent));
   background: transparent;
@@ -105,12 +118,14 @@
   flex-shrink: 0;
 }
 
-/* tabs 横向容器：对齐原 .app-workspace-tab-list
-   position:relative 供 active-plate 绝对定位；gap 4px；横向滚动藏滚动条 */
+/* tabs 横向容器：对齐原 .app-workspace-tab-list；gap 4px；横向滚动藏滚动条 */
 .workspace-dock .dv-tabs-container {
   position: relative;
+  min-width: 0;
+  flex: 1 1 auto;
   gap: 4px;
-  overflow-x: auto;
+  /* 到 76px 下限前优先压缩 tab；再窄时交给 Dockview 的溢出菜单，不能只裁掉最右一枚。 */
+  overflow-x: hidden;
   overflow-y: hidden;
   scrollbar-width: none;
   height: 100%;
@@ -120,24 +135,27 @@
   display: none;
   height: 0;
 }
-/* 滑动底板在 dock 内也要在 tab 之下（app-shell 已 z-index:0；这里确保 tab 在上） */
-.workspace-dock .dv-tabs-container > .app-workspace-tab-active-plate {
-  z-index: 0;
+/* 多标签组默认不会给 .dv-scrollable 分配弹性宽度，固定宽 tab 会把它撑出父级。
+   显式允许它收缩，才能让 tab 依据每个分屏自身的宽度重新分配。 */
+.workspace-dock .dv-tabs-and-actions-container > .dv-scrollable {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
-
 /* ===== tab 容器：透明壳，视觉由 defaultTabComponent（app-workspace-tab 那套）提供 =====
    DOM：.dv-tab > .dv-react-part > .app-workspace-tab-shell > .app-workspace-tab
-   .dv-tab 只做尺寸壳（对齐原 .app-workspace-tab-shell 72~128 / 高 32），不自带胶囊样式。
+   .dv-tab 只做尺寸壳（对齐原 .app-workspace-tab-shell 120 / 高 32），不自带胶囊样式。
    注意：dockview 默认 .dv-tab 有 padding:0.25rem 0.5rem，必须清零。 */
 .workspace-dock .dv-tab {
   position: relative;
-  z-index: 1; /* 盖在 active-plate 之上，对齐原 .app-workspace-tab-shell */
   display: flex;
   align-items: stretch;
   box-sizing: border-box;
-  flex: 0 1 128px;
-  min-width: 72px;
-  max-width: 128px;
+  /* 正常宽度 120px；同组标签变多或分屏变窄时从容收缩到 76px，而非裁切最后一枚。 */
+  width: auto;
+  flex: 1 1 120px;
+  min-width: 76px;
+  max-width: 120px;
   height: 32px;
   padding: 0 !important; /* 覆盖 dockview 默认 0.25rem 0.5rem */
   margin: 0;
@@ -164,7 +182,7 @@
   height: 100%;
 }
 
-/* 去掉 Dockview 自带的标签线（胶囊选中态只由 active-plate 表达）。
+/* 去掉 Dockview 自带的标签线（选中态由标签自身绘制）。
    新版 Dockview 除 ::after / ::before 外，还会插入真实的 .dv-tab-group-underline；
    关闭标签时该节点会跟踪收缩动画约 250ms，表现为旧标签底部短暂残留一条线。 */
 .workspace-dock .dv-tab.dv-active-tab::after,
@@ -181,14 +199,35 @@
   content: none;
 }
 
-/* active 态：与原 TabBar 一致 —— 胶囊本身透明，玻璃由滑动底板 active-plate 负责；
-   只改文字/图标 primary 色 + 关闭按钮半显。双通道：data-active（React）+ .dv-active-tab（CSS 即时）。 */
+/*
+ * 选中态：玻璃胶囊（对齐 .app-workspace-tab-active-plate）。
+ * 必须压过 app-shell 里 `.dark …[data-active] { background: transparent }`，
+ * 否则暗色只剩一圈描边、没有填充。
+ */
 .workspace-dock .app-workspace-tab-shell[data-active] .app-workspace-tab,
 .workspace-dock .dv-tab.dv-active-tab .app-workspace-tab {
   color: hsl(var(--primary)) !important;
-  background: transparent !important;
-  border-color: transparent !important;
-  box-shadow: none !important;
+  border-color: rgb(var(--glass-rgb) / 0.36) !important;
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.1), transparent 64%),
+    rgb(var(--glass-rgb) / 0.72) !important;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.55),
+    inset 1px 0 0 rgb(255 255 255 / 0.18),
+    inset 0 -1px 0 rgb(0 0 0 / 0.08),
+    inset -1px 0 0 rgb(0 0 0 / 0.05) !important;
+}
+.dark .workspace-dock .app-workspace-tab-shell[data-active] .app-workspace-tab,
+.dark .workspace-dock .dv-tab.dv-active-tab .app-workspace-tab {
+  border-color: rgb(255 255 255 / 0.08) !important;
+  background:
+    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.12), transparent 64%),
+    rgb(var(--glass-rgb) / 0.62) !important;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.36),
+    inset 1px 0 0 rgb(255 255 255 / 0.12),
+    inset 0 -1px 0 rgb(0 0 0 / 0.28),
+    inset -1px 0 0 rgb(0 0 0 / 0.16) !important;
 }
 .workspace-dock .dv-tab.dv-active-tab .app-workspace-tab__icon,
 .workspace-dock .app-workspace-tab-shell[data-active] .app-workspace-tab__icon {
@@ -212,9 +251,38 @@
   pointer-events: auto;
 }
 
+/*
+ * 标签栏右侧固定「摘要」：
+ * Dockview 给 .dv-react-part 写死 width/height:100%，而本栏 align-items:center
+ * 时父级是 auto 尺寸 → 百分比算成 0，按钮在 DOM 里却看不见。
+ */
+.workspace-dock .dv-right-actions-container {
+  display: flex;
+  flex: 0 0 auto;
+  align-self: center;
+  align-items: center;
+  height: 32px;
+  min-width: 72px;
+  margin-left: 8px;
+  overflow: visible;
+  z-index: 6;
+}
+.workspace-dock .dv-right-actions-container > .dv-react-part {
+  display: flex !important;
+  width: auto !important;
+  height: auto !important;
+  align-items: center;
+}
+.workspace-dock .dock-tab-summary-actions {
+  display: flex;
+  align-items: center;
+}
+
 /* 标签栏右侧空白（void）：保证可点、可 drop 到「最后」 */
 .workspace-dock .dv-tabs-and-actions-container .dv-void-container {
-  min-width: 24px;
+  min-width: 0;
+  flex-basis: 24px;
+  flex-shrink: 1;
   flex-grow: 1;
   align-self: stretch;
 }

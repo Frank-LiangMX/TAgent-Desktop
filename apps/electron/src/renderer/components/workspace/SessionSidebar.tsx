@@ -977,7 +977,7 @@ function SessionRow({
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-        {/* meta 第二行仅非归档行渲染轮数；时间已上提到 title 行 */}
+        {/* meta 第二行从标题正文起点对齐，仅非归档行渲染轮数；时间已上提到 title 行 */}
         {!archived && s.turnCount != null && s.turnCount > 0 && (
           <div className="meta">
             <span className="m turns">{s.turnCount} 轮</span>

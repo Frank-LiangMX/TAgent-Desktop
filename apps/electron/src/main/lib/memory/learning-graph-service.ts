@@ -53,7 +53,7 @@ export function buildGraphPayload(mode: MemoryMode, _workspaceSlug?: string): Gr
     const id = `sess-${s.id}`
     nodes.push({
       id,
-      kind: 'skill', // 复用 kind 展示会话节点（UI 用 circle）
+      kind: 'session',
       shape: 'circle',
       title: (s.title || `会话 ${s.id}`).slice(0, 40),
       content: s.summary || '',
@@ -65,7 +65,7 @@ export function buildGraphPayload(mode: MemoryMode, _workspaceSlug?: string): Gr
       if (n.kind !== 'memory') continue
       const key = n.title.slice(0, 8).toLowerCase()
       if (key.length >= 2 && hay.includes(key)) {
-        edges.push({ source: id, target: n.id, type: 'memory-skill', weight: 1 })
+        edges.push({ source: id, target: n.id, type: 'memory-session', weight: 1 })
       }
     }
   }
@@ -77,7 +77,7 @@ export function buildGraphPayload(mode: MemoryMode, _workspaceSlug?: string): Gr
     for (let i = 0; i < list.length - 1; i++) {
       const a = list[i]
       const b = list[i + 1]
-      if (a && b) edges.push({ source: a.id, target: b.id, type: 'skill-skill', weight: 0.5 })
+      if (a && b) edges.push({ source: a.id, target: b.id, type: 'memory-memory', weight: 0.5 })
     }
   }
 
@@ -86,7 +86,7 @@ export function buildGraphPayload(mode: MemoryMode, _workspaceSlug?: string): Gr
     edges,
     stats: {
       memoryNodes: nodes.filter((n) => n.kind === 'memory').length,
-      skillNodes: nodes.filter((n) => n.kind === 'skill').length,
+      sessionNodes: nodes.filter((n) => n.kind === 'session').length,
       edges: edges.length,
     },
   }

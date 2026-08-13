@@ -48,6 +48,7 @@ import {
   ksccChannelAtom,
   loadChannelsAtom,
 } from '../../atoms/channel-atoms'
+import { bumpMoaPresetsRevisionAtom } from '../../atoms/moa-presets'
 
 // ── helpers ──
 
@@ -70,6 +71,7 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
   const ksccChannel = useAtomValue(ksccChannelAtom)
   const externalChannels = useAtomValue(externalChannelsAtom)
   const loadChannels = useSetAtom(loadChannelsAtom)
+  const bumpMoaPresetsRevision = useSetAtom(bumpMoaPresetsRevisionAtom)
   const [presets, setPresets] = useState<MoAPreset[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -163,6 +165,7 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
       const updated = presets.filter((p) => p.id !== target.id)
       const reloaded = await window.electronAPI.saveMoaPresets(updated)
       setPresets(reloaded)
+      bumpMoaPresetsRevision()
     } catch (error) {
       // 删除整份写入不应失败（仅剩合法条目），但兜底
       console.error('[Agent 行为] 删除预置失败:', error)
@@ -179,6 +182,7 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
       )
       const reloaded = await window.electronAPI.saveMoaPresets(updated)
       setPresets(reloaded)
+      bumpMoaPresetsRevision()
     } catch (error) {
       console.error('[Agent 行为] 切换启用失败:', error)
     }
@@ -280,6 +284,7 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
                 onCancel={() => setEditor(null)}
                 onSaved={async (updatedList) => {
                   setPresets(updatedList)
+                  bumpMoaPresetsRevision()
                   setEditor(null)
                 }}
               />
