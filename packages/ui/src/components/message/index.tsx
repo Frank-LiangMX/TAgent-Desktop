@@ -428,7 +428,7 @@ export const MessageResponse = React.memo(
         className={cn(
           // 阅读节奏对齐 Codex：略大正文、更疏段/列表、标题层级拉开（非海报字号）
           'prose dark:prose-invert max-w-none text-[length:var(--md-preview-font-size,15px)]',
-          'prose-p:my-3 prose-p:leading-[1.7] prose-li:leading-[1.7] prose-pre:my-0 prose-hr:my-5',
+          'prose-p:my-3 prose-p:leading-[var(--md-preview-line-height,1.7)] prose-li:leading-[var(--md-preview-line-height,1.7)] prose-pre:my-0 prose-hr:my-5',
           'prose-ul:my-3.5 prose-ol:my-3.5 prose-li:my-2',
           'prose-headings:mt-7 prose-headings:mb-3 prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-foreground',
           'prose-h1:text-[19px] prose-h1:leading-snug',

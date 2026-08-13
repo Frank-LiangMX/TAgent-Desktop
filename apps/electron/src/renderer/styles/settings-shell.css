@@ -793,6 +793,8 @@
 
 /* 连续滑轨：拖动时即时跟手，松开后自然停在 5 个字号档位。 */
 .tagent-font-size-slider {
+  --font-size-thumb-size: 17px;
+  --font-size-marker-size: 4px;
   position: relative;
   margin-top: 12px;
   padding-bottom: 18px;
@@ -821,8 +823,8 @@
   box-shadow: inset 0 1px 1px rgb(0 0 0 / 0.08);
 }
 .tagent-font-size-range::-webkit-slider-thumb {
-  width: 17px;
-  height: 17px;
+  width: var(--font-size-thumb-size);
+  height: var(--font-size-thumb-size);
   margin-top: -6px;
   -webkit-appearance: none;
   appearance: none;
@@ -864,16 +866,17 @@
   position: absolute;
   z-index: 1;
   top: 10px;
-  right: 1px;
-  left: 1px;
+  /* range 的首尾落点是拇指中心，而非滑轨边缘。 */
+  right: calc((var(--font-size-thumb-size) - var(--font-size-marker-size)) / 2);
+  left: calc((var(--font-size-thumb-size) - var(--font-size-marker-size)) / 2);
   display: flex;
   align-items: center;
   justify-content: space-between;
   pointer-events: none;
 }
 .tagent-font-size-markers span {
-  width: 4px;
-  height: 4px;
+  width: var(--font-size-marker-size);
+  height: var(--font-size-marker-size);
   border-radius: 50%;
   background: hsl(var(--background) / 0.78);
   box-shadow: 0 0 0 1px hsl(var(--muted-foreground) / 0.25);
@@ -891,18 +894,19 @@
   right: 0;
   bottom: 0;
   left: 0;
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  height: 11px;
   color: hsl(var(--muted-foreground) / 0.64);
   font-size: 9px;
   line-height: 1.15;
 }
 .tagent-font-size-ticks span {
+  position: absolute;
+  left: var(--font-size-tick-position);
+  white-space: nowrap;
   text-align: center;
+  transform: translateX(-50%);
   transition: color 150ms ease, font-weight 150ms ease;
 }
-.tagent-font-size-ticks span:first-child { text-align: left; }
-.tagent-font-size-ticks span:last-child { text-align: right; }
 .tagent-font-size-ticks span.is-active {
   color: hsl(var(--primary));
   font-weight: 650;
@@ -957,7 +961,7 @@
 .tagent-font-size-preview__copy {
   min-width: 0;
   color: hsl(var(--foreground) / 0.84);
-  line-height: 1.7;
+  line-height: var(--md-preview-line-height, 1.7);
   overflow-wrap: anywhere;
 }
 .tagent-font-size-preview__copy p {

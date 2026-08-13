@@ -321,6 +321,8 @@
 
 /* ===== 思考强度滑杆（ReasoningSlider） — 粗条 + 扫光能量 + 粒子动画 ===== */
 .reasoning-slider {
+  --reasoning-thumb-size: 16px;
+  --reasoning-track-inset: calc(var(--reasoning-thumb-size) / 2);
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -329,12 +331,18 @@
 
 /* 两端标签：更快 / 更深 */
 .reasoning-slider-scale {
-  display: flex;
-  justify-content: space-between;
+  position: relative;
+  height: 9px;
   color: hsl(var(--muted-foreground) / 0.6);
   font-size: 9px;
   font-weight: 520;
   line-height: 1;
+}
+.reasoning-slider-scale span {
+  position: absolute;
+  left: var(--reasoning-position);
+  white-space: nowrap;
+  transform: translateX(-50%);
 }
 
 /* ---- 轨道区 ---- */
@@ -359,8 +367,8 @@
 .reasoning-slider-track {
   position: absolute;
   top: 50%;
-  left: 8px;
-  right: 8px;
+  left: var(--reasoning-track-inset);
+  right: var(--reasoning-track-inset);
   height: 8px;
   border-radius: 4px;
   background: hsl(var(--muted-foreground) / 0.12);
@@ -541,8 +549,8 @@
 .reasoning-slider-thumb {
   position: absolute;
   top: 50%;
-  width: 16px;
-  height: 16px;
+  width: var(--reasoning-thumb-size);
+  height: var(--reasoning-thumb-size);
   border-radius: 999px;
   border: 2.5px solid hsl(var(--primary));
   background: hsl(var(--background));
@@ -588,9 +596,8 @@
 
 /* ---- 档位标签 ---- */
 .reasoning-slider-labels {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 4px;
+  position: relative;
+  height: 11px;
   color: hsl(var(--muted-foreground) / 0.5);
   font-size: 9px;
   font-weight: 520;
@@ -599,6 +606,12 @@
 .reasoning-slider-label.is-active {
   color: hsl(var(--primary));
   font-weight: 650;
+}
+.reasoning-slider-label {
+  position: absolute;
+  left: var(--reasoning-position);
+  white-space: nowrap;
+  transform: translateX(-50%);
 }
 
 /* ---- Dark mode adjustments ---- */

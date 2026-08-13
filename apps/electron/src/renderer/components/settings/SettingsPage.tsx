@@ -46,6 +46,7 @@ import {
   setFontSizeLevel,
   FONT_SIZE_LABELS,
   FONT_SIZE_PX,
+  STANDARD_BODY_LINE_HEIGHT,
   type FontSizeLevel,
 } from '../../atoms/font-size'
 import {
@@ -889,6 +890,13 @@ function LoaderPreview({ disabled }: { disabled: boolean }): JSX.Element {
 }
 
 /** 正文字号 5 档滑轨：连续拖动、离散吸附；刻度与读数让当前状态一眼可见。 */
+function getFontSizeSliderPosition(level: FontSizeLevel): string {
+  // range 拇指的中心在两端各内缩 8.5px；标签、刻度和进度条共用此坐标。
+  const offset = (2 - level) * 4.25
+  if (offset === 0) return `${level * 25}%`
+  return `calc(${level * 25}% ${offset > 0 ? '+' : '-'} ${Math.abs(offset)}px)`
+}
+
 function FontSizeSlider({
   level,
   onChange,
@@ -896,10 +904,12 @@ function FontSizeSlider({
   level: FontSizeLevel
   onChange: (v: FontSizeLevel) => void
 }): JSX.Element {
+  const currentPosition = getFontSizeSliderPosition(level)
+
   return (
     <div
       className="tagent-font-size-slider"
-      style={{ '--font-size-progress': `${level * 25}%` } as CSSProperties}
+      style={{ '--font-size-progress': currentPosition } as CSSProperties}
     >
       <input
         type="range"
@@ -919,7 +929,11 @@ function FontSizeSlider({
       </div>
       <div className="tagent-font-size-ticks" aria-hidden="true">
         {([0, 1, 2, 3, 4] as FontSizeLevel[]).map((lv) => (
-          <span key={lv} className={cn(lv === level && 'is-active')}>
+          <span
+            key={lv}
+            className={cn(lv === level && 'is-active')}
+            style={{ '--font-size-tick-position': getFontSizeSliderPosition(lv) } as CSSProperties}
+          >
             {FONT_SIZE_LABELS[lv]}
           </span>
         ))}
@@ -937,7 +951,7 @@ function FontSizePreview(): JSX.Element {
     <section className="tagent-font-size-preview" aria-label="字号与行高预览">
       <header className="tagent-font-size-preview__label">
         <span>正文预览</span>
-        <span>行高 1.7</span>
+        <span>标准行高 · {STANDARD_BODY_LINE_HEIGHT}</span>
       </header>
       <div
         className="tagent-font-size-preview__viewport scrollbar-thin"
