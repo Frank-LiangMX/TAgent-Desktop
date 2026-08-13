@@ -784,11 +784,16 @@ export function SessionSidebar({
         open={Boolean(deleteSessionTarget)}
         onOpenChange={(open) => !open && setDeleteSessionTarget(null)}
         icon={<Trash size={15} weight="duotone" />}
-        title={`删除“${deleteSessionTarget?.title ?? ''}”？`}
+        title="删除会话？"
         description={
-          deleteSessionTarget && tabSessionIds.has(deleteSessionTarget.id)
-            ? '该会话当前已打开，删除将同时关闭对应标签页，聊天记录将永久删除且无法撤销。'
-            : '该会话的全部聊天记录将被永久删除，此操作无法撤销。'
+          <>
+            <span className="mb-1 block break-words text-foreground/80">
+              “{deleteSessionTarget?.title ?? ''}”
+            </span>
+            {deleteSessionTarget && tabSessionIds.has(deleteSessionTarget.id)
+              ? '该会话当前已打开，删除将同时关闭对应标签页，聊天记录将永久删除且无法撤销。'
+              : '该会话的全部聊天记录将被永久删除，此操作无法撤销。'}
+          </>
         }
         confirmLabel="删除会话"
         onConfirm={deleteSession}
