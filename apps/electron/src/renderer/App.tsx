@@ -17,6 +17,14 @@ import type {
   ChannelCreateInput,
   ChannelUpdateInput,
   ChannelTestResult,
+  CollaborationMember,
+  CollaborationMessage,
+  CollaborationRoom,
+  CollaborationRun,
+  CreateCollaborationRoomInput,
+  AddCollaborationMemberInput,
+  UpdateCollaborationRoomInput,
+  AppendCollaborationUserMessageInput,
   FetchModelsInput,
   FetchModelsForChannelInput,
   FetchModelsResult,
@@ -51,10 +59,13 @@ import {
   Toaster,
   TooltipProvider,
 } from '@tagent/ui'
+import { toast } from 'sonner'
 import { MemoryMonitorPanel, showNudgeToasts } from './components/memory'
 import { SessionSidebar } from './components/workspace/SessionSidebar'
 import { PluginStoreSettings } from './components/settings/PluginStoreSettings'
 import { RolesPage } from './components/roles/RolesPage'
+import { CollaborationRoomSidebar } from './components/collaboration/CollaborationRoomSidebar'
+import { CollaborationRoomsPage } from './components/collaboration/CollaborationRoomsPage'
 import {
   SettingsDialog,
   normalizeSettingsTab,
@@ -414,6 +425,21 @@ declare global {
       setDefaultPrompt: (id: string | null) => Promise<void>
       // 渠道余额
       getChannelBalance: (channelId: string) => Promise<ChannelBalanceResult>
+      // 协作室（Stage 1：房间壳 + 静态成员 + 静态消息，不运行 Agent）
+      listCollaborationRooms: (input?: { includeArchived?: boolean }) => Promise<CollaborationRoom[]>
+      createCollaborationRoom: (input: CreateCollaborationRoomInput) => Promise<CollaborationRoom>
+      getCollaborationRoom: (roomId: string) => Promise<CollaborationRoom | null>
+      updateCollaborationRoom: (input: UpdateCollaborationRoomInput) => Promise<CollaborationRoom>
+      listCollaborationMessages: (roomId: string) => Promise<CollaborationMessage[]>
+      appendCollaborationUserMessage: (
+        input: AppendCollaborationUserMessageInput,
+      ) => Promise<CollaborationMessage>
+      listCollaborationMembers: (roomId: string) => Promise<CollaborationMember[]>
+      // 协作室（Stage 2：run 状态机 + 取消 + CHANGED 广播；Stage 3：多成员并行 + 添加成员）
+      listCollaborationRuns: (roomId: string) => Promise<CollaborationRun[]>
+      cancelCollaborationRun: (input: { roomId: string; runId: string }) => Promise<CollaborationRun | null>
+      addCollaborationMember: (input: AddCollaborationMemberInput) => Promise<CollaborationMember>
+      onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => () => void
       // 自动更新
       updater?: {
         checkForUpdates: () => Promise<void>
@@ -439,18 +465,23 @@ export function App(): JSX.Element {
    * - 从其它页切回 chat → 自动展开
    */
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  // 协作室：当前选中房间 + 列表刷新版本（rename/pause/archive/send 后 bump 重新拉取）
+  const [activeCollaborationRoomId, setActiveCollaborationRoomId] = useState<string | null>(null)
+  const [collabRefreshKey, setCollabRefreshKey] = useState(0)
+  const bumpCollab = useCallback(() => setCollabRefreshKey((k) => k + 1), [])
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
   const loadUserProfile = useSetAtom(loadUserProfileAtom)
   const workspaces = useAtomValue(workspacesAtom)
 
-  /** 仅会话页需要 SessionSidebar（插件/记忆/角色库为 rail-only 主区页） */
-  const railSupportsSidebar = (item: Exclude<RailItem, 'settings'>): boolean => item === 'chat'
+  /** 会话 / 协作室页需要侧栏（插件/记忆/角色库为 rail-only 主区页） */
+  const railSupportsSidebar = (item: Exclude<RailItem, 'settings'>): boolean =>
+    item === 'chat' || item === 'collaboration'
 
   const selectRail = (next: Exclude<RailItem, 'settings'>): void => {
     setShowSettings(false)
     if (next === activeRail) {
-      // 再点当前项：chat 可折叠侧栏；rail-only 页无操作
+      // 再点当前项：chat/collaboration 可折叠侧栏；rail-only 页无操作
       if (railSupportsSidebar(next)) {
         setSidebarOpen((v) => !v)
       }
@@ -459,6 +490,38 @@ export function App(): JSX.Element {
     setActiveRail(next)
     setSidebarOpen(railSupportsSidebar(next))
   }
+
+  /** 选中协作室房间 → 记住并展开侧栏 */
+  const selectCollaborationRoom = useCallback((room: CollaborationRoom): void => {
+    setActiveCollaborationRoomId(room.id)
+    setSidebarOpen(true)
+  }, [])
+
+  /** 新建协作室（默认带协调者 + 开发两个成员，S3 即可手测 @点名 / 多成员并行；可在头部重命名 / 添加成员） */
+  const newCollaborationRoom = useCallback(async (): Promise<void> => {
+    try {
+      const created = await window.electronAPI.createCollaborationRoom({
+        title: '新协作室',
+        members: [
+          { displayName: '协调者', isCoordinator: true },
+          { displayName: '开发' },
+        ],
+      })
+      setActiveCollaborationRoomId(created.id)
+      setSidebarOpen(true)
+      bumpCollab()
+    } catch (err) {
+      toast.error('创建协作室失败', { description: err instanceof Error ? err.message : String(err) })
+    }
+  }, [bumpCollab])
+
+  // 协作室 CHANGED 广播：run/member/message 变更时 bump，侧栏 + 主区重新拉取（实时刷新）
+  useEffect(() => {
+    const off = window.electronAPI.onCollaborationRoomChanged(() => {
+      bumpCollab()
+    })
+    return off
+  }, [bumpCollab])
 
   const pushTicker = useSetAtom(pushStatusTickerAtom)
   const notificationPrefs = useAtomValue(notificationPrefsAtom)
@@ -817,7 +880,7 @@ export function App(): JSX.Element {
       <RichSourceContext.Provider value={{ resolve: richSourceResolver }}>
         <AppShell
         topbar={null}
-        sidebarOpen={activeRail === 'chat' && sidebarOpen}
+        sidebarOpen={railSupportsSidebar(activeRail) && sidebarOpen}
         activeRailItem={activeRail === 'chat' ? 'chat' : activeRail}
         onOpenLiveSession={(sessionId, title) => {
           const tab = tabs.find((item) => item.sessionId === sessionId)
@@ -834,6 +897,7 @@ export function App(): JSX.Element {
               // 会话 rail 只负责：切到会话页 / 展开收起侧栏，不创建会话
               selectRail('chat')
             }}
+            onCollaboration={() => selectRail('collaboration')}
             onPlugins={() => selectRail('plugins')}
             onMemory={() => selectRail('memory')}
             onRoles={() => selectRail('roles')}
@@ -841,29 +905,50 @@ export function App(): JSX.Element {
           />
         }
         sidebar={
-          <SessionSidebar
-            activeSessionId={activeTabId}
-            onSelect={(s) => {
-              setShowSettings(false)
-              setActiveRail('chat')
-              setSidebarOpen(true)
-              // 选中已有会话 → 清掉草稿（避免关掉所有 tab 后复活旧草稿）
-              setDraftSession(null)
-              openSession(s.id, s.title, s.workspaceId, s.channelId, s.modelId)
-            }}
-            onNew={(workspaceId) => {
-              setShowSettings(false)
-              setActiveRail('chat')
-              setSidebarOpen(true)
-              newSession(workspaceId)
-            }}
-            onOpenProject={() => void handleOpenProject()}
-            onWorkspaceDeleted={handleWorkspaceDeleted}
-          />
+          activeRail === 'collaboration' ? (
+            <CollaborationRoomSidebar
+              activeRoomId={activeCollaborationRoomId}
+              onSelectRoom={selectCollaborationRoom}
+              onNewRoom={() => void newCollaborationRoom()}
+              refreshKey={collabRefreshKey}
+              onRoomsChanged={bumpCollab}
+            />
+          ) : (
+            <SessionSidebar
+              activeSessionId={activeTabId}
+              onSelect={(s) => {
+                setShowSettings(false)
+                setActiveRail('chat')
+                setSidebarOpen(true)
+                // 选中已有会话 → 清掉草稿（避免关掉所有 tab 后复活旧草稿）
+                setDraftSession(null)
+                openSession(s.id, s.title, s.workspaceId, s.channelId, s.modelId)
+              }}
+              onNew={(workspaceId) => {
+                setShowSettings(false)
+                setActiveRail('chat')
+                setSidebarOpen(true)
+                newSession(workspaceId)
+              }}
+              onOpenProject={() => void handleOpenProject()}
+              onWorkspaceDeleted={handleWorkspaceDeleted}
+            />
+          )
         }
       >
-        {/* main：插件页 | 会话页/欢迎页（底层）+ 新会话草稿 overlay（覆盖层）。 */}
-        {activeRail === 'plugins' ? (
+        {/* main：插件页 | 会话页/欢迎页（底层）+ 新会话草稿 overlay（覆盖层）。
+            欢迎页 / 新会话页的入场动画由 NewConversationLanding 内各元素自行承担
+            （标题逐词模糊渐现、输入框上滑淡入、提示词错落淡入），非整页位移；
+            故此处不做整页过渡，直接切换，新页元素各自重新入场。 */}
+        {activeRail === 'collaboration' ? (
+          <CollaborationRoomsPage
+            roomId={activeCollaborationRoomId}
+            refreshKey={collabRefreshKey}
+            onRoomsChanged={bumpCollab}
+            onNewRoom={() => void newCollaborationRoom()}
+            onOpenSettings={(tab) => openSettings(tab)}
+          />
+        ) : activeRail === 'plugins' ? (
           <div className="plugins-main-view scrollbar-thin">
             <PluginStoreSettings />
           </div>

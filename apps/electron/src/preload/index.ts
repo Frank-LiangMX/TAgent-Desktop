@@ -13,6 +13,7 @@ import {
   AGENT_ROLE_IPC_CHANNELS,
   BALANCE_IPC_CHANNELS,
   CHANNEL_IPC_CHANNELS,
+  COLLABORATION_ROOM_IPC_CHANNELS,
   KANBAN_IPC_CHANNELS,
   MEMORY_IPC_CHANNELS,
   USER_PROFILE_IPC_CHANNELS,
@@ -28,6 +29,15 @@ import type {
   ChannelCreateInput,
   ChannelUpdateInput,
   ChannelTestResult,
+  CollaborationMember,
+  CollaborationMessage,
+  CollaborationRoom,
+  CollaborationRun,
+  CollaborationMailboxEnvelope,
+  CreateCollaborationRoomInput,
+  AddCollaborationMemberInput,
+  UpdateCollaborationRoomInput,
+  AppendCollaborationUserMessageInput,
   DeleteRolesResult,
   FetchModelsInput,
   FetchModelsForChannelInput,
@@ -579,6 +589,50 @@ const electronAPI = {
   // ===== 渠道余额 =====
   getChannelBalance: (channelId: string) =>
     ipcRenderer.invoke(BALANCE_IPC_CHANNELS.GET, channelId) as Promise<ChannelBalanceResult>,
+
+  // ===== 协作室（Stage 1：房间壳 + 静态成员 + 静态消息，不运行 Agent） =====
+  /** 列出全部协作室房间（默认不含已归档） */
+  listCollaborationRooms: (input?: { includeArchived?: boolean }) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST, input) as Promise<CollaborationRoom[]>,
+  /** 创建协作室房间（含可选静态成员） */
+  createCollaborationRoom: (input: CreateCollaborationRoomInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.CREATE, input) as Promise<CollaborationRoom>,
+  /** 获取单个房间（不存在返回 null） */
+  getCollaborationRoom: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.GET, { roomId }) as Promise<CollaborationRoom | null>,
+  /** 更新房间（rename / pause / archive / complete / resume / 调整上限） */
+  updateCollaborationRoom: (input: UpdateCollaborationRoomInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.UPDATE, input) as Promise<CollaborationRoom>,
+  /** 列出某房间全部消息（按时间升序，只显示已存消息） */
+  listCollaborationMessages: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MESSAGES, { roomId }) as Promise<CollaborationMessage[]>,
+  /** 追加静态用户消息（只落盘 + 刷新，不触发 Agent） */
+  appendCollaborationUserMessage: (input: AppendCollaborationUserMessageInput) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.APPEND_USER_MESSAGE,
+      input,
+    ) as Promise<CollaborationMessage>,
+  /** 列出某房间全部成员（静态身份 + 运行状态） */
+  listCollaborationMembers: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MEMBERS, { roomId }) as Promise<CollaborationMember[]>,
+  /** 向已有房间追加一个成员（displayName + 自动绑默认渠道，Stage 3） */
+  addCollaborationMember: (input: AddCollaborationMemberInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.ADD_MEMBER, input) as Promise<CollaborationMember>,
+  /** 列出某房间全部 run（按入队顺序，Stage 2） */
+  listCollaborationRuns: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_RUNS, { roomId }) as Promise<CollaborationRun[]>,
+  /** 取消某 run（abort 后端 + 置 cancelled；终态 run 返回其当前状态） */
+  cancelCollaborationRun: (input: { roomId: string; runId: string }) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.CANCEL_RUN, input) as Promise<CollaborationRun | null>,
+  /** 列出某房间全部 A2A 信箱信封（S4 审计视图） */
+  listCollaborationMailbox: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MAILBOX, { roomId }) as Promise<CollaborationMailboxEnvelope[]>,
+  /** 房间数据变更事件（main → renderer，run/member/message 变更时广播） */
+  onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => {
+    const handler = (_e: unknown, payload: { roomId: string; kind: string; at: number }): void => cb(payload)
+    ipcRenderer.on(COLLABORATION_ROOM_IPC_CHANNELS.CHANGED, handler)
+    return () => ipcRenderer.removeListener(COLLABORATION_ROOM_IPC_CHANNELS.CHANGED, handler)
+  },
 
   // ===== 自动更新 =====
   updater: {

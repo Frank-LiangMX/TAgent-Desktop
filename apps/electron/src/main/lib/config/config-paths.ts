@@ -179,3 +179,35 @@ export function getAgentCrewPrefsPath(): string {
 export function getSystemPromptsPath(): string {
   return join(getConfigDir(), 'system-prompts.json')
 }
+
+/** 协作室数据目录：~/.tagent[-dev]/collaboration/（不存在则建） */
+export function getCollaborationDir(): string {
+  const dir = join(getConfigDir(), 'collaboration')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** 协作室房间索引：~/.tagent[-dev]/collaboration/rooms.json */
+export function getCollaborationRoomsPath(): string {
+  return join(getCollaborationDir(), 'rooms.json')
+}
+
+/** 协作室成员索引：~/.tagent[-dev]/collaboration/members.json */
+export function getCollaborationMembersPath(): string {
+  return join(getCollaborationDir(), 'members.json')
+}
+
+/** 协作室消息索引：~/.tagent[-dev]/collaboration/messages.json */
+export function getCollaborationMessagesPath(): string {
+  return join(getCollaborationDir(), 'messages.json')
+}
+
+/** 协作室 run 索引：~/.tagent[-dev]/collaboration/runs.json */
+export function getCollaborationRunsPath(): string {
+  return join(getCollaborationDir(), 'runs.json')
+}
+
+/** 协作室 A2A 信箱索引：~/.tagent[-dev]/collaboration/mailbox.json（S4） */
+export function getCollaborationMailboxPath(): string {
+  return join(getCollaborationDir(), 'mailbox.json')
+}

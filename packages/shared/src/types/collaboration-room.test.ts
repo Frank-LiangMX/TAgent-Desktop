@@ -1,0 +1,253 @@
+import { describe, expect, test } from 'vitest'
+import {
+  COLLABORATION_MENTION_ALL,
+  COLLABORATION_ROOM_DEFAULT_MAX_A2A_DEPTH,
+  COLLABORATION_ROOM_DEFAULT_MAX_CONCURRENT_RUNS,
+  COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH,
+  COLLABORATION_ROOM_MAX_MEMBERS,
+  COLLABORATION_RUN_ID_PREFIX,
+  collaborationRunIdempotencyKey,
+  isCollaborationMemberStatus,
+  isCollaborationRoomStatus,
+  isCollaborationRunStatus,
+  parseCollaborationMentions,
+  validateCreateCollaborationRoomInput,
+  type CollaborationMember,
+  type CreateCollaborationRoomInput,
+} from './collaboration-room'
+
+/** 构造最小成员（只供 mention 解析用） */
+function mkMember(id: string, displayName: string): CollaborationMember {
+  return {
+    id,
+    roomId: 'cr_x',
+    displayName,
+    roleSnapshot: { displayName },
+    backend: 'channel',
+    logicalSessionId: 'ls_' + id,
+    permissionProfile: 'read-only',
+    capabilities: {
+      supportsResume: false,
+      supportsLiveInput: false,
+      supportsToolBridge: false,
+      supportsStructuredEvents: false,
+    },
+    status: 'idle',
+    isCoordinator: false,
+    createdAt: 0,
+    updatedAt: 0,
+  }
+}
+
+describe('collaboration-room 常量', () => {
+  test('默认并发与 A2A 深度对齐 02-RUNTIME-A2A-SPEC §9', () => {
+    expect(COLLABORATION_ROOM_DEFAULT_MAX_CONCURRENT_RUNS).toBe(3)
+    expect(COLLABORATION_ROOM_DEFAULT_MAX_A2A_DEPTH).toBe(4)
+    expect(COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH).toBe(10)
+    expect(COLLABORATION_ROOM_MAX_MEMBERS).toBe(6)
+  })
+
+  test('run ID 前缀对齐', () => {
+    expect(COLLABORATION_RUN_ID_PREFIX).toBe('run_')
+  })
+})
+
+describe('isCollaborationRunStatus', () => {
+  test('合法 run 状态', () => {
+    expect(isCollaborationRunStatus('queued')).toBe(true)
+    expect(isCollaborationRunStatus('running')).toBe(true)
+    expect(isCollaborationRunStatus('done')).toBe(true)
+    expect(isCollaborationRunStatus('failed')).toBe(true)
+    expect(isCollaborationRunStatus('cancelled')).toBe(true)
+    expect(isCollaborationRunStatus('blocked')).toBe(true)
+  })
+
+  test('非法 run 状态', () => {
+    expect(isCollaborationRunStatus('active')).toBe(false)
+    expect(isCollaborationRunStatus('interrupted')).toBe(false)
+    expect(isCollaborationRunStatus(undefined)).toBe(false)
+    expect(isCollaborationRunStatus(123)).toBe(false)
+  })
+})
+
+describe('collaborationRunIdempotencyKey', () => {
+  test('由 triggerMessageId + memberId 稳定派生（不含时间戳）', () => {
+    const key1 = collaborationRunIdempotencyKey('msg_a', 'cm_b')
+    const key2 = collaborationRunIdempotencyKey('msg_a', 'cm_b')
+    expect(key1).toBe('msg_a:cm_b')
+    expect(key1).toBe(key2)
+  })
+
+  test('不同触发或不同成员得到不同键', () => {
+    expect(collaborationRunIdempotencyKey('msg_a', 'cm_b')).not.toBe(
+      collaborationRunIdempotencyKey('msg_b', 'cm_b'),
+    )
+    expect(collaborationRunIdempotencyKey('msg_a', 'cm_b')).not.toBe(
+      collaborationRunIdempotencyKey('msg_a', 'cm_c'),
+    )
+  })
+})
+
+describe('isCollaborationRoomStatus', () => {
+  test('合法房间状态', () => {
+    expect(isCollaborationRoomStatus('active')).toBe(true)
+    expect(isCollaborationRoomStatus('paused')).toBe(true)
+    expect(isCollaborationRoomStatus('archived')).toBe(true)
+    expect(isCollaborationRoomStatus('completed')).toBe(true)
+  })
+
+  test('非法房间状态', () => {
+    expect(isCollaborationRoomStatus('running')).toBe(false)
+    expect(isCollaborationRoomStatus('')).toBe(false)
+    expect(isCollaborationRoomStatus(undefined)).toBe(false)
+    expect(isCollaborationRoomStatus(null)).toBe(false)
+    expect(isCollaborationRoomStatus(123)).toBe(false)
+  })
+})
+
+describe('isCollaborationMemberStatus', () => {
+  test('合法成员状态', () => {
+    expect(isCollaborationMemberStatus('offline')).toBe(true)
+    expect(isCollaborationMemberStatus('idle')).toBe(true)
+    expect(isCollaborationMemberStatus('running')).toBe(true)
+    expect(isCollaborationMemberStatus('awaiting_peer')).toBe(true)
+    expect(isCollaborationMemberStatus('awaiting_user')).toBe(true)
+    expect(isCollaborationMemberStatus('done')).toBe(true)
+  })
+
+  test('非法成员状态', () => {
+    expect(isCollaborationMemberStatus('active')).toBe(false)
+    expect(isCollaborationMemberStatus('archived')).toBe(false)
+    expect(isCollaborationMemberStatus(undefined)).toBe(false)
+  })
+})
+
+describe('validateCreateCollaborationRoomInput', () => {
+  test('合法输入：无错误', () => {
+    const input: CreateCollaborationRoomInput = {
+      title: '前端重构小组',
+      goal: '把旧 React Class 组件迁到 Hooks',
+      members: [
+        { displayName: '协调者', isCoordinator: true },
+        { displayName: '前端工程师' },
+      ],
+    }
+    expect(validateCreateCollaborationRoomInput(input)).toEqual([])
+  })
+
+  test('空白团队（无成员）也合法', () => {
+    const input: CreateCollaborationRoomInput = { title: '空白团队' }
+    expect(validateCreateCollaborationRoomInput(input)).toEqual([])
+  })
+
+  test('title 为空报错', () => {
+    expect(validateCreateCollaborationRoomInput({ title: '' })).toContain('title 不能为空')
+    expect(validateCreateCollaborationRoomInput({ title: '   ' })).toContain('title 不能为空')
+  })
+
+  test('title 超长报错', () => {
+    const input: CreateCollaborationRoomInput = { title: 'x'.repeat(201) }
+    expect(validateCreateCollaborationRoomInput(input)).toContain('title 长度不能超过 200')
+  })
+
+  test('成员超过上限报错', () => {
+    const members = Array.from({ length: COLLABORATION_ROOM_MAX_MEMBERS + 1 }, () => ({
+      displayName: '成员',
+    }))
+    const input: CreateCollaborationRoomInput = { title: 't', members }
+    const errors = validateCreateCollaborationRoomInput(input)
+    expect(errors.some((e) => e.includes('members 数量不能超过'))).toBe(true)
+  })
+
+  test('成员 displayName 为空报错', () => {
+    const input: CreateCollaborationRoomInput = {
+      title: 't',
+      members: [{ displayName: '' }, { displayName: '好成员' }],
+    }
+    const errors = validateCreateCollaborationRoomInput(input)
+    expect(errors.some((e) => e.includes('members[0].displayName 不能为空'))).toBe(true)
+    expect(errors.some((e) => e.includes('members[1]'))).toBe(false)
+  })
+
+  test('maxConcurrentRuns 越界报错', () => {
+    expect(
+      validateCreateCollaborationRoomInput({ title: 't', maxConcurrentRuns: 0 }),
+    ).toContain('maxConcurrentRuns 须在 1–16')
+    expect(
+      validateCreateCollaborationRoomInput({ title: 't', maxConcurrentRuns: 99 }),
+    ).toContain('maxConcurrentRuns 须在 1–16')
+  })
+
+  test('maxA2ADepth 超过硬上限报错', () => {
+    expect(
+      validateCreateCollaborationRoomInput({ title: 't', maxA2ADepth: COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH + 1 }),
+    ).toContain(`maxA2ADepth 须在 1–${COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH}`)
+  })
+})
+
+describe('parseCollaborationMentions', () => {
+  test('无 @ 返回空数组（调用方回落协调者）', () => {
+    const members = [mkMember('cm_coord', '协调者'), mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('你好，帮我看下', members)).toEqual([])
+    expect(parseCollaborationMentions('', members)).toEqual([])
+  })
+
+  test('@displayName 精确命中（忽略大小写）', () => {
+    const members = [mkMember('cm_coord', '协调者'), mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@开发 做点事', members)).toEqual(['cm_dev'])
+    expect(parseCollaborationMentions('@协调者 @开发 两人都来', members)).toEqual([
+      'cm_coord',
+      'cm_dev',
+    ])
+  })
+
+  test('英文 displayName 忽略大小写匹配', () => {
+    const members = [mkMember('cm_a', 'Alice'), mkMember('cm_b', 'Bob')]
+    expect(parseCollaborationMentions('@alice @BOB', members)).toEqual(['cm_a', 'cm_b'])
+  })
+
+  test('@all → 全部成员（含协调者，按成员顺序去重）', () => {
+    const members = [
+      mkMember('cm_coord', '协调者'),
+      mkMember('cm_dev', '开发'),
+      mkMember('cm_qa', '测试'),
+    ]
+    expect(parseCollaborationMentions('@all 一起上', members)).toEqual([
+      'cm_coord',
+      'cm_dev',
+      'cm_qa',
+    ])
+    // @ALL 忽略大小写
+    expect(parseCollaborationMentions('@ALL', members)).toEqual([
+      'cm_coord',
+      'cm_dev',
+      'cm_qa',
+    ])
+  })
+
+  test('@all 与具体点名共存：去重后仍为全部成员', () => {
+    const members = [mkMember('cm_coord', '协调者'), mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@all @开发', members)).toEqual(['cm_coord', 'cm_dev'])
+  })
+
+  test('无匹配的 @ 忽略（不报错、不影响其他命中）', () => {
+    const members = [mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@不存在', members)).toEqual([])
+    expect(parseCollaborationMentions('@不存在 @开发', members)).toEqual(['cm_dev'])
+  })
+
+  test('末尾标点被剥掉（@开发。 → 开发）', () => {
+    const members = [mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@开发。', members)).toEqual(['cm_dev'])
+    expect(parseCollaborationMentions('@开发, @开发；', members)).toEqual(['cm_dev'])
+  })
+
+  test('同一成员多次 @ 仅记录一次', () => {
+    const members = [mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@开发 @开发 @开发', members)).toEqual(['cm_dev'])
+  })
+
+  test('@all 特殊常量值为 all', () => {
+    expect(COLLABORATION_MENTION_ALL).toBe('all')
+  })
+})
