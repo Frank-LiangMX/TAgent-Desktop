@@ -967,16 +967,16 @@ export interface AgentCallStats {
  *
  * 控制 SubAgent 委派策略注入主 Agent system prompt 的积极性档位：
  * - 'never'：不主动委派，仅用户明确要求时使用
- * - 'conservative'：明确有益才委派（默认）
- * - 'balanced'：积极委派，保持主上下文干净
+ * - 'conservative'：明确有益才委派
+ * - 'balanced'：积极委派，保持主上下文干净（默认）
  * - 'aggressive'：尽可能委派，主会话只做编排与决策
  */
 export type SubagentEagerness = 'never' | 'conservative' | 'balanced' | 'aggressive'
 
 /** 子代理委派积极性默认值（meta 未持久化时使用） */
-export const DEFAULT_SUBAGENT_EAGERNESS: SubagentEagerness = 'conservative'
+export const DEFAULT_SUBAGENT_EAGERNESS: SubagentEagerness = 'balanced'
 
-/** 规范化委派积极性：非法 / 缺省值统一回退默认 conservative */
+/** 规范化委派积极性：非法 / 缺省值统一回退默认 balanced */
 export function migrateSubagentEagerness(value: string | undefined): SubagentEagerness {
   if (value === 'never' || value === 'conservative' || value === 'balanced' || value === 'aggressive') {
     return value

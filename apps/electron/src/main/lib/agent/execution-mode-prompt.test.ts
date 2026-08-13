@@ -31,5 +31,7 @@ describe('buildExecutionModePrompt', () => {
     expect(p).toMatch(/圆桌/)
     expect(p).toMatch(/发送.*▾|发送键旁/)
     expect(p).toMatch(/不能自己发起|没有.*会诊工具/)
+    // 动态触发：多轮未决时主动建议会诊/圆桌（回归守护）
+    expect(p).toMatch(/多轮/)
   })
 })

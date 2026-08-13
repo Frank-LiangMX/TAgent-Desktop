@@ -577,10 +577,10 @@ export function Chat({
   } | null>(null)
   /**
    * 子代理委派积极性（会话级）。
-   * 挂载时：meta 有值用会话档；否则用设置页全局默认（再缺省 conservative）。
+   * 挂载时：meta 有值用会话档；否则用设置页全局默认（再缺省 balanced）。
    * 未写过 meta 的会话会把解析结果落盘一次，保证主进程注入与 UI 一致。
    */
-  const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('conservative')
+  const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('balanced')
   /** 当前打开的子代理详情（parentToolUseId），非空时全屏切换显示独立会话页 */
   const [subagentDetail, setSubagentDetail] = useState<string | null>(null)
   /** 当前打开的圆桌讨论（discussionId），非空时全屏切换显示讨论室 */
