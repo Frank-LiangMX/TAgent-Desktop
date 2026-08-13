@@ -6,7 +6,7 @@
  * 软表面、细边框、Phosphor 图标；选项用描边+淡底选中，不用整行实心 primary 填色。
  */
 import { useAtom } from 'jotai'
-import { ChatCircleDots, Check, PaperPlaneTilt, X } from '@phosphor-icons/react'
+import { ArrowUp, ChatCircleDots, Check, X } from '@phosphor-icons/react'
 import { motion, AnimatePresence } from 'motion/react'
 import * as React from 'react'
 
@@ -304,7 +304,8 @@ export function AskUserQuestionBanner({
                     </span>
                   ) : (
                     <span className="ask-user-card__meta">
-                      {currentQuestion.multiSelect ? '可多选' : '单选一项'}
+                      {currentQuestion.multiSelect ? '可多选' : '单选'}
+                      {currentQuestion.header ? ` · ${currentQuestion.header}` : ''}
                     </span>
                   )}
                 </div>
@@ -366,7 +367,7 @@ export function AskUserQuestionBanner({
                 question={currentQuestion}
                 answer={getAnswer(activeTab)}
                 focusedIndex={focusedOptIdx}
-                showModeBadge={questions.length === 1}
+                showModeBadge={questions.length > 1}
                 onToggleOption={(label) => {
                   toggleOptionByState(activeTab, currentQuestion, label)
                   if (!currentQuestion.multiSelect && !isLastTab) {
@@ -411,7 +412,7 @@ export function AskUserQuestionBanner({
                     onClick={() => void handleSubmit()}
                     disabled={submitting || !hasValidAnswers}
                   >
-                    <PaperPlaneTilt size={13} weight="fill" />
+                    <ArrowUp size={13} weight="bold" />
                     {submitting ? '提交中…' : '确认'}
                   </button>
                 )}
