@@ -864,7 +864,7 @@ export function annotateThinkingDurations(process: ProcessEntry[]): void {
 }
 
 /**
- * 过程条目的时间戳只适合做近似值；完成后的单段思考不应超过整轮实际运行时长。
+ * 过程条目的时间戳只适合做近似值；思考段的**总和**不得超过整轮实际运行时长。
  * 这同时防御 UI 节点复用或迟到消息造成的阶段时长穿透到下一轮。
  */
 export function capThinkingDurationsToTurn(
@@ -873,9 +873,11 @@ export function capThinkingDurationsToTurn(
 ): void {
   if (totalDurationMs == null || !Number.isFinite(totalDurationMs) || totalDurationMs < 0) return
   const maxSec = Math.max(0, Math.floor(totalDurationMs / 1000))
+  let remainingSec = maxSec
   for (const entry of process) {
     if (entry.type !== 'thinking' || entry.durationSec == null) continue
-    entry.durationSec = Math.min(entry.durationSec, maxSec)
+    entry.durationSec = Math.min(entry.durationSec, remainingSec)
+    remainingSec -= entry.durationSec
   }
 }
 

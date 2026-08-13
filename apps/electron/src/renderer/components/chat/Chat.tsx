@@ -2704,6 +2704,7 @@ export function Chat({
                       key={turn.key}
                       turn={turn}
                       isLiveTurn={isLiveTurn}
+                      runStartedAt={isLiveTurn ? runStartedAt : undefined}
                       isLatestAssistantTurn={isLatestAssistantTurn}
                       streamState={isLiveTurn ? streamState : undefined}
                       fallbackModelId={
@@ -2748,6 +2749,7 @@ export function Chat({
                       isStreaming: true,
                     }}
                     isLiveTurn
+                    runStartedAt={runStartedAt}
                     isLatestAssistantTurn
                     streamState={streamState}
                     mentionLabels={liveMentionLabels.length > 0 ? liveMentionLabels : undefined}
@@ -3170,6 +3172,7 @@ export function Chat({
 function TurnView({
   turn,
   isLiveTurn = false,
+  runStartedAt,
   isLatestAssistantTurn = false,
   streamState,
   fallbackModelId,
@@ -3185,6 +3188,8 @@ function TurnView({
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
+  /** 会话本轮统一起点，供消息内运行计时与底部胶囊共用。 */
+  runStartedAt?: number | null
   /** 当前会话末尾 assistant-turn（简洁模式跑完保持展开用） */
   isLatestAssistantTurn?: boolean
   streamState?: SessionStreamState
@@ -3220,6 +3225,7 @@ function TurnView({
         <AssistantTurnView
           turn={turn}
           isLiveTurn={isLiveTurn}
+          runStartedAt={runStartedAt}
           isLatestAssistantTurn={isLatestAssistantTurn}
           streamState={streamState}
           fallbackModelId={fallbackModelId}

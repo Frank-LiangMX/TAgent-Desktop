@@ -52,6 +52,8 @@ interface AssistantTurnViewProps {
   turn: Extract<SessionRenderTurn, { kind: 'assistant-turn' }>
   /** 当前会话仍在跑且本 turn 是最新一轮（含工具间隙） */
   isLiveTurn?: boolean
+  /** 本轮从用户发送开始的统一计时起点；与底部运行胶囊保持一致。 */
+  runStartedAt?: number | null
   /**
    * 是否为会话末尾的 assistant-turn。
    * 简洁模式：live 结束后若仍为 true 保持执行块展开；发新一轮 / 切会话后折叠。
@@ -77,6 +79,7 @@ interface AssistantTurnViewProps {
 export function AssistantTurnView({
   turn,
   isLiveTurn = false,
+  runStartedAt,
   isLatestAssistantTurn = false,
   streamState,
   fallbackModelId,
@@ -106,32 +109,7 @@ export function AssistantTurnView({
       displayMode: processDisplayMode,
     },
   )
-
-  // 完成态以主进程记录的整轮耗时作硬上限，阶段估算不得反超总运行时长。
-  if (!isLiveTurn && completedDuration) {
-    capThinkingDurationsToTurn(presentation.process, completedDuration.ms)
-  }
-
   const processLive = isLiveTurn
-
-  // concise：Cursor 式时间线（text 已留在 process）
-  const conciseSegments = useMemo(
-    () =>
-      isConcise
-        ? buildConciseTimeline(presentation.process, {
-            answerTexts: presentation.answerTexts,
-            streamingText: presentation.streamingText,
-            isLive: processLive,
-          })
-        : [],
-    [
-      isConcise,
-      presentation.process,
-      presentation.answerTexts,
-      presentation.streamingText,
-      processLive,
-    ],
-  )
 
   // W1.4：本轮曾经 live 即记 true（用于打字机尾段防闪）。历史轮挂载时 isLiveTurn 恒 false，
   // 不会置位——避免历史答案被误当流式重新逐字。
@@ -180,13 +158,44 @@ export function AssistantTurnView({
   const completionLabel =
     endedBy === 'stopped' ? '已中断' : endedBy === 'error' ? '出错' : '完成'
 
-  // live 且尚无 createdAt：用首次进入 live 的时刻（结束后 ref 保留，不重置）
+  // live 的统一起点必须是用户发送时刻，不能等首条 assistant 消息到达；后者会漏掉
+  // 排队、推理首包和工具前置时间，造成消息头与底部运行胶囊不同步。
+  // 若极端情况下还未拿到 runStartedAt，才以首条 assistant / 挂载时刻兜底。
   const liveStartRef = useRef<number | null>(null)
   if (isLiveTurn && liveStartRef.current == null) {
-    liveStartRef.current = turnCreatedAt ?? Date.now()
+    liveStartRef.current = runStartedAt ?? turnCreatedAt ?? Date.now()
   }
-  const startedAt = turnCreatedAt ?? liveStartRef.current ?? undefined
+  const startedAt =
+    (isLiveTurn ? runStartedAt ?? turnCreatedAt : turnCreatedAt) ??
+    liveStartRef.current ??
+    undefined
   const elapsedMs = useLiveElapsedMs(startedAt, isLiveTurn)
+
+  // 不论 live 或完成，单段思考不得超过同一轮的整轮耗时。流式过程中尚未有完成记录时，
+  // 以同一个实时 elapsed 作上限，防止消息时间戳/长度估算超过运行胶囊。
+  const knownTurnDurationMs = isLiveTurn ? elapsedMs : completedDuration?.ms
+  if (knownTurnDurationMs != null) {
+    capThinkingDurationsToTurn(presentation.process, knownTurnDurationMs)
+  }
+
+  // concise：Cursor 式时间线（text 已留在 process）
+  const conciseSegments = useMemo(
+    () =>
+      isConcise
+        ? buildConciseTimeline(presentation.process, {
+            answerTexts: presentation.answerTexts,
+            streamingText: presentation.streamingText,
+            isLive: processLive,
+          })
+        : [],
+    [
+      isConcise,
+      presentation.process,
+      presentation.answerTexts,
+      presentation.streamingText,
+      processLive,
+    ],
+  )
 
   // concise 标题用：live 取当前已过秒；完成后优先 completedDuration
   const thinkingDurationSec = isLiveTurn

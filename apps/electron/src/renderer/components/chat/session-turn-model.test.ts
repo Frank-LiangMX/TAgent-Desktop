@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { TAgentMessage } from '@tagent/shared'
 import {
   buildTurnPresentation,
+  capThinkingDurationsToTurn,
   dedupeAnswerTexts,
   groupItemsIntoTurns,
   isRealUserInput,
@@ -240,5 +241,18 @@ describe('dedupeAnswerTexts', () => {
   test('drops exact duplicates and prefixes', () => {
     expect(dedupeAnswerTexts(['你好', '你好', '你好世界'])).toEqual(['你好世界'])
     expect(dedupeAnswerTexts(['完整', '完整'])).toEqual(['完整'])
+  })
+})
+
+describe('capThinkingDurationsToTurn', () => {
+  test('caps the combined thinking time to the enclosing turn duration', () => {
+    const process = [
+      { type: 'thinking' as const, key: 't1', thinking: 'first', durationSec: 45 },
+      { type: 'thinking' as const, key: 't2', thinking: 'second', durationSec: 30 },
+    ]
+
+    capThinkingDurationsToTurn(process, 59_000)
+
+    expect(process.map((entry) => entry.durationSec)).toEqual([45, 14])
   })
 })
