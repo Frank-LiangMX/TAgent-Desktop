@@ -335,6 +335,50 @@ describe('SessionRuntime 引导 flush 竞态（Pi）', () => {
 })
 
 describe('SessionRuntime 用户主动 stop', () => {
+  it('普通停止尚未完成时立即发送会等待 interrupt，而不是报「上一轮仍在跑」', async () => {
+    let releaseOldLoop!: () => void
+    const oldLoopSignal = new Promise<void>((resolve) => {
+      releaseOldLoop = resolve
+    })
+    let releaseInterrupt!: () => void
+    const interruptSignal = new Promise<void>((resolve) => {
+      releaseInterrupt = resolve
+    })
+    const { adapter } = createMock([{ kind: 'crashAfterSignal', signal: oldLoopSignal }], {
+      interruptQuery: () => interruptSignal,
+    })
+    let queued = 0
+    adapter.sendQueuedMessage = async () => {
+      queued++
+    }
+    const rt = new SessionRuntime('s-stop-send-race', adapter)
+    const messages: SDKMessage[] = []
+    rt.setCallbacks({ onMessage: (message) => messages.push(message) })
+
+    await rt.sendMessage({ sessionId: 's-stop-send-race', prompt: 'first' } as QueryInput)
+    await waitFor(() => messages.length > 0)
+
+    const stopping = rt.interrupt()
+    const sending = rt.sendMessage(
+      { sessionId: 's-stop-send-race', prompt: 'second' } as QueryInput,
+      {
+        type: 'user',
+        message: { role: 'user', content: 'second' },
+        parent_tool_use_id: null,
+      } as never,
+    )
+    await flush()
+    expect(queued).toBe(0)
+
+    releaseInterrupt()
+    await withTimeout(Promise.all([stopping, sending]))
+    expect(queued).toBe(1)
+
+    rt.destroy()
+    releaseOldLoop()
+    await flush()
+  })
+
   it('用户 interrupt 后进程退出 → 不恢复、不报错', async () => {
     let triggerCrash!: () => void
     const signal = new Promise<void>((r) => {

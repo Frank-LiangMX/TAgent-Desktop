@@ -164,11 +164,16 @@
   height: 100%;
 }
 
-/* 去掉 abyss 给 active/inactive tab 的 ::after 下划线 + ::before 分隔符（胶囊不靠线）*/
+/* 去掉 Dockview 自带的标签线（胶囊选中态只由 active-plate 表达）。
+   新版 Dockview 除 ::after / ::before 外，还会插入真实的 .dv-tab-group-underline；
+   关闭标签时该节点会跟踪收缩动画约 250ms，表现为旧标签底部短暂残留一条线。 */
 .workspace-dock .dv-tab.dv-active-tab::after,
 .workspace-dock .dv-tab.dv-inactive-tab::after,
 .workspace-dock .dv-tabs-container .dv-tab:not(:first-child)::before {
   content: none;
+}
+.workspace-dock .dv-tab-group-underline {
+  display: none !important;
 }
 /* 去掉 dockview 默认 focus outline（胶囊不需要方框） */
 .workspace-dock .dv-tab:focus::after,

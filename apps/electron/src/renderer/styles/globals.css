@@ -44,7 +44,7 @@
     /* 助手模型名胶囊字号 */
     --turn-title-size: 9px;
     /* 会话 markdown 正文字号（对齐 Codex 阅读舒适度：略大于 UI 控件字） */
-    --md-preview-font-size: 15px;
+    --md-preview-font-size: 14px;
     /*
      * 字体栈对齐 Codex Appearance 默认：
      * UI: -apple-system, BlinkMacSystemFont, "Segoe UI", …

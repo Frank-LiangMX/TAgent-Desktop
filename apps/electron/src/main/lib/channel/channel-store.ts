@@ -249,6 +249,30 @@ export function syncKsccChannelAvailability(): number {
 }
 
 /**
+ * 启动迁移：把 KSCC_DEFAULT_MODELS 中尚未出现的模型追加到已有 kscc-internal 渠道。
+ * seed 对已存在渠道是幂等跳过的，否则网关新上的模型（如 deepseek-v4-flash）进不了选项。
+ * 不改用户已有项的 enabled / 顺序 / 自定义字段；仅按 id 追加缺项。
+ * @returns 追加的模型条数
+ */
+export function syncKsccDefaultModels(): number {
+  const config = readConfig()
+  let added = 0
+  const next = config.channels.map((c) => {
+    if (c.provider !== 'kscc-internal') return c
+    const have = new Set(c.models.map((m) => m.id))
+    const missing = KSCC_DEFAULT_MODELS.filter((d) => !have.has(d.id)).map((m) => ({ ...m }))
+    if (missing.length === 0) return c
+    added += missing.length
+    return { ...c, models: [...c.models, ...missing], updatedAt: Date.now() }
+  })
+  if (added > 0) {
+    writeConfig({ ...config, channels: next })
+    console.log(`[渠道存储] 已为 kscc-internal 追加 ${added} 个默认模型`)
+  }
+  return added
+}
+
+/**
  * 启动迁移：补全已有渠道模型的 contextWindow / safeContextLimit。
  *
  * 早期创建的渠道模型缺窗口字段（default-models 加字段之前），导致

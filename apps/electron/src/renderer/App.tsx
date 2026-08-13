@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import type {
   AgentWorkspace,
   AskUserRequest,
@@ -31,6 +32,10 @@ import type {
   PluginStoreCatalog,
   StageEntry,
   UserProfile,
+  SystemPrompt,
+  SystemPromptConfig,
+  SystemPromptCreateInput,
+  SystemPromptUpdateInput,
   WorkspaceMcpConfig,
   WorkspacePluginBundleRecord,
 } from '@tagent/shared'
@@ -79,7 +84,6 @@ import { useGlobalSessionRunSync } from './hooks/useGlobalSessionRunSync'
 import { useGlobalPermissionSync } from './hooks/useGlobalPermissionSync'
 import { useAskUserSync } from './hooks/useAskUserSync'
 import { useInitUpdaterListener } from './atoms/updater'
-import { UpdateBanner } from './components/updater/UpdateBanner'
 import { acknowledgeSessionStatusAtom } from './atoms/session-status-atoms'
 
 declare global {
@@ -228,8 +232,8 @@ declare global {
       onAskUserRequest: (cb: (request: AskUserRequest) => void) => () => void
       onAskUserResolved: (cb: (e: { requestId: string }) => void) => () => void
       askUserRespond: (response: AskUserResponse) => Promise<void>
-      /** 关闭 AskUser 选项卡（用户取消，非提交答案） */
-      askUserDismiss?: (requestId: string) => Promise<void>
+      /** 关闭 AskUser 选项卡（软 deny「用户未选择」，不停止当前轮） */
+      askUserDismiss: (requestId: string) => Promise<void>
       // 热切换会话权限模式
       setSessionPermissionMode: (sessionId: string, mode: string) => Promise<{ ok: boolean; error?: string }>
       /** 热切换 Chat|Work（仅用户源） */
@@ -355,6 +359,12 @@ declare global {
       // 用户档案
       getUserProfile: () => Promise<UserProfile>
       updateUserProfile: (updates: Partial<UserProfile>) => Promise<UserProfile>
+      getSystemPromptConfig: () => Promise<SystemPromptConfig>
+      createSystemPrompt: (input: SystemPromptCreateInput) => Promise<SystemPrompt>
+      updateSystemPrompt: (id: string, input: SystemPromptUpdateInput) => Promise<SystemPrompt>
+      deleteSystemPrompt: (id: string) => Promise<void>
+      updateAppendSetting: (enabled: boolean) => Promise<void>
+      setDefaultPrompt: (id: string | null) => Promise<void>
       // 渠道余额
       getChannelBalance: (channelId: string) => Promise<ChannelBalanceResult>
       // 自动更新
@@ -370,6 +380,7 @@ declare global {
 }
 
 export function App(): JSX.Element {
+  const reducedMotion = useReducedMotion()
   const [showSettings, setShowSettings] = useState(false)
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>('general')
   /** 主区导航：会话 | 插件 | 记忆 | 角色库（设置走对话框，打开时 rail 高亮 settings） */
@@ -417,7 +428,7 @@ export function App(): JSX.Element {
   useGlobalPermissionSync()
   // 全局 AskUserQuestion 队列同步（REQUEST 入队 / RESOLVED 出队，切会话不丢选项卡）
   useAskUserSync()
-  // 自动更新状态监听（主进程推送 → atom → UpdateBanner）
+  // 自动更新状态监听（主进程推送 → atom → 顶栏 UpdateBanner）
   useInitUpdaterListener()
 
   // Phase 2：全局 Nudge → 按设置：顶栏 ticker / 面板 toast
@@ -680,10 +691,7 @@ export function App(): JSX.Element {
           />
         }
       >
-        {/* main：插件页 | 会话页/欢迎页（底层）+ 新会话草稿 overlay（覆盖层）。
-            欢迎页 / 新会话页的入场动画由 NewConversationLanding 内各元素自行承担
-            （标题逐词模糊渐现、输入框上滑淡入、提示词错落淡入），非整页位移；
-            故此处不做整页过渡，直接切换，新页元素各自重新入场。 */}
+        {/* main：插件页 | 会话页/欢迎页（底层）+ 新会话草稿 overlay（覆盖层）。 */}
         {activeRail === 'plugins' ? (
           <div className="plugins-main-view scrollbar-thin">
             <PluginStoreSettings />
@@ -698,20 +706,62 @@ export function App(): JSX.Element {
           </div>
         ) : workspaces.length === 0 ? (
           <ProjectOnboarding onOpenProject={() => void handleOpenProject()} />
-        ) : draftSession && draftSession.id !== activeTab?.sessionId ? (
-          // 新会话草稿态：优先渲染草稿 Chat（NewConversationLanding compose 形态）。
-          // tab 状态保留在 atoms（activeTabId 不清），返回键关草稿 → 回到下方会话页/欢迎页。
-          // 物化成 tab 后 draftSession.id === activeTab.sessionId → 条件不成立，自动切到会话页。
-          <Chat
-            key={draftSession.id}
-            session={draftSession}
-            onDraftWorkspaceChange={(id) => {
-              setLastActiveWorkspaceId(id)
-              setDraftSession((prev) => (prev ? { ...prev, workspaceId: id } : prev))
-            }}
-            onBack={() => setDraftSession(null)}
-            onMaterialized={() => setDraftSession(null)}
-          />
+        ) : (draftSession && draftSession.id !== activeTab?.sessionId) || !activeTab ? (
+          // 欢迎页和草稿会话共享同一舞台，保证它们在切换时可以交叉过渡。
+          <div className="relative h-full min-h-0">
+            <AnimatePresence initial={false} mode="sync">
+              {draftSession && draftSession.id !== activeTab?.sessionId ? (
+                <motion.div
+                  key={draftSession.id}
+                  className="absolute inset-0"
+                  initial={reducedMotion ? false : { opacity: 0, y: 12, scale: 0.99 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: 8, scale: 0.99 }}
+                  transition={
+                    reducedMotion
+                      ? { duration: 0 }
+                      : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }
+                  }
+                >
+                  <Chat
+                    session={draftSession}
+                    onDraftWorkspaceChange={(id) => {
+                      setLastActiveWorkspaceId(id)
+                      setDraftSession((prev) => (prev ? { ...prev, workspaceId: id } : prev))
+                    }}
+                    onBack={() => setDraftSession(null)}
+                    onMaterialized={() => setDraftSession(null)}
+                  />
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="new-session-welcome"
+                  className="absolute inset-0"
+                  initial={false}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -10, scale: 0.985 }}
+                  transition={
+                    reducedMotion
+                      ? { duration: 0 }
+                      : { duration: 0.18, ease: [0.4, 0, 1, 1] }
+                  }
+                >
+                  <NewConversationLanding
+                    composer={
+                      <WelcomeStart
+                        onNewSession={() => newSession()}
+                        onOpenProject={() => void handleOpenProject()}
+                      />
+                    }
+                    onPickSuggestion={(text) => {
+                      setPendingSuggestion(text)
+                      newSession()
+                    }}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         ) : activeTab ? (
           splitDockMode ? (
             <WorkspaceDock />
@@ -723,20 +773,7 @@ export function App(): JSX.Element {
               </div>
             </div>
           )
-        ) : (
-          <NewConversationLanding
-            composer={
-              <WelcomeStart
-                onNewSession={() => newSession()}
-                onOpenProject={() => void handleOpenProject()}
-              />
-            }
-            onPickSuggestion={(text) => {
-              setPendingSuggestion(text)
-              newSession()
-            }}
-          />
-        )}
+        ) : null}
       </AppShell>
 
       <SettingsDialog
@@ -749,7 +786,6 @@ export function App(): JSX.Element {
       {notificationPrefs.panelToast ? (
         <Toaster position="top-center" richColors closeButton visibleToasts={2} />
       ) : null}
-      <UpdateBanner />
       </RichSourceContext.Provider>
     </TooltipProvider>
   )

@@ -15,8 +15,10 @@ export const KSCC_DEFAULT_MODELS: ChannelModel[] = [
   { id: 'glm-5.2', name: 'GLM-5.2 (1M)', enabled: true, contextWindow: 1_000_000 },
   { id: 'kimi-k2.5', name: 'Kimi K2.5', enabled: true, contextWindow: 200_000 },
   { id: 'kimi-k2.6', name: 'Kimi K2.6', enabled: true, contextWindow: 200_000 },
+  { id: 'kimi-k3', name: 'Kimi K3', enabled: true, contextWindow: 200_000 },
   { id: 'mimo-v2.5', name: 'MiMo V2.5 (1M)', enabled: true, contextWindow: 1_000_000 },
   { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro (1M)', enabled: true, contextWindow: 1_000_000 },
+  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash (1M)', enabled: true, contextWindow: 1_000_000 },
 ]
 
 /** kscc 内置渠道默认模型 ID */
@@ -65,7 +67,7 @@ export function getDefaultModelsForProvider(provider: ProviderType): ChannelMode
  * or inherits from the parent」）。内置角色 modelPool 均空，走 resolveModelForRole：
  * claudeAvailable=true → 钉 'haiku'；false → undefined（继承父）。
  *
- * kscc-internal 网关只代理 glm/kimi/mimo（见 KSCC_DEFAULT_MODELS），不认识 'haiku' 别名 →
+ * kscc-internal 网关只代理 glm/kimi/mimo/deepseek-v4（见 KSCC_DEFAULT_MODELS），不认识 'haiku' 别名 →
  * 钉 haiku 会让子代理首轮 LLM 调用即失败。故仅 Anthropic 系渠道（真有 Claude 模型）才钉 haiku，
  * 其余渠道省略 model 让子代理继承父会话模型（与 Pi 核 createSubagentStreamFn 的 modelOverride 兜底对齐）。
  *

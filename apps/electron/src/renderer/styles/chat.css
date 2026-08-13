@@ -61,6 +61,24 @@
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
+
+/*
+ * 纯附件气泡（无文字 / 无 tool_result）：硬限高，防止单张高分辨率图
+ * 在 inline-block + flex-wrap 祖先链下把气泡撑成 ~760px 高块
+ * （见 docs/dev/ux/FIX-attachment-bubble-oversize-brief.md）。
+ * 根因：.agent-user-block__bubble 把 MessageContent 的 overflow:hidden 覆盖成 visible，
+ * 整条祖先链无 max-height，唯一约束是 <img> 自身的 max-h；base64 大图在 inline-block
+ * 父级下 intrinsic sizing 可能先于 max-h 定档，导致 img 放飞容器。
+ * 不加 overflow:hidden —— 避免裁掉图片右下角 hover 保存按钮 + lightbox portal；
+ * img 自身 inline style 已限高，此 max-height 仅作兜底：img 失控时气泡 box 仍 ≤ min(500,50vh)，
+ * 内容可能溢出圆角但不再撑高布局流，后续消息不被挤。
+ */
+.tagent-thread .agent-user-bubble--attachments-only {
+  box-sizing: border-box;
+  /* 兜底：紧凑型单图卡片（img 上限 360×200），气泡盒 ≤220px 给 padding 余量
+     760px 异常态 → 220px（≈71% 高度缩减）满足 brief 验收 6 的 ≥60% 目标 */
+  max-height: 220px;
+}
 .tagent-thread .agent-user-bubble__rich {
   word-break: normal;
   overflow-wrap: anywhere;

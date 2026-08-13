@@ -7,6 +7,7 @@ import type { ReactNode } from 'react'
 import { WindowControls } from './WindowControls'
 import { NavIsland, type PanelPresence } from './NavIsland'
 import { StatusTicker } from './StatusTicker'
+import { UpdateBanner } from '../updater/UpdateBanner'
 
 interface AppShellProps {
   topbar?: ReactNode
@@ -35,7 +36,7 @@ export function AppShell({
         ) : (
           <div className="w-16 shrink-0" aria-hidden />
         )}
-        <StatusTicker />
+        <UpdateBanner fallback={<StatusTicker />} />
         <div className="ml-0 shrink-0 titlebar-no-drag">
           <WindowControls />
         </div>

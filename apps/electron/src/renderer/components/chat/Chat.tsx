@@ -536,12 +536,6 @@ export function Chat({
    * 未写过 meta 的会话会把解析结果落盘一次，保证主进程注入与 UI 一致。
    */
   const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('conservative')
-  /**
-   * 会话偏好 CLI 工人 id（会话级，持久化）。
-   * 未设置 = undefined = 自动（跟随全局启用池优先级）。切会话 key 重建后重置，挂载时回显持久化值。
-   * 主进程 task 工具未显式传 cli 时用它作 preferredCliId；显式 cli 仍最高优先。
-   */
-  const [sessionCliWorkerId, setSessionCliWorkerId] = useState<string | undefined>(undefined)
   /** 当前打开的子代理详情（parentToolUseId），非空时全屏切换显示独立会话页 */
   const [subagentDetail, setSubagentDetail] = useState<string | null>(null)
   /** 当前打开的圆桌讨论（discussionId），非空时全屏切换显示讨论室 */
@@ -894,12 +888,6 @@ export function Chat({
             })
           }
           setReasoningEffort(migrateReasoningEffort(persisted.reasoningEffort))
-          // 回显会话偏好 CLI 工人（未设置 = undefined = 自动，跟随全局启用池优先级）
-          setSessionCliWorkerId(
-            typeof persisted.cliWorkerId === 'string' && persisted.cliWorkerId.trim()
-              ? persisted.cliWorkerId.trim()
-              : undefined,
-          )
           // 旧会话无字段 → migrate 为 work，避免突然只读
           setExecutionMode(migrateExecutionMode(persisted.executionMode))
           setPermissionMode(
@@ -1518,7 +1506,7 @@ export function Chat({
         const abortLike =
           userStoppedRef.current ||
           (lastUserStopAtRef.current > 0 && Date.now() - lastUserStopAtRef.current < STALE_ABORT_WINDOW_MS) ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|用户取消选择|操作已中止|会话已结束/i.test(
+          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|操作已中止|会话已结束/i.test(
             raw,
           )
         if (abortLike) {
@@ -1738,7 +1726,7 @@ export function Chat({
         const abortLike =
           userStoppedRef.current ||
           (lastUserStopAtRef.current > 0 && Date.now() - lastUserStopAtRef.current < STALE_ABORT_WINDOW_MS) ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|用户取消选择|操作已中止|会话已结束/i.test(
+          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|操作已中止|会话已结束/i.test(
             `${userError?.message ?? ''} ${rawMessage}`,
           )
         if (abortLike) {
@@ -2347,13 +2335,6 @@ export function Chat({
             void window.electronAPI.updateSessionMeta(sessionId, { subagentEagerness: level })
           }
         }}
-        cliWorkerId={sessionCliWorkerId}
-        onCliWorkerIdChange={(id) => {
-          setSessionCliWorkerId(id)
-          if (!onDraftWorkspaceChange) {
-            void window.electronAPI.updateSessionMeta(sessionId, { cliWorkerId: id })
-          }
-        }}
       />
       <ModelSelector
         selection={effectiveSelection}
@@ -2754,7 +2735,7 @@ export function Chat({
           onRetry={retryLastUserPrompt}
         />
         <PermissionBanner sessionId={sessionId} />
-        <AskUserQuestionBanner sessionId={sessionId} onUserStop={userStopRun} />
+        <AskUserQuestionBanner sessionId={sessionId} />
         <div
           ref={composerClusterRef}
           className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''}`}
@@ -2839,13 +2820,6 @@ export function Chat({
                         setSubagentEagerness(level)
                         void window.electronAPI.updateSessionMeta(sessionId, {
                           subagentEagerness: level,
-                        })
-                      }}
-                      cliWorkerId={sessionCliWorkerId}
-                      onCliWorkerIdChange={(id) => {
-                        setSessionCliWorkerId(id)
-                        void window.electronAPI.updateSessionMeta(sessionId, {
-                          cliWorkerId: id,
                         })
                       }}
                     />

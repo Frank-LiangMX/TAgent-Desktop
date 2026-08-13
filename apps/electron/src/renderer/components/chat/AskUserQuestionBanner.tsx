@@ -25,16 +25,10 @@ const EMPTY_ANSWER: AskUserQuestionDraft = { selected: [], customText: '', showC
 
 interface AskUserQuestionBannerProps {
   sessionId: string
-  /**
-   * 用户点关闭时：渲染层标记「用户主动停止」，后续 abort/error_* 不当运行出错。
-   * 由 Chat 传入 userStopRun。
-   */
-  onUserStop?: () => void
 }
 
 export function AskUserQuestionBanner({
   sessionId,
-  onUserStop,
 }: AskUserQuestionBannerProps): React.ReactElement | null {
   const [allRequests, setAllRequests] = useAtom(allPendingAskUserRequestsAtom)
   const [drafts, setDrafts] = useAtom(askUserDraftsAtom)
@@ -139,15 +133,12 @@ export function AskUserQuestionBanner({
       return map
     })
     clearDrafts(ids)
-    // 先标用户停止，再 stop：否则 clearSessionPending/abort 产生的 error_* 会被当成「运行出错」
-    onUserStop?.()
+    // 关闭只表示「未选择」：软 deny 回灌给 Agent，保持当前轮运行，由 Agent 决定后续。
     void (async () => {
       try {
-        // 显式 dismiss 每个 pending（deny「用户取消选择」+ interrupt），再 interrupt 本轮
         for (const requestId of ids) {
-          await window.electronAPI.askUserDismiss?.(requestId)
+          await window.electronAPI.askUserDismiss(requestId)
         }
-        await window.electronAPI.stopAgent(sessionId)
       } catch (err) {
         console.error(err)
       }

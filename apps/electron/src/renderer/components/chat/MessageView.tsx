@@ -132,7 +132,9 @@ function UserView({
         ))}
       </div>
     ) : hasAttachments ? (
-      <div className="agent-user-bubble relative inline-block max-w-full">{attachmentBlock}</div>
+      <div className="agent-user-bubble agent-user-bubble--attachments-only relative inline-block max-w-full">
+        {attachmentBlock}
+      </div>
     ) : (
       <>
         {textBlock}

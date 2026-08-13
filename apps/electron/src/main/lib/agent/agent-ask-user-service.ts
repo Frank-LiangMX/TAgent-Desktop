@@ -112,8 +112,8 @@ export class AgentAskUserService {
 
   /**
    * 用户关闭选项卡 / 取消作答（非选择提交）。
-   * resolve deny「用户取消选择」并清 pending；调用方通常再 interrupt 本轮。
-   * 文案须可被 renderer abortLike 识别为用户中断，避免抬「运行出错」。
+   * 只 resolve 软 deny 并清 pending，不中断当前轮：Agent 收到「用户未选择」后，
+   * 可自行采用默认方案、换一种方式继续、重新说明必要性，或结束本轮。
    */
   dismissToAskUser(requestId: string): string | null {
     const pending = this.pendingRequests.get(requestId)
@@ -121,9 +121,8 @@ export class AgentAskUserService {
     const sessionId = pending.request.sessionId
     pending.resolve({
       behavior: 'deny',
-      message: '用户取消选择',
-      // 硬停本轮：避免软 deny 后模型当工具失败再试 / 刷 error_*
-      interrupt: true,
+      message:
+        '用户关闭了选项弹窗，未提供选择。请自行判断是采用合理默认方案、换一种方式继续，还是结束当前任务；不要立即重复提出同一个问题。',
     })
     this.pendingRequests.delete(requestId)
     return sessionId

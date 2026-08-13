@@ -13,12 +13,14 @@ import { McpService } from './lib/ipc/mcp-service'
 import { PluginService } from './lib/ipc/plugin-service'
 import { MemoryService } from './lib/ipc/memory-service'
 import { UserProfileService } from './lib/ipc/user-profile-service'
+import { SystemPromptService } from './lib/ipc/system-prompt-service'
 import { BalanceService } from './lib/ipc/balance-service'
 import { PermissionService } from './lib/permission/permission-service'
 import {
   seedBuiltinChannels,
   migrateModelWindows,
   syncKsccChannelAvailability,
+  syncKsccDefaultModels,
 } from './lib/channel/channel-store'
 import { discoverAndReconcileCliWorkers } from './lib/agent/cli-workers-service'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
@@ -238,6 +240,8 @@ app.whenReady().then(async () => {
   seedBuiltinChannels()
   // 无本机 kscc 时强制停用内置渠道，避免用户无脑打开后发送才失败
   syncKsccChannelAvailability()
+  // 网关新上的默认模型追加进已有 kscc-internal（seed 不覆盖存量渠道）
+  syncKsccDefaultModels()
   migrateModelWindows()
 
   // Phase 2：全局记忆 L5 服务启动 wiring
@@ -262,6 +266,7 @@ app.whenReady().then(async () => {
   McpService.create()
   PluginService.create()
   UserProfileService.create()
+  SystemPromptService.create()
   BalanceService.create()
   MemoryService.create()
   // 角色库 IPC（seed DEFAULT_ROLES + CRUD + 商店）

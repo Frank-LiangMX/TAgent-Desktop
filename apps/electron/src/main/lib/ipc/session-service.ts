@@ -95,6 +95,7 @@ import {
 } from '../permission/permission-service'
 import { buildBuiltinSubagentDefinitions, buildSubagentDelegationPrompt } from '../agent/subagent-definitions'
 import { buildExecutionModePrompt } from '../agent/execution-mode-prompt'
+import { buildUserSystemPromptAppend } from '../system-prompt-manager'
 import {
   buildPiKanbanTools,
   injectKanbanMcpServer,
@@ -518,7 +519,8 @@ export class SessionService {
       }
     )
 
-    // 用户关闭 AskUser 选项卡：deny「用户取消选择」+ interrupt，随后通常再 STOP_AGENT
+    // 用户关闭 AskUser 选项卡：只回灌「用户未选择」的软 deny，不停止当前轮。
+    // Agent 收到工具拒绝原因后自行决定继续、采用默认方案、重新说明或结束。
     ipcMain.handle(
       AGENT_IPC_CHANNELS.ASK_USER_DISMISS,
       async (_e, requestId: string): Promise<void> => {
@@ -1821,6 +1823,8 @@ export class SessionService {
           append: [
             // Chat/Work 策略须尽早出现，压过 claude_code preset 的动手/Plan 默认习惯
             buildExecutionModePrompt(executionMode),
+            // Chat：注入设置页默认系统提示词（内置或用户自定义）
+            executionMode === 'chat' ? buildUserSystemPromptAppend() : '',
             '## 身份与自我介绍\n你是一个专业的编程助手，帮助用户完成软件开发任务。回复时不要自我介绍，也不要提及你所属的 CLI 工具名或出品方品牌；直接以助手姿态回答用户的问题。',
             // W8：输出风格沟通红线（与 Pi 核 buildOutputStylePrompt 同文）
             buildOutputStylePrompt(),
@@ -1897,6 +1901,7 @@ export class SessionService {
     const piExecutionMode = this.getExecutionMode(input.sessionId)
     const piExecutionPrompt = [
       buildExecutionModePrompt(piExecutionMode),
+      piExecutionMode === 'chat' ? buildUserSystemPromptAppend() : '',
       piExecutionMode === 'work'
         ? '## 看板派工工具\n可用 kanban_create_board / kanban_add_task / kanban_list_*。长任务拆任务并指定 roleId。'
         : '',

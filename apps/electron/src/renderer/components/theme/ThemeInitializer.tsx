@@ -16,6 +16,10 @@ import {
   applyThemeToDOM,
   matchMediaDark,
 } from '../../atoms/theme'
+import {
+  fontSizeLevelAtom,
+  applyFontSizeToDOM,
+} from '../../atoms/font-size'
 import { useDynamicBackground } from '../../hooks/useDynamicBackground'
 
 function getElectronThemeApi():
@@ -42,6 +46,7 @@ export function ThemeInitializer({ children }: { children: React.ReactNode }): R
   const style = useAtomValue(themeStyleAtom)
   const systemIsDark = useAtomValue(systemIsDarkAtom)
   const setSystemIsDark = useSetAtom(systemIsDarkAtom)
+  const fontSizeLevel = useAtomValue(fontSizeLevelAtom)
   const store = useStore()
 
   // 系统明暗：Electron nativeTheme（权威）+ matchMedia 兜底
@@ -90,6 +95,11 @@ export function ThemeInitializer({ children }: { children: React.ReactNode }): R
     const resolvedDark = m === 'system' ? d : m === 'dark'
     document.documentElement.style.colorScheme = resolvedDark ? 'dark' : 'light'
   }, [mode, style, systemIsDark, store])
+
+  // 正文字号档位变化 → 应用 DOM（消息区 markdown 正文）
+  useEffect(() => {
+    applyFontSizeToDOM(fontSizeLevel)
+  }, [fontSizeLevel])
 
   return <>{children}</>
 }

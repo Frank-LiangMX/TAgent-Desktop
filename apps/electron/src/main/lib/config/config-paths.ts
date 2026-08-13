@@ -174,3 +174,8 @@ export function getAgentDiscussPrefsPath(): string {
 export function getAgentCrewPrefsPath(): string {
   return join(getConfigDir(), 'agent-crew-prefs.json')
 }
+
+/** 系统提示词配置：~/.tagent[-dev]/system-prompts.json */
+export function getSystemPromptsPath(): string {
+  return join(getConfigDir(), 'system-prompts.json')
+}

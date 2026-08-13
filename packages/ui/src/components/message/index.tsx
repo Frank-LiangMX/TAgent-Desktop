@@ -688,7 +688,17 @@ function MessageAttachmentImage({
     <img
       src={imageSrc}
       alt={attachment.filename}
-      className="max-w-[500px] max-h-[min(500px,50vh)] rounded-glass-popover object-contain cursor-pointer"
+      className="rounded-glass-popover object-contain cursor-pointer"
+      style={{
+        // inline style 绕开 Tailwind 任意值命中 + inline-block 祖先链对 replaced
+        // element intrinsic sizing 的干扰，确保 max-width/max-height 一定生效。
+        // 上限 360×200：紧凑型单图卡片（对齐 docs/dev/ux/FIX-attachment-bubble-oversize-brief.md
+        // 验收 6 的 ≥60% 高度缩减目标——760px 异常态 → 200px 收敛）。
+        maxWidth: '360px',
+        maxHeight: '200px',
+        width: 'auto',
+        height: 'auto',
+      }}
       onClick={() => setLightboxOpen(true)}
     />
   ) : (
