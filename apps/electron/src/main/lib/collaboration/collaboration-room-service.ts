@@ -34,11 +34,13 @@ import {
   COLLABORATION_ROOM_MAX_MEMBERS,
   COLLABORATION_RUN_ID_PREFIX,
   collaborationRunIdempotencyKey,
+  collaborationContinuationIdempotencyKey,
   collaborationLoopFingerprint,
   isCollaborationDuplicateReply,
   isCollaborationSelfSend,
   isCollaborationRoomStatus,
   nextCollaborationA2ADepth,
+  nextCollaborationMentionAliases,
   parseCollaborationMentions,
   transitionCollaborationMailboxState,
   validateCreateCollaborationRoomInput,
@@ -48,12 +50,14 @@ import {
   type CollaborationMessage,
   type CollaborationRoom,
   type CollaborationRoomChangedPayload,
+  type CollaborationTextDeltaPayload,
   type CollaborationRun,
   type CollaborationRunStatus,
   type CollaborationSerializedRunError,
   type CreateCollaborationMemberInput,
   type CreateCollaborationRoomInput,
   type UpdateCollaborationRoomInput,
+  type UpdateCollaborationMemberInput,
   type AppendCollaborationUserMessageInput,
   type MemberBackendAdapter,
   type MemberTurnInput,
@@ -93,12 +97,17 @@ export type CollaborationRoomBroadcast = (
   kind: CollaborationRoomChangedPayload['kind'],
 ) => void
 
+/** 流式正文增量回调（独立于 CHANGED，避免每 token 全量刷新） */
+export type CollaborationTextDeltaHandler = (payload: CollaborationTextDeltaPayload) => void
+
 /** 服务构造选项（adapter / broadcast 可注入） */
 export interface CollaborationRoomServiceOptions {
   /** 成员后端适配器（默认 ChannelBackendAdapter；测试可注入 mock） */
   adapter?: MemberBackendAdapter
   /** CHANGED 广播（默认 noop；IPC 层注入真实广播） */
   broadcast?: CollaborationRoomBroadcast
+  /** 流式正文增量（默认 noop） */
+  onTextDelta?: CollaborationTextDeltaHandler
 }
 
 /** Stage 1/2 静态成员的默认能力（全 false，S3+ 由真实 probe 填充） */
@@ -123,6 +132,7 @@ function noopBroadcast(): void {
 export class CollaborationRoomService {
   private readonly adapter: MemberBackendAdapter
   private readonly broadcast: CollaborationRoomBroadcast
+  private readonly onTextDelta: CollaborationTextDeltaHandler
   /** 房间运行调度器（房间并发 + 成员串行 + FIFO 队列） */
   private readonly scheduler: RoomScheduler
   /** 运行中 run 的 AbortController（cancelRun 用） */
@@ -133,6 +143,7 @@ export class CollaborationRoomService {
   private constructor(opts: CollaborationRoomServiceOptions) {
     this.adapter = opts.adapter ?? createChannelBackendAdapter()
     this.broadcast = opts.broadcast ?? noopBroadcast
+    this.onTextDelta = opts.onTextDelta ?? (() => undefined)
     this.scheduler = this.createScheduler()
   }
 
@@ -567,7 +578,8 @@ export class CollaborationRoomService {
    * 守卫：request 信封必须存在且为激活态（pending/delivered）；重复回复阻断；
    * 回复者必须是 request 的 toMemberId（防伪造）。
    * 落盘：reply 信封（置 answered）+ 原 question 信封置 answered + a2a_reply 消息。
-   * 不唤醒发送者 turn（留 S4-3 adapter 接线）；S4-2 仅保证信箱状态机正确。
+   * 若原提问者 run 处于 awaiting_peer：CAS 为 done，并入队一条 continuation run
+   *（幂等键 a2a-continue:{requestId}:{askerMemberId}）。不处于 awaiting_peer 则只落盘回复。
    */
   roomReply(input: {
     roomId: string
@@ -590,12 +602,12 @@ export class CollaborationRoomService {
     if (questionEnv.toMemberId !== fromMember.id) {
       return { ok: false, reason: '回复者与 request 接收者不匹配' }
     }
-    if (!transitionCollaborationMailboxState(questionEnv.state, 'answer').ok) {
-      return { ok: false, reason: `question 信封状态不可回复：${questionEnv.state}` }
-    }
-    // 幂等：同 (request, from) 已有活动 reply 或该 request 已 answered → 阻断
+    // 幂等先于状态迁移：同 request 已有有效回复时给出更精确的原因
     if (isCollaborationDuplicateReply(input.requestId, fromMember.id, related)) {
       return { ok: false, reason: '重复回复（该 request 已有有效回复）' }
+    }
+    if (!transitionCollaborationMailboxState(questionEnv.state, 'answer').ok) {
+      return { ok: false, reason: `question 信封状态不可回复：${questionEnv.state}` }
     }
 
     const now = Date.now()
@@ -618,7 +630,7 @@ export class CollaborationRoomService {
     const t = transitionCollaborationMailboxState(questionEnv.state, 'answer')
     if (t.ok) upsertMailboxEnvelope({ ...questionEnv, state: t.state })
 
-    this.appendA2AMessage(
+    const replyMessage = this.appendA2AMessage(
       room,
       fromMember,
       'a2a_reply',
@@ -630,21 +642,74 @@ export class CollaborationRoomService {
       questionEnv.depth,
     )
     this.broadcast(room.id, 'mailbox-updated')
+    this.enqueueAskerContinuation(room, questionEnv, input.requestId, replyMessage)
     return { ok: true, envelopeId: replyEnvelope.id }
   }
 
   /**
-   * 把一个 run 标记为 awaiting_peer（执行槽释放，保留 continuation 供 S4-3 恢复）。
-   * 仅 running → awaiting_peer 合法（CAS）；成员状态同步为 idle（不占槽）。
+   * 把一个 run 标记为 awaiting_peer（执行槽释放，保留 continuation 供 peer reply 唤醒）。
+   * 仅 running → awaiting_peer 合法（CAS）；abort 物理 turn（不占槽）；成员回 idle。
+   * executeRun 看到 abort 时若 run 已是 awaiting_peer，不得覆盖为 cancelled。
    */
   markRunAwaitingPeer(runId: string): CollaborationRun | undefined {
     const updated = this.casRun(runId, 'running', 'awaiting_peer', {})
     if (updated) {
+      const ctrl = this.abortControllers.get(runId)
+      if (ctrl) ctrl.abort()
       this.scheduler.release(runId, updated.roomId, updated.memberId)
       this.syncMemberStatus(updated.memberId)
       this.broadcast(updated.roomId, 'run-awaiting-peer')
     }
     return updated
+  }
+
+  /**
+   * S4-3：peer reply 到达后，若原提问者 run 处于 awaiting_peer，入队 continuation。
+   *
+   * - 原 run CAS awaiting_peer → done（等待已结束；continuation 是新 turn，因 backend 无 resume）
+   * - 幂等键含 requestId，同一 reply 不会二次唤醒
+   * - 房间非 active / 原 run 不是 awaiting_peer / 成员缺失 → 静默跳过（reply 已落盘）
+   */
+  private enqueueAskerContinuation(
+    room: CollaborationRoom,
+    questionEnv: CollaborationMailboxEnvelope,
+    requestId: string,
+    replyMessage: CollaborationMessage,
+  ): void {
+    if (room.status !== 'active') return
+    const askerRun = getRun(questionEnv.causationId)
+    if (!askerRun || askerRun.status !== 'awaiting_peer') return
+    const asker = getMember(askerRun.memberId)
+    if (!asker || asker.roomId !== room.id) return
+
+    const idempotencyKey = collaborationContinuationIdempotencyKey(requestId, asker.id)
+    if (findRunByIdempotencyKey(idempotencyKey)) return
+
+    this.casRun(askerRun.id, 'awaiting_peer', 'done', { finishedAt: Date.now() })
+
+    const continuation: CollaborationRun = {
+      id: genId(COLLABORATION_RUN_ID_PREFIX),
+      roomId: room.id,
+      memberId: asker.id,
+      triggerMessageId: replyMessage.id,
+      idempotencyKey,
+      status: 'queued',
+      attempt: 0,
+    }
+    upsertRun(continuation)
+    this.scheduler.enqueue({
+      runId: continuation.id,
+      roomId: room.id,
+      memberId: asker.id,
+      room,
+      member: asker,
+      run: continuation,
+      triggerMessage: replyMessage,
+    })
+    if (!this.scheduler.isMemberRunning(asker.id)) {
+      this.setMemberStatus(asker.id, 'queued')
+    }
+    this.broadcast(room.id, 'run-continued')
   }
 
   /** 列出某房间全部信箱信封（renderer 审计视图用） */
@@ -683,7 +748,7 @@ export class CollaborationRoomService {
     runId: string,
     targetMemberIds: string[],
     depth: number,
-  ): void {
+  ): CollaborationMessage {
     const message: CollaborationMessage = {
       id: genId(COLLABORATION_MESSAGE_ID_PREFIX),
       roomId: room.id,
@@ -701,6 +766,7 @@ export class CollaborationRoomService {
       createdAt: Date.now(),
     }
     appendMessage(message)
+    return message
   }
 
   /**
@@ -792,7 +858,16 @@ export class CollaborationRoomService {
       // 组装上下文投影 + 调后端
       const allMembers = loadMembers(room.id)
       const messages = listMessagesByRoom(room.id)
-      const { systemPrompt, prompt } = buildTurnPrompts(room, member, allMembers, messages)
+      const pendingMailbox = listActiveMailboxForMember(member.id)
+      const { systemPrompt, prompt } = buildTurnPrompts(
+        room,
+        member,
+        allMembers,
+        messages,
+        triggerMessage,
+        pendingMailbox,
+      )
+      let streamed = ''
       const input: MemberTurnInput = {
         roomId: room.id,
         memberId: member.id,
@@ -803,11 +878,30 @@ export class CollaborationRoomService {
         systemPrompt,
         prompt,
         signal: controller.signal,
+        onTextDelta: (delta: string) => {
+          if (!delta) return
+          streamed += delta
+          this.onTextDelta({
+            roomId: room.id,
+            runId: run.id,
+            memberId: member.id,
+            text: streamed,
+            at: Date.now(),
+          })
+        },
       }
       const result = await this.adapter.runTurn(input)
 
-      // 被取消则不写成员消息（cancelRun 已置 cancelled；此处 CAS 不覆盖，仅兜底）
+      // 被取消则不写成员消息。awaiting_peer / 已被 continuation 收口的 run 不得覆盖为 cancelled。
       if (controller.signal.aborted) {
+        const current = getRun(run.id)
+        if (
+          current?.status === 'awaiting_peer' ||
+          current?.status === 'done' ||
+          current?.status === 'blocked'
+        ) {
+          return
+        }
         this.casRun(run.id, 'running', 'cancelled', { finishedAt: Date.now() })
         this.broadcast(room.id, 'run-cancelled')
         return
@@ -823,7 +917,14 @@ export class CollaborationRoomService {
       this.broadcast(room.id, 'run-finished')
     } catch (err) {
       if (controller.signal.aborted) {
-        // 取消（cancelRun 已置 cancelled；此处 CAS 不覆盖，仅兜底）
+        const current = getRun(run.id)
+        if (
+          current?.status === 'awaiting_peer' ||
+          current?.status === 'done' ||
+          current?.status === 'blocked'
+        ) {
+          return
+        }
         this.casRun(run.id, 'running', 'cancelled', { finishedAt: Date.now() })
         this.broadcast(room.id, 'run-cancelled')
         return
@@ -902,6 +1003,62 @@ export class CollaborationRoomService {
 
     this.broadcast(roomId, 'updated')
     return member
+  }
+
+  /**
+   * 更新已有成员（改显示名 / 渠道 / 模型）。
+   * 不改 isCoordinator、logicalSessionId、权限档位（安全字段）。
+   */
+  updateMember(input: UpdateCollaborationMemberInput): CollaborationMember {
+    const member = getMember(input.memberId)
+    if (!member) {
+      throw new Error('成员不存在')
+    }
+    if (member.roomId !== input.roomId) {
+      throw new Error('成员不属于该房间')
+    }
+    const room = getRoom(input.roomId)
+    if (!room) {
+      throw new Error('房间不存在')
+    }
+    if (room.status === 'archived') {
+      throw new Error('已归档房间不能修改成员')
+    }
+
+    let displayName = member.displayName
+    let mentionAliases = member.mentionAliases
+    if (input.displayName !== undefined) {
+      displayName = input.displayName.trim()
+      if (!displayName) {
+        throw new Error('成员显示名不能为空')
+      }
+      mentionAliases = nextCollaborationMentionAliases(
+        member.mentionAliases,
+        member.displayName,
+        displayName,
+      )
+    }
+
+    const channelChanged = input.channelId !== undefined && input.channelId !== (member.channelId ?? '')
+    const nextChannelId =
+      input.channelId === undefined ? member.channelId : input.channelId || undefined
+    let nextModelId = input.modelId === undefined ? member.modelId : input.modelId || undefined
+    // 换渠道且未同时指定模型 → 清掉旧模型，由 adapter 回落新渠道默认
+    if (channelChanged && input.modelId === undefined) {
+      nextModelId = undefined
+    }
+
+    const updated: CollaborationMember = {
+      ...member,
+      displayName,
+      mentionAliases: mentionAliases && mentionAliases.length > 0 ? mentionAliases : undefined,
+      channelId: nextChannelId,
+      modelId: nextModelId,
+      updatedAt: Date.now(),
+    }
+    upsertMember(updated)
+    this.broadcast(input.roomId, 'updated')
+    return updated
   }
 
   // ===== 内部辅助 =====
@@ -1031,32 +1188,84 @@ function resolveTargetMembers(
  * 组装一次 turn 的 systemPrompt + prompt（02-RUNTIME-A2A-SPEC §7 简化版）。
  *
  * systemPrompt：角色 + 房间目标 + 角色职责。
- * prompt：近期 chat 消息（用户 + 成员，按成员显示名标注）+ 触发消息 + 回复指令。
- * Stage 2 不实现滚动摘要 / 信箱投影 / 任务投影（留 S3+）。
+ * prompt：近期 chat / A2A 消息 + 触发消息 + 回复指令。
+ * A2A continuation（trigger.kind === 'a2a_reply'）额外注入「peer 回复 + 勿重复副作用」。
  */
 function buildTurnPrompts(
   room: CollaborationRoom,
   member: CollaborationMember,
   allMembers: CollaborationMember[],
   messages: CollaborationMessage[],
+  triggerMessage: CollaborationMessage,
+  pendingMailbox: CollaborationMailboxEnvelope[] = [],
 ): { systemPrompt: string; prompt: string } {
   const roleDesc = member.roleSnapshot.description
+  const isContinuation = triggerMessage.kind === 'a2a_reply'
+  const roster = allMembers
+    .map((m) => {
+      const bits = [m.displayName]
+      if (m.isCoordinator) bits.push('协调者')
+      if (m.id === member.id) bits.push('你')
+      return bits.join('/')
+    })
+    .join('、')
   const systemPrompt = [
     `你是协作室「${room.title}」的成员「${member.displayName}」。`,
     roleDesc ? `你的职责：${roleDesc}。` : '',
     room.goal ? `房间目标：${room.goal}。` : '',
-    '请以该身份简洁、直接地回复用户的最新消息。',
+    roster ? `房间成员：${roster}。` : '',
+    '用户用 @显示名 点名才会唤醒对应成员；你不能仅靠输出 @ 去唤醒他人。',
+    isContinuation
+      ? '你正在从一次跨成员提问中恢复。请根据对方回复继续完成原任务，不要重复已经做过的副作用操作。'
+      : '请以该身份简洁、直接地回复用户的最新消息。',
   ]
     .filter(Boolean)
     .join('')
 
   const nameOf = (authorId: string): string =>
     allMembers.find((m) => m.id === authorId)?.displayName ?? '成员'
-  const recent = messages.filter((m) => m.kind === 'chat').slice(-RECENT_CONTEXT_MESSAGES)
-  const transcript = recent
-    .map((m) => `${m.authorType === 'user' ? '用户' : nameOf(m.authorId)}：${m.content}`)
-    .join('\n')
-  const prompt = `${transcript}\n\n请以「${member.displayName}」的身份回复最后一条消息。`
+  const visibleToMember = (m: CollaborationMessage): boolean => {
+    if (m.visibility === 'room') return true
+    if (m.visibility === 'user_only') return false
+    return m.authorId === member.id || m.targetMemberIds.includes(member.id)
+  }
+  const recent = messages
+    .filter((m) => m.kind === 'chat' || m.kind === 'a2a_request' || m.kind === 'a2a_reply')
+    .filter(visibleToMember)
+    .slice(-RECENT_CONTEXT_MESSAGES)
+  const formatLine = (m: CollaborationMessage): string => {
+    const who = m.authorType === 'user' ? '用户' : nameOf(m.authorId)
+    if (m.kind === 'a2a_request') return `${who}（提问）：${m.content}`
+    if (m.kind === 'a2a_reply') return `${who}（回复）：${m.content}`
+    return `${who}：${m.content}`
+  }
+  const transcript = recent.map(formatLine).join('\n')
+
+  const inboxLines = pendingMailbox
+    .filter((e) => e.toMemberId === member.id && (e.state === 'pending' || e.state === 'delivered'))
+    .slice(-6)
+    .map((e) => {
+      const kind = e.type === 'question' ? '提问' : e.type === 'reply' ? '回复' : '通知'
+      return `- 来自「${nameOf(e.fromMemberId)}」的${kind}：${e.payload}`
+    })
+
+  let prompt = `${transcript}\n\n请以「${member.displayName}」的身份回复最后一条消息。`
+  if (inboxLines.length > 0) {
+    prompt += `\n\n## 待处理信箱\n${inboxLines.join('\n')}`
+  }
+  if (isContinuation) {
+    const peerName = nameOf(triggerMessage.authorId)
+    prompt += [
+      '',
+      '',
+      '## A2A 恢复',
+      `成员「${peerName}」回复了你的提问：`,
+      '---',
+      triggerMessage.content,
+      '---',
+      '请根据回复继续完成你之前的任务。不要重复已经做过的副作用操作。',
+    ].join('\n')
+  }
 
   return { systemPrompt, prompt }
 }

@@ -286,6 +286,11 @@ export interface CollaborationMember {
   roomId: string
   /** 显示名 */
   displayName: string
+  /**
+   * 历史显示名别名（改名后仍能被 @旧名 命中）。
+   * 当前 displayName 始终优先；若房间里另一成员占用了该名，别名不再生效。
+   */
+  mentionAliases?: string[]
   /** 绑定角色库 ID（可选） */
   roleId?: string
   /** 角色快照（避免角色库更新后历史被改写） */
@@ -488,6 +493,16 @@ export function collaborationRunIdempotencyKey(triggerMessageId: string, memberI
   return `${triggerMessageId}:${memberId}`
 }
 
+/**
+ * A2A continuation 幂等键：同一 request 对提问者只唤醒一次新 turn。
+ *
+ * 02-RUNTIME-A2A-SPEC §6：B 回复后，宿主把 reply 加入 A 的 continuation。
+ * 必须含 requestId，避免同一 reply 重复唤醒（S4-3）。
+ */
+export function collaborationContinuationIdempotencyKey(requestId: string, memberId: string): string {
+  return `a2a-continue:${requestId}:${memberId}`
+}
+
 // ===== Mention 解析（Stage 3） =====
 
 /** @all 特殊 mention（忽略大小写）：路由到房间全部成员（含协调者） */
@@ -502,7 +517,9 @@ const MENTION_TRAILING_PUNCT = /[.,;:!?，。；！？、）》]+$/u
  * 从用户消息文本解析 @mention，返回命中的成员 ID 列表（按出现顺序去重）。
  *
  * - `@all`（忽略大小写）→ 全部成员（含协调者；即全部 CollaborationMember）
- * - `@displayName` → 精确匹配成员 displayName（忽略大小写）；无匹配则忽略
+ * - `@displayName` → 精确匹配成员 displayName（忽略大小写）
+ * - `@旧名` → 匹配 mentionAliases（当前 displayName 占用同名时，当前名优先）
+ * - `@memberId` → 精确匹配成员 id（程序化 / 稳定身份）
  * - 未命中任何 @ → 返回空数组（调用方据此回落协调者）
  *
  * 纯函数，不读 DB、不依赖时间；members 由调用方传入。Stage 3 路由的文本侧入口，
@@ -515,9 +532,19 @@ export function parseCollaborationMentions(
   members: CollaborationMember[],
 ): string[] {
   if (!text) return []
-  // displayName 小写 → member（忽略大小写精确匹配）
   const byLowerName = new Map<string, CollaborationMember>()
-  for (const m of members) byLowerName.set(m.displayName.toLowerCase(), m)
+  const byId = new Map<string, CollaborationMember>()
+  // 别名先入；当前 displayName 后写入以覆盖同名冲突
+  for (const m of members) {
+    byId.set(m.id, m)
+    for (const alias of m.mentionAliases ?? []) {
+      const key = alias.trim().toLowerCase()
+      if (key && !byLowerName.has(key)) byLowerName.set(key, m)
+    }
+  }
+  for (const m of members) {
+    byLowerName.set(m.displayName.toLowerCase(), m)
+  }
 
   const matched: string[] = []
   const seen = new Set<string>()
@@ -525,7 +552,6 @@ export function parseCollaborationMentions(
     const name = (raw[1] ?? '').replace(MENTION_TRAILING_PUNCT, '')
     if (!name) continue
     if (name.toLowerCase() === COLLABORATION_MENTION_ALL) {
-      // @all → 全部成员（保持成员顺序，去重）
       for (const m of members) {
         if (!seen.has(m.id)) {
           seen.add(m.id)
@@ -534,13 +560,38 @@ export function parseCollaborationMentions(
       }
       continue
     }
-    const m = byLowerName.get(name.toLowerCase())
+    const byName = byLowerName.get(name.toLowerCase())
+    const byMemberId = byId.get(name)
+    const m = byName ?? byMemberId
     if (m && !seen.has(m.id)) {
       seen.add(m.id)
       matched.push(m.id)
     }
   }
   return matched
+}
+
+/**
+ * 改名时累积 mention 别名：旧名进别名，新名从别名里摘掉，去重保序。
+ */
+export function nextCollaborationMentionAliases(
+  prev: string[] | undefined,
+  oldName: string,
+  newName: string,
+): string[] {
+  const oldN = oldName.trim()
+  const newN = newName.trim()
+  const seen = new Set<string>()
+  const out: string[] = []
+  const push = (value: string): void => {
+    const key = value.trim().toLowerCase()
+    if (!key || key === newN.toLowerCase() || seen.has(key)) return
+    seen.add(key)
+    out.push(value.trim())
+  }
+  for (const a of prev ?? []) push(a)
+  if (oldN) push(oldN)
+  return out
 }
 
 // ===== 创建/更新输入 =====
@@ -587,6 +638,23 @@ export interface CreateCollaborationRoomInput {
   budget?: CollaborationRoomBudget
   /** 附加看板 ID（可选） */
   attachedBoardId?: string
+}
+
+/** 更新协作室成员的输入（改显示名 / 渠道 / 模型） */
+export interface UpdateCollaborationMemberInput {
+  /** 房间 ID（校验归属） */
+  roomId: string
+  /** 成员 ID */
+  memberId: string
+  /** 新显示名 */
+  displayName?: string
+  /**
+   * 新渠道 ID。传空字符串表示解绑。
+   * 换渠道且未同时传 modelId 时，service 清空 modelId，由 adapter 回落渠道默认模型。
+   */
+  channelId?: string
+  /** 新模型 ID。传空字符串表示改回渠道默认。 */
+  modelId?: string
 }
 
 /** 更新协作室房间的输入（rename / archive / pause / complete） */

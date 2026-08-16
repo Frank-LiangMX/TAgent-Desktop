@@ -3,6 +3,7 @@
 > 上位文档：[00-MASTER](./00-MASTER.md)
 > UI：[01-PRODUCT-UX-SPEC](./01-PRODUCT-UX-SPEC.md)
 > Runtime：[02-RUNTIME-A2A-SPEC](./02-RUNTIME-A2A-SPEC.md)
+> Hermes 机制补强：[04-HERMES-BORROW-SPEC](./04-HERMES-BORROW-SPEC.md)
 
 ## 1. 实施策略
 
@@ -107,6 +108,18 @@ apps/electron/src/main/lib/collaboration/
 
 退出条件：A/B 两成员可以使用不同模型/CLI 并行完成独立任务；任何一方失败不吞掉另一方结果；并发限制重启后仍正确。
 
+## 5.5 Stage 3.5：Hermes 机制补强（不依赖工具回路）
+
+目标：在 S4-3 被 pi-core 挡住时，先把路由、投影、摘要和时间线做到不丢人。真源：[04](./04-HERMES-BORROW-SPEC.md)。
+
+工作（三个可独立 PR）：
+
+- **S3.5-a** 结构化 mention + 引用块 / `@all` / 歧义名守卫；`projectCollaborationTurnContext` 替换 `buildTurnPrompts`。
+- **S3.5-b** `summaries.json` + 有效发言阈值 + 总结者六段 prompt + CAS。无模型 fail-closed，不阻塞发言。
+- **S3.5-c** 按 `runId` 收成 run 卡；去掉每人一条「思考中」灰泡。
+
+退出条件：04 §4.5 / §5.4 / §6.7 单测绿；04 §9 手测 T1–T8 通过；普通 Chat / 会诊 / 圆桌无回归。成员正文 `@` 仍不能产生 run。
+
 ## 6. Stage 4：结构化 A2A 与等待恢复
 
 目标：完成本功能与“主会话派工”的本质差异。
@@ -120,6 +133,12 @@ apps/electron/src/main/lib/collaboration/
 - A2A 时间线摘要、参与者过滤、完整审计视图。
 
 退出条件：自动化场景“A 询问 B → B 回复 → A 恢复完成”稳定通过；深度超限、自发给自己、重复 reply 和 A↔B 循环均被阻断并可解释。
+
+S4 内部分切片（见 S4-A2A-NOTES 与 04 §7）：
+
+- S4-1 / S4-2 已交付：纯函数 + mailbox 落盘。
+- S4-3 待做：adapter 工具回路与 peer reply 唤醒（blocked-on-pi-core）。
+- **S4.5** 信封作 outbox：`attemptId` / `delivery` / 重启 `outcome_unknown` / 可呈现深度停止卡。禁止另起 Hermes 式 handoff 表，禁止 unlimited。
 
 ## 7. Stage 5：任务、看板与产物
 
@@ -159,7 +178,11 @@ apps/electron/src/main/lib/collaboration/
 | S1 | Rail 可进入、创建/恢复静态房间 | 导航回归、DB migration |
 | S2 | 一个独立成员可回答 | 幂等、取消、上下文隔离 |
 | S3 | 两成员并行 + 协调者 | 公平调度、成本倍增 |
+| S3.5-a | `@` 按成员 ID 投递；投影分自己/别人 | 误把成员文本当路由 |
+| S3.5-b | 成员能读到六段式房间摘要 | 摘要抢槽、注入、双跑 |
+| S3.5-c | 一 run 一卡，时间线安静 | 把 Chat 编排搬进房间 |
 | S4 | A 问 B 后等待并恢复 | continuation、副作用重复 |
+| S4.5 | 深度停止可解释、重启不重放已开跑调用 | 另起 outbox 表、unlimited |
 | S5 | 任务/产物互链 | 双真值、路径安全 |
 | S6 | worktree/租约 + 生产恢复 | 文件冲突、清理与崩溃 |
 
@@ -168,7 +191,11 @@ apps/electron/src/main/lib/collaboration/
 ### 单元测试
 
 - 所有状态转换与非法转换。
-- mention/target 路由、`@all` 权限、成员内串行。
+- mention/target 路由、结构化 mention、引用块屏蔽、歧义 displayName、`@all` 仅用户、成员正文不路由。
+- 上下文投影：自己/别人角色、可见性、围栏内 `@` 保留。
+- 房间摘要：有效发言计数、CAS、超预算 fail-closed。
+- 时间线按 `runId` 聚合；handoff `attemptId` 去重与 `outcome_unknown`。
+- 成员内串行、房间并发。
 - A2A depth、request/reply 幂等、循环 fingerprint。
 - budget、并发、公平队列、scheduler lease。
 - 路径归一化、workspace escape、租约冲突。
@@ -227,6 +254,8 @@ apps/electron/src/main/lib/collaboration/
 - 不得在无法确认副作用时自动无限重试。
 - 不得让 renderer 成为调度或任务真值源。
 - 不得为了“实时感”先绑定一个不可靠的长驻进程架构。
+- 不得让成员正文中的 `@` 产生 run 或 A2A 投递。
+- 不得另起一套与 mailbox 平行的 Hermes handoff 表，也不得开放 unlimited 深度。
 
 ## 13. 上线门槛
 

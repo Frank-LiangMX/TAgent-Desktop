@@ -20,9 +20,12 @@ import type {
   CollaborationMessage,
   CollaborationRoom,
   CollaborationRun,
+  CollaborationMailboxEnvelope,
+  CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
   AddCollaborationMemberInput,
   UpdateCollaborationRoomInput,
+  UpdateCollaborationMemberInput,
   AppendCollaborationUserMessageInput,
   FetchModelsInput,
   FetchModelsForChannelInput,
@@ -382,7 +385,10 @@ declare global {
       listCollaborationRuns: (roomId: string) => Promise<CollaborationRun[]>
       cancelCollaborationRun: (input: { roomId: string; runId: string }) => Promise<CollaborationRun | null>
       addCollaborationMember: (input: AddCollaborationMemberInput) => Promise<CollaborationMember>
+      updateCollaborationMember: (input: UpdateCollaborationMemberInput) => Promise<CollaborationMember>
+      listCollaborationMailbox: (roomId: string) => Promise<CollaborationMailboxEnvelope[]>
       onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => () => void
+      onCollaborationTextDelta: (cb: (payload: CollaborationTextDeltaPayload) => void) => () => void
       // 自动更新
       updater?: {
         checkForUpdates: () => Promise<void>

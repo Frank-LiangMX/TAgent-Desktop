@@ -2,6 +2,7 @@
 
 > 上位文档：[00-MASTER](./00-MASTER.md)
 > 原则：逻辑成员持久、物理进程按需；结构化 A2A、异步信箱；任务与消息分账。
+> mention 守卫、上下文投影算法、房间摘要与 handoff outbox 的实现契约：[04 Hermes 机制移植](./04-HERMES-BORROW-SPEC.md)。
 
 ## 1. 运行时拓扑
 
@@ -180,12 +181,13 @@ any active ── room pause ──> paused/queue retained
 1. 无显式目标：投递协调者。
 2. 一个目标：投递该成员。
 3. 多个目标：为每个成员创建独立 trigger 和 run，受房间并发上限控制。
-4. `@all`：仅用户或协调者可发；展开为具体成员集合并写入审计，禁止成员通过文本间接升级成 `@all`。
+4. `@all`：仅用户可发（协调者作为 Agent 不能靠文本升级成广播）；展开为具体成员集合并写入审计。
 5. 回复消息：默认投递原作者，除非用户重新选择目标。
+6. 结构化 mention（`memberId`）优先于正文扫描；`structured: []` 表示明确不点名，不再回扫文本。引用块 `<quoted_message>` 内的 `@` 不触发。displayName 忽略大小写冲突时文本兜底 fail-closed。算法见 [04 §4](./04-HERMES-BORROW-SPEC.md)。
 
 ### 4.2 成员输出
 
-成员不能仅靠输出文本触发另一成员。只有调用宿主 A2A 工具才产生投递；正文中的 `@A` 只作为显示文本，最多由 UI建议转为显式投递。
+成员不能仅靠输出文本触发另一成员。只有调用宿主 A2A 工具才产生投递；正文中的 `@A` 只作为显示文本，最多由 UI 建议转为显式投递。解析器对 `sender.type === 'member'` 必须返回空目标。
 
 ### 4.3 公共与定向内容
 
@@ -247,6 +249,10 @@ A turn 调用 room_ask(B)
 7. 已执行动作摘要，特别是等待恢复时的副作用清单。
 
 摘要必须标明是系统生成的二级信息；关键验收、文件路径和任务状态从结构化真值重新注入，不能只信摘要。
+
+投影算法（自己→assistant，别人→user 前缀，剥路由 `@`，围栏内保留）见 [04 §5](./04-HERMES-BORROW-SPEC.md)。房间共享摘要由独立总结者维护，按有效公开发言计数，lease + generation CAS；Agent 自称完成不得升级为已验证事实。见 [04 §6](./04-HERMES-BORROW-SPEC.md)。
+
+Handoff 使用现有 mailbox 信封作 outbox：宿主在投递前签发 `attemptId`，忽略模型自报 depth。TAgent MVP 禁止 unlimited 深度。已开始的调用在重启后标 `outcome_unknown`，不得自动重放。见 [04 §7](./04-HERMES-BORROW-SPEC.md)。
 
 ## 8. 调度、公平性与幂等
 

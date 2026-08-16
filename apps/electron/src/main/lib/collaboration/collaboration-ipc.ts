@@ -34,6 +34,7 @@ import {
   type ListCollaborationMessagesInput,
   type ListCollaborationRoomsInput,
   type ListCollaborationRunsInput,
+  type UpdateCollaborationMemberInput,
   type UpdateCollaborationRoomInput,
 } from '@tagent/shared'
 import { CollaborationRoomService } from './collaboration-room-service'
@@ -50,6 +51,11 @@ export function registerCollaborationRoomIpc(
         kind,
         at: Date.now(),
       })
+    },
+    onTextDelta: (payload) => {
+      const win = getWindow?.()
+      if (!win) return
+      win.webContents.send(COLLABORATION_ROOM_IPC_CHANNELS.TEXT_DELTA, payload)
     },
   })
 
@@ -117,6 +123,13 @@ export function registerCollaborationRoomIpc(
   )
 
   ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.UPDATE_MEMBER,
+    async (_e, input: UpdateCollaborationMemberInput): Promise<CollaborationMember> => {
+      return service.updateMember(input)
+    },
+  )
+
+  ipcMain.handle(
     COLLABORATION_ROOM_IPC_CHANNELS.LIST_RUNS,
     async (_e, input: ListCollaborationRunsInput): Promise<CollaborationRun[]> => {
       return service.listRuns(input.roomId)
@@ -141,6 +154,6 @@ export function registerCollaborationRoomIpc(
   )
 
   console.log(
-    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/list-runs/cancel-run/list-mailbox；Stage 4 A2A 信箱 host 侧）',
+    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/update-member/list-runs/cancel-run/list-mailbox；S4-3 continuation）',
   )
 }

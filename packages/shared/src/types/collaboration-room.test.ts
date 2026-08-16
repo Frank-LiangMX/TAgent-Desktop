@@ -6,7 +6,9 @@ import {
   COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH,
   COLLABORATION_ROOM_MAX_MEMBERS,
   COLLABORATION_RUN_ID_PREFIX,
+  collaborationContinuationIdempotencyKey,
   collaborationRunIdempotencyKey,
+  nextCollaborationMentionAliases,
   isCollaborationMemberStatus,
   isCollaborationRoomStatus,
   isCollaborationRunStatus,
@@ -84,6 +86,26 @@ describe('collaborationRunIdempotencyKey', () => {
     )
     expect(collaborationRunIdempotencyKey('msg_a', 'cm_b')).not.toBe(
       collaborationRunIdempotencyKey('msg_a', 'cm_c'),
+    )
+  })
+})
+
+describe('collaborationContinuationIdempotencyKey', () => {
+  test('由 requestId + 提问者 memberId 稳定派生', () => {
+    expect(collaborationContinuationIdempotencyKey('req_1', 'cm_a')).toBe(
+      'a2a-continue:req_1:cm_a',
+    )
+    expect(collaborationContinuationIdempotencyKey('req_1', 'cm_a')).toBe(
+      collaborationContinuationIdempotencyKey('req_1', 'cm_a'),
+    )
+  })
+
+  test('不同 request 或不同成员得到不同键', () => {
+    expect(collaborationContinuationIdempotencyKey('req_1', 'cm_a')).not.toBe(
+      collaborationContinuationIdempotencyKey('req_2', 'cm_a'),
+    )
+    expect(collaborationContinuationIdempotencyKey('req_1', 'cm_a')).not.toBe(
+      collaborationContinuationIdempotencyKey('req_1', 'cm_b'),
     )
   })
 })
@@ -249,5 +271,38 @@ describe('parseCollaborationMentions', () => {
 
   test('@all 特殊常量值为 all', () => {
     expect(COLLABORATION_MENTION_ALL).toBe('all')
+  })
+
+  test('改名后 @旧名 仍命中 mentionAliases', () => {
+    const members = [
+      mkMember('cm_dev', '主程'),
+    ]
+    members[0]!.mentionAliases = ['开发']
+    expect(parseCollaborationMentions('@开发 看下', members)).toEqual(['cm_dev'])
+    expect(parseCollaborationMentions('@主程 看下', members)).toEqual(['cm_dev'])
+  })
+
+  test('当前 displayName 占用同名时优先于别人的别名', () => {
+    const oldDev = mkMember('cm_old', '主程')
+    oldDev.mentionAliases = ['开发']
+    const newDev = mkMember('cm_new', '开发')
+    expect(parseCollaborationMentions('@开发', [oldDev, newDev])).toEqual(['cm_new'])
+  })
+
+  test('@memberId 精确命中', () => {
+    const members = [mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@cm_dev 看下', members)).toEqual(['cm_dev'])
+  })
+})
+
+describe('nextCollaborationMentionAliases', () => {
+  test('旧名进入别名，新名从别名摘掉', () => {
+    expect(nextCollaborationMentionAliases(['前端'], '开发', '主程')).toEqual(['前端', '开发'])
+    expect(nextCollaborationMentionAliases(['主程', '开发'], '主程', '开发')).toEqual(['主程'])
+  })
+
+  test('同名改写（仅大小写）不堆积别名', () => {
+    expect(nextCollaborationMentionAliases(undefined, '开发', '开发')).toEqual([])
+    expect(nextCollaborationMentionAliases(['开发'], '开发', '开发')).toEqual([])
   })
 })

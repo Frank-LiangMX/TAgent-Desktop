@@ -18,6 +18,7 @@ import type {
   CreateCollaborationRoomInput,
   CreateCollaborationMemberInput,
   UpdateCollaborationRoomInput,
+  UpdateCollaborationMemberInput,
   AppendCollaborationUserMessageInput,
 } from './collaboration-room'
 
@@ -38,6 +39,8 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   LIST_MEMBERS: 'collaboration-room:list-members',
   /** 向已有房间追加一个成员（Stage 3：「添加成员」按钮；displayName + 自动绑默认渠道） */
   ADD_MEMBER: 'collaboration-room:add-member',
+  /** 更新已有成员（改显示名 / 渠道 / 模型） */
+  UPDATE_MEMBER: 'collaboration-room:update-member',
   /** 列出某房间全部 run（按 createdAt 升序，Stage 2） */
   LIST_RUNS: 'collaboration-room:list-runs',
   /** 取消某 run（abort 后端调用 + 置 cancelled，Stage 2） */
@@ -46,7 +49,19 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   LIST_MAILBOX: 'collaboration-room:list-mailbox',
   /** 房间数据变更事件（main → renderer，Stage 2 起广播） */
   CHANGED: 'collaboration-room:changed',
+  /** 成员 turn 流式正文增量（独立通道，避免走 CHANGED 全量刷新） */
+  TEXT_DELTA: 'collaboration-room:text-delta',
 } as const
+
+/** 成员 turn 流式正文增量（累积文本，非单 token） */
+export interface CollaborationTextDeltaPayload {
+  roomId: string
+  runId: string
+  memberId: string
+  /** 截至当前的累积正文 */
+  text: string
+  at: number
+}
 
 /** 列出全部房间输入 */
 export interface ListCollaborationRoomsInput {
@@ -119,6 +134,7 @@ export interface CollaborationRoomChangedPayload {
     | 'run-cancelled'
     | 'run-awaiting-peer'
     | 'mailbox-updated'
+    | 'run-continued'
   /** 发生时间戳 */
   at: number
 }
@@ -146,6 +162,7 @@ export interface CollaborationRoomChangedPayload {
 export type {
   CreateCollaborationRoomInput,
   UpdateCollaborationRoomInput,
+  UpdateCollaborationMemberInput,
   AppendCollaborationUserMessageInput,
   CollaborationRoom,
   CollaborationMember,

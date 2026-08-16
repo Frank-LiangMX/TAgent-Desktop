@@ -77,7 +77,13 @@ function createMockAdapter(opts: MockAdapterOptions = {}): {
         })
       }
       if (opts.throwErr) throw opts.throwErr
-      return { text: opts.text ?? 'mock reply' }
+      const text = opts.text ?? 'mock reply'
+      if (input.onTextDelta) {
+        const mid = Math.max(1, Math.floor(text.length / 2))
+        input.onTextDelta(text.slice(0, mid))
+        input.onTextDelta(text.slice(mid))
+      }
+      return { text }
     },
   }
   return { adapter, calls }
@@ -264,5 +270,31 @@ describe('CollaborationRoomService run 行为（Stage 2）', () => {
     expect(run.error?.code).toBe('INTERRUPTED')
     expect(run.finishedAt).toBeTypeOf('number')
     expect(svc2.listMembers(roomId)[0]!.status).toBe('idle')
+  })
+
+  test('runTurn 流式增量累积转发给 onTextDelta', async () => {
+    const deltas: Array<{ runId: string; text: string }> = []
+    const { adapter } = createMockAdapter({ text: '你好世界' })
+    const svc = CollaborationRoomService.create({
+      adapter,
+      onTextDelta: (p) => deltas.push({ runId: p.runId, text: p.text }),
+    })
+    const { roomId } = createRoomWithCoordinator(svc)
+    svc.appendUserMessage({ roomId, content: '嗨' })
+    await svc.awaitAllRuns()
+
+    expect(deltas.length).toBeGreaterThanOrEqual(2)
+    expect(deltas[deltas.length - 1]!.text).toBe('你好世界')
+    expect(deltas[0]!.text.length).toBeLessThan(deltas[deltas.length - 1]!.text.length)
+  })
+
+  test('上下文投影含成员名册与路由规则', async () => {
+    const { adapter, calls } = createMockAdapter({ text: 'ok' })
+    const svc = createService(adapter)
+    const { roomId } = createRoomWithCoordinator(svc)
+    svc.appendUserMessage({ roomId, content: '嗨' })
+    await svc.awaitAllRuns()
+    expect(calls[0]!.systemPrompt).toMatch(/房间成员/)
+    expect(calls[0]!.systemPrompt).toMatch(/不能仅靠输出/)
   })
 })

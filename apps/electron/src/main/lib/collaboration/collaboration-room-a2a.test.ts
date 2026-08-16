@@ -20,6 +20,7 @@ import type {
   MemberTurnInput,
   MemberTurnResult,
   CollaborationMemberCapabilities,
+  CollaborationRun,
 } from '@tagent/shared'
 import { CollaborationRoomService } from './collaboration-room-service'
 import { listMailboxByRoom, upsertRun } from './collaboration-room-repository'
@@ -53,6 +54,22 @@ function createHangingAdapter(): MemberBackendAdapter {
 
 function createService(adapter?: MemberBackendAdapter): CollaborationRoomService {
   return CollaborationRoomService.create({ adapter: adapter ?? createHangingAdapter() })
+}
+
+async function waitForRunStatus(
+  svc: CollaborationRoomService,
+  runId: string,
+  status: CollaborationRun['status'],
+  timeoutMs = 1000,
+): Promise<void> {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    if (svc.getRunById(runId)?.status === status) return
+    await new Promise<void>((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(
+    `timeout waiting for run ${runId} to be ${status}, got ${svc.getRunById(runId)?.status}`,
+  )
 }
 
 /** 创建带协调者+开发两成员的房间，返回 roomId + 两成员 id */
@@ -330,5 +347,224 @@ describe('CollaborationRoomService A2A 信箱 host 侧（Stage 4-2）', () => {
 
     svc.roomSend({ roomId, fromRunId: runId, toMemberId: devId, payload: 'hi' })
     expect(svc.listMailbox(roomId)).toHaveLength(1)
+  })
+
+  test('roomReply：asker 非 awaiting_peer → 不入队 continuation', () => {
+    const svc = createService()
+    const { roomId, coordinatorId, devId } = createRoomWithTwoMembers(svc)
+    const { runId } = triggerRunningRun(svc, roomId)
+
+    const ask = svc.roomAsk({ roomId, fromRunId: runId, toMemberId: devId, question: 'Q' })
+    expect(ask.ok).toBe(true)
+    if (!ask.ok) return
+
+    const devMsg = svc.appendUserMessage({ roomId, content: '开发开始', targetMemberIds: [devId] })
+    const devRun = svc.listRuns(roomId).find((r) => r.triggerMessageId === devMsg.id)!
+    const reply = svc.roomReply({
+      roomId,
+      fromRunId: devRun.id,
+      requestId: ask.requestId,
+      answer: '是的',
+    })
+    expect(reply.ok).toBe(true)
+
+    const continuations = svc
+      .listRuns(roomId)
+      .filter((r) => r.idempotencyKey.startsWith('a2a-continue:'))
+    expect(continuations).toHaveLength(0)
+    expect(svc.getRunById(runId)!.status).toBe('running')
+    void coordinatorId
+  })
+
+  test('updateMember：改显示名与渠道', () => {
+    const svc = createService()
+    const { roomId, coordinatorId } = createRoomWithTwoMembers(svc)
+    const updated = svc.updateMember({
+      roomId,
+      memberId: coordinatorId,
+      displayName: '主协调',
+      channelId: 'ch_test',
+      modelId: 'model-x',
+    })
+    expect(updated.displayName).toBe('主协调')
+    expect(updated.channelId).toBe('ch_test')
+    expect(updated.modelId).toBe('model-x')
+    expect(svc.listMembers(roomId).find((m) => m.id === coordinatorId)?.displayName).toBe('主协调')
+  })
+
+  test('updateMember：换渠道未传 modelId → 清空旧模型', () => {
+    const svc = createService()
+    const { roomId, coordinatorId } = createRoomWithTwoMembers(svc)
+    svc.updateMember({ roomId, memberId: coordinatorId, channelId: 'ch_a', modelId: 'old-model' })
+    const next = svc.updateMember({ roomId, memberId: coordinatorId, channelId: 'ch_b' })
+    expect(next.channelId).toBe('ch_b')
+    expect(next.modelId).toBeUndefined()
+  })
+
+  test('updateMember：改名后 @旧名 仍路由到该成员', () => {
+    const svc = createService()
+    const { roomId, devId } = createRoomWithTwoMembers(svc)
+    svc.updateMember({ roomId, memberId: devId, displayName: '主程' })
+    const updated = svc.listMembers(roomId).find((m) => m.id === devId)!
+    expect(updated.displayName).toBe('主程')
+    expect(updated.mentionAliases).toContain('开发')
+
+    const msg = svc.appendUserMessage({ roomId, content: '@开发 看下这个' })
+    expect(msg.targetMemberIds).toEqual([devId])
+    const runs = svc.listRuns(roomId).filter((r) => r.triggerMessageId === msg.id)
+    expect(runs).toHaveLength(1)
+    expect(runs[0]!.memberId).toBe(devId)
+  })
+
+  test('接收者 turn 的 prompt 含待处理信箱', async () => {
+    const calls: MemberTurnInput[] = []
+    const adapter: MemberBackendAdapter = {
+      capabilities: () => MOCK_CAPS,
+      runTurn: async (input: MemberTurnInput): Promise<MemberTurnResult> => {
+        calls.push(input)
+        if (input.signal.aborted) throw new Error('aborted')
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(resolve, 15)
+          input.signal.addEventListener('abort', () => {
+            clearTimeout(t)
+            reject(new Error('aborted'))
+          })
+        })
+        return { text: 'ok' }
+      },
+    }
+    const svc = createService(adapter)
+    const { roomId, devId } = createRoomWithTwoMembers(svc)
+    const start = svc.appendUserMessage({ roomId, content: '开始' })
+    const askerRun = svc.listRuns(roomId).find((r) => r.triggerMessageId === start.id)!
+    await waitForRunStatus(svc, askerRun.id, 'running')
+    const ask = svc.roomAsk({
+      roomId,
+      fromRunId: askerRun.id,
+      toMemberId: devId,
+      question: '接口定义对吗？',
+    })
+    expect(ask.ok).toBe(true)
+    svc.markRunAwaitingPeer(askerRun.id)
+
+    svc.appendUserMessage({ roomId, content: '开发开始', targetMemberIds: [devId] })
+    await svc.awaitAllRuns()
+    const devCall = calls.find((c) => c.memberId === devId)
+    expect(devCall?.prompt).toMatch(/待处理信箱/)
+    expect(devCall?.prompt).toMatch(/接口定义对吗/)
+  })
+})
+
+describe('CollaborationRoomService A2A continuation（S4-3 host 唤醒）', () => {
+  test('roomReply：asker awaiting_peer → 入队 continuation，prompt 含回复', async () => {
+    const calls: MemberTurnInput[] = []
+    const adapter: MemberBackendAdapter = {
+      capabilities: () => MOCK_CAPS,
+      runTurn: async (input: MemberTurnInput): Promise<MemberTurnResult> => {
+        calls.push(input)
+        if (input.signal.aborted) throw new Error('aborted')
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(resolve, 20)
+          input.signal.addEventListener('abort', () => {
+            clearTimeout(t)
+            reject(new Error('aborted'))
+          })
+        })
+        return { text: `ok:${input.memberId}` }
+      },
+    }
+    const svc = createService(adapter)
+    const { roomId, coordinatorId, devId } = createRoomWithTwoMembers(svc)
+
+    const msg = svc.appendUserMessage({ roomId, content: '开始' })
+    const askerRun = svc.listRuns(roomId).find((r) => r.triggerMessageId === msg.id)!
+    await waitForRunStatus(svc, askerRun.id, 'running')
+
+    const ask = svc.roomAsk({
+      roomId,
+      fromRunId: askerRun.id,
+      toMemberId: devId,
+      question: '接口定义对吗？',
+    })
+    expect(ask.ok).toBe(true)
+    if (!ask.ok) return
+
+    const awaiting = svc.markRunAwaitingPeer(askerRun.id)
+    expect(awaiting?.status).toBe('awaiting_peer')
+
+    const devMsg = svc.appendUserMessage({ roomId, content: '开发开始', targetMemberIds: [devId] })
+    const devRun = svc.listRuns(roomId).find((r) => r.triggerMessageId === devMsg.id)!
+    const reply = svc.roomReply({
+      roomId,
+      fromRunId: devRun.id,
+      requestId: ask.requestId,
+      answer: '接口没问题，继续实现',
+    })
+    expect(reply.ok).toBe(true)
+
+    await svc.awaitAllRuns()
+
+    const continuation = svc
+      .listRuns(roomId)
+      .find((r) => r.idempotencyKey === `a2a-continue:${ask.requestId}:${coordinatorId}`)
+    expect(continuation).toBeDefined()
+    expect(continuation!.status).toBe('done')
+    expect(svc.getRunById(askerRun.id)!.status).toBe('done')
+
+    const contCall = calls.find((c) => c.runId === continuation!.id)
+    expect(contCall).toBeDefined()
+    expect(contCall!.prompt).toMatch(/接口没问题，继续实现/)
+    expect(contCall!.prompt).toMatch(/A2A 恢复/)
+    expect(contCall!.systemPrompt).toMatch(/跨成员提问中恢复/)
+  })
+
+  test('roomReply：同一 request 只唤醒一次 continuation', async () => {
+    const adapter: MemberBackendAdapter = {
+      capabilities: () => MOCK_CAPS,
+      runTurn: async (input: MemberTurnInput): Promise<MemberTurnResult> => {
+        if (input.signal.aborted) throw new Error('aborted')
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(resolve, 15)
+          input.signal.addEventListener('abort', () => {
+            clearTimeout(t)
+            reject(new Error('aborted'))
+          })
+        })
+        return { text: 'ok' }
+      },
+    }
+    const svc = createService(adapter)
+    const { roomId, coordinatorId, devId } = createRoomWithTwoMembers(svc)
+    const msg = svc.appendUserMessage({ roomId, content: '开始' })
+    const askerRun = svc.listRuns(roomId).find((r) => r.triggerMessageId === msg.id)!
+    await waitForRunStatus(svc, askerRun.id, 'running')
+    const ask = svc.roomAsk({ roomId, fromRunId: askerRun.id, toMemberId: devId, question: 'Q' })
+    expect(ask.ok).toBe(true)
+    if (!ask.ok) return
+    svc.markRunAwaitingPeer(askerRun.id)
+
+    const devMsg = svc.appendUserMessage({ roomId, content: '开发开始', targetMemberIds: [devId] })
+    const devRun = svc.listRuns(roomId).find((r) => r.triggerMessageId === devMsg.id)!
+    const r1 = svc.roomReply({
+      roomId,
+      fromRunId: devRun.id,
+      requestId: ask.requestId,
+      answer: 'A1',
+    })
+    expect(r1.ok).toBe(true)
+    const r2 = svc.roomReply({
+      roomId,
+      fromRunId: devRun.id,
+      requestId: ask.requestId,
+      answer: 'A2',
+    })
+    expect(r2.ok).toBe(false)
+
+    await svc.awaitAllRuns()
+    const continuations = svc
+      .listRuns(roomId)
+      .filter((r) => r.idempotencyKey.startsWith('a2a-continue:'))
+    expect(continuations).toHaveLength(1)
+    void coordinatorId
   })
 })

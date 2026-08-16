@@ -26,14 +26,18 @@ import {
   UserPlus,
 } from '@phosphor-icons/react'
 import type {
+  Channel,
+  CollaborationMailboxEnvelope,
   CollaborationMember,
   CollaborationMessage,
   CollaborationRoom,
   CollaborationRoomStatus,
   CollaborationRun,
 } from '@tagent/shared'
+import { MessageResponse, useSmoothStream } from '@tagent/ui'
 import { ChatInput, type ChatInputHandle } from '../chat/ChatInput'
 import { CollaborationTextPrompt } from './CollaborationTextPrompt'
+import { CollaborationMemberSettings } from './CollaborationMemberSettings'
 import { cn } from '../../lib/utils'
 
 type TextPromptKind = 'add-member' | 'rename' | null
@@ -74,13 +78,14 @@ function runStatusLabel(status: CollaborationRun['status']): string {
   }
 }
 
-/** 成员显示状态：以 runs 为准（running/queued），否则看成员 status（idle/offline） */
+/** 成员显示状态：以 runs 为准（running/queued/awaiting_peer），否则看成员 status */
 function memberDisplayStatus(
   member: CollaborationMember,
   runs: CollaborationRun[],
-): 'running' | 'queued' | 'idle' | 'offline' {
+): 'running' | 'queued' | 'awaiting_peer' | 'idle' | 'offline' {
   if (runs.some((r) => r.memberId === member.id && r.status === 'running')) return 'running'
   if (runs.some((r) => r.memberId === member.id && r.status === 'queued')) return 'queued'
+  if (runs.some((r) => r.memberId === member.id && r.status === 'awaiting_peer')) return 'awaiting_peer'
   return member.status === 'offline' ? 'offline' : 'idle'
 }
 
@@ -91,6 +96,8 @@ function memberStatusLabel(status: ReturnType<typeof memberDisplayStatus>): stri
       return '思考中'
     case 'queued':
       return '排队中'
+    case 'awaiting_peer':
+      return '等待成员'
     case 'idle':
       return '空闲'
     case 'offline':
@@ -122,10 +129,13 @@ export function CollaborationRoomsPage({
   const [messages, setMessages] = useState<CollaborationMessage[]>([])
   const [members, setMembers] = useState<CollaborationMember[]>([])
   const [runs, setRuns] = useState<CollaborationRun[]>([])
-  const [channels, setChannels] = useState<Array<{ id: string; name: string }>>([])
+  const [channels, setChannels] = useState<Channel[]>([])
   const [cancellingId, setCancellingId] = useState<string | null>(null)
   const [addingMember, setAddingMember] = useState(false)
   const [textPrompt, setTextPrompt] = useState<TextPromptKind>(null)
+  const [editingMember, setEditingMember] = useState<CollaborationMember | null>(null)
+  const [mailbox, setMailbox] = useState<CollaborationMailboxEnvelope[]>([])
+  const [streamByRun, setStreamByRun] = useState<Record<string, string>>({})
   const inputRef = useRef<ChatInputHandle>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -138,20 +148,36 @@ export function CollaborationRoomsPage({
         setMessages([])
         setMembers([])
         setRuns([])
+        setMailbox([])
+        setStreamByRun({})
         return
       }
       try {
-        const [r, msgs, mems, rs] = await Promise.all([
+        const [r, msgs, mems, rs, box] = await Promise.all([
           window.electronAPI.getCollaborationRoom(roomId),
           window.electronAPI.listCollaborationMessages(roomId),
           window.electronAPI.listCollaborationMembers(roomId),
           window.electronAPI.listCollaborationRuns(roomId),
+          window.electronAPI.listCollaborationMailbox(roomId),
         ])
         if (cancelled) return
         setRoom(r ?? null)
         setMessages(Array.isArray(msgs) ? msgs : [])
         setMembers(Array.isArray(mems) ? mems : [])
         setRuns(Array.isArray(rs) ? rs : [])
+        setMailbox(Array.isArray(box) ? box : [])
+        const live = new Set(
+          (Array.isArray(rs) ? rs : [])
+            .filter((run) => run.status === 'running')
+            .map((run) => run.id),
+        )
+        setStreamByRun((prev) => {
+          const next: Record<string, string> = {}
+          for (const [id, text] of Object.entries(prev)) {
+            if (live.has(id)) next[id] = text
+          }
+          return next
+        })
       } catch (err) {
         if (cancelled) return
         console.error('[协作室主区] 加载失败:', err)
@@ -159,6 +185,7 @@ export function CollaborationRoomsPage({
         setMessages([])
         setMembers([])
         setRuns([])
+        setMailbox([])
       }
     })()
     return () => {
@@ -173,7 +200,7 @@ export function CollaborationRoomsPage({
       try {
         const list = await window.electronAPI.listChannels()
         if (cancelled) return
-        setChannels(Array.isArray(list) ? list.map((c) => ({ id: c.id, name: c.name })) : [])
+        setChannels(Array.isArray(list) ? list : [])
       } catch (err) {
         if (cancelled) return
         console.error('[协作室主区] 加载渠道失败:', err)
@@ -184,23 +211,36 @@ export function CollaborationRoomsPage({
     }
   }, [])
 
-  // 新消息 → 滚到底
+  // 流式增量：独立通道，不 bump refreshKey
+  useEffect(() => {
+    const off = window.electronAPI.onCollaborationTextDelta?.((payload) => {
+      if (!roomId || payload.roomId !== roomId) return
+      setStreamByRun((prev) => ({ ...prev, [payload.runId]: payload.text }))
+    })
+    return () => {
+      off?.()
+    }
+  }, [roomId])
+
+  // 新消息 / 流式 → 滚到底
   useEffect(() => {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [messages.length, runs.length])
+  }, [messages.length, runs.length, streamByRun])
 
-  // 活跃 run（running 优先，queued 随后）— S3 多成员可同时多个
+  // 活跃 run（running 优先，queued / awaiting_peer 随后）
   const activeRuns = runs
-    .filter((r) => r.status === 'running' || r.status === 'queued')
+    .filter((r) => r.status === 'running' || r.status === 'queued' || r.status === 'awaiting_peer')
     .sort((a, b) => {
-      const rank = (r: CollaborationRun) => (r.status === 'running' ? 0 : 1)
+      const rank = (r: CollaborationRun) =>
+        r.status === 'running' ? 0 : r.status === 'queued' ? 1 : 2
       if (rank(a) !== rank(b)) return rank(a) - rank(b)
       return (a.startedAt ?? 0) - (b.startedAt ?? 0)
     })
   // 房间并发统计（头部 x/y + 排队）
   const runningCount = runs.filter((r) => r.status === 'running').length
   const queuedCount = runs.filter((r) => r.status === 'queued').length
+  const pendingMailbox = mailbox.filter((e) => e.state === 'pending' || e.state === 'delivered')
   const maxConcurrent = room?.maxConcurrentRuns ?? 0
   const memberName = (memberId: string): string =>
     members.find((m) => m.id === memberId)?.displayName ?? '成员'
@@ -295,6 +335,26 @@ export function CollaborationRoomsPage({
       toast.error('操作失败', { description: err instanceof Error ? err.message : String(err) })
     }
   }, [room, onRoomsChanged])
+
+  const confirmMemberSettings = useCallback(
+    async (patch: { displayName: string; channelId: string; modelId: string }): Promise<void> => {
+      if (!room || !editingMember) return
+      setEditingMember(null)
+      try {
+        await window.electronAPI.updateCollaborationMember({
+          roomId: room.id,
+          memberId: editingMember.id,
+          displayName: patch.displayName,
+          channelId: patch.channelId,
+          modelId: patch.modelId,
+        })
+        onRoomsChanged()
+      } catch (err) {
+        toast.error('更新成员失败', { description: err instanceof Error ? err.message : String(err) })
+      }
+    },
+    [room, editingMember, onRoomsChanged],
+  )
 
   const handleArchive = useCallback(async (): Promise<void> => {
     if (!room) return
@@ -401,6 +461,11 @@ export function CollaborationRoomsPage({
           {queuedCount > 0 ? (
             <span className="text-amber-600" title="排队等待启动的 run">排队 {queuedCount}</span>
           ) : null}
+          {pendingMailbox.length > 0 ? (
+            <span className="text-sky-600" title="尚未回复的 A2A 信封">
+              信箱 {pendingMailbox.length}
+            </span>
+          ) : null}
           {room.workspaceId ? <span>工作区：{room.workspaceId}</span> : null}
         </div>
         {/* 成员状态条 */}
@@ -410,22 +475,26 @@ export function CollaborationRoomsPage({
               const st = memberDisplayStatus(m, runs)
               const hasBackend = memberHasExecutableBackend(m)
               return (
-                <span
+                <button
                   key={m.id}
+                  type="button"
                   className={cn(
-                    'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px]',
+                    'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] hover:ring-1 hover:ring-primary/40',
                     st === 'running' && 'bg-emerald-500/15 text-emerald-600',
                     st === 'queued' && 'bg-amber-500/15 text-amber-600',
+                    st === 'awaiting_peer' && 'bg-sky-500/15 text-sky-600',
                     (st === 'idle' || st === 'offline') && 'bg-muted text-muted-foreground',
                     !hasBackend && 'ring-1 ring-amber-500/40',
                   )}
-                  title={`${m.displayName}：${memberStatusLabel(st)}${m.isCoordinator ? '（协调者）' : ''} · 后端：${channelLabel(m)}`}
+                  title={`${m.displayName}：${memberStatusLabel(st)}${m.isCoordinator ? '（协调者）' : ''} · 后端：${channelLabel(m)} · 点击修改渠道/模型`}
+                  onClick={() => setEditingMember(m)}
                 >
                   <span
                     className={cn(
                       'inline-block size-1.5 rounded-full',
                       st === 'running' && 'animate-pulse bg-emerald-500',
                       st === 'queued' && 'bg-amber-500',
+                      st === 'awaiting_peer' && 'animate-pulse bg-sky-500',
                       st === 'idle' && 'bg-muted-foreground/40',
                       st === 'offline' && 'bg-muted-foreground/20',
                     )}
@@ -437,10 +506,29 @@ export function CollaborationRoomsPage({
                   ) : (
                     <span className="opacity-60">{channelLabel(m)}</span>
                   )}
-                </span>
+                </button>
               )
             })}
           </div>
+        ) : null}
+        {pendingMailbox.length > 0 ? (
+          <ul className="flex flex-col gap-1 pt-1.5">
+            {pendingMailbox.slice(0, 4).map((env) => (
+              <li
+                key={env.id}
+                className="truncate rounded-md bg-sky-500/10 px-2 py-1 text-[11px] text-sky-700 dark:text-sky-300"
+                title={env.payload}
+              >
+                <span className="font-medium">
+                  {env.type === 'question' ? '待回复' : env.type === 'reply' ? '回复' : '通知'}
+                </span>
+                {' · '}
+                {memberName(env.fromMemberId)} → {memberName(env.toMemberId)}
+                {' · '}
+                {env.payload}
+              </li>
+            ))}
+          </ul>
         ) : null}
       </header>
 
@@ -460,6 +548,7 @@ export function CollaborationRoomsPage({
                 key={r.id}
                 memberName={memberName(r.memberId)}
                 status={r.status}
+                streamedText={streamByRun[r.id]}
                 cancelling={cancellingId === r.id}
                 onCancel={() => void handleCancelRun(r.id)}
               />
@@ -529,6 +618,13 @@ export function CollaborationRoomsPage({
         onCancel={() => setTextPrompt(null)}
         onConfirm={(title) => void confirmRename(title)}
       />
+      <CollaborationMemberSettings
+        open={editingMember !== null}
+        member={editingMember}
+        channels={channels}
+        onCancel={() => setEditingMember(null)}
+        onSave={(patch) => void confirmMemberSettings(patch)}
+      />
     </div>
   )
 }
@@ -538,7 +634,7 @@ function memberDisplayName(authorId: string, members: CollaborationMember[]): st
   return members.find((m) => m.id === authorId)?.displayName ?? '成员'
 }
 
-/** 单条消息气泡（user 右对齐，member/system 左/居中） */
+/** 单条消息气泡（user 右对齐，member/system 左/居中；成员正文走 Markdown） */
 function MessageBubble({
   message,
   members,
@@ -564,18 +660,61 @@ function MessageBubble({
       </li>
     )
   }
-  // member
+  if (message.kind === 'a2a_request' || message.kind === 'a2a_reply') {
+    const isAsk = message.kind === 'a2a_request'
+    const targets = message.targetMemberIds
+      .map((id) => memberDisplayName(id, members))
+      .filter(Boolean)
+      .join('、')
+    return (
+      <li className="flex justify-start">
+        <div className="max-w-[80%]">
+          <div className="mb-0.5 text-[11px] text-muted-foreground">
+            {memberDisplayName(message.authorId, members)}
+            <span className="ml-1.5 rounded bg-sky-500/15 px-1 py-px text-sky-600">
+              {isAsk ? 'A2A 提问' : 'A2A 回复'}
+              {targets ? ` → ${targets}` : ''}
+            </span>
+          </div>
+          <div className="rounded-2xl rounded-bl-sm border border-sky-500/20 bg-sky-500/5 px-3.5 py-2 text-sm text-foreground">
+            <MessageResponse className="prose-p:my-1 prose-headings:my-1.5 text-sm">
+              {message.content}
+            </MessageResponse>
+          </div>
+        </div>
+      </li>
+    )
+  }
   return (
     <li className="flex justify-start">
       <div className="max-w-[80%]">
         <div className="mb-0.5 text-[11px] text-muted-foreground">
           {memberDisplayName(message.authorId, members)}
         </div>
-        <div className="whitespace-pre-wrap rounded-2xl rounded-bl-sm bg-muted px-3.5 py-2 text-sm text-foreground">
-          {message.content}
+        <div className="rounded-2xl rounded-bl-sm bg-muted px-3.5 py-2 text-sm text-foreground">
+          <MessageResponse className="prose-p:my-1 prose-headings:my-1.5 text-sm">
+            {message.content}
+          </MessageResponse>
         </div>
       </div>
     </li>
+  )
+}
+
+/** 流式正文：跟主会话一样走打字机，不完全量替换 Markdown */
+function LiveStreamBody({ text }: { text: string }): JSX.Element {
+  const { displayedContent } = useSmoothStream({
+    content: text,
+    isStreaming: true,
+  })
+  const shown = displayedContent.trim() || text
+  return (
+    <MessageResponse
+      className="prose-p:my-1 prose-headings:my-1.5 text-sm text-foreground"
+      streaming
+    >
+      {shown}
+    </MessageResponse>
   )
 }
 
@@ -583,15 +722,19 @@ function MessageBubble({
 function ThinkingBubble({
   memberName,
   status,
+  streamedText,
   cancelling,
   onCancel,
 }: {
   memberName: string
   status: CollaborationRun['status']
+  streamedText?: string
   cancelling: boolean
   onCancel: () => void
 }): JSX.Element {
   const queued = status === 'queued'
+  const waitingPeer = status === 'awaiting_peer'
+  const live = Boolean(streamedText && status === 'running')
   return (
     <li className="flex justify-start">
       <div className="max-w-[80%]">
@@ -600,14 +743,20 @@ function ThinkingBubble({
           <span
             className={cn(
               'inline-block size-1.5 rounded-full',
-              queued ? 'bg-amber-500' : 'animate-pulse bg-emerald-500',
+              queued && 'bg-amber-500',
+              waitingPeer && 'animate-pulse bg-sky-500',
+              !queued && !waitingPeer && 'animate-pulse bg-emerald-500',
             )}
           />
           <span>{runStatusLabel(status)}…</span>
         </div>
-        <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-3.5 py-2 text-sm text-muted-foreground">
+        <div className="rounded-2xl rounded-bl-sm bg-muted px-3.5 py-2 text-sm text-muted-foreground">
           {queued ? (
             <span className="text-xs">等待空闲 slot…</span>
+          ) : waitingPeer ? (
+            <span className="text-xs">已释放执行槽，等待另一成员回复</span>
+          ) : live ? (
+            <LiveStreamBody text={streamedText!} />
           ) : (
             <span className="flex gap-1">
               <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.3s]" />
@@ -615,15 +764,17 @@ function ThinkingBubble({
               <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60" />
             </span>
           )}
-          <button
-            type="button"
-            className="ml-1 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-            onClick={onCancel}
-            disabled={cancelling}
-          >
-            <StopCircle size={12} />
-            {cancelling ? '取消中…' : '取消'}
-          </button>
+          {!waitingPeer ? (
+            <button
+              type="button"
+              className="mt-1.5 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+              onClick={onCancel}
+              disabled={cancelling}
+            >
+              <StopCircle size={12} />
+              {cancelling ? '取消中…' : '取消'}
+            </button>
+          ) : null}
         </div>
       </div>
     </li>

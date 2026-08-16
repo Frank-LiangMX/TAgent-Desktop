@@ -33,9 +33,11 @@ import type {
   CollaborationRoom,
   CollaborationRun,
   CollaborationMailboxEnvelope,
+  CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
   AddCollaborationMemberInput,
   UpdateCollaborationRoomInput,
+  UpdateCollaborationMemberInput,
   AppendCollaborationUserMessageInput,
   DeleteRolesResult,
   FetchModelsInput,
@@ -589,6 +591,9 @@ const electronAPI = {
   /** 向已有房间追加一个成员（displayName + 自动绑默认渠道，Stage 3） */
   addCollaborationMember: (input: AddCollaborationMemberInput) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.ADD_MEMBER, input) as Promise<CollaborationMember>,
+  /** 更新成员（显示名 / 渠道 / 模型） */
+  updateCollaborationMember: (input: UpdateCollaborationMemberInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.UPDATE_MEMBER, input) as Promise<CollaborationMember>,
   /** 列出某房间全部 run（按入队顺序，Stage 2） */
   listCollaborationRuns: (roomId: string) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_RUNS, { roomId }) as Promise<CollaborationRun[]>,
@@ -603,6 +608,12 @@ const electronAPI = {
     const handler = (_e: unknown, payload: { roomId: string; kind: string; at: number }): void => cb(payload)
     ipcRenderer.on(COLLABORATION_ROOM_IPC_CHANNELS.CHANGED, handler)
     return () => ipcRenderer.removeListener(COLLABORATION_ROOM_IPC_CHANNELS.CHANGED, handler)
+  },
+  /** 成员 turn 流式正文增量（不走 CHANGED，避免每 token 全量刷新） */
+  onCollaborationTextDelta: (cb: (payload: CollaborationTextDeltaPayload) => void) => {
+    const handler = (_e: unknown, payload: CollaborationTextDeltaPayload): void => cb(payload)
+    ipcRenderer.on(COLLABORATION_ROOM_IPC_CHANNELS.TEXT_DELTA, handler)
+    return () => ipcRenderer.removeListener(COLLABORATION_ROOM_IPC_CHANNELS.TEXT_DELTA, handler)
   },
 
   // ===== 自动更新 =====
