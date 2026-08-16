@@ -445,14 +445,13 @@ export function App(): JSX.Element {
     setSidebarOpen(true)
   }, [])
 
-  /** 新建协作室（默认带协调者 + 开发两个成员，S3 即可手测 @点名 / 多成员并行；可在头部重命名 / 添加成员） */
+  /** 新建协作室（默认只有协调者；其余成员创建后用「添加成员」弹窗选内核/渠道 + 模型加入） */
   const newCollaborationRoom = useCallback(async (): Promise<void> => {
     try {
       const created = await window.electronAPI.createCollaborationRoom({
         title: '新协作室',
         members: [
           { displayName: '协调者', isCoordinator: true },
-          { displayName: '开发' },
         ],
       })
       setActiveCollaborationRoomId(created.id)

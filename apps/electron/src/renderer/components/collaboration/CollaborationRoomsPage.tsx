@@ -3,6 +3,7 @@
  *
  * 选中房间 → 头部（标题/状态/目标/成员数/并发 x/y/排队/重命名/暂停/归档/添加成员）+
  * 成员状态条（空闲/思考中/排队中）+ 时间线（用户/成员/系统消息 + 多条「思考中」）+ 输入框。
+ * 添加成员弹窗可选内核（渠道）+ 模型 + 是否协调者；成员气泡可再编辑渠道/模型。
  *
  * Stage 3：发消息 → 主进程解析 @mention → 多目标并行 run（受 maxConcurrentRuns + 成员串行限制）→
  *   CHANGED 广播 → 本页重新拉取，实时看到①用户消息②多条「XX 思考中 / 排队中」+ 各自取消③成员回复气泡。
@@ -38,9 +39,10 @@ import { MessageResponse, useSmoothStream } from '@tagent/ui'
 import { ChatInput, type ChatInputHandle } from '../chat/ChatInput'
 import { CollaborationTextPrompt } from './CollaborationTextPrompt'
 import { CollaborationMemberSettings } from './CollaborationMemberSettings'
+import { CollaborationAddMemberDialog } from './CollaborationAddMemberDialog'
 import { cn } from '../../lib/utils'
 
-type TextPromptKind = 'add-member' | 'rename' | null
+type TextPromptKind = 'rename' | null
 
 /** 房间状态 → 中文标签 */
 function roomStatusLabel(status: CollaborationRoomStatus): string {
@@ -132,6 +134,7 @@ export function CollaborationRoomsPage({
   const [channels, setChannels] = useState<Channel[]>([])
   const [cancellingId, setCancellingId] = useState<string | null>(null)
   const [addingMember, setAddingMember] = useState(false)
+  const [showAddMemberDialog, setShowAddMemberDialog] = useState(false)
   const [textPrompt, setTextPrompt] = useState<TextPromptKind>(null)
   const [editingMember, setEditingMember] = useState<CollaborationMember | null>(null)
   const [mailbox, setMailbox] = useState<CollaborationMailboxEnvelope[]>([])
@@ -292,12 +295,23 @@ export function CollaborationRoomsPage({
   )
 
   const confirmAddMember = useCallback(
-    async (name: string): Promise<void> => {
+    async (patch: {
+      displayName: string
+      channelId: string
+      modelId: string
+      isCoordinator: boolean
+    }): Promise<void> => {
       if (!room) return
-      setTextPrompt(null)
+      setShowAddMemberDialog(false)
       setAddingMember(true)
       try {
-        await window.electronAPI.addCollaborationMember({ roomId: room.id, displayName: name })
+        await window.electronAPI.addCollaborationMember({
+          roomId: room.id,
+          displayName: patch.displayName,
+          channelId: patch.channelId || undefined,
+          modelId: patch.modelId || undefined,
+          isCoordinator: patch.isCoordinator,
+        })
         onRoomsChanged()
       } catch (err) {
         console.error('[协作室] 添加成员失败:', err)
@@ -439,7 +453,7 @@ export function CollaborationRoomsPage({
             className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
             aria-label="添加成员"
             disabled={addingMember || archived}
-            onClick={() => setTextPrompt('add-member')}
+            onClick={() => setShowAddMemberDialog(true)}
           >
             <UserPlus size={14} />
           </button>
@@ -602,15 +616,6 @@ export function CollaborationRoomsPage({
       </div>
 
       <CollaborationTextPrompt
-        open={textPrompt === 'add-member'}
-        title="添加成员"
-        label="输入显示名，将自动绑定当前可用渠道（kscc 优先）"
-        placeholder="例如：开发"
-        confirmLabel="添加"
-        onCancel={() => setTextPrompt(null)}
-        onConfirm={(name) => void confirmAddMember(name)}
-      />
-      <CollaborationTextPrompt
         open={textPrompt === 'rename'}
         title="重命名协作室"
         defaultValue={room.title}
@@ -624,6 +629,12 @@ export function CollaborationRoomsPage({
         channels={channels}
         onCancel={() => setEditingMember(null)}
         onSave={(patch) => void confirmMemberSettings(patch)}
+      />
+      <CollaborationAddMemberDialog
+        open={showAddMemberDialog}
+        channels={channels}
+        onCancel={() => setShowAddMemberDialog(false)}
+        onSave={(patch) => void confirmAddMember(patch)}
       />
     </div>
   )
