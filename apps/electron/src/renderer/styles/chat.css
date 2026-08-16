@@ -37,15 +37,18 @@
  * 用户气泡：中性玻璃板 + 右下尖角 + 顶高光 + 向下柔影
  * 对齐 TAgent_General agent-thread.css:420-438（.tagent-agent-thread .agent-user-bubble）。
  * 用 .tagent-thread 父前缀提优先级，压过库组件 UserMessageContent 的 px-3.5 py-2.5。
- * fill 调实（0.88）：TAgent_General 气泡叠在 content-area 实色面板上才明显（fill 0.59），
- * 我无面板、scene 半透明直透，需更实 fill 才有边界。
- * 禁 backdrop-filter（圆角糊黑）。
+ * 光泽玻璃配方与协作室气泡/run 卡统一：径向高光 + 对角渐变 + 内描边 + 背景模糊。
  */
 .tagent-thread .agent-user-bubble {
-  background: rgb(var(--glass-rgb) / 0.88);
-  border: 1px solid var(--surface-role-message-user-rim);
+  background:
+    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 66%),
+    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.62), rgb(var(--glass-rgb) / 0.42));
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
   border-radius: var(--bubble-radius, 16px);
-  box-shadow: var(--surface-role-message-user-shadow);
+  box-shadow:
+    0 4px 14px -6px rgb(48 59 76 / 0.16),
+    inset 0 1px 0 rgb(255 255 255 / 0.4),
+    inset 1px 0 0 rgb(255 255 255 / 0.12);
   color: hsl(var(--foreground) / 0.92);
   font-size: 12px;
   font-weight: 500;
@@ -57,9 +60,14 @@
   box-sizing: border-box;
   word-break: normal;
   overflow-wrap: anywhere;
-  filter: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  backdrop-filter: blur(14px) saturate(1.1);
+}
+.dark .tagent-thread .agent-user-bubble {
+  border-color: rgb(255 255 255 / 0.1);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 4px 14px -6px rgb(0 0 0 / 0.3);
 }
 
 /*

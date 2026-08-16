@@ -46,14 +46,16 @@ function roomStatusLabel(status: CollaborationRoomStatus): string {
   }
 }
 
-/** 相对时间（刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期） */
+/** 相对时间：对齐会话侧栏（刚刚 / N分钟前 / N小时前 / 昨天 / N天前 / 上周） */
 function formatRelativeTime(ts: number): string {
   const diff = Date.now() - ts
-  if (diff < 60_000) return '刚刚'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
-  return new Date(ts).toLocaleDateString()
+  const ageMin = diff / 60000
+  if (ageMin < 1) return '刚刚'
+  if (ageMin < 60) return `${Math.floor(ageMin)}分钟前`
+  if (ageMin < 24 * 60) return `${Math.floor(ageMin / 60)}小时前`
+  if (ageMin < 48 * 60) return '昨天'
+  if (ageMin < 7 * 24 * 60) return `${Math.floor(ageMin / (24 * 60))}天前`
+  return '上周'
 }
 
 interface CollaborationRoomSidebarProps {
@@ -100,6 +102,8 @@ export function CollaborationRoomSidebar({
     !q || room.title.toLowerCase().includes(q)
   const activeRooms = rooms.filter((r) => r.status !== 'archived' && matchesQuery(r))
   const archivedRooms = rooms.filter((r) => r.status === 'archived' && matchesQuery(r))
+  // 对齐会话侧栏：手动展开，或搜索有结果时自动展开
+  const archivedOpen = archivedExpanded || Boolean(q && archivedRooms.length)
 
   // Ctrl+K / ⌘K 聚焦搜索（对齐会话侧栏）
   useEffect(() => {
@@ -235,16 +239,17 @@ export function CollaborationRoomSidebar({
       {/* 已归档底栏 */}
       {archivedRooms.length > 0 ? (
         <div className="arch-foot">
-          <div className={cn('group-archived', archivedExpanded && 'open')}>
+          <div className={cn('group group-archived', archivedOpen && 'open')}>
             <button
               type="button"
               className="group-head"
               onClick={() => setArchivedExpanded((v) => !v)}
+              aria-expanded={archivedOpen}
             >
               <CaretRight
                 size={12}
                 weight="regular"
-                className={cn('caret', !archivedExpanded && 'caret-empty')}
+                className="caret"
                 aria-hidden
               />
               <span className="gname">已归档</span>
@@ -277,7 +282,7 @@ export function CollaborationRoomSidebar({
   )
 }
 
-/** 单个房间行：状态点 + 标题/状态 + 时间 + 三点菜单（对齐会话侧栏行） */
+/** 单个房间行：状态点 + 标题 + 时间同一行，三点菜单在标题行，第二行状态文字对齐标题（对齐会话卡） */
 function RoomRow({
   room,
   active,
@@ -298,57 +303,54 @@ function RoomRow({
       className={cn('row', active && 'is-open')}
       onClick={onSelect}
     >
-      <span
-        className={cn(
-          'stat-dot',
-          room.status === 'active' && 'room-active',
-          room.status === 'paused' && 'room-paused',
-          room.status === 'completed' && 'room-completed',
-        )}
-      />
       <div className="body">
         <div className="title">
-          <AppTooltip label={room.title} side="top" multiline>
-            <span className="t">{room.title}</span>
-          </AppTooltip>
+          <span
+            className={cn(
+              'stat-dot',
+              room.status === 'active' && 'done',
+              room.status === 'paused' && 'pending',
+              room.status === 'completed' && 'done',
+            )}
+          />
+          <span className="t">{room.title}</span>
+          <span className="m time">{formatRelativeTime(room.updatedAt)}</span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="dots"
+                onClick={(e) => e.stopPropagation()}
+                aria-label="房间操作"
+              >
+                <DotsThreeVertical size={14} weight="regular" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={onRename}>
+                <PencilSimple size={13} weight="regular" className="mr-1.5" /> 重命名
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onTogglePause}>
+                {room.status === 'paused' ? (
+                  <>
+                    <Play size={13} weight="regular" className="mr-1.5" /> 恢复运行
+                  </>
+                ) : (
+                  <>
+                    <Pause size={13} weight="regular" className="mr-1.5" /> 暂停新运行
+                  </>
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onArchive}>
+                <Archive size={13} weight="regular" className="mr-1.5" /> 归档
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
         <div className="meta">
           <span className="m turns">{roomStatusLabel(room.status)}</span>
-          <span className="m time">{formatRelativeTime(room.updatedAt)}</span>
         </div>
       </div>
-
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            className="dots"
-            onClick={(e) => e.stopPropagation()}
-            aria-label="房间操作"
-          >
-            <DotsThreeVertical size={14} />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={onRename}>
-            <PencilSimple size={14} className="mr-1.5" /> 重命名
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={onTogglePause}>
-            {room.status === 'paused' ? (
-              <>
-                <Play size={14} className="mr-1.5" /> 恢复运行
-              </>
-            ) : (
-              <>
-                <Pause size={14} className="mr-1.5" /> 暂停新运行
-              </>
-            )}
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={onArchive}>
-            <Archive size={14} className="mr-1.5" /> 归档
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
     </li>
   )
 }
@@ -363,28 +365,28 @@ function ArchivedRoomRow({
 }): JSX.Element {
   return (
     <li className="row row-archived" onClick={onRestore}>
-      <span className="arch-mark" />
       <div className="body">
         <div className="title">
+          <span className="arch-mark" />
           <span className="t" title={room.title}>
             {room.title}
           </span>
           <span className="arch-status">已归档</span>
+          <AppTooltip label="恢复" side="top">
+            <button
+              type="button"
+              className="dots"
+              aria-label="恢复"
+              onClick={(e) => {
+                e.stopPropagation()
+                onRestore()
+              }}
+            >
+              <Play size={12} />
+            </button>
+          </AppTooltip>
         </div>
       </div>
-      <AppTooltip label="恢复" side="top">
-        <button
-          type="button"
-          className="dots"
-          aria-label="恢复"
-          onClick={(e) => {
-            e.stopPropagation()
-            onRestore()
-          }}
-        >
-          <Play size={12} />
-        </button>
-      </AppTooltip>
     </li>
   )
 }

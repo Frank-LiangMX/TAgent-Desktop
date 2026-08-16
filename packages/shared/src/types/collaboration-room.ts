@@ -921,6 +921,76 @@ export function projectCollaborationTurnContext(
   return { systemPrompt, messages: projected }
 }
 
+// ===== S3.5-c 安静时间线（H3，04-HERMES-BORROW-SPEC §8） =====
+
+export type CollaborationTimelineItem =
+  | { type: 'user' | 'system' | 'member' | 'a2a'; message: CollaborationMessage }
+  | { type: 'run'; run: CollaborationRun; messages: CollaborationMessage[] }
+
+/**
+ * 把消息 + run 收拢成时间线条目（04 §8）：
+ * - 用户 chat / 系统 warning / A2A 提问回复 → 独立条目
+ * - 成员 chat 按 runId 收进 run 卡（该 run 的正文 + 状态），不散成气泡
+ * - 无 run 的成员消息（历史数据）退化为独立 member 条目
+ * - 排序：run 以 startedAt ?? createdAt 为主键、其次 run.id；消息以 createdAt 为主
+ */
+export function groupCollaborationTimelineItems(
+  messages: CollaborationMessage[],
+  runs: CollaborationRun[],
+): CollaborationTimelineItem[] {
+  const runById = new Map(runs.map((r) => [r.id, r]))
+  const runMessages = new Map<string, CollaborationMessage[]>()
+  const standalone: Array<{ type: 'user' | 'system' | 'member' | 'a2a'; message: CollaborationMessage }> = []
+
+  for (const m of messages) {
+    if (m.kind === 'chat' && m.authorType === 'member') {
+      if (m.runId && runById.has(m.runId)) {
+        const list = runMessages.get(m.runId) ?? []
+        list.push(m)
+        runMessages.set(m.runId, list)
+        continue
+      }
+      standalone.push({ type: 'member', message: m })
+      continue
+    }
+    if (m.kind === 'a2a_request' || m.kind === 'a2a_reply') {
+      standalone.push({ type: 'a2a', message: m })
+      continue
+    }
+    if (m.authorType === 'user') {
+      standalone.push({ type: 'user', message: m })
+      continue
+    }
+    standalone.push({ type: 'system', message: m })
+  }
+
+  const items: CollaborationTimelineItem[] = [
+    ...standalone,
+    ...runs.map((run) => ({
+      type: 'run' as const,
+      run,
+      messages: runMessages.get(run.id) ?? [],
+    })),
+  ]
+
+  items.sort((a, b) => {
+    const aAnchor =
+      a.type === 'run'
+        ? (a.run.startedAt ?? a.run.createdAt)
+        : a.message.createdAt
+    const bAnchor =
+      b.type === 'run'
+        ? (b.run.startedAt ?? b.run.createdAt)
+        : b.message.createdAt
+    if (aAnchor !== bAnchor) return aAnchor - bAnchor
+    const aId = a.type === 'run' ? a.run.id : a.message.id
+    const bId = b.type === 'run' ? b.run.id : b.message.id
+    return aId < bId ? -1 : aId > bId ? 1 : 0
+  })
+
+  return items
+}
+
 /**
  * 改名时累积 mention 别名：旧名进别名，新名从别名里摘掉，去重保序。
  */

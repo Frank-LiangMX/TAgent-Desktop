@@ -16,7 +16,6 @@
  * 变更后调 onRoomsChanged 通知 App bump refreshKey；run/member 变更由 CHANGED 广播驱动 bump。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useAtomValue } from 'jotai'
 import { toast } from 'sonner'
 import { motion } from 'motion/react'
 import {
@@ -27,7 +26,6 @@ import {
   Pause,
   PencilSimple,
   Play,
-  StopCircle,
   UsersThree,
 } from '@phosphor-icons/react'
 import type {
@@ -40,16 +38,15 @@ import type {
   CollaborationRoomStatus,
   CollaborationRun,
 } from '@tagent/shared'
-import { DEFAULT_USER_NAME } from '@tagent/shared'
-import { userProfileAtom } from '../../atoms/user-profile'
-import { AppTooltip, MessageResponse, useSmoothStream } from '@tagent/ui'
+import { AppTooltip } from '@tagent/ui'
 import { ChatInput, type ChatInputHandle } from '../chat/ChatInput'
 import BlurText from '../chat/BlurText'
 import { CollaborationTextPrompt } from './CollaborationTextPrompt'
 import { CollaborationMemberSettings } from './CollaborationMemberSettings'
 import { CollaborationAddMemberDialog } from './CollaborationAddMemberDialog'
+import { CollaborationTimeline } from './CollaborationTimeline'
+import { MemberAvatar } from './CollaborationAvatars'
 import { cn } from '../../lib/utils'
-import { getModelLogo } from '../../lib/model-logo'
 
 type TextPromptKind = 'rename' | null
 
@@ -85,28 +82,6 @@ function roomStatusLabel(status: CollaborationRoomStatus): string {
       return '已归档'
     case 'completed':
       return '已完成'
-  }
-}
-
-/** run 状态 → 中文标签 */
-function runStatusLabel(status: CollaborationRun['status']): string {
-  switch (status) {
-    case 'queued':
-      return '排队中'
-    case 'running':
-      return '思考中'
-    case 'done':
-      return '已完成'
-    case 'failed':
-      return '失败'
-    case 'cancelled':
-      return '已取消'
-    case 'awaiting_peer':
-      return '等待成员'
-    case 'awaiting_user':
-      return '等待用户'
-    case 'blocked':
-      return '阻塞'
   }
 }
 
@@ -262,15 +237,6 @@ export function CollaborationRoomsPage({
     if (el) el.scrollTop = el.scrollHeight
   }, [messages.length, runs.length, streamByRun])
 
-  // 活跃 run（running 优先，queued / awaiting_peer 随后）
-  const activeRuns = runs
-    .filter((r) => r.status === 'running' || r.status === 'queued' || r.status === 'awaiting_peer')
-    .sort((a, b) => {
-      const rank = (r: CollaborationRun) =>
-        r.status === 'running' ? 0 : r.status === 'queued' ? 1 : 2
-      if (rank(a) !== rank(b)) return rank(a) - rank(b)
-      return (a.startedAt ?? 0) - (b.startedAt ?? 0)
-    })
   // 房间并发统计（头部 x/y + 排队）
   const runningCount = runs.filter((r) => r.status === 'running').length
   const queuedCount = runs.filter((r) => r.status === 'queued').length
@@ -620,15 +586,26 @@ export function CollaborationRoomsPage({
                   <button
                     type="button"
                     className={cn(
-                      'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors hover:ring-1 hover:ring-primary/40',
-                      st === 'running' && 'bg-emerald-500/15 text-emerald-600',
-                      st === 'queued' && 'bg-amber-500/15 text-amber-600',
-                      st === 'awaiting_peer' && 'bg-sky-500/15 text-sky-600',
-                      (st === 'idle' || st === 'offline') && 'bg-muted text-muted-foreground',
+                      'inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-foreground/[0.04] py-0.5 pl-0.5 pr-2 text-[11px] transition-colors hover:border-primary/40 hover:bg-foreground/[0.08]',
+                      st === 'running' && 'border-emerald-500/30 bg-emerald-500/10',
+                      st === 'queued' && 'border-amber-500/30 bg-amber-500/10',
+                      st === 'awaiting_peer' && 'border-sky-500/30 bg-sky-500/10',
                       !hasBackend && 'ring-1 ring-amber-500/40',
                     )}
                     aria-label={`编辑成员 ${m.displayName}`}
                   >
+                    <MemberAvatar member={m} channels={channels} size={18} />
+                    <span className="font-medium text-foreground/85">{m.displayName}</span>
+                    {m.isCoordinator ? (
+                      <span className="rounded bg-primary/10 px-1 text-[9px] font-medium text-primary">
+                        协调
+                      </span>
+                    ) : null}
+                    {!hasBackend ? (
+                      <span className="font-medium text-amber-600">无渠道</span>
+                    ) : (
+                      <span className="opacity-60">{channelLabel(m)}</span>
+                    )}
                     <span
                       className={cn(
                         'collab-status-dot inline-block size-1.5 rounded-full',
@@ -639,13 +616,6 @@ export function CollaborationRoomsPage({
                         st === 'offline' && 'bg-muted-foreground/20',
                       )}
                     />
-                    {m.displayName}
-                    {m.isCoordinator ? <span className="opacity-60">·协调</span> : null}
-                    {!hasBackend ? (
-                      <span className="rounded bg-amber-500/15 px-1 font-medium text-amber-600">无渠道</span>
-                    ) : (
-                      <span className="opacity-60">{channelLabel(m)}</span>
-                    )}
                   </button>
                 </CollaborationMemberSettings>
               )
@@ -673,37 +643,20 @@ export function CollaborationRoomsPage({
         ) : null}
       </header>
 
-      {/* 时间线（对齐会话信息流：tagent-thread 居中限宽） */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-        {messages.length === 0 && activeRuns.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            还没有消息。在下方输入并发送一条消息试试（可 @成员名 点名）。
-          </div>
-        ) : (
-          <div className="tagent-thread px-5 pb-44">
-            <ul className="flex flex-col gap-2.5">
-              {messages.map((m) => (
-                <MessageBubble key={m.id} message={m} members={members} channels={channels} />
-              ))}
-              {activeRuns.map((r) => (
-                <ThinkingBubble
-                  key={r.id}
-                  member={members.find((m) => m.id === r.memberId)}
-                  channels={channels}
-                  memberName={memberName(r.memberId)}
-                  status={r.status}
-                  streamedText={streamByRun[r.id]}
-                  cancelling={cancellingId === r.id}
-                  onCancel={() => void handleCancelRun(r.id)}
-                />
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
+      {/* 时间线（S3.5-c：一 run 一卡，对齐会话信息流） */}
+      <CollaborationTimeline
+        messages={messages}
+        runs={runs}
+        members={members}
+        channels={channels}
+        streamByRun={streamByRun}
+        cancellingId={cancellingId}
+        onCancelRun={(runId) => void handleCancelRun(runId)}
+        scrollRef={scrollRef}
+      />
 
       {/* 底部输入栈（绝对定位，输入框底与侧栏底对齐，对齐会话 composer） */}
-      <div className="session-bottom-stack absolute inset-x-0">
+      <div className="collab-bottom-stack session-bottom-stack absolute inset-x-0">
         <div className="composer-blur-underlay" aria-hidden="true" />
         <div className="session-composer-cluster">
           {archived ? (
@@ -764,247 +717,3 @@ export function CollaborationRoomsPage({
   )
 }
 
-/** 成员名查找（member 气泡显示作者名） */
-function memberDisplayName(authorId: string, members: CollaborationMember[]): string {
-  return members.find((m) => m.id === authorId)?.displayName ?? '成员'
-}
-
-/** 成员头像：优先模型 logo，兜底显示名首字 + 按成员 ID 稳定的主题色 */
-function MemberAvatar({
-  member,
-  channels,
-  size = 32,
-}: {
-  member: CollaborationMember
-  channels: Channel[]
-  size?: number
-}): JSX.Element {
-  const channel = channels.find((c) => c.id === member.channelId)
-  const logo =
-    member.modelId && channel?.provider
-      ? getModelLogo(member.modelId, channel.provider)
-      : undefined
-  const box = {
-    width: size,
-    height: size,
-    fontSize: Math.round(size * 0.42),
-  }
-  if (logo) {
-    return (
-      <img
-        src={logo}
-        alt={member.displayName}
-        className="shrink-0 rounded-full border-[0.5px] border-foreground/10 object-cover"
-        style={box}
-      />
-    )
-  }
-  const palette = [
-    'bg-primary/15 text-primary',
-    'bg-sky-500/15 text-sky-600',
-    'bg-amber-500/15 text-amber-600',
-    'bg-emerald-500/15 text-emerald-600',
-    'bg-violet-500/15 text-violet-600',
-  ]
-  const idx =
-    Array.from(member.id).reduce((acc, ch) => acc + ch.charCodeAt(0), 0) %
-    palette.length
-  return (
-    <div
-      className={cn(
-        'flex shrink-0 items-center justify-center rounded-full border-[0.5px] border-foreground/10 font-semibold',
-        palette[idx],
-      )}
-      style={box}
-    >
-      {member.displayName.slice(0, 1)}
-    </div>
-  )
-}
-
-/** 用户消息头像：与设置左下角/会话一致，用户名首字圆形渐变头像 */
-function UserMessageAvatar(): JSX.Element {
-  const profile = useAtomValue(userProfileAtom)
-  const userName = (profile.userName || DEFAULT_USER_NAME).trim() || DEFAULT_USER_NAME
-  const avatarLetter = userName.charAt(0).toUpperCase() || 'U'
-  return (
-    <AppTooltip label={userName}>
-      <span
-        className="flex size-9 shrink-0 select-none items-center justify-center rounded-full border-2 border-background/90 text-sm font-bold leading-none text-primary-foreground"
-        style={{
-          background:
-            'linear-gradient(145deg, color-mix(in srgb, hsl(var(--primary)) 82%, white), hsl(var(--primary) / 0.62))',
-          boxShadow:
-            '0 1px 2px hsl(var(--foreground) / 0.08), 0 4px 12px -2px hsl(var(--foreground) / 0.12)',
-        }}
-        aria-label={userName}
-      >
-        {avatarLetter}
-      </span>
-    </AppTooltip>
-  )
-}
-
-/** 单条消息气泡（user 右对齐，member/system 左/居中；成员正文走 Markdown） */
-function MessageBubble({
-  message,
-  members,
-  channels,
-}: {
-  message: CollaborationMessage
-  members: CollaborationMember[]
-  channels: Channel[]
-}): JSX.Element {
-  if (message.authorType === 'user') {
-    return (
-      <li className="flex justify-end gap-2">
-        <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl border border-border/60 bg-foreground/[0.05] px-3.5 py-2 text-sm text-foreground backdrop-blur-sm">
-          {message.content}
-        </div>
-        <UserMessageAvatar />
-      </li>
-    )
-  }
-  if (message.authorType === 'system') {
-    return (
-      <li className="flex justify-center">
-        <div className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
-          {message.content}
-        </div>
-      </li>
-    )
-  }
-  if (message.kind === 'a2a_request' || message.kind === 'a2a_reply') {
-    const isAsk = message.kind === 'a2a_request'
-    const targets = message.targetMemberIds
-      .map((id) => memberDisplayName(id, members))
-      .filter(Boolean)
-      .join('、')
-    const author = members.find((m) => m.id === message.authorId)
-    return (
-      <li className="flex justify-start gap-2">
-        {author ? <MemberAvatar member={author} channels={channels} /> : null}
-        <div className="max-w-[80%]">
-          <div className="mb-0.5 text-[11px] text-muted-foreground">
-            {memberDisplayName(message.authorId, members)}
-            <span className="ml-1.5 rounded bg-sky-500/15 px-1 py-px text-sky-600">
-              {isAsk ? 'A2A 提问' : 'A2A 回复'}
-              {targets ? ` → ${targets}` : ''}
-            </span>
-          </div>
-          <div className="rounded-2xl border border-sky-500/20 bg-sky-500/5 px-3.5 py-2 text-sm text-foreground">
-            <MessageResponse className="prose-p:my-1 prose-headings:my-1.5 text-sm">
-              {message.content}
-            </MessageResponse>
-          </div>
-        </div>
-      </li>
-    )
-  }
-  const author = members.find((m) => m.id === message.authorId)
-  return (
-    <li className="flex justify-start gap-2">
-      {author ? <MemberAvatar member={author} channels={channels} /> : null}
-      <div className="max-w-[80%]">
-        <div className="mb-0.5 text-[11px] text-muted-foreground">
-          {memberDisplayName(message.authorId, members)}
-        </div>
-        <div className="rounded-2xl border border-border/50 bg-foreground/[0.03] px-3.5 py-2 text-sm text-foreground backdrop-blur-sm">
-          <MessageResponse className="prose-p:my-1 prose-headings:my-1.5 text-sm">
-            {message.content}
-          </MessageResponse>
-        </div>
-      </div>
-    </li>
-  )
-}
-
-/** 流式正文：跟主会话一样走打字机，不完全量替换 Markdown */
-function LiveStreamBody({ text }: { text: string }): JSX.Element {
-  const { displayedContent } = useSmoothStream({
-    content: text,
-    isStreaming: true,
-  })
-  const shown = displayedContent.trim() || text
-  return (
-    <MessageResponse
-      className="prose-p:my-1 prose-headings:my-1.5 text-sm text-foreground"
-      streaming
-    >
-      {shown}
-    </MessageResponse>
-  )
-}
-
-/** 成员「思考中」气泡 + 取消按钮（活跃 run 时显示在时间线末尾） */
-function ThinkingBubble({
-  member,
-  channels,
-  memberName,
-  status,
-  streamedText,
-  cancelling,
-  onCancel,
-}: {
-  member?: CollaborationMember
-  channels: Channel[]
-  memberName: string
-  status: CollaborationRun['status']
-  streamedText?: string
-  cancelling: boolean
-  onCancel: () => void
-}): JSX.Element {
-  const queued = status === 'queued'
-  const waitingPeer = status === 'awaiting_peer'
-  const live = Boolean(streamedText && status === 'running')
-  return (
-    <li className="flex justify-start">
-      <div className="max-w-[80%]">
-        <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          {member ? <MemberAvatar member={member} channels={channels} size={20} /> : null}
-          <span className="font-medium text-foreground/70">{memberName}</span>
-          <span
-            className={cn(
-              'collab-status-dot inline-block size-1.5 rounded-full',
-              queued && 'bg-amber-500',
-              waitingPeer && 'animate-pulse bg-sky-500',
-              !queued && !waitingPeer && 'animate-pulse bg-emerald-500',
-            )}
-          />
-          <span>{runStatusLabel(status)}…</span>
-        </div>
-        <div
-          className="collab-run-card rounded-2xl px-3.5 py-2.5 text-sm text-foreground/90"
-          data-status={status}
-        >
-          {queued ? (
-            <span className="text-xs">等待空闲 slot…</span>
-          ) : waitingPeer ? (
-            <span className="text-xs">已释放执行槽，等待另一成员回复</span>
-          ) : live ? (
-            <LiveStreamBody text={streamedText!} />
-          ) : (
-            <span className="flex gap-1">
-              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.3s]" />
-              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.15s]" />
-              <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60" />
-            </span>
-          )}
-        </div>
-        {!waitingPeer ? (
-          <div className="mt-1.5 flex justify-end">
-            <button
-              type="button"
-              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
-              onClick={onCancel}
-              disabled={cancelling}
-            >
-              <StopCircle size={12} />
-              {cancelling ? '取消中…' : '取消'}
-            </button>
-          </div>
-        ) : null}
-      </div>
-    </li>
-  )
-}

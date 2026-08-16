@@ -6,20 +6,6 @@
  * 这里只补协作室特有的语义颜色与微调。
  */
 
-/* 房间状态点：active 绿 / paused 琥珀 / completed 蓝（对齐会话 .stat-dot 尺寸与质感） */
-.stat-dot.room-active {
-  background: hsl(152 42% 42% / 0.92);
-}
-.stat-dot.room-paused {
-  background: hsl(38 92% 50% / 0.92);
-}
-.stat-dot.room-completed {
-  background: hsl(217 91% 60% / 0.92);
-}
-.light .stat-dot.room-active {
-  background: hsl(152 36% 36% / 0.9);
-}
-
 /* 主区 run 卡：玻璃底 + 状态色描边，进场滑入 */
 .collab-run-card {
   border: 1px solid rgb(var(--glass-rgb) / 0.45);
@@ -59,6 +45,32 @@
     opacity: 1;
     transform: translateY(0) scale(1);
   }
+}
+
+/* 消息气泡：光泽玻璃配方（与 run 卡同一套视觉语言，用户/成员共用） */
+.collab-glass-bubble {
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  background:
+    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 66%),
+    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.5), rgb(var(--glass-rgb) / 0.3));
+  box-shadow:
+    0 4px 14px -6px rgb(48 59 76 / 0.16),
+    inset 0 1px 0 rgb(255 255 255 / 0.4),
+    inset 1px 0 0 rgb(255 255 255 / 0.12);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  backdrop-filter: blur(14px) saturate(1.1);
+}
+.dark .collab-glass-bubble {
+  border-color: rgb(255 255 255 / 0.1);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 4px 14px -6px rgb(0 0 0 / 0.3);
+}
+
+/* 协作室底部模糊带：比输入框略宽（8px 边距），仍避开最右侧细滚动条 */
+.collab-bottom-stack .composer-blur-underlay {
+  left: 8px;
+  right: 8px;
 }
 
 /* 状态圆点过渡：换色/脉冲不跳变 */
