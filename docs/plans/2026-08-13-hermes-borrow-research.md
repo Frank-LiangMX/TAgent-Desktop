@@ -1,7 +1,7 @@
 # hermes-studio 可借鉴点调研与技术路线建议
 
-> **状态**：Draft v1，待逐条过  
-> **日期**：2026-08-13  
+> **状态**：Draft v1.1（Q1–Q4 已拍，Q5–Q7 待过；F1/F2 旁支已实测记录）  
+> **日期**：2026-08-13（旁支实测 2026-08-13）  
 > **来源**：F:\hermes-studio 代码实测（4 套运行时 + DAG 编排层）对照 TAgent 现有 SubAgent/看板/会诊/圆桌  
 > **目的**：治"主会话不太用子代理/看板/会诊/圆桌"这个痛点，挑值得抄的搬过来
 
@@ -147,13 +147,85 @@ hermes 把多 agent 协作做成了**四套正交运行时**（hermes/coding/ekk
 
 **锚点**：`apps/electron/src/main/lib/agent/cli-workers/`（已有 observer 层）、`apps/electron/src/main/lib/adapters/pi/pi-agent-adapter.ts`（SDK 事件直接消费，无翻译层缺口）
 
-### Q3（R3/B4 看板 DAG 化） — 待过
+### Q3（R3/B4 看板 DAG 化） — ✅ 已拍：不抄 DAG；做崩溃恢复五件 + 迁 SQLite
 
-要不要给看板升级成 DAG + 节点审批 + 重启恢复？大工程，得先确认产品要这个能力。
+**结论**：不抄 DAG（用户不画流程图，分支/审批/图引擎无人设计无人用）；但"重启恢复"不依赖 DAG，单拎出来做——经过一轮圆桌细化成下面这套方案。要的"自由性"靠 Q1 后台子代理 + agent 自主编排，不靠人画图。
 
-### Q4（R4/B3 圆桌回声守卫） — 待过
+**前置确认（已查代码）**：
 
-要不要给圆桌加 mentionDepth 级联上限防越聊越炸？
+- TAgent 看板任务**已落盘**（`kanban-store.ts` 用 `writeJsonAtomic` 写 `kanban-store.json`，boards/tasks/links 都在盘上）。所以崩溃不会丢"账"，缺的是"启动时翻账"的钩子。
+- "gateway vs 主线程"**不是障碍**——能不能恢复取决于"状态存进程外 + 启动翻账"，与 worker 在哪跑无关。hermes 能恢复是因为状态在进程外（SQLite），不是因为有 gateway。
+- hermes 的恢复也不是自动续跑——`recoverActiveRuns()`（`workflow-manager.ts:1058`）把 running 标 **failed** 让用户 rerun。TAgent 单用户桌面，照搬保守策略即可。
+
+#### 不做的事（含理由，避免后续重新讨论）
+
+| 项 | 理由 |
+|---|---|
+| **DAG 化** | 用户不画流程图，分支/审批/图引擎无人设计无人用；要的"自由性"靠 agent 自主编排（Q1 后台子代理），不靠人画图 |
+| **自动重派** | 重派前提是幂等性判断，而派活 agent 自己都不知道任务可否重复执行；默认重派 = 给自己埋双写雷 |
+| **心跳判活** | 依赖 worker 回报心跳字段，当前没有；Q1 hook 做时顺手加，不单独立项 |
+| **幂等标记 / retryPolicy** | 工程量不小，当前规模不值得；保守策略（一律判败等人工介入）已经够安全 |
+| **级联取消（blocks 链）** | JSON 里遍历做级联太恶心；如果迁 SQLite 则 Q1 顺手一条 SQL 做，不迁就砍 |
+| **僵尸 worker 杀** | 需要按任务 ID 找原进程 kill 或任务级互斥锁，复杂度高；等真遇到"频繁崩溃且用户不想手动介入"的场景再说，大概率永远等不到 |
+| **给 JSON 加文件锁** | 单用户桌面应用撞窗口极低；`proper-lockfile` 引依赖、处理锁超时/死锁，ROI 差。验证不过 SQLite 也忍着，到实际丢数据再处理 |
+
+#### 要做的事（按顺序，含工程量）
+
+| 项 | 优先级 | 工程量 | 理由 |
+|---|---|---|---|
+| **sanitize 脏文件** | P0，第一个做 | ~5 分钟 | `writeJsonAtomic` 残留 tmp + 半拉 JSON 会让启动直接抛异常起不来；底线兜不住后面全白做 |
+| **store/runner 解耦** | P0，紧接 sanitize | ~半天 | runner 只 emit `task:completed` / `task:failed` 事件，独立 TaskLifecycle 服务消费事件写 store；不拆这层，interrupted 状态在代码里没有落脚点，后面加什么恢复策略都要在 runner 里硬塞特殊分支 |
+| **interrupted 枚举** | P0，跟解耦一起做 | ~加个字段 | 五态（running / interrupted / ready / failed / done），interrupted 仅由人工决策转 ready 或 failed；不加，Q1 加心跳判活时要改状态机结构动到更多地方 |
+| **SQLite electron 打包验证** | 尽快，今天/明天 | ~半天 | 信息不对称卡着所有后续决策；验证过了 Q1 直接迁，并发写/恢复/级联的问题一起消失；验证不过才知道 JSON 要续命多久 |
+| **SQLite 迁移** | Q1 中（验证通过后） | 中等 | 真正理由是并发安全与后续扩展，不是崩溃恢复；迁移后启动翻账一条 SQL 搞定，并发写自动消失 |
+| **启动翻账恢复** | Q1，SQLite 迁移后 | 一条 SQL | `UPDATE tasks SET status='interrupted' WHERE status='running'`，UI 亮黄点，用户手动决定重跑或放弃 |
+| **心跳 + 级联（可选）** | Q1 末，SQLite 的话顺手做 | 小 | 心跳 Q1 hook 做时顺手加；级联一条 SQL 的事；JSON 继命则砍级联 |
+
+#### 核心理由（后续开发须知的"为什么"）
+
+1. **恢复策略：保守方案就是对的**
+   hermes 的恢复也不是自动续跑——它把 running 标 failed 让用户 rerun。TAgent 作为单用户桌面应用，用户本来就会手动介入（重启 Electron → 看一眼看板 → 自己决定重跑还是放弃）。"标 interrupted + UI 亮黄点让用户自己选"已经覆盖了这个场景。自动重派、心跳判活、级联取消——是在给单用户桌面应用补分布式系统的课，当前规模不值得。
+
+2. **SQLite 迁移的真正驱动力是并发安全，不是崩溃恢复**
+   `kanban-store.ts` 是 read-modify-write 整文件：两个 worker 同时完成不同任务，后写覆盖前写更新。**这不是崩溃场景，是正常运行就会丢数据。** 崩溃恢复的前提是正常运行时账就是对的。SQLite 天然行级锁根治这个问题；同时启动翻账变成一条 SQL、interrupted 变成加个字段、级联变成一条 SQL。迁移的注释里也已经写了"完整 SQLite 调度器后续从 General 移植"，不是重写。
+
+3. **gateway vs 主线程不是障碍**
+   能不能恢复取决于"状态存进程外 + 启动翻账"，与 worker 在哪跑无关。hermes 能恢复是因为状态在进程外（SQLite），不是因为有 gateway。TAgent 状态已落盘 JSON，缺的只是启动翻账钩子 + 解耦给 interrupted 一个落脚点。
+
+**锚点**：`apps/electron/src/main/lib/kanban/kanban-store.ts`（read-modify-write 整文件，并发丢数据点）、`kanban-dispatcher.ts`（dispatchKanbanTick，调度器）、`kanban-worker-runner.ts`（runner，需解耦 emit 事件）、`kanban-bootstrap.ts`（启动钩子落点，加翻账）；hermes 对照：`packages/server/src/services/workflow-manager.ts:1058`（recoverActiveRuns 标 failed）、`index.ts:363`（启动时调恢复）
+
+### Q4（R4/B3 圆桌回声守卫） — ❌ 已拍：不做（判错纠正）
+
+**结论**：不做。本条建立在"圆桌没刹车、会越聊越炸"的判断上——**该判断已由子代理核实为错误**，撤销。
+
+**核实结果（coder 子代理实测，锚点已验）**：圆桌有四重刹车，不存在"越聊越炸"，且根本不是递归联动模型：
+
+1. **硬轮次上限**：`beginNextRound` 在 `nextRound > roundLimit` 时直接 `phase='finalizing'` 收口；默认上限 3（`run-moa-discussion.ts:474`）。类型定义 `moa-discussion.ts:203-209`。
+2. **提前收敛刹车（T9）**：每轮后 `evaluateDiscussionConvergence` 判定，命中收敛信号词或本轮发言全短即收口（`moa-discussion.ts:338-372`，信号词表 282-297；调用 `run-moa-discussion.ts:608-612`）。
+3. **纪要收敛刹车（T11）**：每 2 轮跑纪要模型，解析出"收敛: 是"且 `currentRound >= 2` 即收口（`run-moa-discussion.ts:586-601`）。
+4. **全员失败即停 + AbortSignal 用户喊停**（`run-moa-discussion.ts:570-580、496-500、516-519、545-548、560-563`）。
+
+**关键纠正**：hermes 的 `mentionDepth` 是给"agent @ agent 触发递归回应"的图模型用的；TAgent 圆桌是**固定席位串行轮流发言**（panel 固定、多轮），不是 agent 递归调用 agent。**mentionDepth 这个概念在 TAgent 圆桌模型里根本不存在**，硬套是错的。默认最多 3 轮就强制由总结人收口，架构上炸不了。
+
+**附记（文档漂移，不影响结论）**：`moa-discussion.ts:82` 注释说 roundLimit"默认 6"，但实际 fallback 是 3（T9 提前收敛后改的，注释没同步）。后续可顺手修注释。
+
+**锚点**：`apps/electron/src/main/lib/agent/run-moa-discussion.ts`、`packages/shared/src/types/moa-discussion.ts`、`apps/electron/src/main/lib/agent/agent-crew-prefs.ts`（班组偏好落盘，`maxParallelWorkers` 调度未接）
+
+---
+
+### Q3 补充项（核实时新发现）— failed 前置死锁后继，比审批更该修
+
+**子代理核实 Q3 时发现一个我（主会话）之前漏掉的真实隐患**：
+
+- `promoteReadyDependents` **只在前置变 `done` 时触发**后继 ready（`kanban-store.ts:220-262`）。
+- 前置若变 `failed`，永远到不了 `done` → 依赖它的后继**永远卡 `pending`**，没有失败分支跳过/降级。
+- 这是"无分支边"在 Q3 里的具体落地痛点——比"没审批节点"更急，因为它在**正常失败场景**就会发生，不用等崩溃。
+
+**处置**：归入 Q3"不做的事"里 DAG 不抄的**反面**——不抄图引擎，但这个"失败分支跳过/降级"要在 Q1/SQLite 迁移时补上（比审批优先）。比纯队列多这一条分支能力，但仍不是完整 DAG。
+
+**核实的另两点（更正我之前措辞，不改方案）**：
+1. 看板有自主性，不是纯"外包工人"：goal 闸门验收（`kanban-goal-judge.ts:33-60` + `kanban-dispatcher.ts:195-217`，敷衍完成转 blocked）、blackboard 跨任务交接（`kanban.ts:124-129` + `kanban-agent-tools.ts:264-280`）、worker 自主 complete/block（`kanban-agent-tools.ts:199-262`）。Q3 方案不受影响，但措辞从"外包工人"更正为"有 goal 验收的自主 worker"。
+2. **班组 ≠ 看板**：班组（`agent-crew-prefs.ts:10-11`）目前仅偏好落盘 + UI，`maxParallelWorkers` 调度未接；真正干活的 worker 在看板。两者别混为一谈。
 
 ### Q5（R5 MoA 常驻） — 待过
 
@@ -169,7 +241,42 @@ hermes 把多 agent 协作做成了**四套正交运行时**（hermes/coding/ekk
 
 ---
 
-## 6. 引用锚点（hermes-studio，相对 F:\hermes-studio）
+## 6. 旁支发现（核实中带出的真问题，独立于 Q1–Q7）
+
+### F1 本地 CLI 子代理后端约束只挂在 task 工具一个入口（约束覆盖不全 = bug）
+
+**发现经过**：用户设置 `defaultBackend: "cli"`（`~/.tagent-dev/cli-workers.json` 已验：`enabled:true / defaultBackend:"cli" / defaultCliId:"kscc" / 6 个 worker 全 enabled`，本机 codex 0.146.0、grok 1.0.3 均在）。但主会话派子代理时仍走内置 in-process，未走 CLI → 约束失效。
+
+**根因（代码层面）**：
+- CLI 后端选择逻辑 `resolveTaskSubagentBackend`（`apps/electron/src/main/lib/agent/cli-workers/resolve-backend.ts:46`）会读 `listCliWorkersConfig()` + `shouldUseCliWorker(cfg)`，遵守 `defaultBackend=cli`。
+- 但该函数**只被 `subagent-task-tool.ts`（Pi 核 `task` 工具，name:'task'，`:213`）调用**。
+- 主会话的 Agent 工具派子代理走的是**另一套子代理机制**，不经过 `resolveTaskSubagentBackend`、不读 `cli-workers.json` → `defaultBackend` 约束对它失效。
+
+**缺口本质**：`resolveTaskSubagentBackend` 只挂在 `task` 工具这一个入口，没做成**所有子代理派工入口的共同漏斗**。任何不走 `task` 工具的派工入口都绕过用户设置。产品意图是"设了 defaultBackend=cli 子代理就走 CLI"，实际只在"agent 调 task 工具"生效，在"主会话直接派子代理"失效 → **约束覆盖不全**。
+
+**修法方向**（待定，不落代码）：
+1. 把主会话 Agent 工具也接进 `resolveTaskSubagentBackend`，让它也读 `cli-workers.json` 走 `defaultBackend` 约束（倾向，符合产品意图）。
+2. 或若主会话这套本就不该走 CLI（设计如此），则设置页须明示"defaultBackend 只对 task 工具派工生效"，别让用户误以为全局（文档/UI 层修）。
+
+**与 Q1 的关系**：Q1 后台子代理要走哪条派工路径，必须先定这个接线缺口——否则后台子代理照样绕过 CLI 约束。F1 是 Q1 的前置。
+
+**锚点**：`cli-workers/resolve-backend.ts:46`（`resolveTaskSubagentBackend`，只被 task 工具调）、`adapters/pi/subagent-task-tool.ts:213`（name:'task'，唯一接 CLI 后端的入口）、`~/.tagent-dev/cli-workers.json`（用户设置已验）
+
+### F2 已实测：本地 CLI 子代理能真派出去，派工代码没坏
+
+**测试法**：直接单测 `runCliWorker`，真 spawn 本机 codex/grok（绕过主会话 Agent 工具那层，直验派工代码本身）。
+
+**结果（2026-08-13，vitest 实跑通过）**：
+- **codex**：spawn `cmd.exe argsCount=10 delivery=stdin`，10933ms，exit 0，`summary: "在的"` ✓
+- **grok**：spawn `grok.exe argsCount=5 delivery=argv`，9730ms，exit 0，`summary: "在的。"` ✓
+
+**结论**：`runCliWorker` → `runCodexWorker`/`runGrokWorker` 派工代码**是通的**，能真起本机 CLI 进程并拿到模型回复。
+
+**所以 F1 的"失效"精确定位**：失效不在"派工能力"（能力在，刚测过 spawn 成功），失效在"主会话 Agent 工具这条入口没走派工代码"——它不调 `resolveTaskSubagentBackend`/`runCliWorker`，自己走内置 in-process，绕过了 `defaultBackend=cli`。**能力在，入口没接上。** 修 F1 = 把主会话入口接上派工代码，不是修派工代码。
+
+---
+
+## 7. 引用锚点（hermes-studio，相对 F:\hermes-studio）
 
 - 后台委托：`packages/ekko-agent/src/tools/delegation.ts`、`packages/ekko-agent/src/runtime/runtime.ts:734`
 - CLI 归一：`packages/server/src/services/agent-runner/`（`coding-agent-event-mapper.ts`、`responses-stream.ts`、`redact.ts`）
