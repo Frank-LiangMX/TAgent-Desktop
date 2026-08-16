@@ -57,7 +57,16 @@ export function normalizeModels(
     const id = model.id.trim()
     if (!id || seen.has(id)) return []
     seen.add(id)
-    return [{ id, name: model.name.trim() || id, enabled: model.enabled }]
+    return [
+      {
+        id,
+        name: model.name.trim() || id,
+        enabled: model.enabled,
+        // 之前 normalize 只留 id/name/enabled，保存渠道草稿会静默丢掉窗口字段。
+        ...(model.contextWindow != null ? { contextWindow: model.contextWindow } : {}),
+        ...(model.safeContextLimit != null ? { safeContextLimit: model.safeContextLimit } : {}),
+      },
+    ]
   })
   const enabled = normalized.filter((model) => model.enabled)
   const validDefault = enabled.some((model) => model.id === defaultModelId)
@@ -81,11 +90,26 @@ export function mergeFetchedModels(
         id: model.id.trim(),
         name: existing?.name || model.name.trim() || model.id.trim(),
         enabled: existing?.enabled ?? model.enabled,
+        ...(pickOptionalNumber(existing?.contextWindow, model.contextWindow) != null
+          ? { contextWindow: pickOptionalNumber(existing?.contextWindow, model.contextWindow) }
+          : {}),
+        ...(pickOptionalNumber(existing?.safeContextLimit, model.safeContextLimit) != null
+          ? { safeContextLimit: pickOptionalNumber(existing?.safeContextLimit, model.safeContextLimit) }
+          : {}),
       }
     }),
     ...current.filter((model) => !incomingIds.has(model.id)),
   ]
   return normalizeModels(merged, defaultModelId)
+}
+
+/** 取首个非空 number（保留本地已存值，缺失回退远端）；均无返回 undefined。 */
+function pickOptionalNumber(
+  existing: number | undefined,
+  fetched: number | undefined,
+): number | undefined {
+  if (existing != null) return existing
+  return fetched
 }
 
 export function validateChannelDraft(

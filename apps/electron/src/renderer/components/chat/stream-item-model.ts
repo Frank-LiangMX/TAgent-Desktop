@@ -239,6 +239,17 @@ export function preserveAssistantThinking(
   return { ...incoming, content: merged }
 }
 
+/** 后到的 user 快照没带 attachments 时，保留已有图片/附件。 */
+export function preserveUserAttachments(
+  existing: TAgentMessage,
+  incoming: TAgentMessage,
+): TAgentMessage {
+  if (existing.type !== 'user' || incoming.type !== 'user') return incoming
+  if (incoming.attachments?.length) return incoming
+  if (!existing.attachments?.length) return incoming
+  return { ...incoming, attachments: existing.attachments }
+}
+
 /**
  * turn_end / result / 段边界清 stream 前：把仍只在缓冲里的思考写入末条主线 assistant。
  *
@@ -412,10 +423,13 @@ export function applySdkMessageToItems<T extends StreamItemLike>(
         return prev
       }
       // 同 uuid 后到快照若剥掉 thinking，保留已有思考块（REGRESS-E：防「最后一段也没了」）
+      // user：后到快照若没带 attachments，保留已有图（旁路回显 / 历史回放不要冲掉）
       const merged =
         existing?.message && msg.type === 'assistant'
           ? preserveAssistantThinking(existing.message, msg)
-          : msg
+          : existing?.message?.type === 'user' && msg.type === 'user'
+            ? preserveUserAttachments(existing.message, msg)
+            : msg
       return prev.map((it, i) => (i === uuidIdx ? applyMsg(it, merged) : it))
     }
   }

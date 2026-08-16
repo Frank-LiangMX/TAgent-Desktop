@@ -162,6 +162,20 @@ interface SendMessageInput {
   moaDiscussionPresetId?: string
 }
 
+/** 模型侧注入的 [用户附件] 附录，不应再当第二条用户气泡展示。 */
+function userContentHasAttachmentAppendix(content: unknown): boolean {
+  if (typeof content === 'string') return content.includes('[用户附件]')
+  if (!Array.isArray(content)) return false
+  return content.some(
+    (b) =>
+      b &&
+      typeof b === 'object' &&
+      (b as { type?: string }).type === 'text' &&
+      typeof (b as { text?: string }).text === 'string' &&
+      (b as { text: string }).text.includes('[用户附件]'),
+  )
+}
+
 export class SessionService {
   private runtimes = new Map<string, SessionRuntime>()
   /**
@@ -2012,6 +2026,11 @@ export class SessionService {
    *  替原「按 IR `_partial` 一刀切跳过」——glm 每 content 块为独立 uuid 且 `stop_reason` 始终 null，旧规则全标 `_partial` 全跳过 → 段间短文/工具/思考落盘全丢。
    *  live 推流（sendPayload）不受影响——闸口只管落盘。 */
   private handleSdkStreamMessage(sessionId: string, workspaceId: string | undefined, msg: SDKMessage): void {
+    // 模型侧附件附录：面板已有带图的原用户气泡，SDK 回显再推会变成第二条无图消息。
+    if ((msg as { type?: string }).type === 'user') {
+      const content = (msg as { message?: { content?: unknown } }).message?.content
+      if (userContentHasAttachmentAppendix(content)) return
+    }
     // 注入 createdAt（落盘带上，加载时 sdkMessageToIR 读回 → 渲染层显示时间）
     ;(msg as any).createdAt = (msg as any).createdAt ?? Date.now()
     const { message, event } = sdkMessageToIR(msg)
@@ -2089,6 +2108,9 @@ export class SessionService {
   private handlePiStreamPayload(sessionId: string, workspaceId: string | undefined, p: TAgentDesktopStreamPayload): void {
     if (p.kind === 'sdk_message') {
       const msg = p.message
+      if (msg.type === 'user' && userContentHasAttachmentAppendix(msg.content)) {
+        return
+      }
       ;(msg as any).createdAt = (msg as any).createdAt ?? Date.now()
       const isPartial =
         msg.type === 'assistant' && (msg as { _partial?: boolean })._partial === true

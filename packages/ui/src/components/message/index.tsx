@@ -471,6 +471,8 @@ interface UserMessageContentProps extends HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode
   /** 内容变化时重新测量折叠（ReactNode 时请传文本） */
   contentKey?: string
+  /** 嵌在图文组合气泡内时不再套一层独立气泡壳 */
+  embedded?: boolean
 }
 
 /** 用户消息内容组件，超过 4 行时默认折叠 */
@@ -478,6 +480,7 @@ export const UserMessageContent = React.memo(
   function UserMessageContent({
     children,
     contentKey,
+    embedded = false,
     className,
     ...props
   }: UserMessageContentProps): React.ReactElement {
@@ -501,8 +504,9 @@ export const UserMessageContent = React.memo(
     return (
       <div
         className={cn(
-          'agent-user-bubble relative inline-block max-w-full px-3.5 py-2.5',
-          // is-collapsed：给底部「展开」预留空间（勿用 pb-6，会被业务侧 padding 覆盖）
+          embedded
+            ? 'agent-user-bubble__embedded relative max-w-full'
+            : 'agent-user-bubble relative inline-block max-w-full px-3.5 py-2.5',
           shouldCollapse && !isExpanded && 'is-collapsed',
           shouldCollapse && isExpanded && 'is-expanded',
           className
@@ -556,6 +560,7 @@ export const UserMessageContent = React.memo(
   (prevProps, nextProps) =>
     prevProps.children === nextProps.children &&
     prevProps.contentKey === nextProps.contentKey &&
+    prevProps.embedded === nextProps.embedded &&
     prevProps.className === nextProps.className,
 )
 
@@ -577,6 +582,8 @@ interface MessageAttachmentsProps extends HTMLAttributes<HTMLDivElement> {
   onSaveImage?: (localPath: string, filename: string) => void
   /** 点击非图片附件 → 打开预览 */
   onOpenAttachment?: (attachment: FileAttachment) => void
+  /** inBubble：与用户气泡同壳，附件 chip 用轻量内嵌样式 */
+  variant?: 'default' | 'inBubble'
 }
 
 /** 消息附件容器 */
@@ -586,6 +593,7 @@ export function MessageAttachments({
   onReadAttachment,
   onSaveImage,
   onOpenAttachment,
+  variant = 'default',
   ...props
 }: MessageAttachmentsProps): React.ReactElement {
   const imageAttachments = attachments.filter((att) => att.mediaType.startsWith('image/'))
@@ -593,7 +601,10 @@ export function MessageAttachments({
   const isSingleImage = imageAttachments.length === 1 && fileAttachments.length === 0
 
   return (
-    <div className={cn('flex flex-col gap-2 mb-2', className)} {...props}>
+    <div
+      className={cn('flex flex-col gap-2', variant === 'default' && 'mb-2', className)}
+      {...props}
+    >
       {imageAttachments.length > 0 && (
         <div className="flex flex-wrap gap-2.5">
           {imageAttachments.map((att) => (
@@ -614,6 +625,7 @@ export function MessageAttachments({
               key={att.id}
               attachment={att}
               onOpenAttachment={onOpenAttachment}
+              variant={variant}
             />
           ))}
         </div>
@@ -661,7 +673,7 @@ function MessageAttachmentImage({
       <div
         className={cn(
           'rounded-glass-popover bg-muted/30 animate-pulse shrink-0',
-          isSingle ? 'w-[280px] h-[200px]' : 'size-[280px]'
+          isSingle ? 'w-[280px] h-[200px]' : 'size-[280px]',
         )}
       />
     )
@@ -671,7 +683,15 @@ function MessageAttachmentImage({
     <img
       src={imageSrc}
       alt={attachment.filename}
-      className="max-w-[500px] max-h-[min(500px,50vh)] rounded-glass-popover object-contain cursor-pointer"
+      className="rounded-glass-popover object-contain cursor-pointer"
+      style={{
+        // 对齐 main：inline style 绕开 Tailwind + inline-block 祖先链对 replaced
+        // element 的干扰。上限 360×200，见 FIX-attachment-bubble-oversize-brief。
+        maxWidth: '360px',
+        maxHeight: '200px',
+        width: 'auto',
+        height: 'auto',
+      }}
       onClick={() => setLightboxOpen(true)}
     />
   ) : (
@@ -716,12 +736,14 @@ function MessageAttachmentImage({
 interface MessageAttachmentFileProps {
   attachment: FileAttachment
   onOpenAttachment?: (attachment: FileAttachment) => void
+  variant?: 'default' | 'inBubble'
 }
 
 /** 文件附件展示（标签样式，可点击预览） */
 function MessageAttachmentFile({
   attachment,
   onOpenAttachment,
+  variant = 'default',
 }: MessageAttachmentFileProps): React.ReactElement {
   const displayName =
     attachment.filename.length > 20 ? attachment.filename.slice(0, 17) + '...' : attachment.filename
@@ -730,9 +752,24 @@ function MessageAttachmentFile({
     onOpenAttachment?.(attachment)
   }, [attachment, onOpenAttachment])
 
+  const chipClass =
+    variant === 'inBubble'
+      ? cn(
+          'flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] shrink-0 max-w-full',
+          'bg-foreground/5 border border-foreground/10 text-foreground/80',
+          onOpenAttachment &&
+            'transition-colors hover:bg-foreground/8 hover:text-foreground cursor-pointer',
+        )
+      : cn(
+          'flex items-center gap-2 rounded-glass-popover bg-[#37a5aa]/10 border border-[#37a5aa]/20',
+          'px-3 py-1.5 text-[13px] text-[#37a5aa] shrink-0',
+          onOpenAttachment &&
+            'transition-colors hover:bg-[#37a5aa]/15 hover:border-[#37a5aa]/30 cursor-pointer',
+        )
+
   if (!onOpenAttachment) {
     return (
-      <div className="flex items-center gap-2 rounded-glass-popover bg-[#37a5aa]/10 border border-[#37a5aa]/20 px-3 py-1.5 text-[13px] text-[#37a5aa] shrink-0">
+      <div className={chipClass}>
         <Paperclip className="size-4" />
         <span>{displayName}</span>
       </div>
@@ -744,11 +781,7 @@ function MessageAttachmentFile({
       type="button"
       onClick={handleOpen}
       title={attachment.filename}
-      className={cn(
-        'flex items-center gap-2 rounded-glass-popover bg-[#37a5aa]/10 border border-[#37a5aa]/20',
-        'px-3 py-1.5 text-[13px] text-[#37a5aa] shrink-0',
-        'transition-colors hover:bg-[#37a5aa]/15 hover:border-[#37a5aa]/30 cursor-pointer',
-      )}
+      className={chipClass}
     >
       <Paperclip className="size-4" />
       <span>{displayName}</span>

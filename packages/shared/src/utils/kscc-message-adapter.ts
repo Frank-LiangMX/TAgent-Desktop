@@ -8,6 +8,7 @@
  * 不走 TAgentMessage（转录只收完整消息）。
  */
 import type { SDKMessage } from '../types/agent'
+import type { FileAttachment } from '../types/chat'
 import type {
   TAgentMessage,
   TAgentContentBlock,
@@ -15,6 +16,25 @@ import type {
   TAgentUsage,
   TAgentControlEvent,
 } from '../types/tagent-message'
+
+function pickUserAttachments(raw: Record<string, unknown>): FileAttachment[] | undefined {
+  const list = raw.attachments
+  if (!Array.isArray(list) || list.length === 0) return undefined
+  const out: FileAttachment[] = []
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue
+    const a = item as Record<string, unknown>
+    if (typeof a.filename !== 'string' || typeof a.localPath !== 'string') continue
+    out.push({
+      id: typeof a.id === 'string' ? a.id : a.localPath,
+      filename: a.filename,
+      mediaType: typeof a.mediaType === 'string' ? a.mediaType : 'application/octet-stream',
+      localPath: a.localPath,
+      size: typeof a.size === 'number' ? a.size : 0,
+    })
+  }
+  return out.length > 0 ? out : undefined
+}
 
 /** SDK content block → TAgentContentBlock */
 function sdkBlockToIR(block: Record<string, unknown>): TAgentContentBlock | TAgentToolResultBlock {
@@ -68,6 +88,7 @@ export function sdkMessageToIR(
     const content = Array.isArray(message?.content)
       ? (message!.content as Array<Record<string, unknown>>).map(sdkBlockToIR)
       : []
+    const attachments = pickUserAttachments(m)
     return {
       message: {
         type: 'user',
@@ -78,6 +99,7 @@ export function sdkMessageToIR(
         isSynthetic: m.isSynthetic as boolean | undefined,
         createdAt: m.createdAt as number | undefined,
         content: content as unknown as TAgentMessage['content'],
+        ...(attachments ? { attachments } : {}),
       } as TAgentMessage,
     }
   }

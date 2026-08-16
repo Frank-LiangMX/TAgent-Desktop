@@ -94,40 +94,64 @@ function UserView({
     (b): b is TAgentToolResultBlock => b.type === 'tool_result',
   )
   const plainText = textBlocks.map((b) => b.text).join('\n')
-  const showChrome = textBlocks.length > 0
+  const hasAttachments = (message.attachments?.length ?? 0) > 0
+  const hasText = textBlocks.length > 0
+  const showChrome = hasText || hasAttachments
+
+  const attachmentBlock = hasAttachments ? (
+    <MessageAttachments
+      attachments={message.attachments!}
+      variant="inBubble"
+      className="agent-user-bubble__attachments"
+      onReadAttachment={async (localPath) => {
+        const base64 = await window.electronAPI.readAttachment(localPath)
+        return base64
+      }}
+      onOpenAttachment={onOpenAttachment}
+    />
+  ) : null
+
+  const textBlock = hasText ? (
+    <UserMessageContent contentKey={plainText} embedded={hasAttachments}>
+      <MentionText text={plainText} roles={mentionRoles} />
+    </UserMessageContent>
+  ) : null
+
+  const bubbleBody =
+    hasAttachments && (hasText || toolResultBlocks.length > 0) ? (
+      <div
+        className={cn(
+          'agent-user-bubble agent-user-bubble--combo relative inline-block max-w-full',
+          hasText && 'agent-user-bubble--combo-has-text',
+        )}
+      >
+        {attachmentBlock}
+        {textBlock}
+        {toolResultBlocks.map((b) => (
+          <ToolResultView key={b.toolUseId} block={b} />
+        ))}
+      </div>
+    ) : hasAttachments ? (
+      <div className="agent-user-bubble agent-user-bubble--attachments-only relative inline-block max-w-full">
+        {attachmentBlock}
+      </div>
+    ) : (
+      <>
+        {textBlock}
+        {toolResultBlocks.map((b) => (
+          <ToolResultView key={b.toolUseId} block={b} />
+        ))}
+      </>
+    )
 
   return (
     <Message from="user">
-      {/*
-        右对齐 flex：左列 = 气泡 +（时间|复制）；右列 = 头像。
-        气泡 width:fit-content，避免 grid minmax(0,auto) 把短句压成竖排。
-      */}
       <div className={cn('agent-user-block', showChrome && 'has-avatar')}>
         <div className="agent-user-block__col">
-          <MessageContent className="agent-user-block__bubble">
-            {message.attachments?.length ? (
-              <MessageAttachments
-                attachments={message.attachments}
-                onReadAttachment={async (localPath) => {
-                  const base64 = await window.electronAPI.readAttachment(localPath)
-                  return base64
-                }}
-                onOpenAttachment={onOpenAttachment}
-              />
-            ) : null}
-            {textBlocks.length > 0 && (
-              <UserMessageContent contentKey={plainText}>
-                <MentionText text={plainText} roles={mentionRoles} />
-              </UserMessageContent>
-            )}
-            {toolResultBlocks.map((b) => (
-              <ToolResultView key={b.toolUseId} block={b} />
-            ))}
-          </MessageContent>
+          <MessageContent className="agent-user-block__bubble">{bubbleBody}</MessageContent>
 
-          {showChrome && (message.createdAt || plainText.trim()) ? (
+          {showChrome && (message.createdAt || plainText.trim() || hasAttachments) ? (
             <div className="agent-user-block__meta">
-              {/* 工具在左、时间贴右；隐藏工具时不占宽，时间始终贴气泡右缘 */}
               {plainText.trim() ? (
                 <div className="agent-user-block__tools agent-user-toolbar">
                   {onRefillToInput ? (
@@ -146,11 +170,13 @@ function UserView({
         </div>
 
         {showChrome ? (
-          <AppTooltip label={userName}>
-            <span className="agent-user-block__avatar" aria-label={userName}>
-              {avatarLetter}
-            </span>
-          </AppTooltip>
+          <div className="agent-user-block__avatar-wrap">
+            <AppTooltip label={userName}>
+              <span className="agent-user-block__avatar" aria-label={userName}>
+                {avatarLetter}
+              </span>
+            </AppTooltip>
+          </div>
         ) : null}
       </div>
     </Message>

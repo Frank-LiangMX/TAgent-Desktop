@@ -92,4 +92,33 @@ describe('sdkMessageToIR - partial / stop_reason（REGRESS-E）', () => {
       uuid: 'u-4',
     })
   })
+
+  test('user 顶层 attachments 透传到 IR（旁路后历史回放不能丢图）', () => {
+    const msg = {
+      type: 'user',
+      createdAt: 1,
+      message: { role: 'user', content: [{ type: 'text', text: '分析一下图片' }] },
+      attachments: [
+        {
+          id: 'a1',
+          filename: 'shot.png',
+          mediaType: 'image/png',
+          localPath: 's1/shot.png',
+          size: 12,
+        },
+      ],
+    } as never
+
+    const { message } = sdkMessageToIR(msg)
+    expect(message?.type).toBe('user')
+    expect((message as { attachments?: unknown[] }).attachments).toEqual([
+      {
+        id: 'a1',
+        filename: 'shot.png',
+        mediaType: 'image/png',
+        localPath: 's1/shot.png',
+        size: 12,
+      },
+    ])
+  })
 })
