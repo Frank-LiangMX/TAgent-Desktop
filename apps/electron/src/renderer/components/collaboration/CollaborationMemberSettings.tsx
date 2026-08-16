@@ -1,31 +1,51 @@
 /**
- * 协作室成员设置弹层：改显示名、渠道、模型。
+ * 协作室成员设置弹出面板（锚定成员气泡，对齐模型选择器形态，不做全局弹窗）。
+ *
+ * 触发 = 页面传入的成员气泡（children）；面板内可改显示名、渠道、模型。
+ * 表单控件用 @tagent/ui 主题化组件（Input / Select）。
  */
-import { useEffect, useMemo, useState } from 'react'
-import { Button } from '@tagent/ui'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  Button,
+  Input,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@tagent/ui'
 import type { Channel, CollaborationMember } from '@tagent/shared'
 
 export interface CollaborationMemberSettingsProps {
-  open: boolean
-  member: CollaborationMember | null
+  member: CollaborationMember
   channels: Channel[]
-  onCancel: () => void
-  onSave: (patch: { displayName: string; channelId: string; modelId: string }) => void
+  /** 触发元素（成员气泡按钮） */
+  children: ReactNode
+  onSave: (patch: {
+    memberId: string
+    displayName: string
+    channelId: string
+    modelId: string
+  }) => void
 }
 
 export function CollaborationMemberSettings({
-  open,
   member,
   channels,
-  onCancel,
+  children,
   onSave,
-}: CollaborationMemberSettingsProps): JSX.Element | null {
+}: CollaborationMemberSettingsProps): JSX.Element {
+  const [open, setOpen] = useState(false)
   const [displayName, setDisplayName] = useState('')
   const [channelId, setChannelId] = useState('')
   const [modelId, setModelId] = useState('')
 
+  // 每次打开回填当前成员配置
   useEffect(() => {
-    if (!open || !member) return
+    if (!open) return
     setDisplayName(member.displayName)
     setChannelId(member.channelId ?? '')
     setModelId(member.modelId ?? '')
@@ -38,39 +58,40 @@ export function CollaborationMemberSettings({
   const selectedChannel = enabledChannels.find((c) => c.id === channelId)
   const enabledModels = selectedChannel?.models.filter((m) => m.enabled) ?? []
 
-  if (!open || !member) return null
-
   const submit = (): void => {
     const name = displayName.trim()
     if (!name) return
-    onSave({ displayName: name, channelId, modelId })
+    onSave({ memberId: member.id, displayName: name, channelId, modelId })
+    setOpen(false)
   }
 
   return (
-    <div
-      className="absolute inset-0 z-[80] flex items-center justify-center bg-black/40 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="collab-member-settings-title"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onCancel()
-      }}
-    >
-      <div className="w-full max-w-sm rounded-xl border border-border bg-background p-4 shadow-xl">
-        <h2 id="collab-member-settings-title" className="text-sm font-semibold text-foreground">
-          成员设置
-          {member.isCoordinator ? (
-            <span className="ml-1.5 text-xs font-normal text-muted-foreground">协调者</span>
-          ) : null}
-        </h2>
-        <p className="mt-1 text-xs text-muted-foreground">改渠道或模型后，下一次 turn 生效。</p>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>{children}</PopoverTrigger>
+      <PopoverContent align="end" side="bottom" sideOffset={6} className="w-80">
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-sm font-semibold text-foreground">
+            成员设置
+            {member.isCoordinator ? (
+              <span className="ml-1.5 text-xs font-normal text-muted-foreground">协调者</span>
+            ) : null}
+          </h2>
+          <span className="text-[11px] text-muted-foreground">改渠道/模型后下一次 turn 生效</span>
+        </div>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          后端：
+          {channels.find((c) => c.id === member.channelId)?.name ?? '未绑定'}
+          {member.roleSnapshot.roleId
+            ? ` · 角色：${member.roleSnapshot.displayName}`
+            : ''}
+        </p>
 
         <label className="mt-3 block text-xs text-muted-foreground" htmlFor="collab-member-name">
           显示名
         </label>
-        <input
+        <Input
           id="collab-member-name"
-          className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="mt-1"
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
           onKeyDown={(e) => {
@@ -79,7 +100,7 @@ export function CollaborationMemberSettings({
               submit()
             } else if (e.key === 'Escape') {
               e.preventDefault()
-              onCancel()
+              setOpen(false)
             }
           }}
         />
@@ -87,40 +108,46 @@ export function CollaborationMemberSettings({
         <label className="mt-3 block text-xs text-muted-foreground" htmlFor="collab-member-channel">
           渠道
         </label>
-        <select
-          id="collab-member-channel"
-          className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          value={channelId}
-          onChange={(e) => {
-            setChannelId(e.target.value)
+        <Select
+          value={channelId || 'none'}
+          onValueChange={(v) => {
+            setChannelId(v === 'none' ? '' : v)
             setModelId('')
           }}
         >
-          <option value="">未绑定</option>
-          {enabledChannels.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger id="collab-member-channel" className="mt-1">
+            <SelectValue placeholder="未绑定" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">未绑定</SelectItem>
+            {enabledChannels.map((c) => (
+              <SelectItem key={c.id} value={c.id}>
+                {c.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
         <label className="mt-3 block text-xs text-muted-foreground" htmlFor="collab-member-model">
           模型
         </label>
-        <select
-          id="collab-member-model"
-          className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-          value={modelId}
+        <Select
+          value={modelId || 'default'}
+          onValueChange={(v) => setModelId(v === 'default' ? '' : v)}
           disabled={!channelId || enabledModels.length === 0}
-          onChange={(e) => setModelId(e.target.value)}
         >
-          <option value="">{channelId ? '渠道默认' : '先选渠道'}</option>
-          {enabledModels.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name || m.id}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger id="collab-member-model" className="mt-1">
+            <SelectValue placeholder={channelId ? '渠道默认' : '先选渠道'} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="default">渠道默认</SelectItem>
+            {enabledModels.map((m) => (
+              <SelectItem key={m.id} value={m.id}>
+                {m.name || m.id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
         {enabledChannels.length === 0 ? (
           <p className="mt-2 text-xs text-amber-600">没有已启用的渠道。请先去设置 → 渠道启用。</p>
@@ -132,14 +159,14 @@ export function CollaborationMemberSettings({
         ) : null}
 
         <div className="mt-4 flex justify-end gap-2">
-          <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+          <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
             取消
           </Button>
           <Button type="button" size="sm" disabled={!displayName.trim()} onClick={submit}>
             保存
           </Button>
         </div>
-      </div>
-    </div>
+      </PopoverContent>
+    </Popover>
   )
 }

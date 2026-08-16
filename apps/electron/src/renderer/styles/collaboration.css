@@ -1,0 +1,70 @@
+/*
+ * collaboration.css — 协作室样式（对齐会话页视觉语言）
+ *
+ * 侧栏房间状态点 / 主区时间线 / run 卡 / 状态过渡。
+ * 基础容器复用 session/sidebar 既有类（.session-body / .side-title / .row / .arch-foot），
+ * 这里只补协作室特有的语义颜色与微调。
+ */
+
+/* 房间状态点：active 绿 / paused 琥珀 / completed 蓝（对齐会话 .stat-dot 尺寸与质感） */
+.stat-dot.room-active {
+  background: hsl(152 42% 42% / 0.92);
+}
+.stat-dot.room-paused {
+  background: hsl(38 92% 50% / 0.92);
+}
+.stat-dot.room-completed {
+  background: hsl(217 91% 60% / 0.92);
+}
+.light .stat-dot.room-active {
+  background: hsl(152 36% 36% / 0.9);
+}
+
+/* 主区 run 卡：玻璃底 + 状态色描边，进场滑入 */
+.collab-run-card {
+  border: 1px solid rgb(var(--glass-rgb) / 0.45);
+  background:
+    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.05), transparent 66%),
+    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.34), rgb(var(--glass-rgb) / 0.2));
+  box-shadow:
+    0 4px 14px -6px rgb(48 59 76 / 0.14),
+    inset 0 1px 0 rgb(255 255 255 / 0.3);
+  animation: collab-run-card-in 220ms var(--app-shell-motion, ease-out) both;
+  transition:
+    border-color 180ms ease,
+    box-shadow 220ms var(--app-shell-motion, ease-out);
+}
+.dark .collab-run-card {
+  border-color: rgb(255 255 255 / 0.09);
+  box-shadow:
+    0 4px 14px -6px rgb(0 0 0 / 0.36),
+    inset 0 1px 0 rgb(255 255 255 / 0.05);
+}
+.collab-run-card[data-status='running'] {
+  border-color: rgb(16 185 129 / 0.35);
+}
+.collab-run-card[data-status='queued'] {
+  border-color: rgb(234 179 8 / 0.35);
+}
+.collab-run-card[data-status='awaiting_peer'] {
+  border-color: rgb(14 165 233 / 0.35);
+}
+
+@keyframes collab-run-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 状态圆点过渡：换色/脉冲不跳变 */
+.collab-status-dot {
+  transition:
+    background-color 180ms ease,
+    box-shadow 180ms ease,
+    opacity 180ms ease;
+}

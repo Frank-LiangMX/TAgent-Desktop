@@ -1,13 +1,28 @@
 /**
- * 协作室添加成员弹窗：显示名 + 内核（渠道）+ 模型 + 是否协调者。
+ * 协作室「添加成员」弹出面板（对齐模型选择器形态：锚定按钮的 Popover，不做全局弹窗）。
  *
- * 参照 Hermes 的「添加成员 = 选内核 + 模型」模式：
+ * 字段：显示名 + 内核（渠道）+ 模型 + 是否协调者 + 角色（角色库 / 自定义 prompt）。
  * - 内核 = 渠道（kscc 内网走 kscc CLI；外部渠道走 Pi HTTP）
  * - 不选渠道时由主进程自动绑定默认渠道（kscc 优先），与建房间行为一致
  * - 模型随渠道联动；选「渠道默认」则不传 modelId
+ * 表单控件全部用 @tagent/ui 主题化组件（Input / Select / Textarea / Switch）。
  */
 import { useEffect, useMemo, useState } from 'react'
-import { Button } from '@tagent/ui'
+import { UserPlus } from '@phosphor-icons/react'
+import {
+  Button,
+  Input,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  Textarea,
+} from '@tagent/ui'
 import type {
   AgentRoleProfile,
   Channel,
@@ -18,8 +33,9 @@ type RoleMode = 'none' | 'library' | 'custom'
 
 export interface CollaborationAddMemberDialogProps {
   open: boolean
+  onOpenChange: (open: boolean) => void
+  disabled?: boolean
   channels: Channel[]
-  onCancel: () => void
   onSave: (patch: {
     displayName: string
     channelId: string
@@ -32,10 +48,11 @@ export interface CollaborationAddMemberDialogProps {
 
 export function CollaborationAddMemberDialog({
   open,
+  onOpenChange,
+  disabled = false,
   channels,
-  onCancel,
   onSave,
-}: CollaborationAddMemberDialogProps): JSX.Element | null {
+}: CollaborationAddMemberDialogProps): JSX.Element {
   const [displayName, setDisplayName] = useState('')
   const [channelId, setChannelId] = useState('')
   const [modelId, setModelId] = useState('')
@@ -69,8 +86,6 @@ export function CollaborationAddMemberDialog({
   const enabledModels = selectedChannel?.models.filter((m) => m.enabled) ?? []
   const selectedRole = roles.find((r) => r.id === selectedRoleId) ?? null
 
-  if (!open) return null
-
   const submit = (): void => {
     const name =
       displayName.trim() ||
@@ -99,29 +114,29 @@ export function CollaborationAddMemberDialog({
   }
 
   return (
-    <div
-      className="absolute inset-0 z-[80] flex items-center justify-center bg-black/40 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="collab-add-member-title"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onCancel()
-      }}
-    >
-      <div className="w-full max-w-sm rounded-xl border border-border bg-background p-4 shadow-xl">
-        <h2 id="collab-add-member-title" className="text-sm font-semibold text-foreground">
-          添加成员
-        </h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          内核即运行渠道；不选时自动绑定默认渠道（kscc 优先）。添加后点击成员气泡可再改。
-        </p>
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+          aria-label="添加成员"
+          disabled={disabled}
+        >
+          <UserPlus size={14} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" side="bottom" sideOffset={6} className="w-80">
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-sm font-semibold text-foreground">添加成员</h2>
+          <span className="text-[11px] text-muted-foreground">不选渠道 = 自动（kscc 优先）</span>
+        </div>
 
         <label className="mt-3 block text-xs text-muted-foreground" htmlFor="collab-add-member-name">
           显示名
         </label>
-        <input
+        <Input
           id="collab-add-member-name"
-          className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="mt-1"
           value={displayName}
           placeholder="例如：开发、测试、文档"
           onChange={(e) => setDisplayName(e.target.value)}
@@ -131,7 +146,7 @@ export function CollaborationAddMemberDialog({
               submit()
             } else if (e.key === 'Escape') {
               e.preventDefault()
-              onCancel()
+              onOpenChange(false)
             }
           }}
           autoFocus
@@ -140,63 +155,73 @@ export function CollaborationAddMemberDialog({
         <label className="mt-3 block text-xs text-muted-foreground" htmlFor="collab-add-member-channel">
           内核（渠道）
         </label>
-        <select
-          id="collab-add-member-channel"
-          className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          value={channelId}
-          onChange={(e) => {
-            setChannelId(e.target.value)
+        <Select
+          value={channelId || 'auto'}
+          onValueChange={(v) => {
+            setChannelId(v === 'auto' ? '' : v)
             setModelId('')
           }}
         >
-          <option value="">自动（kscc 优先）</option>
-          {enabledChannels.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger id="collab-add-member-channel" className="mt-1">
+            <SelectValue placeholder="自动（kscc 优先）" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">自动（kscc 优先）</SelectItem>
+            {enabledChannels.map((c) => (
+              <SelectItem key={c.id} value={c.id}>
+                {c.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         {enabledChannels.length === 0 ? (
-          <p className="mt-2 text-xs text-amber-600">没有已启用的渠道，成员将无法回复。请先到设置启用渠道。</p>
+          <p className="mt-1.5 text-xs text-amber-600">
+            没有已启用的渠道，成员将无法回复。请先到设置启用渠道。
+          </p>
         ) : null}
 
         <label className="mt-3 block text-xs text-muted-foreground" htmlFor="collab-add-member-model">
           模型
         </label>
-        <select
-          id="collab-add-member-model"
-          className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-          value={modelId}
+        <Select
+          value={modelId || 'default'}
+          onValueChange={(v) => setModelId(v === 'default' ? '' : v)}
           disabled={!channelId || enabledModels.length === 0}
-          onChange={(e) => setModelId(e.target.value)}
         >
-          <option value="">{channelId ? (enabledModels.length > 0 ? '渠道默认' : '该渠道无可用模型') : '自动时用渠道默认模型'}</option>
-          {enabledModels.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name || m.id}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger id="collab-add-member-model" className="mt-1">
+            <SelectValue
+              placeholder={
+                channelId
+                  ? enabledModels.length > 0
+                    ? '渠道默认'
+                    : '该渠道无可用模型'
+                  : '自动时用渠道默认模型'
+              }
+            />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="default">渠道默认</SelectItem>
+            {enabledModels.map((m) => (
+              <SelectItem key={m.id} value={m.id}>
+                {m.name || m.id}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-        <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
-            className="size-3.5 rounded border-border accent-primary"
-            checked={isCoordinator}
-            onChange={(e) => setIsCoordinator(e.target.checked)}
-          />
-          协调者（消息不 @ 时默认由该成员应答）
-        </label>
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <span className="text-xs text-muted-foreground">
+            协调者（不 @ 时默认由该成员应答）
+          </span>
+          <Switch size="sm" checked={isCoordinator} onCheckedChange={setIsCoordinator} />
+        </div>
 
         <label className="mt-3 block text-xs text-muted-foreground" htmlFor="collab-add-member-role">
           角色（可选）
         </label>
-        <select
-          id="collab-add-member-role"
-          className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        <Select
           value={roleMode === 'library' ? selectedRoleId : roleMode}
-          onChange={(e) => {
-            const v = e.target.value
+          onValueChange={(v) => {
             if (v === 'none' || v === 'custom') {
               setRoleMode(v)
               setSelectedRoleId('')
@@ -206,20 +231,25 @@ export function CollaborationAddMemberDialog({
             }
           }}
         >
-          <option value="none">无角色</option>
-          {roles.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.displayName}（{r.id}）
-            </option>
-          ))}
-          <option value="custom">自定义角色 prompt…</option>
-        </select>
+          <SelectTrigger id="collab-add-member-role" className="mt-1">
+            <SelectValue placeholder="无角色" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">无角色</SelectItem>
+            {roles.map((r) => (
+              <SelectItem key={r.id} value={r.id}>
+                {r.displayName}（{r.id}）
+              </SelectItem>
+            ))}
+            <SelectItem value="custom">自定义角色 prompt…</SelectItem>
+          </SelectContent>
+        </Select>
         {roleMode === 'library' && selectedRole ? (
           <p className="mt-1.5 line-clamp-2 text-xs text-muted-foreground">{selectedRole.description}</p>
         ) : null}
         {roleMode === 'custom' ? (
-          <textarea
-            className="mt-1.5 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          <Textarea
+            className="mt-1.5 resize-none"
             rows={3}
             placeholder="输入该成员的角色设定 / 专业能力 prompt"
             value={customPrompt}
@@ -228,7 +258,7 @@ export function CollaborationAddMemberDialog({
         ) : null}
 
         <div className="mt-4 flex justify-end gap-2">
-          <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+          <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
             取消
           </Button>
           <Button
@@ -240,7 +270,7 @@ export function CollaborationAddMemberDialog({
             添加
           </Button>
         </div>
-      </div>
-    </div>
+      </PopoverContent>
+    </Popover>
   )
 }

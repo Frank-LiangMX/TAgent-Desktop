@@ -10,21 +10,24 @@
  *   一方失败不影响另一方（各 run 独立落盘）。
  *
  * 复用 ChatInput（仅 onSubmit + placeholder），不复用 Chat 的 session 编排/流式/工具过程。
- * 时间线 Stage 1–3 用简单气泡（plain text）；Markdown/附件渲染留 S6+。
+ * 时间线走 tagent-thread 居中限宽；成员正文 Markdown；run 卡玻璃化 + 状态过渡。
  *
  * 数据通过 window.electronAPI.collaborationRoom.* IPC（见 preload）。
  * 变更后调 onRoomsChanged 通知 App bump refreshKey；run/member 变更由 CHANGED 广播驱动 bump。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { motion } from 'motion/react'
 import {
   Archive,
+  At,
   CirclesThreePlus,
+  Database,
   Pause,
   PencilSimple,
   Play,
   StopCircle,
-  UserPlus,
+  UsersThree,
 } from '@phosphor-icons/react'
 import type {
   Channel,
@@ -36,14 +39,36 @@ import type {
   CollaborationRoomStatus,
   CollaborationRun,
 } from '@tagent/shared'
-import { MessageResponse, useSmoothStream } from '@tagent/ui'
+import { AppTooltip, MessageResponse, useSmoothStream } from '@tagent/ui'
 import { ChatInput, type ChatInputHandle } from '../chat/ChatInput'
+import BlurText from '../chat/BlurText'
 import { CollaborationTextPrompt } from './CollaborationTextPrompt'
 import { CollaborationMemberSettings } from './CollaborationMemberSettings'
 import { CollaborationAddMemberDialog } from './CollaborationAddMemberDialog'
 import { cn } from '../../lib/utils'
 
 type TextPromptKind = 'rename' | null
+
+const EASE = [0.16, 1, 0.3, 1] as const
+
+/** 欢迎页能力点卡片 */
+const WELCOME_FEATURES = [
+  {
+    icon: UsersThree,
+    title: '多成员并行',
+    desc: '一条消息可同时唤醒多个成员，各自独立执行、互不阻塞。',
+  },
+  {
+    icon: At,
+    title: '@点名路由',
+    desc: '不 @ 由协调者回复；@成员名 精确投递，@all 唤醒全部。',
+  },
+  {
+    icon: Database,
+    title: '持久房间',
+    desc: '消息与运行状态落盘，重启不丢历史、不会出现假 running。',
+  },
+] as const
 
 /** 房间状态 → 中文标签 */
 function roomStatusLabel(status: CollaborationRoomStatus): string {
@@ -137,7 +162,6 @@ export function CollaborationRoomsPage({
   const [addingMember, setAddingMember] = useState(false)
   const [showAddMemberDialog, setShowAddMemberDialog] = useState(false)
   const [textPrompt, setTextPrompt] = useState<TextPromptKind>(null)
-  const [editingMember, setEditingMember] = useState<CollaborationMember | null>(null)
   const [mailbox, setMailbox] = useState<CollaborationMailboxEnvelope[]>([])
   const [streamByRun, setStreamByRun] = useState<Record<string, string>>({})
   const inputRef = useRef<ChatInputHandle>(null)
@@ -356,13 +380,17 @@ export function CollaborationRoomsPage({
   }, [room, onRoomsChanged])
 
   const confirmMemberSettings = useCallback(
-    async (patch: { displayName: string; channelId: string; modelId: string }): Promise<void> => {
-      if (!room || !editingMember) return
-      setEditingMember(null)
+    async (patch: {
+      memberId: string
+      displayName: string
+      channelId: string
+      modelId: string
+    }): Promise<void> => {
+      if (!room) return
       try {
         await window.electronAPI.updateCollaborationMember({
           roomId: room.id,
-          memberId: editingMember.id,
+          memberId: patch.memberId,
           displayName: patch.displayName,
           channelId: patch.channelId,
           modelId: patch.modelId,
@@ -372,7 +400,7 @@ export function CollaborationRoomsPage({
         toast.error('更新成员失败', { description: err instanceof Error ? err.message : String(err) })
       }
     },
-    [room, editingMember, onRoomsChanged],
+    [room, onRoomsChanged],
   )
 
   const handleArchive = useCallback(async (): Promise<void> => {
@@ -388,28 +416,99 @@ export function CollaborationRoomsPage({
   // 空态
   if (!roomId || !room) {
     return (
-      <div className="flex h-full min-h-0 items-center justify-center p-8">
-        <div className="flex max-w-md flex-col items-center gap-4 text-center">
-          <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-            <CirclesThreePlus size={28} />
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold text-foreground">Agent 协作室</h2>
-            <p className="mt-1.5 text-sm text-muted-foreground">
-              在一个持久房间里与协调者和多个成员协作。不 @ 时协调者回复；<code className="rounded bg-muted px-1">@成员名</code>{' '}
-              点名指定成员（可多个，并行扇出）；<code className="rounded bg-muted px-1">@all</code> 唤醒全部。受房间并发上限与成员内串行约束，可取消，重启后无假
-              running。
-            </p>
-          </div>
-          <button
-            type="button"
-            className="flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            onClick={onNewRoom}
+      <div className="relative flex h-full min-h-0 items-center justify-center overflow-hidden px-4">
+        {/* 背景氛围光 */}
+        <div aria-hidden className="pointer-events-none absolute inset-0">
+          <div className="absolute left-1/2 top-1/3 size-[420px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/10 blur-[120px]" />
+        </div>
+
+        <div className="relative w-full max-w-[720px]">
+          <motion.p
+            className="mb-5 text-center text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70"
+            initial={{ opacity: 0, filter: 'blur(8px)' }}
+            animate={{ opacity: 1, filter: 'blur(0px)' }}
+            transition={{ duration: 0.5, ease: EASE, delay: 0.04 }}
           >
-            <CirclesThreePlus size={16} />
-            新建协作室
-          </button>
-          <p className="text-xs text-muted-foreground">或在左侧选择一个已有房间。</p>
+            Agent collaboration room
+          </motion.p>
+
+          <div className="mb-4 text-center">
+            <BlurText
+              text="让多个 Agent 在一个房间里协作。"
+              className="justify-center text-2xl font-semibold tracking-tight text-foreground/90"
+              delay={90}
+              direction="bottom"
+              stepDuration={0.4}
+            />
+          </div>
+
+          <motion.p
+            className="mx-auto max-w-md text-center text-sm leading-relaxed text-muted-foreground"
+            initial={{ opacity: 0, y: 12, filter: 'blur(4px)' }}
+            animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+            transition={{ duration: 0.5, ease: EASE, delay: 0.3 }}
+          >
+            新建一个房间，配置成员与内核模型，然后 @ 点名或交给协调者调度。
+          </motion.p>
+
+          <motion.div
+            className="mt-8 grid grid-cols-1 gap-2.5 sm:grid-cols-3"
+            initial="hidden"
+            animate="show"
+            variants={{
+              hidden: {},
+              show: { transition: { staggerChildren: 0.08, delayChildren: 0.5 } },
+            }}
+          >
+            {WELCOME_FEATURES.map((f) => (
+              <motion.div
+                key={f.title}
+                className="group flex items-start gap-3 rounded-xl border border-border/55 bg-muted/25 px-3.5 py-3 text-left transition-all hover:border-border hover:bg-accent/70 hover:shadow-sm"
+                variants={{
+                  hidden: { opacity: 0, y: 14, filter: 'blur(4px)' },
+                  show: {
+                    opacity: 1,
+                    y: 0,
+                    filter: 'blur(0px)',
+                    transition: { duration: 0.42, ease: EASE },
+                  },
+                }}
+              >
+                <span
+                  className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary transition-colors group-hover:bg-primary/15"
+                  aria-hidden="true"
+                >
+                  <f.icon className="size-4" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-xs font-medium text-foreground/90">{f.title}</span>
+                  <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
+                    {f.desc}
+                  </span>
+                </span>
+              </motion.div>
+            ))}
+          </motion.div>
+
+          <motion.div
+            className="mt-9 flex flex-col items-center gap-3"
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.45, ease: EASE, delay: 0.72 }}
+          >
+            <button
+              type="button"
+              className="group flex items-center gap-2 rounded-full bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-lg shadow-primary/20 transition-all hover:bg-primary/90 hover:shadow-primary/30 active:scale-[0.97]"
+              onClick={onNewRoom}
+            >
+              <CirclesThreePlus
+                size={17}
+                className="transition-transform group-hover:rotate-12"
+              />
+              新建协作室
+            </button>
+            <p className="text-xs text-muted-foreground">或从左侧选择一个已有房间。</p>
+          </motion.div>
         </div>
       </div>
     )
@@ -419,16 +518,16 @@ export function CollaborationRoomsPage({
   const paused = room.status === 'paused'
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="session-body flex h-full min-h-0 flex-col">
       {/* 头部 */}
-      <header className="flex flex-col gap-1.5 border-b border-border/50 px-5 py-3">
+      <header className="flex flex-col gap-1.5 border-b border-border/40 px-5 py-3">
         <div className="flex items-center gap-2">
           <h1 className="flex-1 truncate text-base font-semibold text-foreground" title={room.title}>
             {room.title}
           </h1>
           <span
             className={cn(
-              'rounded-full px-2 py-0.5 text-[11px]',
+              'rounded-full px-2 py-0.5 text-[11px] transition-colors',
               room.status === 'paused' && 'bg-amber-500/15 text-amber-600',
               room.status === 'active' && 'bg-emerald-500/15 text-emerald-600',
               room.status === 'archived' && 'bg-muted text-muted-foreground',
@@ -437,39 +536,43 @@ export function CollaborationRoomsPage({
           >
             {roomStatusLabel(room.status)}
           </span>
-          <button
-            type="button"
-            className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="重命名"
-            onClick={() => setTextPrompt('rename')}
-          >
-            <PencilSimple size={14} />
-          </button>
-          <button
-            type="button"
-            className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label={room.status === 'paused' ? '恢复运行' : '暂停新运行'}
-            onClick={() => void handleTogglePause()}
-          >
-            {room.status === 'paused' ? <Play size={14} /> : <Pause size={14} />}
-          </button>
-          <button
-            type="button"
-            className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-            aria-label="添加成员"
+          <AppTooltip label="重命名" side="bottom">
+            <button
+              type="button"
+              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              aria-label="重命名"
+              onClick={() => setTextPrompt('rename')}
+            >
+              <PencilSimple size={14} />
+            </button>
+          </AppTooltip>
+          <AppTooltip label={room.status === 'paused' ? '恢复运行' : '暂停新运行'} side="bottom">
+            <button
+              type="button"
+              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              aria-label={room.status === 'paused' ? '恢复运行' : '暂停新运行'}
+              onClick={() => void handleTogglePause()}
+            >
+              {room.status === 'paused' ? <Play size={14} /> : <Pause size={14} />}
+            </button>
+          </AppTooltip>
+          <CollaborationAddMemberDialog
+            open={showAddMemberDialog}
+            onOpenChange={setShowAddMemberDialog}
             disabled={addingMember || archived}
-            onClick={() => setShowAddMemberDialog(true)}
-          >
-            <UserPlus size={14} />
-          </button>
-          <button
-            type="button"
-            className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="归档"
-            onClick={() => void handleArchive()}
-          >
-            <Archive size={14} />
-          </button>
+            channels={channels}
+            onSave={(patch) => void confirmAddMember(patch)}
+          />
+          <AppTooltip label="归档" side="bottom">
+            <button
+              type="button"
+              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              aria-label="归档"
+              onClick={() => void handleArchive()}
+            >
+              <Archive size={14} />
+            </button>
+          </AppTooltip>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
           {room.goal ? <span className="truncate" title={room.goal}>目标：{room.goal}</span> : null}
@@ -494,38 +597,43 @@ export function CollaborationRoomsPage({
               const st = memberDisplayStatus(m, runs)
               const hasBackend = memberHasExecutableBackend(m)
               return (
-                <button
+                <CollaborationMemberSettings
                   key={m.id}
-                  type="button"
-                  className={cn(
-                    'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] hover:ring-1 hover:ring-primary/40',
-                    st === 'running' && 'bg-emerald-500/15 text-emerald-600',
-                    st === 'queued' && 'bg-amber-500/15 text-amber-600',
-                    st === 'awaiting_peer' && 'bg-sky-500/15 text-sky-600',
-                    (st === 'idle' || st === 'offline') && 'bg-muted text-muted-foreground',
-                    !hasBackend && 'ring-1 ring-amber-500/40',
-                  )}
-                  title={`${m.displayName}：${memberStatusLabel(st)}${m.isCoordinator ? '（协调者）' : ''} · 后端：${channelLabel(m)}${m.roleSnapshot.roleId ? ` · 角色：${m.roleSnapshot.displayName}` : ''} · 点击修改渠道/模型`}
-                  onClick={() => setEditingMember(m)}
+                  member={m}
+                  channels={channels}
+                  onSave={(patch) => void confirmMemberSettings(patch)}
                 >
-                  <span
+                  <button
+                    type="button"
                     className={cn(
-                      'inline-block size-1.5 rounded-full',
-                      st === 'running' && 'animate-pulse bg-emerald-500',
-                      st === 'queued' && 'bg-amber-500',
-                      st === 'awaiting_peer' && 'animate-pulse bg-sky-500',
-                      st === 'idle' && 'bg-muted-foreground/40',
-                      st === 'offline' && 'bg-muted-foreground/20',
+                      'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors hover:ring-1 hover:ring-primary/40',
+                      st === 'running' && 'bg-emerald-500/15 text-emerald-600',
+                      st === 'queued' && 'bg-amber-500/15 text-amber-600',
+                      st === 'awaiting_peer' && 'bg-sky-500/15 text-sky-600',
+                      (st === 'idle' || st === 'offline') && 'bg-muted text-muted-foreground',
+                      !hasBackend && 'ring-1 ring-amber-500/40',
                     )}
-                  />
-                  {m.displayName}
-                  {m.isCoordinator ? <span className="opacity-60">·协调</span> : null}
-                  {!hasBackend ? (
-                    <span className="rounded bg-amber-500/15 px-1 font-medium text-amber-600">无渠道</span>
-                  ) : (
-                    <span className="opacity-60">{channelLabel(m)}</span>
-                  )}
-                </button>
+                    aria-label={`编辑成员 ${m.displayName}`}
+                  >
+                    <span
+                      className={cn(
+                        'collab-status-dot inline-block size-1.5 rounded-full',
+                        st === 'running' && 'animate-pulse bg-emerald-500',
+                        st === 'queued' && 'bg-amber-500',
+                        st === 'awaiting_peer' && 'animate-pulse bg-sky-500',
+                        st === 'idle' && 'bg-muted-foreground/40',
+                        st === 'offline' && 'bg-muted-foreground/20',
+                      )}
+                    />
+                    {m.displayName}
+                    {m.isCoordinator ? <span className="opacity-60">·协调</span> : null}
+                    {!hasBackend ? (
+                      <span className="rounded bg-amber-500/15 px-1 font-medium text-amber-600">无渠道</span>
+                    ) : (
+                      <span className="opacity-60">{channelLabel(m)}</span>
+                    )}
+                  </button>
+                </CollaborationMemberSettings>
               )
             })}
           </div>
@@ -551,73 +659,80 @@ export function CollaborationRoomsPage({
         ) : null}
       </header>
 
-      {/* 时间线 */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+      {/* 时间线（对齐会话信息流：tagent-thread 居中限宽） */}
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
         {messages.length === 0 && activeRuns.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
             还没有消息。在下方输入并发送一条消息试试（可 @成员名 点名）。
           </div>
         ) : (
-          <ul className="flex flex-col gap-2.5">
-            {messages.map((m) => (
-              <MessageBubble key={m.id} message={m} members={members} />
-            ))}
-            {activeRuns.map((r) => (
-              <ThinkingBubble
-                key={r.id}
-                memberName={memberName(r.memberId)}
-                status={r.status}
-                streamedText={streamByRun[r.id]}
-                cancelling={cancellingId === r.id}
-                onCancel={() => void handleCancelRun(r.id)}
-              />
-            ))}
-          </ul>
+          <div className="tagent-thread px-5 pb-44">
+            <ul className="flex flex-col gap-2.5">
+              {messages.map((m) => (
+                <MessageBubble key={m.id} message={m} members={members} />
+              ))}
+              {activeRuns.map((r) => (
+                <ThinkingBubble
+                  key={r.id}
+                  memberName={memberName(r.memberId)}
+                  status={r.status}
+                  streamedText={streamByRun[r.id]}
+                  cancelling={cancellingId === r.id}
+                  onCancel={() => void handleCancelRun(r.id)}
+                />
+              ))}
+            </ul>
+          </div>
         )}
       </div>
 
-      {/* 输入框 */}
-      <div className="border-t border-border/50 px-4 py-3">
-        {archived ? (
-          <div className="rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
-            已归档房间不再发送新消息。可在侧栏「已归档」中恢复。
-          </div>
-        ) : paused ? (
-          <div className="rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
-            房间已暂停，不会启动新运行。恢复运行后可继续发送。
-          </div>
-        ) : allMembersMissingBackend ? (
-          <div className="flex flex-col items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-3 text-center">
-            <p className="text-xs text-amber-700 dark:text-amber-300">
-              所有成员都未绑定可用渠道（kscc / 外部渠道），发送后无法跑起任何回复。
-            </p>
-            <button
-              type="button"
-              className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-              onClick={() => onOpenSettings?.('channels')}
-            >
-              去渠道设置
-            </button>
-          </div>
-        ) : anyMemberMissingBackend ? (
-          <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-            <span>部分成员未绑定渠道（@ 到他们时不会回复）。</span>
-            <button
-              type="button"
-              className="rounded-full bg-primary px-2.5 py-0.5 font-medium text-primary-foreground hover:bg-primary/90"
-              onClick={() => onOpenSettings?.('channels')}
-            >
-              去渠道设置
-            </button>
-          </div>
-        ) : (
-          <ChatInput
-            ref={inputRef}
-            onSubmit={() => void send()}
-            placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@all 唤醒全部）"
-            mentionRoles={members.map((m) => ({ id: m.id, displayName: m.displayName }))}
-          />
-        )}
+      {/* 底部输入栈（绝对定位，输入框底与侧栏底对齐，对齐会话 composer） */}
+      <div className="session-bottom-stack absolute inset-x-0">
+        <div className="composer-blur-underlay" aria-hidden="true" />
+        <div className="session-composer-cluster">
+          {archived ? (
+            <div className="rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
+              已归档房间不再发送新消息。可在侧栏「已归档」中恢复。
+            </div>
+          ) : paused ? (
+            <div className="rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
+              房间已暂停，不会启动新运行。恢复运行后可继续发送。
+            </div>
+          ) : allMembersMissingBackend ? (
+            <div className="flex flex-col items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-3 text-center">
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                所有成员都未绑定可用渠道（kscc / 外部渠道），发送后无法跑起任何回复。
+              </p>
+              <button
+                type="button"
+                className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                onClick={() => onOpenSettings?.('channels')}
+              >
+                去渠道设置
+              </button>
+            </div>
+          ) : anyMemberMissingBackend ? (
+            <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              <span>部分成员未绑定渠道（@ 到他们时不会回复）。</span>
+              <button
+                type="button"
+                className="rounded-full bg-primary px-2.5 py-0.5 font-medium text-primary-foreground hover:bg-primary/90"
+                onClick={() => onOpenSettings?.('channels')}
+              >
+                去渠道设置
+              </button>
+            </div>
+          ) : (
+            <div className="session-input-dock">
+              <ChatInput
+                ref={inputRef}
+                onSubmit={() => void send()}
+                placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@all 唤醒全部）"
+                mentionRoles={members.map((m) => ({ id: m.id, displayName: m.displayName }))}
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       <CollaborationTextPrompt
@@ -627,19 +742,6 @@ export function CollaborationRoomsPage({
         confirmLabel="保存"
         onCancel={() => setTextPrompt(null)}
         onConfirm={(title) => void confirmRename(title)}
-      />
-      <CollaborationMemberSettings
-        open={editingMember !== null}
-        member={editingMember}
-        channels={channels}
-        onCancel={() => setEditingMember(null)}
-        onSave={(patch) => void confirmMemberSettings(patch)}
-      />
-      <CollaborationAddMemberDialog
-        open={showAddMemberDialog}
-        channels={channels}
-        onCancel={() => setShowAddMemberDialog(false)}
-        onSave={(patch) => void confirmAddMember(patch)}
       />
     </div>
   )
@@ -661,7 +763,7 @@ function MessageBubble({
   if (message.authorType === 'user') {
     return (
       <li className="flex justify-end">
-        <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-primary px-3.5 py-2 text-sm text-primary-foreground">
+        <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-sm border border-border/60 bg-foreground/[0.05] px-3.5 py-2 text-sm text-foreground backdrop-blur-sm">
           {message.content}
         </div>
       </li>
@@ -707,7 +809,7 @@ function MessageBubble({
         <div className="mb-0.5 text-[11px] text-muted-foreground">
           {memberDisplayName(message.authorId, members)}
         </div>
-        <div className="rounded-2xl rounded-bl-sm bg-muted px-3.5 py-2 text-sm text-foreground">
+        <div className="rounded-2xl rounded-bl-sm border border-border/50 bg-foreground/[0.03] px-3.5 py-2 text-sm text-foreground backdrop-blur-sm">
           <MessageResponse className="prose-p:my-1 prose-headings:my-1.5 text-sm">
             {message.content}
           </MessageResponse>
@@ -754,11 +856,11 @@ function ThinkingBubble({
   return (
     <li className="flex justify-start">
       <div className="max-w-[80%]">
-        <div className="mb-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <span>{memberName}</span>
+        <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <span className="font-medium text-foreground/70">{memberName}</span>
           <span
             className={cn(
-              'inline-block size-1.5 rounded-full',
+              'collab-status-dot inline-block size-1.5 rounded-full',
               queued && 'bg-amber-500',
               waitingPeer && 'animate-pulse bg-sky-500',
               !queued && !waitingPeer && 'animate-pulse bg-emerald-500',
@@ -766,7 +868,10 @@ function ThinkingBubble({
           />
           <span>{runStatusLabel(status)}…</span>
         </div>
-        <div className="rounded-2xl rounded-bl-sm bg-muted px-3.5 py-2 text-sm text-muted-foreground">
+        <div
+          className="collab-run-card rounded-2xl rounded-bl-sm px-3.5 py-2.5 text-sm text-foreground/90"
+          data-status={status}
+        >
           {queued ? (
             <span className="text-xs">等待空闲 slot…</span>
           ) : waitingPeer ? (
@@ -780,18 +885,20 @@ function ThinkingBubble({
               <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60" />
             </span>
           )}
-          {!waitingPeer ? (
+        </div>
+        {!waitingPeer ? (
+          <div className="mt-1.5 flex justify-end">
             <button
               type="button"
-              className="mt-1.5 flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               onClick={onCancel}
               disabled={cancelling}
             >
               <StopCircle size={12} />
               {cancelling ? '取消中…' : '取消'}
             </button>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </div>
     </li>
   )
