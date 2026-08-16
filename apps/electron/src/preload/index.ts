@@ -17,6 +17,7 @@ import {
   KANBAN_IPC_CHANNELS,
   MEMORY_IPC_CHANNELS,
   USER_PROFILE_IPC_CHANNELS,
+  SYSTEM_PROMPT_IPC_CHANNELS,
 } from '@tagent/shared'
 import type {
   AgentRoleProfile,
@@ -51,6 +52,10 @@ import type {
   RoleStoreCatalogResult,
   SaveAgentRoleInput,
   UserProfile,
+  SystemPrompt,
+  SystemPromptConfig,
+  SystemPromptCreateInput,
+  SystemPromptUpdateInput,
   WorkspaceMcpConfig,
   WorkspacePluginBundleRecord,
   MoAPreset,
@@ -202,6 +207,16 @@ const electronAPI = {
   getMessages: (sessionId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_SDK_MESSAGES, sessionId),
   /** 监听流式事件 */
+  listSessionProcesses: (sessionId: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_SESSION_PROCESSES, sessionId),
+  killSessionProcess: (sessionId: string, id: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.KILL_SESSION_PROCESS, { sessionId, id }),
+  onSessionProcessesChanged: (cb: (payload: { sessionId: string; processes: unknown[] }) => void) => {
+    const handler = (_e: unknown, payload: { sessionId: string; processes: unknown[] }): void =>
+      cb(payload)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.SESSION_PROCESSES_CHANGED, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.SESSION_PROCESSES_CHANGED, handler)
+  },
   onStreamEvent: (cb: (payload: unknown) => void) => {
     const handler = (_e: unknown, payload: unknown) => cb(payload)
     ipcRenderer.on(AGENT_IPC_CHANNELS.STREAM_EVENT, handler)
@@ -349,7 +364,7 @@ const electronAPI = {
   },
   askUserRespond: (response: AskUserResponse) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.ASK_USER_RESPOND, response),
-  /** 用户关闭选项卡：deny 取消选择（不当运行出错） */
+  /** 用户关闭选项卡：软 deny「用户未选择」，当前轮继续 */
   askUserDismiss: (requestId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.ASK_USER_DISMISS, requestId),
   // 热切换指定会话的权限模式（持久化 meta + 通知运行时）
@@ -558,6 +573,20 @@ const electronAPI = {
     ipcRenderer.invoke(USER_PROFILE_IPC_CHANNELS.GET) as Promise<UserProfile>,
   updateUserProfile: (updates: Partial<UserProfile>) =>
     ipcRenderer.invoke(USER_PROFILE_IPC_CHANNELS.UPDATE, updates) as Promise<UserProfile>,
+
+  // ===== 系统提示词（Chat 模式；设置页 CRUD）=====
+  getSystemPromptConfig: () =>
+    ipcRenderer.invoke(SYSTEM_PROMPT_IPC_CHANNELS.GET_CONFIG) as Promise<SystemPromptConfig>,
+  createSystemPrompt: (input: SystemPromptCreateInput) =>
+    ipcRenderer.invoke(SYSTEM_PROMPT_IPC_CHANNELS.CREATE, input) as Promise<SystemPrompt>,
+  updateSystemPrompt: (id: string, input: SystemPromptUpdateInput) =>
+    ipcRenderer.invoke(SYSTEM_PROMPT_IPC_CHANNELS.UPDATE, id, input) as Promise<SystemPrompt>,
+  deleteSystemPrompt: (id: string) =>
+    ipcRenderer.invoke(SYSTEM_PROMPT_IPC_CHANNELS.DELETE, id) as Promise<void>,
+  updateAppendSetting: (enabled: boolean) =>
+    ipcRenderer.invoke(SYSTEM_PROMPT_IPC_CHANNELS.UPDATE_APPEND_SETTING, enabled) as Promise<void>,
+  setDefaultPrompt: (id: string | null) =>
+    ipcRenderer.invoke(SYSTEM_PROMPT_IPC_CHANNELS.SET_DEFAULT, id) as Promise<void>,
 
   // ===== 渠道余额 =====
   getChannelBalance: (channelId: string) =>

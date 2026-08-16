@@ -113,7 +113,7 @@ export interface StageEntry {
  */
 export interface GraphNode {
   id: string
-  kind: 'memory' | 'skill'
+  kind: 'memory' | 'session'
   shape: 'diamond' | 'circle'
   source?: 'L0' | 'L2' | 'L5'
   title: string
@@ -128,7 +128,7 @@ export interface GraphNode {
 export interface GraphEdge {
   source: string
   target: string
-  type: 'skill-skill' | 'memory-skill'
+  type: 'memory-memory' | 'memory-session'
   weight?: number
 }
 
@@ -140,7 +140,7 @@ export interface GraphPayload {
   edges: GraphEdge[]
   stats: {
     memoryNodes: number
-    skillNodes: number
+    sessionNodes: number
     edges: number
   }
 }
@@ -452,6 +452,8 @@ export interface SDKUserMessage {
   isReplay?: boolean
   /** SDK 合成的消息（如 Skill 展开 prompt），非人类用户输入 */
   isSynthetic?: boolean
+  /** TAgent 标注：运行中引导消息，供面板按同一执行回合渲染。 */
+  isSteer?: boolean
 }
 
 /** SDK result 消息（查询结束时返回） */
@@ -967,16 +969,16 @@ export interface AgentCallStats {
  *
  * 控制 SubAgent 委派策略注入主 Agent system prompt 的积极性档位：
  * - 'never'：不主动委派，仅用户明确要求时使用
- * - 'conservative'：明确有益才委派（默认）
- * - 'balanced'：积极委派，保持主上下文干净
+ * - 'conservative'：明确有益才委派
+ * - 'balanced'：积极委派，保持主上下文干净（默认）
  * - 'aggressive'：尽可能委派，主会话只做编排与决策
  */
 export type SubagentEagerness = 'never' | 'conservative' | 'balanced' | 'aggressive'
 
 /** 子代理委派积极性默认值（meta 未持久化时使用） */
-export const DEFAULT_SUBAGENT_EAGERNESS: SubagentEagerness = 'conservative'
+export const DEFAULT_SUBAGENT_EAGERNESS: SubagentEagerness = 'balanced'
 
-/** 规范化委派积极性：非法 / 缺省值统一回退默认 conservative */
+/** 规范化委派积极性：非法 / 缺省值统一回退默认 balanced */
 export function migrateSubagentEagerness(value: string | undefined): SubagentEagerness {
   if (value === 'never' || value === 'conservative' || value === 'balanced' || value === 'aggressive') {
     return value
@@ -2002,6 +2004,12 @@ export const AGENT_IPC_CHANNELS = {
   GET_TASK_OUTPUT: 'agent:get-task-output',
   /** 停止任务 */
   STOP_TASK: 'agent:stop-task',
+  /** 列出本会话仍在跑的后台进程（Bash / CLI 工人） */
+  LIST_SESSION_PROCESSES: 'agent:list-session-processes',
+  /** 杀掉本会话某个后台进程 */
+  KILL_SESSION_PROCESS: 'agent:kill-session-process',
+  /** 主→渲染：本会话后台进程列表变化 */
+  SESSION_PROCESSES_CHANGED: 'agent:session-processes-changed',
 
   // 工作区能力（MCP + Skill）
   /** 触发自动归档 */
@@ -2183,7 +2191,7 @@ export const AGENT_IPC_CHANNELS = {
   ASK_USER_REQUEST: 'agent:ask-user:request',
   /** AskUser 响应（渲染进程 → 主进程） */
   ASK_USER_RESPOND: 'agent:ask-user:respond',
-  /** AskUser 用户关闭选项卡（渲染 → 主进程：deny「用户取消选择」+ interrupt，不当运行错误） */
+  /** AskUser 用户关闭选项卡（渲染 → 主进程：软 deny「用户未选择」，不中断当前轮） */
   ASK_USER_DISMISS: 'agent:ask-user:dismiss',
   /** AskUser 已决（主进程 → 渲染进程：用户 respond / dismiss / 会话清理，渲染层按 requestId 出队） */
   ASK_USER_RESOLVED: 'agent:ask-user:resolved',

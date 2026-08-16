@@ -50,6 +50,8 @@ export interface TAgentUserMessage {
   createdAt?: number
   isReplay?: boolean
   isSynthetic?: boolean
+  /** 运行中通过「引导」注入的用户指令；仍是用户可见消息，但并入当前执行回合。 */
+  isSteer?: boolean
   content: Array<TAgentTextBlock | TAgentToolResultBlock | { type: string; [key: string]: unknown }>
   attachments?: FileAttachment[]
 }

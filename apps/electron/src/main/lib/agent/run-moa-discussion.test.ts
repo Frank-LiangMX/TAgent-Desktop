@@ -230,8 +230,13 @@ describe('runMoADiscussion · 正常两轮 + 收口', () => {
     expect(runSeat).toHaveBeenCalledTimes(6)
 
     const panels = panelsOf(payloads)
+    // 每次调用席位前都先推进行中状态，渲染层可明确显示当前在等谁。
+    expect(panels.some((panel) => panel.activeSpeakerId === 'ref-0' && panel.entries.length === 0)).toBe(true)
+    expect(panels.some((panel) => panel.activeSpeakerId === 'ref-1' && panel.entries.length === 1)).toBe(true)
+    expect(panels.some((panel) => panel.activeSpeakerId === 'moderator' && panel.phase === 'finalizing')).toBe(true)
     const last = panels.at(-1)!
     expect(last.phase).toBe('done')
+    expect(last.activeSpeakerId).toBeUndefined()
     expect(last.summary).toBe('共识方案：综合各方意见，分两步实施。')
     expect(last.entries).toHaveLength(4)
     // 串行 + 轮次顺序：ref-0@1, ref-1@1, ref-0@2, ref-1@2

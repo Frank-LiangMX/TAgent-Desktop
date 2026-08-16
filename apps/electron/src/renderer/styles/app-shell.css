@@ -321,6 +321,8 @@
 
 /* ===== 思考强度滑杆（ReasoningSlider） — 粗条 + 扫光能量 + 粒子动画 ===== */
 .reasoning-slider {
+  --reasoning-thumb-size: 16px;
+  --reasoning-track-inset: calc(var(--reasoning-thumb-size) / 2);
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -329,12 +331,18 @@
 
 /* 两端标签：更快 / 更深 */
 .reasoning-slider-scale {
-  display: flex;
-  justify-content: space-between;
+  position: relative;
+  height: 9px;
   color: hsl(var(--muted-foreground) / 0.6);
   font-size: 9px;
   font-weight: 520;
   line-height: 1;
+}
+.reasoning-slider-scale span {
+  position: absolute;
+  left: var(--reasoning-position);
+  white-space: nowrap;
+  transform: translateX(-50%);
 }
 
 /* ---- 轨道区 ---- */
@@ -359,8 +367,8 @@
 .reasoning-slider-track {
   position: absolute;
   top: 50%;
-  left: 8px;
-  right: 8px;
+  left: var(--reasoning-track-inset);
+  right: var(--reasoning-track-inset);
   height: 8px;
   border-radius: 4px;
   background: hsl(var(--muted-foreground) / 0.12);
@@ -375,6 +383,9 @@
   left: 0;
   height: 100%;
   border-radius: 4px;
+  /* 扫光伪元素以 fill 为坐标系运动，必须在当前强度的填充段内裁剪，
+     不能泄漏到右侧未填充轨道。 */
+  overflow: hidden;
   background: linear-gradient(90deg,
     hsl(var(--primary) / 0.55),
     hsl(var(--primary) / 0.85),
@@ -541,8 +552,8 @@
 .reasoning-slider-thumb {
   position: absolute;
   top: 50%;
-  width: 16px;
-  height: 16px;
+  width: var(--reasoning-thumb-size);
+  height: var(--reasoning-thumb-size);
   border-radius: 999px;
   border: 2.5px solid hsl(var(--primary));
   background: hsl(var(--background));
@@ -588,9 +599,8 @@
 
 /* ---- 档位标签 ---- */
 .reasoning-slider-labels {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 4px;
+  position: relative;
+  height: 11px;
   color: hsl(var(--muted-foreground) / 0.5);
   font-size: 9px;
   font-weight: 520;
@@ -599,6 +609,12 @@
 .reasoning-slider-label.is-active {
   color: hsl(var(--primary));
   font-weight: 650;
+}
+.reasoning-slider-label {
+  position: absolute;
+  left: var(--reasoning-position);
+  white-space: nowrap;
+  transform: translateX(-50%);
 }
 
 /* ---- Dark mode adjustments ---- */
@@ -873,12 +889,14 @@
  * - 模型名极短截断
  * - token 栏只留圆环 + 数字
  */
-.is-composer-compact .composer-crew-btn {
+.is-composer-compact .composer-crew-btn,
+.is-composer-compact .composer-summary-btn {
   width: 28px;
   padding-inline: 0;
   gap: 0;
 }
-.is-composer-compact .composer-crew-btn__label {
+.is-composer-compact .composer-crew-btn__label,
+.is-composer-compact .composer-summary-btn__label {
   display: none;
 }
 /* 运行模式 pill 窄宽退化为纯图标（compact 由 RunModeSelector 直接不渲染文字，
@@ -1165,6 +1183,16 @@
   border-color: hsl(142 40% 42% / 0.35);
   background: hsl(142 40% 42% / 0.1);
 }
+.status-ticker--live {
+  color: hsl(var(--primary));
+  border-color: hsl(var(--primary) / 0.34);
+  background: hsl(var(--primary) / 0.08);
+}
+.status-ticker--history {
+  color: hsl(var(--muted-foreground));
+  border-color: hsl(var(--border) / 0.44);
+  background: hsl(var(--foreground) / 0.045);
+}
 .status-ticker--warn {
   color: hsl(32 80% 40%);
   border-color: hsl(32 80% 48% / 0.35);
@@ -1174,6 +1202,13 @@
   color: hsl(var(--destructive));
   border-color: hsl(var(--destructive) / 0.35);
   background: hsl(var(--destructive) / 0.08);
+}
+.status-ticker--enter {
+  animation: status-ticker-enter 220ms var(--app-shell-motion) both;
+}
+.status-ticker--exit {
+  pointer-events: none;
+  animation: status-ticker-exit 170ms ease-in both;
 }
 .dark .status-ticker--success {
   color: hsl(142 50% 62%);
@@ -1185,6 +1220,18 @@
   min-width: 0;
   flex: 1 1 auto;
   overflow: hidden;
+}
+.status-ticker__live-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  box-shadow: 0 0 0 0 hsl(var(--primary) / 0.3);
+  animation: status-ticker-live-pulse 2.6s ease-in-out infinite;
+}
+/* 两端渐隐只服务于滚动长文案。短通知若也套遮罩，首尾文字会被错误地糊掉。 */
+.status-ticker--marquee .status-ticker__viewport {
   mask-image: linear-gradient(90deg, transparent, #000 8px, #000 calc(100% - 8px), transparent);
 }
 .status-ticker__track {
@@ -1205,12 +1252,181 @@
 .status-ticker__badge {
   flex-shrink: 0;
   padding: 0 5px;
+  border: 0;
   border-radius: 999px;
   background: hsl(var(--foreground) / 0.08);
   font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease, transform 140ms var(--app-shell-motion);
+}
+.status-ticker__badge:hover,
+.status-ticker__badge:focus-visible {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.14);
+}
+.status-ticker__badge:active {
+  transform: scale(0.94);
+}
+.status-ticker-inbox {
+  width: min(320px, calc(100vw - 24px));
+  padding: 5px !important;
+  border: 1px solid var(--spatial-line, hsl(var(--border) / 0.72));
+  border-radius: 12px;
+  background: rgb(var(--glass-rgb) / 0.94);
+  box-shadow: 0 14px 36px -14px rgb(0 0 0 / 0.42), inset 0 1px 0 rgb(255 255 255 / 0.08);
+  -webkit-backdrop-filter: blur(18px) saturate(1.1);
+  backdrop-filter: blur(18px) saturate(1.1);
+}
+.status-ticker-inbox__titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 7px 6px;
+  color: hsl(var(--foreground) / 0.86);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+.status-ticker-inbox__titlebar button {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 5px;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  font-size: 9.5px;
+  font-weight: 520;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+.status-ticker-inbox__titlebar button:hover,
+.status-ticker-inbox__titlebar button:focus-visible {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.08);
+}
+.status-ticker-inbox__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 7px 7px;
+  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+  font-weight: 600;
+}
+.status-ticker-inbox__head span:last-child {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.status-ticker-inbox__head--notifications {
+  margin-top: 4px;
+  padding-top: 9px;
+  border-top: 1px solid hsl(var(--foreground) / 0.08);
+}
+.status-ticker-inbox__list {
+  display: grid;
+  gap: 2px;
+  max-height: min(360px, calc(100vh - 90px));
+  overflow-y: auto;
+}
+.status-ticker-inbox__item {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 3px 3px 3px 7px;
+  border: 0;
+  border-radius: 8px;
+  color: hsl(var(--foreground) / 0.88);
+  background: transparent;
+  text-align: left;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.status-ticker-inbox__item:hover,
+.status-ticker-inbox__item:focus-within {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.08);
+}
+.status-ticker-inbox__main {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 4px 4px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.status-ticker-inbox__delete {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-top: 1px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground) / 0.55);
+  cursor: pointer;
+  opacity: 0.72;
+  transition: color 140ms ease, background-color 140ms ease, opacity 140ms ease;
+}
+.status-ticker-inbox__item:hover .status-ticker-inbox__delete,
+.status-ticker-inbox__delete:focus-visible {
+  opacity: 1;
+}
+.status-ticker-inbox__delete:hover,
+.status-ticker-inbox__delete:focus-visible {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.1);
+}
+.status-ticker-inbox__item--live .status-ticker-inbox__dot {
+  background: hsl(var(--primary));
+  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.13);
+}
+.status-ticker-inbox__item--history {
+  color: hsl(var(--muted-foreground));
+}
+.status-ticker-inbox__item--history .status-ticker-inbox__dot {
+  opacity: 0.58;
+}
+.status-ticker-inbox__dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.62);
+}
+.status-ticker-inbox__item[data-tone='success'] .status-ticker-inbox__dot { background: hsl(142 48% 48%); }
+.status-ticker-inbox__item[data-tone='warn'] .status-ticker-inbox__dot { background: hsl(32 86% 54%); }
+.status-ticker-inbox__item[data-tone='error'] .status-ticker-inbox__dot { background: hsl(var(--destructive)); }
+.status-ticker-inbox__copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.status-ticker-inbox__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.status-ticker-inbox__meta {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 9.5px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 @keyframes status-ticker-in {
   from {
@@ -1220,6 +1436,37 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+@keyframes status-ticker-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes status-ticker-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-2px) scale(0.985);
+  }
+}
+@keyframes status-ticker-live-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 hsl(var(--primary) / 0.28);
+    opacity: 0.76;
+  }
+  50% {
+    box-shadow: 0 0 0 4px hsl(var(--primary) / 0);
+    opacity: 1;
   }
 }
 @keyframes status-ticker-marquee {
@@ -1232,7 +1479,10 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .status-ticker__track,
-  .status-ticker__track--marquee {
+  .status-ticker__track--marquee,
+  .status-ticker--enter,
+  .status-ticker--exit,
+  .status-ticker__live-dot {
     animation: none;
   }
 }
@@ -1364,8 +1614,20 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  overflow-x: auto;
+  min-width: 0;
+  flex: 1 1 auto;
+  /* 顶栏最多四个标签，空间不足时由 tab 自身收缩；不要启用横向滚动，
+     Windows/Electron 会在 hover 时浮出一条白色 overlay scrollbar。 */
+  overflow: hidden;
   scrollbar-width: none;
+}
+
+/* 标签栏右侧固定动作（摘要），不随 tab 横向滚动 */
+.app-workspace-tab-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-left: 2px;
 }
 .app-workspace-tab-list::-webkit-scrollbar {
   display: none;
@@ -1411,9 +1673,11 @@
 .app-workspace-tab-shell {
   position: relative;
   z-index: 1;
-  min-width: 72px;
-  max-width: 128px;
-  flex: 0 1 128px;
+  /* 宽屏保持 120px；分屏或窄窗口时四枚标签均分可用空间，最低仍保留图标、短标题和关闭入口。 */
+  width: auto;
+  min-width: 76px;
+  max-width: 120px;
+  flex: 1 1 120px;
 }
 
 .app-workspace-tab {
@@ -1527,12 +1791,12 @@
 }
 .app-workspace-tab-status[data-status='running'] {
   background: rgb(59 130 246);
-  animation: status-pulse 1.3s ease-in-out infinite;
+  animation: status-pulse 2.6s ease-in-out infinite;
 }
 .app-workspace-tab-status[data-status='pending'] {
   background: rgb(234 179 8);
   --status-pulse-rgb: 234 179 8;
-  animation: status-pulse 1.3s ease-in-out infinite;
+  animation: status-pulse 2.6s ease-in-out infinite;
 }
 .app-workspace-tab-status[data-status='done'] {
   background: hsl(152 42% 42% / 0.92);

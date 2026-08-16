@@ -7,8 +7,8 @@
  * 阶段块 live：摘要累积 + 底部当前动作；层级文案扫光
  */
 import { memo, useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
-import { Message, MessageContent, MessageResponse, useSmoothStream } from '@tagent/ui'
+import { ArrowBendDownLeft, CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
+import { Message, MessageContent, MessageResponse, UserMessageContent, useSmoothStream } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 import { formatElapsedDuration, useLiveElapsedMs } from '../../lib/time-utils'
 import type { ConciseSegment, WorkStageStep } from './concise-timeline-model'
@@ -112,6 +112,9 @@ export function ConciseTimelineView({
                   extras={getStageExtras?.(seg)}
                 />
               )
+            }
+            if (seg.kind === 'guidance') {
+              return <GuidanceBubble key={seg.key} text={seg.text} />
             }
             return (
               <NarrativeRow
@@ -243,6 +246,23 @@ const RunQueueShell = memo(function RunQueueShell({
   )
 })
 
+/** 运行中引导：在消息列表的当前执行块内呈现为用户气泡，而非切开新回合。 */
+const GuidanceBubble = memo(function GuidanceBubble({ text }: { text: string }): JSX.Element {
+  return (
+    <div className="agent-concise-guidance">
+      <span className="agent-concise-guidance__label">
+        <ArrowBendDownLeft size={11} weight="bold" aria-hidden />
+        引导
+      </span>
+      <Message from="user" className="agent-concise-guidance__message py-0">
+        <MessageContent>
+          <UserMessageContent>{text}</UserMessageContent>
+        </MessageContent>
+      </Message>
+    </div>
+  )
+})
+
 /** seg 是否为过程队列末位（其后再无工具 / 正文 / 进度文）→ 仍属正在流式的思考。 */
 function isLastSegment(segments: ConciseSegment[], key: string): boolean {
   const last = segments[segments.length - 1]
@@ -281,10 +301,13 @@ export const ThinkingFold = memo(function ThinkingFold({
   const startRef = useRef<number | null>(null)
   // live 墙钟：idle 后 useLiveElapsedMs 归零，需冻结最后一秒数，避免退回偏大的字数粗估
   const frozenLiveSecRef = useRef<number | undefined>(undefined)
-  if (isLive && startRef.current == null) {
+  const wasTimingLiveRef = useRef(false)
+  // stream-thinking key 会复用；新一段进入 live 时不可沿用上一段的起点。
+  if (isLive && !wasTimingLiveRef.current) {
     startRef.current = Date.now()
     frozenLiveSecRef.current = undefined
   }
+  wasTimingLiveRef.current = isLive
   const elapsedMs = useLiveElapsedMs(startRef.current ?? undefined, isLive)
   if (isLive && elapsedMs > 0) {
     frozenLiveSecRef.current = Math.max(1, Math.floor(elapsedMs / 1000))
@@ -454,6 +477,8 @@ const WorkStageFold = memo(function WorkStageFold({
   extras?: ReactNode
 }): JSX.Element {
   // Cursor：live 只露摘要 + 当前动作；明细仅用户展开。禁止 live 灌入步骤再整收。
+  // 产品裁决：简洁模式不自动展开思考链正文——阶段性总结走 narrative.progress（正文），
+  // 思考全文只在用户点开 stage/step 后可见（勿在摘要下外挂打字机）。
   const [open, setOpen] = useState(false)
   const stageActive = isStageLive || keepWhileActive
   // REGRESS-N（产品裁决 3）：折叠 stage 摘要带「· 含思考」——中段有分量的思考（非 trivial）
@@ -669,10 +694,12 @@ const StageStepRow = memo(function StageStepRow({
   const frozenLiveSecRef = useRef<number | undefined>(undefined)
   const isThinking = step.kind === 'thinking'
   const thinkingLive = isThinking && isStreaming
-  if (thinkingLive && startRef.current == null) {
+  const wasTimingLiveRef = useRef(false)
+  if (thinkingLive && !wasTimingLiveRef.current) {
     startRef.current = Date.now()
     frozenLiveSecRef.current = undefined
   }
+  wasTimingLiveRef.current = thinkingLive
   // tool pending 也算 streaming；思考行用 live 计时，idle 后冻结避免退回字数粗估
   const elapsedMs = useLiveElapsedMs(
     isThinking ? (startRef.current ?? undefined) : undefined,

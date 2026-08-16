@@ -42,12 +42,12 @@ function mkFactory() {
 // ===== 委派积极性 =====
 
 describe('resolveEagerness', () => {
-  it('缺省回退默认 conservative', () => {
-    expect(resolveEagerness(undefined)).toBe('conservative')
+  it('缺省回退默认 balanced', () => {
+    expect(resolveEagerness(undefined)).toBe('balanced')
   })
 
-  it('meta 无字段回退默认 conservative', () => {
-    expect(resolveEagerness({})).toBe('conservative')
+  it('meta 无字段回退默认 balanced', () => {
+    expect(resolveEagerness({})).toBe('balanced')
   })
 
   it('meta 无字段时使用全局 fallback', () => {
@@ -64,8 +64,8 @@ describe('resolveEagerness', () => {
     expect(resolveEagerness({ subagentEagerness: 'never' })).toBe('never')
   })
 
-  it('非法值回退默认 conservative', () => {
-    expect(resolveEagerness({ subagentEagerness: 'lunatic' as never })).toBe('conservative')
+  it('非法值回退默认 balanced', () => {
+    expect(resolveEagerness({ subagentEagerness: 'lunatic' as never })).toBe('balanced')
   })
 })
 

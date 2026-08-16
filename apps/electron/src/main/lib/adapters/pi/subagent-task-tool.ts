@@ -21,6 +21,7 @@ import {
   resolveTaskSubagentBackend,
 } from '../../agent/cli-workers/resolve-backend'
 import { runCliWorker } from '../../agent/cli-workers/run-cli-worker'
+import { bashHooksForSession } from '../../agent/session-process-registry'
 
 // ESM-only 包延迟加载
 type PiCoreModule = typeof import('@tagent/pi-core')
@@ -288,6 +289,7 @@ export function createTaskTool(
             worker: backend.worker,
             prompt: fullPrompt,
             cwd,
+            sessionId: parentSessionId,
             signal,
             onProgress: (name) =>
               onTaskEvent?.({ type: 'task_progress', toolUseId, taskId, lastToolName: name }),
@@ -417,7 +419,7 @@ export function createTaskTool(
 
       // 创建子 Agent（限制 tools，自定义 systemPrompt；模型：角色池 > 渠道默认）
       // 挂 beforeToolCall：与主会话同权限（至少危险命令 + Chat 只读）
-      const subTools = resolveSubagentTools(def.tools ?? [], piCore, cwd)
+      const subTools = resolveSubagentTools(def.tools ?? [], piCore, cwd, parentSessionId)
       const subStreamFn = createSubagentStreamFn(channelConfig, piCore, def.model)
 
       const subAgent = new piAgentCore.Agent({
@@ -529,13 +531,20 @@ function resolveSubagentTools(
   toolNames: string[],
   piCore: PiCoreModule,
   cwd: string,
+  sessionId: string,
 ): AgentTool[] {
   const allTools = piCore.defaultTools
-  if (toolNames.length === 0) return allTools
+  if (toolNames.length === 0) {
+    return allTools.map((t) =>
+      t.name === 'Bash' ? piCore.createBashTool(cwd, bashHooksForSession(sessionId)) : t,
+    )
+  }
   const allowed = new Set(toolNames)
   return allTools
     .filter((t) => allowed.has(t.name))
-    .map((t) => (t.name === 'Bash' ? piCore.createBashTool(cwd) : t))
+    .map((t) =>
+      t.name === 'Bash' ? piCore.createBashTool(cwd, bashHooksForSession(sessionId)) : t,
+    )
 }
 
 /** 为子 Agent 创建 streamFn（复用父 Agent 的渠道配置；可选角色 model 覆盖） */

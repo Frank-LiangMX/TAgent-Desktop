@@ -64,6 +64,10 @@ import {
 } from '@tagent/ui'
 import { Square, Compass, Zap, Plus, X } from 'lucide-react'
 import { UsersThree } from '@phosphor-icons/react'
+import {
+  collectSessionCollabOutline,
+  type SessionCollabItem,
+} from './session-collab-outline'
 import { cn } from '../../lib/utils'
 import {
   COMPACTION_IN_PROGRESS_LABEL,
@@ -140,13 +144,25 @@ import {
   type ChannelCoreKind,
   type ModelSelection,
 } from '../../atoms/model-selection'
-import { tabsAtom, activeTabIdAtom, materializeTab } from '../../atoms/tabs'
+import {
+  tabsAtom,
+  activeTabIdAtom,
+  openTabWithLimit,
+  type TabItem,
+} from '../../atoms/tabs'
 import { loadWorkspacesAtom, workspacesAtom } from '../../atoms/workspace-atoms'
 import { pendingSuggestionAtom } from '../../atoms/pending-suggestion'
+import { moaPresetsRevisionAtom } from '../../atoms/moa-presets'
 import {
   makeStatusTickerItem,
   pushStatusTickerAtom,
 } from '../../atoms/status-ticker'
+import { crewOpenRequestAtom, crewPanelOpenMapAtom } from '../../atoms/dock-api'
+import {
+  clearSessionSummaryHostAtom,
+  sessionSummaryActionAtom,
+  setSessionSummaryHostAtom,
+} from '../../atoms/session-summary'
 
 export interface SessionMeta {
   id: string
@@ -248,6 +264,8 @@ export function Chat({
   onDraftWorkspaceChange,
   onBack,
   onMaterialized,
+  canMaterializeTab,
+  onTabEvicted,
   crewExternalized = false,
   onOpenCrew,
 }: {
@@ -262,6 +280,10 @@ export function Chat({
    * 不清的话切到其他 tab 时草稿 overlay 条件会复活，覆盖带 TabBar 的会话页。
    */
   onMaterialized?: () => void
+  /** 草稿首发前由 App 统一检查顶部标签容量；false 时不发送，避免后台孤儿会话。 */
+  canMaterializeTab?: () => boolean
+  /** 草稿物化时替换了旧标签，交由 App 同步关闭其 Dockview pane。 */
+  onTabEvicted?: (tab: TabItem) => void
   /**
    * 班组面板已外置到 Dockview 独立 pane（分屏模式）。true 时隐藏 Chat 内部班组面板
    * 及其入口（footer 按钮 / edge-tab / Work 自动开），班组全走 dock 的 crew pane。
@@ -316,6 +338,8 @@ export function Chat({
    * 不当「运行出错」，保持已中断语义。新一轮 startRun 清零。
    */
   const userStoppedRef = useRef(false)
+  /** 上次用户停止的时间戳：短窗口内到达的 error 视为迟到的 abort 副作用，不弹错误条 */
+  const lastUserStopAtRef = useRef(0)
   const pendingStopTimerRef = useRef<number | null>(null)
   const pendingHardStopTimerRef = useRef<number | null>(null)
   const clearPendingStop = useCallback(() => {
@@ -361,6 +385,7 @@ export function Chat({
   const userStopRun = (): void => {
     clearPendingStop()
     userStoppedRef.current = true
+    lastUserStopAtRef.current = Date.now()
     recordCompletion('stopped')
     runStartedAtPersistRef.current = null
     stopRun()
@@ -416,10 +441,10 @@ export function Chat({
     moaDiscussionPresetId?: string
   }>>([])
   /**
-   * 用户点停止后跳过一次「running→false 自动消费队列」：
-   * 停止应保留队列，由「立即发送 / 引导」显式处理，避免误发或丢消息。
+   * 用户点「立即发送」时跳过一次 running→false 自动消费：
+   * 先保证用户选中的那条发出，再让其余队列在该轮结束后按序消费。
    */
-  const skipQueueAutoConsumeRef = useRef(false)
+  const deferQueueAutoConsumeRef = useRef(false)
   /** 队列「立即发送 / 引导」进行中 */
   const [queueActionBusy, setQueueActionBusy] = useState(false)
   /** 待发送附件（输入框暂存，发送后清空） */
@@ -430,13 +455,14 @@ export function Chat({
   const hasSendable = hasDraft || pendingAttachments.length > 0
   /** MoA 会诊预置（发送键旁 ▾「发送方式」）。挂载拉一次。 */
   const [consultPresets, setConsultPresets] = useState<MoAPreset[]>([])
+  const moaPresetsRevision = useAtomValue(moaPresetsRevisionAtom)
   useEffect(() => {
     let cancelled = false
     void window.electronAPI.listMoaPresets().then((list) => {
       if (!cancelled) setConsultPresets(list ?? [])
     }).catch(() => { /* 预置拉取失败：菜单空态，不阻塞正常发送 */ })
     return () => { cancelled = true }
-  }, [])
+  }, [moaPresetsRevision])
   /** 历史加载完成的标志：false 时 Conversation resize=instant（无动画）+ ScrollPositionManager 恢复位置 */
   const [scrollReady, setScrollReady] = useState(false)
   /**
@@ -483,9 +509,31 @@ export function Chat({
   const [sessionBoardId, setSessionBoardId] = useState<string | null>(null)
   /** 右侧班组面板（有板才有入口） */
   const [crewPanelOpen, setCrewPanelOpen] = useState(false)
+  const crewOpenRequest = useAtomValue(crewOpenRequestAtom)
+  const setCrewPanelOpenMap = useSetAtom(crewPanelOpenMapAtom)
   const [hasCrewBoards, setHasCrewBoards] = useState(false)
   /** 右栏宽度（可拖宽，持久化） */
   const [crewPanelWidth, setCrewPanelWidth] = useState<number>(loadCrewPanelWidth)
+
+  // 非分屏：标签栏/顶栏请求打开或切换本会话班组右栏。
+  useEffect(() => {
+    if (crewExternalized || crewOpenRequest?.sessionId !== sessionId) return
+    if (crewOpenRequest.toggle) setCrewPanelOpen((v) => !v)
+    else setCrewPanelOpen(true)
+  }, [crewExternalized, crewOpenRequest?.requestId, crewOpenRequest?.sessionId, crewOpenRequest?.toggle, sessionId])
+
+  useEffect(() => {
+    if (crewExternalized) return
+    setCrewPanelOpenMap((prev) => ({ ...prev, [sessionId]: crewPanelOpen }))
+    return () => {
+      setCrewPanelOpenMap((prev) => {
+        if (!(sessionId in prev)) return prev
+        const next = { ...prev }
+        delete next[sessionId]
+        return next
+      })
+    }
+  }, [crewExternalized, crewPanelOpen, sessionId, setCrewPanelOpenMap])
   const handleCrewPanelWidth = useCallback((w: number) => {
     setCrewPanelWidth(Math.min(CREW_PANEL_WIDTH_MAX, Math.max(CREW_PANEL_WIDTH_MIN, Math.round(w))))
   }, [])
@@ -529,16 +577,10 @@ export function Chat({
   } | null>(null)
   /**
    * 子代理委派积极性（会话级）。
-   * 挂载时：meta 有值用会话档；否则用设置页全局默认（再缺省 conservative）。
+   * 挂载时：meta 有值用会话档；否则用设置页全局默认（再缺省 balanced）。
    * 未写过 meta 的会话会把解析结果落盘一次，保证主进程注入与 UI 一致。
    */
-  const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('conservative')
-  /**
-   * 会话偏好 CLI 工人 id（会话级，持久化）。
-   * 未设置 = undefined = 自动（跟随全局启用池优先级）。切会话 key 重建后重置，挂载时回显持久化值。
-   * 主进程 task 工具未显式传 cli 时用它作 preferredCliId；显式 cli 仍最高优先。
-   */
-  const [sessionCliWorkerId, setSessionCliWorkerId] = useState<string | undefined>(undefined)
+  const [subagentEagerness, setSubagentEagerness] = useState<SubagentEagerness>('balanced')
   /** 当前打开的子代理详情（parentToolUseId），非空时全屏切换显示独立会话页 */
   const [subagentDetail, setSubagentDetail] = useState<string | null>(null)
   /** 当前打开的圆桌讨论（discussionId），非空时全屏切换显示讨论室 */
@@ -891,12 +933,6 @@ export function Chat({
             })
           }
           setReasoningEffort(migrateReasoningEffort(persisted.reasoningEffort))
-          // 回显会话偏好 CLI 工人（未设置 = undefined = 自动，跟随全局启用池优先级）
-          setSessionCliWorkerId(
-            typeof persisted.cliWorkerId === 'string' && persisted.cliWorkerId.trim()
-              ? persisted.cliWorkerId.trim()
-              : undefined,
-          )
           // 旧会话无字段 → migrate 为 work，避免突然只读
           setExecutionMode(migrateExecutionMode(persisted.executionMode))
           setPermissionMode(
@@ -1509,10 +1545,13 @@ export function Chat({
             : subtype === 'error_during_execution'
               ? '执行过程中出错'
               : subtype || '运行出错')
-        // 用户刚点停止 / abort 文案：保持「已中断」，勿抬错误条、勿把 endedBy 改成 error
+        // 用户刚点停止 / abort 文案 / 上一轮被停止后迟到的 error result：
+        // 保持「已中断」，勿抬错误条、勿把 endedBy 改成 error
+        const STALE_ABORT_WINDOW_MS = 8000
         const abortLike =
           userStoppedRef.current ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|用户取消选择|操作已中止|会话已结束/i.test(
+          (lastUserStopAtRef.current > 0 && Date.now() - lastUserStopAtRef.current < STALE_ABORT_WINDOW_MS) ||
+          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|操作已中止|会话已结束/i.test(
             raw,
           )
         if (abortLike) {
@@ -1728,13 +1767,15 @@ export function Chat({
         // 独立错误条（非 assistant 气泡）：copy / dismiss / retryable→重试
         const userError = (evt as { error?: UserFacingError }).error
         const rawMessage = typeof evt.message === 'string' ? evt.message : ''
+        const STALE_ABORT_WINDOW_MS = 8000
         const abortLike =
           userStoppedRef.current ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|用户取消选择|操作已中止|会话已结束/i.test(
+          (lastUserStopAtRef.current > 0 && Date.now() - lastUserStopAtRef.current < STALE_ABORT_WINDOW_MS) ||
+          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|操作已中止|会话已结束/i.test(
             `${userError?.message ?? ''} ${rawMessage}`,
           )
         if (abortLike) {
-          // 用户打断：只收口运行态，不展示错误条、不把侧栏打成 error
+          // 用户打断 / 迟到的上轮错误：只收口运行态，不展示错误条、不把侧栏打成 error
           if (runStartedAtRef.current != null) recordCompletion('stopped')
           clearPendingStop()
           stopRun()
@@ -1890,6 +1931,10 @@ export function Chat({
       alert('当前渠道或模型已停用，请选择同一运行区域内的可用模型')
       return
     }
+    const isExistingTab = tabs.some((tab) => tab.sessionId === sessionIdRef.current)
+    if (!isExistingTab && canMaterializeTab && !canMaterializeTab()) {
+      return
+    }
     // 保存附件到磁盘
     let savedAttachments: Array<{ id: string; filename: string; mediaType: string; localPath: string; size: number }> = []
     if (attachments?.length) {
@@ -1945,16 +1990,20 @@ export function Chat({
           '新会话'
         const exists = tabs.some((t) => t.sessionId === sid)
         if (!exists) {
-          const { tabs: nextTabs, activeTabId } = materializeTab(
+          const result = openTabWithLimit(
             tabs,
             sid,
             tabTitle,
+            (id) => sessionRunMap[id]?.running === true,
             session.workspaceId,
             selection.channelId,
             selection.modelId,
           )
-          setTabs(nextTabs)
-          setActiveTabId(activeTabId)
+          // 正常路径已在发送前预检；保留防御分支，避免极端并发下挤掉正在运行的会话。
+          if (result.blocked) return
+          setTabs(result.tabs)
+          setActiveTabId(result.activeTabId)
+          if (result.evictedTab) onTabEvicted?.(result.evictedTab)
           // 草稿转正：通知 App 清 draftSession，否则切到其他 tab 时
           // 草稿 overlay 条件（draftSession.id !== activeTab.sessionId）会复活，覆盖带 TabBar 的会话页
           onMaterialized?.()
@@ -2158,9 +2207,8 @@ export function Chat({
   /** 运行结束 → 批量消费队列（逐条 await，确保 running 状态正确） */
   useEffect(() => {
     if (running) return
-    // 用户停止：保留队列，跳过本轮自动消费
-    if (skipQueueAutoConsumeRef.current) {
-      skipQueueAutoConsumeRef.current = false
+    if (deferQueueAutoConsumeRef.current) {
+      deferQueueAutoConsumeRef.current = false
       return
     }
     if (messageQueue.length === 0) return
@@ -2183,35 +2231,10 @@ export function Chat({
     scheduleComposerTopUpdate()
   }
 
-  /** 立即发送指定条目：打断（若仍在跑）并以该条开新一轮 */
-  const sendQueueItemNow = (index: number): void => {
-    if (queueActionBusy) return
-    const item = messageQueue[index]
-    if (!item) return
-    setMessageQueue((q) => q.filter((_, i) => i !== index))
-    if (messageQueue.length <= 1) {
-      rootRef.current?.style.setProperty('--session-stack-over-cluster', '0px')
-    }
-    scheduleComposerTopUpdate()
-    setQueueActionBusy(true)
-    skipQueueAutoConsumeRef.current = true
-    void (async () => {
-      try {
-        if (running) {
-          userStopRun()
-          await window.electronAPI.stopAgent(sessionIdRef.current)
-        }
-        await sendQueued(item)
-      } finally {
-        setQueueActionBusy(false)
-        scheduleComposerTopUpdate()
-      }
-    })()
-  }
-
   /** 引导指定条目：不打断；成功后从 UI 队列移除 */
   const steerQueueItem = (index: number): void => {
     if (queueActionBusy) return
+    if (!running) return
     const item = messageQueue[index]
     if (!item) return
     setQueueActionBusy(true)
@@ -2236,6 +2259,14 @@ export function Chat({
               : '已排队引导：本轮结束后自动发送',
             'info',
             4000,
+          ),
+        )
+      } catch (err) {
+        pushTicker(
+          makeStatusTickerItem(
+            `引导失败：${err instanceof Error ? err.message : String(err)}`,
+            'error',
+            5000,
           ),
         )
       } finally {
@@ -2339,13 +2370,6 @@ export function Chat({
             void window.electronAPI.updateSessionMeta(sessionId, { subagentEagerness: level })
           }
         }}
-        cliWorkerId={sessionCliWorkerId}
-        onCliWorkerIdChange={(id) => {
-          setSessionCliWorkerId(id)
-          if (!onDraftWorkspaceChange) {
-            void window.electronAPI.updateSessionMeta(sessionId, { cliWorkerId: id })
-          }
-        }}
       />
       <ModelSelector
         selection={effectiveSelection}
@@ -2368,7 +2392,6 @@ export function Chat({
           size="icon"
           className="size-9 rounded-full text-destructive hover:bg-destructive/10"
           onClick={() => {
-            skipQueueAutoConsumeRef.current = true
             userStopRun()
             void window.electronAPI.stopAgent(sessionIdRef.current)
             scheduleComposerTopUpdate()
@@ -2471,6 +2494,80 @@ export function Chat({
     },
     [setFilePreviewRequest, setSplitDockMode, splitDockMode],
   )
+
+  const jumpToCollabAnchor = useCallback((anchorKey: string) => {
+    setVisibleCount(Number.POSITIVE_INFINITY)
+    const tryScroll = (attempt = 0): void => {
+      const ctx = scrollContextRef.current
+      const scroller = ctx?.scrollRef.current
+      const target = scroller?.querySelector<HTMLElement>(
+        `[data-message-id="${typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(anchorKey) : anchorKey}"]`,
+      )
+      if (!scroller || !target) {
+        if (attempt < 16) window.setTimeout(() => tryScroll(attempt + 1), 50)
+        return
+      }
+      ctx.stopScroll?.()
+      const sticky = ctx.state
+      if (sticky) {
+        sticky.animation = undefined
+        sticky.velocity = 0
+        sticky.accumulated = 0
+      }
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      target.classList.add('session-collab-flash')
+      window.setTimeout(() => target.classList.remove('session-collab-flash'), 1600)
+    }
+    requestAnimationFrame(() => tryScroll())
+  }, [])
+
+  const handleCollabSelect = useCallback(
+    (item: SessionCollabItem) => {
+      if (item.kind === 'discussion' && item.discussionId) {
+        setOpenDiscussionId(item.discussionId)
+        return
+      }
+      if (item.kind === 'subagent' && item.parentToolUseId) {
+        setSubagentDetail(item.parentToolUseId)
+        return
+      }
+      jumpToCollabAnchor(item.anchorKey)
+    },
+    [jumpToCollabAnchor],
+  )
+
+  const collabTimelineItems = useMemo(
+    () => collectSessionCollabOutline(items).items,
+    [items],
+  )
+  const publishSummaryHost = useSetAtom(setSessionSummaryHostAtom)
+  const clearSummaryHost = useSetAtom(clearSessionSummaryHostAtom)
+  useEffect(() => {
+    publishSummaryHost({
+      sessionId,
+      timelineItems: collabTimelineItems,
+      sessionBoardId,
+      hasCrewBoards,
+    })
+    return () => {
+      clearSummaryHost(sessionId)
+    }
+  }, [
+    sessionId,
+    collabTimelineItems,
+    sessionBoardId,
+    hasCrewBoards,
+    publishSummaryHost,
+    clearSummaryHost,
+  ])
+
+  const summaryAction = useAtomValue(sessionSummaryActionAtom)
+  const summaryActionMountAtRef = useRef(Date.now())
+  useEffect(() => {
+    if (!summaryAction || summaryAction.sessionId !== sessionId) return
+    if (summaryAction.requestId < summaryActionMountAtRef.current) return
+    handleCollabSelect(summaryAction.item)
+  }, [handleCollabSelect, sessionId, summaryAction])
 
   /** 输入框待发附件 chip → 分屏预览（尚未落盘，用内存 base64） */
   const openPendingAttachmentPreview = useCallback(
@@ -2607,6 +2704,7 @@ export function Chat({
                       key={turn.key}
                       turn={turn}
                       isLiveTurn={isLiveTurn}
+                      runStartedAt={isLiveTurn ? runStartedAt : undefined}
                       isLatestAssistantTurn={isLatestAssistantTurn}
                       streamState={isLiveTurn ? streamState : undefined}
                       fallbackModelId={
@@ -2651,6 +2749,7 @@ export function Chat({
                       isStreaming: true,
                     }}
                     isLiveTurn
+                    runStartedAt={runStartedAt}
                     isLatestAssistantTurn
                     streamState={streamState}
                     mentionLabels={liveMentionLabels.length > 0 ? liveMentionLabels : undefined}
@@ -2685,7 +2784,6 @@ export function Chat({
           queue={messageQueue}
           onRemove={removeQueueItem}
           onClear={clearQueue}
-          onSendNow={sendQueueItemNow}
           onSteer={steerQueueItem}
           onEdit={editQueueItem}
           busy={queueActionBusy}
@@ -2746,7 +2844,7 @@ export function Chat({
           onRetry={retryLastUserPrompt}
         />
         <PermissionBanner sessionId={sessionId} />
-        <AskUserQuestionBanner sessionId={sessionId} onUserStop={userStopRun} />
+        <AskUserQuestionBanner sessionId={sessionId} />
         <div
           ref={composerClusterRef}
           className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''}`}
@@ -2833,44 +2931,7 @@ export function Chat({
                           subagentEagerness: level,
                         })
                       }}
-                      cliWorkerId={sessionCliWorkerId}
-                      onCliWorkerIdChange={(id) => {
-                        setSessionCliWorkerId(id)
-                        void window.electronAPI.updateSessionMeta(sessionId, {
-                          cliWorkerId: id,
-                        })
-                      }}
                     />
-                    {/* 班组：窄模式仅图标。
-                        分屏模式（crewExternalized）也保留按钮（绑定本会话），点击开外部 crew pane；
-                        非分屏模式点开关内部面板。按 hasCrewBoards/sessionBoardId 显隐（有/有过板才显）。 */}
-                    {hasCrewBoards || sessionBoardId ? (
-                      <AppTooltip label={crewExternalized ? '打开班组面板（分屏）' : crewPanelOpen ? '收起班组面板' : '打开班组面板'}>
-                        <button
-                          type="button"
-                          className={cn(
-                            'composer-crew-btn inline-flex h-7 shrink-0 items-center justify-center rounded-lg transition-colors',
-                            composerCompact ? 'w-7 px-0' : 'gap-1 px-2',
-                            !crewExternalized && crewPanelOpen
-                              ? 'bg-primary/12 text-primary'
-                              : 'text-muted-foreground hover:bg-foreground/10 hover:text-foreground',
-                          )}
-                          onClick={() => {
-                            if (crewExternalized) onOpenCrew?.()
-                            else setCrewPanelOpen((v) => !v)
-                          }}
-                          aria-label={crewExternalized ? '打开班组面板' : crewPanelOpen ? '收起班组面板' : '打开班组面板'}
-                          aria-pressed={!crewExternalized ? crewPanelOpen : undefined}
-                        >
-                          <UsersThree className="size-3.5 shrink-0" weight="bold" />
-                          {!composerCompact ? (
-                            <span className="composer-crew-btn__label text-[11px] font-semibold">
-                              班组
-                            </span>
-                          ) : null}
-                        </button>
-                      </AppTooltip>
-                    ) : null}
                   </div>
                   <div className="composer-footer-bar__right flex h-7 min-w-0 shrink items-center gap-0.5">
                     <ModelSelector
@@ -2890,7 +2951,7 @@ export function Chat({
                     />
                     {/*
                       发送/停止/引导/立即发送 同槽复用：
-                      · 运行中 + 无草稿 → 停止键（清队列 + 中断）
+                      · 运行中 + 无草稿 → 停止键（中断当前轮，队列自动续发）
                       · 运行中 + 有草稿 → [引导] [立即发送] [排队发送]
                       · 空闲 + 有草稿 → 发送键（enabled，立即发）
                       · 空闲 + 无草稿 → 发送键（disabled）
@@ -2901,8 +2962,7 @@ export function Chat({
                         size="icon"
                         className="size-9 rounded-full text-destructive hover:bg-destructive/10"
                         onClick={() => {
-                          // 保留队列：停止后可「立即发送 / 引导」，勿静默丢弃
-                          skipQueueAutoConsumeRef.current = true
+                          // 停止当前轮后，已有队列会按顺序自动发送。
                           userStopRun()
                           window.electronAPI.stopAgent(sessionIdRef.current)
                           scheduleComposerTopUpdate()
@@ -2923,34 +2983,44 @@ export function Chat({
                               if (!text) return
                               chatInputRef.current?.clear()
                               void (async () => {
-                                const res = await window.electronAPI.steerAgent(
-                                  sessionIdRef.current,
-                                  text,
-                                ) as { ok?: boolean; mode?: string; error?: string } | undefined
-                                if (!res?.ok) {
+                                try {
+                                  const res = await window.electronAPI.steerAgent(
+                                    sessionIdRef.current,
+                                    text,
+                                  ) as { ok?: boolean; mode?: string; error?: string } | undefined
+                                  if (!res?.ok) {
+                                    pushTicker(
+                                      makeStatusTickerItem(
+                                        `引导失败：${res?.error ?? '未知错误'}`,
+                                        'error',
+                                        5000,
+                                      ),
+                                    )
+                                    return
+                                  }
+                                  if (res.mode === 'pending_next_turn') {
+                                    pushTicker(
+                                      makeStatusTickerItem(
+                                        '已排队引导：本轮结束后自动发送',
+                                        'info',
+                                        4000,
+                                      ),
+                                    )
+                                  } else if (res.mode === 'live') {
+                                    pushTicker(
+                                      makeStatusTickerItem(
+                                        '已注入引导：将在下一轮边界生效',
+                                        'info',
+                                        4000,
+                                      ),
+                                    )
+                                  }
+                                } catch (err) {
                                   pushTicker(
                                     makeStatusTickerItem(
-                                      `引导失败：${res?.error ?? '未知错误'}`,
+                                      `引导失败：${err instanceof Error ? err.message : String(err)}`,
                                       'error',
                                       5000,
-                                    ),
-                                  )
-                                  return
-                                }
-                                if (res.mode === 'pending_next_turn') {
-                                  pushTicker(
-                                    makeStatusTickerItem(
-                                      '已排队引导：本轮结束后自动发送',
-                                      'info',
-                                      4000,
-                                    ),
-                                  )
-                                } else if (res.mode === 'live') {
-                                  pushTicker(
-                                    makeStatusTickerItem(
-                                      '已注入引导：将在下一轮边界生效',
-                                      'info',
-                                      4000,
                                     ),
                                   )
                                 }
@@ -2970,8 +3040,8 @@ export function Chat({
                               const text = chatInputRef.current?.getText().trim() ?? ''
                               if ((!text && pendingAttachments.length === 0) || !effectiveSelection) return
                               chatInputRef.current?.clear()
-                              // 草稿立即发送：不丢弃已有队列；先打断再发本条，队列仍保留待自然消费或手动发
-                              skipQueueAutoConsumeRef.current = true
+                              // 草稿立即发送：优先发本条，再自动消费已有队列。
+                              deferQueueAutoConsumeRef.current = true
                               userStopRun()
                               void (async () => {
                                 await window.electronAPI.stopAgent(sessionIdRef.current)
@@ -3102,6 +3172,7 @@ export function Chat({
 function TurnView({
   turn,
   isLiveTurn = false,
+  runStartedAt,
   isLatestAssistantTurn = false,
   streamState,
   fallbackModelId,
@@ -3117,6 +3188,8 @@ function TurnView({
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
+  /** 会话本轮统一起点，供消息内运行计时与底部胶囊共用。 */
+  runStartedAt?: number | null
   /** 当前会话末尾 assistant-turn（简洁模式跑完保持展开用） */
   isLatestAssistantTurn?: boolean
   streamState?: SessionStreamState
@@ -3152,6 +3225,7 @@ function TurnView({
         <AssistantTurnView
           turn={turn}
           isLiveTurn={isLiveTurn}
+          runStartedAt={runStartedAt}
           isLatestAssistantTurn={isLatestAssistantTurn}
           streamState={streamState}
           fallbackModelId={fallbackModelId}
@@ -3180,15 +3254,21 @@ function ItemView({
 }): JSX.Element {
   // MoA 圆桌卡（standalone，挂主时间线）
   if (item.moaRoundtable) {
-    return <MoaRoundtableCard panel={item.moaRoundtable} sessionId={sessionId} />
+    return (
+      <div data-message-id={item.key}>
+        <MoaRoundtableCard panel={item.moaRoundtable} sessionId={sessionId} />
+      </div>
+    )
   }
   // 圆桌讨论入口卡（standalone，挂主时间线；点击进全屏讨论室）
   if (item.moaDiscussion) {
     return (
-      <MoaDiscussionCard
-        panel={item.moaDiscussion}
-        onOpen={() => onOpenDiscussion?.(item.moaDiscussion!.discussionId)}
-      />
+      <div data-message-id={item.key}>
+        <MoaDiscussionCard
+          panel={item.moaDiscussion}
+          onOpen={() => onOpenDiscussion?.(item.moaDiscussion!.discussionId)}
+        />
+      </div>
     )
   }
   // 子代理 taskCard 已并入 assistant-turn + SubagentEntryCard，standalone 不再渲染第二张卡

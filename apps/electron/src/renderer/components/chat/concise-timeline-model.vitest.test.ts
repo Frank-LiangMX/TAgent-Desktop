@@ -50,6 +50,22 @@ describe('classifyToolFamily', () => {
   })
 })
 
+describe('buildConciseTimeline guidance', () => {
+  it('keeps an injected guide as an ordered timeline item', () => {
+    const process: ProcessEntry[] = [
+      { type: 'text', key: 'before', text: '我先检查一下配置。' },
+      { type: 'guidance', key: 'guide', text: '请优先验证本地窗口。' },
+      tool('Read', 'read', { file_path: 'config.ts' }),
+    ]
+
+    expect(buildConciseTimeline(process)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'guidance', key: 'guide', text: '请优先验证本地窗口。' }),
+      ]),
+    )
+  })
+})
+
 describe('isDeliverableThinking / isTrivialThinking', () => {
   it('treats bold markdown as deliverable', () => {
     expect(

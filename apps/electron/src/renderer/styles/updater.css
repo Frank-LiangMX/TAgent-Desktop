@@ -1,44 +1,34 @@
-/* ===== 更新提示横幅（底部浮岛） ===== */
+/* ===== 顶栏更新通知（与 StatusTicker 共用窗口栏中央槽位） ===== */
 .upd-banner {
-  position: fixed;
-  bottom: 20px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 50;
+  position: relative;
   display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  max-width: min(520px, 46vw);
+  height: 26px;
+  margin-inline: auto;
   align-items: center;
-  gap: 10px;
-  padding: 7px 8px 7px 12px;
-  border-radius: 14px;
-  font-size: 12px;
-  line-height: 1.4;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  line-height: 1.2;
   font-weight: 500;
   white-space: nowrap;
-  border: 1px solid rgb(var(--glass-rgb) / 0.5);
-  background:
-    radial-gradient(100% 120% at 10% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 64%),
-    rgb(var(--glass-rgb) / 0.82);
-  backdrop-filter: blur(16px) saturate(1.18);
-  -webkit-backdrop-filter: blur(16px) saturate(1.18);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.22),
-    0 4px 16px rgb(0 0 0 / 0.08),
-    0 8px 28px -8px rgb(0 0 0 / 0.06);
+  overflow: hidden;
+  border: 1px solid hsl(var(--border) / 0.55);
+  background: hsl(var(--background) / 0.45);
   color: hsl(var(--foreground));
-  animation: upd-in 0.3s var(--settings-motion, cubic-bezier(0.16, 1, 0.3, 1));
+  animation: upd-in 220ms ease;
 }
 
 .dark .upd-banner {
-  border-color: rgb(var(--glass-rgb) / 0.25);
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.06),
-    0 4px 16px rgb(0 0 0 / 0.24),
-    0 8px 28px -8px rgb(0 0 0 / 0.16);
+  border-color: hsl(var(--border) / 0.5);
 }
 
 @keyframes upd-in {
-  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
-  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 /* 状态圆点 */
@@ -46,8 +36,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   flex-shrink: 0;
   border: 1px solid rgb(var(--glass-rgb) / 0.3);
@@ -89,7 +79,7 @@
 }
 
 .upd-banner-track {
-  width: 64px;
+  width: 56px;
   height: 3px;
   border-radius: 999px;
   background: rgb(var(--glass-rgb) / 0.25);
@@ -114,8 +104,9 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 11px;
-  border-radius: 8px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 7px;
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -153,8 +144,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: 7px;
   border: none;
   background: transparent;
@@ -308,4 +299,11 @@
 }
 @keyframes upd-spin {
   to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upd-banner,
+  .upd-spin {
+    animation: none;
+  }
 }

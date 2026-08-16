@@ -13,11 +13,11 @@ import {
   Folder,
   FolderOpen,
   CaretRight,
+  CaretDown,
   ChatsCircle,
   PencilSimple,
   Trash,
   DotsThreeVertical,
-  DotsSixVertical,
   Plus,
   Archive,
   MagnifyingGlass,
@@ -157,6 +157,7 @@ export function SessionSidebar({
     useState<AgentWorkspace | null>(null)
   /** 工作区三点菜单打开期间保持按钮可见（失焦组头后 :hover 失配） */
   const [workspaceMenuOpenId, setWorkspaceMenuOpenId] = useState<string | null>(null)
+  const [hoveredGroupId, setHoveredGroupId] = useState<string | null>(null)
   const refreshCounter = useAtomValue(sessionsRefreshAtom)
   const workspaces = useAtomValue(workspacesAtom)
   const setWorkspaces = useSetAtom(workspacesAtom)
@@ -383,11 +384,23 @@ export function SessionSidebar({
     }
   }
 
+  const setDragCursor = (value: string | null): void => {
+    if (typeof document === 'undefined') return
+    if (value === null) {
+      document.body.style.removeProperty('cursor')
+    } else {
+      document.body.style.cursor = value
+    }
+  }
+
   const startWorkspaceDrag = (event: React.DragEvent, workspaceId: string): void => {
     event.stopPropagation()
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('text/plain', workspaceId)
     setDragWorkspaceId(workspaceId)
+    // 拖拽进入：浏览器默认在 drag 期间对 draggable 元素的 cursor 控制不一致
+    // (尤其 Electron/Chromium), 强制在 body 上设 grabbing, 直到 dragend
+    setDragCursor('grabbing')
   }
 
   const updateWorkspaceDropIndicator = (
@@ -410,6 +423,7 @@ export function SessionSidebar({
   const finishWorkspaceDrag = (): void => {
     setDragWorkspaceId(null)
     setWorkspaceDropIndicator(null)
+    setDragCursor(null)
   }
 
   const dropWorkspace = async (
@@ -564,15 +578,15 @@ export function SessionSidebar({
           ).length
           const groupHeaderContent = (
             <>
-              <CaretRight
-                size={12}
-                weight="regular"
-                className={cn('caret', !hasSessions && 'caret-empty')}
-                aria-hidden
-              />
-              {/* 文件夹：折叠 Folder / 展开 FolderOpen，与 caret 状态一致 */}
+              {/* 图标:未 hover → Folder / FolderOpen;hover → CaretRight(折叠) / CaretDown(展开) */}
               {isManagedWorkspace ? (
-                isExpanded ? (
+                hoveredGroupId === group.id ? (
+                  isExpanded ? (
+                    <CaretDown size={14} weight="bold" className="ws-ico" aria-hidden />
+                  ) : (
+                    <CaretRight size={14} weight="bold" className="ws-ico" aria-hidden />
+                  )
+                ) : isExpanded ? (
                   <FolderOpen size={14} weight="duotone" className="ws-ico" aria-hidden />
                 ) : (
                   <Folder size={14} weight="duotone" className="ws-ico" aria-hidden />
@@ -646,27 +660,23 @@ export function SessionSidebar({
                     aria-hidden="true"
                   />
                 )}
-                {group.workspace && (
-                  <AppTooltip label="拖拽调整工作区顺序" side="right">
-                    <button
-                      type="button"
-                      className="workspace-drag-handle"
-                      draggable
-                      onDragStart={(event) => startWorkspaceDrag(event, group.id)}
-                      onDragEnd={finishWorkspaceDrag}
-                      onClick={(event) => event.stopPropagation()}
-                      aria-label={`拖拽调整工作区顺序：${group.name}`}
-                    >
-                      <DotsSixVertical size={14} weight="bold" />
-                    </button>
-                  </AppTooltip>
-                )}
                 <button
                   type="button"
                   className="group-head"
                   onClick={() => hasSessions && toggleGroup(group.id)}
                   aria-expanded={hasSessions ? isExpanded : undefined}
                   disabled={!hasSessions}
+                  draggable={Boolean(group.workspace)}
+                  onDragStart={
+                    group.workspace
+                      ? (event) => startWorkspaceDrag(event, group.id)
+                      : undefined
+                  }
+                  onDragEnd={finishWorkspaceDrag}
+                  onMouseEnter={() => setHoveredGroupId(group.id)}
+                  onMouseLeave={() =>
+                    setHoveredGroupId((prev) => (prev === group.id ? null : prev))
+                  }
                 >
                   {groupHeaderContent}
                 </button>
@@ -774,11 +784,16 @@ export function SessionSidebar({
         open={Boolean(deleteSessionTarget)}
         onOpenChange={(open) => !open && setDeleteSessionTarget(null)}
         icon={<Trash size={15} weight="duotone" />}
-        title={`删除“${deleteSessionTarget?.title ?? ''}”？`}
+        title="删除会话？"
         description={
-          deleteSessionTarget && tabSessionIds.has(deleteSessionTarget.id)
-            ? '该会话当前已打开，删除将同时关闭对应标签页，聊天记录将永久删除且无法撤销。'
-            : '该会话的全部聊天记录将被永久删除，此操作无法撤销。'
+          <>
+            <span className="mb-1 block break-words text-foreground/80">
+              “{deleteSessionTarget?.title ?? ''}”
+            </span>
+            {deleteSessionTarget && tabSessionIds.has(deleteSessionTarget.id)
+              ? '该会话当前已打开，删除将同时关闭对应标签页，聊天记录将永久删除且无法撤销。'
+              : '该会话的全部聊天记录将被永久删除，此操作无法撤销。'}
+          </>
         }
         confirmLabel="删除会话"
         onConfirm={deleteSession}
@@ -891,27 +906,27 @@ function SessionRow({
         dotsOpen && 'is-dots-open',
       )}
     >
-      {/* 行首:归档行用小方块标记,否则完整状态色点 stream/error/idle/done */}
-      {archived ? (
-        <span className="arch-mark" />
-      ) : (
-        <span
-          className={cn(
-            'stat-dot',
-            status === 'pending'
-              ? 'pending'
-              : status === 'running'
-                ? 'stream'
-                : status === 'error'
-                  ? 'error'
-                  : status === 'idle'
-                    ? 'idle'
-                    : 'done',
-          )}
-        />
-      )}
       <div className="body">
         <div className="title">
+          {/* 行首:归档行用小方块标记,否则完整状态色点 stream/error/idle/done；与标题同第一行 */}
+          {archived ? (
+            <span className="arch-mark" />
+          ) : (
+            <span
+              className={cn(
+                'stat-dot',
+                status === 'pending'
+                  ? 'pending'
+                  : status === 'running'
+                    ? 'stream'
+                    : status === 'error'
+                      ? 'error'
+                      : status === 'idle'
+                        ? 'idle'
+                        : 'done',
+              )}
+            />
+          )}
           {editing ? (
             <input
               autoFocus
@@ -928,51 +943,52 @@ function SessionRow({
           ) : (
             <span className="t">{s.title}</span>
           )}
+          {/* 末尾时间：第一行右侧，margin-left:auto 由 .meta .m.time 提供 */}
+          {!archived && !editing && (
+            <span className="m time">{s.updatedAt ? relTime(s.updatedAt) : ''}</span>
+          )}
           {/* 归档行：内联「已归档」状态贴右，与标题同一基线，单行不落第二行 */}
           {archived && !editing && <span className="arch-status">已归档</span>}
+          {/* 三点菜单：放 title 行、与标题/时间同 baseline；hover 让位展开，打开期间保持展开（is-dots-open） */}
+          <DropdownMenu open={dotsOpen} onOpenChange={setDotsOpen}>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="dots"
+                onClick={(e) => e.stopPropagation()}
+                aria-label="会话操作"
+              >
+                <DotsThreeVertical size={14} weight="regular" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-32 p-1 text-xs">
+              <DropdownMenuItem onClick={(e) => onRename(s, e)} className="rounded-lg px-2 py-1 text-xs">
+                <PencilSimple size={13} weight="regular" /> 重命名
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={(e) => void onArchiveToggle(s, e)} className="rounded-lg px-2 py-1 text-xs">
+                <Archive size={13} weight="regular" /> {archived ? '取消归档' : '归档'}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={(e) => onDelete(s.id, e)}
+                className="rounded-lg px-2 py-1 text-xs text-red-500 focus:text-red-500"
+              >
+                <Trash size={13} weight="regular" /> 删除
+              </DropdownMenuItem>
+              {isInTabs && (
+                <div className="px-2 pb-0.5 pt-1 text-[10px] leading-tight text-muted-foreground/70">
+                  将同时关闭已打开的标签
+                </div>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
-        {/* meta（轮数 / 时间）第二行仅非归档行渲染；归档状态已内联到 title 行 */}
-        {!archived && (
+        {/* meta 第二行从标题正文起点对齐，仅非归档行渲染轮数；时间已上提到 title 行 */}
+        {!archived && s.turnCount != null && s.turnCount > 0 && (
           <div className="meta">
-            {s.turnCount != null && s.turnCount > 0 && (
-              <span className="m turns">{s.turnCount} 轮</span>
-            )}
-            <span className="m time">{s.updatedAt ? relTime(s.updatedAt) : ''}</span>
+            <span className="m turns">{s.turnCount} 轮</span>
           </div>
         )}
       </div>
-      {/* 三点菜单:hover 让位展开；打开期间保持展开（is-dots-open） */}
-      <DropdownMenu open={dotsOpen} onOpenChange={setDotsOpen}>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            className="dots"
-            onClick={(e) => e.stopPropagation()}
-            aria-label="会话操作"
-          >
-            <DotsThreeVertical size={14} weight="regular" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-32 p-1 text-xs">
-          <DropdownMenuItem onClick={(e) => onRename(s, e)} className="rounded-lg px-2 py-1 text-xs">
-            <PencilSimple size={13} weight="regular" /> 重命名
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={(e) => void onArchiveToggle(s, e)} className="rounded-lg px-2 py-1 text-xs">
-            <Archive size={13} weight="regular" /> {archived ? '取消归档' : '归档'}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={(e) => onDelete(s.id, e)}
-            className="rounded-lg px-2 py-1 text-xs text-red-500 focus:text-red-500"
-          >
-            <Trash size={13} weight="regular" /> 删除
-          </DropdownMenuItem>
-          {isInTabs && (
-            <div className="px-2 pb-0.5 pt-1 text-[10px] leading-tight text-muted-foreground/70">
-              将同时关闭已打开的标签
-            </div>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
     </motion.div>
   )
 }
@@ -1032,13 +1048,12 @@ function buildGroups(
   return result
 }
 
-/** 相对时间(替代 formatTime 的 HH:MM):刚刚/N分钟前/N小时前/昨天/N天前/上周 */
+/** 相对时间(Cursor 风格:数字+单位极简)。< 1m → 刚刚;< 1h → Nm;< 24h → Nh;< 7d → Nd;其余 Nw */
 function relTime(ts: number): string {
   const ageMin = (Date.now() - ts) / 60000
   if (ageMin < 1) return '刚刚'
-  if (ageMin < 60) return `${Math.floor(ageMin)}分钟前`
-  if (ageMin < 24 * 60) return `${Math.floor(ageMin / 60)}小时前`
-  if (ageMin < 48 * 60) return '昨天'
-  if (ageMin < 7 * 24 * 60) return `${Math.floor(ageMin / (24 * 60))}天前`
-  return '上周'
+  if (ageMin < 60) return `${Math.floor(ageMin)}m`
+  if (ageMin < 24 * 60) return `${Math.floor(ageMin / 60)}h`
+  if (ageMin < 7 * 24 * 60) return `${Math.floor(ageMin / (24 * 60))}d`
+  return `${Math.floor(ageMin / (7 * 24 * 60))}w`
 }

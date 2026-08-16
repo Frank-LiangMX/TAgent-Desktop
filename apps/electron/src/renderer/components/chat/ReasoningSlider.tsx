@@ -21,6 +21,7 @@ export const REASONING_LABELS: Record<ReasoningEffort, string> = {
 export const REASONING_ORDER = ['low', 'medium', 'high', 'max'] as const
 
 const THUMB_HALF = 8
+const THUMB_SIZE = THUMB_HALF * 2
 
 function effortPosition(effort: ReasoningEffort): number {
   const idx = Math.max(0, REASONING_ORDER.indexOf(effort as (typeof REASONING_ORDER)[number]))
@@ -35,7 +36,10 @@ function effortForPosition(position: number): ReasoningEffort {
 
 function thumbLeft(position: number): string {
   const n = Math.min(1, Math.max(0, Number.isFinite(position) ? position : 0))
-  return `${n * 100}%`
+  // rail 两端各为 8px 的拇指半径预留空间；所有视觉锚点共用这个可移动区间。
+  const offset = (0.5 - n) * THUMB_SIZE
+  if (offset === 0) return `${n * 100}%`
+  return `calc(${n * 100}% ${offset > 0 ? '+' : '-'} ${Math.abs(offset)}px)`
 }
 
 const PARTICLES = [
@@ -142,8 +146,8 @@ export function ReasoningSlider({ value, onChange }: ReasoningSliderProps): JSX.
   return (
     <div className={cn('reasoning-slider', `reasoning-slider--${value}`)}>
       <div className="reasoning-slider-scale">
-        <span>更快</span>
-        <span>更深</span>
+        <span style={{ '--reasoning-position': thumbLeft(0) } as React.CSSProperties}>更快</span>
+        <span style={{ '--reasoning-position': thumbLeft(1) } as React.CSSProperties}>更深</span>
       </div>
       <div
         ref={railRef}
@@ -198,6 +202,7 @@ export function ReasoningSlider({ value, onChange }: ReasoningSliderProps): JSX.
           <span
             key={effort}
             className={cn('reasoning-slider-label', effort === value && 'is-active')}
+            style={{ '--reasoning-position': thumbLeft(effortPosition(effort)) } as React.CSSProperties}
           >
             {REASONING_LABELS[effort]}
           </span>

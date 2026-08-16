@@ -24,10 +24,10 @@ import {
 /** 各色系色卡预览（scene-base + scene-a 静态 RGB，取自 tokens.css） */
 const STYLE_CARDS: { style: ThemeStyle; label: string; light: string; dark: string }[] = [
   { style: 'default', label: '中性', light: 'rgb(217 222 231)', dark: 'rgb(36 38 42)' },
-  { style: 'slate', label: '暖砂', light: 'rgb(236 232 224)', dark: 'rgb(38 36 32)' },
+  { style: 'slate', label: '暖砂', light: 'rgb(232 228 222)', dark: 'rgb(38 36 33)' },
   { style: 'ocean', label: '碧海', light: 'rgb(232 238 240)', dark: 'rgb(32 40 42)' },
   { style: 'forest', label: '翠林', light: 'rgb(234 236 228)', dark: 'rgb(36 40 34)' },
-  { style: 'orange', label: '琥珀', light: 'rgb(238 234 224)', dark: 'rgb(40 36 30)' },
+  { style: 'orange', label: '琥珀', light: 'rgb(242 228 204)', dark: 'rgb(37 27 20)' },
   { style: 'purple', label: '紫藤', light: 'rgb(234 233 238)', dark: 'rgb(36 34 42)' },
 ]
 

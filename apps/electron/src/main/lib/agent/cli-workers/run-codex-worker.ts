@@ -29,6 +29,7 @@ export interface RunCodexWorkerInput {
   worker: CliWorkerEntry
   prompt: string
   cwd: string
+  sessionId?: string
   signal?: AbortSignal
   onProgress?: (lastToolName: string) => void
   onToolUse?: (t: CliToolUseHit) => void
@@ -74,6 +75,7 @@ export async function runCodexWorker(input: RunCodexWorkerInput): Promise<RunCli
     plan,
     prompt: input.prompt,
     cwd: input.cwd,
+    sessionId: input.sessionId,
     signal: input.signal,
     observer: new CodexStreamObserver(),
     onProgress: input.onProgress,

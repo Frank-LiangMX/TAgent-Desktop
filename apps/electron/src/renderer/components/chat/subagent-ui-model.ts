@@ -38,11 +38,11 @@ export const SUBAGENT_EAGERNESS_CONFIG: Record<SubagentEagerness, SubagentEagern
   },
   conservative: {
     label: '保守',
-    description: '明确有益才委派（探索/审查/调研），默认',
+    description: '明确有益才委派（探索/审查/调研）',
   },
   balanced: {
     label: '均衡',
-    description: '积极委派，保持主上下文干净',
+    description: '积极委派，保持主上下文干净（默认）',
   },
   aggressive: {
     label: '激进',

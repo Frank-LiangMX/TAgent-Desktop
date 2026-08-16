@@ -139,7 +139,15 @@ export const bashTool: AgentTool<typeof bashSchema, BashToolDetails> = {
  * 创建带指定 cwd 的 Bash 工具实例（会话级，闭包注入工作目录，不读 process.cwd）。
  * 用于多会话/多工作区场景：每个会话一个 bashTool，cwd 不串。
  */
-export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashToolDetails> {
+export interface BashProcessHooks {
+  onSpawn?: (info: { pid?: number; command: string }) => void
+  onExit?: (info: { pid?: number; command: string }) => void
+}
+
+export function createBashTool(
+  cwd: string,
+  hooks?: BashProcessHooks,
+): AgentTool<typeof bashSchema, BashToolDetails> {
   return {
     name: "Bash",
     label: "Bash",
@@ -147,7 +155,7 @@ export function createBashTool(cwd: string): AgentTool<typeof bashSchema, BashTo
     parameters: bashSchema,
     execute: async (_id, params): Promise<AgentToolResult<BashToolDetails>> => {
       const timeoutMs = params.timeout ?? 30000;
-      const result = await runShell(params.command, timeoutMs, cwd);
+      const result = await runShell(params.command, timeoutMs, cwd, hooks);
       const MAX = 8000;
       let out = result.stdout;
       let err = result.stderr;
@@ -216,47 +224,50 @@ function killProcessTree(child: ReturnType<typeof spawn>): void {
   }
 }
 
-function runShell(command: string, timeoutMs: number, cwd: string): Promise<BashToolDetails> {
+function runShell(
+  command: string,
+  timeoutMs: number,
+  cwd: string,
+  hooks?: BashProcessHooks,
+): Promise<BashToolDetails> {
   return new Promise((resolve) => {
     const child = spawn(normalizeCommandForWindows(command), {
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
       cwd,
     });
+    const spawnInfo = { pid: child.pid, command }
+    hooks?.onSpawn?.(spawnInfo)
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let settled = false;
+    const finish = (details: BashToolDetails): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      hooks?.onExit?.(spawnInfo)
+      resolve(details)
+    }
     const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        killProcessTree(child);
-        const stderr = decodeOutput(Buffer.concat(stderrChunks)) + `\n[超时 ${timeoutMs}ms 被杀]`;
-        resolve({ exitCode: -1, stdout: decodeOutput(Buffer.concat(stdoutChunks)), stderr });
-      }
+      killProcessTree(child);
+      const stderr = decodeOutput(Buffer.concat(stderrChunks)) + `\n[超时 ${timeoutMs}ms 被杀]`;
+      finish({ exitCode: -1, stdout: decodeOutput(Buffer.concat(stdoutChunks)), stderr });
     }, timeoutMs);
     child.stdout?.on("data", (d: Buffer) => { stdoutChunks.push(Buffer.from(d)); });
     child.stderr?.on("data", (d: Buffer) => { stderrChunks.push(Buffer.from(d)); });
     child.on("exit", (code) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve({
-          exitCode: code ?? 0,
-          stdout: decodeOutput(Buffer.concat(stdoutChunks)),
-          stderr: decodeOutput(Buffer.concat(stderrChunks)),
-        });
-      }
+      finish({
+        exitCode: code ?? 0,
+        stdout: decodeOutput(Buffer.concat(stdoutChunks)),
+        stderr: decodeOutput(Buffer.concat(stderrChunks)),
+      });
     });
     child.on("error", (err) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve({
-          exitCode: -1,
-          stdout: decodeOutput(Buffer.concat(stdoutChunks)),
-          stderr: decodeOutput(Buffer.concat(stderrChunks)) + `\n${err.message}`,
-        });
-      }
+      finish({
+        exitCode: -1,
+        stdout: decodeOutput(Buffer.concat(stdoutChunks)),
+        stderr: decodeOutput(Buffer.concat(stderrChunks)) + `\n${err.message}`,
+      });
     });
   });
 }

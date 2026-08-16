@@ -26,6 +26,8 @@ export interface RunCliWorkerInput {
   worker: CliWorkerEntry
   prompt: string
   cwd: string
+  /** 所属主会话：登记后台进程，摘要里可停 */
+  sessionId?: string
   signal?: AbortSignal
   onProgress?: (lastToolName: string) => void
   onToolUse?: (t: CliToolUseHit) => void
@@ -42,6 +44,7 @@ export async function runCliWorker(input: RunCliWorkerInput): Promise<RunCliWork
         model: input.worker.defaultModel,
         prompt: input.prompt,
         cwd: input.cwd,
+        sessionId: input.sessionId,
         signal: input.signal,
         onProgress: input.onProgress,
         onToolUse: input.onToolUse,

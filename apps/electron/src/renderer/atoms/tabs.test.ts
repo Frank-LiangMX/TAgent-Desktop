@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'vitest'
 
-import { closeTab, openTab, type TabItem } from './tabs'
+import {
+  closeTab,
+  MAX_SESSION_TABS,
+  openTab,
+  openTabWithLimit,
+  trimTabsToLimit,
+  type TabItem,
+} from './tabs'
 
 describe('session tabs', () => {
   test('stores the workspace id when a session tab is opened', () => {
@@ -87,5 +94,64 @@ describe('session tabs', () => {
 
     expect(result.activeTabId).toBe('session-2')
     expect(result.tabs).toEqual([tabs[1]])
+  })
+
+  test('replaces the earliest non-running tab after reaching the tab limit', () => {
+    const tabs: TabItem[] = Array.from({ length: MAX_SESSION_TABS }, (_, index) => ({
+      id: `session-${index + 1}`,
+      sessionId: `session-${index + 1}`,
+      title: `Session ${index + 1}`,
+    }))
+
+    const result = openTabWithLimit(
+      tabs,
+      'session-5',
+      'Session 5',
+      (sessionId) => sessionId === 'session-1' || sessionId === 'session-3',
+    )
+
+    expect(result.blocked).toBe(false)
+    expect(result.evictedTab?.id).toBe('session-2')
+    expect(result.tabs.map((tab) => tab.id)).toEqual([
+      'session-1',
+      'session-3',
+      'session-4',
+      'session-5',
+    ])
+    expect(result.activeTabId).toBe('session-5')
+  })
+
+  test('does not replace a tab when every open tab is running', () => {
+    const tabs: TabItem[] = Array.from({ length: MAX_SESSION_TABS }, (_, index) => ({
+      id: `session-${index + 1}`,
+      sessionId: `session-${index + 1}`,
+      title: `Session ${index + 1}`,
+    }))
+
+    const result = openTabWithLimit(tabs, 'session-5', 'Session 5', () => true)
+
+    expect(result).toMatchObject({ tabs, activeTabId: null, blocked: true })
+    expect(result.evictedTab).toBeUndefined()
+  })
+
+  test('trims historical overflow without stopping running tabs', () => {
+    const tabs: TabItem[] = Array.from({ length: MAX_SESSION_TABS + 2 }, (_, index) => ({
+      id: `session-${index + 1}`,
+      sessionId: `session-${index + 1}`,
+      title: `Session ${index + 1}`,
+    }))
+
+    const result = trimTabsToLimit(
+      tabs,
+      (sessionId) => sessionId === 'session-1' || sessionId === 'session-4',
+    )
+
+    expect(result.tabs.map((tab) => tab.id)).toEqual([
+      'session-1',
+      'session-4',
+      'session-5',
+      'session-6',
+    ])
+    expect(result.evictedTabs.map((tab) => tab.id)).toEqual(['session-2', 'session-3'])
   })
 })

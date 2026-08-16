@@ -6,6 +6,7 @@
 import { app, BrowserWindow, Menu, ipcMain, nativeImage, nativeTheme } from 'electron'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 import { SessionService } from './lib/ipc/session-service'
 import { ChannelService } from './lib/ipc/channel-service'
 import { WorkspaceService } from './lib/ipc/workspace-service'
@@ -13,12 +14,14 @@ import { McpService } from './lib/ipc/mcp-service'
 import { PluginService } from './lib/ipc/plugin-service'
 import { MemoryService } from './lib/ipc/memory-service'
 import { UserProfileService } from './lib/ipc/user-profile-service'
+import { SystemPromptService } from './lib/ipc/system-prompt-service'
 import { BalanceService } from './lib/ipc/balance-service'
 import { PermissionService } from './lib/permission/permission-service'
 import {
   seedBuiltinChannels,
   migrateModelWindows,
   syncKsccChannelAvailability,
+  syncKsccDefaultModels,
 } from './lib/channel/channel-store'
 import { discoverAndReconcileCliWorkers } from './lib/agent/cli-workers-service'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
@@ -30,6 +33,7 @@ import {
   selfRepairService,
   reflectService,
   resolveIdleConsolidationFlag,
+  setMemoryForegroundActivityProbe,
   startIdleConsolidationScheduler,
   stopIdleConsolidationScheduler,
 } from './lib/memory'
@@ -46,6 +50,20 @@ let permissionService: PermissionService | null = null
 // Chromium 命令行开关必须在 app ready 之前设置，热更新无法使其生效。
 if (process.platform === 'win32') {
   app.commandLine.appendSwitch('disable-lcd-text')
+}
+
+// macOS：首次启动时自动清除 quarantine 隔离属性
+// 用户从 GitHub Releases / 浏览器下载的 .zip/.dmg 会被 macOS 标记为"已下载的应用"，
+// 导致 Gatekeeper 拦截显示"TAgent 已损坏，无法打开"。
+// 此处以静默方式移除自身 quarantine 属性，避免用户手动执行 xattr 命令。
+if (process.platform === 'darwin' && app.isPackaged) {
+  try {
+    const appBundlePath = path.join(process.execPath, '..', '..', '..')
+    execSync(`xattr -cr "${appBundlePath}"`, { timeout: 5000 })
+    console.log('[启动] 已自动清除 macOS quarantine 隔离属性')
+  } catch (err) {
+    console.warn('[启动] 清除 quarantine 属性失败（可忽略）:', (err as Error).message)
+  }
 }
 
 /**
@@ -238,6 +256,8 @@ app.whenReady().then(async () => {
   seedBuiltinChannels()
   // 无本机 kscc 时强制停用内置渠道，避免用户无脑打开后发送才失败
   syncKsccChannelAvailability()
+  // 网关新上的默认模型追加进已有 kscc-internal（seed 不覆盖存量渠道）
+  syncKsccDefaultModels()
   migrateModelWindows()
 
   // Phase 2：全局记忆 L5 服务启动 wiring
@@ -262,6 +282,7 @@ app.whenReady().then(async () => {
   McpService.create()
   PluginService.create()
   UserProfileService.create()
+  SystemPromptService.create()
   BalanceService.create()
   MemoryService.create()
   // 角色库 IPC（seed DEFAULT_ROLES + CRUD + 商店）
@@ -288,6 +309,7 @@ app.whenReady().then(async () => {
   )
   permissionService = PermissionService.create(() => mainWindow)
   sessionService = SessionService.create(() => mainWindow, permissionService)
+  setMemoryForegroundActivityProbe(() => sessionService?.hasActiveAgents() ?? false)
   WorkspaceService.create(
     () => mainWindow,
     (workspaceId) => sessionService?.deleteWorkspaceSessions(workspaceId) ?? 0,

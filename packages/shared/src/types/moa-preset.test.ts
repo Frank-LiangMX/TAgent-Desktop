@@ -343,7 +343,10 @@ describe('resolveConsultPresetsForChannel (SPEC 03-PI-EXTERNAL §3)', () => {
 
   it('kscc: returns stored presets whose seats are all enabled in the channel', () => {
     const ch = makeChannel({
-      models: [{ id: 'glm-5.2' }, { id: 'kimi-k2.5' }, { id: 'glm-5.1' }, { id: 'mimo-v2.5' }],
+      models: [
+        { id: 'glm-5.2' }, { id: 'kimi-k2.6' }, { id: 'mimo-v2.5-pro' },
+        { id: 'deepseek-v4-flash' }, { id: 'glm-5.1' }, { id: 'kimi-k2.5' }, { id: 'mimo-v2.5' },
+      ],
       defaultModelId: 'glm-5.2',
     })
     const out = resolveConsultPresetsForChannel(ch, stored)
@@ -351,9 +354,9 @@ describe('resolveConsultPresetsForChannel (SPEC 03-PI-EXTERNAL §3)', () => {
   })
 
   it('kscc: filters out a preset whose reference model is not enabled', () => {
-    // 缺 kimi-k2.5 → default 不可用；cheap（glm-5.1/mimo-v2.5/glm-5.2）仍可用
+    // 缺 kimi-k2.6 / mimo-v2.5-pro → default 不可用；cheap 仍可用
     const ch = makeChannel({
-      models: [{ id: 'glm-5.2' }, { id: 'glm-5.1' }, { id: 'mimo-v2.5' }],
+      models: [{ id: 'glm-5.2' }, { id: 'deepseek-v4-flash' }, { id: 'kimi-k2.5' }],
       defaultModelId: 'glm-5.2',
     })
     const out = resolveConsultPresetsForChannel(ch, stored)
@@ -497,7 +500,10 @@ describe('resolveConsultPresetsForChannel (SPEC 03-PI-EXTERNAL §3)', () => {
   it('kscc: includes stored presets whose channelId matches the kscc channel', () => {
     const kscc = makeChannel({
       id: 'kscc-1',
-      models: [{ id: 'glm-5.2' }, { id: 'kimi-k2.5' }, { id: 'glm-5.1' }, { id: 'mimo-v2.5' }],
+      models: [
+        { id: 'glm-5.2' }, { id: 'kimi-k2.6' }, { id: 'mimo-v2.5-pro' },
+        { id: 'deepseek-v4-flash' }, { id: 'glm-5.1' }, { id: 'kimi-k2.5' }, { id: 'mimo-v2.5' },
+      ],
       defaultModelId: 'glm-5.2',
     })
     const tagged: MoAPreset[] = MOA_DEFAULT_PRESETS.map((p) => ({ ...p, channelId: 'kscc-1' }))
@@ -508,7 +514,10 @@ describe('resolveConsultPresetsForChannel (SPEC 03-PI-EXTERNAL §3)', () => {
   it('kscc: excludes stored presets bound to the external scope (no cross-scope)', () => {
     const kscc = makeChannel({
       id: 'kscc-1',
-      models: [{ id: 'glm-5.2' }, { id: 'kimi-k2.5' }, { id: 'glm-5.1' }, { id: 'mimo-v2.5' }],
+      models: [
+        { id: 'glm-5.2' }, { id: 'kimi-k2.6' }, { id: 'mimo-v2.5-pro' },
+        { id: 'deepseek-v4-flash' }, { id: 'glm-5.1' }, { id: 'kimi-k2.5' }, { id: 'mimo-v2.5' },
+      ],
       defaultModelId: 'glm-5.2',
     })
     // 预置全部属外部档（即便模型名撞上 kscc，也按 channelId 排除，不混档）
@@ -522,7 +531,10 @@ describe('resolveConsultPresetsForChannel (SPEC 03-PI-EXTERNAL §3)', () => {
   it('kscc: treats presets with no channelId as kscc (v1 compat)', () => {
     const kscc = makeChannel({
       id: 'kscc-1',
-      models: [{ id: 'glm-5.2' }, { id: 'kimi-k2.5' }, { id: 'glm-5.1' }, { id: 'mimo-v2.5' }],
+      models: [
+        { id: 'glm-5.2' }, { id: 'kimi-k2.6' }, { id: 'mimo-v2.5-pro' },
+        { id: 'deepseek-v4-flash' }, { id: 'glm-5.1' }, { id: 'kimi-k2.5' }, { id: 'mimo-v2.5' },
+      ],
       defaultModelId: 'glm-5.2',
     })
     const noChannel: MoAPreset[] = MOA_DEFAULT_PRESETS.map((p) => ({ ...p }))

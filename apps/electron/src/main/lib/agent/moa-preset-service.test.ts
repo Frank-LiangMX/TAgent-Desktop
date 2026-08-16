@@ -209,6 +209,80 @@ describe('writeMoaPresets', () => {
     expect(raw.presets.every((p: { channelId: string }) => p.channelId === 'kscc-internal')).toBe(true)
   })
 
+  it('upgrades untouched legacy built-in seats to the expanded kscc roster', async () => {
+    const { listMoaPresets } = await loadService()
+    const filePath = join(configDir, 'moa-presets.json')
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 2,
+        presets: [
+          {
+            id: 'default', name: '默认会诊', enabled: true, channelId: 'kscc-internal',
+            references: [
+              { name: '架构师', modelId: 'glm-5.2' },
+              { name: '实战派', modelId: 'kimi-k2.5' },
+            ],
+            aggregatorModelId: 'glm-5.2', timeoutMsPerSeat: 120_000,
+          },
+          {
+            id: 'cheap', name: '省并发', enabled: true, channelId: 'kscc-internal',
+            references: [
+              { name: '省并发·甲', modelId: 'glm-5.1' },
+              { name: '省并发·乙', modelId: 'mimo-v2.5' },
+            ],
+            aggregatorModelId: 'glm-5.2', timeoutMsPerSeat: 120_000,
+          },
+        ],
+      }),
+      'utf8',
+    )
+
+    const byId = new Map(listMoaPresets().map((preset) => [preset.id, preset]))
+    expect(byId.get('default')!.references.map((seat) => seat.modelId)).toEqual([
+      'glm-5.2', 'kimi-k2.6', 'mimo-v2.5-pro',
+    ])
+    expect(byId.get('default')!.aggregatorModelId).toBe('glm-5.2')
+    expect(byId.get('cheap')!.references.map((seat) => seat.modelId)).toEqual(['deepseek-v4-flash', 'kimi-k2.5'])
+    expect(byId.get('cheap')!.aggregatorModelId).toBe('deepseek-v4-flash')
+  })
+
+  it('upgrades the immediately preceding untouched cheap preset to DeepSeek Flash', async () => {
+    const { listMoaPresets } = await loadService()
+    const filePath = join(configDir, 'moa-presets.json')
+    writeFileSync(filePath, JSON.stringify({
+      version: 2,
+      presets: [{
+        id: 'cheap', name: '省并发', enabled: true, channelId: 'kscc-internal',
+        references: [
+          { name: '省并发·甲', modelId: 'glm-5.1' },
+          { name: '省并发·乙', modelId: 'kimi-k2.5' },
+        ],
+        aggregatorModelId: 'mimo-v2.5', timeoutMsPerSeat: 120_000,
+      }],
+    }), 'utf8')
+
+    const cheap = listMoaPresets().find((preset) => preset.id === 'cheap')!
+    expect(cheap.references.map((seat) => seat.modelId)).toEqual(['deepseek-v4-flash', 'kimi-k2.5'])
+    expect(cheap.aggregatorModelId).toBe('deepseek-v4-flash')
+  })
+
+  it('does not overwrite a customized built-in preset while migrating defaults', async () => {
+    const { listMoaPresets } = await loadService()
+    const filePath = join(configDir, 'moa-presets.json')
+    const customized: MoAPreset = {
+      id: 'default', name: '我的默认会诊', enabled: true, channelId: 'kscc-internal',
+      references: [
+        { name: '自定义甲', modelId: 'glm-5.2' },
+        { name: '自定义乙', modelId: 'kimi-k2.5' },
+      ],
+      aggregatorModelId: 'glm-5.1', timeoutMsPerSeat: 60_000,
+    }
+    writeFileSync(filePath, JSON.stringify({ version: 2, presets: [customized] }), 'utf8')
+
+    expect(listMoaPresets()).toEqual([customized])
+  })
+
   it('rewrites legacy non-kscc channelId to external scope on read (外部渠合并)', async () => {
     const { listMoaPresets } = await loadService()
     const filePath = join(configDir, 'moa-presets.json')

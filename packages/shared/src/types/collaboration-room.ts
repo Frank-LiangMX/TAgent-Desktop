@@ -622,6 +622,14 @@ export interface CreateCollaborationMemberInput {
   isCoordinator?: boolean
 }
 
+/** 删除协作室成员 */
+export interface RemoveCollaborationMemberInput {
+  /** 所属协作室 ID */
+  roomId: string
+  /** 要删除的成员 ID */
+  memberId: string
+}
+
 /** 创建协作室房间的输入 */
 export interface CreateCollaborationRoomInput {
   /** 房间名（必填，非空） */

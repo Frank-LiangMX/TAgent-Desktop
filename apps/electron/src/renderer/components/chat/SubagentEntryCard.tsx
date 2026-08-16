@@ -115,6 +115,10 @@ export function SubagentEntryCard({
     return '子代理任务'
   }, [card?.description, launcher, items])
 
+  const entryAnchorId =
+    card?.toolUseId ||
+    items.find((it) => it.message?.type === 'assistant' && it.message.parentToolUseId)?.message
+      ?.parentToolUseId
   const messageCount = items.filter((it) => it.message?.type === 'assistant').length
   // terminal card.status 优先；缺卡时 live 才算 running，避免失败后仍显示运行中
   const status: TaskCardState['status'] =
@@ -142,6 +146,7 @@ export function SubagentEntryCard({
       <AppTooltip label="查看子代理完整过程">
         <button
           type="button"
+          data-message-id={entryAnchorId ? `subagent-${entryAnchorId}` : undefined}
           className={cn(
             'agent-concise-subagent',
             isRunning && 'is-running',
@@ -184,6 +189,7 @@ export function SubagentEntryCard({
     <AppTooltip label="查看子代理完整过程">
       <button
         type="button"
+        data-message-id={entryAnchorId ? `subagent-${entryAnchorId}` : undefined}
         className={cn(
           'subagent-entry-card',
           status === 'running' && 'is-running',

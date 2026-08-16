@@ -68,7 +68,7 @@ export function DestructiveConfirmDialog({
 
   return (
     <AlertDialog open={open} onOpenChange={handleOpenChange}>
-      <AlertDialogContent className="!z-[120] !w-[calc(100%-32px)] !max-w-[356px] !gap-0 !overflow-hidden !rounded-[16px] !p-0">
+      <AlertDialogContent className="!z-[120] !w-[min(calc(100vw-32px),400px)] !max-w-none !gap-0 !overflow-hidden !rounded-[16px] !p-0">
         <div className="flex items-start gap-3 px-4 pb-3 pt-4">
           {icon && (
             <span className="grid h-8 w-8 shrink-0 place-items-center rounded-[9px] bg-destructive/10 text-destructive">
@@ -89,16 +89,16 @@ export function DestructiveConfirmDialog({
             )}
           </AlertDialogHeader>
         </div>
-        <AlertDialogFooter className="!flex-row !justify-end !space-x-0 gap-2 border-t border-border/40 bg-muted/20 px-4 py-2.5">
+        <AlertDialogFooter className="!flex-row !flex-wrap !justify-end !space-x-0 gap-2 border-t border-border/40 bg-muted/20 px-4 py-2.5">
           <AlertDialogCancel
             disabled={pending}
-            className="!mt-0 h-8 min-w-[64px] rounded-[9px] px-3 text-xs shadow-none"
+            className="!mt-0 h-8 shrink-0 min-w-[64px] rounded-[9px] px-3 text-xs shadow-none"
           >
             取消
           </AlertDialogCancel>
           <AlertDialogAction
             disabled={pending}
-            className="h-8 min-w-[76px] rounded-[9px] bg-destructive px-3 text-xs text-destructive-foreground shadow-sm hover:bg-destructive/90"
+            className="h-8 shrink-0 min-w-[76px] rounded-[9px] bg-destructive px-3 text-xs text-destructive-foreground shadow-sm hover:bg-destructive/90"
             onClick={(event) => void handleConfirm(event)}
           >
             {pending ? pendingLabel : confirmLabel}

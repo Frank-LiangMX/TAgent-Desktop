@@ -97,6 +97,7 @@ export function sdkMessageToIR(
         sessionId: m.session_id as string | undefined,
         isReplay: m.isReplay as boolean | undefined,
         isSynthetic: m.isSynthetic as boolean | undefined,
+        isSteer: m.isSteer as boolean | undefined,
         createdAt: m.createdAt as number | undefined,
         content: content as unknown as TAgentMessage['content'],
         ...(attachments ? { attachments } : {}),

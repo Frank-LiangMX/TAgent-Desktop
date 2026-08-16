@@ -27,6 +27,7 @@ export interface RunMimoWorkerInput {
   worker: CliWorkerEntry
   prompt: string
   cwd: string
+  sessionId?: string
   signal?: AbortSignal
   onProgress?: (lastToolName: string) => void
   onToolUse?: (t: CliToolUseHit) => void
@@ -61,6 +62,7 @@ export async function runMimoWorker(input: RunMimoWorkerInput): Promise<RunCliWo
     plan,
     prompt: input.prompt,
     cwd: input.cwd,
+    sessionId: input.sessionId,
     signal: input.signal,
     observer: new MimoStreamObserver(),
     onProgress: input.onProgress,

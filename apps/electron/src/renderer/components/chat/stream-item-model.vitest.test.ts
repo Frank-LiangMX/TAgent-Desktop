@@ -394,6 +394,45 @@ describe('applySdkMessageToItems：uuid 原地 upsert（S2.1 单真源）', () =
     }
   })
 
+  it('工具终态无 text：shouldClearStreamText 为真 → 须先 commit 再清（main 无 tool_start）', () => {
+    const toolFinal = {
+      type: 'assistant',
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }],
+    }
+    expect(shouldClearStreamText(toolFinal)).toBe(true)
+    // 消息自身无 text：Chat sdk_message 路径会 commitStreamTextToLastAssistant 再清
+    expect(
+      toolFinal.content.some(
+        (b) => b.type === 'text' && typeof (b as { text?: string }).text === 'string',
+      ),
+    ).toBe(false)
+
+    let items: StreamItemLike[] = [
+      {
+        key: 'm0',
+        message: {
+          type: 'assistant',
+          uuid: 'u1',
+          stop_reason: undefined,
+          content: [{ type: 'thinking', thinking: '想' }],
+        },
+      },
+    ]
+    const pending = '目录摸清了：问题在投影层，下一步改 concise。'
+    items = commitStreamTextToLastAssistant(items, pending)
+    const m = items[0]?.message
+    expect(m?.type).toBe('assistant')
+    if (m?.type === 'assistant') {
+      expect(m.content.some((b) => b.type === 'text' && (b as { text: string }).text === pending)).toBe(
+        true,
+      )
+    }
+    // 清缓冲后 presentation 仍能从 message text 投出 narrative
+    const cleared = applySdkMessageToStreamState({ text: pending, thinking: '想' }, toolFinal)
+    expect(cleared.text).toBe('')
+  })
+
   it('commitStreamTextToLastAssistant 已有前缀 text 时不双写', () => {
     const text = '52 个文件已暂存（调研文档排除在外）。'
     let items: StreamItemLike[] = [

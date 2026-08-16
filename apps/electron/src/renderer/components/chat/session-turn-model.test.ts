@@ -2,9 +2,11 @@ import { describe, expect, test } from 'bun:test'
 import type { TAgentMessage } from '@tagent/shared'
 import {
   buildTurnPresentation,
+  capThinkingDurationsToTurn,
   dedupeAnswerTexts,
   groupItemsIntoTurns,
   isRealUserInput,
+  isSteerUserMessage,
   isToolResultOnlyUser,
   summarizeProcess,
   type TurnSourceItem,
@@ -74,6 +76,15 @@ describe('isRealUserInput / isToolResultOnlyUser', () => {
     } as Extract<TAgentMessage, { type: 'user' }>
     expect(isRealUserInput(m)).toBe(false)
   })
+
+  test('steer user remains visible but is marked for the active execution turn', () => {
+    const m = { ...userText('把范围收窄到渲染层'), isSteer: true } as Extract<
+      TAgentMessage,
+      { type: 'user' }
+    >
+    expect(isRealUserInput(m)).toBe(true)
+    expect(isSteerUserMessage(m)).toBe(true)
+  })
 })
 
 describe('groupItemsIntoTurns', () => {
@@ -96,6 +107,34 @@ describe('groupItemsIntoTurns', () => {
       expect(turns[1].items).toHaveLength(6)
       expect(turns[1].modelId).toBe('deepseek-v4-flash')
     }
+  })
+
+  test('keeps a running steer message inside the existing assistant turn', () => {
+    const items: TurnSourceItem[] = [
+      {
+        key: 'a1',
+        message: assistantTools('deepseek-v4-flash', [{ id: 't1', name: 'Read' }]),
+      },
+      {
+        key: 'guide-1',
+        message: {
+          ...(userText('优先检查渲染层') as Extract<TAgentMessage, { type: 'user' }>),
+          isSteer: true,
+        },
+      },
+      { key: 'r1', message: userToolResult('t1') },
+      { key: 'a2', message: assistantText('deepseek-v4-flash', '已按引导继续。') },
+    ]
+
+    const turns = groupItemsIntoTurns(items)
+
+    expect(turns).toHaveLength(1)
+    expect(turns[0]?.kind).toBe('assistant-turn')
+    if (turns[0]?.kind !== 'assistant-turn') return
+    const presentation = buildTurnPresentation(turns[0], { displayMode: 'concise' })
+    expect(presentation.process).toContainEqual(
+      expect.objectContaining({ type: 'guidance', text: '优先检查渲染层' }),
+    )
   })
 
   test('second real user starts a new turn', () => {
@@ -240,5 +279,18 @@ describe('dedupeAnswerTexts', () => {
   test('drops exact duplicates and prefixes', () => {
     expect(dedupeAnswerTexts(['你好', '你好', '你好世界'])).toEqual(['你好世界'])
     expect(dedupeAnswerTexts(['完整', '完整'])).toEqual(['完整'])
+  })
+})
+
+describe('capThinkingDurationsToTurn', () => {
+  test('caps the combined thinking time to the enclosing turn duration', () => {
+    const process = [
+      { type: 'thinking' as const, key: 't1', thinking: 'first', durationSec: 45 },
+      { type: 'thinking' as const, key: 't2', thinking: 'second', durationSec: 30 },
+    ]
+
+    capThinkingDurationsToTurn(process, 59_000)
+
+    expect(process.map((entry) => entry.durationSec)).toEqual([45, 14])
   })
 })

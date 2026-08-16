@@ -6,7 +6,7 @@
  * 软表面、细边框、Phosphor 图标；选项用描边+淡底选中，不用整行实心 primary 填色。
  */
 import { useAtom } from 'jotai'
-import { ChatCircleDots, Check, PaperPlaneTilt, X } from '@phosphor-icons/react'
+import { ArrowUp, ChatCircleDots, Check, X } from '@phosphor-icons/react'
 import { motion, AnimatePresence } from 'motion/react'
 import * as React from 'react'
 
@@ -25,16 +25,10 @@ const EMPTY_ANSWER: AskUserQuestionDraft = { selected: [], customText: '', showC
 
 interface AskUserQuestionBannerProps {
   sessionId: string
-  /**
-   * 用户点关闭时：渲染层标记「用户主动停止」，后续 abort/error_* 不当运行出错。
-   * 由 Chat 传入 userStopRun。
-   */
-  onUserStop?: () => void
 }
 
 export function AskUserQuestionBanner({
   sessionId,
-  onUserStop,
 }: AskUserQuestionBannerProps): React.ReactElement | null {
   const [allRequests, setAllRequests] = useAtom(allPendingAskUserRequestsAtom)
   const [drafts, setDrafts] = useAtom(askUserDraftsAtom)
@@ -139,15 +133,12 @@ export function AskUserQuestionBanner({
       return map
     })
     clearDrafts(ids)
-    // 先标用户停止，再 stop：否则 clearSessionPending/abort 产生的 error_* 会被当成「运行出错」
-    onUserStop?.()
+    // 关闭只表示「未选择」：软 deny 回灌给 Agent，保持当前轮运行，由 Agent 决定后续。
     void (async () => {
       try {
-        // 显式 dismiss 每个 pending（deny「用户取消选择」+ interrupt），再 interrupt 本轮
         for (const requestId of ids) {
-          await window.electronAPI.askUserDismiss?.(requestId)
+          await window.electronAPI.askUserDismiss(requestId)
         }
-        await window.electronAPI.stopAgent(sessionId)
       } catch (err) {
         console.error(err)
       }
@@ -313,7 +304,8 @@ export function AskUserQuestionBanner({
                     </span>
                   ) : (
                     <span className="ask-user-card__meta">
-                      {currentQuestion.multiSelect ? '可多选' : '单选一项'}
+                      {currentQuestion.multiSelect ? '可多选' : '单选'}
+                      {currentQuestion.header ? ` · ${currentQuestion.header}` : ''}
                     </span>
                   )}
                 </div>
@@ -375,7 +367,7 @@ export function AskUserQuestionBanner({
                 question={currentQuestion}
                 answer={getAnswer(activeTab)}
                 focusedIndex={focusedOptIdx}
-                showModeBadge={questions.length === 1}
+                showModeBadge={questions.length > 1}
                 onToggleOption={(label) => {
                   toggleOptionByState(activeTab, currentQuestion, label)
                   if (!currentQuestion.multiSelect && !isLastTab) {
@@ -420,7 +412,7 @@ export function AskUserQuestionBanner({
                     onClick={() => void handleSubmit()}
                     disabled={submitting || !hasValidAnswers}
                   >
-                    <PaperPlaneTilt size={13} weight="fill" />
+                    <ArrowUp size={13} weight="bold" />
                     {submitting ? '提交中…' : '确认'}
                   </button>
                 )}

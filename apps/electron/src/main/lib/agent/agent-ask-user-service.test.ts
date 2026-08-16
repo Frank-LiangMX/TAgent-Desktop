@@ -67,7 +67,7 @@ describe('AgentAskUserService（REGRESS-H）', () => {
     expect(askUserService.respondToAskUser('not-exist', {})).toBeNull()
   })
 
-  it('dismissToAskUser → deny「用户取消选择」+ interrupt，清 pending', async () => {
+  it('dismissToAskUser → 软 deny「用户未选择」、无 interrupt，清 pending', async () => {
     const ac = new AbortController()
     const sent: AskUserRequest[] = []
     const p = askUserService.handleAskUserQuestion(
@@ -81,8 +81,8 @@ describe('AgentAskUserService（REGRESS-H）', () => {
     expect(sid).toBe('s-dismiss')
     await expect(p).resolves.toEqual({
       behavior: 'deny',
-      message: '用户取消选择',
-      interrupt: true,
+      message:
+        '用户关闭了选项弹窗，未提供选择。请自行判断是采用合理默认方案、换一种方式继续，还是结束当前任务；不要立即重复提出同一个问题。',
     })
     expect(askUserService.getPendingRequests().some((r) => r.requestId === req.requestId)).toBe(
       false,

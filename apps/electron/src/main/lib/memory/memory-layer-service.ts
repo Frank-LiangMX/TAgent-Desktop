@@ -493,7 +493,9 @@ export class MemoryLayerService {
         ORDER BY bm25(fts) ASC
         LIMIT ?
       `)
-      return stmt.all(ftsQuery, limit) as SessionMemoryRecord[]
+      const matches = stmt.all(ftsQuery, limit) as SessionMemoryRecord[]
+      // FTS 的默认分词对中文长句召回较弱；无命中时回退到片段 LIKE 检索。
+      return matches.length > 0 ? matches : this.searchSessionsFallback(mode, query, limit)
     } catch (error) {
       console.warn('[MemoryLayerService] FTS5 搜索失败，fallback:', error)
       return this.searchSessionsFallback(mode, query, limit)
@@ -514,14 +516,20 @@ export class MemoryLayerService {
     }
 
     try {
-      const searchPattern = `%${query}%`
+      const terms = buildMemoryLikeTerms(query)
+      if (terms.length === 0) return []
+      const predicate = terms.map(() => '(title LIKE ? OR summary LIKE ? OR key_facts LIKE ?)').join(' OR ')
       const stmt = db.prepare(`
         SELECT * FROM sessions
-        WHERE title LIKE ? OR summary LIKE ? OR key_facts LIKE ?
+        WHERE ${predicate}
         ORDER BY created_at DESC
         LIMIT ?
       `)
-      return stmt.all(searchPattern, searchPattern, searchPattern, limit) as SessionMemoryRecord[]
+      const parameters = terms.flatMap((term) => {
+        const pattern = `%${term}%`
+        return [pattern, pattern, pattern]
+      })
+      return stmt.all(...parameters, limit) as SessionMemoryRecord[]
     } catch {
       return []
     }
@@ -765,6 +773,19 @@ export class MemoryLayerService {
       return []
     }
   }
+}
+
+/** 为 LIKE 回退提取少量稳定片段，兼容中文连续文本和英文术语。 */
+function buildMemoryLikeTerms(query: string): string[] {
+  const terms = new Set<string>()
+  for (const word of query.match(/[A-Za-z0-9_./-]{3,}/g) ?? []) {
+    terms.add(word.slice(0, 40))
+  }
+  for (const run of query.match(/[\u4e00-\u9fff]{2,}/g) ?? []) {
+    terms.add(run.slice(0, 12))
+    if (run.length > 12) terms.add(run.slice(-12))
+  }
+  return [...terms].slice(0, 6)
 }
 
 // 导出单例

@@ -71,12 +71,18 @@ import {
   buildMemoryPromptSections,
   memoryLayerService,
   memoryEvidenceSink,
+  buildMemoryRecallContext,
   nudgeService,
   normalizeToTextMessages,
   type MemoryMode,
 } from '../memory'
 import { ksccSoftReset } from '../agent/kscc-soft-reset'
 import { resolveWorkspaceForSession } from '../workspace/workspace-manager'
+import {
+  killSessionProcess,
+  listSessionProcesses,
+  subscribeSessionProcesses,
+} from '../agent/session-process-registry'
 import { findFileByNameCached } from './file-search'
 import { getEnabledMcpServers } from '../mcp/mcp-store'
 import { listMoaPresets, writeMoaPresets, validateMoAPresetList } from '../agent/moa-preset-service'
@@ -95,6 +101,7 @@ import {
 } from '../permission/permission-service'
 import { buildBuiltinSubagentDefinitions, buildSubagentDelegationPrompt } from '../agent/subagent-definitions'
 import { buildExecutionModePrompt } from '../agent/execution-mode-prompt'
+import { buildUserSystemPromptAppend } from '../system-prompt-manager'
 import {
   buildPiKanbanTools,
   injectKanbanMcpServer,
@@ -130,6 +137,8 @@ import type { NoProgressGuardMode, AgentDiscussPrefs, AgentCrewPrefs } from '@ta
 interface SendMessageInput {
   sessionId: string
   prompt: string
+  /** 运行中引导的后续自动发送：在消息列表内并入前一执行回合。 */
+  isSteer?: boolean
   /** 渠道 ID（决定选哪个 adapter + 绑核）。不传默认 kscc-internal */
   channelId?: string
   /** 模型 ID */
@@ -243,6 +252,34 @@ export class SessionService {
     this.pendingSteerBySession.delete(sessionId)
   }
 
+  /**
+   * kscc 的实时引导直接写入长驻 channel，不会像 handleSend 那样自然经过消息落盘。
+   * 这里补齐持久化和 renderer 广播，保证用户点击「引导」后既能在对话中看见，也不会重开丢失。
+   */
+  private persistLiveSteerMessage(sessionId: string, text: string): void {
+    const meta = getSessionMeta(sessionId)
+    const workspaceId = meta?.workspaceId
+    const now = Date.now()
+    const userMsg: SDKMessage = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text }] },
+      parent_tool_use_id: null,
+      createdAt: now,
+      isSteer: true,
+    } as unknown as SDKMessage
+    try {
+      appendPanelMessages(workspaceId, sessionId, [userMsg])
+      appendSdkMessages(workspaceId, sessionId, [userMsg])
+      const { message: userIR } = sdkMessageToIR(userMsg)
+      if (userIR) {
+        this.sendPayload(sessionId, { kind: 'sdk_message', message: userIR })
+      }
+    } catch (err) {
+      // 引导已成功入 channel；记录失败不应把成功结果变成失败或重复注入。
+      console.warn(`[会话 ${sessionId}] 实时引导落盘失败:`, err)
+    }
+  }
+
   /** 取/建会话的落盘闸口状态。 */
   private getStreamPersistGate(sessionId: string): StreamPersistGateState {
     let s = this.streamPersistGateBySession.get(sessionId)
@@ -319,6 +356,7 @@ export class SessionService {
       channelId: meta.channelId,
       model: meta.modelId,
       workspaceId: meta.workspaceId,
+      isSteer: true,
     }).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err)
       console.warn(`[session-service] pending steer flush 失败: ${msg}`)
@@ -532,7 +570,8 @@ export class SessionService {
       }
     )
 
-    // 用户关闭 AskUser 选项卡：deny「用户取消选择」+ interrupt，随后通常再 STOP_AGENT
+    // 用户关闭 AskUser 选项卡：只回灌「用户未选择」的软 deny，不停止当前轮。
+    // Agent 收到工具拒绝原因后自行决定继续、采用默认方案、重新说明或结束。
     ipcMain.handle(
       AGENT_IPC_CHANNELS.ASK_USER_DISMISS,
       async (_e, requestId: string): Promise<void> => {
@@ -559,24 +598,32 @@ export class SessionService {
       ): Promise<{ ok: boolean; mode?: 'live' | 'pending_next_turn'; error?: string }> => {
         const text = typeof message === 'string' ? message.trim() : ''
         if (!text) return { ok: false, error: '消息为空' }
+        try {
+          const kind = this.resolveAdapterKindForSession(sessionId)
+          const rt = this.runtimes.get(sessionId)
 
-        const kind = this.resolveAdapterKindForSession(sessionId)
-        const rt = this.runtimes.get(sessionId)
+          // kscc 真长驻：loop 存活时 enqueue 到下一轮边界。
+          if (kind === 'kscc' && rt?.hasLiveProcess()) {
+            const mode = await rt.steerMessage(text)
+            if (mode === 'live') {
+              this.persistLiveSteerMessage(sessionId, text)
+              return { ok: true, mode: 'live' }
+            }
+            // live 判定竞态失败 → 降级 pending
+          }
 
-        // kscc 真长驻：loop 存活时 enqueue 到下一轮边界
-        if (kind === 'kscc' && rt?.hasLiveProcess()) {
-          const mode = await rt.steerMessage(text)
-          if (mode === 'live') return { ok: true, mode: 'live' }
-          // live 判定竞态失败 → 降级 pending
+          // Pi 核（或 kscc 已无 live）：下一轮注入，避免 agent.steer 静默失效
+          this.enqueuePendingSteer(sessionId, text)
+          // 仅当 turn 与 loop 都已停稳才立刻 flush（避免 Pi result 后 generator 未 done 窗口误 enqueue）
+          if (!rt || (!rt.isTurnInFlight() && !rt.isRunning())) {
+            this.flushPendingSteer(sessionId)
+          }
+          return { ok: true, mode: 'pending_next_turn' }
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          console.warn(`[会话 ${sessionId}] 引导失败: ${error}`)
+          return { ok: false, error }
         }
-
-        // Pi 核（或 kscc 已无 live）：下一轮注入，避免 agent.steer 静默失效
-        this.enqueuePendingSteer(sessionId, text)
-        // 仅当 turn 与 loop 都已停稳才立刻 flush（避免 Pi result 后 generator 未 done 窗口误 enqueue）
-        if (!rt || (!rt.isTurnInFlight() && !rt.isRunning())) {
-          this.flushPendingSteer(sessionId)
-        }
-        return { ok: true, mode: 'pending_next_turn' }
       },
     )
 
@@ -966,6 +1013,29 @@ export class SessionService {
       },
     )
 
+    ipcMain.handle(AGENT_IPC_CHANNELS.LIST_SESSION_PROCESSES, async (_e, sessionId: string) => {
+      return listSessionProcesses(typeof sessionId === 'string' ? sessionId : '')
+    })
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.KILL_SESSION_PROCESS,
+      async (_e, input: { sessionId?: string; id?: string }) => {
+        const sessionId = typeof input?.sessionId === 'string' ? input.sessionId : ''
+        const id = typeof input?.id === 'string' ? input.id : ''
+        if (!sessionId || !id) return { ok: false, error: '缺少 sessionId 或进程 id' }
+        return killSessionProcess(sessionId, id)
+      },
+    )
+    subscribeSessionProcesses((sessionId, processes) => {
+      try {
+        this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.SESSION_PROCESSES_CHANGED, {
+          sessionId,
+          processes,
+        })
+      } catch {
+        /* window gone */
+      }
+    })
+
     ipcMain.handle(AGENT_IPC_CHANNELS.LIST_SESSIONS, async () => {
       const sessions = listSessions()
       console.log(`[会话] listSessions 返回 ${sessions.length} 个会话，isArray=${Array.isArray(sessions)}`)
@@ -1241,6 +1311,7 @@ export class SessionService {
         message: { role: 'user', content: [{ type: 'text', text: input.prompt }] },
         parent_tool_use_id: null,
         createdAt: now,
+        ...(input.isSteer ? { isSteer: true } : {}),
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       } as unknown as SDKMessage
       // Phase 1.2 双写：先面板（保可见）再 SDK（resume）
@@ -1263,6 +1334,7 @@ export class SessionService {
       const userIR: TAgentMessage = {
         type: 'user',
         createdAt: Date.now(),
+        ...(input.isSteer ? { isSteer: true } : {}),
         content: [{ type: 'text', text: input.prompt }],
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       }
@@ -1778,6 +1850,18 @@ export class SessionService {
         mode: sessionMode,
         memorySnapshot: { l0: snap.l0User, l1: snap.l1Project, l2: snap.l2Facts },
       })
+      // KSCC 是长驻 SDK 会话，无法复用 Pi 的 transformContext；因此按每轮 prompt
+      // 直接附加受控 L4 检索上下文。当前会话自身被排除，避免摘要回灌。
+      let recallContext = ''
+      try {
+        recallContext = buildMemoryRecallContext(
+          input.prompt,
+          memoryLayerService.searchSessions(sessionMode, input.prompt, 5),
+          input.sessionId,
+        )
+      } catch (err) {
+        console.warn('[memory] kscc recall failed:', err)
+      }
       // KsccQueryOptions：canUseTool/mcpServers/permissionMode/allowDangerouslySkipPermissions
       // canUseTool 透传 PermissionService.createCanUseTool（permissionMode + executionMode 闭包读 meta）
       const canUseTool = this.permissionService
@@ -1810,7 +1894,7 @@ export class SessionService {
       }
       const opts: KsccQueryOptions = {
         sessionId: input.sessionId,
-        prompt: input.prompt,
+        prompt: recallContext ? `${recallContext}\n\n---\n\n${input.prompt}` : input.prompt,
         attachments: input.attachments,
         model,
         cwd,
@@ -1835,6 +1919,8 @@ export class SessionService {
           append: [
             // Chat/Work 策略须尽早出现，压过 claude_code preset 的动手/Plan 默认习惯
             buildExecutionModePrompt(executionMode),
+            // Chat：注入设置页默认系统提示词（内置或用户自定义）
+            executionMode === 'chat' ? buildUserSystemPromptAppend() : '',
             '## 身份与自我介绍\n你是一个专业的编程助手，帮助用户完成软件开发任务。回复时不要自我介绍，也不要提及你所属的 CLI 工具名或出品方品牌；直接以助手姿态回答用户的问题。',
             // W8：输出风格沟通红线（与 Pi 核 buildOutputStylePrompt 同文）
             buildOutputStylePrompt(),
@@ -1911,6 +1997,7 @@ export class SessionService {
     const piExecutionMode = this.getExecutionMode(input.sessionId)
     const piExecutionPrompt = [
       buildExecutionModePrompt(piExecutionMode),
+      piExecutionMode === 'chat' ? buildUserSystemPromptAppend() : '',
       piExecutionMode === 'work'
         ? '## 看板派工工具\n可用 kanban_create_board / kanban_add_task / kanban_list_*。长任务拆任务并指定 roleId。'
         : '',
@@ -2340,6 +2427,6 @@ export class SessionService {
     for (const rt of this.runtimes.values()) {
       if (rt.isTurnInFlight()) return true
     }
-    return false
+    return this.moaInFlight.size > 0
   }
 }

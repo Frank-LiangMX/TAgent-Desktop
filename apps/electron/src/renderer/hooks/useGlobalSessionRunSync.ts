@@ -26,12 +26,19 @@ import {
   IDLE_WATCHDOG_TIMEOUT_MS,
   shouldForceIdle,
 } from '@tagent/shared'
+import {
+  makeStatusTickerItem,
+  pushStatusTickerAtom,
+} from '../atoms/status-ticker'
+import { getNotificationPrefsSnapshot } from '../atoms/notification-prefs'
 
 type StreamEnvelope = {
   sessionId?: string
   payload?: {
     kind: string
     event?: { type?: string }
+    subtype?: string
+    errors?: unknown[]
     message?: {
       type?: string
       stop_reason?: string
@@ -65,6 +72,8 @@ const WATCHDOG_POLL_INTERVAL_MS = 5_000
 
 /** per-session 最近流式事件时间戳（ms） */
 const lastStreamEventAtMap = new Map<string, number>()
+/** 同一 run 的 result 可能被多个订阅路径观察到；每轮只提示一次。 */
+const notifiedCompletionSessionIds = new Set<string>()
 
 /** 流式活动 kind 集合（与 adopt 判定一致） */
 const STREAM_ACTIVITY_KINDS = new Set([
@@ -76,6 +85,7 @@ const STREAM_ACTIVITY_KINDS = new Set([
 export function useGlobalSessionRunSync(): void {
   const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
   const stopSessionRun = useSetAtom(stopSessionRunAtom)
+  const pushTicker = useSetAtom(pushStatusTickerAtom)
 
   useEffect(() => {
     const off = window.electronAPI.onStreamEvent((raw: unknown) => {
@@ -87,6 +97,34 @@ export function useGlobalSessionRunSync(): void {
       if (p.kind === 'result') {
         lastStreamEventAtMap.delete(sessionId)
         stopSessionRun(sessionId)
+        const isErrorResult =
+          (typeof p.subtype === 'string' && p.subtype.startsWith('error_')) ||
+          (Array.isArray(p.errors) && p.errors.length > 0)
+        if (
+          !isErrorResult &&
+          !notifiedCompletionSessionIds.has(sessionId) &&
+          getNotificationPrefsSnapshot().titlebarTicker
+        ) {
+          notifiedCompletionSessionIds.add(sessionId)
+          // 完成事件只有 sessionId；异步补标题，避免把技术 id 暴露到顶栏。
+          void window.electronAPI
+            .listSessions()
+            .then((sessions) => {
+              const title = (sessions as Array<{ id?: string; title?: string }>)
+                .find((session) => session.id === sessionId)
+                ?.title?.trim()
+              pushTicker(
+                makeStatusTickerItem(
+                  title ? `会话已完成 · ${title}` : '会话已完成',
+                  'success',
+                  6500,
+                ),
+              )
+            })
+            .catch(() => {
+              pushTicker(makeStatusTickerItem('会话已完成', 'success', 6500))
+            })
+        }
         return
       }
 
@@ -99,6 +137,8 @@ export function useGlobalSessionRunSync(): void {
       // 流式活动：保证 running + 保住已有 startedAt（勿用 Date.now 重置）
       // 终态 assistant 跳过：turn_end 已 schedule 软/硬停，再 adopt 会把 UI 拉回「一直在跑」
       if (STREAM_ACTIVITY_KINDS.has(p.kind) && !isTerminalAssistantPayload(p) && !isParentedSdkPayload(p)) {
+        // 新一轮开始后允许该会话再次发布完成通知。
+        notifiedCompletionSessionIds.delete(sessionId)
         lastStreamEventAtMap.set(sessionId, Date.now())
         const entry = getDefaultStore().get(sessionRunMapAtom)[sessionId]
         if (entry?.running && entry.startedAt != null) return
@@ -153,5 +193,5 @@ export function useGlobalSessionRunSync(): void {
       off?.()
       window.clearInterval(watchdogTimer)
     }
-  }, [adoptSessionRun, stopSessionRun])
+  }, [adoptSessionRun, stopSessionRun, pushTicker])
 }

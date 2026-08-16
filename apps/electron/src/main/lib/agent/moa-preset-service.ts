@@ -53,6 +53,79 @@ function buildSeed(ksccChannelId: string): MoAPresetsFile {
 }
 
 /**
+ * 旧版内置模板的精确席位签名。只命中未改过席位的 default / cheap，
+ * 只为 Kscc 更新内置班底（新增模型、快速省并发）时升级；自定义班底绝不覆盖。
+ */
+interface BuiltinSeatSignature {
+  name: string
+  references: ReadonlyArray<{ name: string; modelId: string }>
+  aggregatorModelId: string
+}
+
+const LEGACY_BUILTIN_SEAT_SIGNATURES: Record<'default' | 'cheap', readonly BuiltinSeatSignature[]> = {
+  default: [{
+    name: '默认会诊',
+    references: [
+      { name: '架构师', modelId: 'glm-5.2' },
+      { name: '实战派', modelId: 'kimi-k2.5' },
+    ],
+    aggregatorModelId: 'glm-5.2',
+  }],
+  cheap: [
+    {
+      name: '省并发',
+      references: [
+        { name: '省并发·甲', modelId: 'glm-5.1' },
+        { name: '省并发·乙', modelId: 'mimo-v2.5' },
+      ],
+      aggregatorModelId: 'glm-5.2',
+    },
+    {
+      name: '省并发',
+      references: [
+        { name: '省并发·甲', modelId: 'glm-5.1' },
+        { name: '省并发·乙', modelId: 'kimi-k2.5' },
+      ],
+      aggregatorModelId: 'mimo-v2.5',
+    },
+  ],
+}
+
+function hasExactSeatSignature(
+  preset: MoAPreset,
+  signature: BuiltinSeatSignature,
+): boolean {
+  return (
+    preset.name === signature.name &&
+    preset.aggregatorModelId === signature.aggregatorModelId &&
+    preset.references.length === signature.references.length &&
+    preset.references.every(
+      (seat, index) =>
+        seat.name === signature.references[index]?.name &&
+        seat.modelId === signature.references[index]?.modelId &&
+        seat.systemPrompt == null,
+    )
+  )
+}
+
+/** 只升级保留旧内置席位的 kscc 预置；配置过的预置原样返回。 */
+function migrateLegacyBuiltinSeats(presets: MoAPreset[], ksccChannelId: string): MoAPreset[] {
+  return presets.map((preset) => {
+    if (preset.channelId !== ksccChannelId || (preset.id !== 'default' && preset.id !== 'cheap')) {
+      return preset
+    }
+    const signatures = LEGACY_BUILTIN_SEAT_SIGNATURES[preset.id]
+    const nextTemplate = MOA_DEFAULT_PRESETS.find((item) => item.id === preset.id)
+    if (!nextTemplate || !signatures.some((signature) => hasExactSeatSignature(preset, signature))) return preset
+    return {
+      ...preset,
+      references: nextTemplate.references.map((seat) => ({ ...seat })),
+      aggregatorModelId: nextTemplate.aggregatorModelId,
+    }
+  })
+}
+
+/**
  * 读取预置列表；首次访问（文件不存在）就地 seed 默认预置并落盘。
  *
  * 返回的预置列表保留文件里的原始顺序，便于 UI 稳定展示。
@@ -110,14 +183,20 @@ export function listMoaPresets(): MoAPreset[] {
     needsWrite = true
   }
 
+  // K2.6 / MiMo Pro 入库后的内置班底升级：仅改精确匹配旧模板的 kscc 预置。
+  const upgraded = migrateLegacyBuiltinSeats(valid, ksccChannelId)
+  if (upgraded.some((preset, index) => preset !== valid[index])) {
+    needsWrite = true
+  }
+
   if (needsWrite) {
     try {
-      writeJsonAtomic(filePath, { version: 2, presets: stripEphemeral(valid) })
+      writeJsonAtomic(filePath, { version: 2, presets: stripEphemeral(upgraded) })
     } catch (err) {
       console.warn('[moa-preset-service] v2 迁移写回失败：', err)
     }
   }
-  return valid
+  return upgraded
 }
 
 /**

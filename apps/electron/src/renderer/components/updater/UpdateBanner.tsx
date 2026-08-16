@@ -1,7 +1,7 @@
 /**
- * 更新提示横幅
+ * 顶栏更新通知
  *
- * 底部浮岛玻璃条，跟随主题 --glass-rgb / --scene-a-rgb。
+ * 复用窗口标题栏中央通知槽；没有更新状态或被关闭时恢复普通 StatusTicker。
  * 发现新版本 → 下载中 → 已就绪（安装） / 错误（重试）
  */
 import { useAtomValue, useSetAtom } from 'jotai'
@@ -15,7 +15,11 @@ import {
 import { useState, useEffect } from 'react'
 import { AppTooltip } from '@tagent/ui'
 
-export function UpdateBanner(): JSX.Element | null {
+interface UpdateBannerProps {
+  fallback?: JSX.Element
+}
+
+export function UpdateBanner({ fallback }: UpdateBannerProps): JSX.Element | null {
   const state = useAtomValue(updateStateAtom)
   const checkForUpdates = useSetAtom(checkForUpdatesAtom)
   const installWhenIdle = useSetAtom(installWhenIdleAtom)
@@ -29,20 +33,34 @@ export function UpdateBanner(): JSX.Element | null {
     }
   }, [state.status])
 
-  if (state.status === 'idle' || state.status === 'not-available' || dismissed) return null
+  if (state.status === 'idle' || state.status === 'not-available' || dismissed) {
+    return fallback ?? null
+  }
 
   const handleDismiss = (): void => setDismissed(true)
 
   if (state.status === 'downloading') {
     const pct = Math.round(state.progress.percent)
     return (
-      <div className="upd-banner" data-variant="downloading">
+      <div
+        className="upd-banner titlebar-no-drag"
+        data-variant="downloading"
+        role="status"
+        aria-live="polite"
+      >
         <span className="upd-banner-dot" data-state="spin">
           <Loader2 size={13} className="upd-spin" />
         </span>
         <span className="upd-banner-label">正在下载 v{state.version}</span>
         <span className="upd-banner-pct">{pct}%</span>
-        <div className="upd-banner-track">
+        <div
+          className="upd-banner-track"
+          role="progressbar"
+          aria-label={`正在下载 v${state.version}`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={pct}
+        >
           <div className="upd-banner-fill" style={{ width: `${pct}%` }} />
         </div>
       </div>
@@ -51,7 +69,12 @@ export function UpdateBanner(): JSX.Element | null {
 
   if (state.status === 'downloaded') {
     return (
-      <div className="upd-banner" data-variant="ready">
+      <div
+        className="upd-banner titlebar-no-drag"
+        data-variant="ready"
+        role="status"
+        aria-live="polite"
+      >
         <span className="upd-banner-dot" data-state="done">
           <CheckCircle2 size={13} />
         </span>
@@ -83,7 +106,12 @@ export function UpdateBanner(): JSX.Element | null {
 
   if (state.status === 'available') {
     return (
-      <div className="upd-banner" data-variant="info">
+      <div
+        className="upd-banner titlebar-no-drag"
+        data-variant="info"
+        role="status"
+        aria-live="polite"
+      >
         <span className="upd-banner-dot" data-state="info">
           <Download size={13} />
         </span>
@@ -102,7 +130,12 @@ export function UpdateBanner(): JSX.Element | null {
 
   if (state.status === 'error') {
     return (
-      <div className="upd-banner" data-variant="error">
+      <div
+        className="upd-banner titlebar-no-drag"
+        data-variant="error"
+        role="status"
+        aria-live="polite"
+      >
         <span className="upd-banner-dot" data-state="error">
           <AlertCircle size={13} />
         </span>
@@ -130,5 +163,5 @@ export function UpdateBanner(): JSX.Element | null {
     )
   }
 
-  return null
+  return fallback ?? null
 }

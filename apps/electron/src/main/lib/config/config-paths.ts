@@ -175,6 +175,11 @@ export function getAgentCrewPrefsPath(): string {
   return join(getConfigDir(), 'agent-crew-prefs.json')
 }
 
+/** 系统提示词配置：~/.tagent[-dev]/system-prompts.json */
+export function getSystemPromptsPath(): string {
+  return join(getConfigDir(), 'system-prompts.json')
+}
+
 /** 协作室数据目录：~/.tagent[-dev]/collaboration/（不存在则建） */
 export function getCollaborationDir(): string {
   const dir = join(getConfigDir(), 'collaboration')

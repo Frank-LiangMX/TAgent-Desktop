@@ -14,6 +14,7 @@ import {
   Sun,
   UserRound,
   Users,
+  ScrollText,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import {
@@ -41,6 +42,14 @@ import {
   dynamicBgEnabledAtom,
 } from '../../atoms/dynamic-bg'
 import {
+  fontSizeLevelAtom,
+  setFontSizeLevel,
+  FONT_SIZE_LABELS,
+  FONT_SIZE_PX,
+  STANDARD_BODY_LINE_HEIGHT,
+  type FontSizeLevel,
+} from '../../atoms/font-size'
+import {
   userProfileAtom,
   saveUserProfileAtom,
 } from '../../atoms/user-profile'
@@ -54,6 +63,7 @@ import { MoaSettings } from './MoaSettings'
 import { CliWorkersSettingsSection } from './CliWorkersSettingsSection'
 import { NoProgressGuardSettings } from './NoProgressGuardSettings'
 import { AgentCrewSettings } from './AgentCrewSettings'
+import { PromptSettings } from './PromptSettings'
 import { UpdateChecker } from './UpdateChecker'
 import { ComposerRunTimer } from '../chat/ComposerRunTimer'
 import appiconLight from '../../assets/tagent-appicon-light.png'
@@ -76,6 +86,7 @@ export type SettingsTab =
   | 'general'
   | 'appearance'
   | 'channels'
+  | 'prompts'
   | 'agent-roundtable'
   | 'agent-cli'
   | 'agent-crew'
@@ -92,6 +103,7 @@ export function normalizeSettingsTab(tab: SettingsTab | string | undefined): Set
     'general',
     'appearance',
     'channels',
+    'prompts',
     'agent-roundtable',
     'agent-cli',
     'agent-crew',
@@ -135,6 +147,13 @@ const ALL_TABS: TabItem[] = [
     label: '渠道',
     description: 'AI 供应商、密钥与连通',
     icon: <Cable size={14} strokeWidth={1.75} />,
+    group: 'core',
+  },
+  {
+    id: 'prompts',
+    label: '提示词',
+    description: 'Chat 系统提示与模板',
+    icon: <ScrollText size={14} strokeWidth={1.75} />,
     group: 'core',
   },
   {
@@ -370,6 +389,8 @@ function renderTabContent(tab: SettingsTab): JSX.Element {
       return <AppearanceSettings />
     case 'channels':
       return <ChannelsSettings />
+    case 'prompts':
+      return <PromptSettings />
     case 'agent-roundtable':
       return <MoaSettings />
     case 'agent-cli':
@@ -486,6 +507,7 @@ export function SettingsDialog({
                     key={`${activeTab}-${paneKey}`}
                     className={`settings-shell-content settings-shell-pane ${
                       activeTab === 'channels' ||
+                      activeTab === 'prompts' ||
                       activeTab === 'agent-roundtable' ||
                       activeTab === 'agent-cli'
                         ? 'settings-shell-content--wide'
@@ -867,12 +889,92 @@ function LoaderPreview({ disabled }: { disabled: boolean }): JSX.Element {
   )
 }
 
+/** 正文字号 5 档滑轨：连续拖动、离散吸附；刻度与读数让当前状态一眼可见。 */
+function getFontSizeSliderPosition(level: FontSizeLevel): string {
+  // range 拇指的中心在两端各内缩 8.5px；标签、刻度和进度条共用此坐标。
+  const offset = (2 - level) * 4.25
+  if (offset === 0) return `${level * 25}%`
+  return `calc(${level * 25}% ${offset > 0 ? '+' : '-'} ${Math.abs(offset)}px)`
+}
+
+function FontSizeSlider({
+  level,
+  onChange,
+}: {
+  level: FontSizeLevel
+  onChange: (v: FontSizeLevel) => void
+}): JSX.Element {
+  const currentPosition = getFontSizeSliderPosition(level)
+
+  return (
+    <div
+      className="tagent-font-size-slider"
+      style={{ '--font-size-progress': currentPosition } as CSSProperties}
+    >
+      <input
+        type="range"
+        min={0}
+        max={4}
+        step={1}
+        value={level}
+        onChange={(e) => onChange(Number(e.target.value) as FontSizeLevel)}
+        aria-label="正文字号"
+        aria-valuetext={`${FONT_SIZE_LABELS[level]}，${FONT_SIZE_PX[level]} px`}
+        className="tagent-font-size-range"
+      />
+      <div className="tagent-font-size-markers" aria-hidden="true">
+        {([0, 1, 2, 3, 4] as FontSizeLevel[]).map((lv) => (
+          <span key={lv} className={cn(lv <= level && 'is-filled', lv === level && 'is-current')} />
+        ))}
+      </div>
+      <div className="tagent-font-size-ticks" aria-hidden="true">
+        {([0, 1, 2, 3, 4] as FontSizeLevel[]).map((lv) => (
+          <span
+            key={lv}
+            className={cn(lv === level && 'is-active')}
+            style={{ '--font-size-tick-position': getFontSizeSliderPosition(lv) } as CSSProperties}
+          >
+            {FONT_SIZE_LABELS[lv]}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 字号实时预览固定在独立视窗内：字体变大时只重排视窗内的正文，
+ * 不把 SettingsCard 顶开。
+ */
+function FontSizePreview(): JSX.Element {
+  return (
+    <section className="tagent-font-size-preview" aria-label="字号与行高预览">
+      <header className="tagent-font-size-preview__label">
+        <span>正文预览</span>
+        <span>标准行高 · {STANDARD_BODY_LINE_HEIGHT}</span>
+      </header>
+      <div
+        className="tagent-font-size-preview__viewport scrollbar-thin"
+        tabIndex={0}
+        aria-label="可滚动的正文预览内容"
+      >
+        <div className="tagent-font-size-preview__copy text-[length:var(--md-preview-font-size,14px)]">
+          <p>这是一段消息正文，阅读时保持舒适的节奏。</p>
+          <p><strong>重点信息</strong>、<code>变量名</code> 与普通文字混排，帮助你确认阅读效果。</p>
+          <p>每行保留稳定的留白，便于连续阅读和快速扫读。</p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function AppearanceSettings(): JSX.Element {
   const themeMode = useAtomValue(themeModeAtom)
   const themeStyle = useAtomValue(themeStyleAtom)
   const resolvedDark = useAtomValue(resolvedDarkAtom)
   const dynamicBg = useAtomValue(dynamicBgEnabledAtom)
   const setDynamicBg = useSetAtom(dynamicBgEnabledAtom)
+  const fontSizeLevel = useAtomValue(fontSizeLevelAtom)
   const loaderEnabled = useAtomValue(loaderAnimationEnabledAtom)
   const setLoaderEnabled = useSetAtom(loaderAnimationEnabledAtom)
   /** 运行胶囊图鉴锚点：固定起点，预览里实时走字（关开关只暂停动画，不卸 DOM） */
@@ -1011,6 +1113,24 @@ function AppearanceSettings(): JSX.Element {
             </div>
           </div>
           ) : null}
+          <div className="tagent-font-size-row">
+            <div className="tagent-font-size-row__control">
+              <div className="tagent-font-size-row__heading">
+                <div>
+                  <span className="settings-field-label">正文字号</span>
+                  <span className="tagent-font-size-row__description">仅调整消息正文，不影响界面控件</span>
+                </div>
+                <output className="tagent-font-size-row__value">
+                  {FONT_SIZE_LABELS[fontSizeLevel]} · {FONT_SIZE_PX[fontSizeLevel]} px
+                </output>
+              </div>
+              <FontSizeSlider
+                level={fontSizeLevel}
+                onChange={(v) => setFontSizeLevel(v)}
+              />
+            </div>
+            <FontSizePreview />
+          </div>
           <div className="settings-row">
             <div className="settings-row-main min-w-0 flex-1">
               <span className="settings-field-label">动态背景</span>

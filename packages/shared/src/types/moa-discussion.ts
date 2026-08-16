@@ -49,6 +49,10 @@ export interface MoADiscussionPanel {
   phase: MoADiscussionPhase
   roundLimit: number
   currentRound: number
+  /** 当前正在请求模型回复的席位；没有在途请求时为空。 */
+  activeSpeakerId?: string
+  /** 当前席位开始请求的时间，用于渲染层显示明确的进行中反馈。 */
+  activeSpeakerStartedAt?: number
   /** 总结人收口后的共识方案文本；finalize 时写入 */
   summary?: string
   /**
@@ -166,7 +170,28 @@ export function appendDiscussionEntry(
     turn: input.turn ?? panel.currentRound,
     createdAt: input.createdAt ?? Date.now(),
   }
-  return { ...panel, entries: [...panel.entries, entry] }
+  return {
+    ...panel,
+    entries: [...panel.entries, entry],
+    activeSpeakerId: undefined,
+    activeSpeakerStartedAt: undefined,
+  }
+}
+
+/**
+ * 标记当前正在发言的席位。编排层必须在调用模型前更新并 emit，避免讨论过程成为黑盒。
+ * 传空可显式清除进行中状态；通常 appendDiscussionEntry 会在一条发言完成后自动清除。
+ */
+export function setMoADiscussionActiveSpeaker(
+  panel: MoADiscussionPanel,
+  speakerId?: string,
+  startedAt = Date.now(),
+): MoADiscussionPanel {
+  return {
+    ...panel,
+    activeSpeakerId: speakerId,
+    activeSpeakerStartedAt: speakerId ? startedAt : undefined,
+  }
 }
 
 /**
@@ -188,12 +213,24 @@ export function setMoADiscussionPhase(
   panel: MoADiscussionPanel,
   phase: MoADiscussionPhase,
 ): MoADiscussionPanel {
-  return { ...panel, phase }
+  return {
+    ...panel,
+    phase,
+    ...(phase === 'error' || phase === 'cancelled'
+      ? { activeSpeakerId: undefined, activeSpeakerStartedAt: undefined }
+      : {}),
+  }
 }
 
 /** 总结人收口：phase='done' + 写入 summary。已终态的 panel 仍允许覆盖 summary。 */
 export function finalizeMoADiscussion(panel: MoADiscussionPanel, summary: string): MoADiscussionPanel {
-  return { ...panel, phase: 'done', summary }
+  return {
+    ...panel,
+    phase: 'done',
+    summary,
+    activeSpeakerId: undefined,
+    activeSpeakerStartedAt: undefined,
+  }
 }
 
 /**
@@ -227,7 +264,12 @@ export function clearDiscussionRunningSummary(panel: MoADiscussionPanel): MoADis
 
 /** 用户喊停 / 编排异常退出：phase='cancelled'。保留 entries 便于回放。 */
 export function markMoADiscussionCancelled(panel: MoADiscussionPanel): MoADiscussionPanel {
-  return { ...panel, phase: 'cancelled' }
+  return {
+    ...panel,
+    phase: 'cancelled',
+    activeSpeakerId: undefined,
+    activeSpeakerStartedAt: undefined,
+  }
 }
 
 /**

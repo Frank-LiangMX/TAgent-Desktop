@@ -428,7 +428,7 @@ export const MessageResponse = React.memo(
         className={cn(
           // 阅读节奏对齐 Codex：略大正文、更疏段/列表、标题层级拉开（非海报字号）
           'prose dark:prose-invert max-w-none text-[length:var(--md-preview-font-size,15px)]',
-          'prose-p:my-3 prose-p:leading-[1.7] prose-li:leading-[1.7] prose-pre:my-0 prose-hr:my-5',
+          'prose-p:my-3 prose-p:leading-[var(--md-preview-line-height,1.7)] prose-li:leading-[var(--md-preview-line-height,1.7)] prose-pre:my-0 prose-hr:my-5',
           'prose-ul:my-3.5 prose-ol:my-3.5 prose-li:my-2',
           'prose-headings:mt-7 prose-headings:mb-3 prose-headings:font-semibold prose-headings:tracking-tight prose-headings:text-foreground',
           'prose-h1:text-[19px] prose-h1:leading-snug',
@@ -471,7 +471,7 @@ interface UserMessageContentProps extends HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode
   /** 内容变化时重新测量折叠（ReactNode 时请传文本） */
   contentKey?: string
-  /** 嵌在图文组合气泡内时不再套一层独立气泡壳 */
+  /** 已在外层 agent-user-bubble 内：不再套第二层气泡壳 */
   embedded?: boolean
 }
 
@@ -507,6 +507,7 @@ export const UserMessageContent = React.memo(
           embedded
             ? 'agent-user-bubble__embedded relative max-w-full'
             : 'agent-user-bubble relative inline-block max-w-full px-3.5 py-2.5',
+          // is-collapsed：给底部「展开」预留空间（勿用 pb-6，会被业务侧 padding 覆盖）
           shouldCollapse && !isExpanded && 'is-collapsed',
           shouldCollapse && isExpanded && 'is-expanded',
           className
@@ -602,7 +603,11 @@ export function MessageAttachments({
 
   return (
     <div
-      className={cn('flex flex-col gap-2', variant === 'default' && 'mb-2', className)}
+      className={cn(
+        'flex flex-col gap-2',
+        variant === 'default' && 'mb-2',
+        className,
+      )}
       {...props}
     >
       {imageAttachments.length > 0 && (
@@ -673,7 +678,7 @@ function MessageAttachmentImage({
       <div
         className={cn(
           'rounded-glass-popover bg-muted/30 animate-pulse shrink-0',
-          isSingle ? 'w-[280px] h-[200px]' : 'size-[280px]',
+          isSingle ? 'w-[280px] h-[200px]' : 'size-[280px]'
         )}
       />
     )
@@ -685,8 +690,10 @@ function MessageAttachmentImage({
       alt={attachment.filename}
       className="rounded-glass-popover object-contain cursor-pointer"
       style={{
-        // 对齐 main：inline style 绕开 Tailwind + inline-block 祖先链对 replaced
-        // element 的干扰。上限 360×200，见 FIX-attachment-bubble-oversize-brief。
+        // inline style 绕开 Tailwind 任意值命中 + inline-block 祖先链对 replaced
+        // element intrinsic sizing 的干扰，确保 max-width/max-height 一定生效。
+        // 上限 360×200：紧凑型单图卡片（对齐 docs/dev/ux/FIX-attachment-bubble-oversize-brief.md
+        // 验收 6 的 ≥60% 高度缩减目标——760px 异常态 → 200px 收敛）。
         maxWidth: '360px',
         maxHeight: '200px',
         width: 'auto',
@@ -770,8 +777,8 @@ function MessageAttachmentFile({
   if (!onOpenAttachment) {
     return (
       <div className={chipClass}>
-        <Paperclip className="size-4" />
-        <span>{displayName}</span>
+        <Paperclip className={variant === 'inBubble' ? 'size-3.5 shrink-0' : 'size-4'} />
+        <span className="truncate">{displayName}</span>
       </div>
     )
   }
@@ -783,8 +790,8 @@ function MessageAttachmentFile({
       title={attachment.filename}
       className={chipClass}
     >
-      <Paperclip className="size-4" />
-      <span>{displayName}</span>
+      <Paperclip className={variant === 'inBubble' ? 'size-3.5 shrink-0' : 'size-4'} />
+      <span className="truncate">{displayName}</span>
     </button>
   )
 }

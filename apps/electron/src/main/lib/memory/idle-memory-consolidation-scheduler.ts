@@ -1,8 +1,8 @@
 /**
  * Idle memory consolidation scheduler (ADR-0006)
  *
- * Phase 2.1 从 TAgent_General 移植。agent-service（前台活跃检测）Desktop 未移植，
- * createService 中保守假设"前台活跃"（见 TODO），避免空闲整理打扰用户。
+ * Phase 2.1 从 TAgent_General 移植。Desktop 通过主进程注入「是否有模型轮在运行」
+ * 判定前台活跃；窗口处于前台但没有运行任务时，允许静默整理积压记忆。
  *
  * Replaces the old per-turn LLM calls with a single idle-triggered batch scan.
  * Uses recurring setTimeout (not setInterval): the next tick is scheduled only
@@ -20,10 +20,17 @@
  * Rollout flag:
  *   TAGENT_IDLE_MEMORY_CONSOLIDATION='1' → force on
  *   TAGENT_IDLE_MEMORY_CONSOLIDATION='0' → force off
- *   (unset) → ON when !app.isPackaged, OFF when packaged
+ *   (unset) → ON（开发与打包版一致）
  */
 
 export const TICK_MS = 60_000
+
+/** 主进程在 SessionService 就绪后注入；默认无活跃任务，避免永久阻塞整理。 */
+let foregroundActivityProbe: () => boolean = () => false
+
+export function setMemoryForegroundActivityProbe(probe: () => boolean): void {
+  foregroundActivityProbe = probe
+}
 
 // ---------------------------------------------------------------------------
 // Minimal wire-format — the scheduler only needs runIfEligible from the
@@ -126,11 +133,7 @@ const defaultScheduler = new IdleConsolidationScheduler({
     const { buildDefaultDeps, ConsolidationService } =
       await import('./memory-consolidation-service')
     const deps = await buildDefaultDeps()
-    deps.isForegroundActive = () => {
-      // TODO(2.2)：Desktop 未移植 agent-service 的 hasActiveAgentSessions。
-      // 保守假设前台活跃，空闲整理由上层显式触发（如手动整理按钮），避免打扰。
-      return true
-    }
+    deps.isForegroundActive = () => foregroundActivityProbe()
     return new ConsolidationService(deps)
   },
   setTimeout: (cb, ms) => globalThis.setTimeout(cb, ms) as unknown as number,
@@ -159,5 +162,6 @@ export function resolveIdleConsolidationFlag(isPackaged: boolean): boolean {
   const env = process.env.TAGENT_IDLE_MEMORY_CONSOLIDATION
   if (env === '1') return true
   if (env === '0') return false
-  return !isPackaged
+  void isPackaged
+  return true
 }

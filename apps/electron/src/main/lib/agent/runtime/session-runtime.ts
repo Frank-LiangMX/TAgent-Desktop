@@ -64,6 +64,11 @@ export class SessionRuntime {
   private userClosing = false
   /** 用户主动 stop（interrupt）→ 本轮退出不恢复、不报错；下一轮 sendMessage 清除 */
   private userStopping = false
+  /**
+   * 正在进行的软中断。renderer 会先把 UI 切到 stopped，再等待 STOP_AGENT IPC；
+   * 用户若立刻发送下一条，必须先等这次中断完成，不能直接撞 `turnInFlight`。
+   */
+  private interruptInFlight: Promise<void> | undefined
   /** 已执行的自动恢复次数（≤ MAX_AUTO_RECOVERY） */
   private recoveryAttempts = 0
   /** 从流式消息捕获的最新 SDK session id（恢复时作为 resumeSessionId） */
@@ -175,6 +180,11 @@ export class SessionRuntime {
     queryOptions: Parameters<AgentProviderAdapter['query']>[0],
     userMessage?: SDKUserMessageInput
   ): Promise<void> {
+    // UI 的停止态早于主进程 query.interrupt() 完成；快速发送时在此串行化，避免误报
+    // 「上一轮仍在跑」。
+    const pendingInterrupt = this.interruptInFlight
+    if (pendingInterrupt) await pendingInterrupt
+
     if (this.state === 'closed') {
       throw new Error(`[session ${this.sessionId}] 会话已关闭`)
     }
@@ -519,9 +529,20 @@ export class SessionRuntime {
    * - kscc：SDK interrupt 保进程；Pi：agent.abort 软停，Agent 实例可保留在 adapter Map
    */
   async interrupt(): Promise<void> {
+    if (this.interruptInFlight) {
+      await this.interruptInFlight
+      return
+    }
     this.userStopping = true
-    await this.adapter.interruptQuery?.(this.sessionId)
-    this.turnInFlight = false
+    const operation = Promise.resolve()
+      .then(() => this.adapter.interruptQuery?.(this.sessionId))
+      .then(() => undefined)
+      .finally(() => {
+        this.turnInFlight = false
+        if (this.interruptInFlight === operation) this.interruptInFlight = undefined
+      })
+    this.interruptInFlight = operation
+    await operation
   }
 
   /**
@@ -560,6 +581,7 @@ export class SessionRuntime {
     // 用户主动关闭：永久关闭，不触发自动恢复、不报错
     this.userClosing = true
     this.adapter.abort(this.sessionId)
+    this.interruptInFlight = undefined
     this.loopRunning = false
     this.turnInFlight = false
     this.state = 'closed'

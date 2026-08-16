@@ -340,7 +340,17 @@
   width: 100%;
   min-width: 0;
 }
-.workspace-drag-handle,
+/* 工作区组头：默认 cursor: pointer(像可点击);拖拽中切到 grabbing;
+   按下未动仍是 pointer(不动就不触发 drag,符合"点击感觉"),只有真拖动才进 drag 模式。
+   浏览器在 HTML5 drag 期间对 draggable 元素的 cursor 控制不稳定(Electron/Chromium),
+   TSX 端会用 body.style.cursor 强制 grabbing;此处用 !important 兜底确保拖拽中本体也显 grabbing。 */
+.workspace-group .group-head {
+  cursor: pointer;
+}
+.workspace-dragging .group-head,
+.workspace-dragging * {
+  cursor: grabbing !important;
+}
 .workspace-new-session,
 .workspace-menu-button {
   position: absolute;
@@ -364,13 +374,6 @@
     background 0.16s ease,
     transform 0.16s ease;
 }
-.workspace-drag-handle {
-  left: 4px;
-  cursor: grab;
-}
-.workspace-drag-handle:active {
-  cursor: grabbing;
-}
 .workspace-new-session {
   right: 26px;
   cursor: pointer;
@@ -379,25 +382,16 @@
   right: 4px;
   cursor: pointer;
 }
-.workspace-group-head:hover .workspace-drag-handle,
 .workspace-group-head:hover .workspace-new-session,
 .workspace-group-head:hover .workspace-menu-button,
 .workspace-group-head.is-dots-open .workspace-new-session,
 .workspace-group-head.is-dots-open .workspace-menu-button,
 .workspace-group-head:has(
-    .workspace-drag-handle:focus-visible,
-    .workspace-new-session:focus-visible,
-    .workspace-menu-button:focus-visible
-  )
-  .workspace-drag-handle,
-.workspace-group-head:has(
-    .workspace-drag-handle:focus-visible,
     .workspace-new-session:focus-visible,
     .workspace-menu-button:focus-visible
   )
   .workspace-new-session,
 .workspace-group-head:has(
-    .workspace-drag-handle:focus-visible,
     .workspace-new-session:focus-visible,
     .workspace-menu-button:focus-visible
   )
@@ -413,35 +407,20 @@
   opacity: 0.78;
   pointer-events: auto;
 }
-.workspace-drag-handle:hover,
 .workspace-new-session:hover,
 .workspace-menu-button:hover,
 .workspace-menu-button[data-state='open'] {
   color: hsl(var(--foreground) / 0.86);
   background: hsl(var(--foreground) / 0.06);
 }
-.workspace-drag-handle:hover,
-.workspace-new-session:hover {
-  transform: translateY(-50%) scale(1.04);
-}
 .workspace-new-session:hover {
   color: hsl(var(--primary));
   background: hsl(var(--primary) / 0.1);
 }
-/* hover 出拖柄/加号/菜单时：只让位 caret 与数量角标；文件夹图标保持可见（分区身份） */
-.workspace-group-head:hover > .group-head .caret,
+/* hover 出加号/菜单时：让位数量角标；caret 已删除，无需让位 */
 .workspace-group-head:hover > .group-head .ws-badge,
-.workspace-group-head.is-dots-open > .group-head .caret,
 .workspace-group-head.is-dots-open > .group-head .ws-badge,
 .workspace-group-head:has(
-    .workspace-drag-handle:focus-visible,
-    .workspace-new-session:focus-visible,
-    .workspace-menu-button:focus-visible
-  )
-  > .group-head
-  .caret,
-.workspace-group-head:has(
-    .workspace-drag-handle:focus-visible,
     .workspace-new-session:focus-visible,
     .workspace-menu-button:focus-visible
   )
@@ -489,7 +468,9 @@
   width: 100%;
   box-sizing: border-box;
   min-height: 32px;
-  padding: 5px 10px 5px 8px;
+  /* 左边距对齐会话行 .stat-dot 左边到视口(~15px):
+     .group(padding-left:2) + .group-head(padding-left:13) = 15px */
+  padding: 5px 10px 5px 13px;
   border: 0;
   background: transparent;
   cursor: pointer;
@@ -581,6 +562,11 @@
   border-radius: 5px;
   transition: opacity 0.16s ease;
 }
+/* 会话时间右侧需给 hover 展开的三点菜单留出 8px 视觉尾距。
+   工作区计数沿用这条尾线，避免同一列表的右侧信息上下错位。 */
+.workspace-group-head > .group-head .ws-badge {
+  margin-right: 8px;
+}
 .group.has-stream .ws-badge {
   color: hsl(var(--primary));
   background: hsl(var(--primary) / 0.1);
@@ -607,7 +593,7 @@
   opacity: 0.85;
 }
 .ws-sub .live i:first-child {
-  animation: status-pulse 1.3s ease-in-out infinite;
+  animation: status-pulse 2.6s ease-in-out infinite;
 }
 .ws-sub .err {
   color: hsl(var(--destructive) / 0.9);
@@ -702,25 +688,25 @@
 .light .row:hover {
   box-shadow: 0 4px 12px -6px rgb(48 59 76 / 0.16), inset 0 1px 0 rgb(255 255 255 / 0.4);
 }
-/* 已打开：与 open-chip 同色玻璃底，去掉灰阶竖条 */
+/* 已打开：加深玻璃底 + 轻 primary 色，去掉灰阶竖条 */
 .row.is-open {
-  background: rgb(var(--glass-rgb) / 0.34);
-  border-color: rgb(var(--glass-rgb) / 0.28);
+  background: color-mix(in srgb, hsl(var(--primary)) 14%, rgb(var(--glass-rgb) / 0.62));
+  border-color: color-mix(in srgb, hsl(var(--primary)) 22%, rgb(var(--glass-rgb) / 0.5));
   box-shadow: none;
 }
 .light .row.is-open {
-  background: rgb(255 255 255 / 0.72);
-  border-color: rgb(255 255 255 / 0.78);
+  background: color-mix(in srgb, hsl(var(--primary)) 10%, color-mix(in srgb, hsl(var(--foreground)) 8%, #fff));
+  border-color: color-mix(in srgb, hsl(var(--primary)) 16%, transparent);
 }
 .row.is-open .t {
   color: hsl(var(--foreground) / 0.92);
 }
 .row.is-open:hover {
-  background: rgb(var(--glass-rgb) / 0.48);
+  background: color-mix(in srgb, hsl(var(--primary)) 18%, rgb(var(--glass-rgb) / 0.72));
   box-shadow: none;
 }
 .light .row.is-open:hover {
-  background: rgb(255 255 255 / 0.88);
+  background: color-mix(in srgb, hsl(var(--primary)) 13%, color-mix(in srgb, hsl(var(--foreground)) 9%, #fff));
 }
 
 .row .body {
@@ -736,9 +722,9 @@
 .row .title .t {
   flex: 1;
   min-width: 0;
-  /* 为三点菜单按钮预留 hover 展开空间（24px 宽 + margin 净增 13px = 37px），
+  /* 为三点菜单按钮预留 hover 展开空间（24px 宽 + title gap 6px = 30px），
    * 让标题平时就保持 hover 时的截断状态，hover 不跳动 */
-  max-width: calc(100% - 37px);
+  max-width: calc(100% - 30px);
   font-size: 12.5px;
   line-height: 18px;
   font-weight: 500;
@@ -753,6 +739,8 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
+  /* 第二行从标题正文起点开始：跨过左侧状态圆点（8px）与 title gap（6px）。 */
+  padding-left: 15px;
 }
 .row .meta .m {
   font-size: 10.5px;
@@ -761,10 +749,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.row .meta .m.time {
+.row .m.time {
   margin-left: auto;
   flex: none;
+  font-size: 10.5px;
+  color: hsl(var(--muted-foreground));
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding-left: 8px;
 }
 .row .meta .turns {
   flex: none;
@@ -779,16 +771,18 @@
   height: 8px;
   margin-left: 1px;
   border-radius: 999px;
+  /* 放 title 行内，由 .title 的 align-items:center 与标题垂直居中；
+     无需再 translateY 微调（旧两行几何中心偏下的场景已移除） */
   --status-pulse-rgb: 59 130 246;
 }
 .stat-dot.stream {
   background: rgb(59 130 246);
-  animation: status-pulse 1.3s ease-in-out infinite;
+  animation: status-pulse 2.6s ease-in-out infinite;
 }
 .stat-dot.pending {
   background: rgb(234 179 8);
   --status-pulse-rgb: 234 179 8;
-  animation: status-pulse 1.3s ease-in-out infinite;
+  animation: status-pulse 2.6s ease-in-out infinite;
 }
 .stat-dot.done {
   background: hsl(152 42% 42% / 0.92);
@@ -815,7 +809,7 @@
   }
 }
 
-/* 三点菜单:hover 行时从 0 宽展开让位,标题区 flex:1 自然收缩 */
+/* 三点菜单：放 title 行、居中于标题行垂直中线；hover 从 0 宽展开让位，标题区 flex:1 自然收缩 */
 .dots {
   flex: none;
   width: 0;
@@ -831,15 +825,13 @@
   cursor: pointer;
   transform: scale(0.7);
   transform-origin: center;
-  margin-left: -9px; /* 抵消 row gap,空载不留死区 */
   transition: width 0.26s cubic-bezier(0.34, 1.56, 0.64, 1),
-    margin-left 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.18s ease,
-    transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.16s, color 0.16s;
+    opacity 0.18s ease, transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background 0.16s, color 0.16s;
 }
 .row:hover .dots,
 .row.is-dots-open .dots {
   width: 24px;
-  margin-left: 4px;
   opacity: 1;
   transform: scale(1);
 }
