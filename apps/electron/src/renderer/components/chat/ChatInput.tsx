@@ -47,6 +47,8 @@ interface ChatInputProps {
   onPreviewAttachment?: (attachment: PendingAttachment) => void
   mentionRoles?: MentionRoleOption[]
   topBar?: React.ReactNode
+  /** 编辑器内 mention 芯片（含 roleId）变更上报：结构化目标用，空数组=无芯片 */
+  onMentionChange?: (memberIds: string[]) => void
   /** @ 选择面板开合变化：true=弹出（输入框上方浮层），false=关闭。供调用方让位重叠 UI */
   onMentionOpenChange?: (open: boolean) => void
 }
@@ -83,6 +85,22 @@ function editorToPlainText(root: HTMLElement): string {
   for (const c of Array.from(root.childNodes)) walk(c)
   // 折叠 contenteditable 产生的多余换行尾部
   return out.replace(/\u00a0/g, ' ')
+}
+
+/** 收集当前编辑器内所有 mention 芯片的稳定 id（按出现顺序） */
+function collectMentionIds(root: HTMLElement | null): string[] {
+  if (!root) return []
+  const ids: string[] = []
+  const walk = (node: Node): void => {
+    if (node.nodeType !== Node.ELEMENT_NODE) return
+    const el = node as HTMLElement
+    if (el.dataset.mention === '1' && el.dataset.roleId) {
+      ids.push(el.dataset.roleId)
+    }
+    for (const c of Array.from(el.childNodes)) walk(c)
+  }
+  walk(root)
+  return ids
 }
 
 function createMentionChip(
@@ -183,6 +201,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     onPreviewAttachment,
     mentionRoles,
     topBar,
+    onMentionChange,
     onMentionOpenChange,
   }, ref) {
     const editorRef = useRef<HTMLDivElement>(null)
@@ -383,7 +402,8 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       autoResize()
       syncEmpty()
       syncMentionFromCaret()
-    }, [autoResize, syncEmpty, syncMentionFromCaret])
+      onMentionChange?.(collectMentionIds(editorRef.current))
+    }, [autoResize, syncEmpty, syncMentionFromCaret, onMentionChange])
 
     // 方向键只在 keyDown 改 activeIndex；keyUp 再 sync 时勿把高亮打回 0（query 未变已处理）
     const handleKeyUp = useCallback(

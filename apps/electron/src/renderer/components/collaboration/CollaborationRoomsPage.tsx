@@ -166,6 +166,8 @@ export function CollaborationRoomsPage({
   const [addingMember, setAddingMember] = useState(false)
   const [showAddMemberDialog, setShowAddMemberDialog] = useState(false)
   const [textPrompt, setTextPrompt] = useState<TextPromptKind>(null)
+  /** composer 中选中的成员 mention 芯片 id（结构化路由用；无芯片时不传 → 文本兜底） */
+  const [composerMentionIds, setComposerMentionIds] = useState<string[]>([])
   const [mailbox, setMailbox] = useState<CollaborationMailboxEnvelope[]>([])
   const [streamByRun, setStreamByRun] = useState<Record<string, string>>({})
   const inputRef = useRef<ChatInputHandle>(null)
@@ -299,13 +301,21 @@ export function CollaborationRoomsPage({
     const text = inputRef.current?.getText().trim() ?? ''
     if (!text) return
     try {
-      await window.electronAPI.appendCollaborationUserMessage({ roomId: room.id, content: text })
+      await window.electronAPI.appendCollaborationUserMessage({
+        roomId: room.id,
+        content: text,
+        mentions:
+          composerMentionIds.length > 0
+            ? composerMentionIds.map((id) => ({ kind: 'agent' as const, memberId: id }))
+            : undefined,
+      })
       inputRef.current?.clear()
+      setComposerMentionIds([])
       onRoomsChanged()
     } catch (err) {
       toast.error('发送失败', { description: err instanceof Error ? err.message : String(err) })
     }
-  }, [room, onRoomsChanged])
+  }, [room, composerMentionIds, onRoomsChanged])
 
   const handleCancelRun = useCallback(
     async (runId: string): Promise<void> => {
@@ -733,9 +743,10 @@ export function CollaborationRoomsPage({
               <ChatInput
                 ref={inputRef}
                 onSubmit={() => void send()}
-                placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@all 唤醒全部）"
-                mentionRoles={members.map((m) => ({ id: m.id, displayName: m.displayName }))}
-              />
+              placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@all 唤醒全部）"
+              mentionRoles={members.map((m) => ({ id: m.id, displayName: m.displayName }))}
+              onMentionChange={setComposerMentionIds}
+            />
             </div>
           )}
         </div>

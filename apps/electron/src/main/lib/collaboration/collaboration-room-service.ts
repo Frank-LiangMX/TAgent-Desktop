@@ -4,8 +4,8 @@
  * 在 repository 之上做：输入校验、ID 生成、默认值、状态转换、mention 解析、run 触发与调度。
  *
  * Stage 3 新增（在 S2 单成员闭环之上）：
- * - appendUserMessage 落盘用户消息前用 parseCollaborationMentions 把 @displayName 解析为
- *   targetMemberIds（@all → 全部成员；无 @ → []，由 trigger 路由协调者）。
+ * - appendUserMessage 落盘用户消息前用 resolveCollaborationMentions 把结构化 mentions /
+ *   @displayName 解析为 targetMemberIds（@all → 全部成员；无 @ → []，由 trigger 路由协调者）。
  * - triggerRunForMessage 按解析目标创建多个 run（各幂等键含 memberId+messageId），经
  *   RoomScheduler 启动：房间级 maxConcurrentRuns + 成员内串行 + FIFO 公平队列。
  * - 多目标并行扇出；一方 failed 不取消另一方；结果各自落盘 member 消息。
@@ -41,7 +41,8 @@ import {
   isCollaborationRoomStatus,
   nextCollaborationA2ADepth,
   nextCollaborationMentionAliases,
-  parseCollaborationMentions,
+  projectCollaborationTurnContext,
+  resolveCollaborationMentions,
   transitionCollaborationMailboxState,
   validateCreateCollaborationRoomInput,
   type CollaborationMailboxEnvelope,
@@ -117,9 +118,6 @@ const DEFAULT_MEMBER_CAPABILITIES: CollaborationMemberCapabilities = {
   supportsToolBridge: false,
   supportsStructuredEvents: false,
 }
-
-/** 上下文投影：近期对话条数上限（避免 token 膨胀） */
-const RECENT_CONTEXT_MESSAGES = 12
 
 function genId(prefix: string): string {
   return `${prefix}${randomUUID()}`
@@ -281,8 +279,9 @@ export class CollaborationRoomService {
   /**
    * 追加用户消息（Stage 3：落盘前解析 @mention → targetMemberIds，落盘后异步触发多成员 run）。
    *
-   * - 目标解析：显式 input.targetMemberIds 优先（程序化调用）；否则从文本 @displayName / @all
-   *   解析（parseCollaborationMentions）。无 @ 命中 → targetMemberIds=[]，由 trigger 路由协调者。
+   * - 目标解析：显式 input.targetMemberIds 优先（程序化调用）；否则 input.mentions 结构化优先，
+   *   未提供时从文本 @displayName / @all 兜底解析（resolveCollaborationMentions）。
+   *   无 @ 命中 → targetMemberIds=[]，由 trigger 路由协调者。
    * - 房间 active：落盘用户消息 → 异步 triggerRunForMessage（不阻塞 IPC，返回即结束）。
    * - 房间 paused/archived/completed：只落盘消息，不触发 run（pause 后不启动新 run）。
    *
@@ -299,10 +298,18 @@ export class CollaborationRoomService {
       throw new Error('消息内容不能为空')
     }
 
-    // 目标成员解析（S3）：显式 targetMemberIds 优先；否则从文本 @mention 解析（@all → 全部成员）
+    // 目标成员解析（S3.5-a）：显式 targetMemberIds 优先（程序化调用）；
+    // 否则走 resolveCollaborationMentions（结构化 mentions 优先，未提供时文本兜底）
     const explicitTargets =
       input.targetMemberIds && input.targetMemberIds.length > 0 ? input.targetMemberIds : null
-    const targetMemberIds = explicitTargets ?? parseCollaborationMentions(text, loadMembers(input.roomId))
+    const targetMemberIds =
+      explicitTargets ??
+      resolveCollaborationMentions({
+        text,
+        members: loadMembers(input.roomId),
+        structured: input.mentions,
+        sender: { type: 'user' },
+      }).targetMemberIds
 
     const now = Date.now()
     const id = genId(COLLABORATION_MESSAGE_ID_PREFIX)
@@ -859,14 +866,32 @@ export class CollaborationRoomService {
       const allMembers = loadMembers(room.id)
       const messages = listMessagesByRoom(room.id)
       const pendingMailbox = listActiveMailboxForMember(member.id)
-      const { systemPrompt, prompt } = buildTurnPrompts(
+      const projected = projectCollaborationTurnContext({
         room,
         member,
-        allMembers,
+        members: allMembers,
         messages,
-        triggerMessage,
-        pendingMailbox,
-      )
+        trigger: triggerMessage,
+        mailboxPreview: pendingMailbox
+          .filter(
+            (e) =>
+              e.toMemberId === member.id &&
+              (e.state === 'pending' || e.state === 'delivered'),
+          )
+          .slice(-6)
+          .map((e) => ({
+            fromName:
+              allMembers.find((m) => m.id === e.fromMemberId)?.displayName ?? '成员',
+            type:
+              e.type === 'question'
+                ? '提问'
+                : e.type === 'reply'
+                  ? '回复'
+                  : '通知',
+            payload: e.payload,
+          })),
+      })
+      const prompt = flattenProjectedTurn(projected.messages)
       let streamed = ''
       const input: MemberTurnInput = {
         roomId: room.id,
@@ -875,7 +900,7 @@ export class CollaborationRoomService {
         triggerMessageId: triggerMessage.id,
         channelId: member.channelId,
         modelId: member.modelId,
-        systemPrompt,
+        systemPrompt: projected.systemPrompt,
         prompt,
         signal: controller.signal,
         onTextDelta: (delta: string) => {
@@ -1185,91 +1210,13 @@ function resolveTargetMembers(
 }
 
 /**
- * 组装一次 turn 的 systemPrompt + prompt（02-RUNTIME-A2A-SPEC §7 简化版）。
- *
- * systemPrompt：角色 + 房间目标 + 角色职责。
- * prompt：近期 chat / A2A 消息 + 触发消息 + 回复指令。
- * A2A continuation（trigger.kind === 'a2a_reply'）额外注入「peer 回复 + 勿重复副作用」。
+ * S3.5-a：把投影结果 flatten 成现有 adapter 需要的单段 prompt（04 §5.3）。
+ * S4-3 升级 tool bridge 时应改为直接传 messages 数组，不再 flatten。
  */
-function buildTurnPrompts(
-  room: CollaborationRoom,
-  member: CollaborationMember,
-  allMembers: CollaborationMember[],
-  messages: CollaborationMessage[],
-  triggerMessage: CollaborationMessage,
-  pendingMailbox: CollaborationMailboxEnvelope[] = [],
-): { systemPrompt: string; prompt: string } {
-  const roleDesc = member.roleSnapshot.description
-  const rolePrompt = member.roleSnapshot.systemPrompt?.trim()
-  const isContinuation = triggerMessage.kind === 'a2a_reply'
-  const roster = allMembers
-    .map((m) => {
-      const bits = [m.displayName]
-      if (m.isCoordinator) bits.push('协调者')
-      if (m.id === member.id) bits.push('你')
-      return bits.join('/')
-    })
-    .join('、')
-  const systemPrompt = [
-    `你是协作室「${room.title}」的成员「${member.displayName}」。`,
-    roleDesc ? `你的职责：${roleDesc}。` : '',
-    rolePrompt ? `\n### 角色设定（严格遵循）\n${rolePrompt}\n` : '',
-    room.goal ? `房间目标：${room.goal}。` : '',
-    roster ? `房间成员：${roster}。` : '',
-    '用户用 @显示名 点名才会唤醒对应成员；你不能仅靠输出 @ 去唤醒他人。',
-    isContinuation
-      ? '你正在从一次跨成员提问中恢复。请根据对方回复继续完成原任务，不要重复已经做过的副作用操作。'
-      : '请以该身份简洁、直接地回复用户的最新消息。',
-  ]
-    .filter(Boolean)
-    .join('')
-
-  const nameOf = (authorId: string): string =>
-    allMembers.find((m) => m.id === authorId)?.displayName ?? '成员'
-  const visibleToMember = (m: CollaborationMessage): boolean => {
-    if (m.visibility === 'room') return true
-    if (m.visibility === 'user_only') return false
-    return m.authorId === member.id || m.targetMemberIds.includes(member.id)
-  }
-  const recent = messages
-    .filter((m) => m.kind === 'chat' || m.kind === 'a2a_request' || m.kind === 'a2a_reply')
-    .filter(visibleToMember)
-    .slice(-RECENT_CONTEXT_MESSAGES)
-  const formatLine = (m: CollaborationMessage): string => {
-    const who = m.authorType === 'user' ? '用户' : nameOf(m.authorId)
-    if (m.kind === 'a2a_request') return `${who}（提问）：${m.content}`
-    if (m.kind === 'a2a_reply') return `${who}（回复）：${m.content}`
-    return `${who}：${m.content}`
-  }
-  const transcript = recent.map(formatLine).join('\n')
-
-  const inboxLines = pendingMailbox
-    .filter((e) => e.toMemberId === member.id && (e.state === 'pending' || e.state === 'delivered'))
-    .slice(-6)
-    .map((e) => {
-      const kind = e.type === 'question' ? '提问' : e.type === 'reply' ? '回复' : '通知'
-      return `- 来自「${nameOf(e.fromMemberId)}」的${kind}：${e.payload}`
-    })
-
-  let prompt = `${transcript}\n\n请以「${member.displayName}」的身份回复最后一条消息。`
-  if (inboxLines.length > 0) {
-    prompt += `\n\n## 待处理信箱\n${inboxLines.join('\n')}`
-  }
-  if (isContinuation) {
-    const peerName = nameOf(triggerMessage.authorId)
-    prompt += [
-      '',
-      '',
-      '## A2A 恢复',
-      `成员「${peerName}」回复了你的提问：`,
-      '---',
-      triggerMessage.content,
-      '---',
-      '请根据回复继续完成你之前的任务。不要重复已经做过的副作用操作。',
-    ].join('\n')
-  }
-
-  return { systemPrompt, prompt }
+function flattenProjectedTurn(
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+): string {
+  return messages.map((m) => `[${m.role}] ${m.content}`).join('\n\n')
 }
 
 /** 序列化 run 错误（保留 code：MemberBackendResolveError 有 code） */
