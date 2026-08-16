@@ -8,7 +8,13 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@tagent/ui'
-import type { Channel } from '@tagent/shared'
+import type {
+  AgentRoleProfile,
+  Channel,
+  CollaborationRoleSnapshot,
+} from '@tagent/shared'
+
+type RoleMode = 'none' | 'library' | 'custom'
 
 export interface CollaborationAddMemberDialogProps {
   open: boolean
@@ -19,6 +25,8 @@ export interface CollaborationAddMemberDialogProps {
     channelId: string
     modelId: string
     isCoordinator: boolean
+    roleId?: string
+    roleSnapshot?: CollaborationRoleSnapshot
   }) => void
 }
 
@@ -32,6 +40,10 @@ export function CollaborationAddMemberDialog({
   const [channelId, setChannelId] = useState('')
   const [modelId, setModelId] = useState('')
   const [isCoordinator, setIsCoordinator] = useState(false)
+  const [roles, setRoles] = useState<AgentRoleProfile[]>([])
+  const [roleMode, setRoleMode] = useState<RoleMode>('none')
+  const [selectedRoleId, setSelectedRoleId] = useState('')
+  const [customPrompt, setCustomPrompt] = useState('')
 
   // 每次打开重置表单
   useEffect(() => {
@@ -40,6 +52,13 @@ export function CollaborationAddMemberDialog({
     setChannelId('')
     setModelId('')
     setIsCoordinator(false)
+    setRoleMode('none')
+    setSelectedRoleId('')
+    setCustomPrompt('')
+    void window.electronAPI
+      .listAgentRoles()
+      .then(setRoles)
+      .catch(() => setRoles([]))
   }, [open])
 
   const enabledChannels = useMemo(
@@ -48,13 +67,35 @@ export function CollaborationAddMemberDialog({
   )
   const selectedChannel = enabledChannels.find((c) => c.id === channelId)
   const enabledModels = selectedChannel?.models.filter((m) => m.enabled) ?? []
+  const selectedRole = roles.find((r) => r.id === selectedRoleId) ?? null
 
   if (!open) return null
 
   const submit = (): void => {
-    const name = displayName.trim()
+    const name =
+      displayName.trim() ||
+      (roleMode === 'library' && selectedRole ? selectedRole.displayName : '')
     if (!name) return
-    onSave({ displayName: name, channelId, modelId, isCoordinator })
+
+    let roleId: string | undefined
+    let roleSnapshot: CollaborationRoleSnapshot | undefined
+    if (roleMode === 'library' && selectedRole) {
+      roleId = selectedRole.id
+      roleSnapshot = {
+        roleId: selectedRole.id,
+        displayName: selectedRole.displayName,
+        description: selectedRole.description,
+        systemPrompt: selectedRole.systemPrompt,
+      }
+    } else if (roleMode === 'custom' && customPrompt.trim()) {
+      roleSnapshot = {
+        displayName: name,
+        description: '自定义角色',
+        systemPrompt: customPrompt.trim(),
+      }
+    }
+
+    onSave({ displayName: name, channelId, modelId, isCoordinator, roleId, roleSnapshot })
   }
 
   return (
@@ -147,11 +188,55 @@ export function CollaborationAddMemberDialog({
           协调者（消息不 @ 时默认由该成员应答）
         </label>
 
+        <label className="mt-3 block text-xs text-muted-foreground" htmlFor="collab-add-member-role">
+          角色（可选）
+        </label>
+        <select
+          id="collab-add-member-role"
+          className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          value={roleMode === 'library' ? selectedRoleId : roleMode}
+          onChange={(e) => {
+            const v = e.target.value
+            if (v === 'none' || v === 'custom') {
+              setRoleMode(v)
+              setSelectedRoleId('')
+            } else {
+              setRoleMode('library')
+              setSelectedRoleId(v)
+            }
+          }}
+        >
+          <option value="none">无角色</option>
+          {roles.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.displayName}（{r.id}）
+            </option>
+          ))}
+          <option value="custom">自定义角色 prompt…</option>
+        </select>
+        {roleMode === 'library' && selectedRole ? (
+          <p className="mt-1.5 line-clamp-2 text-xs text-muted-foreground">{selectedRole.description}</p>
+        ) : null}
+        {roleMode === 'custom' ? (
+          <textarea
+            className="mt-1.5 w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            rows={3}
+            placeholder="输入该成员的角色设定 / 专业能力 prompt"
+            value={customPrompt}
+            onChange={(e) => setCustomPrompt(e.target.value)}
+          />
+        ) : null}
+
         <div className="mt-4 flex justify-end gap-2">
           <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
             取消
           </Button>
-          <Button type="button" size="sm" disabled={!displayName.trim()} onClick={submit}>
+          <Button
+            type="button"
+            size="sm"
+            disabled={!displayName.trim() && !(roleMode === 'library' && selectedRole)}
+            onClick={submit}
+          >
             添加
           </Button>
         </div>

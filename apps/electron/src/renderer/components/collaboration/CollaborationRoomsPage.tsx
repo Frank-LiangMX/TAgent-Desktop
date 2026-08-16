@@ -28,6 +28,7 @@ import {
 } from '@phosphor-icons/react'
 import type {
   Channel,
+  CollaborationRoleSnapshot,
   CollaborationMailboxEnvelope,
   CollaborationMember,
   CollaborationMessage,
@@ -300,6 +301,8 @@ export function CollaborationRoomsPage({
       channelId: string
       modelId: string
       isCoordinator: boolean
+      roleId?: string
+      roleSnapshot?: CollaborationRoleSnapshot
     }): Promise<void> => {
       if (!room) return
       setShowAddMemberDialog(false)
@@ -311,6 +314,8 @@ export function CollaborationRoomsPage({
           channelId: patch.channelId || undefined,
           modelId: patch.modelId || undefined,
           isCoordinator: patch.isCoordinator,
+          roleId: patch.roleId,
+          roleSnapshot: patch.roleSnapshot,
         })
         onRoomsChanged()
       } catch (err) {
@@ -500,7 +505,7 @@ export function CollaborationRoomsPage({
                     (st === 'idle' || st === 'offline') && 'bg-muted text-muted-foreground',
                     !hasBackend && 'ring-1 ring-amber-500/40',
                   )}
-                  title={`${m.displayName}：${memberStatusLabel(st)}${m.isCoordinator ? '（协调者）' : ''} · 后端：${channelLabel(m)} · 点击修改渠道/模型`}
+                  title={`${m.displayName}：${memberStatusLabel(st)}${m.isCoordinator ? '（协调者）' : ''} · 后端：${channelLabel(m)}${m.roleSnapshot.roleId ? ` · 角色：${m.roleSnapshot.displayName}` : ''} · 点击修改渠道/模型`}
                   onClick={() => setEditingMember(m)}
                 >
                   <span

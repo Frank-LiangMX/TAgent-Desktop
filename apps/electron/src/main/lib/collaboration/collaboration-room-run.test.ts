@@ -297,4 +297,31 @@ describe('CollaborationRoomService run 行为（Stage 2）', () => {
     expect(calls[0]!.systemPrompt).toMatch(/房间成员/)
     expect(calls[0]!.systemPrompt).toMatch(/不能仅靠输出/)
   })
+
+  test('角色快照 systemPrompt 注入成员系统提示词', async () => {
+    const { adapter, calls } = createMockAdapter({ text: 'ok' })
+    const svc = createService(adapter)
+    const room = svc.createRoom({
+      title: '角色测试',
+      members: [
+        {
+          displayName: '分析师',
+          isCoordinator: true,
+          roleId: 'analyst',
+          roleSnapshot: {
+            roleId: 'analyst',
+            displayName: '分析师',
+            description: '做数据分析',
+            systemPrompt: '你是资深数据分析师，输出必须包含数据表格。',
+          },
+        },
+      ],
+    })
+    svc.appendUserMessage({ roomId: room.id, content: '看看数据' })
+    await svc.awaitAllRuns()
+
+    expect(calls[0]!.systemPrompt).toContain('### 角色设定')
+    expect(calls[0]!.systemPrompt).toContain('资深数据分析师')
+    expect(calls[0]!.systemPrompt).toContain('你的职责：做数据分析。')
+  })
 })

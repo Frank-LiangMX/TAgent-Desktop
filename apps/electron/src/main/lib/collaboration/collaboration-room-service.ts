@@ -1200,6 +1200,7 @@ function buildTurnPrompts(
   pendingMailbox: CollaborationMailboxEnvelope[] = [],
 ): { systemPrompt: string; prompt: string } {
   const roleDesc = member.roleSnapshot.description
+  const rolePrompt = member.roleSnapshot.systemPrompt?.trim()
   const isContinuation = triggerMessage.kind === 'a2a_reply'
   const roster = allMembers
     .map((m) => {
@@ -1212,6 +1213,7 @@ function buildTurnPrompts(
   const systemPrompt = [
     `你是协作室「${room.title}」的成员「${member.displayName}」。`,
     roleDesc ? `你的职责：${roleDesc}。` : '',
+    rolePrompt ? `\n### 角色设定（严格遵循）\n${rolePrompt}\n` : '',
     room.goal ? `房间目标：${room.goal}。` : '',
     roster ? `房间成员：${roster}。` : '',
     '用户用 @显示名 点名才会唤醒对应成员；你不能仅靠输出 @ 去唤醒他人。',

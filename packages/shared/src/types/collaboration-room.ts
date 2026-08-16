@@ -143,6 +143,8 @@ export interface CollaborationRoleSnapshot {
   displayName: string
   /** 角色职责描述（快照） */
   description?: string
+  /** 角色专属 system prompt 快照（创建成员时从角色库复制，避免库更新改写历史行为） */
+  systemPrompt?: string
 }
 
 /**
