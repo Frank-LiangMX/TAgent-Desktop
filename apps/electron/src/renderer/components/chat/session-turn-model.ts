@@ -79,6 +79,8 @@ export type ProcessEntry =
       result?: TAgentToolResultBlock
       at?: number
     }
+  /** 用户在运行中注入的引导；视觉上作为当前执行块内的用户气泡。 */
+  | { type: 'guidance'; text: string; key: string; at?: number }
   | { type: 'text'; text: string; key: string; at?: number }
 
 export interface TurnPresentation {
@@ -353,7 +355,19 @@ export function groupItemsIntoTurns(items: TurnSourceItem[]): SessionRenderTurn[
     const msg = item.message
 
     if (msg?.type === 'user') {
-      if (isRealUserInput(msg)) {
+      if (isSteerUserMessage(msg)) {
+        // 引导属于正在执行的同一轮：进运行块内的时间线，不新起普通用户回合。
+        if (!current) {
+          current = {
+            kind: 'assistant-turn',
+            key: `turn-${item.key}`,
+            items: [item],
+            isStreaming: false,
+          }
+        } else {
+          current.items.push(item)
+        }
+      } else if (isRealUserInput(msg)) {
         flush()
         turns.push({ kind: 'user', key: item.key, message: msg })
       } else if (
@@ -523,15 +537,27 @@ export function buildTurnPresentation(
   // **稳定 key**（S2.4）：tool 用 `tool-${id}`；thinking/text/blk 用「消息 uuid + 块在 content[] 中的下标」。
   //   - partial→final 原地 upsert（S1）uuid 不变，Pi 顺序追加 → blockIndex 不变 → 同一段思考 key 稳定，不随列表重编 remount。
   //   - 旧消息无 uuid 时回退 item.key（uuid upsert 亦保 key 不变）。
-  const allBlocks: Array<{ block: TAgentContentBlock; key: string; at?: number }> = []
+  type TimelineSource =
+    | { kind: 'block'; block: TAgentContentBlock; key: string; at?: number }
+    | { kind: 'guidance'; text: string; key: string; at?: number }
+  const timeline: TimelineSource[] = []
   const toolUseSeen = new Map<string, { block: TAgentToolUseBlock; key: string; rich: boolean }>()
   for (const item of turn.items) {
-    if (item.message?.type !== 'assistant') continue
-    if (item.message.parentToolUseId) continue
-    const rich = item.message.content.some((b) => b.type === 'thinking' || b.type === 'text')
-    const ownerKey = item.message.uuid ?? item.key
-    const at = item.message.createdAt
-    item.message.content.forEach((block, blockIndex) => {
+    const message = item.message
+    if (message?.type === 'user' && isSteerUserMessage(message)) {
+      const text = message.content
+        .filter((block) => block.type === 'text')
+        .map((block) => (block as TAgentTextBlock).text)
+        .join('\n')
+        .trim()
+      if (text) timeline.push({ kind: 'guidance', key: `guidance-${item.key}`, text, at: message.createdAt })
+      continue
+    }
+    if (message?.type !== 'assistant' || message.parentToolUseId) continue
+    const rich = message.content.some((b) => b.type === 'thinking' || b.type === 'text')
+    const ownerKey = message.uuid ?? item.key
+    const at = message.createdAt
+    message.content.forEach((block, blockIndex) => {
       if (block.type === 'tool_use') {
         const tu = block as TAgentToolUseBlock
         // 子代理入口：过程区完全不渲染（含超长 tool_result）
@@ -541,23 +567,26 @@ export function buildTurnPresentation(
         if (prev) {
           // 已有同 id：若当前消息更完整（rich）且旧的只是占位，替换内容但**保留稳定 key**
           if (rich && !prev.rich) {
-            const idx = allBlocks.findIndex((x) => x.key === prev.key)
-            if (idx >= 0) allBlocks[idx] = { block, key: prev.key, at }
+            const idx = timeline.findIndex((x) => x.kind === 'block' && x.key === prev.key)
+            if (idx >= 0) timeline[idx] = { kind: 'block', block, key: prev.key, at }
             toolUseSeen.set(tu.id, { block: tu, key: prev.key, rich })
           }
           return
         }
         toolUseSeen.set(tu.id, { block: tu, key: stableKey, rich })
-        allBlocks.push({ block, key: stableKey, at })
+        timeline.push({ kind: 'block', block, key: stableKey, at })
       } else if (block.type === 'thinking') {
-        allBlocks.push({ block, key: `think-${ownerKey}-${blockIndex}`, at })
+        timeline.push({ kind: 'block', block, key: `think-${ownerKey}-${blockIndex}`, at })
       } else if (block.type === 'text') {
-        allBlocks.push({ block, key: `text-${ownerKey}-${blockIndex}`, at })
+        timeline.push({ kind: 'block', block, key: `text-${ownerKey}-${blockIndex}`, at })
       } else {
-        allBlocks.push({ block, key: `blk-${ownerKey}-${blockIndex}`, at })
+        timeline.push({ kind: 'block', block, key: `blk-${ownerKey}-${blockIndex}`, at })
       }
     })
   }
+  const allBlocks = timeline.filter(
+    (entry): entry is Extract<TimelineSource, { kind: 'block' }> => entry.kind === 'block',
+  )
 
   // 单真源（S2.2）：消息 content 已带「非空」thinking / text 块时以消息为准——
   // streamState 仅作「尚无 partial」的短暂兜底。正文若再被 streamState 覆盖，
@@ -633,10 +662,19 @@ export function buildTurnPresentation(
     trailingTextStart > 0 &&
     (isActive && hasProcessBlock ? canSplitStreamingFinal : true)
 
-  const processEnd = splitAnswer ? trailingTextStart! : allBlocks.length
+  const trailingAnswerKeys = new Set(
+    splitAnswer && trailingTextStart !== null
+      ? allBlocks.slice(trailingTextStart).map((entry) => entry.key)
+      : [],
+  )
 
-  for (let i = 0; i < processEnd; i++) {
-    const { block, key, at } = allBlocks[i]!
+  for (const entry of timeline) {
+    if (entry.kind === 'guidance') {
+      process.push({ type: 'guidance', key: entry.key, text: entry.text, at: entry.at })
+      continue
+    }
+    const { block, key, at } = entry
+    if (trailingAnswerKeys.has(key)) continue
     if (block.type === 'thinking') {
       process.push({
         type: 'thinking',
@@ -679,7 +717,9 @@ export function buildTurnPresentation(
     for (const p of process) {
       if (p.type === 'text') answerTexts.push(p.text)
     }
+    const guidance = process.filter((p): p is Extract<ProcessEntry, { type: 'guidance' }> => p.type === 'guidance')
     process.length = 0
+    process.push(...guidance)
   }
 
   // 合并/去重交付文本：多段 assistant 可能带前缀重复，只保留非前缀的最长序列
@@ -861,6 +901,11 @@ export function annotateThinkingDurations(process: ProcessEntry[]): void {
     }
     cur.durationSec = resolveThinkingDurationSec(cur.thinking, measured)
   }
+}
+
+/** 运行中注入的用户引导：可见，但不能切断当前 assistant-turn。 */
+export function isSteerUserMessage(message: TAgentUserMessage): boolean {
+  return message.isSteer === true
 }
 
 /**

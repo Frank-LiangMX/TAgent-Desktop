@@ -7,8 +7,8 @@
  * 阶段块 live：摘要累积 + 底部当前动作；层级文案扫光
  */
 import { memo, useEffect, useId, useRef, useState, type ReactNode } from 'react'
-import { CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
-import { Message, MessageContent, MessageResponse, useSmoothStream } from '@tagent/ui'
+import { ArrowBendDownLeft, CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
+import { Message, MessageContent, MessageResponse, UserMessageContent, useSmoothStream } from '@tagent/ui'
 import { cn } from '../../lib/utils'
 import { formatElapsedDuration, useLiveElapsedMs } from '../../lib/time-utils'
 import type { ConciseSegment, WorkStageStep } from './concise-timeline-model'
@@ -112,6 +112,9 @@ export function ConciseTimelineView({
                   extras={getStageExtras?.(seg)}
                 />
               )
+            }
+            if (seg.kind === 'guidance') {
+              return <GuidanceBubble key={seg.key} text={seg.text} />
             }
             return (
               <NarrativeRow
@@ -239,6 +242,23 @@ const RunQueueShell = memo(function RunQueueShell({
           </div>
         ) : null}
       </div>
+    </div>
+  )
+})
+
+/** 运行中引导：在消息列表的当前执行块内呈现为用户气泡，而非切开新回合。 */
+const GuidanceBubble = memo(function GuidanceBubble({ text }: { text: string }): JSX.Element {
+  return (
+    <div className="agent-concise-guidance">
+      <span className="agent-concise-guidance__label">
+        <ArrowBendDownLeft size={11} weight="bold" aria-hidden />
+        引导
+      </span>
+      <Message from="user" className="agent-concise-guidance__message py-0">
+        <MessageContent>
+          <UserMessageContent>{text}</UserMessageContent>
+        </MessageContent>
+      </Message>
     </div>
   )
 })

@@ -123,6 +123,7 @@ export function ProcessGroupView({
         if (t) return t.length > 48 ? `思考：${t.slice(0, 48)}…` : `思考：${t}`
         return '正在思考…'
       }
+      if (e.type === 'guidance') return '已收到引导'
       if (e.type === 'tool' && e.result) {
         return getToolPhrase(e.tool.name, e.tool.input).label
       }
@@ -161,6 +162,7 @@ export function ProcessGroupView({
     (e) =>
       e.type === 'tool' ||
       e.type === 'thinking' ||
+      e.type === 'guidance' ||
       (e.type === 'text' && e.text.trim()),
   )
 
@@ -231,6 +233,14 @@ export function ProcessGroupView({
                   text={entry.text}
                   isLive={live && entry.key === lastTextKey}
                 />
+              )
+            }
+            if (entry.type === 'guidance') {
+              return (
+                <div key={entry.key} className="agent-process-guidance">
+                  <span className="agent-process-guidance__label">引导</span>
+                  <span className="agent-process-guidance__bubble">{entry.text}</span>
+                </div>
               )
             }
             return null

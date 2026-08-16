@@ -881,6 +881,56 @@
   padding: 1px 0;
 }
 
+/* 运行中引导：属于当前执行链的用户输入，不另起整轮。 */
+.agent-concise-guidance {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  margin: 5px 0 3px;
+}
+.agent-concise-guidance__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 3px;
+  font-size: 10px;
+  line-height: 1;
+  color: hsl(var(--muted-foreground) / 0.66);
+}
+.agent-concise-guidance__message {
+  max-width: min(84%, 520px);
+}
+.agent-concise-guidance__message .agent-user-bubble {
+  padding: 7px 10px;
+  border-radius: 12px 12px 4px 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  box-shadow: none;
+}
+.agent-process-guidance {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  margin: 6px 0;
+}
+.agent-process-guidance__label {
+  margin-right: 2px;
+  font-size: 10px;
+  color: hsl(var(--muted-foreground) / 0.66);
+}
+.agent-process-guidance__bubble {
+  max-width: min(84%, 520px);
+  padding: 7px 10px;
+  border: 1px solid hsl(var(--border) / 0.46);
+  border-radius: 12px 12px 4px 12px;
+  background: hsl(var(--foreground) / 0.055);
+  color: hsl(var(--foreground) / 0.9);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
 .agent-concise-narrative__text {
   font-size: 13px;
   line-height: 1.55;

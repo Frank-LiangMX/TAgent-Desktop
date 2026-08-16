@@ -137,6 +137,8 @@ import type { NoProgressGuardMode, AgentDiscussPrefs, AgentCrewPrefs } from '@ta
 interface SendMessageInput {
   sessionId: string
   prompt: string
+  /** 运行中引导的后续自动发送：在消息列表内并入前一执行回合。 */
+  isSteer?: boolean
   /** 渠道 ID（决定选哪个 adapter + 绑核）。不传默认 kscc-internal */
   channelId?: string
   /** 模型 ID */
@@ -249,6 +251,7 @@ export class SessionService {
       message: { role: 'user', content: [{ type: 'text', text }] },
       parent_tool_use_id: null,
       createdAt: now,
+      isSteer: true,
     } as unknown as SDKMessage
     try {
       appendPanelMessages(workspaceId, sessionId, [userMsg])
@@ -339,6 +342,7 @@ export class SessionService {
       channelId: meta.channelId,
       model: meta.modelId,
       workspaceId: meta.workspaceId,
+      isSteer: true,
     }).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err)
       console.warn(`[session-service] pending steer flush 失败: ${msg}`)
@@ -1293,6 +1297,7 @@ export class SessionService {
         message: { role: 'user', content: [{ type: 'text', text: input.prompt }] },
         parent_tool_use_id: null,
         createdAt: now,
+        ...(input.isSteer ? { isSteer: true } : {}),
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       } as unknown as SDKMessage
       // Phase 1.2 双写：先面板（保可见）再 SDK（resume）
@@ -1315,6 +1320,7 @@ export class SessionService {
       const userIR: TAgentMessage = {
         type: 'user',
         createdAt: Date.now(),
+        ...(input.isSteer ? { isSteer: true } : {}),
         content: [{ type: 'text', text: input.prompt }],
         ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       }

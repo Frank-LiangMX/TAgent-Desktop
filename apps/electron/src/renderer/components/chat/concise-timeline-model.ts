@@ -44,6 +44,7 @@ export type ConciseSegment =
       diffAdd?: number
       diffDel?: number
     }
+  | { kind: 'guidance'; key: string; text: string }
   | { kind: 'narrative'; key: string; text: string; tone: 'progress' | 'final' }
 
 const SEARCH_RE = /^(grep|search|semanticsearch|websearch)/i
@@ -608,6 +609,15 @@ export function buildConciseTimeline(
 
   for (let i = 0; i < source.length; i++) {
     const cur = source[i]!
+
+    if (cur.type === 'guidance') {
+      if (!cur.text.trim()) continue
+      // 引导是当前执行链的用户输入：保序插入，且作为阶段边界，避免和前后工具揉成一块。
+      flushLeadingThink()
+      flushStage()
+      segments.push({ kind: 'guidance', key: cur.key, text: cur.text })
+      continue
+    }
 
     if (cur.type === 'thinking') {
       const t = cur.thinking.trim()

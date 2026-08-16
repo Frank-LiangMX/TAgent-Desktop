@@ -452,6 +452,8 @@ export interface SDKUserMessage {
   isReplay?: boolean
   /** SDK 合成的消息（如 Skill 展开 prompt），非人类用户输入 */
   isSynthetic?: boolean
+  /** TAgent 标注：运行中引导消息，供面板按同一执行回合渲染。 */
+  isSteer?: boolean
 }
 
 /** SDK result 消息（查询结束时返回） */
