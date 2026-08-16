@@ -399,6 +399,8 @@
   justify-content: center;
   width: var(--user-avatar-size);
   height: var(--user-avatar-size);
+  /* border-box 会让 2px 边框吃掉内圈（28px），头像比模型 logo 显小；改 content-box 让内圈=32px */
+  box-sizing: content-box;
   flex-shrink: 0;
   margin-top: 1px;
   border-radius: 999px;

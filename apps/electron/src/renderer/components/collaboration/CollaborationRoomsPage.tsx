@@ -16,6 +16,7 @@
  * 变更后调 onRoomsChanged 通知 App bump refreshKey；run/member 变更由 CHANGED 广播驱动 bump。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useAtomValue } from 'jotai'
 import { toast } from 'sonner'
 import { motion } from 'motion/react'
 import {
@@ -39,6 +40,8 @@ import type {
   CollaborationRoomStatus,
   CollaborationRun,
 } from '@tagent/shared'
+import { DEFAULT_USER_NAME } from '@tagent/shared'
+import { userProfileAtom } from '../../atoms/user-profile'
 import { AppTooltip, MessageResponse, useSmoothStream } from '@tagent/ui'
 import { ChatInput, type ChatInputHandle } from '../chat/ChatInput'
 import BlurText from '../chat/BlurText'
@@ -46,6 +49,7 @@ import { CollaborationTextPrompt } from './CollaborationTextPrompt'
 import { CollaborationMemberSettings } from './CollaborationMemberSettings'
 import { CollaborationAddMemberDialog } from './CollaborationAddMemberDialog'
 import { cn } from '../../lib/utils'
+import { getModelLogo } from '../../lib/model-logo'
 
 type TextPromptKind = 'rename' | null
 
@@ -669,11 +673,13 @@ export function CollaborationRoomsPage({
           <div className="tagent-thread px-5 pb-44">
             <ul className="flex flex-col gap-2.5">
               {messages.map((m) => (
-                <MessageBubble key={m.id} message={m} members={members} />
+                <MessageBubble key={m.id} message={m} members={members} channels={channels} />
               ))}
               {activeRuns.map((r) => (
                 <ThinkingBubble
                   key={r.id}
+                  member={members.find((m) => m.id === r.memberId)}
+                  channels={channels}
                   memberName={memberName(r.memberId)}
                   status={r.status}
                   streamedText={streamByRun[r.id]}
@@ -752,20 +758,99 @@ function memberDisplayName(authorId: string, members: CollaborationMember[]): st
   return members.find((m) => m.id === authorId)?.displayName ?? '成员'
 }
 
+/** 成员头像：优先模型 logo，兜底显示名首字 + 按成员 ID 稳定的主题色 */
+function MemberAvatar({
+  member,
+  channels,
+  size = 32,
+}: {
+  member: CollaborationMember
+  channels: Channel[]
+  size?: number
+}): JSX.Element {
+  const channel = channels.find((c) => c.id === member.channelId)
+  const logo =
+    member.modelId && channel?.provider
+      ? getModelLogo(member.modelId, channel.provider)
+      : undefined
+  const box = {
+    width: size,
+    height: size,
+    fontSize: Math.round(size * 0.42),
+  }
+  if (logo) {
+    return (
+      <img
+        src={logo}
+        alt={member.displayName}
+        className="shrink-0 rounded-full border-[0.5px] border-foreground/10 object-cover"
+        style={box}
+      />
+    )
+  }
+  const palette = [
+    'bg-primary/15 text-primary',
+    'bg-sky-500/15 text-sky-600',
+    'bg-amber-500/15 text-amber-600',
+    'bg-emerald-500/15 text-emerald-600',
+    'bg-violet-500/15 text-violet-600',
+  ]
+  const idx =
+    Array.from(member.id).reduce((acc, ch) => acc + ch.charCodeAt(0), 0) %
+    palette.length
+  return (
+    <div
+      className={cn(
+        'flex shrink-0 items-center justify-center rounded-full border-[0.5px] border-foreground/10 font-semibold',
+        palette[idx],
+      )}
+      style={box}
+    >
+      {member.displayName.slice(0, 1)}
+    </div>
+  )
+}
+
+/** 用户消息头像：与设置左下角/会话一致，用户名首字圆形渐变头像 */
+function UserMessageAvatar(): JSX.Element {
+  const profile = useAtomValue(userProfileAtom)
+  const userName = (profile.userName || DEFAULT_USER_NAME).trim() || DEFAULT_USER_NAME
+  const avatarLetter = userName.charAt(0).toUpperCase() || 'U'
+  return (
+    <AppTooltip label={userName}>
+      <span
+        className="flex size-9 shrink-0 select-none items-center justify-center rounded-full border-2 border-background/90 text-sm font-bold leading-none text-primary-foreground"
+        style={{
+          background:
+            'linear-gradient(145deg, color-mix(in srgb, hsl(var(--primary)) 82%, white), hsl(var(--primary) / 0.62))',
+          boxShadow:
+            '0 1px 2px hsl(var(--foreground) / 0.08), 0 4px 12px -2px hsl(var(--foreground) / 0.12)',
+        }}
+        aria-label={userName}
+      >
+        {avatarLetter}
+      </span>
+    </AppTooltip>
+  )
+}
+
 /** 单条消息气泡（user 右对齐，member/system 左/居中；成员正文走 Markdown） */
 function MessageBubble({
   message,
   members,
+  channels,
 }: {
   message: CollaborationMessage
   members: CollaborationMember[]
+  channels: Channel[]
 }): JSX.Element {
   if (message.authorType === 'user') {
     return (
-      <li className="flex justify-end">
-        <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-sm border border-border/60 bg-foreground/[0.05] px-3.5 py-2 text-sm text-foreground backdrop-blur-sm">
+      <li className="flex justify-end gap-2">
+        <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl border border-border/60 bg-foreground/[0.05] px-3.5 py-2 text-sm text-foreground backdrop-blur-sm">
           {message.content}
         </div>
+        <UserMessageAvatar />
       </li>
     )
   }
@@ -784,8 +869,10 @@ function MessageBubble({
       .map((id) => memberDisplayName(id, members))
       .filter(Boolean)
       .join('、')
+    const author = members.find((m) => m.id === message.authorId)
     return (
-      <li className="flex justify-start">
+      <li className="flex justify-start gap-2">
+        {author ? <MemberAvatar member={author} channels={channels} /> : null}
         <div className="max-w-[80%]">
           <div className="mb-0.5 text-[11px] text-muted-foreground">
             {memberDisplayName(message.authorId, members)}
@@ -794,7 +881,7 @@ function MessageBubble({
               {targets ? ` → ${targets}` : ''}
             </span>
           </div>
-          <div className="rounded-2xl rounded-bl-sm border border-sky-500/20 bg-sky-500/5 px-3.5 py-2 text-sm text-foreground">
+          <div className="rounded-2xl border border-sky-500/20 bg-sky-500/5 px-3.5 py-2 text-sm text-foreground">
             <MessageResponse className="prose-p:my-1 prose-headings:my-1.5 text-sm">
               {message.content}
             </MessageResponse>
@@ -803,13 +890,15 @@ function MessageBubble({
       </li>
     )
   }
+  const author = members.find((m) => m.id === message.authorId)
   return (
-    <li className="flex justify-start">
+    <li className="flex justify-start gap-2">
+      {author ? <MemberAvatar member={author} channels={channels} /> : null}
       <div className="max-w-[80%]">
         <div className="mb-0.5 text-[11px] text-muted-foreground">
           {memberDisplayName(message.authorId, members)}
         </div>
-        <div className="rounded-2xl rounded-bl-sm border border-border/50 bg-foreground/[0.03] px-3.5 py-2 text-sm text-foreground backdrop-blur-sm">
+        <div className="rounded-2xl border border-border/50 bg-foreground/[0.03] px-3.5 py-2 text-sm text-foreground backdrop-blur-sm">
           <MessageResponse className="prose-p:my-1 prose-headings:my-1.5 text-sm">
             {message.content}
           </MessageResponse>
@@ -838,12 +927,16 @@ function LiveStreamBody({ text }: { text: string }): JSX.Element {
 
 /** 成员「思考中」气泡 + 取消按钮（活跃 run 时显示在时间线末尾） */
 function ThinkingBubble({
+  member,
+  channels,
   memberName,
   status,
   streamedText,
   cancelling,
   onCancel,
 }: {
+  member?: CollaborationMember
+  channels: Channel[]
   memberName: string
   status: CollaborationRun['status']
   streamedText?: string
@@ -857,6 +950,7 @@ function ThinkingBubble({
     <li className="flex justify-start">
       <div className="max-w-[80%]">
         <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          {member ? <MemberAvatar member={member} channels={channels} size={20} /> : null}
           <span className="font-medium text-foreground/70">{memberName}</span>
           <span
             className={cn(
@@ -869,7 +963,7 @@ function ThinkingBubble({
           <span>{runStatusLabel(status)}…</span>
         </div>
         <div
-          className="collab-run-card rounded-2xl rounded-bl-sm px-3.5 py-2.5 text-sm text-foreground/90"
+          className="collab-run-card rounded-2xl px-3.5 py-2.5 text-sm text-foreground/90"
           data-status={status}
         >
           {queued ? (
