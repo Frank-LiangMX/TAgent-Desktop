@@ -684,7 +684,7 @@ export function resolveCollaborationMentions(
       }
       const member = input.members.find((mm) => mm.id === m.memberId)
       if (!member) {
-        dropped.push({ token: m.memberId, reason: 'unknown-member-id' })
+        dropped.push({ token: m.displayNameSnapshot ?? m.memberId, reason: 'unknown-member-id' })
         continue
       }
       if (!seen.has(member.id)) {
@@ -907,7 +907,7 @@ export function projectCollaborationTurnContext(
 
   // 4. trigger 必须在末尾可定位（continuation 走步骤 5，不重复）
   const triggerContent = stripCollaborationRoutableMentions(trigger.content).trim()
-  if (!projectedIds.has(trigger.id) && trigger.kind !== 'a2a_reply') {
+  if (!projectedIds.has(trigger.id) && trigger.kind !== 'a2a_reply' && visibleToMember(trigger)) {
     if (trigger.authorType === 'user') {
       push('user', `[用户]: ${triggerContent}`, trigger.id)
     } else {
@@ -916,7 +916,7 @@ export function projectCollaborationTurnContext(
   }
 
   // 5. A2A continuation 尾部（勿重复副作用）
-  if (trigger.kind === 'a2a_reply') {
+  if (trigger.kind === 'a2a_reply' && visibleToMember(trigger)) {
     const peerName = nameOf(trigger.authorId)
     push(
       'user',
@@ -975,7 +975,10 @@ export function groupCollaborationTimelineItems(
     ...runs.map((run) => ({
       type: 'run' as const,
       run,
-      messages: runMessages.get(run.id) ?? [],
+      messages: (runMessages.get(run.id) ?? []).slice().sort((a, b) => {
+        if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+      }),
     })),
   ]
 
