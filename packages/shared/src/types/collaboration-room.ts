@@ -10,6 +10,10 @@
  * - docs/plans/agent-collaboration-room/02-RUNTIME-A2A-SPEC.md §2（实体字段契约）
  * - docs/decisions/ADR-0007-agent-collaboration-room.md
  */
+import {
+  COLLABORATION_SUMMARY_MAX_EVERY_UTTERANCES,
+  COLLABORATION_SUMMARY_MIN_EVERY_UTTERANCES,
+} from './collaboration-summary'
 
 // ===== 房间状态 =====
 
@@ -262,6 +266,8 @@ export interface CollaborationRoom {
   maxConcurrentRuns: number
   /** A2A 跨成员深度上限（默认 4，硬上限 10） */
   maxA2ADepth: number
+  /** 每 N 条有效发言触发一次房间摘要（S3.5-b，默认 8，范围 4–20） */
+  summaryEveryUtterances?: number
   /** 房间预算 */
   budget: CollaborationRoomBudget
   /** 附加看板 ID（可选，S5+） */
@@ -1062,6 +1068,8 @@ export interface CreateCollaborationRoomInput {
   maxConcurrentRuns?: number
   /** A2A 跨成员深度上限（可选，默认 4） */
   maxA2ADepth?: number
+  /** 每 N 条有效发言触发一次房间摘要（可选，默认 8，范围 4–20） */
+  summaryEveryUtterances?: number
   /** 房间预算（可选） */
   budget?: CollaborationRoomBudget
   /** 附加看板 ID（可选） */
@@ -1099,6 +1107,8 @@ export interface UpdateCollaborationRoomInput {
   maxConcurrentRuns?: number
   /** 新 A2A 深度上限 */
   maxA2ADepth?: number
+  /** 新房间摘要频率（有效发言条数，4–20） */
+  summaryEveryUtterances?: number
   /** 新预算 */
   budget?: CollaborationRoomBudget
 }
@@ -1182,6 +1192,15 @@ export function validateCreateCollaborationRoomInput(
     (input.maxA2ADepth < 1 || input.maxA2ADepth > COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH)
   ) {
     errors.push(`maxA2ADepth 须在 1–${COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH}`)
+  }
+  if (
+    input.summaryEveryUtterances !== undefined &&
+    (input.summaryEveryUtterances < COLLABORATION_SUMMARY_MIN_EVERY_UTTERANCES ||
+      input.summaryEveryUtterances > COLLABORATION_SUMMARY_MAX_EVERY_UTTERANCES)
+  ) {
+    errors.push(
+      `summaryEveryUtterances 须在 ${COLLABORATION_SUMMARY_MIN_EVERY_UTTERANCES}–${COLLABORATION_SUMMARY_MAX_EVERY_UTTERANCES}`,
+    )
   }
   return errors
 }

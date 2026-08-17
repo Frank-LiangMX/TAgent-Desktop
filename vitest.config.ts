@@ -2,11 +2,15 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
 const uiSource = fileURLToPath(new URL('./packages/ui/src', import.meta.url))
+const piCoreIndex = fileURLToPath(new URL('./packages/pi-core/src/index.ts', import.meta.url))
 
 export default defineConfig({
   resolve: {
     alias: {
       '@': uiSource,
+      // pi-core 的 package.json exports 指向未构建的 dist/index.js；vitest 直接
+      // 解析到 src，保证工作区测试（含依赖 pi-core 的协作室用例）不依赖先构建产物。
+      '@tagent/pi-core': piCoreIndex,
     },
   },
   test: {

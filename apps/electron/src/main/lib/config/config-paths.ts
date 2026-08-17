@@ -211,3 +211,8 @@ export function getCollaborationRunsPath(): string {
 export function getCollaborationMailboxPath(): string {
   return join(getCollaborationDir(), 'mailbox.json')
 }
+
+/** 协作室房间共享摘要索引：~/.tagent[-dev]/collaboration/summaries.json（S3.5-b） */
+export function getCollaborationSummariesPath(): string {
+  return join(getCollaborationDir(), 'summaries.json')
+}

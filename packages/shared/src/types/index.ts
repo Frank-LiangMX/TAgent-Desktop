@@ -127,3 +127,5 @@ export * from './agent-discuss-crew-prefs'
 export * from './collaboration-room'
 export * from './collaboration-room-channels'
 export * from './collaboration-a2a'
+// S3.5-b 房间共享摘要（04 §6）：类型 + 有效发言/CAS 谓词 + 六段总结 prompt
+export * from './collaboration-summary'

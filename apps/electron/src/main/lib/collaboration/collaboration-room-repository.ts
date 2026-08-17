@@ -21,6 +21,7 @@ import type {
   CollaborationMessage,
   CollaborationRun,
   CollaborationMailboxEnvelope,
+  CollaborationRoomSummary,
 } from '@tagent/shared'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import {
@@ -29,6 +30,7 @@ import {
   getCollaborationMessagesPath,
   getCollaborationRunsPath,
   getCollaborationMailboxPath,
+  getCollaborationSummariesPath,
 } from '../config/config-paths'
 
 /** 配置版本号 */
@@ -330,4 +332,190 @@ export function listMailboxByStatus(
 ): CollaborationMailboxEnvelope[] {
   const set = new Set(states)
   return readMailboxConfig().envelopes.filter((e) => set.has(e.state))
+}
+
+// ===== summaries.json（S3.5-b 房间共享摘要，04 §6.2） =====
+
+interface SummariesConfig {
+  version: number
+  summaries: CollaborationRoomSummary[]
+}
+
+function readSummariesConfig(): SummariesConfig {
+  const parsed = readJsonSafe<SummariesConfig | null>(getCollaborationSummariesPath(), null)
+  if (!parsed || !Array.isArray(parsed.summaries)) {
+    return { version: CONFIG_VERSION, summaries: [] }
+  }
+  return parsed
+}
+
+function writeSummariesConfig(config: SummariesConfig): void {
+  try {
+    writeJsonAtomic(getCollaborationSummariesPath(), config)
+  } catch (err) {
+    console.error('[协作室存储] 写入 summaries.json 失败:', err)
+    throw new Error('写入协作室房间摘要失败')
+  }
+}
+
+/** 取某房间的摘要记录（不存在返回 undefined）。 */
+export function getCollaborationSummary(roomId: string): CollaborationRoomSummary | undefined {
+  return readSummariesConfig().summaries.find((s) => s.roomId === roomId)
+}
+
+/** 全量 upsert（无条件写，仅供内部/一次性；并发路径请用 saveSummaryIfCurrent）。 */
+export function saveCollaborationSummary(summary: CollaborationRoomSummary): void {
+  const config = readSummariesConfig()
+  const idx = config.summaries.findIndex((s) => s.roomId === summary.roomId)
+  if (idx === -1) config.summaries.push(summary)
+  else config.summaries[idx] = summary
+  writeSummariesConfig(config)
+}
+
+/**
+ * CAS 写（04 §6.2）：仅当现存行的 (generation, version, summaryThroughMessageId) 等于
+ * `expected` 时才写入 `next`；否则不写并返回 false。防并发提交覆盖（commit 主路径用）。
+ *
+ * @returns 是否成功写入
+ */
+export function saveCollaborationSummaryIfCurrent(
+  roomId: string,
+  expected: Pick<CollaborationRoomSummary, 'generation' | 'version' | 'summaryThroughMessageId'>,
+  next: CollaborationRoomSummary,
+): boolean {
+  const config = readSummariesConfig()
+  const idx = config.summaries.findIndex((s) => s.roomId === roomId)
+  const current = idx === -1 ? undefined : config.summaries[idx]
+  const keyMatches =
+    (current?.generation ?? 0) === expected.generation &&
+    (current?.version ?? 0) === expected.version &&
+    (current?.summaryThroughMessageId ?? '') === expected.summaryThroughMessageId
+  if (!keyMatches) return false
+  if (idx === -1) config.summaries.push(next)
+  else config.summaries[idx] = next
+  writeSummariesConfig(config)
+  return true
+}
+
+/**
+ * 抢占一个总结租约（04 §6.2）：仅当当前无未过期的进行中租约时，才把该行置为
+ * `summarizing` 并签发 runToken + leaseExpiresAt。返回抢到的基线记录（含当时
+ * generation/version/锚点，供 commit CAS 对比）；租约在有效期内则返回 `baseline=null`。
+ *
+ * 返回对象：
+ * - `{ ok: false }`：有未过期租约，不抢跑（等待下一次阈值）。
+ * - `{ ok: true, baseline }`：抢占成功。`baseline` 为首条基线（当前行或新建缺省行），
+ *   commit 时须以其 generation/version/锚点做 CAS。
+ */
+export function claimCollaborationSummary(
+  roomId: string,
+  runToken: string,
+  leaseMs: number,
+  now: number,
+):
+  | { ok: true; baseline: CollaborationRoomSummary }
+  | { ok: false; reason: 'lease-active' | 'generation-mismatch' } {
+  const config = readSummariesConfig()
+  const idx = config.summaries.findIndex((s) => s.roomId === roomId)
+  const current = idx === -1 ? undefined : config.summaries[idx]
+
+  if (current && current.status === 'summarizing' && current.leaseExpiresAt !== undefined) {
+    if (current.leaseExpiresAt > now) {
+      return { ok: false, reason: 'lease-active' }
+    }
+  }
+
+  const baseline: CollaborationRoomSummary = current ?? {
+    roomId,
+    summary: '',
+    summaryThroughMessageId: '',
+    summarizedUtteranceCount: 0,
+    version: 0,
+    generation: 0,
+    status: 'idle',
+    updatedAt: now,
+    lastError: null,
+  }
+  const claimed: CollaborationRoomSummary = {
+    ...baseline,
+    status: 'summarizing',
+    runToken,
+    leaseExpiresAt: now + leaseMs,
+    lastError: null,
+    updatedAt: now,
+  }
+  if (idx === -1) config.summaries.push(claimed)
+  else config.summaries[idx] = claimed
+  writeSummariesConfig(config)
+  return { ok: true, baseline }
+}
+
+/**
+ * 提交一次成功总结（04 §6.2）：仅当现存行 generation 与 `baseline.generation` 一致（且
+ * 持有的 runToken 仍匹配）才写入成功稿并 advance anchor/version；否则不写并返回 false
+ *（旧摘要保留；调用方应把该行置为 failed）。
+ *
+ * @param baseline claim 时返回的基线记录
+ * @param summarizeResult 新摘要正文
+ * @param throughMessageId 本次已覆盖到的最后一条有效发言 ID（新锚点）
+ * @param utteranceCount 新累计有效发言数
+ */
+export function commitCollaborationSummary(
+  roomId: string,
+  runToken: string,
+  baseline: Pick<CollaborationRoomSummary, 'generation' | 'version' | 'summaryThroughMessageId'>,
+  nextSummary: string,
+  throughMessageId: string,
+  utteranceCount: number,
+  now: number,
+): boolean {
+  const config = readSummariesConfig()
+  const idx = config.summaries.findIndex((s) => s.roomId === roomId)
+  const current = idx === -1 ? undefined : config.summaries[idx]
+  if (!current) return false
+  // 租约 token 不匹配（已被抢/过期回收）→ 不写
+  if (current.runToken !== undefined && current.runToken !== runToken) return false
+  if (current.generation !== baseline.generation) return false
+  if (current.version !== baseline.version) return false
+  if (current.summaryThroughMessageId !== baseline.summaryThroughMessageId) return false
+
+  config.summaries[idx] = {
+    roomId,
+    summary: nextSummary,
+    summaryThroughMessageId: throughMessageId,
+    summarizedUtteranceCount: utteranceCount,
+    version: baseline.version + 1,
+    generation: baseline.generation,
+    status: 'success',
+    updatedAt: now,
+    lastError: null,
+  }
+  writeSummariesConfig(config)
+  return true
+}
+
+/**
+ * 使进行中的总结失效（房间清空 / 目标重写，04 §6.2）：generation +1 并回到 idle，
+ * 保留既有摘要文本与锚点。进行中的 claim 因其 baseline.generation 过期而 commit 失败。
+ */
+export function invalidateCollaborationSummaryGeneration(roomId: string): number {
+  const config = readSummariesConfig()
+  const idx = config.summaries.findIndex((s) => s.roomId === roomId)
+  const current = idx === -1 ? undefined : config.summaries[idx]
+  const generation = (current?.generation ?? 0) + 1
+  const next: CollaborationRoomSummary = {
+    roomId,
+    summary: current?.summary ?? '',
+    summaryThroughMessageId: current?.summaryThroughMessageId ?? '',
+    summarizedUtteranceCount: current?.summarizedUtteranceCount ?? 0,
+    version: current?.version ?? 0,
+    generation,
+    status: 'idle',
+    updatedAt: Date.now(),
+    lastError: null,
+  }
+  if (idx === -1) config.summaries.push(next)
+  else config.summaries[idx] = next
+  writeSummariesConfig(config)
+  return generation
 }

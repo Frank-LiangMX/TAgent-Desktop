@@ -41,6 +41,8 @@ import {
   isCollaborationRoomStatus,
   nextCollaborationA2ADepth,
   nextCollaborationMentionAliases,
+  COLLABORATION_SUMMARY_DEFAULT_EVERY_UTTERANCES,
+  latestCollaborationRoomSummaryText,
   projectCollaborationTurnContext,
   resolveCollaborationMentions,
   transitionCollaborationMailboxState,
@@ -67,6 +69,7 @@ import {
   appendMembers,
   appendMessage,
   appendMailboxEnvelope,
+  getCollaborationSummary,
   getMember,
   getRoom,
   getRun,
@@ -90,6 +93,10 @@ import {
   MemberBackendResolveError,
   pickDefaultMemberChannelBinding,
 } from './member-backend-adapter'
+import {
+  CollaborationSummaryRunner,
+  type CollaborationSummaryModelCaller,
+} from './collaboration-room-summary'
 import { RoomScheduler, type RoomSchedulerEntry } from './collaboration-room-scheduler'
 
 /** CHANGED 广播类型（主进程 → renderer） */
@@ -109,6 +116,8 @@ export interface CollaborationRoomServiceOptions {
   broadcast?: CollaborationRoomBroadcast
   /** 流式正文增量（默认 noop） */
   onTextDelta?: CollaborationTextDeltaHandler
+  /** 房间摘要模型调用（注入假实现可测 S1–S8；默认复用协调者 channel/model） */
+  summaryModelCaller?: CollaborationSummaryModelCaller
 }
 
 /** Stage 1/2 静态成员的默认能力（全 false，S3+ 由真实 probe 填充） */
@@ -133,6 +142,8 @@ export class CollaborationRoomService {
   private readonly onTextDelta: CollaborationTextDeltaHandler
   /** 房间运行调度器（房间并发 + 成员串行 + FIFO 队列） */
   private readonly scheduler: RoomScheduler
+  /** 房间共享摘要 runner（§6.6：不占 maxConcurrentRuns 槽，fail-closed 不阻塞发言） */
+  private readonly summaryRunner: CollaborationSummaryRunner
   /** 运行中 run 的 AbortController（cancelRun 用） */
   private readonly abortControllers: Map<string, AbortController> = new Map()
   /** 运行中 run 的执行 Promise（测试可 await；完成后自动清除） */
@@ -142,6 +153,9 @@ export class CollaborationRoomService {
     this.adapter = opts.adapter ?? createChannelBackendAdapter()
     this.broadcast = opts.broadcast ?? noopBroadcast
     this.onTextDelta = opts.onTextDelta ?? (() => undefined)
+    this.summaryRunner = new CollaborationSummaryRunner({
+      modelCaller: opts.summaryModelCaller,
+    })
     this.scheduler = this.createScheduler()
   }
 
@@ -222,6 +236,8 @@ export class CollaborationRoomService {
       status: 'active',
       maxConcurrentRuns: input.maxConcurrentRuns ?? COLLABORATION_ROOM_DEFAULT_MAX_CONCURRENT_RUNS,
       maxA2ADepth: input.maxA2ADepth ?? COLLABORATION_ROOM_DEFAULT_MAX_A2A_DEPTH,
+      summaryEveryUtterances:
+        input.summaryEveryUtterances ?? COLLABORATION_SUMMARY_DEFAULT_EVERY_UTTERANCES,
       budget: input.budget ?? {},
       attachedBoardId: input.attachedBoardId,
       createdAt: now,
@@ -254,6 +270,7 @@ export class CollaborationRoomService {
       status: nextStatus,
       maxConcurrentRuns: input.maxConcurrentRuns ?? existing.maxConcurrentRuns,
       maxA2ADepth: input.maxA2ADepth ?? existing.maxA2ADepth,
+      summaryEveryUtterances: input.summaryEveryUtterances ?? existing.summaryEveryUtterances,
       budget: input.budget ?? existing.budget,
       updatedAt: now,
       // 归档记时间；从 archived 恢复到 active 清掉归档时间
@@ -336,6 +353,7 @@ export class CollaborationRoomService {
     // active 房间异步触发成员 run（不阻塞 IPC）
     if (room.status === 'active') {
       this.triggerRunForMessage(room, message)
+      this.kickSummary(room)
     }
 
     return message
@@ -872,6 +890,7 @@ export class CollaborationRoomService {
         members: allMembers,
         messages,
         trigger: triggerMessage,
+        roomSummary: latestCollaborationRoomSummaryText(getCollaborationSummary(room.id)),
         mailboxPreview: pendingMailbox
           .filter(
             (e) =>
@@ -940,6 +959,7 @@ export class CollaborationRoomService {
       })
       this.appendMemberMessage(room, member, triggerMessage, result.text, run.id)
       this.broadcast(room.id, 'run-finished')
+      this.kickSummary(room)
     } catch (err) {
       if (controller.signal.aborted) {
         const current = getRun(run.id)
@@ -1124,6 +1144,17 @@ export class CollaborationRoomService {
     if (member.status !== next) {
       upsertMember({ ...member, status: next, updatedAt: Date.now() })
     }
+  }
+
+  /**
+   * 触发房间共享摘要（§6.6）：不占 maxConcurrentRuns、非阻塞、fail-closed。
+   * runner 内部失败/无渠道/超预算都只置 status='failed'，绝不抛错阻塞本方法/发言。
+   */
+  private kickSummary(room: CollaborationRoom): void {
+    if (room.status !== 'active') return
+    this.summaryRunner.run(room.id).catch((err) => {
+      console.error('[协作室摘要] 后台总结触发失败（不影响成员发言）:', err)
+    })
   }
 
   /** 追加成员消息（done 后） */
