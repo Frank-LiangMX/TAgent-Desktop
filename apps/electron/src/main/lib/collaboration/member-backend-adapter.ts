@@ -66,13 +66,22 @@ const ROOM_TOOL_DESCRIPTORS = [
   },
 ] as const
 
-const roomSendSchema = Type.Object({ toMemberId: Type.String(), message: Type.String() })
-const roomAskSchema = Type.Object({
-  toMemberId: Type.String(),
-  question: Type.String(),
-  expected: Type.Optional(Type.String()),
-})
-const roomReplySchema = Type.Object({ requestId: Type.String(), answer: Type.String() })
+const roomSendSchema = Type.Object(
+  { toMemberId: Type.String(), message: Type.String() },
+  { additionalProperties: false },
+)
+const roomAskSchema = Type.Object(
+  {
+    toMemberId: Type.String(),
+    question: Type.String(),
+    expected: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+)
+const roomReplySchema = Type.Object(
+  { requestId: Type.String(), answer: Type.String() },
+  { additionalProperties: false },
+)
 
 /** channel 后端能力（S2 诚实标记：无 resume/工具/实时输入） */
 const CHANNEL_BACKEND_CAPABILITIES: CollaborationMemberCapabilities = {
