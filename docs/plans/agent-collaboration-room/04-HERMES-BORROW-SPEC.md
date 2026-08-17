@@ -5,7 +5,7 @@
 > 对照：`C:\Users\loumi\Desktop\AI\hermes-studio` 群聊实现（只读）；旧文 [HERMES-STUDIO-TAKEAWAYS](../../dev/moa-roundtable/HERMES-STUDIO-TAKEAWAYS.md)（2026-08-08，MoA 主线，群聊当时被标为「勿整室搬迁」）
 > 实现 brief：[HERMES-BORROW-brief](../../dev/collaboration-room/HERMES-BORROW-brief.md)
 > 日期：2026-08-16
-> 状态：规格定稿，待按切片实现。本文是协作室机制补强的实现真源；与 01/02 冲突时以 ADR-0007 与 02 红线为准，细节以本文为准。
+> 状态：规格定稿，**切片已全部实现（2026-08-17）**。本文是协作室机制补强的实现真源；与 01/02 冲突时以 ADR-0007 与 02 红线为准，细节以本文为准。
 
 ## 0. 一句话
 
@@ -66,6 +66,8 @@ S4-3（adapter 工具回路）仍 blocked-on-pi-core。本文把**不依赖工�
 | **S4.5** handoff outbox | 深度停止有卡片和一次「继续」；重启已开跑的调用标未知，不重放 | S4-2 已有；S4-3 唤醒回路可后接 | 见 §7；与现有 mailbox 状态机兼容 |
 
 推荐提交顺序：S3.5-a → S3.5-c → S3.5-b →（S4-3 工具回路）→ S4.5。S3.5-b 可与 S3.5-c 并行，但不要和 a 挤在同一个 PR。
+
+> **实现进度（2026-08-17）：** 推荐顺序中的 S3.5-a/c/b、S4-3（kscc + Anthropic 协议外部原生工具桥）、S4.5 均已交付；见 [HANDOFF-2026-08-17](../../dev/collaboration-room/HANDOFF-2026-08-17.md)。剩余未做 host 工具为 `room_publish_artifact` / `room_request_user`。
 
 ---
 

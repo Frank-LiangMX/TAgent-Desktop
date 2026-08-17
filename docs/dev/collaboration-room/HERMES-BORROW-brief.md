@@ -24,6 +24,8 @@
 
 ## 2. 建议 PR 切割
 
+> ⚠️ **更新（2026-08-17）：** 以下 PR 1–4 已全部交付，`feature/collab-room` 已是实现完成的形态。本表保留作为原切割计划的历史参考；最新进度见 [HANDOFF-2026-08-17](./HANDOFF-2026-08-17.md)。
+
 | PR | 切片 | 主要改动 | 验收 |
 | --- | --- | --- | --- |
 | 1 | S3.5-a | `resolveCollaborationMentions` + `projectCollaborationTurnContext` + `appendUserMessage.mentions` + MentionPicker 传 memberId | 04 §4.5 / §5.4 + 04 §9 T1–T8 |
