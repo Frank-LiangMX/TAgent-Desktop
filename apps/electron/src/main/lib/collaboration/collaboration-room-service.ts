@@ -32,6 +32,7 @@ import {
   COLLABORATION_ROOM_ID_PREFIX,
   COLLABORATION_ROOM_MAX_MEMBERS,
   COLLABORATION_RUN_ID_PREFIX,
+  COLLABORATION_ROOM_TASK_ID_PREFIX,
   collaborationRunIdempotencyKey,
   collaborationContinuationIdempotencyKey,
   collaborationEnvelopeIdempotencyKey,
@@ -40,6 +41,7 @@ import {
   isCollaborationDuplicateReply,
   isCollaborationSelfSend,
   isCollaborationRoomStatus,
+  isCollaborationRoomTaskStatus,
   nextCollaborationA2ADepth,
   nextCollaborationMentionAliases,
   recommendedCollaborationHandoffDepth,
@@ -48,6 +50,7 @@ import {
   projectCollaborationTurnContext,
   resolveCollaborationMentions,
   transitionCollaborationMailboxState,
+  transitionCollaborationRoomTaskStatus,
   validateCreateCollaborationRoomInput,
   type CollaborationMailboxEnvelope,
   type CollaborationMember,
@@ -55,6 +58,8 @@ import {
   type CollaborationMessage,
   type CollaborationRoom,
   type CollaborationRoomChangedPayload,
+  type CollaborationRoomTask,
+  type CollaborationRoomTaskStatus,
   type CollaborationTextDeltaPayload,
   type CollaborationRun,
   type CollaborationRunStatus,
@@ -64,6 +69,8 @@ import {
   type UpdateCollaborationRoomInput,
   type UpdateCollaborationMemberInput,
   type AppendCollaborationUserMessageInput,
+  type CreateCollaborationRoomTaskInput,
+  type UpdateCollaborationRoomTaskInput,
   type MemberBackendAdapter,
   type MemberTurnInput,
 } from '@tagent/shared'
@@ -76,6 +83,7 @@ import {
   getMember,
   getRoom,
   getRun,
+  getRoomTask,
   listActiveMailboxForMember,
   listMailboxByRequest,
   listMailboxByRoom,
@@ -83,12 +91,15 @@ import {
   listMessagesByRoom,
   listRunsByRoom,
   listRunsByStatus,
+  listRoomTasksByRoom,
   loadMembers,
   loadRooms,
   upsertMailboxEnvelope,
   upsertMember,
   upsertRoom,
   upsertRun,
+  upsertRoomTask,
+  saveRoomTaskIfCurrent,
   findRunByIdempotencyKey,
 } from './collaboration-room-repository'
 import {
@@ -1329,6 +1340,182 @@ export class CollaborationRoomService {
     return updated
   }
 
+  // ===== Room Task（S5：无看板时的轻量任务真值） =====
+  //
+  // 02-RUNTIME-A2A-SPEC §2.6 / 03-IMPLEMENTATION-PHASES §7：room task 仅在房间未挂载看板
+  // （attachedBoardId 为空）时是任务真值。挂载看板后任务真值归看板，room 不再维护另一份
+  // 独立任务状态（不变量 §15.7）；此处 create/update 一律 fail closed，list/get 仍开放
+  // 供历史追溯。本切片不做看板桥 / 产物 / 模型工具（room_task_update 等）。
+
+  /**
+   * 创建轻量 room task（仅未挂载看板时）。
+   *
+   * - 房间须存在且未挂载看板：挂载后任务真值归看板，不能在房间内创建（不变量 §15.7）。
+   * - 标题必填非空；负责人（若指定）须为本房间成员。
+   * - 初始 status='todo'、version=1。
+   */
+  createRoomTask(input: CreateCollaborationRoomTaskInput): CollaborationRoomTask {
+    const room = getRoom(input.roomId)
+    if (!room) {
+      throw new Error('房间不存在')
+    }
+    if (this.roomHasAttachedBoard(room)) {
+      throw new Error('房间已挂载看板，任务真值由看板维护，不能在房间内创建任务')
+    }
+    const title = input.title?.trim() ?? ''
+    if (!title) {
+      throw new Error('任务标题不能为空')
+    }
+    const assigneeMemberId = this.validateAssignee(input.assigneeMemberId, room.id)
+
+    const now = Date.now()
+    const task: CollaborationRoomTask = {
+      id: genId(COLLABORATION_ROOM_TASK_ID_PREFIX),
+      roomId: room.id,
+      title,
+      description: input.description?.trim() || undefined,
+      status: 'todo',
+      assigneeMemberId,
+      sourceMessageId: input.sourceMessageId || undefined,
+      runId: input.runId || undefined,
+      dependsOnTaskIds: dedupeDependsOn(input.dependsOnTaskIds),
+      acceptanceCriteria: input.acceptanceCriteria?.trim() || undefined,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    }
+    upsertRoomTask(task)
+    this.broadcast(room.id, 'updated')
+    return task
+  }
+
+  /** 列出某房间全部 room task（按 createdAt 升序，次按 id 稳定） */
+  listRoomTasks(roomId: string): CollaborationRoomTask[] {
+    return listRoomTasksByRoom(roomId)
+  }
+
+  /** 取单个 room task（不存在返回 undefined） */
+  getRoomTaskById(taskId: string): CollaborationRoomTask | undefined {
+    return getRoomTask(taskId)
+  }
+
+  /**
+   * 更新轻量 room task（仅未挂载看板时）。
+   *
+   * - 任务须存在且属于 input.roomId（拒绝跨房间）。
+   * - 房间已挂载看板 → 拒绝（不变量 §15.7）。
+   * - status 变化须通过严格状态机（transitionCollaborationRoomTaskStatus）；不变则跳过。
+   * - 新负责人（若指定）须为本房间成员；传空字符串解除指派。
+   * - expectedVersion（若提供）须与当前 version 一致；写时 CAS 防覆盖。
+   * - version 自增；updatedAt 刷新。
+   */
+  updateRoomTask(input: UpdateCollaborationRoomTaskInput): CollaborationRoomTask {
+    const current = getRoomTask(input.taskId)
+    if (!current) {
+      throw new Error('任务不存在')
+    }
+    if (current.roomId !== input.roomId) {
+      throw new Error('任务不属于该房间')
+    }
+    const room = getRoom(input.roomId)
+    if (!room) {
+      throw new Error('房间不存在')
+    }
+    if (this.roomHasAttachedBoard(room)) {
+      throw new Error('房间已挂载看板，任务真值由看板维护，不能在房间内修改任务')
+    }
+    if (input.expectedVersion !== undefined && input.expectedVersion !== current.version) {
+      throw new Error('任务版本已过期，请刷新后重试')
+    }
+
+    // 状态迁移校验（严格状态机）
+    const nextStatus =
+      input.status !== undefined && input.status !== current.status
+        ? this.validateTaskTransition(current.status, input.status)
+        : current.status
+
+    // 标题（若改）
+    const nextTitle =
+      input.title !== undefined ? this.validateTaskTitle(input.title) : current.title
+
+    // 负责人（若改；空字符串解除指派）
+    let nextAssignee = current.assigneeMemberId
+    if (input.assigneeMemberId !== undefined) {
+      nextAssignee = this.validateAssignee(input.assigneeMemberId, room.id)
+    }
+
+    const now = Date.now()
+    const next: CollaborationRoomTask = {
+      ...current,
+      title: nextTitle,
+      description:
+        input.description !== undefined
+          ? input.description.trim() || undefined
+          : current.description,
+      status: nextStatus,
+      assigneeMemberId: nextAssignee,
+      acceptanceCriteria:
+        input.acceptanceCriteria !== undefined
+          ? input.acceptanceCriteria.trim() || undefined
+          : current.acceptanceCriteria,
+      runId: input.runId !== undefined ? input.runId || undefined : current.runId,
+      version: current.version + 1,
+      updatedAt: now,
+    }
+
+    if (!saveRoomTaskIfCurrent(input.taskId, current.version, next)) {
+      throw new Error('任务已被其他操作更新，请刷新后重试')
+    }
+    this.broadcast(room.id, 'updated')
+    return next
+  }
+
+  /** 严格状态迁移：非法则抛错，返回目标状态 */
+  private validateTaskTransition(
+    from: CollaborationRoomTaskStatus,
+    to: CollaborationRoomTaskStatus,
+  ): CollaborationRoomTaskStatus {
+    if (!isCollaborationRoomTaskStatus(to)) {
+      throw new Error(`非法任务状态：${String(to)}`)
+    }
+    const res = transitionCollaborationRoomTaskStatus(from, to)
+    if (!res.ok) {
+      throw new Error(res.reason)
+    }
+    return to
+  }
+
+  private validateTaskTitle(title: string): string {
+    const t = title.trim()
+    if (!t) {
+      throw new Error('任务标题不能为空')
+    }
+    return t
+  }
+
+  /**
+   * 校验负责人归属：空字符串 → undefined（解除指派）；非空须为本房间成员。
+   * create/update 共用，拒绝跨房间成员。
+   */
+  private validateAssignee(
+    assigneeMemberId: string | undefined,
+    roomId: string,
+  ): string | undefined {
+    if (assigneeMemberId === undefined) return undefined
+    const id = assigneeMemberId.trim()
+    if (!id) return undefined
+    const assignee = getMember(id)
+    if (!assignee || assignee.roomId !== roomId) {
+      throw new Error('负责人不属于该房间')
+    }
+    return id
+  }
+
+  /** 房间是否已挂载看板（true 时 room task 不再是任务真值） */
+  private roomHasAttachedBoard(room: CollaborationRoom): boolean {
+    return Boolean(room.attachedBoardId)
+  }
+
   // ===== 内部辅助 =====
 
   /** CAS 转换 run 状态：仅当当前状态 === expectedFrom 时才更新为 to，否则返回 undefined */
@@ -1482,6 +1669,20 @@ function serializeRunError(err: unknown): CollaborationSerializedRunError {
     return { message: err.message, stack: err.stack }
   }
   return { message: String(err) }
+}
+
+/** 依赖任务 ID 去重保序（trim + 跳过空串）；空结果返回 undefined，避免落盘空数组 */
+function dedupeDependsOn(ids?: string[]): string[] | undefined {
+  if (!ids || ids.length === 0) return undefined
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const id of ids) {
+    const t = id?.trim()
+    if (!t || seen.has(t)) continue
+    seen.add(t)
+    out.push(t)
+  }
+  return out.length > 0 ? out : undefined
 }
 
 /** 根据创建输入 + 房间 ID 构建一个静态成员记录 */

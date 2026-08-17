@@ -1,0 +1,464 @@
+/**
+ * 协作室 room task（S5 第一刀：无看板时轻量任务真值层）聚焦测试
+ *
+ * 覆盖：
+ * - 纯状态机 transitionCollaborationRoomTaskStatus：合法 / 非法 / 自环 + 类型守卫
+ * - createRoomTask：持久化（id 前缀 / version=1 / status=todo / timestamps）、标题校验、
+ *   负责人归属（跨成员拒绝）、挂载看板拒绝（不变量 §15.7）、房间不存在
+ * - listRoomTasks：跨房间隔离；getRoomTaskById
+ * - updateRoomTask：合法迁移 + version 自增、非法迁移拒绝（状态/版本不变）、跨房间拒绝、
+ *   跨成员拒绝、挂载看板拒绝、expectedVersion CAS、任务不存在、空串解除指派
+ * - 重启读取：新 service 实例读到已落盘 task（version / status / 字段保留）
+ *
+ * 通过 TAGENT_CONFIG_DIR 指向临时目录，与 collaboration-room-repository.test.ts 同构。
+ */
+import { afterAll, beforeAll, describe, expect, test } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  canTransitionCollaborationRoomTaskStatus,
+  isCollaborationRoomTaskStatus,
+  transitionCollaborationRoomTaskStatus,
+  type CollaborationRoomTask,
+  type CollaborationRoomTaskStatus,
+} from '@tagent/shared'
+import { CollaborationRoomService } from './collaboration-room-service'
+import { getRoom, upsertRoom } from './collaboration-room-repository'
+
+let tmpDir: string
+
+beforeAll(() => {
+  tmpDir = mkdtempSync(join(tmpdir(), 'tagent-collab-task-test-'))
+  process.env.TAGENT_CONFIG_DIR = tmpDir
+})
+
+afterAll(() => {
+  delete process.env.TAGENT_CONFIG_DIR
+  rmSync(tmpDir, { recursive: true, force: true })
+})
+
+/** 构造一个带协调者成员的房间，返回 { room, coordinatorId } */
+function mkRoomWithCoordinator(
+  svc: CollaborationRoomService,
+  title: string,
+): { room: ReturnType<CollaborationRoomService['createRoom']>; coordinatorId: string } {
+  const room = svc.createRoom({
+    title,
+    members: [{ displayName: '协调者', isCoordinator: true }],
+  })
+  const coordinatorId = svc.listMembers(room.id)[0]!.id
+  return { room, coordinatorId }
+}
+
+// ===== 纯状态机（不读 DB / 不依赖时间） =====
+
+describe('transitionCollaborationRoomTaskStatus 纯状态机', () => {
+  test('合法迁移全部放行', () => {
+    const legal: Array<[CollaborationRoomTaskStatus, CollaborationRoomTaskStatus]> = [
+      ['todo', 'in_progress'],
+      ['todo', 'blocked'],
+      ['todo', 'failed'],
+      ['in_progress', 'blocked'],
+      ['in_progress', 'done'],
+      ['in_progress', 'failed'],
+      ['blocked', 'todo'],
+      ['blocked', 'in_progress'],
+      ['blocked', 'failed'],
+      ['done', 'todo'],
+      ['done', 'in_progress'],
+      ['failed', 'todo'],
+      ['failed', 'in_progress'],
+    ]
+    for (const [from, to] of legal) {
+      expect(transitionCollaborationRoomTaskStatus(from, to)).toEqual({ ok: true })
+      expect(canTransitionCollaborationRoomTaskStatus(from, to)).toBe(true)
+    }
+  })
+
+  test('非法迁移全部拒绝（不改变状态）', () => {
+    const illegal: Array<[CollaborationRoomTaskStatus, CollaborationRoomTaskStatus]> = [
+      ['todo', 'done'],
+      ['in_progress', 'todo'],
+      ['blocked', 'done'],
+      ['done', 'blocked'],
+      ['done', 'failed'],
+      ['failed', 'blocked'],
+      ['failed', 'done'],
+    ]
+    for (const [from, to] of illegal) {
+      const r = transitionCollaborationRoomTaskStatus(from, to)
+      expect(r.ok).toBe(false)
+      if (!r.ok) expect(r.reason).toContain('非法状态迁移')
+      expect(canTransitionCollaborationRoomTaskStatus(from, to)).toBe(false)
+    }
+  })
+
+  test('自环一律拒绝（状态迁移必须改变状态）', () => {
+    const states: CollaborationRoomTaskStatus[] = [
+      'todo',
+      'in_progress',
+      'blocked',
+      'done',
+      'failed',
+    ]
+    for (const s of states) {
+      const r = transitionCollaborationRoomTaskStatus(s, s)
+      expect(r.ok).toBe(false)
+      if (!r.ok) expect(r.reason).toContain('状态未变化')
+      expect(canTransitionCollaborationRoomTaskStatus(s, s)).toBe(false)
+    }
+  })
+
+  test('isCollaborationRoomTaskStatus 类型守卫', () => {
+    for (const s of ['todo', 'in_progress', 'blocked', 'done', 'failed'] as const) {
+      expect(isCollaborationRoomTaskStatus(s)).toBe(true)
+    }
+    // 旧占位值已废弃，不应被当作合法 room task 状态
+    for (const s of ['pending', 'ready', 'running', 'cancelled', undefined, null, 1, 'done ']) {
+      expect(isCollaborationRoomTaskStatus(s)).toBe(false)
+    }
+  })
+})
+
+// ===== service 集成（持久化 / 校验 / 重启） =====
+
+describe('CollaborationRoomService.createRoomTask', () => {
+  test('持久化：id 前缀 crt_ / version=1 / status=todo / timestamps', () => {
+    const svc = CollaborationRoomService.create()
+    const { room, coordinatorId } = mkRoomWithCoordinator(svc, '任务持久化')
+
+    const task = svc.createRoomTask({
+      roomId: room.id,
+      title: '搭骨架',
+      description: '先落真值层',
+      assigneeMemberId: coordinatorId,
+      acceptanceCriteria: '测试通过',
+    })
+
+    expect(task.id).toMatch(/^crt_/)
+    expect(task.roomId).toBe(room.id)
+    expect(task.title).toBe('搭骨架')
+    expect(task.description).toBe('先落真值层')
+    expect(task.status).toBe('todo')
+    expect(task.assigneeMemberId).toBe(coordinatorId)
+    expect(task.version).toBe(1)
+    expect(task.acceptanceCriteria).toBe('测试通过')
+    expect(task.createdAt).toBeTypeOf('number')
+    expect(task.updatedAt).toBe(task.createdAt)
+
+    // 落盘可读回
+    expect(svc.getRoomTaskById(task.id)?.id).toBe(task.id)
+    expect(svc.listRoomTasks(room.id).map((t) => t.id)).toContain(task.id)
+  })
+
+  test('可选字段：description / dependsOnTaskIds / sourceMessageId / runId 存储 + 去重', () => {
+    const svc = CollaborationRoomService.create()
+    const { room } = mkRoomWithCoordinator(svc, '可选字段')
+
+    const task = svc.createRoomTask({
+      roomId: room.id,
+      title: '带依赖',
+      description: '   ',
+      dependsOnTaskIds: ['crt_a', 'crt_a', ' crt_b ', ''],
+      sourceMessageId: 'msg_x',
+      runId: 'run_y',
+    })
+    expect(task.description).toBeUndefined()
+    expect(task.dependsOnTaskIds).toEqual(['crt_a', 'crt_b'])
+    expect(task.sourceMessageId).toBe('msg_x')
+    expect(task.runId).toBe('run_y')
+  })
+
+  test('房间不存在 → 抛错', () => {
+    const svc = CollaborationRoomService.create()
+    expect(() => svc.createRoomTask({ roomId: 'cr_no', title: 'x' })).toThrow(/房间不存在/)
+  })
+
+  test('标题为空 → 抛错', () => {
+    const svc = CollaborationRoomService.create()
+    const { room } = mkRoomWithCoordinator(svc, '空标题')
+    expect(() => svc.createRoomTask({ roomId: room.id, title: '' })).toThrow(/标题不能为空/)
+    expect(() => svc.createRoomTask({ roomId: room.id, title: '   ' })).toThrow(/标题不能为空/)
+  })
+
+  test('负责人跨房间 → 拒绝；同房间 → 放行', () => {
+    const svc = CollaborationRoomService.create()
+    const a = mkRoomWithCoordinator(svc, '房间 A')
+    const b = mkRoomWithCoordinator(svc, '房间 B')
+    const memberB = svc.listMembers(b.room.id)[0]!.id
+
+    // B 的成员不能被指派到 A 的任务
+    expect(() =>
+      svc.createRoomTask({ roomId: a.room.id, title: '越界指派', assigneeMemberId: memberB }),
+    ).toThrow(/负责人不属于该房间/)
+
+    // A 的协调者可以
+    const ok = svc.createRoomTask({
+      roomId: a.room.id,
+      title: '本房间指派',
+      assigneeMemberId: a.coordinatorId,
+    })
+    expect(ok.assigneeMemberId).toBe(a.coordinatorId)
+  })
+
+  test('房间已挂载看板 → 拒绝创建（不变量 §15.7：不能形成双真值）', () => {
+    const svc = CollaborationRoomService.create()
+    const room = svc.createRoom({ title: '挂板房', attachedBoardId: 'b_board1' })
+    expect(room.attachedBoardId).toBe('b_board1')
+    expect(() => svc.createRoomTask({ roomId: room.id, title: '不该建' })).toThrow(
+      /已挂载看板/,
+    )
+  })
+})
+
+describe('CollaborationRoomService.listRoomTasks / getRoomTaskById', () => {
+  test('跨房间隔离：listRoomTasks 只返回本房间任务', () => {
+    const svc = CollaborationRoomService.create()
+    const a = mkRoomWithCoordinator(svc, '隔离 A')
+    const b = mkRoomWithCoordinator(svc, '隔离 B')
+
+    svc.createRoomTask({ roomId: a.room.id, title: 'A1' })
+    svc.createRoomTask({ roomId: a.room.id, title: 'A2' })
+    svc.createRoomTask({ roomId: b.room.id, title: 'B1' })
+
+    expect(svc.listRoomTasks(a.room.id).map((t) => t.title)).toEqual(['A1', 'A2'])
+    expect(svc.listRoomTasks(b.room.id).map((t) => t.title)).toEqual(['B1'])
+    expect(svc.listRoomTasks('cr_no_exist')).toEqual([])
+  })
+
+  test('getRoomTaskById：存在 / 不存在', () => {
+    const svc = CollaborationRoomService.create()
+    const { room } = mkRoomWithCoordinator(svc, '按 id 查')
+    const task = svc.createRoomTask({ roomId: room.id, title: '查我' })
+    expect(svc.getRoomTaskById(task.id)?.title).toBe('查我')
+    expect(svc.getRoomTaskById('crt_no')).toBeUndefined()
+  })
+})
+
+describe('CollaborationRoomService.updateRoomTask 状态迁移', () => {
+  test('合法迁移放行 + version 自增', () => {
+    const svc = CollaborationRoomService.create()
+    const { room } = mkRoomWithCoordinator(svc, '合法迁移')
+    const task = svc.createRoomTask({ roomId: room.id, title: '走全流程' })
+
+    const r1 = svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'in_progress' })
+    expect(r1.status).toBe('in_progress')
+    expect(r1.version).toBe(2)
+
+    const r2 = svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'done' })
+    expect(r2.status).toBe('done')
+    expect(r2.version).toBe(3)
+
+    // reopen：done → in_progress 合法
+    const r3 = svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'in_progress' })
+    expect(r3.status).toBe('in_progress')
+    expect(r3.version).toBe(4)
+
+    // blocked → in_progress 合法
+    const r4 = svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'blocked' })
+    expect(r4.status).toBe('blocked')
+    const r5 = svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'in_progress' })
+    expect(r5.status).toBe('in_progress')
+
+    // failed → retry：in_progress → failed → in_progress
+    const r6 = svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'failed' })
+    expect(r6.status).toBe('failed')
+    const r7 = svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'in_progress' })
+    expect(r7.status).toBe('in_progress')
+  })
+
+  test('非法迁移拒绝：状态与 version 都不变（未落盘）', () => {
+    const svc = CollaborationRoomService.create()
+    const { room } = mkRoomWithCoordinator(svc, '非法迁移')
+    const task = svc.createRoomTask({ roomId: room.id, title: '不能跳级' })
+
+    // todo → done 非法（必须经 in_progress）
+    expect(() =>
+      svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'done' }),
+    ).toThrow(/非法状态迁移/)
+
+    // 未变更：状态仍 todo、version 仍 1
+    const after = svc.getRoomTaskById(task.id)
+    expect(after?.status).toBe('todo')
+    expect(after?.version).toBe(1)
+  })
+
+  test('不传 status：仅改字段，不改状态、version 仍自增', () => {
+    const svc = CollaborationRoomService.create()
+    const { room } = mkRoomWithCoordinator(svc, '改字段')
+    const task = svc.createRoomTask({ roomId: room.id, title: '原标题' })
+
+    const r = svc.updateRoomTask({ roomId: room.id, taskId: task.id, title: '新标题' })
+    expect(r.title).toBe('新标题')
+    expect(r.status).toBe('todo')
+    expect(r.version).toBe(2)
+  })
+
+  test('传等于当前 status：视为不改状态（不触发迁移校验），version 仍自增', () => {
+    const svc = CollaborationRoomService.create()
+    const { room } = mkRoomWithCoordinator(svc, '同态更新')
+    const task = svc.createRoomTask({ roomId: room.id, title: '同态' })
+    const r = svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'todo' })
+    expect(r.status).toBe('todo')
+    expect(r.version).toBe(2)
+  })
+})
+
+describe('CollaborationRoomService.updateRoomTask 守卫', () => {
+  test('跨房间：任务属于 A，用 B 的 roomId 更新 → 拒绝', () => {
+    const svc = CollaborationRoomService.create()
+    const a = mkRoomWithCoordinator(svc, '跨房间 A')
+    const b = mkRoomWithCoordinator(svc, '跨房间 B')
+    const task = svc.createRoomTask({ roomId: a.room.id, title: 'A 的任务' })
+
+    expect(() =>
+      svc.updateRoomTask({ roomId: b.room.id, taskId: task.id, status: 'in_progress' }),
+    ).toThrow(/任务不属于该房间/)
+    // 未被改
+    expect(svc.getRoomTaskById(task.id)?.status).toBe('todo')
+  })
+
+  test('跨成员：改指派为别房间成员 → 拒绝', () => {
+    const svc = CollaborationRoomService.create()
+    const a = mkRoomWithCoordinator(svc, '跨成员 A')
+    const b = mkRoomWithCoordinator(svc, '跨成员 B')
+    const memberB = svc.listMembers(b.room.id)[0]!.id
+    const task = svc.createRoomTask({ roomId: a.room.id, title: '指派' })
+
+    expect(() =>
+      svc.updateRoomTask({ roomId: a.room.id, taskId: task.id, assigneeMemberId: memberB }),
+    ).toThrow(/负责人不属于该房间/)
+
+    // 同房间成员可指派
+    const ok = svc.updateRoomTask({
+      roomId: a.room.id,
+      taskId: task.id,
+      assigneeMemberId: a.coordinatorId,
+    })
+    expect(ok.assigneeMemberId).toBe(a.coordinatorId)
+
+    // 空字符串解除指派
+    const cleared = svc.updateRoomTask({
+      roomId: a.room.id,
+      taskId: task.id,
+      assigneeMemberId: '',
+    })
+    expect(cleared.assigneeMemberId).toBeUndefined()
+  })
+
+  test('挂载看板后：create/update 拒绝，list/get 仍开放（历史追溯）', () => {
+    const svc = CollaborationRoomService.create()
+    const { room } = mkRoomWithCoordinator(svc, '后挂看板')
+    const task = svc.createRoomTask({ roomId: room.id, title: '挂板前建的' })
+
+    // 模拟看板桥后续挂载：直接翻房间的 attachedBoardId
+    upsertRoom({ ...getRoom(room.id)!, attachedBoardId: 'b_late' })
+
+    // update 被拒
+    expect(() =>
+      svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'in_progress' }),
+    ).toThrow(/已挂载看板/)
+    // create 也被拒
+    expect(() => svc.createRoomTask({ roomId: room.id, title: '挂板后建' })).toThrow(
+      /已挂载看板/,
+    )
+
+    // list / get 仍可读（历史追溯不丢失）
+    expect(svc.listRoomTasks(room.id).map((t) => t.id)).toContain(task.id)
+    expect(svc.getRoomTaskById(task.id)?.title).toBe('挂板前建的')
+  })
+
+  test('expectedVersion CAS：过期拒绝 / 匹配放行 / 不传跳过', () => {
+    const svc = CollaborationRoomService.create()
+    const { room } = mkRoomWithCoordinator(svc, 'CAS')
+    const task = svc.createRoomTask({ roomId: room.id, title: '乐观锁' })
+    expect(task.version).toBe(1)
+
+    // 过期版本（传 0，实际 1）→ 拒绝
+    expect(() =>
+      svc.updateRoomTask({
+        roomId: room.id,
+        taskId: task.id,
+        status: 'in_progress',
+        expectedVersion: 0,
+      }),
+    ).toThrow(/版本已过期/)
+
+    // 匹配版本（传 1）→ 放行，version → 2
+    const r1 = svc.updateRoomTask({
+      roomId: room.id,
+      taskId: task.id,
+      status: 'in_progress',
+      expectedVersion: 1,
+    })
+    expect(r1.version).toBe(2)
+
+    // 再次用过期版本（仍传 1）→ 拒绝
+    expect(() =>
+      svc.updateRoomTask({
+        roomId: room.id,
+        taskId: task.id,
+        status: 'done',
+        expectedVersion: 1,
+      }),
+    ).toThrow(/版本已过期/)
+
+    // 不传 expectedVersion → 跳过 CAS，正常放行
+    const r2 = svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'done' })
+    expect(r2.status).toBe('done')
+    expect(r2.version).toBe(3)
+  })
+
+  test('任务不存在 → 抛错', () => {
+    const svc = CollaborationRoomService.create()
+    const { room } = mkRoomWithCoordinator(svc, '不存在的任务')
+    expect(() =>
+      svc.updateRoomTask({ roomId: room.id, taskId: 'crt_no', status: 'in_progress' }),
+    ).toThrow(/任务不存在/)
+  })
+})
+
+describe('CollaborationRoomService room task 重启读取', () => {
+  test('新 service 实例读到已落盘 task（version / status / 字段保留）', () => {
+    // 第一阶段：写入
+    const svc1 = CollaborationRoomService.create()
+    const { room, coordinatorId } = mkRoomWithCoordinator(svc1, '重启验证')
+    const task = svc1.createRoomTask({
+      roomId: room.id,
+      title: '落盘任务',
+      description: '关掉再开还在',
+      assigneeMemberId: coordinatorId,
+      acceptanceCriteria: '能读回',
+    })
+    const updated = svc1.updateRoomTask({
+      roomId: room.id,
+      taskId: task.id,
+      status: 'in_progress',
+    })
+    expect(updated.status).toBe('in_progress')
+    expect(updated.version).toBe(2)
+
+    // 第二阶段：模拟重启 —— 新 service 实例（无内存状态，纯读盘）
+    const svc2 = CollaborationRoomService.create()
+    const loaded = svc2.getRoomTaskById(task.id) as CollaborationRoomTask
+    expect(loaded).toBeDefined()
+    expect(loaded.id).toBe(task.id)
+    expect(loaded.roomId).toBe(room.id)
+    expect(loaded.title).toBe('落盘任务')
+    expect(loaded.description).toBe('关掉再开还在')
+    expect(loaded.assigneeMemberId).toBe(coordinatorId)
+    expect(loaded.acceptanceCriteria).toBe('能读回')
+    // 状态机 + version 跨实例保留
+    expect(loaded.status).toBe('in_progress')
+    expect(loaded.version).toBe(2)
+
+    // list 也跨实例可用
+    expect(svc2.listRoomTasks(room.id).map((t) => t.id)).toContain(task.id)
+
+    // 新实例可继续合法迁移（version → 3）
+    const r = svc2.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'done' })
+    expect(r.status).toBe('done')
+    expect(r.version).toBe(3)
+  })
+})

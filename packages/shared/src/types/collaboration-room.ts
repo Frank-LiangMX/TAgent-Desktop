@@ -77,7 +77,7 @@ export type CollaborationMessageKind =
 /** 消息可见范围 */
 export type CollaborationMessageVisibility = 'room' | 'participants' | 'user_only'
 
-// ===== Run / Mailbox / RoomTask 占位状态枚举（S2+ 运行时用） =====
+// ===== Run / Mailbox / RoomTask 状态枚举（运行时用） =====
 
 /** Run 状态机（02-RUNTIME-A2A-SPEC §2.4），Stage 2 起产生真实 run */
 export type CollaborationRunStatus =
@@ -124,14 +124,81 @@ export type CollaborationMailboxStopReason =
   | 'continue_failed'
   | 'outcome_unknown'
 
-/** 轻量 room task 状态（无看板时用，S5+） */
+/**
+ * 轻量 room task 状态（无看板时的任务真值，S5）。
+ *
+ * 02-RUNTIME-A2A-SPEC §2.6 / 03-IMPLEMENTATION-PHASES §7：房间仅在未挂载看板时维护
+ * 轻量任务真值；挂载看板后任务真值归看板，room 只存投影事件（不变量 §15.7）。
+ *
+ * - todo：待办（已创建，尚未开始）
+ * - in_progress：进行中（负责人已开工）
+ * - blocked：阻塞（等待输入/依赖/外部）
+ * - done：完成（终态，可被 reopen 回到 in_progress/todo）
+ * - failed：失败（终态，可被 retry 回到 in_progress/todo）
+ */
 export type CollaborationRoomTaskStatus =
-  | 'pending'
-  | 'ready'
-  | 'running'
+  | 'todo'
+  | 'in_progress'
+  | 'blocked'
   | 'done'
   | 'failed'
-  | 'cancelled'
+
+/** 判断是否为合法 room task 状态 */
+export function isCollaborationRoomTaskStatus(
+  value: unknown,
+): value is CollaborationRoomTaskStatus {
+  return (
+    value === 'todo' ||
+    value === 'in_progress' ||
+    value === 'blocked' ||
+    value === 'done' ||
+    value === 'failed'
+  )
+}
+
+/**
+ * room task 合法后继状态（严格状态机）。
+ *
+ * 合法迁移（其余一律拒绝）：
+ * - todo        → in_progress | blocked | failed
+ * - in_progress → blocked | done | failed
+ * - blocked     → todo | in_progress | failed
+ * - done        → todo | in_progress  （reopen）
+ * - failed      → todo | in_progress   （retry）
+ */
+const ROOM_TASK_NEXT_STATES: Record<
+  CollaborationRoomTaskStatus,
+  readonly CollaborationRoomTaskStatus[]
+> = {
+  todo: ['in_progress', 'blocked', 'failed'],
+  in_progress: ['blocked', 'done', 'failed'],
+  blocked: ['todo', 'in_progress', 'failed'],
+  done: ['todo', 'in_progress'],
+  failed: ['todo', 'in_progress'],
+}
+
+/**
+ * 行使一次 room task 状态迁移。
+ *
+ * 自环（from === to）一律拒绝：状态迁移必须改变状态；幂等更新由调用方自行跳过。
+ * 返回 `{ ok: true }` 或 `{ ok: false; reason }`（判别联合，便于调用方 fail closed）。
+ */
+export function transitionCollaborationRoomTaskStatus(
+  from: CollaborationRoomTaskStatus,
+  to: CollaborationRoomTaskStatus,
+): { ok: true } | { ok: false; reason: string } {
+  if (from === to) return { ok: false, reason: `状态未变化（${from} → ${to}）` }
+  if (ROOM_TASK_NEXT_STATES[from].includes(to)) return { ok: true }
+  return { ok: false, reason: `非法状态迁移：${from} → ${to}` }
+}
+
+/** 是否为合法 room task 状态迁移（不改变状态时返回 false） */
+export function canTransitionCollaborationRoomTaskStatus(
+  from: CollaborationRoomTaskStatus,
+  to: CollaborationRoomTaskStatus,
+): boolean {
+  return transitionCollaborationRoomTaskStatus(from, to).ok
+}
 
 // ===== 辅助类型 =====
 
@@ -500,24 +567,38 @@ export interface CollaborationMailboxEnvelope {
   expiresAt?: number
 }
 
-/** 轻量 room task（无看板时用，S5+） */
+/**
+ * 轻量 room task（无看板时的任务真值，S5）。
+ *
+ * 02-RUNTIME-A2A-SPEC §2.6：`collaboration_room_tasks` 只承载无看板时的轻量任务真值；
+ * 附加看板后房间保存 `attachedBoardId` 引用，状态由 kanban repository 提供，room 不再
+ * 维护另一份独立任务状态（不变量 §15.7）。本切片只落 room task 真值，不做看板桥/产物/模型工具。
+ *
+ * 并发守卫：`version` 每次更新自增；调用方可传 `expectedVersion` 做 CAS，防止覆盖他人更新。
+ */
 export interface CollaborationRoomTask {
-  /** task ID */
+  /** task ID，格式 crt_xxxx */
   id: string
   /** 所属房间 ID */
   roomId: string
   /** 任务标题 */
   title: string
-  /** 任务描述 */
-  body?: string
-  /** 负责成员 ID（可选） */
-  assigneeMemberId?: string
+  /** 任务描述（可选，给负责成员的说明） */
+  description?: string
   /** 状态 */
   status: CollaborationRoomTaskStatus
-  /** 依赖任务 ID 列表 */
+  /** 负责成员 ID（可选；须为本房间成员，由 service 校验） */
+  assigneeMemberId?: string
+  /** 产生该任务的消息 ID（可选，因果追溯） */
+  sourceMessageId?: string
+  /** 关联 run ID（可选，执行追溯；可在 update 时回填） */
+  runId?: string
+  /** 依赖任务 ID 列表（可选；仅记录，本切片不据此推进状态） */
   dependsOnTaskIds?: string[]
-  /** 验收标准 */
+  /** 验收标准（可选） */
   acceptanceCriteria?: string
+  /** 乐观并发版本号；每次 update 自增 */
+  version: number
   /** 创建时间戳 */
   createdAt: number
   /** 更新时间戳 */
@@ -548,6 +629,8 @@ export const COLLABORATION_MESSAGE_ID_PREFIX = 'msg_'
 export const COLLABORATION_LOGICAL_SESSION_ID_PREFIX = 'ls_'
 /** run ID 前缀 */
 export const COLLABORATION_RUN_ID_PREFIX = 'run_'
+/** room task ID 前缀 */
+export const COLLABORATION_ROOM_TASK_ID_PREFIX = 'crt_'
 
 /**
  * 计算 run 幂等键：同一触发消息对同一成员只产生一个 run。
@@ -1186,6 +1269,50 @@ export interface AppendCollaborationUserMessageInput {
   targetMemberIds?: string[]
   /** 回复的消息 ID（可选） */
   replyToMessageId?: string
+}
+
+// ===== Room Task 创建/更新输入（S5：无看板时轻量任务真值） =====
+
+/** 创建轻量 room task 的输入（仅未挂载看板时可用） */
+export interface CreateCollaborationRoomTaskInput {
+  /** 所属房间 ID */
+  roomId: string
+  /** 任务标题（必填，非空） */
+  title: string
+  /** 任务描述（可选） */
+  description?: string
+  /** 负责成员 ID（可选；须为本房间成员，由 service 校验） */
+  assigneeMemberId?: string
+  /** 产生该任务的消息 ID（可选，因果追溯） */
+  sourceMessageId?: string
+  /** 关联 run ID（可选，执行追溯） */
+  runId?: string
+  /** 依赖任务 ID 列表（可选；仅记录，不据此推进状态） */
+  dependsOnTaskIds?: string[]
+  /** 验收标准（可选） */
+  acceptanceCriteria?: string
+}
+
+/** 更新轻量 room task 的输入（仅未挂载看板时可用） */
+export interface UpdateCollaborationRoomTaskInput {
+  /** 所属房间 ID（校验归属，拒绝跨房间） */
+  roomId: string
+  /** 任务 ID */
+  taskId: string
+  /** 目标状态（触发严格状态迁移校验；不传或等于当前则不改状态） */
+  status?: CollaborationRoomTaskStatus
+  /** 新标题（可选） */
+  title?: string
+  /** 新描述（可选；传空字符串清空） */
+  description?: string
+  /** 新负责成员 ID（可选；须为本房间成员；传空字符串解除指派） */
+  assigneeMemberId?: string
+  /** 新验收标准（可选；传空字符串清空） */
+  acceptanceCriteria?: string
+  /** 关联 run ID（可选，回填执行追溯；传空字符串清空） */
+  runId?: string
+  /** 乐观并发：调用方上次读到的 version；不匹配则拒绝（防覆盖） */
+  expectedVersion?: number
 }
 
 // ===== 校验与类型守卫 =====

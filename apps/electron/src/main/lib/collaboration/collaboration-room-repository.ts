@@ -22,6 +22,7 @@ import type {
   CollaborationRun,
   CollaborationMailboxEnvelope,
   CollaborationRoomSummary,
+  CollaborationRoomTask,
 } from '@tagent/shared'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import {
@@ -31,6 +32,7 @@ import {
   getCollaborationRunsPath,
   getCollaborationMailboxPath,
   getCollaborationSummariesPath,
+  getCollaborationRoomTasksPath,
 } from '../config/config-paths'
 
 /** 配置版本号 */
@@ -530,4 +532,83 @@ export function invalidateCollaborationSummaryGeneration(roomId: string): number
   else config.summaries[idx] = next
   writeSummariesConfig(config)
   return generation
+}
+
+// ===== room-tasks.json（S5 轻量 room task 真值，无看板时） =====
+//
+// 仅在房间未挂载看板时承载任务真值（02-RUNTIME-A2A-SPEC §2.6 / 不变量 §15.7）。
+// 挂载看板后 service 层拒绝 create/update，状态归 kanban repository；本表只保留历史。
+
+interface RoomTasksConfig {
+  version: number
+  tasks: CollaborationRoomTask[]
+}
+
+function readRoomTasksConfig(): RoomTasksConfig {
+  const parsed = readJsonSafe<RoomTasksConfig | null>(getCollaborationRoomTasksPath(), null)
+  if (!parsed || !Array.isArray(parsed.tasks)) {
+    return { version: CONFIG_VERSION, tasks: [] }
+  }
+  return parsed
+}
+
+function writeRoomTasksConfig(config: RoomTasksConfig): void {
+  try {
+    writeJsonAtomic(getCollaborationRoomTasksPath(), config)
+  } catch (err) {
+    console.error('[协作室存储] 写入 room-tasks.json 失败:', err)
+    throw new Error('写入协作室任务数据失败')
+  }
+}
+
+/** 读取全部 room task */
+export function loadRoomTasks(): CollaborationRoomTask[] {
+  return readRoomTasksConfig().tasks
+}
+
+/** 列出某房间全部 room task（按 createdAt 升序，次按 id 稳定） */
+export function listRoomTasksByRoom(roomId: string): CollaborationRoomTask[] {
+  return readRoomTasksConfig()
+    .tasks.filter((t) => t.roomId === roomId)
+    .sort((a, b) => {
+      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    })
+}
+
+/** 取单个 room task（全局搜索） */
+export function getRoomTask(taskId: string): CollaborationRoomTask | undefined {
+  return readRoomTasksConfig().tasks.find((t) => t.id === taskId)
+}
+
+/** upsert 单个 room task（按 id） */
+export function upsertRoomTask(task: CollaborationRoomTask): void {
+  const config = readRoomTasksConfig()
+  const idx = config.tasks.findIndex((t) => t.id === task.id)
+  if (idx === -1) config.tasks.push(task)
+  else config.tasks[idx] = task
+  writeRoomTasksConfig(config)
+}
+
+/**
+ * CAS 写：仅当现存 task 的 version 等于 `expectedVersion` 时才写入 `next`；否则不写并返回
+ * false。防并发提交覆盖（乐观并发；调用方传入上次读到的 version）。新增 task（现存不存在）
+ * 时要求 `expectedVersion === 0`，避免把"不存在"误当"version=0 已存在"写入。
+ *
+ * @returns 是否成功写入
+ */
+export function saveRoomTaskIfCurrent(
+  taskId: string,
+  expectedVersion: number,
+  next: CollaborationRoomTask,
+): boolean {
+  const config = readRoomTasksConfig()
+  const idx = config.tasks.findIndex((t) => t.id === taskId)
+  const current = idx === -1 ? undefined : config.tasks[idx]
+  const currentVersion = current?.version ?? 0
+  if (currentVersion !== expectedVersion) return false
+  if (idx === -1) config.tasks.push(next)
+  else config.tasks[idx] = next
+  writeRoomTasksConfig(config)
+  return true
 }
