@@ -230,14 +230,39 @@ describe('resolveChannelBackendConfig', () => {
 })
 
 describe('channelSupportsRoomToolBridge', () => {
-  test('仅 kscc-internal 声明为支持房间工具桥；外部渠道保持 false', () => {
+  test('kscc-internal 与 Anthropic 协议外部渠道声明支持；OpenAI-completions/google/缺失 fail closed', () => {
     channelState.channels = [
       fakeChannel({ id: 'kscc', provider: 'kscc-internal' }),
-      fakeChannel({ id: 'external', provider: 'openai' }),
+      fakeChannel({ id: 'anthropic-ch', provider: 'anthropic' }),
+      fakeChannel({ id: 'deepseek-ch', provider: 'deepseek' }),
+      fakeChannel({ id: 'kimi-ch', provider: 'kimi-api' }),
+      fakeChannel({ id: 'zhipu-coding-ch', provider: 'zhipu-coding' }),
+      fakeChannel({ id: 'qwen-anthropic-ch', provider: 'qwen-anthropic' }),
+      fakeChannel({ id: 'openai-ch', provider: 'openai' }),
+      fakeChannel({ id: 'zhipu-ch', provider: 'zhipu' }),
+      fakeChannel({ id: 'doubao-ch', provider: 'doubao' }),
+      fakeChannel({ id: 'qwen-ch', provider: 'qwen' }),
+      fakeChannel({ id: 'custom-ch', provider: 'custom' }),
+      fakeChannel({ id: 'google-ch', provider: 'google' }),
     ]
+    // kscc 走 antml 文本协议桥
     expect(channelSupportsRoomToolBridge('kscc')).toBe(true)
-    expect(channelSupportsRoomToolBridge('external')).toBe(false)
+    // Anthropic /v1/messages 协议外部渠道 → 原生 function/tool calling 桥
+    expect(channelSupportsRoomToolBridge('anthropic-ch')).toBe(true)
+    expect(channelSupportsRoomToolBridge('deepseek-ch')).toBe(true)
+    expect(channelSupportsRoomToolBridge('kimi-ch')).toBe(true)
+    expect(channelSupportsRoomToolBridge('zhipu-coding-ch')).toBe(true)
+    expect(channelSupportsRoomToolBridge('qwen-anthropic-ch')).toBe(true)
+    // OpenAI-completions / google / custom：无原生工具桥 → fail closed，保持纯文本
+    expect(channelSupportsRoomToolBridge('openai-ch')).toBe(false)
+    expect(channelSupportsRoomToolBridge('zhipu-ch')).toBe(false)
+    expect(channelSupportsRoomToolBridge('doubao-ch')).toBe(false)
+    expect(channelSupportsRoomToolBridge('qwen-ch')).toBe(false)
+    expect(channelSupportsRoomToolBridge('custom-ch')).toBe(false)
+    expect(channelSupportsRoomToolBridge('google-ch')).toBe(false)
+    // 未绑定 / 不存在的渠道 → false
     expect(channelSupportsRoomToolBridge()).toBe(false)
+    expect(channelSupportsRoomToolBridge('nope')).toBe(false)
   })
 })
 

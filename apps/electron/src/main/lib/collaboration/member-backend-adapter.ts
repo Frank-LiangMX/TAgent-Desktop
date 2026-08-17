@@ -16,13 +16,16 @@ import {
   createKsccBareStreamFn,
   createKsccSeatRunner,
   createPiHttpSeatRunner,
+  createHttpDirectStreamFn,
   type MoASeatRunner,
 } from '@tagent/pi-core'
 import { Agent, type AgentTool, type AgentToolResult } from '@earendil-works/pi-agent-core'
 import { Type } from '@earendil-works/pi-ai'
 import {
+  isAgentCompatibleProvider,
   resolveChannelDefaultModelId,
   type Channel,
+  type CollaborationHostToolHandler,
   type CollaborationMemberCapabilities,
   type MemberBackendAdapter,
   type MemberTurnInput,
@@ -272,6 +275,14 @@ export class ChannelBackendAdapter implements MemberBackendAdapter {
       })
     }
 
+    // 外部渠道：仅原生 function/tool calling 协议（Anthropic /v1/messages）且宿主注入
+    // hostToolHandler 时，才用真实 AgentTool 经供应商原生 tool_use 接桥；execute 转发宿主
+    // handler 真实校验/执行，结果由 Agent 自动回注下一轮 context。绝不通过 prompt 文本
+    // 伪造工具。无原生工具能力 / 无 host handler → fail closed 走下方纯文本 runner。
+    if (cfg.kind === 'external' && input.hostToolHandler && isAgentCompatibleProvider(cfg.provider)) {
+      return runExternalRoomToolTurn({ input, cfg })
+    }
+
     const runner: MoASeatRunner =
       cfg.kind === 'kscc'
         ? createKsccSeatRunner({ ksccPath: cfg.ksccPath })
@@ -290,11 +301,149 @@ export class ChannelBackendAdapter implements MemberBackendAdapter {
 }
 
 /**
- * 能力声明用的保守 probe：只有明确绑定且 provider 为本机 kscc 的成员才展示工具桥能力。
- * 外部 HTTP 渠道即使模型本身宣称可调工具，也尚未接入本 bridge，因此必须是 false。
+ * 能力声明用的保守 probe：
+ * - kscc-internal：走 antml 文本协议工具桥（runKsccRoomToolTurn）。
+ * - 外部渠道：仅当走原生 function/tool calling 协议（Anthropic /v1/messages，即
+ *   isAgentCompatibleProvider）时才声明支持；此时 runExternalRoomToolTurn 用真实
+ *   AgentTool 经供应商原生 tool_use 接桥。
+ * - OpenAI-completions / google 等不在此列 → false，保持纯文本回复（fail closed），
+ *   绝不通过 prompt 文本伪造工具，也绝不假装支持。
  */
 export function channelSupportsRoomToolBridge(channelId?: string): boolean {
-  return Boolean(channelId && getChannel(channelId)?.provider === 'kscc-internal')
+  if (!channelId) return false
+  const channel = getChannel(channelId)
+  if (!channel) return false
+  if (channel.provider === 'kscc-internal') return true
+  return isAgentCompatibleProvider(channel.provider)
+}
+
+/**
+ * 构造协作室工具桥的 3 把受限 AgentTool：room_send / room_ask / room_reply。
+ *
+ * 安全契约（02-RUNTIME-A2A-SPEC §9 / 03-IMPLEMENTATION-PHASES §12）：
+ * - 工具 schema 由宿主白名单写死（TypeBox），绝不来自模型或 prompt 文本；这是模型在
+ *   房间里能触发的全部副作用，绝不暴露 filesystem/shell/database（不复用 Pi 会话的
+ *   Read/Bash/Edit/Write/Task 等）。
+ * - execute 把调用转发给宿主 hostToolHandler 真实校验/落盘/状态机迁移，绝不就地伪造结果；
+ *   返回值的 content 由 Agent 自动作为 tool_result 回注下一轮 context（result 回注）。
+ * - ask 成功且 result.awaitPeer=true 时调用 abortAgent 停掉 Agent loop，让 service 把
+ *   run 迁移到 awaiting_peer，避免模型在等待期间再做副作用。
+ */
+export function buildRoomBridgeTools(args: {
+  hostToolHandler: CollaborationHostToolHandler
+  abortAgent: () => void
+}): AgentTool<any, { output: string }>[] {
+  const { hostToolHandler, abortAgent } = args
+  const make = (
+    name: 'room_send' | 'room_ask' | 'room_reply',
+    description: string,
+    // TypeBox schema 具体泛型在三个工具间不同；AgentTool 在此处按运行时 schema 消费。
+    parameters: any,
+  ): AgentTool<any, { output: string }> => ({
+    name,
+    label: name,
+    description,
+    parameters: parameters as any,
+    execute: async (_id, raw): Promise<AgentToolResult<{ output: string }>> => {
+      const result = await hostToolHandler({
+        name,
+        arguments: Object.fromEntries(
+          Object.entries(raw as Record<string, unknown>).map(([key, value]) => [
+            key,
+            String(value ?? ''),
+          ]),
+        ),
+      })
+      // ask 的宿主状态已以 CAS 迁移；停掉 Agent loop 以免模型在等待期间再做副作用。
+      if (result.awaitPeer) abortAgent()
+      return {
+        content: [{ type: 'text', text: result.output }],
+        details: { output: result.output },
+      }
+    },
+  })
+  return [
+    make('room_send', ROOM_TOOL_DESCRIPTORS[0].description, roomSendSchema),
+    make('room_ask', ROOM_TOOL_DESCRIPTORS[1].description, roomAskSchema),
+    make('room_reply', ROOM_TOOL_DESCRIPTORS[2].description, roomReplySchema),
+  ]
+}
+
+/**
+ * 外部渠道原生工具桥：把 room_send/room_ask/room_reply 作为真实 AgentTool（TypeBox schema）
+ * 接入 Pi Agent + createHttpDirectStreamFn。模型经供应商原生 function/tool calling 协议
+ * （Anthropic /v1/messages 的 tool_use）发起调用，Agent 调 execute → hostToolHandler 真实
+ * 执行，结果由 Agent 自动回注下一轮 context。工具 schema 仅通过原生 API 暴露，绝不注入
+ * prompt 文本伪造。仅 isAgentCompatibleProvider 的外部渠道进入此路径；其余 fail closed。
+ *
+ * 取消/超时/awaitPeer 与 runKsccRoomToolTurn 同款：signal/timer 调 agent.abort，
+ * ask 成功后 abortAgent 停 loop，service 据此把 run 保留为 awaiting_peer。
+ */
+async function runExternalRoomToolTurn(args: {
+  input: MemberTurnInput
+  cfg: ResolvedChannelBackend
+}): Promise<MemberTurnResult> {
+  const { input, cfg } = args
+  let agent: Agent | undefined
+  const tools = buildRoomBridgeTools({
+    hostToolHandler: input.hostToolHandler!,
+    abortAgent: () => agent?.abort(),
+  })
+  // createHttpDirectStreamFn 内部按 provider 预建 Model（含正确 api/baseUrl），Agent 的
+  // initialState.model 仅作占位（streamFn 忽略传入 model）。进入此路径的外部渠道均为
+  // Anthropic 协议 → anthropic-messages。
+  const model = {
+    id: cfg.modelId,
+    name: cfg.modelId,
+    api: 'anthropic-messages' as const,
+    provider: 'anthropic',
+    baseUrl: cfg.baseUrl ?? '',
+    reasoning: false,
+    input: ['text'] as ('text' | 'image')[],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 200_000,
+    maxTokens: 8_192,
+  }
+  agent = new Agent({
+    initialState: {
+      systemPrompt: input.systemPrompt,
+      model,
+      thinkingLevel: 'off',
+      tools,
+      messages: [],
+    },
+    streamFn: createHttpDirectStreamFn({
+      provider: cfg.provider,
+      apiKey: cfg.apiKey ?? '',
+      baseUrl: cfg.baseUrl,
+      modelId: cfg.modelId,
+    }),
+    toolExecution: 'sequential',
+  } as never)
+
+  let text = ''
+  const unsubscribe = agent.subscribe((event) => {
+    if (event.type !== 'message_update') return
+    const update = (event as { assistantMessageEvent?: { type?: string; delta?: string } })
+      .assistantMessageEvent
+    if (update?.type !== 'text_delta' || !update.delta) return
+    text += update.delta
+    input.onTextDelta?.(update.delta)
+  })
+  const timer = setTimeout(() => agent?.abort(), MEMBER_TURN_TIMEOUT_MS)
+  const abort = () => agent?.abort()
+  if (input.signal.aborted) abort()
+  else input.signal.addEventListener('abort', abort, { once: true })
+  try {
+    await agent.prompt(input.prompt)
+    await agent.waitForIdle()
+  } finally {
+    clearTimeout(timer)
+    input.signal.removeEventListener('abort', abort)
+    unsubscribe()
+    agent.abort()
+  }
+  return { text: text.trim() }
 }
 
 /**
@@ -309,37 +458,10 @@ async function runKsccRoomToolTurn(args: {
 }): Promise<MemberTurnResult> {
   const { input } = args
   let agent: Agent | undefined
-  const makeTool = <T extends Record<string, unknown>>(
-    name: 'room_send' | 'room_ask' | 'room_reply',
-    description: string,
-    // TypeBox schema 具体泛型在三个工具间不同；AgentTool 在此处按运行时 schema 消费。
-    parameters: any,
-  ): AgentTool<any, { output: string }> => ({
-    name,
-    label: name,
-    description,
-    parameters: parameters as any,
-    execute: async (_id, raw): Promise<AgentToolResult<{ output: string }>> => {
-      const result = await input.hostToolHandler!({
-        name,
-        arguments: Object.fromEntries(
-          Object.entries(raw as T).map(([key, value]) => [key, String(value ?? '')]),
-        ),
-      })
-      // ask 的宿主状态已以 CAS 迁移；停掉 Agent loop 以免模型在等待期间再做副作用。
-      if (result.awaitPeer) agent?.abort()
-      return {
-        content: [{ type: 'text', text: result.output }],
-        details: { output: result.output },
-      }
-    },
+  const tools = buildRoomBridgeTools({
+    hostToolHandler: input.hostToolHandler!,
+    abortAgent: () => agent?.abort(),
   })
-
-  const tools: AgentTool<any, { output: string }>[] = [
-    makeTool('room_send', ROOM_TOOL_DESCRIPTORS[0].description, roomSendSchema),
-    makeTool('room_ask', ROOM_TOOL_DESCRIPTORS[1].description, roomAskSchema),
-    makeTool('room_reply', ROOM_TOOL_DESCRIPTORS[2].description, roomReplySchema),
-  ]
   const model = {
     id: args.modelId,
     name: args.modelId,
