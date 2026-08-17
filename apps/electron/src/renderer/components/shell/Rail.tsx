@@ -2,7 +2,7 @@
  * Rail — 左导航轨图标内容（仅内容，外壳由 NavIsland 包 app-nav-rail）
  * 与 General FunctionalRail 一致：children 进 app-nav-rail-content。
  */
-import { Brain, ChatsCircle, CirclesThreePlus, PuzzlePiece, UsersThree } from '@phosphor-icons/react'
+import { Brain, ChatsCircle, IdentificationCard, PuzzlePiece, UsersThree } from '@phosphor-icons/react'
 import { useAtomValue } from 'jotai'
 import { AppTooltip } from '@tagent/ui'
 import { userProfileAtom } from '../../atoms/user-profile'
@@ -48,7 +48,7 @@ export function Rail({
         />
         <RailIcon
           railId="collaboration"
-          icon={<CirclesThreePlus {...RAIL_ICON} />}
+          icon={<UsersThree {...RAIL_ICON} />}
           label="协作"
           active={active === 'collaboration'}
           onClick={onCollaboration}
@@ -69,7 +69,7 @@ export function Rail({
         />
         <RailIcon
           railId="roles"
-          icon={<UsersThree {...RAIL_ICON} />}
+          icon={<IdentificationCard {...RAIL_ICON} />}
           label="角色库"
           active={active === 'roles'}
           onClick={onRoles}

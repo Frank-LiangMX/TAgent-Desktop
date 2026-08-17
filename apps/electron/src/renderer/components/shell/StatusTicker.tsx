@@ -3,6 +3,7 @@
  * 放在窗口标题栏中央：不挡主内容，可拖窗（非交互空白仍是 drag region）
  */
 import { useEffect, useMemo, useState } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import {
   archiveStatusTickerAtom,
@@ -20,6 +21,7 @@ import { tabsAtom } from '../../atoms/tabs'
 import { formatElapsedDuration, useLiveElapsedMs } from '../../lib/time-utils'
 import { cn } from '../../lib/utils'
 import { AppTooltip, Popover, PopoverContent, PopoverTrigger } from '@tagent/ui'
+import { LIVE_SESSION_STACK_MAX_VISIBLE, LiveSessionStack } from './LiveSessionStack'
 
 function formatTickerTime(at: number): string {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -34,6 +36,7 @@ export function StatusTicker({
 }: {
   onOpenSession?: (sessionId: string, title: string) => void
 }): JSX.Element {
+  const reducedMotion = useReducedMotion()
   const enabled = useAtomValue(notificationPrefsAtom).titlebarTicker
   const queue = useAtomValue(statusTickerQueueAtom)
   const history = useAtomValue(statusTickerHistoryAtom)
@@ -64,9 +67,20 @@ export function StatusTicker({
   )
   // 需要立即处理的异常优先于常规运行态；其余时间顶栏展示全局进行中会话。
   const urgentNotice = current?.tone === 'warn' || current?.tone === 'error' ? current : null
-  const livePrimary = urgentNotice ? null : liveSessions[0] ?? null
-  const liveStartedAt = livePrimary ? sessionRunMap[livePrimary.sessionId]?.startedAt ?? null : null
-  const liveElapsedMs = useLiveElapsedMs(liveStartedAt ?? undefined, livePrimary != null, 1000)
+  const showLiveStack = !urgentNotice && liveSessions.length >= 2
+  const liveSingle = !urgentNotice && liveSessions.length === 1 ? liveSessions[0] : null
+  const liveStartedAt = liveSingle ? sessionRunMap[liveSingle.sessionId]?.startedAt ?? null : null
+  const liveElapsedMs = useLiveElapsedMs(liveStartedAt ?? undefined, liveSingle != null, 1000)
+  const startedAtBySession = useMemo(
+    () =>
+      Object.fromEntries(
+        liveSessions.map((session) => [
+          session.sessionId,
+          sessionRunMap[session.sessionId]?.startedAt ?? null,
+        ]),
+      ),
+    [liveSessions, sessionRunMap],
+  )
 
   // TTL 自动消退
   useEffect(() => {
@@ -101,16 +115,19 @@ export function StatusTicker({
     setTick((n) => n + 1)
   }, [displayed?.id])
 
-  const historyPrimary = !livePrimary && !displayed && history.length > 0
-  const primaryText = livePrimary
-    ? `运行中 · ${livePrimary.title || '未命名会话'} · ${formatElapsedDuration(liveElapsedMs)}`
+  const historyPrimary = !liveSingle && !showLiveStack && !displayed && history.length > 0
+  const primaryText = liveSingle
+    ? `运行中 · ${liveSingle.title || '未命名会话'} · ${formatElapsedDuration(liveElapsedMs)}`
     : historyPrimary
       ? `通知历史 · ${history.length} 条已提醒`
     : displayed?.text ?? ''
   const long = primaryText.length > 42
-  const extraCount = Math.max(0, liveSessions.length + queue.length + history.length - 1)
+  const hiddenLiveCount = showLiveStack
+    ? Math.max(0, liveSessions.length - LIVE_SESSION_STACK_MAX_VISIBLE)
+    : Math.max(0, liveSessions.length - 1)
+  const extraCount = hiddenLiveCount + queue.length + history.length
 
-  if (!displayed && !livePrimary && !historyPrimary) {
+  if (!displayed && !liveSingle && !showLiveStack && !historyPrimary) {
     return <div className="status-ticker status-ticker--empty" aria-hidden />
   }
 
@@ -121,8 +138,8 @@ export function StatusTicker({
   }
 
   const activatePrimary = (): void => {
-    if (livePrimary) {
-      onOpenSession?.(livePrimary.sessionId, livePrimary.title)
+    if (liveSingle) {
+      onOpenSession?.(liveSingle.sessionId, liveSingle.title)
       return
     }
     if (historyPrimary) {
@@ -132,81 +149,140 @@ export function StatusTicker({
     if (displayed) activateQueueItem(displayed)
   }
 
+  const inboxBadge =
+    extraCount > 0 || historyPrimary ? (
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="status-ticker__badge"
+          aria-label={`查看 ${liveSessions.length} 个运行中会话和 ${queue.length + history.length} 条通知`}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {historyPrimary ? '查看' : `+${extraCount}`}
+        </button>
+      </PopoverTrigger>
+    ) : null
+
   return (
     <Popover open={inboxOpen} onOpenChange={setInboxOpen}>
       <AppTooltip
         label={
-          livePrimary
-            ? '定位到运行中的会话'
-            : historyPrimary
-              ? '查看通知历史'
-              : displayed?.actionLabel ?? displayed?.text
+          showLiveStack
+            ? `${liveSessions.length} 个会话运行中 · 悬停展开`
+            : liveSingle
+              ? '定位到运行中的会话'
+              : historyPrimary
+                ? '查看通知历史'
+                : displayed?.actionLabel ?? displayed?.text
         }
         side="bottom"
         disabled={inboxOpen}
       >
-        <div
-          className={cn(
-            'status-ticker titlebar-no-drag',
-            livePrimary
-              ? 'status-ticker--live'
-              : historyPrimary
-                ? 'status-ticker--history'
-                : displayed?.tone && `status-ticker--${displayed.tone}`,
-            long && 'status-ticker--marquee',
-            !livePrimary && phase === 'enter' && 'status-ticker--enter',
-            !livePrimary && phase === 'exit' && 'status-ticker--exit',
-          )}
-          role={livePrimary || historyPrimary || displayed?.onClick ? 'button' : 'status'}
-          aria-live="polite"
-          tabIndex={phase === 'exit' || (!livePrimary && !historyPrimary && !displayed?.onClick) ? undefined : 0}
-          aria-label={
-            livePrimary
-              ? `打开运行中的会话：${livePrimary.title}`
-              : historyPrimary
-                ? '查看通知历史'
-                : displayed?.actionLabel
-          }
-          onClick={() => {
-            if (phase === 'exit') return
-            activatePrimary()
-          }}
-          onKeyDown={(event) => {
-            if (
-              (!livePrimary && !historyPrimary && !displayed?.onClick) ||
-              phase === 'exit' ||
-              (event.key !== 'Enter' && event.key !== ' ')
-            ) return
-            event.preventDefault()
-            activatePrimary()
-          }}
-        >
-          {livePrimary ? <span className="status-ticker__live-dot" aria-hidden /> : null}
-          <div className="status-ticker__viewport">
-            <div
-              key={livePrimary ? `live-${livePrimary.sessionId}` : `${displayed?.id ?? 'empty'}-${tick}`}
-              className={cn('status-ticker__track', long && 'status-ticker__track--marquee')}
-            >
-              <span className="status-ticker__text">{primaryText}</span>
-              {long ? (
-                <span className="status-ticker__text status-ticker__text--dup" aria-hidden>
-                  {primaryText}
-                </span>
-              ) : null}
-            </div>
-          </div>
-          {extraCount > 0 || historyPrimary ? (
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                className="status-ticker__badge"
-                aria-label={`查看 ${liveSessions.length} 个运行中会话和 ${queue.length + history.length} 条通知`}
-                onClick={(event) => event.stopPropagation()}
+        <div className="status-ticker-host titlebar-no-drag" aria-live="polite">
+          <AnimatePresence mode="wait" initial={false}>
+            {showLiveStack ? (
+              <motion.div
+                key="live-stack"
+                className="status-ticker-host__layer"
+                initial={reducedMotion ? false : { opacity: 0, y: -6, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={
+                  reducedMotion
+                    ? undefined
+                    : { opacity: 0, y: -4, scale: 0.98, transition: { duration: 0.14 } }
+                }
+                transition={
+                  reducedMotion
+                    ? { duration: 0 }
+                    : { type: 'spring', stiffness: 420, damping: 32 }
+                }
               >
-                {historyPrimary ? '查看' : `+${extraCount}`}
-              </button>
-            </PopoverTrigger>
-          ) : null}
+                <LiveSessionStack
+                  sessions={liveSessions}
+                  startedAtBySession={startedAtBySession}
+                  onOpenSession={onOpenSession}
+                />
+                {inboxBadge}
+              </motion.div>
+            ) : (
+              <motion.div
+                key={liveSingle ? `live-${liveSingle.sessionId}` : displayed?.id ?? 'notice'}
+                className="status-ticker-host__layer"
+                initial={reducedMotion ? false : { opacity: 0, y: -6, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={
+                  reducedMotion
+                    ? undefined
+                    : { opacity: 0, y: -4, scale: 0.98, transition: { duration: 0.14 } }
+                }
+                transition={
+                  reducedMotion
+                    ? { duration: 0 }
+                    : { type: 'spring', stiffness: 420, damping: 32 }
+                }
+              >
+                <div
+                  className={cn(
+                    'status-ticker',
+                    liveSingle
+                      ? 'status-ticker--live'
+                      : historyPrimary
+                        ? 'status-ticker--history'
+                        : displayed?.tone && `status-ticker--${displayed.tone}`,
+                    long && 'status-ticker--marquee',
+                    !liveSingle && phase === 'enter' && 'status-ticker--enter',
+                    !liveSingle && phase === 'exit' && 'status-ticker--exit',
+                  )}
+                  role={liveSingle || historyPrimary || displayed?.onClick ? 'button' : 'status'}
+                  tabIndex={
+                    phase === 'exit' || (!liveSingle && !historyPrimary && !displayed?.onClick)
+                      ? undefined
+                      : 0
+                  }
+                  aria-label={
+                    liveSingle
+                      ? `打开运行中的会话：${liveSingle.title}`
+                      : historyPrimary
+                        ? '查看通知历史'
+                        : displayed?.actionLabel
+                  }
+                  onClick={() => {
+                    if (phase === 'exit') return
+                    activatePrimary()
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      (!liveSingle && !historyPrimary && !displayed?.onClick) ||
+                      phase === 'exit' ||
+                      (event.key !== 'Enter' && event.key !== ' ')
+                    ) return
+                    event.preventDefault()
+                    activatePrimary()
+                  }}
+                >
+                  {liveSingle ? <span className="status-ticker__live-dot" aria-hidden /> : null}
+                  <div className="status-ticker__viewport">
+                    <div
+                      key={
+                        liveSingle
+                          ? `live-${liveSingle.sessionId}`
+                          : `${displayed?.id ?? 'empty'}-${tick}`
+                      }
+                      className={cn('status-ticker__track', long && 'status-ticker__track--marquee')}
+                    >
+                      <span className="status-ticker__text">{primaryText}</span>
+                      {long ? (
+                        <span className="status-ticker__text status-ticker__text--dup" aria-hidden>
+                          {primaryText}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  {inboxBadge}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </AppTooltip>
       <PopoverContent

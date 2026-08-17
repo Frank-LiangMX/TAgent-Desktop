@@ -7,6 +7,7 @@
  */
 
 import type { TAgentMessage } from '@tagent/shared'
+import { sanitizeAssistantTextForDisplay } from '@tagent/shared'
 
 /** 会话级流式缓冲：正文 + 思考 */
 export interface SessionStreamState {
@@ -332,7 +333,7 @@ export function commitStreamTextToLastAssistant<T extends StreamItemLike>(
   prev: T[],
   text: string,
 ): T[] {
-  const t = text.trim()
+  const t = sanitizeAssistantTextForDisplay(text)
   if (!t) return prev
   for (let i = prev.length - 1; i >= 0; i--) {
     const m = prev[i]?.message

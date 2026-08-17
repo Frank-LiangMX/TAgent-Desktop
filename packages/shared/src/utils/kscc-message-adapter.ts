@@ -16,6 +16,7 @@ import type {
   TAgentUsage,
   TAgentControlEvent,
 } from '../types/tagent-message'
+import { sanitizeAssistantTextForDisplay } from './tool-markup-text'
 
 function pickUserAttachments(raw: Record<string, unknown>): FileAttachment[] | undefined {
   const list = raw.attachments
@@ -40,7 +41,7 @@ function pickUserAttachments(raw: Record<string, unknown>): FileAttachment[] | u
 function sdkBlockToIR(block: Record<string, unknown>): TAgentContentBlock | TAgentToolResultBlock {
   const type = block.type as string
   if (type === 'text' && typeof block.text === 'string') {
-    return { type: 'text', text: block.text }
+    return { type: 'text', text: sanitizeAssistantTextForDisplay(block.text) }
   }
   if (type === 'thinking' && typeof block.thinking === 'string') {
     return { type: 'thinking', thinking: block.thinking }

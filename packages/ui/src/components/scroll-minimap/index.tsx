@@ -43,14 +43,23 @@ interface ScrollMinimapProps {
 
 const MIN_ITEMS = 1
 const MAX_BARS = 20
-/** 每条刻度槽位高度（含间距）— 鱼眼时槽位固定，避免整列跳动 */
-const BAR_SLOT = 8
-/** 纵向细条：高度压薄；横向可略长 */
-const BAR_HEIGHT_BASE = 1.5
+/** 每条刻度槽位高度（含间距）— 同时作为 hover 命中区 */
+const BAR_SLOT = 12
+/** resting 刻度视觉尺寸（命中区固定为 BAR_SLOT，视觉用 transform 放大） */
+const BAR_HEIGHT_BASE = 2.5
 const BAR_WIDTH_BASE = 10
-/** 鱼眼最大宽/高（主要拉宽，高度只轻微抬一点） */
-const BAR_WIDTH_FOCUS = 18
-const BAR_HEIGHT_FOCUS = 2.5
+/**
+ * Codex 式离散鱼眼：每格相对 resting 的 scale，阶梯式明显缩短（非平滑曲线）。
+ * distance 0 = 焦点，4+ = resting。
+ */
+const FISHEYE_SCALE_X = [3, 2.05, 1.48, 1.14, 1] as const
+/** 轨宽 = 焦点 tick 视觉宽度，避免 scale 后裁切 */
+const RAIL_VISUAL_WIDTH = BAR_WIDTH_BASE * FISHEYE_SCALE_X[0]
+/** 刻度轨与 hover 预览之间的留白，避免扫刻度时误触预览抢 hover */
+const PEEK_PANEL_GAP = 12
+const PEEK_PANEL_LEFT = RAIL_VISUAL_WIDTH + PEEK_PANEL_GAP
+const PEEK_PANEL_WIDTH = 260
+const POPOVER_PANEL_LEFT = PEEK_PANEL_LEFT + 4
 const OPEN_BTN_SIZE = 16
 const RAIL_HEAD_OFFSET = 20
 
@@ -92,12 +101,10 @@ function escapeRegExp(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-/** 鱼眼：距离 hover 越远越短；高度始终保持细线 */
-function fisheyeSize(distance: number): { width: number; height: number } {
-  if (distance <= 0) return { width: BAR_WIDTH_FOCUS, height: BAR_HEIGHT_FOCUS }
-  if (distance === 1) return { width: 14, height: 2 }
-  if (distance === 2) return { width: 12, height: 1.75 }
-  return { width: BAR_WIDTH_BASE, height: BAR_HEIGHT_BASE }
+/** 鱼眼：仅横向 scaleX，高度不变；distance ≥ 4 为 resting */
+function fisheyeScale(distance: number): number {
+  if (distance >= FISHEYE_SCALE_X.length - 1) return 1
+  return FISHEYE_SCALE_X[distance] ?? 1
 }
 
 export function ScrollMinimap({
@@ -124,6 +131,7 @@ export function ScrollMinimap({
   const closeTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
   const fadeTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
   const scrollActiveTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
+  const peekClearTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
   const searchInputRef = React.useRef<HTMLInputElement>(null)
   const focusSearchOnOpenRef = React.useRef(false)
   const trackRef = React.useRef<HTMLDivElement>(null)
@@ -134,8 +142,18 @@ export function ScrollMinimap({
       if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
       if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
       if (scrollActiveTimerRef.current) clearTimeout(scrollActiveTimerRef.current)
+      if (peekClearTimerRef.current) clearTimeout(peekClearTimerRef.current)
     }
   }, [])
+
+  const cancelClearPeek = React.useCallback(() => {
+    if (peekClearTimerRef.current) clearTimeout(peekClearTimerRef.current)
+  }, [])
+
+  const scheduleClearPeek = React.useCallback(() => {
+    cancelClearPeek()
+    peekClearTimerRef.current = setTimeout(() => setPeekIndex(null), 140)
+  }, [cancelClearPeek])
 
   React.useEffect(() => {
     const el = scrollRef.current
@@ -451,7 +469,7 @@ export function ScrollMinimap({
     <div className="message-nav-shell pointer-events-none absolute inset-0 z-30">
       {/* 左侧刻度：鱼眼 + hover 用户轮次预览 */}
       <div
-        className="message-nav-rail absolute left-2.5 top-0 bottom-0 flex w-7 items-start justify-start pt-1 pl-0.5 pointer-events-none"
+        className="message-nav-rail absolute left-2.5 top-0 bottom-0 flex w-8 items-start justify-center pt-1 pointer-events-none"
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             setPanelOpen(false)
@@ -462,8 +480,7 @@ export function ScrollMinimap({
       >
         <div
           className="relative flex flex-col pointer-events-auto"
-          style={{ width: BAR_WIDTH_FOCUS }}
-          onMouseLeave={() => setPeekIndex(null)}
+          style={{ width: RAIL_VISUAL_WIDTH }}
         >
           {/* Rail open button: center on resting tick width */}
           <Tooltip>
@@ -479,7 +496,7 @@ export function ScrollMinimap({
                 style={{
                   width: OPEN_BTN_SIZE,
                   height: OPEN_BTN_SIZE,
-                  marginLeft: (BAR_WIDTH_BASE - OPEN_BTN_SIZE) / 2,
+                  marginLeft: (RAIL_VISUAL_WIDTH - OPEN_BTN_SIZE) / 2,
                 }}
                 aria-label="消息导航"
                 aria-pressed={panelOpen}
@@ -501,10 +518,10 @@ export function ScrollMinimap({
           {panelOpen && (
             <div
               className={cn(
-                'message-nav-float message-nav-popover absolute left-[22px] top-0 z-20 ml-1.5 w-[300px] origin-top-left flex flex-col overflow-hidden pointer-events-auto',
+                'message-nav-float message-nav-popover absolute top-0 z-20 w-[300px] origin-top-left flex flex-col overflow-hidden pointer-events-auto',
                 isLeaving ? 'message-nav-popover-exit' : 'message-nav-popover-enter'
               )}
-              style={{ maxHeight: 'min(460px, 64vh)' }}
+              style={{ left: POPOVER_PANEL_LEFT, maxHeight: 'min(460px, 64vh)' }}
               onMouseEnter={() => {
                 if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
                 if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
@@ -596,27 +613,29 @@ export function ScrollMinimap({
             </div>
           )}
 
-          {/* hover 一轮轻量预览：用户摘要 + 助手摘要（截断）+ 附件 chips */}
+          {/* hover 预览：纯展示，pointer-events-none，避免抢刻度 hover；点击刻度跳转 */}
           {peekItem && !panelOpen && (
-            <button
-              type="button"
-              className="message-nav-float message-nav-peek absolute left-[20px] z-20 ml-1.5 w-[260px] p-0 text-left pointer-events-auto message-nav-peek-enter"
-              style={{ top: Math.max(0, peekTop - 4) }}
-              onClick={() => {
-                if (peekItem) scrollToMessage(peekItem.id)
+            <div
+              className="message-nav-float message-nav-peek absolute z-20 p-0 text-left pointer-events-none message-nav-peek-enter"
+              style={{
+                left: PEEK_PANEL_LEFT,
+                top: Math.max(0, peekTop - 4),
+                width: PEEK_PANEL_WIDTH,
               }}
-              onMouseEnter={() => {
-                if (peekBar) setPeekIndex(peekBar.index)
-              }}
+              aria-hidden
             >
               <div className="relative z-10 px-3 py-2.5 space-y-1.5">
-                <div className="text-xs font-medium leading-4 line-clamp-2">
-                  {peekItem.preview || '(空消息)'}
-                </div>
+                <HighlightedPreview
+                  text={peekItem.preview}
+                  query=""
+                  className="text-xs font-medium leading-4 line-clamp-2"
+                />
                 {peekItem.replyPreview ? (
-                  <div className="text-[11px] leading-4 opacity-70 line-clamp-3">
-                    {peekItem.replyPreview}
-                  </div>
+                  <HighlightedPreview
+                    text={peekItem.replyPreview}
+                    query=""
+                    className="text-[11px] leading-4 opacity-70 line-clamp-3"
+                  />
                 ) : null}
                 {peekItem.attachments && peekItem.attachments.length > 0 ? (
                   <div className="flex flex-wrap gap-1 pt-0.5">
@@ -630,17 +649,29 @@ export function ScrollMinimap({
                   </div>
                 ) : null}
               </div>
-            </button>
+            </div>
           )}
 
-          {/* 鱼眼胶囊刻度 */}
+          {/* 鱼眼胶囊刻度：槽位固定 + transform 视觉，mousemove 整列命中 */}
           <div
             className="message-nav-bars relative flex-shrink-0"
-            style={{ width: BAR_WIDTH_FOCUS, height: bars.length * BAR_SLOT }}
+            style={{ width: RAIL_VISUAL_WIDTH, height: bars.length * BAR_SLOT }}
+            onPointerEnter={cancelClearPeek}
+            onPointerMove={(event) => {
+              cancelClearPeek()
+              const rect = event.currentTarget.getBoundingClientRect()
+              const y = event.clientY - rect.top
+              const index = Math.min(
+                bars.length - 1,
+                Math.max(0, Math.floor(y / BAR_SLOT)),
+              )
+              setPeekIndex((prev) => (prev === index ? prev : index))
+            }}
+            onPointerLeave={scheduleClearPeek}
           >
             {bars.map((bar) => {
               const distance = peekIndex === null ? 99 : Math.abs(bar.index - peekIndex)
-              const { width, height } = fisheyeSize(distance)
+              const scaleX = fisheyeScale(distance)
               const focused = distance === 0
               return (
                 <button
@@ -648,24 +679,32 @@ export function ScrollMinimap({
                   type="button"
                   aria-label={`跳转到消息组 ${bar.start + 1}`}
                   className={cn(
-                    'message-nav-bar absolute left-0 rounded-full border-0 p-0 cursor-pointer',
-                    'transition-[width,height,background-color,opacity,box-shadow] duration-150 ease-out',
-                    bar.isVisible && 'message-nav-bar-visible',
-                    bar.hasStatus && !bar.isVisible && 'message-nav-bar-status',
-                    bar.hasUser && !bar.isVisible && !bar.hasStatus && 'message-nav-bar-user',
-                    !bar.isVisible && !bar.hasUser && !bar.hasStatus && 'message-nav-bar-assistant',
-                    focused && 'message-nav-bar-focused'
+                    'message-nav-bar-slot absolute left-0 border-0 bg-transparent p-0 cursor-pointer',
+                    focused && 'message-nav-bar-slot--focused',
                   )}
                   style={{
-                    top: bar.index * BAR_SLOT + (BAR_SLOT - height) / 2,
-                    width,
-                    height,
-                    borderRadius: height,
+                    top: bar.index * BAR_SLOT,
+                    width: RAIL_VISUAL_WIDTH,
+                    height: BAR_SLOT,
                   }}
-                  onMouseEnter={() => setPeekIndex(bar.index)}
-                  onFocus={() => setPeekIndex(bar.index)}
                   onClick={() => scrollToGroup(bar.start)}
-                />
+                >
+                  <span
+                    className={cn(
+                      'message-nav-bar',
+                      bar.isVisible && 'message-nav-bar-visible',
+                      bar.hasStatus && !bar.isVisible && 'message-nav-bar-status',
+                      bar.hasUser && !bar.isVisible && !bar.hasStatus && 'message-nav-bar-user',
+                      !bar.isVisible && !bar.hasUser && !bar.hasStatus && 'message-nav-bar-assistant',
+                      focused && 'message-nav-bar-focused',
+                    )}
+                    style={{
+                      width: BAR_WIDTH_BASE,
+                      height: BAR_HEIGHT_BASE,
+                      transform: `scaleX(${scaleX})`,
+                    }}
+                  />
+                </button>
               )
             })}
           </div>
@@ -716,16 +755,24 @@ export function ScrollMinimap({
   )
 }
 
-function HighlightedPreview({ text, query }: { text: string; query: string }): React.ReactElement {
+function HighlightedPreview({
+  text,
+  query,
+  className,
+}: {
+  text: string
+  query: string
+  className?: string
+}): React.ReactElement {
   if (!text) {
-    return <span className="text-[11px] leading-4 md-text-faint">(空消息)</span>
+    return <span className={cn('text-[11px] leading-4 md-text-faint', className)}>(空消息)</span>
   }
 
   if (query.trim()) {
     const escaped = escapeRegExp(query)
     const parts = text.split(new RegExp(`(${escaped})`, 'gi'))
     return (
-      <span className="text-[11px] leading-4 md-text line-clamp-2">
+      <span className={cn('text-[11px] leading-4 md-text line-clamp-2', className)}>
         {parts.map((part, i) =>
           part.toLowerCase() === query.toLowerCase() ? (
             <mark key={i} className="bg-primary/15 text-primary rounded-sm px-0.5">
@@ -740,7 +787,12 @@ function HighlightedPreview({ text, query }: { text: string; query: string }): R
   }
 
   return (
-    <div className="prose prose-sm dark:prose-invert max-w-none text-[11px] leading-4 md-text-variant prose-p:my-0 prose-headings:my-0.5 prose-headings:text-[11px] prose-li:my-0 prose-pre:my-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 line-clamp-2 overflow-hidden">
+    <div
+      className={cn(
+        'prose prose-sm dark:prose-invert max-w-none text-[11px] leading-4 md-text-variant prose-p:my-0 prose-headings:my-0.5 prose-headings:text-[11px] prose-li:my-0 prose-pre:my-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 overflow-hidden',
+        className ?? 'line-clamp-2',
+      )}
+    >
       <Markdown remarkPlugins={PREVIEW_REMARK_PLUGINS} components={PREVIEW_MD_COMPONENTS}>
         {text}
       </Markdown>

@@ -33,6 +33,7 @@ import {
   resolveWorkerCapability,
   syncDefaultCliId,
   SUPPORTED_CLI_WORKER_IDS,
+  CLI_CAPABILITY_TAGS,
   type CliReasoning,
   type CliWorkerBackend,
   type CliWorkerCapability,
@@ -315,6 +316,20 @@ export function CliWorkersSettingsSection(): JSX.Element {
     [saveWorkerCapability],
   )
 
+  const handleWorkerTagToggle = useCallback(
+    (id: string, tag: string): void => {
+      const cur = cfgRef.current
+      if (!cur) return
+      const w = cur.workers.find((x) => x.id === id)
+      if (!w) return
+      const cap = resolveWorkerCapability(w)
+      const tags = cap.tags ?? []
+      const next = tags.includes(tag) ? tags.filter((t) => t !== tag) : [...tags, tag]
+      saveWorkerCapability(id, { tags: next })
+    },
+    [saveWorkerCapability],
+  )
+
   if (!cfg) {
     return (
       <div className="cli-workers-block">
@@ -407,7 +422,7 @@ export function CliWorkersSettingsSection(): JSX.Element {
             </span>
           </div>
 
-          <div className="cli-workers-table" role="list">
+          <div className="cli-workers-table settings-card settings-card-surface" role="list">
             {cfg.workers.map((w, index) => {
               const probe = probeMap[w.id]
               const priorityRank = w.enabled
@@ -448,7 +463,7 @@ export function CliWorkersSettingsSection(): JSX.Element {
                         aria-label={`提高 ${w.id} 优先级`}
                         onClick={() => handleMovePriority(w.id, 'up')}
                       >
-                        <ChevronUp size={14} />
+                        <ChevronUp size={12} strokeWidth={2.25} />
                       </button>
                       <button
                         type="button"
@@ -457,7 +472,7 @@ export function CliWorkersSettingsSection(): JSX.Element {
                         aria-label={`降低 ${w.id} 优先级`}
                         onClick={() => handleMovePriority(w.id, 'down')}
                       >
-                        <ChevronDown size={14} />
+                        <ChevronDown size={12} strokeWidth={2.25} />
                       </button>
                     </div>
                     <div className="cli-workers-enable">
@@ -498,7 +513,7 @@ export function CliWorkersSettingsSection(): JSX.Element {
                 const hasVision = (cap.modalities ?? ['text']).includes('vision')
 
                 return (
-                  <div key={w.id} className="cli-workers-adv-card">
+                  <div key={w.id} className="cli-workers-adv-card settings-card settings-card-surface">
                     <div className="cli-workers-adv-card-head">
                       <span className="cli-workers-adv-card-title">{workerLabel(w.id)}</span>
                       <span className={`cli-workers-badge ${badge.cls}`}>{badge.text}</span>
@@ -598,6 +613,27 @@ export function CliWorkersSettingsSection(): JSX.Element {
                           aria-label={`${hasVision ? '关闭' : '开启'} ${w.id} 视觉`}
                           onCheckedChange={(on) => handleWorkerVisionToggle(w.id, on)}
                         />
+                      </div>
+
+                      <div className="agent-behavior-field">
+                        <span className="agent-behavior-field-label">擅长任务类型</span>
+                        <div className="cli-workers-tag-pick">
+                          {CLI_CAPABILITY_TAGS.map((t) => {
+                            const on = (cap.tags ?? []).includes(t.id)
+                            return (
+                              <button
+                                key={t.id}
+                                type="button"
+                                className={`cli-workers-tag-chip${on ? ' is-on' : ''}`}
+                                disabled={saving}
+                                aria-pressed={on}
+                                onClick={() => handleWorkerTagToggle(w.id, t.id)}
+                              >
+                                {t.label}
+                              </button>
+                            )
+                          })}
+                        </div>
                       </div>
 
                       <label className="agent-behavior-field">

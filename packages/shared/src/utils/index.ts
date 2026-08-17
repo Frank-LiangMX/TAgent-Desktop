@@ -97,6 +97,12 @@ export {
   shouldForceIdle,
 } from './idle-watchdog'
 
+export {
+  isToolCallArtifactText,
+  sanitizeAssistantTextForDisplay,
+  stripToolInvocationMarkup,
+} from './tool-markup-text'
+
 // 流式 delta 协议（E）：累计快照 → 增量 suffix delta + resync + 落盘快照校准
 export {
   computeDelta,

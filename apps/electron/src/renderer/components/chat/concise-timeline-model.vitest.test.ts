@@ -339,6 +339,21 @@ describe('buildConciseTimeline', () => {
     expect(segs).toHaveLength(1)
     expect(segs[0]).toMatchObject({ kind: 'narrative', tone: 'final' })
   })
+
+  it('drops tool-call artifact text (call / antml tail) before tools', () => {
+    const process: ProcessEntry[] = [
+      { type: 'text', key: 'n1', text: '分析 padding 不一致。' },
+      { type: 'text', key: 'n2', text: 'call' },
+      tool('Grep', 't1', { pattern: 'padding' }),
+    ]
+    const segs = buildConciseTimeline(process)
+    expect(segs.map((s) => s.kind)).toEqual(['narrative', 'work_stage'])
+    expect(segs[0]).toMatchObject({ kind: 'narrative', text: '分析 padding 不一致。' })
+    expect(segs.some((s) => s.kind === 'narrative' && (s as { text: string }).text === 'call')).toBe(
+      false,
+    )
+  })
+
   it('live trailing text stays progress (no final flash)', () => {
     const process: ProcessEntry[] = [
       tool('Read', '1', { file_path: 'a.ts' }),

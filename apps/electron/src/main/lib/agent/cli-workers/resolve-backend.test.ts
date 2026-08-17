@@ -421,7 +421,7 @@ describe('listEnabledCliWorkerCards', () => {
     expect(listEnabledCliWorkerCards()).toBe('')
   })
 
-  it('启用池 → 含能力卡头 + 每启用工人一行 + 参数说明（禁用者不入卡）', async () => {
+  it('启用池 → 含能力卡头 + 每启用工人一行（含擅长标签）+ 参数说明（禁用者不入卡）', async () => {
     const { listEnabledCliWorkerCards } = await load()
     writeCfg({
       version: 1,
@@ -429,19 +429,34 @@ describe('listEnabledCliWorkerCards', () => {
       defaultBackend: 'cli',
       defaultCliId: 'kscc',
       workers: [
-        { id: 'kscc', enabled: true, bin: 'kscc', capability: { cost: 3, reasoning: 'high', goodFor: '编排' } },
-        { id: 'grok', enabled: true, bin: 'grok', capability: { cost: 2, reasoning: 'medium', modalities: ['text', 'vision'] } },
+        { id: 'kscc', enabled: true, bin: 'kscc', capability: { cost: 3, reasoning: 'high', tags: ['backend', 'reasoning'], goodFor: '编排' } },
+        { id: 'grok', enabled: true, bin: 'grok', capability: { cost: 2, reasoning: 'medium', modalities: ['text', 'vision'], tags: ['frontend'] } },
         { id: 'codex', enabled: false, bin: 'codex' },
         { id: 'mimo', enabled: false, bin: 'mimo' },
       ],
     })
     const card = listEnabledCliWorkerCards()
     expect(card).toContain('CLI 工人能力卡（按优先级）：')
-    expect(card).toContain('kscc — cost 3 · reasoning high · text · 编排')
-    expect(card).toContain('grok — cost 2 · reasoning medium · text+vision')
-    expect(card).toContain('可用参数：cli 指定其一；require 硬性')
+    // tags → 「擅长: <labels>」（用 label 不用 id）；goodFor 仍尾部补充
+    expect(card).toContain('kscc — cost 3 · reasoning high · text · 擅长: 后端 / 复杂实现,深度推理 / 编排')
+    expect(card).toContain('grok — cost 2 · reasoning medium · text+vision · 擅长: 前端开发')
+    expect(card).toContain('可用参数：cli 指定其一；require 硬性（vision / reasoningMin / tag）；prefer 软性（costMax / goodFor / tag）')
     expect(card).not.toContain('codex') // 禁用者不入卡
     expect(card).not.toContain('mimo')
+  })
+
+  it('无 tags 工人能力卡行不出现「擅长:」', async () => {
+    const { listEnabledCliWorkerCards } = await load()
+    writeCfg({
+      version: 1,
+      enabled: true,
+      defaultBackend: 'cli',
+      defaultCliId: 'kscc',
+      workers: [{ id: 'kscc', enabled: true, bin: 'kscc', capability: { cost: 3, reasoning: 'high', goodFor: '编排' } }],
+    })
+    const card = listEnabledCliWorkerCards()
+    expect(card).toContain('kscc — cost 3 · reasoning high · text / 编排')
+    expect(card).not.toContain('擅长:')
   })
 })
 

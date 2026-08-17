@@ -395,7 +395,7 @@ function renderTabContent(tab: SettingsTab): JSX.Element {
       return <MoaSettings />
     case 'agent-cli':
       return (
-        <div className="settings-page">
+        <div className="settings-page agent-cli-settings-page">
           <SettingsPageIntro
             title="子代理"
             description="委派积极性、内置子代理与可选本机 CLI。默认走内置；切到本机 CLI 后再配置工人与探测。"

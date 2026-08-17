@@ -68,19 +68,23 @@ export function DestructiveConfirmDialog({
 
   return (
     <AlertDialog open={open} onOpenChange={handleOpenChange}>
-      <AlertDialogContent className="!z-[120] !w-[min(calc(100vw-32px),400px)] !max-w-none !gap-0 !overflow-hidden !rounded-[16px] !p-0">
-        <div className="flex items-start gap-3 px-4 pb-3 pt-4">
+      <AlertDialogContent
+        className="!z-[120] !w-[min(calc(100vw-32px),420px)] !max-w-none !gap-0 !rounded-[16px] !p-0 data-[state=closed]:slide-out-to-left-0 data-[state=closed]:slide-out-to-top-0 data-[state=open]:slide-in-from-left-0 data-[state=open]:slide-in-from-top-0"
+      >
+        <div className="flex w-full min-w-0 items-start gap-3 px-4 pb-3 pt-4">
           {icon && (
             <span className="grid h-8 w-8 shrink-0 place-items-center rounded-[9px] bg-destructive/10 text-destructive">
               {icon}
             </span>
           )}
-          <AlertDialogHeader className="min-w-0 flex-1 !space-y-1 !text-left">
-            <AlertDialogTitle className="truncate text-[14px] font-semibold leading-5 tracking-[-0.01em]">
+          <AlertDialogHeader className="min-w-0 flex-1 !space-y-1.5 !text-left">
+            <AlertDialogTitle className="text-[14px] font-semibold leading-5 tracking-[-0.01em]">
               {title}
             </AlertDialogTitle>
-            <AlertDialogDescription className="text-[12px] leading-[18px] text-muted-foreground/85">
-              {description}
+            <AlertDialogDescription asChild>
+              <div className="min-w-0 break-words text-[12px] leading-[18px] text-muted-foreground/85 [overflow-wrap:anywhere]">
+                {description}
+              </div>
             </AlertDialogDescription>
             {error && (
               <p className="pt-1 text-[11px] leading-4 text-destructive" role="alert">

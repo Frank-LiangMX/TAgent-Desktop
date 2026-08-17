@@ -20,6 +20,7 @@ import {
   workerPreferScore,
   workerSupportsRequire,
   SUPPORTED_CLI_WORKER_IDS,
+  cliCapabilityTagLabel,
   type CliCapabilityPrefer,
   type CliCapabilityRequire,
   type CliWorkerEntry,
@@ -149,12 +150,14 @@ export function listEnabledCliWorkerCards(): string {
   const lines = supportedPool.map((w) => {
     const cap = resolveWorkerCapability(w)
     const mods = (cap.modalities ?? ['text']).join('+')
-    const tail = cap.goodFor ? ` · ${cap.goodFor}` : ''
-    return `  ${w.id} — cost ${cap.cost} · reasoning ${cap.reasoning} · ${mods}${tail}`
+    const tagsLabel = (cap.tags ?? []).map((t) => cliCapabilityTagLabel(t)).join(',')
+    const tagsPart = tagsLabel ? ` · 擅长: ${tagsLabel}` : ''
+    const tail = cap.goodFor ? ` / ${cap.goodFor}` : ''
+    return `  ${w.id} — cost ${cap.cost} · reasoning ${cap.reasoning} · ${mods}${tagsPart}${tail}`
   })
   return [
     'CLI 工人能力卡（按优先级）：',
     ...lines,
-    '可用参数：cli 指定其一；require 硬性（vision / reasoningMin）；prefer 软性（costMax / goodFor）。',
+    '可用参数：cli 指定其一；require 硬性（vision / reasoningMin / tag）；prefer 软性（costMax / goodFor / tag）。',
   ].join('\n')
 }

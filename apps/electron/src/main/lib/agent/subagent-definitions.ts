@@ -19,6 +19,7 @@ import {
   roleToSubagentDef,
   SUBAGENT_CATALOG_ROLE_IDS,
 } from '../role/role-projection'
+import { listEnabledCliWorkerCards } from '../agent/cli-workers/resolve-backend'
 
 export interface BuildSubagentDefinitionsOptions {
   /** Claude 渠道：子代理默认 haiku；非 Claude 省略 model 继承主模型 */
@@ -88,6 +89,33 @@ export function buildBuiltinSubagentDefinitions(
 }
 
 /**
+ * 本地 CLI 编排段：启用本机 CLI 工人时注入，教主 agent 用 Bash spawn 本地 CLI 当外部子代理。
+ * 未启用（总开关关 / 无启用工人）→ 返回禁用提示段，让主 agent 知道这条路存在但当前不可用。
+ */
+function buildLocalCliDelegationSection(): string {
+  const cards = listEnabledCliWorkerCards()
+  if (!cards) {
+    return [
+      '当前未启用本机 CLI 工人。如需按特长把子活外包给本地 CLI（codex/grok/kscc/mimo/opencode/claude 等），',
+      '可在设置页「CLI 工人」启用并配置后端；启用后此处会列出可用 CLI 及其能力画像。',
+    ].join('')
+  }
+  return [
+    '本机已启用 CLI 工人，可按特长把子活外包给本地 CLI 当外部子代理——用 Bash 工具 spawn CLI 进程跑，收 stdout 整合结论。',
+    '',
+    cards,
+    '',
+    '**用法**：用 Bash 工具调对应 CLI 的非交互命令（如 `codex exec "任务描述"`、`grok -p "任务描述"`、',
+    '`kscc -p "任务描述" --model <id>` 等，具体语法以各 CLI --help 为准），在 cwd 下跑、收 stdout、整合结论回主会话。',
+    '- 按特长选 CLI：看上方能力卡的「擅长: ...」标签匹配任务类型（前端/后端/推理/杂活/测试/审查/调研/重构/命令）；标签由设置页「擅长任务类型」配置。',
+    '- 给 CLI **清晰、可验收**的单次任务描述；长输出可重定向到临时文件再 Read 整合。',
+    '- 外部 CLI 无 TAgent 的会话状态，**不要**指望它续接主会话上下文——把必要上下文写进任务描述里。',
+    '- Bash spawn CLI 属非结构化派工（无进度卡/详情页）；高频或需进度可见时，优先用内置 SubAgent（上方目录）。',
+    '- 失败（命令找不到 / 超时 / 非零退出）先看 stderr，别静默重试同一命令。',
+  ].join('\n')
+}
+
+/**
  * 子代理委派策略（注入主 Agent system prompt）
  *
  * @param eagerness 委派积极性档位（never/conservative/balanced/aggressive）
@@ -137,6 +165,10 @@ ${subagentList}
 - 需要架构/实现向短任务 → 委派 \`analyst\` / \`coder\`
 - **大项目分析**：先主会话用 1-2 次 Glob 摸清顶层骨架与模块边界，再**按子系统异质扇出**多个 explorer（每个管一个目录/模块、返回结构化摘要），主会话只做整合
 - **小总览题**（主会话几次 Glob/Read 能答）不委派；**禁止同质冗余**：多个子代理扫同一目录/同一问题是浪费
+
+### 本地 CLI 编排（外部子代理）
+
+${buildLocalCliDelegationSection()}
 
 ### 委派最佳实践
 

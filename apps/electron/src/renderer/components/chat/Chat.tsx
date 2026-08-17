@@ -134,6 +134,7 @@ import { RunModeSelector } from './RunModeSelector'
 import { KanbanCrewPanel } from './KanbanCrewPanel'
 import { MessageQueue } from './MessageQueue'
 import { ScrollPositionManager } from '../shell/ScrollPositionManager'
+import { ReadingScrollGuard } from '../shell/ReadingScrollGuard'
 import {
   channelsAtom,
   selectedModelSelectionAtom,
@@ -1543,7 +1544,8 @@ export function Chat({
       resetStreamState()
       // result = 整个 run 真正 idle（turn_end 只是单个 SDK turn 结束，工具循环还会继续）。
       clearPendingStop()
-      // 收尾「往上折」靠 live 底栏 CSS 过渡；勿立刻 resize=instant，否则高度变化会顿一下。
+      // 收尾高度骤降：切 instant，避免 StickToBottom smooth 再从头扫到底。
+      beginStreamTransition(500)
 
       // error_* 以前几乎对 UI 透明（只吃 usage）；抬到 SessionErrorBanner，避免「气泡里有失败但无错误条」
       const subtype = typeof p.subtype === 'string' ? p.subtype : ''
@@ -2793,6 +2795,7 @@ export function Chat({
           restoreReady={fullyMounted}
           layoutKey={effectiveVisible}
         />
+        <ReadingScrollGuard live={running || runStartedAt != null} />
         <ScrollMinimap items={minimapItems} />
         <ConversationScrollButton />
       </Conversation>

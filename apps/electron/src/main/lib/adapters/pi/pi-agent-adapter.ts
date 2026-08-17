@@ -38,6 +38,7 @@ import {
   buildRichContentSystemPrompt,
   isPromptTooLongMessage,
   NO_PROGRESS_GUARD_DEFAULT_MODE,
+  sanitizeAssistantTextForDisplay,
 } from '@tagent/shared'
 import {
   buildMemoryPromptSections,
@@ -1459,7 +1460,7 @@ function piUsageToIR(u?: Usage): TAgentUsage {
 /** Pi AssistantMessage content block → IR TAgentContentBlock */
 function piBlockToIR(block: AssistantMessage['content'][number]): TAgentContentBlock {
   if (block.type === 'text') {
-    return { type: 'text', text: block.text }
+    return { type: 'text', text: sanitizeAssistantTextForDisplay(block.text) }
   }
   if (block.type === 'thinking') {
     return { type: 'thinking', thinking: block.thinking }

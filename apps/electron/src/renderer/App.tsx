@@ -959,15 +959,24 @@ export function App(): JSX.Element {
             onOpenSettings={(tab) => openSettings(tab)}
           />
         ) : activeRail === 'plugins' ? (
-          <div className="plugins-main-view scrollbar-thin">
+          <div
+            key="plugins"
+            className="plugins-main-view scrollbar-thin animate-in fade-in duration-300"
+          >
             <PluginStoreSettings />
           </div>
         ) : activeRail === 'memory' ? (
-          <div className="app-shell-content-stage relative h-full min-h-0 animate-in fade-in duration-300">
+          <div
+            key="memory"
+            className="app-shell-content-stage relative h-full min-h-0 animate-in fade-in duration-300"
+          >
             <MemoryMonitorPanel />
           </div>
         ) : activeRail === 'roles' ? (
-          <div className="plugins-main-view scrollbar-thin animate-in fade-in duration-300">
+          <div
+            key="roles"
+            className="plugins-main-view scrollbar-thin animate-in fade-in duration-300"
+          >
             <RolesPage />
           </div>
         ) : workspaces.length === 0 ? (

@@ -1173,6 +1173,67 @@
   background: transparent;
   pointer-events: none;
 }
+
+/* 顶栏通知宿主：单条胶囊 ↔ 多会话堆叠切换 */
+.status-ticker-host {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  max-width: min(560px, 50vw);
+  margin-inline: auto;
+  justify-content: center;
+  align-items: flex-end;
+  min-height: 26px;
+}
+.status-ticker-host__layer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 多会话运行：卡片堆叠（最多 3 张可见，悬停扇形展开） */
+.status-ticker-stack {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: min(480px, 44vw);
+  height: 26px;
+  padding-top: 11px;
+  margin-top: -5px;
+}
+.status-ticker-stack__card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  margin: 0;
+  cursor: pointer;
+  transform-origin: 50% 100%;
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.06);
+  will-change: transform, opacity;
+}
+.status-ticker-stack__card--back {
+  pointer-events: none;
+}
+.status-ticker-stack:hover .status-ticker-stack__card--back,
+.status-ticker-stack:focus-within .status-ticker-stack__card--back {
+  pointer-events: auto;
+}
+.status-ticker-stack__card--front {
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.08),
+    0 6px 16px -10px rgb(0 0 0 / 0.35);
+}
+.status-ticker-stack__text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .status-ticker:hover {
   color: hsl(var(--foreground));
   border-color: hsl(var(--border) / 0.85);

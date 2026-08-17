@@ -4,6 +4,7 @@
 > **触发**：用户想确认 kscc 出的桌面 agent「KCwork」能否给 TAgent 提供更稳定的调 kscc 思路
 > **结论先行**：KCwork 调 kscc 的方式 = spawn kscc CLI 进程（ACP 协议）+ utility worker 双层隔离，与 TAgent 的 spawn kscc 同源同路；**不是 http 反代、不是 API key 直连**。能给 TAgent 的实际收益有三块（context usage / 崩溃隔离 / 协议稳态），但都不解决"两核重复维护"的真痛点。是否动工取决于对这三块收益的取舍。
 > ⚠️ **2026-08-17 实测复核**：§2.2「spawn `kscc --experimental-acp`」前提已失效（终端 kscc 1.2.1 移除 ACP）；KCwork 8月14新版自包含 ksoc/aioncore，不再依赖系统终端 kscc。详见末尾 §11。
+> ⚠️ **2026-08-17 定论修正**：§11「kscc 去 ACP → ACP 死路」措辞需窄化为「**kscc 这条 ACP 路死**」——KCwork 改用自带 ksoc（opencode 改造版，带 `opencode acp`）跑 ACP，是另一条活路；但对 TAgent 定位不值得（甜头 context usage 未证实 + 代价大）。详见 `2026-08-17-ksoc-acp-route-research.md` §9 最终判定。
 
 ---
 
