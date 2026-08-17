@@ -463,8 +463,13 @@ export function Chat({
     }).catch(() => { /* 预置拉取失败：菜单空态，不阻塞正常发送 */ })
     return () => { cancelled = true }
   }, [moaPresetsRevision])
-  /** 历史加载完成的标志：false 时 Conversation resize=instant（无动画）+ ScrollPositionManager 恢复位置 */
+  /** 历史已写入 items：false 时 Conversation resize=instant；钉底只等这个，不等虚拟化全挂 */
   const [scrollReady, setScrollReady] = useState(false)
+  /**
+   * 全挂完后再吃几帧 instant，消化 Markdown/高亮后长高。
+   * 立刻切 smooth 会让 StickToBottom 弹簧扫视口。
+   */
+  const [holdInstantResize, setHoldInstantResize] = useState(true)
   /**
    * 流式结束 / 新消息发送过渡：切 resize=instant，短暂后回 smooth——
    * 防止高度变化（落盘切换、上一轮执行块折叠）触发平滑滚动扫视口。
@@ -743,8 +748,6 @@ export function Chat({
    * 在虚拟化切片上分组（底栏近期完整，超长会话旧段渐进加载）。
    */
   const visibleTurns = useMemo(() => groupItemsIntoTurns(visibleItems), [visibleItems])
-  /** scrollReady 门控：历史加载完 && 全挂完才恢复滚动位置（对齐旧版 scrollReady = ready && fullyMounted） */
-  const effectiveScrollReady = scrollReady && fullyMounted
 
   // 选择优先级：本会话最近选择 > 持久化会话选择 > 新会话全局选择。
   // 旧会话只有 channelId 没有 modelId 时，用该渠道当前默认模型做一次迁移。
@@ -813,8 +816,18 @@ export function Chat({
   /** 已绑定渠道即显示 token 栏；kscc 仅隐藏占用圆环（占用不可信），累计统计照常 */
   const showTokenBar = lockedKind !== null
 
-  // 切换会话时加载历史。滚动位置恢复交给 ScrollPositionManager（Conversation 内部），
-  // 它用 useLayoutEffect + stopScroll + 直接设 scrollTop（无动画、无可见滚动过程）。
+  // 全挂完后再保持一小段 instant，避免 Markdown 后长高触发 smooth 扫视口
+  useEffect(() => {
+    if (!scrollReady || !fullyMounted) {
+      setHoldInstantResize(true)
+      return
+    }
+    const timer = window.setTimeout(() => setHoldInstantResize(false), 220)
+    return () => window.clearTimeout(timer)
+  }, [scrollReady, fullyMounted])
+
+  // 切换会话时加载历史。滚动位置恢复交给 ScrollPositionManager（Conversation 内部）：
+  // 钉底在 scrollReady 后立刻同步写 scrollTop；中间位等 fullyMounted 再还原。
   useEffect(() => {
     sessionIdRef.current = sessionId
     setItems([])
@@ -822,6 +835,7 @@ export function Chat({
     // 运行态：不在此 stopRun（见下方 async reconcile 注释）。
     setHasDraft(false)
     setScrollReady(false)
+    setHoldInstantResize(true)
     setVisibleCount(20) // 虚拟化：切会话重置首批 20
     streamStateRef.current = clearSessionStreamState()
     itemIdxRef.current = 0
@@ -2055,7 +2069,38 @@ export function Chat({
     await sendQueued({ text, selection: effectiveSelection })
   }, [getLastRealUserPrompt, effectiveSelection, running])
 
-  /** 用户发送：空闲→立即发；运行中→入队 */
+  /** 运行中引导：不中断；气泡夹进当前执行块；主进程落盘 isSteer 并注入模型。 */
+  const submitSteer = useCallback(async (text: string): Promise<void> => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    try {
+      const res = (await window.electronAPI.steerAgent(
+        sessionIdRef.current,
+        trimmed,
+      )) as { ok?: boolean; mode?: string; error?: string } | undefined
+      if (!res?.ok) {
+        pushTicker(
+          makeStatusTickerItem(`引导失败：${res?.error ?? '未知错误'}`, 'error', 5000),
+        )
+        return
+      }
+      if (res.mode === 'pending_next_turn') {
+        pushTicker(
+          makeStatusTickerItem('已夹入引导：本轮结束后 Agent 会按此继续', 'info', 3500),
+        )
+      }
+    } catch (err) {
+      pushTicker(
+        makeStatusTickerItem(
+          `引导失败：${err instanceof Error ? err.message : String(err)}`,
+          'error',
+          5000,
+        ),
+      )
+    }
+  }, [pushTicker])
+
+  /** 用户发送：空闲→立即发；运行中（含 turn_end 软停窗口）→ 引导，不另起一轮 */
   const send = async (): Promise<void> => {
     const text = chatInputRef.current?.getText().trim() ?? ''
     if (!text && pendingAttachments.length === 0) return
@@ -2076,23 +2121,29 @@ export function Chat({
     } else {
       setLiveMentionLabels([])
     }
-    chatInputRef.current?.clear()
-    if (running) {
-      // 运行中 → 入队，等当前轮结束自动消费
-      if (effectiveSelection) {
-        setMessageQueue((q) => [
-          ...q,
-          {
-            text,
-            selection: effectiveSelection,
-            ...(pendingAttachments.length ? { attachments: pendingAttachments } : {}),
-          },
-        ])
+    const inFlight = running || runStartedAtRef.current != null
+    if (inFlight) {
+      // 带附件的引导目前只支持文本注入；附件仍入队，等本轮结束再发。
+      if (pendingAttachments.length > 0) {
+        chatInputRef.current?.clear()
+        if (effectiveSelection) {
+          setMessageQueue((q) => [
+            ...q,
+            {
+              text,
+              selection: effectiveSelection,
+              attachments: pendingAttachments,
+            },
+          ])
+        }
+        setPendingAttachments([])
+        return
       }
-      // 入队即清空输入框附件（已快照进队列项；drain 时 sendQueued 保存到磁盘并 revoke previewUrl）
-      setPendingAttachments([])
+      chatInputRef.current?.clear()
+      await submitSteer(text)
       return
     }
+    chatInputRef.current?.clear()
     // 空闲 → 立即发
     if (!effectiveSelection) {
       alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
@@ -2234,41 +2285,15 @@ export function Chat({
   /** 引导指定条目：不打断；成功后从 UI 队列移除 */
   const steerQueueItem = (index: number): void => {
     if (queueActionBusy) return
-    if (!running) return
+    if (!running && runStartedAtRef.current == null) return
     const item = messageQueue[index]
     if (!item) return
     setQueueActionBusy(true)
     void (async () => {
       try {
-        const res = (await window.electronAPI.steerAgent(
-          sessionIdRef.current,
-          item.text,
-        )) as { ok?: boolean; mode?: string; error?: string } | undefined
-        if (!res?.ok) {
-          pushTicker(
-            makeStatusTickerItem(`引导失败：${res?.error ?? '未知错误'}`, 'error', 5000),
-          )
-          return
-        }
+        await submitSteer(item.text)
         setMessageQueue((q) => q.filter((_, i) => i !== index))
         scheduleComposerTopUpdate()
-        pushTicker(
-          makeStatusTickerItem(
-            res.mode === 'live'
-              ? '已注入引导：将在下一轮边界生效'
-              : '已排队引导：本轮结束后自动发送',
-            'info',
-            4000,
-          ),
-        )
-      } catch (err) {
-        pushTicker(
-          makeStatusTickerItem(
-            `引导失败：${err instanceof Error ? err.message : String(err)}`,
-            'error',
-            5000,
-          ),
-        )
       } finally {
         setQueueActionBusy(false)
       }
@@ -2647,7 +2672,7 @@ export function Chat({
         data-mention-open={mentionPickerOpen ? 'true' : 'false'}
         data-bottom-banner-open={hasBlockingBottomBanner ? 'true' : 'false'}
       >
-      {items.length === 0 && !running ? (
+      {items.length === 0 && !running && scrollReady ? (
         <NewConversationLanding
           composer={landingComposer}
           workspaceSlot={workspaceSlot}
@@ -2655,13 +2680,13 @@ export function Chat({
           onBack={onBack}
         />
       ) : (
-        <div className={`relative h-full min-h-0 chat-page-enter ${pageMounted ? 'is-mounted' : ''}`}>
+        <div className={`relative h-full min-h-0 chat-page-enter ${pageMounted && scrollReady ? 'is-mounted' : ''}`}>
           {/* 消息区：全高；线程有 max-width 居中；底栏输入/token 铺满对话列 */}
           <Conversation
             className="absolute inset-0 min-h-0"
             contextRef={scrollContextRef}
             resize={
-              effectiveScrollReady && !streamTransitioning ? 'smooth' : 'instant'
+              !holdInstantResize && !streamTransitioning ? 'smooth' : 'instant'
             }
           >
             <ConversationContent className="session-conversation-pad pt-2 pb-44">
@@ -2761,8 +2786,13 @@ export function Chat({
               })()}
             </div>
         </ConversationContent>
-        {/* 切会话恢复滚动位置（无动画、不打断查历史），对齐 TAgent_General ScrollPositionManager */}
-        <ScrollPositionManager id={sessionId} ready={effectiveScrollReady} />
+        {/* 切会话恢复滚动位置：钉底等 scrollReady；中间位等虚拟化全挂 */}
+        <ScrollPositionManager
+          id={sessionId}
+          ready={scrollReady}
+          restoreReady={fullyMounted}
+          layoutKey={effectiveVisible}
+        />
         <ScrollMinimap items={minimapItems} />
         <ConversationScrollButton />
       </Conversation>
@@ -2859,7 +2889,9 @@ export function Chat({
               ref={chatInputRef}
               onSubmit={() => void send()}
               placeholder={
-                executionMode === 'chat'
+                running || runStartedAt != null
+                  ? '给正在运行的任务追加引导…（Enter 夹入，不中断）'
+                  : executionMode === 'chat'
                   ? '输入消息… @ 点名角色（Enter 发送）'
                   : '输入消息…（Enter 发送，Shift+Enter 换行）'
               }
@@ -2951,8 +2983,8 @@ export function Chat({
                     />
                     {/*
                       发送/停止/引导/立即发送 同槽复用：
-                      · 运行中 + 无草稿 → 停止键（中断当前轮，队列自动续发）
-                      · 运行中 + 有草稿 → [引导] [立即发送] [排队发送]
+                      · 运行中 + 无草稿 → 停止键
+                      · 运行中 + 有草稿 → Enter/发送=夹入引导；立即发送才中断
                       · 空闲 + 有草稿 → 发送键（enabled，立即发）
                       · 空闲 + 无草稿 → 发送键（disabled）
                     */}
@@ -2973,7 +3005,7 @@ export function Chat({
                       </Button>
                     ) : running && hasSendable ? (
                       <div className="flex items-center gap-1">
-                        <AppTooltip label="引导：不中断当前轮；本轮结束后 Agent 看到此消息（kscc 入队 / Pi 自动续发）">
+                        <AppTooltip label="引导：夹进当前运行，不中断；Agent 会按此调整">
                           <Button
                             variant="ghost"
                             size="icon"
@@ -2982,49 +3014,7 @@ export function Chat({
                               const text = chatInputRef.current?.getText().trim()
                               if (!text) return
                               chatInputRef.current?.clear()
-                              void (async () => {
-                                try {
-                                  const res = await window.electronAPI.steerAgent(
-                                    sessionIdRef.current,
-                                    text,
-                                  ) as { ok?: boolean; mode?: string; error?: string } | undefined
-                                  if (!res?.ok) {
-                                    pushTicker(
-                                      makeStatusTickerItem(
-                                        `引导失败：${res?.error ?? '未知错误'}`,
-                                        'error',
-                                        5000,
-                                      ),
-                                    )
-                                    return
-                                  }
-                                  if (res.mode === 'pending_next_turn') {
-                                    pushTicker(
-                                      makeStatusTickerItem(
-                                        '已排队引导：本轮结束后自动发送',
-                                        'info',
-                                        4000,
-                                      ),
-                                    )
-                                  } else if (res.mode === 'live') {
-                                    pushTicker(
-                                      makeStatusTickerItem(
-                                        '已注入引导：将在下一轮边界生效',
-                                        'info',
-                                        4000,
-                                      ),
-                                    )
-                                  }
-                                } catch (err) {
-                                  pushTicker(
-                                    makeStatusTickerItem(
-                                      `引导失败：${err instanceof Error ? err.message : String(err)}`,
-                                      'error',
-                                      5000,
-                                    ),
-                                  )
-                                }
-                              })()
+                              void submitSteer(text)
                             }}
                             aria-label="引导"
                           >

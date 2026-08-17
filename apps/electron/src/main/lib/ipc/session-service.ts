@@ -133,12 +133,19 @@ import {
 import { readAgentDiscussPrefs, writeAgentDiscussPrefs } from '../agent/agent-discuss-prefs'
 import { readAgentCrewPrefs, writeAgentCrewPrefs } from '../agent/agent-crew-prefs'
 import type { NoProgressGuardMode, AgentDiscussPrefs, AgentCrewPrefs } from '@tagent/shared'
+import {
+  extractSdkUserText,
+  isSteerPromptEcho,
+  wrapSteerPromptForModel,
+} from '../agent/steer-prompt'
 
 interface SendMessageInput {
   sessionId: string
   prompt: string
   /** 运行中引导的后续自动发送：在消息列表内并入前一执行回合。 */
   isSteer?: boolean
+  /** 引导已先落盘广播过，flush 时不要再写一条用户气泡。 */
+  skipUserPersist?: boolean
   /** 渠道 ID（决定选哪个 adapter + 绑核）。不传默认 kscc-internal */
   channelId?: string
   /** 模型 ID */
@@ -193,6 +200,8 @@ export class SessionService {
    * STOP / 删会话时丢弃，避免停后仍自动开跑。
    */
   private pendingSteerBySession = new Map<string, string[]>()
+  /** 刚落盘的引导原文，用来丢掉 kscc enqueue 回声（无 isSteer 的第二条用户气泡）。 */
+  private lastSteerBySession = new Map<string, { text: string; at: number }>()
 
   /**
    * kscc 流式落盘闸口状态（REGRESS-G）：按会话维护「同 uuid 去重 + 内容放行」的待提交 assistant。
@@ -253,10 +262,10 @@ export class SessionService {
   }
 
   /**
-   * kscc 的实时引导直接写入长驻 channel，不会像 handleSend 那样自然经过消息落盘。
-   * 这里补齐持久化和 renderer 广播，保证用户点击「引导」后既能在对话中看见，也不会重开丢失。
+   * 引导立刻落盘 + 推 renderer（isSteer），夹进当前执行回合，不另起用户气泡。
+   * kscc 再写 resume JSONL；Pi 只写面板。
    */
-  private persistLiveSteerMessage(sessionId: string, text: string): void {
+  private persistSteerUserMessage(sessionId: string, text: string): void {
     const meta = getSessionMeta(sessionId)
     const workspaceId = meta?.workspaceId
     const now = Date.now()
@@ -267,16 +276,18 @@ export class SessionService {
       createdAt: now,
       isSteer: true,
     } as unknown as SDKMessage
+    this.lastSteerBySession.set(sessionId, { text, at: now })
     try {
       appendPanelMessages(workspaceId, sessionId, [userMsg])
-      appendSdkMessages(workspaceId, sessionId, [userMsg])
+      if (this.resolveAdapterKindForSession(sessionId) === 'kscc') {
+        appendSdkMessages(workspaceId, sessionId, [userMsg])
+      }
       const { message: userIR } = sdkMessageToIR(userMsg)
       if (userIR) {
         this.sendPayload(sessionId, { kind: 'sdk_message', message: userIR })
       }
     } catch (err) {
-      // 引导已成功入 channel；记录失败不应把成功结果变成失败或重复注入。
-      console.warn(`[会话 ${sessionId}] 实时引导落盘失败:`, err)
+      console.warn(`[会话 ${sessionId}] 引导落盘失败:`, err)
     }
   }
 
@@ -346,7 +357,7 @@ export class SessionService {
       console.warn(`[session-service] pending steer 丢弃（无 meta）: ${sessionId}`)
       return
     }
-    const prompt = pending.join('\n\n')
+    const prompt = wrapSteerPromptForModel(pending.join('\n\n'))
     console.log(
       `[会话 ${sessionId}] pending steer → 自动下一轮（${pending.length} 条合并）`,
     )
@@ -357,6 +368,7 @@ export class SessionService {
       model: meta.modelId,
       workspaceId: meta.workspaceId,
       isSteer: true,
+      skipUserPersist: true,
     }).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err)
       console.warn(`[session-service] pending steer flush 失败: ${msg}`)
@@ -602,11 +614,14 @@ export class SessionService {
           const kind = this.resolveAdapterKindForSession(sessionId)
           const rt = this.runtimes.get(sessionId)
 
+          // 先落盘原文，会话里立刻出现「引导」气泡（不等下一轮）。
+          this.persistSteerUserMessage(sessionId, text)
+          const modelText = wrapSteerPromptForModel(text)
+
           // kscc 真长驻：loop 存活时 enqueue 到下一轮边界。
           if (kind === 'kscc' && rt?.hasLiveProcess()) {
-            const mode = await rt.steerMessage(text)
+            const mode = await rt.steerMessage(modelText)
             if (mode === 'live') {
-              this.persistLiveSteerMessage(sessionId, text)
               return { ok: true, mode: 'live' }
             }
             // live 判定竞态失败 → 降级 pending
@@ -1304,6 +1319,7 @@ export class SessionService {
     // 持久化用户消息到 JSONL 并推渲染层。按核分流：
     // - kscc：落盘 SDKMessage（resume 读 JSONL 要此格式）+ sdkMessageToIR 推 IR
     // - pi：直接落盘 IR（pi 自管上下文，不靠 SDK resume）+ 直推 IR
+    if (!input.skipUserPersist) {
     if (adapterKind === 'kscc') {
       const now = Date.now()
       const userMsg: SDKMessage = {
@@ -1345,6 +1361,7 @@ export class SessionService {
         console.warn('[session-service] appendPanelMessages failed (pi user):', err)
       }
       this.sendPayload(input.sessionId, { kind: 'sdk_message', message: userIR })
+    }
     }
 
     // T7 续聊注入 + P0 #1（AUDIT-fresh-session-consult）：夹中场景「普通轮 → 圆桌（快速/研讨）→ 续聊」
@@ -2117,6 +2134,11 @@ export class SessionService {
     if ((msg as { type?: string }).type === 'user') {
       const content = (msg as { message?: { content?: unknown } }).message?.content
       if (userContentHasAttachmentAppendix(content)) return
+      const last = this.lastSteerBySession.get(sessionId)
+      if (last && Date.now() - last.at < 60_000) {
+        const incoming = extractSdkUserText(msg as { message?: { content?: unknown } })
+        if (isSteerPromptEcho(incoming, last.text)) return
+      }
     }
     // 注入 createdAt（落盘带上，加载时 sdkMessageToIR 读回 → 渲染层显示时间）
     ;(msg as any).createdAt = (msg as any).createdAt ?? Date.now()

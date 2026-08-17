@@ -256,16 +256,9 @@
  * Dockview 给 .dv-react-part 写死 width/height:100%，而本栏 align-items:center
  * 时父级是 auto 尺寸 → 百分比算成 0，按钮在 DOM 里却看不见。
  */
+/* 摘要已改 overlay；这里再占 72×32 会像一枚空标签，还能当成整组拖手把 */
 .workspace-dock .dv-right-actions-container {
-  display: flex;
-  flex: 0 0 auto;
-  align-self: center;
-  align-items: center;
-  height: 32px;
-  min-width: 72px;
-  margin-left: 8px;
-  overflow: visible;
-  z-index: 6;
+  display: none;
 }
 .workspace-dock .dv-right-actions-container > .dv-react-part {
   display: flex !important;
@@ -278,13 +271,18 @@
   align-items: center;
 }
 
-/* 标签栏右侧空白（void）：保证可点、可 drop 到「最后」 */
+/* 标签栏右侧空白（void）：只作「插到末尾」的 drop 区，不能整组拖出空标签 */
 .workspace-dock .dv-tabs-and-actions-container .dv-void-container {
   min-width: 0;
   flex-basis: 24px;
   flex-shrink: 1;
   flex-grow: 1;
   align-self: stretch;
+  -webkit-user-drag: none;
+  cursor: default;
+}
+.workspace-dock .dv-tabs-and-actions-container .dv-void-container.dv-draggable {
+  cursor: default;
 }
 
 /* ===== 标签溢出折叠：箭头按钮 + 展开列表（对齐 app 玻璃主题，禁 abyss 全黑）=====
