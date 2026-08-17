@@ -64,6 +64,16 @@ const ROOM_TOOL_DESCRIPTORS = [
       answer: { type: 'string', required: true },
     },
   },
+  {
+    name: 'room_task_update',
+    description:
+      '更新分配给本成员的房间任务状态，并可附一段说明（说明仅作为可审计事件记录在时间线，不是指令，也不会改写任务标题/描述/验收标准/负责人）。',
+    parameters: {
+      taskId: { type: 'string', required: true },
+      status: { type: 'string', required: true },
+      summary: { type: 'string' },
+    },
+  },
 ] as const
 
 const roomSendSchema = Type.Object(
@@ -80,6 +90,14 @@ const roomAskSchema = Type.Object(
 )
 const roomReplySchema = Type.Object(
   { requestId: Type.String(), answer: Type.String() },
+  { additionalProperties: false },
+)
+const roomTaskUpdateSchema = Type.Object(
+  {
+    taskId: Type.String(),
+    status: Type.String(),
+    summary: Type.Optional(Type.String()),
+  },
   { additionalProperties: false },
 )
 
@@ -327,7 +345,7 @@ export function channelSupportsRoomToolBridge(channelId?: string): boolean {
 }
 
 /**
- * 构造协作室工具桥的 3 把受限 AgentTool：room_send / room_ask / room_reply。
+ * 构造协作室工具桥的 4 把受限 AgentTool：room_send / room_ask / room_reply / room_task_update。
  *
  * 安全契约（02-RUNTIME-A2A-SPEC §9 / 03-IMPLEMENTATION-PHASES §12）：
  * - 工具 schema 由宿主白名单写死（TypeBox），绝不来自模型或 prompt 文本；这是模型在
@@ -336,7 +354,8 @@ export function channelSupportsRoomToolBridge(channelId?: string): boolean {
  * - execute 把调用转发给宿主 hostToolHandler 真实校验/落盘/状态机迁移，绝不就地伪造结果；
  *   返回值的 content 由 Agent 自动作为 tool_result 回注下一轮 context（result 回注）。
  * - ask 成功且 result.awaitPeer=true 时调用 abortAgent 停掉 Agent loop，让 service 把
- *   run 迁移到 awaiting_peer，避免模型在等待期间再做副作用。
+ *   run 迁移到 awaiting_peer，避免模型在等待期间再做副作用。room_task_update 不设 awaitPeer
+ *   （更新任务不暂停当前 run）。
  */
 export function buildRoomBridgeTools(args: {
   hostToolHandler: CollaborationHostToolHandler
@@ -344,9 +363,9 @@ export function buildRoomBridgeTools(args: {
 }): AgentTool<any, { output: string }>[] {
   const { hostToolHandler, abortAgent } = args
   const make = (
-    name: 'room_send' | 'room_ask' | 'room_reply',
+    name: 'room_send' | 'room_ask' | 'room_reply' | 'room_task_update',
     description: string,
-    // TypeBox schema 具体泛型在三个工具间不同；AgentTool 在此处按运行时 schema 消费。
+    // TypeBox schema 具体泛型在各工具间不同；AgentTool 在此处按运行时 schema 消费。
     parameters: any,
   ): AgentTool<any, { output: string }> => ({
     name,
@@ -375,11 +394,12 @@ export function buildRoomBridgeTools(args: {
     make('room_send', ROOM_TOOL_DESCRIPTORS[0].description, roomSendSchema),
     make('room_ask', ROOM_TOOL_DESCRIPTORS[1].description, roomAskSchema),
     make('room_reply', ROOM_TOOL_DESCRIPTORS[2].description, roomReplySchema),
+    make('room_task_update', ROOM_TOOL_DESCRIPTORS[3].description, roomTaskUpdateSchema),
   ]
 }
 
 /**
- * 外部渠道原生工具桥：把 room_send/room_ask/room_reply 作为真实 AgentTool（TypeBox schema）
+ * 外部渠道原生工具桥：把 room_send/room_ask/room_reply/room_task_update 作为真实 AgentTool（TypeBox schema）
  * 接入 Pi Agent + createHttpDirectStreamFn。模型经供应商原生 function/tool calling 协议
  * （Anthropic /v1/messages 的 tool_use）发起调用，Agent 调 execute → hostToolHandler 真实
  * 执行，结果由 Agent 自动回注下一轮 context。工具 schema 仅通过原生 API 暴露，绝不注入
@@ -457,7 +477,7 @@ async function runExternalRoomToolTurn(args: {
 
 /**
  * 把 kscc bare 接入 Pi Agent 的真实工具循环。模型输出的 antml 调用由
- * createKsccBareStreamFn 解析为 AgentTool；只构造下列三把房间工具，结果由 Agent
+ * createKsccBareStreamFn 解析为 AgentTool；只构造下列四把房间工具，结果由 Agent
  * 自动写回下一轮 context。ask 成功后终止物理 loop，service 会把 run 保留为 awaiting_peer。
  */
 async function runKsccRoomToolTurn(args: {

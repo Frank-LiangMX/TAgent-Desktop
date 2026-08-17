@@ -275,7 +275,7 @@ export interface CollaborationSerializedRunError {
  * 文件、终端或房间内部持久化层的能力。
  */
 export interface CollaborationHostToolCall {
-  name: 'room_send' | 'room_ask' | 'room_reply'
+  name: 'room_send' | 'room_ask' | 'room_reply' | 'room_task_update'
   arguments: Record<string, string>
 }
 
@@ -631,6 +631,14 @@ export const COLLABORATION_LOGICAL_SESSION_ID_PREFIX = 'ls_'
 export const COLLABORATION_RUN_ID_PREFIX = 'run_'
 /** room task ID 前缀 */
 export const COLLABORATION_ROOM_TASK_ID_PREFIX = 'crt_'
+
+/**
+ * room_task_update 工具 summary 的最大长度（字符）。
+ *
+ * summary 仅作为可审计 task_event 记录在时间线，绝不写入任务的权威字段（title/description/
+ * acceptanceCriteria/assigneeMemberId）；超长拒绝（fail-closed），防止模型借超长说明注入指令或刷屏。
+ */
+export const COLLABORATION_ROOM_TASK_SUMMARY_MAX_LENGTH = 2000
 
 /**
  * 计算 run 幂等键：同一触发消息对同一成员只产生一个 run。

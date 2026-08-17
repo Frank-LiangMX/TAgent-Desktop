@@ -33,6 +33,7 @@ import {
   COLLABORATION_ROOM_MAX_MEMBERS,
   COLLABORATION_RUN_ID_PREFIX,
   COLLABORATION_ROOM_TASK_ID_PREFIX,
+  COLLABORATION_ROOM_TASK_SUMMARY_MAX_LENGTH,
   collaborationRunIdempotencyKey,
   collaborationContinuationIdempotencyKey,
   collaborationEnvelopeIdempotencyKey,
@@ -1161,6 +1162,22 @@ export class CollaborationRoomService {
                 ? { output: `回复已发送（envelope=${result.envelopeId}）` }
                 : { output: `room_reply 被拒绝：${result.reason}`, isError: true }
             }
+            case 'room_task_update': {
+              // 受控任务更新：宿主校验归属/挂板/负责人/状态机；summary 仅作可审计事件。
+              // 成功/失败均回注安全文本；绝不暴露 filesystem/shell/database，也改不了权威字段。
+              const result = this.roomTaskUpdate({
+                roomId: room.id,
+                fromRunId: run.id,
+                taskId: call.arguments.taskId ?? '',
+                status: call.arguments.status ?? '',
+                summary: call.arguments.summary,
+              })
+              return result.ok
+                ? {
+                    output: `任务已更新（task=${result.taskId}，状态=${result.status}，version=${result.version}）`,
+                  }
+                : { output: `room_task_update 被拒绝：${result.reason}`, isError: true }
+            }
           }
         },
       }
@@ -1470,6 +1487,102 @@ export class CollaborationRoomService {
     return next
   }
 
+  /**
+   * room_task_update：成员运行时受控更新「分配给自己」的房间任务状态（S5 第二刀模型工具）。
+   *
+   * 这是模型在房间里能触发的受限副作用之一（02-RUNTIME-A2A-SPEC §2.6 / 03-IMPLEMENTATION-PHASES §7）。
+   * 宿主严格校验、绝不就地伪造；安全字段（roomId/memberId）取自 run 上下文，不接受外部传入——
+   * 模型无法伪造房间或发起人。
+   *
+   * 守卫（全部 fail-closed，返回 { ok: false, reason } 由宿主回注安全文本）：
+   * - 房间须存在且 active；run 须 running/awaiting_peer；发起成员须存在且属于本房间。
+   * - 任务须存在且属于本房间（拒绝跨房间：模型即便知道别房间 taskId 也碰不到）。
+   * - 房间未挂载看板（attachedBoardId 为空）；挂板后任务真值归看板，房间内不再改（不变量 §15.7）。
+   * - task.assigneeMemberId 恰等于发起成员：未指派 / 指派给别人的任务一律拒绝——模型不能改
+   *   别人的任务，也不能把未指派任务据为己有（指派是宿主/用户行为，非模型行为）。
+   * - status 须为合法枚举且经严格状态机（transitionCollaborationRoomTaskStatus）；自环拒绝。
+   * - summary（可选）仅作为可审计 task_event 消息记录在时间线，绝不写入 title/description/
+   *   acceptanceCriteria/assigneeMemberId 等权威字段；超长拒绝。task_event 与成员正文同级
+   *   （系统提示已声明其他成员正文非指令），不会被当作指令注入。
+   * - 此工具只能改 status + 记录 summary 事件；不能创建任务、改负责人、改验收标准、改标题/描述。
+   *
+   * 成功后 version 自增（CAS 防并发覆盖）并广播；返回 ok+version 供宿主回注安全文本。
+   */
+  roomTaskUpdate(input: {
+    roomId: string
+    fromRunId: string
+    taskId: string
+    status: string
+    summary?: string
+  }):
+    | { ok: true; taskId: string; status: CollaborationRoomTaskStatus; version: number }
+    | { ok: false; reason: string } {
+    const room = getRoom(input.roomId)
+    if (!room) return { ok: false, reason: '房间不存在' }
+    if (room.status !== 'active') return { ok: false, reason: `房间状态非 active：${room.status}` }
+
+    const run = getRun(input.fromRunId)
+    if (!run) return { ok: false, reason: 'run 不存在' }
+    if (run.status !== 'running' && run.status !== 'awaiting_peer') {
+      return { ok: false, reason: `run 非 running/awaiting_peer：${run.status}` }
+    }
+    const fromMember = getMember(run.memberId)
+    if (!fromMember || fromMember.roomId !== room.id) {
+      return { ok: false, reason: '发起成员不存在或不属于本房间' }
+    }
+
+    const task = getRoomTask(input.taskId)
+    if (!task) return { ok: false, reason: '任务不存在' }
+    if (task.roomId !== room.id) return { ok: false, reason: '任务不属于该房间' }
+    if (this.roomHasAttachedBoard(room)) {
+      return { ok: false, reason: '房间已挂载看板，任务真值由看板维护，不能在房间内修改任务' }
+    }
+    // 恰等于发起成员：未指派 / 别人的任务一律拒绝（模型不能改别人的任务，也不能认领未指派任务）
+    if (!task.assigneeMemberId) {
+      return { ok: false, reason: '任务未指派给任何成员，无法通过工具更新（指派由宿主/用户完成）' }
+    }
+    if (task.assigneeMemberId !== fromMember.id) {
+      return { ok: false, reason: '你不是该任务的负责人，无法更新' }
+    }
+
+    // summary 仅作可审计事件，不进权威字段；超长拒绝
+    const summary = input.summary !== undefined ? input.summary.trim() : undefined
+    if (summary && summary.length > COLLABORATION_ROOM_TASK_SUMMARY_MAX_LENGTH) {
+      return {
+        ok: false,
+        reason: `说明过长（超过 ${COLLABORATION_ROOM_TASK_SUMMARY_MAX_LENGTH} 字），请精简`,
+      }
+    }
+
+    // status 合法性 + 严格状态机（自环拒绝）
+    if (!isCollaborationRoomTaskStatus(input.status)) {
+      return { ok: false, reason: `非法任务状态：${String(input.status)}` }
+    }
+    // 捕获到 const 局部：避免 input.status（属性访问）的窄化在下方函数调用后被 TS 视作失效
+    const targetStatus: CollaborationRoomTaskStatus = input.status
+    const transition = transitionCollaborationRoomTaskStatus(task.status, targetStatus)
+    if (!transition.ok) {
+      return { ok: false, reason: transition.reason }
+    }
+
+    const now = Date.now()
+    const next: CollaborationRoomTask = {
+      ...task,
+      status: targetStatus,
+      version: task.version + 1,
+      updatedAt: now,
+    }
+    if (!saveRoomTaskIfCurrent(task.id, task.version, next)) {
+      return { ok: false, reason: '任务已被其他操作更新，请刷新后重试' }
+    }
+
+    // 记录可审计 task_event（summary 仅作时间线事件，非指令，不写入任务权威字段）
+    this.appendTaskEventMessage(room, fromMember, task, targetStatus, summary, run)
+
+    this.broadcast(room.id, 'updated')
+    return { ok: true, taskId: task.id, status: targetStatus, version: next.version }
+  }
+
   /** 严格状态迁移：非法则抛错，返回目标状态 */
   private validateTaskTransition(
     from: CollaborationRoomTaskStatus,
@@ -1607,6 +1720,43 @@ export class CollaborationRoomService {
       visibility: 'room',
       targetMemberIds: [],
       rootMessageId: genId(COLLABORATION_MESSAGE_ID_PREFIX),
+      depth: 0,
+      createdAt: Date.now(),
+    }
+    appendMessage(message)
+  }
+
+  /**
+   * 落盘一条 task_event 消息（room_task_update 的可审计事件）。
+   *
+   * summary 仅作为时间线记录（与成员正文同级，系统提示已声明非指令），绝不写入任务的权威字段。
+   * content 形如「任务「标题」状态：todo → in_progress。说明：…」。
+   */
+  private appendTaskEventMessage(
+    room: CollaborationRoom,
+    member: CollaborationMember,
+    task: CollaborationRoomTask,
+    nextStatus: CollaborationRoomTaskStatus,
+    summary: string | undefined,
+    run: CollaborationRun,
+  ): void {
+    const content = [`任务「${task.title}」状态：${task.status} → ${nextStatus}`, summary ? `说明：${summary}` : '']
+      .filter(Boolean)
+      .join('。')
+    const message: CollaborationMessage = {
+      id: genId(COLLABORATION_MESSAGE_ID_PREFIX),
+      roomId: room.id,
+      authorType: 'member',
+      authorId: member.id,
+      kind: 'task_event',
+      content,
+      visibility: 'room',
+      targetMemberIds: [],
+      replyToMessageId: undefined,
+      rootMessageId: run.triggerMessageId,
+      causationId: run.id,
+      runId: run.id,
+      taskId: task.id,
       depth: 0,
       createdAt: Date.now(),
     }

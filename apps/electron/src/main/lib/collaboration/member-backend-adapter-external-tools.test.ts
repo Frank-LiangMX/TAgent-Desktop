@@ -2,7 +2,7 @@
  * 成员后端适配器 —— 外部渠道原生受限工具桥单测（Stage 4-3b 外部渠道）
  *
  * 验证 runExternalRoomToolTurn / buildRoomBridgeTools 的安全契约：
- * - schema 限权：只暴露 room_send/room_ask/room_reply 三把 TypeBox 受限工具，
+ * - schema 限权：只暴露 room_send/room_ask/room_reply/room_task_update 四把 TypeBox 受限工具，
  *   additionalProperties:false 锁死参数；绝不混入 Read/Bash/Edit/Write/Task 等会话工具。
  * - tool-call 转发：execute 把调用转发给宿主 hostToolHandler 真实校验/执行，绝不就地伪造。
  * - result 回注：工具结果由 Agent 回注下一轮 context（第二次 streamFn 调用的上下文里含工具输出）。
@@ -275,15 +275,32 @@ beforeEach(() => {
 // ===== buildRoomBridgeTools：schema 限权 =====
 
 describe('buildRoomBridgeTools — schema 限权', () => {
-  test('仅暴露 room_send/room_ask/room_reply 三把工具，绝不混入会话工具', () => {
+  test('仅暴露 room_send/room_ask/room_reply/room_task_update 四把工具，绝不混入会话工具', () => {
     const tools = buildRoomBridgeTools({
       hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
       abortAgent: vi.fn(),
     })
-    expect(tools).toHaveLength(3)
-    expect(tools.map((t) => t.name)).toEqual(['room_send', 'room_ask', 'room_reply'])
+    expect(tools).toHaveLength(4)
+    expect(tools.map((t) => t.name)).toEqual([
+      'room_send',
+      'room_ask',
+      'room_reply',
+      'room_task_update',
+    ])
     // 绝不暴露 filesystem/shell/database 或会话工具
-    const forbidden = ['Read', 'Bash', 'Edit', 'Write', 'Glob', 'Grep', 'Task', 'FilesystemTool']
+    const forbidden = [
+      'Read',
+      'Bash',
+      'Edit',
+      'Write',
+      'Glob',
+      'Grep',
+      'Task',
+      'FilesystemTool',
+      'Shell',
+      'Database',
+      'Filesystem',
+    ]
     for (const name of forbidden) {
       expect(tools.find((t) => t.name === name)).toBeUndefined()
     }
@@ -322,6 +339,20 @@ describe('buildRoomBridgeTools — schema 限权', () => {
     expect(schema.type).toBe('object')
     expect(Object.keys(schema.properties as object)).toEqual(['requestId', 'answer'])
     expect(schema.required).toEqual(['requestId', 'answer'])
+  })
+
+  test('room_task_update schema：taskId + status 必填，summary 可选，additionalProperties 锁死', () => {
+    const tools = buildRoomBridgeTools({
+      hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
+      abortAgent: vi.fn(),
+    })
+    const schema = tools[3]!.parameters as Record<string, unknown>
+    expect(schema.type).toBe('object')
+    expect(Object.keys(schema.properties as object).sort()).toEqual(['status', 'summary', 'taskId'])
+    expect(schema.required).toEqual(['taskId', 'status'])
+    // 锁死：不接受模型塞进来的额外参数（如 description/acceptanceCriteria/assigneeMemberId ——
+    // 模型不能经此工具改这些权威字段）
+    expect(schema.additionalProperties).toBe(false)
   })
 })
 
@@ -383,6 +414,58 @@ describe('buildRoomBridgeTools — tool-call 转发到宿主 hostToolHandler', (
     await tools.find((t) => t.name === 'room_send')!.execute('tc-4', {
       toMemberId: 'cm_b',
       message: 'hi',
+    })
+    expect(abortAgent).not.toHaveBeenCalled()
+  })
+
+  test('room_task_update.execute：把 {name, arguments(字符串化)} 转发给 handler 并返回其 output', async () => {
+    const handler = vi.fn(
+      async () => ({ output: '任务已更新（task=crt_1，状态=in_progress，version=2）' }),
+    ) as unknown as CollaborationHostToolHandler
+    const tools = buildRoomBridgeTools({ hostToolHandler: handler, abortAgent: vi.fn() })
+    const update = tools.find((t) => t.name === 'room_task_update')!
+    const res = (await update.execute('tc-5', {
+      taskId: 'crt_1',
+      status: 'in_progress',
+      summary: '已开工',
+    })) as {
+      content: Array<{ type: string; text: string }>
+      details: { output: string }
+    }
+    expect(handler).toHaveBeenCalledOnce()
+    expect(handler).toHaveBeenCalledWith({
+      name: 'room_task_update',
+      arguments: { taskId: 'crt_1', status: 'in_progress', summary: '已开工' },
+    })
+    // result 回注载荷：content 文本 = handler output
+    expect(res.content).toEqual([
+      { type: 'text', text: '任务已更新（task=crt_1，状态=in_progress，version=2）' },
+    ])
+    expect(res.details).toEqual({ output: '任务已更新（task=crt_1，状态=in_progress，version=2）' })
+  })
+
+  test('room_task_update.execute：summary 缺省时不塞空串（handler 据缺省视为无说明）', async () => {
+    const handler = vi.fn(async () => ({ output: 'ok' })) as unknown as CollaborationHostToolHandler
+    const tools = buildRoomBridgeTools({ hostToolHandler: handler, abortAgent: vi.fn() })
+    await tools.find((t) => t.name === 'room_task_update')!.execute('tc-6', {
+      taskId: 'crt_1',
+      status: 'done',
+    })
+    // summary 未传 → arguments 不含 summary 键（handler 据此判定无说明）
+    expect(handler).toHaveBeenCalledWith({
+      name: 'room_task_update',
+      arguments: { taskId: 'crt_1', status: 'done' },
+    })
+  })
+
+  test('room_task_update.execute：awaitPeer 缺省不触发 abortAgent（更新任务不暂停 run）', async () => {
+    const handler = vi.fn(async () => ({ output: 'ok' })) as unknown as CollaborationHostToolHandler
+    const abortAgent = vi.fn()
+    const tools = buildRoomBridgeTools({ hostToolHandler: handler, abortAgent })
+    await tools.find((t) => t.name === 'room_task_update')!.execute('tc-7', {
+      taskId: 'crt_1',
+      status: 'in_progress',
+      summary: '继续',
     })
     expect(abortAgent).not.toHaveBeenCalled()
   })
@@ -457,6 +540,7 @@ describe('ChannelBackendAdapter.runTurn — Anthropic 外部渠道原生工具�
       'room_send',
       'room_ask',
       'room_reply',
+      'room_task_update',
     ])
   })
 
