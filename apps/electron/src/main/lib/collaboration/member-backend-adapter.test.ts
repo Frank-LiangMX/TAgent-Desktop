@@ -69,6 +69,7 @@ vi.mock('@tagent/pi-core', () => ({
 
 import {
   resolveChannelBackendConfig,
+  channelSupportsRoomToolBridge,
   ChannelBackendAdapter,
   MemberBackendResolveError,
 } from './member-backend-adapter'
@@ -225,6 +226,18 @@ describe('resolveChannelBackendConfig', () => {
     channelState.channels = [fakeChannel({ id: 'nomodel', provider: 'openai', models: [fakeModel('m', false)] })]
     channelState.decrypted = { nomodel: 'k' }
     expect(() => resolveChannelBackendConfig({ channelId: 'nomodel' })).toThrowError(/NO_MODEL/)
+  })
+})
+
+describe('channelSupportsRoomToolBridge', () => {
+  test('仅 kscc-internal 声明为支持房间工具桥；外部渠道保持 false', () => {
+    channelState.channels = [
+      fakeChannel({ id: 'kscc', provider: 'kscc-internal' }),
+      fakeChannel({ id: 'external', provider: 'openai' }),
+    ]
+    expect(channelSupportsRoomToolBridge('kscc')).toBe(true)
+    expect(channelSupportsRoomToolBridge('external')).toBe(false)
+    expect(channelSupportsRoomToolBridge()).toBe(false)
   })
 })
 

@@ -189,6 +189,27 @@ export interface CollaborationSerializedRunError {
   stack?: string
 }
 
+/**
+ * 协作室成员可调用的宿主工具请求。名称和参数由宿主白名单约束；模型没有直接访问
+ * 文件、终端或房间内部持久化层的能力。
+ */
+export interface CollaborationHostToolCall {
+  name: 'room_send' | 'room_ask' | 'room_reply'
+  arguments: Record<string, string>
+}
+
+/** 宿主工具的受控返回值；awaitPeer 表示当前 turn 应释放执行槽等待对方回复。 */
+export interface CollaborationHostToolResult {
+  output: string
+  isError?: boolean
+  awaitPeer?: boolean
+}
+
+/** 由 room service 注入、仅供支持工具回路的 backend 调用的宿主 handler。 */
+export type CollaborationHostToolHandler = (
+  call: CollaborationHostToolCall,
+) => Promise<CollaborationHostToolResult>
+
 // ===== 成员后端适配器（02-RUNTIME-A2A-SPEC §12，Stage 2 简化版） =====
 
 /**
@@ -218,6 +239,11 @@ export interface MemberTurnInput {
   signal: AbortSignal
   /** 可选流式增量回调（S2 暂不接 renderer，留 S3+） */
   onTextDelta?: (delta: string) => void
+  /**
+   * S4-3b：仅本机 kscc tool bridge 使用。未提供时 backend 必须保持纯文本 turn；
+   * 它不是通用工具授权，也不包含文件/终端工具。
+   */
+  hostToolHandler?: CollaborationHostToolHandler
 }
 
 /** 一次成员 turn 的结果 */
@@ -938,7 +964,7 @@ export type CollaborationTimelineItem =
  * - 用户 chat / 系统 warning / A2A 提问回复 → 独立条目
  * - 成员 chat 按 runId 收进 run 卡（该 run 的正文 + 状态），不散成气泡
  * - 无 run 的成员消息（历史数据）退化为独立 member 条目
- * - 排序：run 以 startedAt ?? createdAt 为主键、其次 run.id；消息以 createdAt 为主
+ * - 排序：run 以 startedAt 为主键、未启动 run 以 0 兜底、其次 run.id；消息以 createdAt 为主
  */
 export function groupCollaborationTimelineItems(
   messages: CollaborationMessage[],
@@ -985,11 +1011,11 @@ export function groupCollaborationTimelineItems(
   items.sort((a, b) => {
     const aAnchor =
       a.type === 'run'
-        ? (a.run.startedAt ?? a.run.createdAt)
+        ? (a.run.startedAt ?? 0)
         : a.message.createdAt
     const bAnchor =
       b.type === 'run'
-        ? (b.run.startedAt ?? b.run.createdAt)
+        ? (b.run.startedAt ?? 0)
         : b.message.createdAt
     if (aAnchor !== bAnchor) return aAnchor - bAnchor
     const aId = a.type === 'run' ? a.run.id : a.message.id

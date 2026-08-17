@@ -456,6 +456,53 @@ describe('CollaborationRoomService A2A 信箱 host 侧（Stage 4-2）', () => {
 })
 
 describe('CollaborationRoomService A2A continuation（S4-3 host 唤醒）', () => {
+  test('host tool handler：A room_ask → B room_reply → A continuation', async () => {
+    const calls: MemberTurnInput[] = []
+    let devId = ''
+    let requestId = ''
+    const adapter: MemberBackendAdapter = {
+      capabilities: () => ({ ...MOCK_CAPS, supportsToolBridge: true }),
+      runTurn: async (input: MemberTurnInput): Promise<MemberTurnResult> => {
+        calls.push(input)
+        if (input.memberId !== devId && !input.prompt.includes('[A2A 恢复]')) {
+          const ask = await input.hostToolHandler!({
+            name: 'room_ask',
+            arguments: { toMemberId: devId, question: '接口定义对吗？' },
+          })
+          requestId = listMailboxByRoom(input.roomId).find((e) => e.type === 'question')!.requestId!
+          expect(ask.awaitPeer).toBe(true)
+          return { text: '' }
+        }
+        if (input.memberId === devId) {
+          const reply = await input.hostToolHandler!({
+            name: 'room_reply',
+            arguments: { requestId, answer: '接口没问题，继续实现' },
+          })
+          expect(reply.isError).not.toBe(true)
+          return { text: '已回复协调者' }
+        }
+        return { text: '已根据回复继续完成' }
+      },
+    }
+    const svc = createService(adapter)
+    const { roomId, coordinatorId, devId: createdDevId } = createRoomWithTwoMembers(svc)
+    devId = createdDevId
+
+    const start = svc.appendUserMessage({ roomId, content: '开始' })
+    const asker = svc.listRuns(roomId).find((r) => r.triggerMessageId === start.id)!
+    await waitForRunStatus(svc, asker.id, 'awaiting_peer')
+
+    svc.appendUserMessage({ roomId, content: '开发处理提问', targetMemberIds: [devId] })
+    await svc.awaitAllRuns()
+
+    const continuation = svc
+      .listRuns(roomId)
+      .find((r) => r.idempotencyKey === `a2a-continue:${requestId}:${coordinatorId}`)
+    expect(continuation?.status).toBe('done')
+    const continued = calls.find((call) => call.runId === continuation?.id)
+    expect(continued?.prompt).toContain('接口没问题，继续实现')
+  })
+
   test('roomReply：asker awaiting_peer → 入队 continuation，prompt 含回复', async () => {
     const calls: MemberTurnInput[] = []
     const adapter: MemberBackendAdapter = {

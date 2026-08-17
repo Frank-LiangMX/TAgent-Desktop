@@ -90,6 +90,7 @@ import {
 } from './collaboration-room-repository'
 import {
   createChannelBackendAdapter,
+  channelSupportsRoomToolBridge,
   MemberBackendResolveError,
   pickDefaultMemberChannelBinding,
 } from './member-backend-adapter'
@@ -933,6 +934,46 @@ export class CollaborationRoomService {
             at: Date.now(),
           })
         },
+        hostToolHandler: async (call) => {
+          switch (call.name) {
+            case 'room_send': {
+              const result = this.roomSend({
+                roomId: room.id,
+                fromRunId: run.id,
+                toMemberId: call.arguments.toMemberId ?? '',
+                payload: call.arguments.message ?? '',
+              })
+              return result.ok
+                ? { output: `通知已发送（envelope=${result.envelopeId}）` }
+                : { output: `room_send 被拒绝：${result.reason}`, isError: true }
+            }
+            case 'room_ask': {
+              const result = this.roomAsk({
+                roomId: room.id,
+                fromRunId: run.id,
+                toMemberId: call.arguments.toMemberId ?? '',
+                question: call.arguments.question ?? '',
+              })
+              if (!result.ok) return { output: `room_ask 被拒绝：${result.reason}`, isError: true }
+              // 先成功落盘 question，再 CAS 释放执行槽；CAS 失败不把半完成 ask 伪装为等待。
+              const awaiting = this.markRunAwaitingPeer(run.id)
+              return awaiting
+                ? { output: `提问已发送（request=${result.requestId}），正在等待对方回复。`, awaitPeer: true }
+                : { output: 'room_ask 已落盘但当前 run 未能进入 awaiting_peer，已停止后续执行。', isError: true }
+            }
+            case 'room_reply': {
+              const result = this.roomReply({
+                roomId: room.id,
+                fromRunId: run.id,
+                requestId: call.arguments.requestId ?? '',
+                answer: call.arguments.answer ?? '',
+              })
+              return result.ok
+                ? { output: `回复已发送（envelope=${result.envelopeId}）` }
+                : { output: `room_reply 被拒绝：${result.reason}`, isError: true }
+            }
+          }
+        },
       }
       const result = await this.adapter.runTurn(input)
 
@@ -1099,6 +1140,10 @@ export class CollaborationRoomService {
       mentionAliases: mentionAliases && mentionAliases.length > 0 ? mentionAliases : undefined,
       channelId: nextChannelId,
       modelId: nextModelId,
+      capabilities: {
+        ...member.capabilities,
+        supportsToolBridge: channelSupportsRoomToolBridge(nextChannelId),
+      },
       updatedAt: Date.now(),
     }
     upsertMember(updated)
@@ -1273,6 +1318,7 @@ function buildMember(
     !spec.channelId && (spec.backend === undefined || spec.backend === 'channel')
       ? pickDefaultMemberChannelBinding()
       : null
+  const channelId = spec.channelId ?? autoBind?.channelId
   return {
     id: genId(COLLABORATION_MEMBER_ID_PREFIX),
     roomId,
@@ -1280,12 +1326,18 @@ function buildMember(
     roleId: spec.roleId,
     roleSnapshot: spec.roleSnapshot ?? { roleId: spec.roleId, displayName },
     backend: spec.backend ?? 'channel',
-    channelId: spec.channelId ?? autoBind?.channelId,
+    channelId,
     modelId: spec.modelId ?? autoBind?.modelId,
     cliWorkerId: spec.cliWorkerId,
     logicalSessionId: genId(COLLABORATION_LOGICAL_SESSION_ID_PREFIX),
     permissionProfile: spec.permissionProfile ?? 'read-only',
-    capabilities: { ...DEFAULT_MEMBER_CAPABILITIES, ...(spec.capabilities ?? {}) },
+    capabilities: {
+      ...DEFAULT_MEMBER_CAPABILITIES,
+      ...(spec.capabilities ?? {}),
+      // 不能由创建方把外部渠道宣称成有工具回路；只有已接入的 kscc 才可为 true。
+      supportsToolBridge:
+        channelSupportsRoomToolBridge(channelId) && spec.capabilities?.supportsToolBridge !== false,
+    },
     status: 'offline',
     isCoordinator: spec.isCoordinator ?? false,
     createdAt: now,
