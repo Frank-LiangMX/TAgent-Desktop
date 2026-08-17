@@ -25,6 +25,8 @@ import type {
   CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
   AddCollaborationMemberInput,
+  ContinueCollaborationDepthStopInput,
+  ContinueCollaborationDepthStopResult,
   UpdateCollaborationRoomInput,
   UpdateCollaborationMemberInput,
   AppendCollaborationUserMessageInput,
@@ -444,6 +446,9 @@ declare global {
       addCollaborationMember: (input: AddCollaborationMemberInput) => Promise<CollaborationMember>
       updateCollaborationMember: (input: UpdateCollaborationMemberInput) => Promise<CollaborationMember>
       listCollaborationMailbox: (roomId: string) => Promise<CollaborationMailboxEnvelope[]>
+      continueCollaborationDepthStop: (
+        input: ContinueCollaborationDepthStopInput,
+      ) => Promise<ContinueCollaborationDepthStopResult>
       onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => () => void
       onCollaborationTextDelta: (cb: (payload: CollaborationTextDeltaPayload) => void) => () => void
       // 自动更新

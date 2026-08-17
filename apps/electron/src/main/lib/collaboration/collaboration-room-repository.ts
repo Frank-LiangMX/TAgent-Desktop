@@ -36,6 +36,17 @@ import {
 /** 配置版本号 */
 const CONFIG_VERSION = 1
 
+/**
+ * 读盘归一化：补齐 S4.5 前历史房间缺失的 a2aHandoffEnabled（默认 true）。
+ * A2A 交接为协作室核心能力，旧数据缺省视为启用，与 createRoom 默认一致。
+ */
+function normalizeRoom(room: CollaborationRoom): CollaborationRoom {
+  if (room.a2aHandoffEnabled === undefined) {
+    return { ...room, a2aHandoffEnabled: true }
+  }
+  return room
+}
+
 // ===== rooms.json =====
 
 interface RoomsConfig {
@@ -62,7 +73,7 @@ function writeRoomsConfig(config: RoomsConfig): void {
 
 /** 读取全部房间（原始顺序） */
 export function loadRooms(): CollaborationRoom[] {
-  return readRoomsConfig().rooms
+  return readRoomsConfig().rooms.map(normalizeRoom)
 }
 
 /** 全量写回房间列表 */
@@ -81,7 +92,8 @@ export function upsertRoom(room: CollaborationRoom): void {
 
 /** 取单个房间 */
 export function getRoom(roomId: string): CollaborationRoom | undefined {
-  return readRoomsConfig().rooms.find((r) => r.id === roomId)
+  const room = readRoomsConfig().rooms.find((r) => r.id === roomId)
+  return room ? normalizeRoom(room) : undefined
 }
 
 // ===== members.json =====

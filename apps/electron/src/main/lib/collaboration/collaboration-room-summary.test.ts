@@ -70,6 +70,7 @@ function mkRoom(roomId: string, overrides: Partial<CollaborationRoom> = {}): Col
     status: 'active',
     maxConcurrentRuns: 3,
     maxA2ADepth: 4,
+    a2aHandoffEnabled: true,
     summaryEveryUtterances: 4,
     budget: {},
     createdAt: 0,

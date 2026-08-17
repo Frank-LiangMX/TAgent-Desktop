@@ -242,6 +242,8 @@ export class CollaborationRoomService {
       // 只在新房间未指定时推荐；updateRoom 永远保留既存值，不能静默改写用户策略。
       maxA2ADepth:
         input.maxA2ADepth ?? recommendedCollaborationHandoffDepth(members.length),
+      // A2A 交接为协作室核心能力，默认启用；S4.5 深度停止卡据此决定是否呈现。
+      a2aHandoffEnabled: true,
       summaryEveryUtterances:
         input.summaryEveryUtterances ?? COLLABORATION_SUMMARY_DEFAULT_EVERY_UTTERANCES,
       budget: input.budget ?? {},

@@ -145,8 +145,22 @@ export function CollaborationRoomsPage({
   const [composerMentionIds, setComposerMentionIds] = useState<string[]>([])
   const [mailbox, setMailbox] = useState<CollaborationMailboxEnvelope[]>([])
   const [streamByRun, setStreamByRun] = useState<Record<string, string>>({})
+  /** S4.5：本地已「停止」关闭的深度停止信封 id（仅前端态，不持久化、不触后端） */
+  const [dismissedDepthStopIds, setDismissedDepthStopIds] = useState<Set<string>>(new Set())
+  /** S4.5：正在继续的深度停止信封 id（主操作 loading 态） */
+  const [continuingDepthStopId, setContinuingDepthStopId] = useState<string | null>(null)
+  /** S4.5：按信封 id 记录的继续失败原因（主操作 error 态） */
+  const [depthStopErrorByEnvelope, setDepthStopErrorByEnvelope] = useState<Record<string, string>>({})
   const inputRef = useRef<ChatInputHandle>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // 切房间时清空深度停止的前端态（dismissed / loading / error）。
+  // 仅依赖 roomId：刷新（refreshKey 变化）时保留 dismissed，避免广播刷新后已关闭的卡片复活。
+  useEffect(() => {
+    setDismissedDepthStopIds(new Set())
+    setContinuingDepthStopId(null)
+    setDepthStopErrorByEnvelope({})
+  }, [roomId])
 
   // 选中房间 / 外部变更 → 重新拉取
   useEffect(() => {
@@ -298,6 +312,51 @@ export function CollaborationRoomsPage({
     },
     [room, onRoomsChanged],
   )
+
+  // S4.5：继续一次已达 A2A 深度上限的交接。主操作 → IPC；带 loading（continuing）/ error（行内）
+  // 状态；成功后刷新房间（CHANGED 广播也会 bump，这里显式确保即时）。IPC 逻辑失败返回
+  // { ok: false, reason }（不抛），仅 unexpected IPC 错误走 catch。
+  const handleContinueDepthStop = useCallback(
+    async (envelopeId: string): Promise<void> => {
+      if (!room) return
+      setContinuingDepthStopId(envelopeId)
+      setDepthStopErrorByEnvelope((prev) => {
+        if (!(envelopeId in prev)) return prev
+        const next = { ...prev }
+        delete next[envelopeId]
+        return next
+      })
+      try {
+        const res = await window.electronAPI.continueCollaborationDepthStop({
+          roomId: room.id,
+          envelopeId,
+        })
+        if (res.ok) {
+          onRoomsChanged()
+        } else {
+          setDepthStopErrorByEnvelope((prev) => ({ ...prev, [envelopeId]: res.reason }))
+        }
+      } catch (err) {
+        setDepthStopErrorByEnvelope((prev) => ({
+          ...prev,
+          [envelopeId]: err instanceof Error ? err.message : String(err),
+        }))
+      } finally {
+        setContinuingDepthStopId(null)
+      }
+    },
+    [room, onRoomsChanged],
+  )
+
+  // S4.5：仅本地关闭该深度停止提示（次操作）。不调 IPC、不改后端状态；刷新保留、切房间清空。
+  const handleDismissDepthStop = useCallback((envelopeId: string): void => {
+    setDismissedDepthStopIds((prev) => {
+      if (prev.has(envelopeId)) return prev
+      const next = new Set(prev)
+      next.add(envelopeId)
+      return next
+    })
+  }, [])
 
   const confirmAddMember = useCallback(
     async (patch: {
@@ -653,6 +712,14 @@ export function CollaborationRoomsPage({
         cancellingId={cancellingId}
         onCancelRun={(runId) => void handleCancelRun(runId)}
         scrollRef={scrollRef}
+        mailbox={mailbox}
+        maxDepth={room.maxA2ADepth}
+        handoffEnabled={room.a2aHandoffEnabled}
+        dismissedDepthStopIds={dismissedDepthStopIds}
+        continuingDepthStopId={continuingDepthStopId}
+        depthStopErrorByEnvelope={depthStopErrorByEnvelope}
+        onContinueDepthStop={(envelopeId) => void handleContinueDepthStop(envelopeId)}
+        onDismissDepthStop={handleDismissDepthStop}
       />
 
       {/* 底部输入栈（绝对定位，输入框底与侧栏底对齐，对齐会话 composer） */}

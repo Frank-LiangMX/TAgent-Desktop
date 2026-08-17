@@ -7,11 +7,13 @@ import { MessageResponse } from '@tagent/ui'
 import {
   groupCollaborationTimelineItems,
   type Channel,
+  type CollaborationMailboxEnvelope,
   type CollaborationMember,
   type CollaborationMessage,
   type CollaborationRun,
 } from '@tagent/shared'
 import { MemberAvatar, UserMessageAvatar } from './CollaborationAvatars'
+import { CollaborationDepthStopCard } from './CollaborationDepthStopCard'
 import { CollaborationRunCard } from './CollaborationRunCard'
 
 function memberDisplayName(authorId: string, members: CollaborationMember[]): string {
@@ -27,6 +29,22 @@ export interface CollaborationTimelineProps {
   cancellingId: string | null
   onCancelRun: (runId: string) => void
   scrollRef: RefObject<HTMLDivElement | null>
+  /** S4.5：A2A 信箱信封（深度停止卡从中筛选可呈现项） */
+  mailbox: CollaborationMailboxEnvelope[]
+  /** S4.5：房间 A2A 深度上限（room.maxA2ADepth） */
+  maxDepth: number
+  /** S4.5：房间是否启用 A2A 交接（room.a2aHandoffEnabled） */
+  handoffEnabled: boolean
+  /** S4.5：本地已「停止」关闭的停止信封 id（不持久化，刷新保留、切房间清空） */
+  dismissedDepthStopIds: Set<string>
+  /** S4.5：正在继续的停止信封 id（loading 态） */
+  continuingDepthStopId: string | null
+  /** S4.5：按信封 id 记录的继续失败原因（error 态） */
+  depthStopErrorByEnvelope: Record<string, string>
+  /** S4.5：继续一次（主操作，调 IPC） */
+  onContinueDepthStop: (envelopeId: string) => void
+  /** S4.5：仅本地关闭该提示（次操作，不触后端） */
+  onDismissDepthStop: (envelopeId: string) => void
 }
 
 export function CollaborationTimeline({
@@ -38,6 +56,14 @@ export function CollaborationTimeline({
   cancellingId,
   onCancelRun,
   scrollRef,
+  mailbox,
+  maxDepth,
+  handoffEnabled,
+  dismissedDepthStopIds,
+  continuingDepthStopId,
+  depthStopErrorByEnvelope,
+  onContinueDepthStop,
+  onDismissDepthStop,
 }: CollaborationTimelineProps): JSX.Element {
   const items = groupCollaborationTimelineItems(messages, runs)
   const empty = messages.length === 0 && runs.length === 0
@@ -122,6 +148,19 @@ export function CollaborationTimeline({
                 />
               )
             })}
+            {mailbox.map((env) => (
+              <CollaborationDepthStopCard
+                key={env.id}
+                envelope={env}
+                maxDepth={maxDepth}
+                handoffEnabled={handoffEnabled}
+                dismissed={dismissedDepthStopIds.has(env.id)}
+                continuing={continuingDepthStopId === env.id}
+                error={depthStopErrorByEnvelope[env.id] ?? null}
+                onContinue={() => onContinueDepthStop(env.id)}
+                onDismiss={() => onDismissDepthStop(env.id)}
+              />
+            ))}
           </ul>
         </div>
       )}

@@ -306,6 +306,12 @@ export interface CollaborationRoom {
   maxConcurrentRuns: number
   /** A2A 跨成员深度上限（默认 4，硬上限 10） */
   maxA2ADepth: number
+  /**
+   * 是否启用 A2A 成员交接（room_send / room_ask / room_reply）。
+   * S4.5 深度停止卡仅在 handoffEnabled=true 时呈现；默认 true（A2A 为协作室核心能力），
+   * 旧数据缺省时由仓库读盘归一化为 true。关掉后不再出现「可继续一次」提示。
+   */
+  a2aHandoffEnabled: boolean
   /** 每 N 条有效发言触发一次房间摘要（S3.5-b，默认 8，范围 4–20） */
   summaryEveryUtterances?: number
   /** 房间预算 */

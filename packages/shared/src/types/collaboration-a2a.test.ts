@@ -15,6 +15,11 @@ import {
   normalizeCollaborationPayload,
   transitionCollaborationMailboxState,
 } from './collaboration-a2a'
+import {
+  COLLABORATION_ROOM_IPC_CHANNELS,
+  type ContinueCollaborationDepthStopInput,
+  type ContinueCollaborationDepthStopResult,
+} from './collaboration-room-channels'
 import type {
   CollaborationMailboxEnvelope,
   CollaborationMailboxState,
@@ -116,6 +121,82 @@ describe('S4.5 handoff outbox guards', () => {
     expect(canContinueCollaborationDepthStop(stop)).toBe(true)
     expect(canContinueCollaborationDepthStop({ ...stop, continueUsed: true })).toBe(false)
     expect(isCollaborationDepthStopPresentable({ envelope: { ...stop, attemptId: undefined }, maxDepth: 4, handoffEnabled: true })).toBe(false)
+  })
+})
+
+describe('S4.5 depth-stop presentability guard（普通失败不得触发卡片）', () => {
+  const attemptId = '550e8400-e29b-41d4-a716-446655440000'
+
+  test('任意普通失败信封（delivery=failed，无 stopReason）不可呈现且不可继续', () => {
+    const plain = mkEnvelope({ delivery: 'failed', attemptId, sourceMessageId: 'msg_s' })
+    expect(isCollaborationDepthStopPresentable({ envelope: plain, maxDepth: 4, handoffEnabled: true })).toBe(false)
+    expect(canContinueCollaborationDepthStop(plain)).toBe(false)
+  })
+
+  test('stopReason 非 max_depth（continue_failed / outcome_unknown）不可呈现', () => {
+    const cf = mkEnvelope({ attemptId, stopReason: 'continue_failed', depth: 4, sourceMessageId: 'msg_s' })
+    const ou = mkEnvelope({ attemptId, stopReason: 'outcome_unknown', depth: 4, sourceMessageId: 'msg_s' })
+    expect(isCollaborationDepthStopPresentable({ envelope: cf, maxDepth: 4, handoffEnabled: true })).toBe(false)
+    expect(isCollaborationDepthStopPresentable({ envelope: ou, maxDepth: 4, handoffEnabled: true })).toBe(false)
+  })
+
+  test('handoffEnabled=false 时即便元数据完整也不可呈现', () => {
+    const stop = mkEnvelope({
+      attemptId,
+      stopReason: 'max_depth',
+      depth: 4,
+      sourceMessageId: 'msg_s',
+      continueUsed: false,
+    })
+    expect(isCollaborationDepthStopPresentable({ envelope: stop, maxDepth: 4, handoffEnabled: false })).toBe(false)
+    expect(isCollaborationDepthStopPresentable({ envelope: stop, maxDepth: 4, handoffEnabled: true })).toBe(true)
+  })
+
+  test('depth 未达 maxDepth / 缺 sourceMessageId / 缺 toMemberId 不可呈现', () => {
+    const base = { attemptId, stopReason: 'max_depth' as const, continueUsed: false }
+    expect(
+      isCollaborationDepthStopPresentable({
+        envelope: mkEnvelope({ ...base, depth: 2, sourceMessageId: 'msg_s' }),
+        maxDepth: 4,
+        handoffEnabled: true,
+      }),
+    ).toBe(false)
+    expect(
+      isCollaborationDepthStopPresentable({
+        envelope: mkEnvelope({ ...base, depth: 4, sourceMessageId: undefined }),
+        maxDepth: 4,
+        handoffEnabled: true,
+      }),
+    ).toBe(false)
+    expect(
+      isCollaborationDepthStopPresentable({
+        envelope: mkEnvelope({ ...base, depth: 4, sourceMessageId: 'msg_s', toMemberId: '' }),
+        maxDepth: 4,
+        handoffEnabled: true,
+      }),
+    ).toBe(false)
+  })
+
+  test('已使用过继续（continueUsed=true）仍 presentable 但不可再继续', () => {
+    const stop = mkEnvelope({
+      attemptId,
+      stopReason: 'max_depth',
+      depth: 4,
+      sourceMessageId: 'msg_s',
+      continueUsed: true,
+    })
+    expect(isCollaborationDepthStopPresentable({ envelope: stop, maxDepth: 4, handoffEnabled: true })).toBe(true)
+    expect(canContinueCollaborationDepthStop(stop)).toBe(false)
+  })
+
+  test('CONTINUE_DEPTH_STOP 通道与输入/结果类型契约', () => {
+    expect(COLLABORATION_ROOM_IPC_CHANNELS.CONTINUE_DEPTH_STOP).toBe('collaboration-room:continue-depth-stop')
+    const input: ContinueCollaborationDepthStopInput = { roomId: 'cr_1', envelopeId: 'env_1' }
+    expect(input.envelopeId).toBe('env_1')
+    const ok: ContinueCollaborationDepthStopResult = { ok: true, envelopeId: 'env_2' }
+    const fail: ContinueCollaborationDepthStopResult = { ok: false, reason: '已达硬深度上限' }
+    expect(ok.ok).toBe(true)
+    expect(fail.ok).toBe(false)
   })
 })
 

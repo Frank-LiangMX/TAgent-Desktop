@@ -8,6 +8,7 @@
  * Stage 2：在 Stage 1 的 7 个通道基础上新增 LIST_RUNS / CANCEL_RUN，并启用 CHANGED
  * 广播（run/member/message 变更时主进程主动推送，渲染层据此重新拉取）。
  * Stage 3：新增 ADD_MEMBER（向已有房间追加成员，「添加成员」按钮用）。
+ * Stage 4.5：新增 CONTINUE_DEPTH_STOP（继续一次已达 A2A 深度上限的交接）。
  */
 
 import type {
@@ -47,6 +48,8 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   CANCEL_RUN: 'collaboration-room:cancel-run',
   /** 列出某房间全部 A2A 信箱信封（S4 审计视图） */
   LIST_MAILBOX: 'collaboration-room:list-mailbox',
+  /** 继续一次已达 A2A 深度上限的交接（S4.5：仅 max_depth 停止且未继续过可继续一次） */
+  CONTINUE_DEPTH_STOP: 'collaboration-room:continue-depth-stop',
   /** 房间数据变更事件（main → renderer，Stage 2 起广播） */
   CHANGED: 'collaboration-room:changed',
   /** 成员 turn 流式正文增量（独立通道，避免走 CHANGED 全量刷新） */
@@ -113,6 +116,19 @@ export interface ListCollaborationMailboxInput {
   roomId: string
 }
 
+/** 继续一次 A2A 深度停止输入（S4.5） */
+export interface ContinueCollaborationDepthStopInput {
+  /** 房间 ID（校验信封归属，防跨房间继续） */
+  roomId: string
+  /** 已达深度上限的停止信封 ID */
+  envelopeId: string
+}
+
+/** 继续一次 A2A 深度停止结果（与 CollaborationRoomService.continueDepthStop 一致） */
+export type ContinueCollaborationDepthStopResult =
+  | { ok: true; envelopeId: string }
+  | { ok: false; reason: string }
+
 /**
  * 房间数据变更事件 payload（main → renderer，Stage 2 起广播）
  *
@@ -157,6 +173,8 @@ export interface CollaborationRoomChangedPayload {
 //   - ADD_MEMBER        → CollaborationMember
 //   - LIST_RUNS         → CollaborationRun[]
 //   - CANCEL_RUN        → CollaborationRun | null
+//   - LIST_MAILBOX      → CollaborationMailboxEnvelope[]
+//   - CONTINUE_DEPTH_STOP → ContinueCollaborationDepthStopResult
 
 /** 重新导出领域输入类型，便于 handler / preload / 渲染层统一引用 */
 export type {

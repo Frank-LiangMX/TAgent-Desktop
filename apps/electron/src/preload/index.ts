@@ -37,6 +37,8 @@ import type {
   CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
   AddCollaborationMemberInput,
+  ContinueCollaborationDepthStopInput,
+  ContinueCollaborationDepthStopResult,
   UpdateCollaborationRoomInput,
   UpdateCollaborationMemberInput,
   AppendCollaborationUserMessageInput,
@@ -632,6 +634,16 @@ const electronAPI = {
   /** 列出某房间全部 A2A 信箱信封（S4 审计视图） */
   listCollaborationMailbox: (roomId: string) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MAILBOX, { roomId }) as Promise<CollaborationMailboxEnvelope[]>,
+  /**
+   * 继续一次已达 A2A 深度上限的交接（S4.5）。
+   * 主进程校验信封属于该房间且仍可继续一次后委托 service；成功返回新信封 id，
+   * 失败（已继续过 / 不属于该房间 / 硬深度上限）返回 { ok: false, reason }，不抛错。
+   */
+  continueCollaborationDepthStop: (input: ContinueCollaborationDepthStopInput) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.CONTINUE_DEPTH_STOP,
+      input,
+    ) as Promise<ContinueCollaborationDepthStopResult>,
   /** 房间数据变更事件（main → renderer，run/member/message 变更时广播） */
   onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => {
     const handler = (_e: unknown, payload: { roomId: string; kind: string; at: number }): void => cb(payload)

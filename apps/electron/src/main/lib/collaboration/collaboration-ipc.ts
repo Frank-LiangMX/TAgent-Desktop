@@ -19,6 +19,7 @@
  */
 import { BrowserWindow, ipcMain } from 'electron'
 import {
+  canContinueCollaborationDepthStop,
   COLLABORATION_ROOM_IPC_CHANNELS,
   type AddCollaborationMemberInput,
   type AppendCollaborationUserMessageInput,
@@ -28,6 +29,8 @@ import {
   type CollaborationMessage,
   type CollaborationRoom,
   type CollaborationRun,
+  type ContinueCollaborationDepthStopInput,
+  type ContinueCollaborationDepthStopResult,
   type CreateCollaborationRoomInput,
   type ListCollaborationMailboxInput,
   type ListCollaborationMembersInput,
@@ -38,6 +41,25 @@ import {
   type UpdateCollaborationRoomInput,
 } from '@tagent/shared'
 import { CollaborationRoomService } from './collaboration-room-service'
+
+/**
+ * S4.5 IPC 守卫：委托 service.continueDepthStop 前校验信封属于该房间且仍可继续一次。
+ * 纯函数（不读 DB、不触 backend），便于离线单测；envelopes 由 handler 从
+ * service.listMailbox(roomId) 传入，确保信封 roomId 与 input.roomId 一致，防跨房间继续。
+ */
+export function resolveCollaborationDepthStopContinue(
+  envelopes: CollaborationMailboxEnvelope[],
+  input: ContinueCollaborationDepthStopInput,
+): { ok: true; envelope: CollaborationMailboxEnvelope } | { ok: false; reason: string } {
+  const envelope = envelopes.find((e) => e.id === input.envelopeId && e.roomId === input.roomId)
+  if (!envelope) {
+    return { ok: false, reason: '深度停止信封不存在或不属于该房间' }
+  }
+  if (!canContinueCollaborationDepthStop(envelope)) {
+    return { ok: false, reason: '该深度停止不可继续或已使用过继续机会' }
+  }
+  return { ok: true, envelope }
+}
 
 export function registerCollaborationRoomIpc(
   getWindow?: () => BrowserWindow | null,
@@ -153,7 +175,21 @@ export function registerCollaborationRoomIpc(
     },
   )
 
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.CONTINUE_DEPTH_STOP,
+    async (
+      _e,
+      input: ContinueCollaborationDepthStopInput,
+    ): Promise<ContinueCollaborationDepthStopResult> => {
+      // 先做 IPC 侧跨房间守卫（service.continueDepthStop 按 envelopeId 全局取信封，
+      // 不带 roomId），再委托 service 执行继续。失败返回 { ok: false, reason }，不抛错。
+      const resolved = resolveCollaborationDepthStopContinue(service.listMailbox(input.roomId), input)
+      if (!resolved.ok) return { ok: false, reason: resolved.reason }
+      return service.continueDepthStop(resolved.envelope.id)
+    },
+  )
+
   console.log(
-    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/update-member/list-runs/cancel-run/list-mailbox；S4-3 continuation）',
+    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/update-member/list-runs/cancel-run/list-mailbox/continue-depth-stop；S4.5 深度停止继续）',
   )
 }
