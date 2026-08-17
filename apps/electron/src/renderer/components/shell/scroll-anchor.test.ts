@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { isAwayFromBottom, pinScrollerToBottom } from './scroll-anchor'
 
 describe('scroll-anchor', () => {
-  test('距底超过阈值才算离开底部', () => {
+  test('距底超过阈值才算几何上离开底部（跟随锁另看 escapedFromLock）', () => {
     expect(isAwayFromBottom(0, 2000, 800, 70)).toBe(true)
     expect(isAwayFromBottom(1130, 2000, 800, 70)).toBe(false)
     expect(isAwayFromBottom(1200, 2000, 800, 70)).toBe(false)

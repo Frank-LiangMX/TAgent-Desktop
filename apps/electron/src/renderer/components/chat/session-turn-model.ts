@@ -25,6 +25,7 @@ import type {
   MoARoundtablePanel,
   MoADiscussionPanel,
 } from '@tagent/shared'
+import { isControlUserTextBlock } from '@tagent/shared'
 import type { ProcessDisplayMode } from './process-group-model'
 import { isSubagentRuntimeTaskType } from './subagent-ui-model'
 import { formatElapsedDuration } from '../../lib/time-utils'
@@ -232,6 +233,100 @@ export function backfillTurnDurations(
   return result
 }
 
+/** 用户已发、尚无 assistant 落盘时的合成 live turn key（与 Chat 渲染一致） */
+export function syntheticLiveTurnKeyForUser(userTurnKey: string): string {
+  return `turn-${userTurnKey}-live`
+}
+
+export function isSyntheticRunTurnKey(turnKey: string): boolean {
+  return turnKey.endsWith('-live') || turnKey.startsWith('turn-stream-')
+}
+
+/**
+ * 当前 run 应记完成耗时的 turn key。
+ * 末尾是 user 且 run 仍 active → 合成 live key；否则取末尾 assistant-turn。
+ */
+export function resolveRunTurnKey(
+  turns: SessionRenderTurn[],
+  sessionId: string,
+  runActive: boolean,
+): string | null {
+  const last = turns[turns.length - 1]
+  if (!last) return null
+  if (last.kind === 'assistant-turn') return last.key
+  if (!runActive) return null
+  if (last.kind === 'user') return syntheticLiveTurnKeyForUser(last.key)
+  return `turn-stream-${sessionId}`
+}
+
+/** 用户发完即停、尚无 assistant-turn 时，在 user 气泡后补「已中断」占位 */
+export function shouldRenderStoppedSyntheticShell(
+  turns: SessionRenderTurn[],
+  turnIndex: number,
+  completedDurations: Record<string, TurnDuration>,
+): boolean {
+  const turn = turns[turnIndex]
+  if (turn?.kind !== 'user') return false
+  const syntheticKey = syntheticLiveTurnKeyForUser(turn.key)
+  if (completedDurations[syntheticKey] == null) return false
+  const next = turns[turnIndex + 1]
+  return next?.kind !== 'assistant-turn'
+}
+
+export type RunStreamSnapshot = {
+  text?: string
+  thinking?: string
+}
+
+/**
+ * 本轮是否已进入 Agent 处理（有流式/assistant/工具/MoA 等）。
+ * 停止前仍为 false → 视为「未开始」，可走撤回而非「已中断」。
+ */
+export function hasRunStartedProcessing(
+  items: TurnSourceItem[],
+  stream?: RunStreamSnapshot | null,
+): boolean {
+  if (stream?.text?.trim() || stream?.thinking?.trim()) return true
+
+  let lastUserIdx = -1
+  for (let i = items.length - 1; i >= 0; i--) {
+    const m = items[i]?.message
+    if (m?.type === 'user' && isRealUserInput(m)) {
+      lastUserIdx = i
+      break
+    }
+  }
+  if (lastUserIdx < 0) return false
+
+  for (let i = lastUserIdx + 1; i < items.length; i++) {
+    const it = items[i]!
+    if (it.compactStatus) return true
+    if (it.streaming || it.streamingText || it.streamingThinking) return true
+    if (it.taskCard) return true
+    if (it.moaRoundtable || it.moaDiscussion) return true
+    const m = it.message
+    if (!m) continue
+    if (m.type === 'assistant') {
+      if (m.parentToolUseId) continue
+      if (isCrewNoticeMessage(m)) continue
+      return true
+    }
+    if (m.type === 'user') return true
+  }
+  return false
+}
+
+/** 撤回未开始轮：去掉末尾真实 user 及其后的占位（应无后续内容） */
+export function sliceItemsBeforeLastRealUser(items: TurnSourceItem[]): TurnSourceItem[] | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const m = items[i]?.message
+    if (m?.type === 'user' && isRealUserInput(m)) {
+      return items.slice(0, i)
+    }
+  }
+  return null
+}
+
 /** 取 items 中最后一条主线（无 parentToolUseId）assistant 消息的 createdAt（完整轮的稳定标识） */
 export function getLastMainAssistantCreatedAt(items: TurnSourceItem[]): number | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -273,11 +368,7 @@ export function isSdkControlUserMessage(message: TAgentUserMessage): boolean {
   for (const b of message.content) {
     if (b.type !== 'text') continue
     const t = (b as TAgentTextBlock).text?.trim() ?? ''
-    if (!t) continue
-    if (/^\[Request interrupted by user/i.test(t)) return true
-    if (/^\[Request cancelled/i.test(t)) return true
-    if (/^The user doesn't want to proceed with this tool use/i.test(t)) return true
-    if (/^Permission for .{0,80} (was|has been) denied/i.test(t)) return true
+    if (t && isControlUserTextBlock(t)) return true
   }
   return false
 }

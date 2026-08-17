@@ -6,7 +6,14 @@
  */
 import { describe, expect, it } from 'vitest'
 import type { TAgentMessage } from '@tagent/shared'
-import { backfillTurnDurations, type TurnSourceItem } from './session-turn-model'
+import {
+  backfillTurnDurations,
+  groupItemsIntoTurns,
+  resolveRunTurnKey,
+  shouldRenderStoppedSyntheticShell,
+  syntheticLiveTurnKeyForUser,
+  type TurnSourceItem,
+} from './session-turn-model'
 
 function assistant(
   text: string,
@@ -92,5 +99,49 @@ describe('backfillTurnDurations', () => {
       5000: { ms: 222, endedBy: 'complete' },
     })
     expect(Object.values(backfilled)).toEqual([{ ms: 222, endedBy: 'complete' }])
+  })
+})
+
+describe('resolveRunTurnKey', () => {
+  it('uses synthetic live key when run active after user send', () => {
+    const turns = groupItemsIntoTurns([
+      userInput('你好', 'u1', 1000),
+      assistant('回答', 'a1', 2000),
+      userInput('再试', 'u2', 3000),
+    ])
+    expect(resolveRunTurnKey(turns, 'sess-1', true)).toBe(syntheticLiveTurnKeyForUser('u2'))
+  })
+
+  it('uses last assistant turn when run active on assistant tail', () => {
+    const turns = groupItemsIntoTurns([
+      userInput('你好', 'u1', 1000),
+      assistant('回答', 'a1', 2000),
+    ])
+    const assistantKey = turns.find((t) => t.kind === 'assistant-turn')!.key
+    expect(resolveRunTurnKey(turns, 'sess-1', true)).toBe(assistantKey)
+  })
+})
+
+describe('shouldRenderStoppedSyntheticShell', () => {
+  it('renders shell after user when synthetic duration exists and no assistant follow-up', () => {
+    const turns = groupItemsIntoTurns([
+      userInput('第一轮', 'u1', 1000),
+      assistant('回答', 'a1', 2000),
+      userInput('第二轮', 'u2', 3000),
+    ])
+    const syntheticKey = syntheticLiveTurnKeyForUser('u2')
+    const durations = { [syntheticKey]: { ms: 7000, endedBy: 'stopped' as const } }
+    expect(shouldRenderStoppedSyntheticShell(turns, 2, durations)).toBe(true)
+    expect(shouldRenderStoppedSyntheticShell(turns, 0, durations)).toBe(false)
+  })
+
+  it('skips shell when assistant turn already exists for that user round', () => {
+    const turns = groupItemsIntoTurns([
+      userInput('你好', 'u1', 1000),
+      assistant('部分回答', 'a1', 2000),
+    ])
+    const syntheticKey = syntheticLiveTurnKeyForUser('u1')
+    const durations = { [syntheticKey]: { ms: 500, endedBy: 'stopped' as const } }
+    expect(shouldRenderStoppedSyntheticShell(turns, 0, durations)).toBe(false)
   })
 })

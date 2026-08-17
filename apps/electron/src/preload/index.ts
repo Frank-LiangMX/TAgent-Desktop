@@ -96,6 +96,13 @@ const electronAPI = {
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.SEND_MESSAGE, input),
   /** 停止当前轮（软中断；主进程另推 turn_end 清 running） */
   stopAgent: (sessionId: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.STOP_AGENT, sessionId),
+  /** 撤回尚未开始 Agent 处理的最后一轮 user 输入（双写 panel + SDK） */
+  recallUnsentTurn: (sessionId: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.RECALL_UNSENT_TURN, sessionId) as Promise<{
+      ok: boolean
+      text?: string
+      reason?: 'no_user' | 'already_started' | 'empty'
+    }>,
   /**
    * 引导 Agent（不中断当前轮）。
    * 返回 `{ ok, mode: 'live' | 'pending_next_turn' }`：

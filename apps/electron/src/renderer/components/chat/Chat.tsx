@@ -5,7 +5,7 @@
  * 消息区用 Conversation 容器（自动钉底），输入区用 TipTap ChatInput。
  * 模型：首条消息只绑定运行内核（KSCC / 外部），同内核内渠道与模型可继续切换。
  */
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback, Fragment } from 'react'
 import { getDefaultStore, useAtomValue, useSetAtom } from 'jotai'
 import {
   sessionRunMapAtom,
@@ -62,7 +62,7 @@ import {
   Button,
   AppTooltip,
 } from '@tagent/ui'
-import { Square, Compass, Zap, Plus, X } from 'lucide-react'
+import { Square, Plus, X } from 'lucide-react'
 import { UsersThree } from '@phosphor-icons/react'
 import {
   collectSessionCollabOutline,
@@ -86,7 +86,13 @@ import {
   backfillTurnDurations,
   getLastMainAssistantCreatedAt,
   groupItemsIntoTurns,
+  hasRunStartedProcessing,
   isRealUserInput,
+  isSyntheticRunTurnKey,
+  resolveRunTurnKey,
+  shouldRenderStoppedSyntheticShell,
+  sliceItemsBeforeLastRealUser,
+  syntheticLiveTurnKeyForUser,
 } from './session-turn-model'
 import {
   applySdkMessageToItems,
@@ -341,6 +347,18 @@ export function Chat({
   const userStoppedRef = useRef(false)
   /** 上次用户停止的时间戳：短窗口内到达的 error 视为迟到的 abort 副作用，不弹错误条 */
   const lastUserStopAtRef = useRef(0)
+  /** 本轮发送快照：未进入处理即停止时撤回气泡并回填输入框 */
+  const pendingSendRecallRef = useRef<{
+    text: string
+    attachments: Array<{
+      id: string
+      filename: string
+      mediaType: string
+      size: number
+      previewUrl?: string
+      data: string
+    }>
+  } | null>(null)
   const pendingStopTimerRef = useRef<number | null>(null)
   const pendingHardStopTimerRef = useRef<number | null>(null)
   const clearPendingStop = useCallback(() => {
@@ -385,6 +403,7 @@ export function Chat({
    */
   const userStopRun = (): void => {
     clearPendingStop()
+    pendingSendRecallRef.current = null
     userStoppedRef.current = true
     lastUserStopAtRef.current = Date.now()
     recordCompletion('stopped')
@@ -406,7 +425,10 @@ export function Chat({
     const dur: TurnDuration = { ms: durationMs, endedBy }
     setCompletedDurations((prev) => ({ ...prev, [turnKey]: dur }))
     // 持久化：最后一条主线 assistant 消息 createdAt 作稳定 key，写入 meta，重开回填
-    const createdAt = getLastMainAssistantCreatedAt(itemsRef.current)
+    // 合成 live turn 尚无 assistant 落盘：勿把 stopped/error 写到上一轮 assistant 的 createdAt
+    const createdAt = isSyntheticRunTurnKey(turnKey)
+      ? undefined
+      : getLastMainAssistantCreatedAt(itemsRef.current)
     if (createdAt != null) {
       const prevDurations = metaRef.current?.turnDurations ?? {}
       const nextDurations = { ...prevDurations, [createdAt]: dur }
@@ -1352,6 +1374,45 @@ export function Chat({
     pendingThinkingUuidRef.current = undefined
   }, [])
 
+  /**
+   * 用户点停止：若 Agent 尚未开始处理 → 撤回 user 气泡、回填输入框；
+   * 否则走正常「已中断」收尾。
+   */
+  const handleUserStop = useCallback(async (): Promise<void> => {
+    clearPendingStop()
+    const canRecall = !hasRunStartedProcessing(itemsRef.current, streamStateRef.current)
+    await window.electronAPI.stopAgent(sessionIdRef.current)
+    if (canRecall) {
+      const recalled = await window.electronAPI.recallUnsentTurn(sessionIdRef.current)
+      if (recalled?.ok && recalled.text) {
+        const recallDraft = pendingSendRecallRef.current
+        pendingSendRecallRef.current = null
+        userStoppedRef.current = false
+        runStartedAtPersistRef.current = null
+        stopRun()
+        resetStreamState()
+        setItems((prev) => sliceItemsBeforeLastRealUser(prev) ?? prev)
+        setCompletedDurations((prev) => {
+          const next = { ...prev }
+          for (const key of Object.keys(next)) {
+            if (key.endsWith('-live')) delete next[key]
+          }
+          return next
+        })
+        chatInputRef.current?.setText(recallDraft?.text ?? recalled.text)
+        if (recallDraft?.attachments?.length) {
+          setPendingAttachments(recallDraft.attachments)
+        }
+        chatInputRef.current?.focus()
+        scheduleComposerTopUpdate()
+        bumpRefresh()
+        return
+      }
+    }
+    userStopRun()
+    scheduleComposerTopUpdate()
+  }, [bumpRefresh, clearPendingStop, resetStreamState, scheduleComposerTopUpdate, stopRun])
+
   // thinking delta 的 rAF 合并缓冲：同一帧内多次 delta 只 flush 一次（渲染频率从"每事件"降到"每帧"）
   const pendingThinkingRef = useRef('')
   /** 与 pendingThinkingRef 对应的 assistant.uuid（同帧合并时保留最新） */
@@ -1951,6 +2012,10 @@ export function Chat({
     if (!isExistingTab && canMaterializeTab && !canMaterializeTab()) {
       return
     }
+    pendingSendRecallRef.current = {
+      text,
+      attachments: attachments?.map((att) => ({ ...att })) ?? [],
+    }
     // 保存附件到磁盘
     let savedAttachments: Array<{ id: string; filename: string; mediaType: string; localPath: string; size: number }> = []
     if (attachments?.length) {
@@ -2088,7 +2153,7 @@ export function Chat({
       }
       if (res.mode === 'pending_next_turn') {
         pushTicker(
-          makeStatusTickerItem('已夹入引导：本轮结束后 Agent 会按此继续', 'info', 3500),
+          makeStatusTickerItem('已记下引导：这场运行停稳后才会交给模型', 'info', 3500),
         )
       }
     } catch (err) {
@@ -2102,7 +2167,7 @@ export function Chat({
     }
   }, [pushTicker])
 
-  /** 用户发送：空闲→立即发；运行中（含 turn_end 软停窗口）→ 引导，不另起一轮 */
+  /** 用户发送：空闲→立即发；运行中→入队，由用户在队列里选「按序排队」或「引导」 */
   const send = async (): Promise<void> => {
     const text = chatInputRef.current?.getText().trim() ?? ''
     if (!text && pendingAttachments.length === 0) return
@@ -2125,24 +2190,18 @@ export function Chat({
     }
     const inFlight = running || runStartedAtRef.current != null
     if (inFlight) {
-      // 带附件的引导目前只支持文本注入；附件仍入队，等本轮结束再发。
-      if (pendingAttachments.length > 0) {
-        chatInputRef.current?.clear()
-        if (effectiveSelection) {
-          setMessageQueue((q) => [
-            ...q,
-            {
-              text,
-              selection: effectiveSelection,
-              attachments: pendingAttachments,
-            },
-          ])
-        }
-        setPendingAttachments([])
-        return
-      }
       chatInputRef.current?.clear()
-      await submitSteer(text)
+      if (effectiveSelection) {
+        setMessageQueue((q) => [
+          ...q,
+          {
+            text,
+            selection: effectiveSelection,
+            ...(pendingAttachments.length ? { attachments: pendingAttachments } : {}),
+          },
+        ])
+      }
+      setPendingAttachments([])
       return
     }
     chatInputRef.current?.clear()
@@ -2417,11 +2476,9 @@ export function Chat({
         <Button
           variant="ghost"
           size="icon"
-          className="size-9 rounded-full text-destructive hover:bg-destructive/10"
+          className="size-8 rounded-glass-popover text-destructive hover:bg-destructive/10"
           onClick={() => {
-            userStopRun()
-            void window.electronAPI.stopAgent(sessionIdRef.current)
-            scheduleComposerTopUpdate()
+            void handleUserStop()
           }}
           aria-label="停止"
         >
@@ -2704,6 +2761,10 @@ export function Chat({
                 </div>
               )}
               {(() => {
+                const runActive = running || runStartedAt != null
+                const runTurnKey = resolveRunTurnKey(visibleTurns, sessionId, runActive)
+                if (runTurnKey) lastAssistantTurnKeyRef.current = runTurnKey
+
                 let lastAssistantIdx = -1
                 for (let i = visibleTurns.length - 1; i >= 0; i--) {
                   if (visibleTurns[i]!.kind === 'assistant-turn') {
@@ -2716,7 +2777,7 @@ export function Chat({
                   // 用 startedAt 而非仅 running——turn_end 软停会短暂 running=false，
                   // 若据此收过程/拆回答会整段跳变；硬停才清 startedAt。
                   const isLiveTurn =
-                    (running || runStartedAt != null) &&
+                    runActive &&
                     turnIndex === visibleTurns.length - 1 &&
                     turn.kind === 'assistant-turn'
                   // 简洁：末尾 assistant 跑完可保持展开；发新一轮后 isLatest=false → 折叠
@@ -2724,35 +2785,53 @@ export function Chat({
                     turn.kind === 'assistant-turn' &&
                     turnIndex === lastAssistantIdx &&
                     turnIndex === visibleTurns.length - 1
-                  // 追踪最后一个 assistant-turn 的 key，供 completeRun 记完成耗时
-                  if (turn.kind === 'assistant-turn') lastAssistantTurnKeyRef.current = turn.key
+                  const stoppedSyntheticKey =
+                    turn.kind === 'user' &&
+                    shouldRenderStoppedSyntheticShell(visibleTurns, turnIndex, completedDurations)
+                      ? syntheticLiveTurnKeyForUser(turn.key)
+                      : null
                   return (
-                    <TurnView
-                      key={turn.key}
-                      turn={turn}
-                      isLiveTurn={isLiveTurn}
-                      runStartedAt={isLiveTurn ? runStartedAt : undefined}
-                      isLatestAssistantTurn={isLatestAssistantTurn}
-                      streamState={isLiveTurn ? streamState : undefined}
-                      fallbackModelId={
-                        isLiveTurn && effectiveSelection?.modelId && !isMoaModelId(effectiveSelection.modelId)
-                          ? effectiveSelection.modelId
-                          : undefined
-                      }
-                      onRefillToInput={pickSuggestion}
-                      mentionLabels={
-                        isLiveTurn && liveMentionLabels.length > 0
-                          ? liveMentionLabels
-                          : undefined
-                      }
-                      mentionRoles={mentionRoles}
-                      completedDuration={completedDurations[turn.key]}
-                      subagentCards={subagentCards}
-                      onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
-                      onOpenDiscussion={(discussionId) => setOpenDiscussionId(discussionId)}
-                      sessionId={sessionId}
-                      onOpenAttachment={openAttachmentPreview}
-                    />
+                    <Fragment key={turn.key}>
+                      <TurnView
+                        turn={turn}
+                        isLiveTurn={isLiveTurn}
+                        runStartedAt={isLiveTurn ? runStartedAt : undefined}
+                        isLatestAssistantTurn={isLatestAssistantTurn}
+                        streamState={isLiveTurn ? streamState : undefined}
+                        fallbackModelId={
+                          isLiveTurn && effectiveSelection?.modelId && !isMoaModelId(effectiveSelection.modelId)
+                            ? effectiveSelection.modelId
+                            : undefined
+                        }
+                        onRefillToInput={pickSuggestion}
+                        mentionLabels={
+                          isLiveTurn && liveMentionLabels.length > 0
+                            ? liveMentionLabels
+                            : undefined
+                        }
+                        mentionRoles={mentionRoles}
+                        completedDuration={completedDurations[turn.key]}
+                        subagentCards={subagentCards}
+                        onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+                        onOpenDiscussion={(discussionId) => setOpenDiscussionId(discussionId)}
+                        sessionId={sessionId}
+                        onOpenAttachment={openAttachmentPreview}
+                      />
+                      {stoppedSyntheticKey ? (
+                        <TurnView
+                          turn={{
+                            kind: 'assistant-turn',
+                            key: stoppedSyntheticKey,
+                            items: [],
+                            isStreaming: false,
+                          }}
+                          completedDuration={completedDurations[stoppedSyntheticKey]}
+                          mentionRoles={mentionRoles}
+                          subagentCards={subagentCards}
+                          onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+                        />
+                      ) : null}
+                    </Fragment>
                   )
                 })
               })()}
@@ -2762,10 +2841,8 @@ export function Chat({
                 const needsSyntheticLiveTurn =
                   runActive && lastTurn?.kind !== 'assistant-turn'
                 if (!needsSyntheticLiveTurn) return null
-                const liveKey =
-                  lastTurn?.kind === 'user'
-                    ? `turn-${lastTurn.key}-live`
-                    : `turn-stream-${sessionId}`
+                const liveKey = resolveRunTurnKey(visibleTurns, sessionId, true)
+                if (!liveKey) return null
                 return (
                   <TurnView
                     key={liveKey}
@@ -2820,7 +2897,7 @@ export function Chat({
           onSteer={steerQueueItem}
           onEdit={editQueueItem}
           busy={queueActionBusy}
-          running={running}
+          running={running || runStartedAt != null}
         />
         {backgroundCrewBanner && executionMode === 'chat' ? (
           <div
@@ -2893,7 +2970,7 @@ export function Chat({
               onSubmit={() => void send()}
               placeholder={
                 running || runStartedAt != null
-                  ? '给正在运行的任务追加引导…（Enter 夹入，不中断）'
+                  ? '运行中回车会加入队列，再选排队或引导'
                   : executionMode === 'chat'
                   ? '输入消息… @ 点名角色（Enter 发送）'
                   : '输入消息…（Enter 发送，Shift+Enter 换行）'
@@ -2985,81 +3062,24 @@ export function Chat({
                       }}
                     />
                     {/*
-                      发送/停止/引导/立即发送 同槽复用：
+                      发送/停止同槽复用：
                       · 运行中 + 无草稿 → 停止键
-                      · 运行中 + 有草稿 → Enter/发送=夹入引导；立即发送才中断
-                      · 空闲 + 有草稿 → 发送键（enabled，立即发）
+                      · 运行中 + 有草稿 → Enter/发送=入队（队列里再选排队或引导）
+                      · 空闲 + 有草稿 → 发送键
                       · 空闲 + 无草稿 → 发送键（disabled）
                     */}
                     {running && !hasSendable ? (
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="size-9 rounded-full text-destructive hover:bg-destructive/10"
+                        className="size-8 rounded-glass-popover text-destructive hover:bg-destructive/10"
                         onClick={() => {
-                          // 停止当前轮后，已有队列会按顺序自动发送。
-                          userStopRun()
-                          window.electronAPI.stopAgent(sessionIdRef.current)
-                          scheduleComposerTopUpdate()
+                          void handleUserStop()
                         }}
                         aria-label="停止"
                       >
                         <Square className="size-4 fill-current" />
                       </Button>
-                    ) : running && hasSendable ? (
-                      <div className="flex items-center gap-1">
-                        <AppTooltip label="引导：夹进当前运行，不中断；Agent 会按此调整">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                            onClick={() => {
-                              const text = chatInputRef.current?.getText().trim()
-                              if (!text) return
-                              chatInputRef.current?.clear()
-                              void submitSteer(text)
-                            }}
-                            aria-label="引导"
-                          >
-                            <Compass className="size-4" />
-                          </Button>
-                        </AppTooltip>
-                        <AppTooltip label="立即发送：中断当前轮，立刻发送此消息">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                            onClick={() => {
-                              const text = chatInputRef.current?.getText().trim() ?? ''
-                              if ((!text && pendingAttachments.length === 0) || !effectiveSelection) return
-                              chatInputRef.current?.clear()
-                              // 草稿立即发送：优先发本条，再自动消费已有队列。
-                              deferQueueAutoConsumeRef.current = true
-                              userStopRun()
-                              void (async () => {
-                                await window.electronAPI.stopAgent(sessionIdRef.current)
-                                await sendQueued({
-                                  text,
-                                  selection: effectiveSelection,
-                                  attachments: pendingAttachments,
-                                })
-                              })()
-                            }}
-                            aria-label="立即发送"
-                          >
-                            <Zap className="size-4" />
-                          </Button>
-                        </AppTooltip>
-                        <SendSplitButton
-                          size="sm"
-                          presets={consultPresetsForMenu}
-                          channel={selectionChannel}
-                          hasDraft={hasSendable}
-                          onSend={() => void send()}
-                          onConsultPreset={(id) => void sendConsult(id)}
-                          onDiscussionPreset={(id) => void sendDiscussion(id)}
-                        />
-                      </div>
                     ) : (
                       <SendSplitButton
                         presets={consultPresetsForMenu}

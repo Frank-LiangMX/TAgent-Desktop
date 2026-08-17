@@ -1133,6 +1133,7 @@
   -webkit-backdrop-filter: blur(24px) saturate(1.18);
   backdrop-filter: blur(24px) saturate(1.18);
   user-select: none;
+  overflow: visible;
 }
 .dark .app-spatial-topbar {
   background: linear-gradient(180deg, rgb(255 255 255 / 0.04), transparent);
@@ -1175,7 +1176,7 @@
 }
 
 /* 顶栏通知宿主：单条胶囊 ↔ 多会话堆叠切换 */
-.status-ticker-host {
+.status-ticker-tooltip-anchor {
   position: relative;
   display: flex;
   min-width: 0;
@@ -1183,49 +1184,95 @@
   max-width: min(560px, 50vw);
   margin-inline: auto;
   justify-content: center;
-  align-items: flex-end;
+  align-items: center;
   min-height: 26px;
+  overflow: visible;
+}
+.status-ticker-host {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  justify-content: center;
+  align-items: center;
+  min-height: 26px;
+  transform-origin: 50% 0%;
+  transform-style: preserve-3d;
 }
 .status-ticker-host__layer {
   display: flex;
   min-width: 0;
+  max-width: 100%;
   align-items: center;
+  justify-content: center;
   gap: 6px;
 }
 
-/* 多会话运行：卡片堆叠（最多 3 张可见，悬停扇形展开） */
+/* 多会话运行：顶栏单 pill + 悬停下拉列表 */
 .status-ticker-stack {
   position: relative;
   display: flex;
-  align-items: flex-end;
+  flex: 0 1 auto;
+  min-width: min(100%, 280px);
+  max-width: min(420px, 40vw);
+  margin-inline: auto;
   justify-content: center;
-  width: min(480px, 44vw);
+  align-items: center;
   height: 26px;
-  padding-top: 11px;
-  margin-top: -5px;
+  z-index: 1;
 }
-.status-ticker-stack__card {
+.status-ticker-stack--open {
+  z-index: 120;
+}
+.status-ticker-stack__deck {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  margin: 0;
-  cursor: pointer;
-  transform-origin: 50% 100%;
-  box-shadow: 0 1px 0 rgb(255 255 255 / 0.06);
-  will-change: transform, opacity;
-}
-.status-ticker-stack__card--back {
+  inset: 0;
   pointer-events: none;
 }
-.status-ticker-stack:hover .status-ticker-stack__card--back,
-.status-ticker-stack:focus-within .status-ticker-stack__card--back {
-  pointer-events: auto;
+.status-ticker-stack__peek {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--primary) / 0.16);
+  background: hsl(var(--primary) / 0.04);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 0.04);
 }
-.status-ticker-stack__card--front {
+.status-ticker-stack__peek--1 {
+  bottom: 1px;
+  transform: scale(0.985);
+  opacity: 0.72;
+}
+.status-ticker-stack__peek--2 {
+  bottom: 3px;
+  transform: scale(0.97);
+  opacity: 0.45;
+}
+.status-ticker-stack__front {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 100%;
+  height: 26px;
+  margin: 0;
+  flex: none;
+  cursor: pointer;
   box-shadow:
     0 1px 0 rgb(255 255 255 / 0.08),
     0 6px 16px -10px rgb(0 0 0 / 0.35);
+}
+.status-ticker-stack__more {
+  flex-shrink: 0;
+  margin-left: 2px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--primary) / 0.88);
+  background: hsl(var(--primary) / 0.12);
 }
 .status-ticker-stack__text {
   min-width: 0;
@@ -1233,6 +1280,77 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.status-ticker-stack__panel-anchor {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  z-index: 130;
+  width: max(100%, min(320px, calc(100vw - 48px)));
+  pointer-events: auto;
+}
+.status-ticker-stack__panel {
+  position: relative;
+  width: 100%;
+  padding: 6px;
+  border-radius: 14px;
+  border: 1px solid hsl(var(--border) / 0.55);
+  background: hsl(var(--background) / 0.94);
+  box-shadow:
+    0 10px 28px -12px rgb(0 0 0 / 0.45),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
+  backdrop-filter: blur(18px) saturate(1.12);
+}
+.status-ticker-stack__panel-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.9);
+  text-align: left;
+  cursor: pointer;
+  animation: status-ticker-stack-row-in 180ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+.status-ticker-stack__panel-row:hover,
+.status-ticker-stack__panel-row:focus-visible {
+  background: hsl(var(--foreground) / 0.06);
+  outline: none;
+}
+.status-ticker-stack__panel-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+.status-ticker-stack__panel-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.25;
+}
+.status-ticker-stack__panel-meta {
+  font-size: 10.5px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--muted-foreground) / 0.82);
+}
+@keyframes status-ticker-stack-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .status-ticker:hover {
   color: hsl(var(--foreground));
@@ -1265,11 +1383,13 @@
   background: hsl(var(--destructive) / 0.08);
 }
 .status-ticker--enter {
-  animation: status-ticker-enter 220ms var(--app-shell-motion) both;
+  transform-origin: 50% 0%;
+  animation: status-ticker-enter 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .status-ticker--exit {
   pointer-events: none;
-  animation: status-ticker-exit 170ms ease-in both;
+  transform-origin: 50% 0%;
+  animation: status-ticker-exit 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .dark .status-ticker--success {
   color: hsl(142 50% 62%);
@@ -1331,6 +1451,11 @@
 .status-ticker__badge:active {
   transform: scale(0.94);
 }
+.status-ticker-host--hold .status-ticker,
+.status-ticker-host--hold .status-ticker__badge {
+  transition: none;
+  pointer-events: none;
+}
 .status-ticker-inbox {
   width: min(320px, calc(100vw - 24px));
   padding: 5px !important;
@@ -1340,6 +1465,14 @@
   box-shadow: 0 14px 36px -14px rgb(0 0 0 / 0.42), inset 0 1px 0 rgb(255 255 255 / 0.08);
   -webkit-backdrop-filter: blur(18px) saturate(1.1);
   backdrop-filter: blur(18px) saturate(1.1);
+  transform-origin: 50% 0%;
+}
+.status-ticker-inbox[data-state='open'] {
+  animation: status-ticker-inbox-in 180ms cubic-bezier(0.4, 0, 0.2, 1) both !important;
+}
+.status-ticker-inbox[data-state='closed'],
+.status-ticker-inbox--retract[data-state='closed'] {
+  animation: status-ticker-inbox-out 180ms cubic-bezier(0.4, 0, 0.2, 1) both !important;
 }
 .status-ticker-inbox__titlebar {
   display: flex;
@@ -1388,7 +1521,15 @@
   display: grid;
   gap: 2px;
   max-height: min(360px, calc(100vh - 90px));
+  overflow-x: hidden;
   overflow-y: auto;
+}
+.status-ticker-inbox__item-wrap {
+  overflow: hidden;
+}
+.status-ticker-inbox__titlebar button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .status-ticker-inbox__item {
   display: flex;
@@ -1489,6 +1630,26 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+@keyframes status-ticker-inbox-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes status-ticker-inbox-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+}
 @keyframes status-ticker-in {
   from {
     opacity: 0;
@@ -1502,21 +1663,21 @@
 @keyframes status-ticker-enter {
   from {
     opacity: 0;
-    transform: translateY(-4px) scale(0.985);
+    transform: perspective(420px) rotateX(58deg) translateY(-8px);
   }
   to {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: perspective(420px) rotateX(0deg) translateY(0);
   }
 }
 @keyframes status-ticker-exit {
   from {
     opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: perspective(420px) rotateX(0deg) translateY(0);
   }
   to {
     opacity: 0;
-    transform: translateY(-2px) scale(0.985);
+    transform: perspective(420px) rotateX(82deg) translateY(-4px);
   }
 }
 @keyframes status-ticker-live-pulse {
@@ -1543,7 +1704,9 @@
   .status-ticker__track--marquee,
   .status-ticker--enter,
   .status-ticker--exit,
-  .status-ticker__live-dot {
+  .status-ticker__live-dot,
+  .status-ticker-inbox[data-state='open'],
+  .status-ticker-inbox[data-state='closed'] {
     animation: none;
   }
 }

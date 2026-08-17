@@ -10,7 +10,8 @@ describe('steer-prompt', () => {
     const wrapped = wrapSteerPromptForModel('它好像是基于aionui的')
     expect(wrapped).toContain('【用户引导】')
     expect(wrapped).toContain('它好像是基于aionui的')
-    expect(wrapped).toContain('不要当成全新问题')
+    expect(wrapped).toContain('原话')
+    expect(wrapped).toContain('不要顺着上一问继续展开')
   })
 
   test('识别原文与包装回声', () => {

@@ -2246,10 +2246,22 @@
   font-size: 11.5px;
   font-weight: 560;
 }
-.message-queue-panel__title span {
+.message-queue-panel__title-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+.message-queue-panel__title-copy > span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.message-queue-panel__hint {
+  font-size: 10px;
+  font-weight: 450;
+  color: hsl(var(--muted-foreground) / 0.62);
+  white-space: normal;
 }
 .message-queue-panel__actions {
   display: flex;

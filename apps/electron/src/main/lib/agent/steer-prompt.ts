@@ -6,8 +6,9 @@
 export function wrapSteerPromptForModel(text: string): string {
   const t = text.trim()
   return (
-    '【用户引导】当前任务仍在进行。请立刻按下面这条补充调整后续行动，' +
-    '不要当成全新问题重开一轮。\n\n' +
+    '【用户引导】先用一句话点出用户的补充（原话：「' +
+    t +
+    '」），然后只做这件事。不要顺着上一问继续展开。\n\n' +
     t
   )
 }

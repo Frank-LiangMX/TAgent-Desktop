@@ -1,12 +1,16 @@
 /**
- * 跑完 / 过程折起时的滚动收口：
- * - 已上滑：按视口锚点留在原处，不要拽到底
- * - 一直贴底：瞬间钉在新底部，杀掉 StickToBottom 弹簧，避免再从头扫一遍
+ * 跑完 / 过程折起时的滚动收口。
+ *
+ * 是否「在看历史」只认 StickToBottom 的 escapedFromLock（用户主动上滑）。
+ * 不能用距底像素：流式贴底时弹簧会落后，距底很大，误判成上滑，
+ * 跑完再按旧锚点一补，视口就会跳回上面。
+ *
+ * - 已上滑：按视口锚点留在原处
+ * - 未上滑（含贴底跟随）：瞬间钉在新底部，杀掉弹簧，避免再扫一遍
  */
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import { useStickToBottomContext } from 'use-stick-to-bottom'
 import {
-  isAwayFromBottom,
   pickViewportAnchor,
   pinScrollerToBottom,
   restoreViewportAnchor,
@@ -14,11 +18,19 @@ import {
 } from './scroll-anchor'
 
 export function ReadingScrollGuard({ live = false }: { live?: boolean }): null {
-  const { scrollRef, contentRef, stopScroll, scrollToBottom, state } = useStickToBottomContext()
+  const {
+    scrollRef,
+    contentRef,
+    stopScroll,
+    scrollToBottom,
+    escapedFromLock,
+    state,
+  } = useStickToBottomContext()
   const prevHeightRef = useRef(0)
-  const prevScrollTopRef = useRef(0)
   const anchorRef = useRef<ViewportAnchor | null>(null)
   const wasLiveRef = useRef(live)
+  const escapedRef = useRef(escapedFromLock)
+  escapedRef.current = escapedFromLock
 
   const pinRef = useRef((): void => {})
   pinRef.current = (): void => {
@@ -39,8 +51,9 @@ export function ReadingScrollGuard({ live = false }: { live?: boolean }): null {
     if (!wasLive || live) return
     const scroller = scrollRef.current
     if (!scroller) return
-    if (isAwayFromBottom(scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight)) {
+    if (escapedRef.current) {
       stopScroll()
+      restoreViewportAnchor(scroller, anchorRef.current)
       return
     }
     pinRef.current()
@@ -55,11 +68,9 @@ export function ReadingScrollGuard({ live = false }: { live?: boolean }): null {
       prevHeightRef.current = content.scrollHeight
     }
 
-    const rememberReading = (): void => {
-      prevScrollTopRef.current = scroller.scrollTop
-      if (
-        !isAwayFromBottom(scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight)
-      ) {
+    const rememberAnchor = (): void => {
+      if (!escapedRef.current) {
+        anchorRef.current = null
         return
       }
       const next = pickViewportAnchor(scroller)
@@ -70,34 +81,26 @@ export function ReadingScrollGuard({ live = false }: { live?: boolean }): null {
       const nextHeight = content.scrollHeight
       const prevHeight = prevHeightRef.current
       const shrunk = prevHeight > 0 && nextHeight < prevHeight - 1
-      const wasAway = isAwayFromBottom(
-        prevScrollTopRef.current,
-        prevHeight,
-        scroller.clientHeight,
-      )
-      if (shrunk && wasAway) {
-        stopScroll()
-        restoreViewportAnchor(scroller, anchorRef.current)
-      } else if (shrunk && !wasAway) {
-        pinRef.current()
+      if (shrunk) {
+        if (escapedRef.current) {
+          stopScroll()
+          restoreViewportAnchor(scroller, anchorRef.current)
+        } else {
+          pinRef.current()
+        }
       }
       snapshotHeight()
-      rememberReading()
-      if (
-        !isAwayFromBottom(scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight)
-      ) {
-        anchorRef.current = null
-      }
+      rememberAnchor()
     }
 
     snapshotHeight()
-    rememberReading()
+    rememberAnchor()
     const observer = new ResizeObserver(onResize)
     observer.observe(content)
-    scroller.addEventListener('scroll', rememberReading, { passive: true })
+    scroller.addEventListener('scroll', rememberAnchor, { passive: true })
     return () => {
       observer.disconnect()
-      scroller.removeEventListener('scroll', rememberReading)
+      scroller.removeEventListener('scroll', rememberAnchor)
     }
   }, [scrollRef, contentRef, stopScroll])
 

@@ -57,6 +57,7 @@ import {
   readMoADiscussionPanels,
   deleteSession as deleteSessionMeta,
   deleteSessionsByWorkspace,
+  recallLastUnsentUserTurn,
 } from '../agent/session-store'
 import {
   createStreamPersistGateState,
@@ -497,6 +498,25 @@ export class SessionService {
       return { ok: true }
     })
 
+    ipcMain.handle(AGENT_IPC_CHANNELS.RECALL_UNSENT_TURN, async (_e, sessionId: string) => {
+      try {
+        const meta = getSessionMeta(sessionId)
+        const workspaceId = meta?.workspaceId
+        const recalled = recallLastUnsentUserTurn(workspaceId, sessionId)
+        if (!recalled.ok) return recalled
+        if (meta && (meta.turnCount ?? 0) > 0) {
+          updateSessionMeta(sessionId, {
+            turnCount: Math.max(0, (meta.turnCount ?? 1) - 1),
+          })
+        }
+        return recalled
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.warn('[session-service] recall unsent turn failed:', msg)
+        return { ok: false, reason: 'empty' as const }
+      }
+    })
+
     /**
      * 圆桌讨论用户插话（§5.3）：渲染层讨论室输入框发送 → push 到活跃讨论的 pending 队列，
      * 由 runMoADiscussion 每轮开始前 drain 注入本轮参与者 prompt（先落 user entry 再追加 [用户插话]）。
@@ -614,22 +634,21 @@ export class SessionService {
           const kind = this.resolveAdapterKindForSession(sessionId)
           const rt = this.runtimes.get(sessionId)
 
-          // 先落盘原文，会话里立刻出现「引导」气泡（不等下一轮）。
+          // 先落盘原文，会话里立刻出现「引导」气泡。
           this.persistSteerUserMessage(sessionId, text)
           const modelText = wrapSteerPromptForModel(text)
 
-          // kscc 真长驻：loop 存活时 enqueue 到下一轮边界。
+          // kscc 长驻：注入同一场运行，当前工具结束后的下一次思考就会带上引导。
+          // 这才和「排队」（整场运行结束再新开一轮）不是一回事。
           if (kind === 'kscc' && rt?.hasLiveProcess()) {
             const mode = await rt.steerMessage(modelText)
             if (mode === 'live') {
               return { ok: true, mode: 'live' }
             }
-            // live 判定竞态失败 → 降级 pending
           }
 
-          // Pi 核（或 kscc 已无 live）：下一轮注入，避免 agent.steer 静默失效
+          // Pi / 无 live loop：只能等本场运行停稳再发，语义接近排队。
           this.enqueuePendingSteer(sessionId, text)
-          // 仅当 turn 与 loop 都已停稳才立刻 flush（避免 Pi result 后 generator 未 done 窗口误 enqueue）
           if (!rt || (!rt.isTurnInFlight() && !rt.isRunning())) {
             this.flushPendingSteer(sessionId)
           }

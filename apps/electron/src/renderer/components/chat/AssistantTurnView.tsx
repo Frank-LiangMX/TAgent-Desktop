@@ -356,6 +356,12 @@ export function AssistantTurnView({
       {/* full：无回答壳时仍展示 Files Changed */}
       {!isConcise && !showAnswerShell ? filesCard : null}
 
+      {!isConcise && !showAnswerShell && !processLive && endFooter ? (
+        <div className="agent-answer-toolbar agent-answer-toolbar--outcome-only">
+          <TurnEndFooter {...endFooter} />
+        </div>
+      ) : null}
+
       {showAnswerShell && (
         <div className="agent-answer-block">
           <Message from="assistant">

@@ -135,6 +135,11 @@ declare global {
         moaOneShotPresetId?: string
       }) => Promise<{ ok: boolean; error?: string }>
       stopAgent: (sessionId: string) => Promise<{ ok: boolean }>
+      recallUnsentTurn: (sessionId: string) => Promise<{
+        ok: boolean
+        text?: string
+        reason?: 'no_user' | 'already_started' | 'empty'
+      }>
       listSessionProcesses: (sessionId: string) => Promise<
         Array<{
           id: string

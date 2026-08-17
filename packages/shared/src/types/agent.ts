@@ -1987,6 +1987,8 @@ export const AGENT_IPC_CHANNELS = {
   SEND_MESSAGE: 'agent:send-message',
   /** 中止 Agent 执行 */
   STOP_AGENT: 'agent:stop',
+  /** 撤回尚未开始处理的最后一轮 user 输入（停止前未进入 Agent 处理） */
+  RECALL_UNSENT_TURN: 'agent:recall-unsent-turn',
   /** 引导 Agent（不中断当前轮，在下一轮边界注入用户消息） */
   STEER_AGENT: 'agent:steer',
   /** 圆桌讨论用户插话（push 到活跃讨论 pending 队列，每轮开始前 drain 注入） */

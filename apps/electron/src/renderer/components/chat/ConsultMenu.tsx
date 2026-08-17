@@ -1,6 +1,7 @@
 /**
  * 发送键 + 旁侧 ▾（会诊 / 圆桌等发送方式）。
- * 有内容时：主钮实心圆；▾ 独立轻量 ghost，避免「胶囊切开」的粗分割线。
+ * 有内容时：主钮实心圆角矩形（32px）；▾ 独立轻量 ghost。
+ * 空闲 / 运行中排队发送共用这一套，不按状态换尺寸。
  *
  * 必须是模块级组件（勿写进 Chat 函数体，否则 Popover 因重挂载点不开）。
  */
@@ -33,8 +34,6 @@ export interface SendSplitButtonProps {
    */
   onDiscussionPreset?: (presetId: string) => void
   className?: string
-  /** 主发送钮尺寸：默认 size-9；运行中排队槽可用 size-8 */
-  size?: 'md' | 'sm'
   /**
    * 当前渠道：决定是否为外部渠（外部菜单加计费提示；同模预置标「同模」）。
    * 不传 → 视作 kscc-internal（兼容旧调用）。
@@ -52,15 +51,11 @@ export function SendSplitButton({
   onConsultPreset,
   onDiscussionPreset,
   className,
-  size = 'md',
   channel,
 }: SendSplitButtonProps): JSX.Element {
   const [open, setOpen] = useState(false)
   const enabled = presets.filter((p) => p.enabled)
   const isExternal = channel != null && channel.provider !== 'kscc-internal'
-  const btnSize = size === 'sm' ? 'size-8' : 'size-9'
-  const iconSize = size === 'sm' ? 'size-4' : 'size-5'
-  const chevronBtn = size === 'sm' ? 'h-8 w-6' : 'h-9 w-7'
   const showDiscussionGroup = typeof onDiscussionPreset === 'function' && enabled.length > 0
 
   const sendButton = (
@@ -74,16 +69,14 @@ export function SendSplitButton({
         variant={hasDraft ? 'default' : 'ghost'}
         size="icon"
         className={cn(
-          btnSize,
-          'rounded-full',
-          hasDraft && 'shadow-sm',
+          'size-8 rounded-glass-popover shadow-none',
           !hasDraft && 'text-muted-foreground',
         )}
         disabled={!hasDraft}
         onClick={onSend}
         aria-label="发送"
       >
-        <ArrowUp className={iconSize} />
+        <ArrowUp className="size-4" />
       </Button>
     </AppTooltip>
   )
@@ -113,8 +106,7 @@ export function SendSplitButton({
               variant="ghost"
               size="icon"
               className={cn(
-                chevronBtn,
-                'rounded-full text-muted-foreground hover:text-foreground',
+                'h-8 w-6 rounded-glass-popover text-muted-foreground hover:text-foreground',
                 open && 'bg-accent text-foreground',
               )}
               aria-label="更多发送方式"
