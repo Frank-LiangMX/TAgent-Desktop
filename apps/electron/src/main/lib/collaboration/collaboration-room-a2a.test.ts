@@ -23,7 +23,7 @@ import type {
   CollaborationRun,
 } from '@tagent/shared'
 import { CollaborationRoomService } from './collaboration-room-service'
-import { listMailboxByRoom, upsertRun } from './collaboration-room-repository'
+import { appendMailboxEnvelope, listMailboxByRoom, upsertRun } from './collaboration-room-repository'
 
 let tmpDir: string
 
@@ -324,6 +324,34 @@ describe('CollaborationRoomService A2A 信箱 host 侧（Stage 4-2）', () => {
     const after = svc2.getRunById(runId)!
     expect(after.status).toBe('blocked')
     void roomId
+  })
+
+  test('recoverInterruptedRuns：仅 outbox 未建 target run → 安全重投一次', () => {
+    const svc = createService()
+    const { roomId, coordinatorId, devId } = createRoomWithTwoMembers(svc)
+    const source = svc.appendUserMessage({ roomId, content: '开始' })
+    const sourceRun = svc.listRuns(roomId).find((run) => run.triggerMessageId === source.id)!
+    appendMailboxEnvelope({
+      id: 'env_recoverable_outbox',
+      roomId,
+      fromMemberId: coordinatorId,
+      toMemberId: devId,
+      type: 'message',
+      payload: '安全重投',
+      rootMessageId: source.id,
+      causationId: sourceRun.id,
+      depth: 0,
+      state: 'pending',
+      attemptId: '550e8400-e29b-41d4-a716-446655440000',
+      delivery: 'outbox',
+      sourceMessageId: source.id,
+      createdAt: Date.now(),
+    })
+    const svc2 = createService()
+    svc2.recoverInterruptedRuns()
+    const recovered = svc2.listMailbox(roomId).find((envelope) => envelope.id === 'env_recoverable_outbox')!
+    expect(recovered.delivery).toMatch(/dispatched|accepted/)
+    expect(recovered.deliveryRunId).toBeTruthy()
   })
 
   test('roomAsk：房间非 active → 拒绝', () => {

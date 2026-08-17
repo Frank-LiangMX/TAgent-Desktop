@@ -416,7 +416,12 @@ export class CollaborationRoomService {
   recoverInterruptedRuns(): number {
     const stuck = listRunsByStatus(['queued', 'running'])
     const awaiting = listRunsByStatus(['awaiting_peer'])
-    if (stuck.length === 0 && awaiting.length === 0) return 0
+    const recoverableOutbox = loadRooms().flatMap((room) =>
+      listMailboxByRoom(room.id).filter(
+        (envelope) => envelope.delivery === 'outbox' && !envelope.deliveryRunId && Boolean(envelope.attemptId),
+      ),
+    )
+    if (stuck.length === 0 && awaiting.length === 0 && recoverableOutbox.length === 0) return 0
     // 在 sweep 前取快照：只有已经 dispatched/accepted 且其目标 run 仍活跃的信封才是
     // 「副作用结果未知」，绝不能因下方把 run 标 failed 后再当作安全重放。
     const interruptedRunIds = new Set(stuck.map((run) => run.id))
@@ -450,10 +455,23 @@ export class CollaborationRoomService {
         }
       }
     }
+    // 仅 outbox 且尚未关联 target run 的窗口可安全重放：它尚未启动任何模型调用。
+    // 一旦已 dispatched/accepted，就走上面的 outcome_unknown，绝不自动再投递。
+    let replayedOutbox = 0
+    for (const envelope of recoverableOutbox) {
+      const room = getRoom(envelope.roomId)
+      const target = getMember(envelope.toMemberId)
+      const trigger = room
+        ? listMessagesByRoom(room.id).find((message) => message.id === envelope.sourceMessageId)
+        : undefined
+      if (!room || !target || !trigger) continue
+      this.dispatchEnvelope(room, target, envelope, trigger)
+      replayedOutbox++
+    }
     console.log(
-      `[协作室] 启动恢复：${stuck.length} 个遗留 run 标记 interrupted/failed，${awaiting.length} 个 awaiting_peer 标记 blocked`,
+      `[协作室] 启动恢复：${stuck.length} 个遗留 run 标记 interrupted/failed，${awaiting.length} 个 awaiting_peer 标记 blocked，${replayedOutbox} 个 outbox 安全重投`,
     )
-    return stuck.length + awaiting.length
+    return stuck.length + awaiting.length + replayedOutbox
   }
 
   // ===== A2A 信箱（S4 host 侧；02-RUNTIME-A2A-SPEC §5–§9） =====
