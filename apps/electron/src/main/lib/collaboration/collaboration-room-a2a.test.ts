@@ -265,8 +265,8 @@ describe('CollaborationRoomService A2A 信箱 host 侧（Stage 4-2）', () => {
     expect(ask1.ok).toBe(true)
 
     // 模拟开发反向 ask 协调者同样问题（A→B→A 循环）
-    const devMsg = svc.appendUserMessage({ roomId, content: '开发开始', targetMemberIds: [devId] })
-    const devRun = svc.listRuns(roomId).find((r) => r.triggerMessageId === devMsg.id)!
+    // S4.5：首个 ask 会自动唤醒开发；用该 delivery run 验证反向循环。
+    const devRun = svc.listRuns(roomId).find((r) => r.memberId === devId && r.status === 'running')!
     const ask2 = svc.roomAsk({
       roomId,
       fromRunId: devRun.id,

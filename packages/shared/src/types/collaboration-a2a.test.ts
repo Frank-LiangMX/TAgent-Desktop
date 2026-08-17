@@ -4,6 +4,11 @@ import {
   collaborationHash32,
   collaborationLoopFingerprint,
   collaborationReplyIdempotencyKey,
+  canContinueCollaborationDepthStop,
+  canTransitionCollaborationDelivery,
+  hasCollaborationAttempt,
+  isCollaborationDepthStopPresentable,
+  recommendedCollaborationHandoffDepth,
   isCollaborationDuplicateReply,
   isCollaborationSelfSend,
   nextCollaborationA2ADepth,
@@ -79,6 +84,38 @@ describe('collaboration-a2a mailbox state machine', () => {
       ok: true,
       state: 'expired',
     })
+  })
+})
+
+describe('S4.5 handoff outbox guards', () => {
+  const attemptId = '550e8400-e29b-41d4-a716-446655440000'
+
+  test('推荐深度有界：2 成员→4，6 成员→7，20 成员→10', () => {
+    expect(recommendedCollaborationHandoffDepth(2)).toBe(4)
+    expect(recommendedCollaborationHandoffDepth(6)).toBe(7)
+    expect(recommendedCollaborationHandoffDepth(20)).toBe(10)
+  })
+
+  test('同一 attempt 不得重复写信封，delivery 不能从未知结果倒退', () => {
+    const envelope = mkEnvelope({ attemptId, delivery: 'outbox' })
+    expect(hasCollaborationAttempt([envelope], attemptId)).toBe(true)
+    expect(canTransitionCollaborationDelivery('outbox', 'dispatched')).toBe(true)
+    expect(canTransitionCollaborationDelivery('accepted', 'outcome_unknown')).toBe(true)
+    expect(canTransitionCollaborationDelivery('outcome_unknown', 'dispatched')).toBe(false)
+  })
+
+  test('仅元数据完整的 max-depth 停止可呈现且可继续一次', () => {
+    const stop = mkEnvelope({
+      attemptId,
+      depth: 4,
+      stopReason: 'max_depth',
+      sourceMessageId: 'msg_source',
+      continueUsed: false,
+    })
+    expect(isCollaborationDepthStopPresentable({ envelope: stop, maxDepth: 4, handoffEnabled: true })).toBe(true)
+    expect(canContinueCollaborationDepthStop(stop)).toBe(true)
+    expect(canContinueCollaborationDepthStop({ ...stop, continueUsed: true })).toBe(false)
+    expect(isCollaborationDepthStopPresentable({ envelope: { ...stop, attemptId: undefined }, maxDepth: 4, handoffEnabled: true })).toBe(false)
   })
 })
 

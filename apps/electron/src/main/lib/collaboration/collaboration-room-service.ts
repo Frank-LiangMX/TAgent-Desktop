@@ -28,19 +28,21 @@ import {
   COLLABORATION_LOGICAL_SESSION_ID_PREFIX,
   COLLABORATION_MEMBER_ID_PREFIX,
   COLLABORATION_MESSAGE_ID_PREFIX,
-  COLLABORATION_ROOM_DEFAULT_MAX_A2A_DEPTH,
   COLLABORATION_ROOM_DEFAULT_MAX_CONCURRENT_RUNS,
   COLLABORATION_ROOM_ID_PREFIX,
   COLLABORATION_ROOM_MAX_MEMBERS,
   COLLABORATION_RUN_ID_PREFIX,
   collaborationRunIdempotencyKey,
   collaborationContinuationIdempotencyKey,
+  collaborationEnvelopeIdempotencyKey,
+  canContinueCollaborationDepthStop,
   collaborationLoopFingerprint,
   isCollaborationDuplicateReply,
   isCollaborationSelfSend,
   isCollaborationRoomStatus,
   nextCollaborationA2ADepth,
   nextCollaborationMentionAliases,
+  recommendedCollaborationHandoffDepth,
   COLLABORATION_SUMMARY_DEFAULT_EVERY_UTTERANCES,
   latestCollaborationRoomSummaryText,
   projectCollaborationTurnContext,
@@ -70,6 +72,7 @@ import {
   appendMessage,
   appendMailboxEnvelope,
   getCollaborationSummary,
+  getMailboxEnvelope,
   getMember,
   getRoom,
   getRun,
@@ -236,7 +239,9 @@ export class CollaborationRoomService {
       coordinatorMemberId,
       status: 'active',
       maxConcurrentRuns: input.maxConcurrentRuns ?? COLLABORATION_ROOM_DEFAULT_MAX_CONCURRENT_RUNS,
-      maxA2ADepth: input.maxA2ADepth ?? COLLABORATION_ROOM_DEFAULT_MAX_A2A_DEPTH,
+      // 只在新房间未指定时推荐；updateRoom 永远保留既存值，不能静默改写用户策略。
+      maxA2ADepth:
+        input.maxA2ADepth ?? recommendedCollaborationHandoffDepth(members.length),
       summaryEveryUtterances:
         input.summaryEveryUtterances ?? COLLABORATION_SUMMARY_DEFAULT_EVERY_UTTERANCES,
       budget: input.budget ?? {},
@@ -412,6 +417,9 @@ export class CollaborationRoomService {
     const stuck = listRunsByStatus(['queued', 'running'])
     const awaiting = listRunsByStatus(['awaiting_peer'])
     if (stuck.length === 0 && awaiting.length === 0) return 0
+    // 在 sweep 前取快照：只有已经 dispatched/accepted 且其目标 run 仍活跃的信封才是
+    // 「副作用结果未知」，绝不能因下方把 run 标 failed 后再当作安全重放。
+    const interruptedRunIds = new Set(stuck.map((run) => run.id))
     const now = Date.now()
     const error: CollaborationSerializedRunError = {
       message: '应用重启时发现仍在运行的 run，已标记中断（请重新发送消息以重试）',
@@ -426,6 +434,21 @@ export class CollaborationRoomService {
     for (const run of awaiting) {
       upsertRun({ ...run, status: 'blocked', finishedAt: now, error })
       this.syncMemberStatus(run.memberId)
+    }
+    for (const room of loadRooms()) {
+      for (const envelope of listMailboxByRoom(room.id)) {
+        if (
+          (envelope.delivery === 'dispatched' || envelope.delivery === 'accepted') &&
+          envelope.deliveryRunId &&
+          interruptedRunIds.has(envelope.deliveryRunId)
+        ) {
+          upsertMailboxEnvelope({
+            ...envelope,
+            delivery: 'outcome_unknown',
+            stopReason: 'outcome_unknown',
+          })
+        }
+      }
     }
     console.log(
       `[协作室] 启动恢复：${stuck.length} 个遗留 run 标记 interrupted/failed，${awaiting.length} 个 awaiting_peer 标记 blocked`,
@@ -480,7 +503,10 @@ export class CollaborationRoomService {
     // 避免深层 run 继续向外发散。run 深度未知时按 0 兜底（宿主补齐）。
     const senderDepth = this.runDepth(run.id)
     const depthCheck = nextCollaborationA2ADepth(senderDepth, room.maxA2ADepth)
-    if (!depthCheck.ok) return { ok: false, reason: depthCheck.reason }
+    if (!depthCheck.ok) {
+      this.recordDepthStop(room, run, fromMember, toMember, input.payload, senderDepth, 'message')
+      return { ok: false, reason: depthCheck.reason }
+    }
 
     const now = Date.now()
     const rootMessageId = run.triggerMessageId
@@ -496,10 +522,14 @@ export class CollaborationRoomService {
       causationId,
       depth: senderDepth,
       state: 'pending',
+      attemptId: randomUUID(),
+      delivery: 'outbox',
+      sourceMessageId: run.triggerMessageId,
       createdAt: now,
     }
     appendMailboxEnvelope(envelope)
-    this.appendA2AMessage(room, fromMember, 'a2a_request', input.payload, rootMessageId, causationId, run.id, [toMember.id], senderDepth)
+    const trigger = this.appendA2AMessage(room, fromMember, 'a2a_request', input.payload, rootMessageId, causationId, run.id, [toMember.id], senderDepth)
+    this.dispatchEnvelope(room, toMember, envelope, trigger)
     this.broadcast(room.id, 'mailbox-updated')
     return { ok: true, envelopeId: envelope.id }
   }
@@ -539,7 +569,10 @@ export class CollaborationRoomService {
 
     const parentDepth = this.runDepth(run.id)
     const depthRes = nextCollaborationA2ADepth(parentDepth, room.maxA2ADepth)
-    if (!depthRes.ok) return { ok: false, reason: depthRes.reason }
+    if (!depthRes.ok) {
+      this.recordDepthStop(room, run, fromMember, toMember, input.question, parentDepth, 'question')
+      return { ok: false, reason: depthRes.reason }
+    }
 
     // 循环指纹：检测 A↔B 近重复问答（02-RUNTIME-A2A-SPEC §9）。
     // - 正向：A→B 已问过同样问题（指纹碰撞）→ 阻断重复投递
@@ -590,10 +623,14 @@ export class CollaborationRoomService {
       causationId,
       depth: depthRes.depth,
       state: 'pending',
+      attemptId: randomUUID(),
+      delivery: 'outbox',
+      sourceMessageId: run.triggerMessageId,
       createdAt: now,
     }
     appendMailboxEnvelope(envelope)
-    this.appendA2AMessage(room, fromMember, 'a2a_request', input.question, rootMessageId, causationId, run.id, [toMember.id], depthRes.depth)
+    const trigger = this.appendA2AMessage(room, fromMember, 'a2a_request', input.question, rootMessageId, causationId, run.id, [toMember.id], depthRes.depth)
+    this.dispatchEnvelope(room, toMember, envelope, trigger)
     this.broadcast(room.id, 'mailbox-updated')
     return { ok: true, envelopeId: envelope.id, requestId }
   }
@@ -763,6 +800,126 @@ export class CollaborationRoomService {
     return max
   }
 
+  /** S4.5：仅在真实越过房间深度策略时写入可呈现的停止信封，绝不伪装成普通失败。 */
+  private recordDepthStop(
+    room: CollaborationRoom,
+    run: CollaborationRun,
+    fromMember: CollaborationMember,
+    toMember: CollaborationMember,
+    payload: string,
+    currentDepth: number,
+    type: 'message' | 'question',
+  ): void {
+    const envelope: CollaborationMailboxEnvelope = {
+      id: genId('env_'),
+      roomId: room.id,
+      fromMemberId: fromMember.id,
+      toMemberId: toMember.id,
+      type,
+      payload,
+      rootMessageId: run.triggerMessageId,
+      causationId: run.id,
+      depth: Math.max(currentDepth, room.maxA2ADepth),
+      state: 'cancelled',
+      attemptId: randomUUID(),
+      delivery: 'failed',
+      stopReason: 'max_depth',
+      continueUsed: false,
+      sourceMessageId: run.triggerMessageId,
+      createdAt: Date.now(),
+    }
+    appendMailboxEnvelope(envelope)
+    this.appendSystemMessage(
+      room.id,
+      `成员「${fromMember.displayName}」向「${toMember.displayName}」的交接已达深度上限（${envelope.depth}/${room.maxA2ADepth}）。可继续一次或停止。`,
+    )
+    this.broadcast(room.id, 'mailbox-updated')
+  }
+
+  /**
+   * S4.5：把已写入的 outbox 信封关联到唯一目标 run。先落盘信封、再创建 queued run、
+   * 最后标 dispatched；同一 attemptId 的幂等键确保崩溃重试不会重复唤醒成员。
+   */
+  private dispatchEnvelope(
+    room: CollaborationRoom,
+    target: CollaborationMember,
+    envelope: CollaborationMailboxEnvelope,
+    triggerMessage: CollaborationMessage,
+  ): void {
+    if (!envelope.attemptId) return
+    const idempotencyKey = collaborationEnvelopeIdempotencyKey({
+      fromMemberId: envelope.fromMemberId,
+      toMemberId: target.id,
+      rootMessageId: envelope.rootMessageId,
+      causationId: `${envelope.causationId}:${envelope.attemptId}`,
+    })
+    const existing = findRunByIdempotencyKey(idempotencyKey)
+    const run = existing ?? {
+      id: genId(COLLABORATION_RUN_ID_PREFIX),
+      roomId: room.id,
+      memberId: target.id,
+      triggerMessageId: triggerMessage.id,
+      idempotencyKey,
+      status: 'queued' as const,
+      attempt: 0,
+    }
+    if (!existing) {
+      upsertRun(run)
+      this.scheduler.enqueue({
+        runId: run.id,
+        roomId: room.id,
+        memberId: target.id,
+        room,
+        member: target,
+        run,
+        triggerMessage,
+      })
+      if (!this.scheduler.isMemberRunning(target.id)) this.setMemberStatus(target.id, 'queued')
+    }
+    upsertMailboxEnvelope({ ...envelope, delivery: 'dispatched', deliveryRunId: run.id })
+  }
+
+  /** queued → running 的同一临界点把 delivery 标为 accepted，避免把未启动误报为已执行。 */
+  private markEnvelopeAccepted(runId: string, roomId: string): void {
+    for (const envelope of listMailboxByRoom(roomId)) {
+      if (envelope.deliveryRunId === runId && envelope.delivery === 'dispatched') {
+        upsertMailboxEnvelope({ ...envelope, delivery: 'accepted' })
+      }
+    }
+  }
+
+  /** S4.5 最小用户入口：深度停止只可继续一次；新 attempt 仍受硬上限 10 限制。 */
+  continueDepthStop(envelopeId: string): { ok: true; envelopeId: string } | { ok: false; reason: string } {
+    const stopped = getMailboxEnvelope(envelopeId)
+    if (!stopped || !canContinueCollaborationDepthStop(stopped)) {
+      return { ok: false, reason: '该深度停止不可继续或已使用过继续机会' }
+    }
+    const room = getRoom(stopped.roomId)
+    const target = getMember(stopped.toMemberId)
+    if (!room || !target || stopped.depth >= 10) {
+      return { ok: false, reason: '继续条件不满足（房间/成员不存在或已达硬深度上限）' }
+    }
+    const source = listMessagesByRoom(room.id).find((message) => message.id === stopped.sourceMessageId)
+    if (!source) return { ok: false, reason: '继续所需的源消息不存在' }
+    const next: CollaborationMailboxEnvelope = {
+      ...stopped,
+      id: genId('env_'),
+      depth: stopped.depth + 1,
+      state: 'pending',
+      attemptId: randomUUID(),
+      delivery: 'outbox',
+      deliveryRunId: undefined,
+      stopReason: undefined,
+      continueUsed: undefined,
+      createdAt: Date.now(),
+    }
+    upsertMailboxEnvelope({ ...stopped, continueUsed: true })
+    appendMailboxEnvelope(next)
+    this.dispatchEnvelope(room, target, next, source)
+    this.broadcast(room.id, 'mailbox-updated')
+    return { ok: true, envelopeId: next.id }
+  }
+
   /** 落盘一条 A2A 消息（room transcript 投影；visibility=participants） */
   private appendA2AMessage(
     room: CollaborationRoom,
@@ -879,6 +1036,7 @@ export class CollaborationRoomService {
         return
       }
       this.setMemberStatus(member.id, 'running')
+      this.markEnvelopeAccepted(run.id, room.id)
       this.broadcast(room.id, 'run-started')
 
       // 组装上下文投影 + 调后端

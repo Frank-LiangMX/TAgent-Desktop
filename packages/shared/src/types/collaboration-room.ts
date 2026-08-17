@@ -110,6 +110,20 @@ export type CollaborationMailboxState = 'pending' | 'delivered' | 'answered' | '
 /** Mailbox 信封类型 */
 export type CollaborationMailboxType = 'message' | 'question' | 'reply' | 'handoff'
 
+/** S4.5：信封作为 outbox 时的投递进度（旧数据缺省兼容）。 */
+export type CollaborationMailboxDelivery =
+  | 'outbox'
+  | 'dispatched'
+  | 'accepted'
+  | 'failed'
+  | 'outcome_unknown'
+
+/** S4.5：仅供可呈现停止/恢复决策使用的宿主原因。 */
+export type CollaborationMailboxStopReason =
+  | 'max_depth'
+  | 'continue_failed'
+  | 'outcome_unknown'
+
 /** 轻量 room task 状态（无看板时用，S5+） */
 export type CollaborationRoomTaskStatus =
   | 'pending'
@@ -462,6 +476,18 @@ export interface CollaborationMailboxEnvelope {
   depth: number
   /** 信封状态 */
   state: CollaborationMailboxState
+  /** 宿主在写入 outbox 前签发；缺省表示 S4.5 前历史数据。 */
+  attemptId?: string
+  /** 仅 S4.5 信封投递过程使用；缺省兼容历史数据。 */
+  delivery?: CollaborationMailboxDelivery
+  /** dispatch 后关联的目标 run，用于恢复时判断是否已实际执行。 */
+  deliveryRunId?: string
+  /** 深度停止/未知结果等可呈现的宿主原因。 */
+  stopReason?: CollaborationMailboxStopReason
+  /** 深度停止仅允许用户继续一次。 */
+  continueUsed?: boolean
+  /** 产生该交接的消息，供时间线停止卡精确挂载。 */
+  sourceMessageId?: string
   /** 创建时间戳 */
   createdAt: number
   /** 过期时间戳（可选） */
