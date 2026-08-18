@@ -44,10 +44,13 @@ import {
   type ListCollaborationMembersInput,
   type ListCollaborationMessagesInput,
   type ListCollaborationRoomTasksInput,
+  type ListCollaborationUserApprovalsInput,
   type ListCollaborationRoomsInput,
   type ListCollaborationRunsInput,
   type ReadCollaborationArtifactInput,
   type ReadCollaborationArtifactResult,
+  type ResolveCollaborationUserApprovalInput,
+  type ResolveCollaborationUserApprovalResult,
   type UpdateCollaborationMemberInput,
   type UpdateCollaborationRoomInput,
   type UpdateCollaborationRoomTaskInput,
@@ -258,6 +261,19 @@ export function registerCollaborationRoomIpc(
     async (_e, input: GetBoardProjectedSummaryInput): Promise<BoardProjectedSummary | null> => {
       return service.projectBoardSummary(input.roomId)
     },
+  )
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.LIST_USER_APPROVALS,
+    async (_e, input: ListCollaborationUserApprovalsInput) => service.listUserApprovals(input.roomId),
+  )
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.RESOLVE_USER_APPROVAL,
+    async (
+      _e,
+      input: ResolveCollaborationUserApprovalInput,
+    ): Promise<ResolveCollaborationUserApprovalResult> => service.resolveUserApproval(input),
   )
 
   // 看板任务状态变化 → 广播给「挂载了该看板」的协作室房间，让面板能及时刷新投影。

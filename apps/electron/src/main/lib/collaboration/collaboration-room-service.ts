@@ -32,6 +32,7 @@ import {
   openSync,
   readFileSync,
   readSync,
+  readdirSync,
   realpathSync,
   renameSync,
   unlinkSync,
@@ -81,6 +82,7 @@ import {
   type CollaborationRoom,
   type CollaborationRoomChangedPayload,
   type CollaborationRoomTask,
+  type CollaborationUserApprovalRequest,
   type CollaborationRoomTaskStatus,
   type CollaborationTextDeltaPayload,
   type CollaborationRun,
@@ -135,11 +137,14 @@ import {
   listRoomTasksByRoom,
   loadMembers,
   loadRooms,
+  getUserApprovalRequest,
+  listUserApprovalRequests,
   upsertMailboxEnvelope,
   upsertMember,
   upsertRoom,
   upsertRun,
   upsertRoomTask,
+  upsertUserApprovalRequest,
   saveRoomTaskIfCurrent,
   findRunByIdempotencyKey,
 } from './collaboration-room-repository'
@@ -861,6 +866,154 @@ export class CollaborationRoomService {
     return listActiveMailboxForMember(memberId)
   }
 
+  /** 列出某房间的用户审批请求（按创建时间升序）。 */
+  listUserApprovals(roomId: string): CollaborationUserApprovalRequest[] {
+    return listUserApprovalRequests(roomId)
+  }
+
+  /**
+   * 成员请求用户决定。请求落盘后当前 run 进入 awaiting_user 并释放执行槽，
+   * 等待 renderer 通过 resolveUserApproval 决定；整个过程按 room/run/member 归属校验。
+   */
+  requestUserApproval(input: {
+    roomId: string
+    fromRunId: string
+    question: string
+    reason?: string
+    options?: string
+  }):
+    | { ok: true; request: CollaborationUserApprovalRequest }
+    | { ok: false; reason: string } {
+    const room = getRoom(input.roomId)
+    const run = getRun(input.fromRunId)
+    if (!room || !run || run.roomId !== input.roomId) return { ok: false, reason: '房间或 run 不存在' }
+    if (run.status !== 'running') return { ok: false, reason: '当前 run 不在 running 状态' }
+    const member = getMember(run.memberId)
+    if (!member || member.roomId !== room.id) return { ok: false, reason: '成员不存在或不属于该房间' }
+    const question = input.question?.trim() ?? ''
+    if (!question) return { ok: false, reason: 'question 不能为空' }
+    if (question.length > 2000) return { ok: false, reason: 'question 不能超过 2000 个字符' }
+    const reason = input.reason?.trim() || undefined
+    if (reason && reason.length > 2000) return { ok: false, reason: 'reason 不能超过 2000 个字符' }
+    let options: string[] | undefined
+    if (input.options?.trim()) {
+      try {
+        const parsed: unknown = JSON.parse(input.options)
+        if (!Array.isArray(parsed) || parsed.length > 8 || parsed.some((v) => typeof v !== 'string')) {
+          return { ok: false, reason: 'options 必须是最多 8 项的 JSON 字符串数组' }
+        }
+        options = parsed.map((value) => value.trim())
+        if (options.some((value) => !value || value.length > 200)) {
+          return { ok: false, reason: 'options 不能包含空项，且每项不超过 200 个字符' }
+        }
+      } catch {
+        return { ok: false, reason: 'options 不是合法 JSON' }
+      }
+    }
+    const transitioned = this.casRun(run.id, 'running', 'awaiting_user', {})
+    if (!transitioned) return { ok: false, reason: 'run 状态已改变，请重试' }
+    const request: CollaborationUserApprovalRequest = {
+      id: genId('approval_'),
+      roomId: room.id,
+      memberId: member.id,
+      runId: run.id,
+      question,
+      ...(reason ? { reason } : {}),
+      ...(options ? { options } : {}),
+      status: 'pending',
+      createdAt: Date.now(),
+    }
+    upsertUserApprovalRequest(request)
+    const controller = this.abortControllers.get(run.id)
+    if (controller) controller.abort()
+    this.scheduler.release(run.id, room.id, member.id)
+    this.setMemberStatus(member.id, 'awaiting_user')
+    this.broadcast(room.id, 'run-awaiting-user')
+    return { ok: true, request }
+  }
+
+  /**
+   * 解决用户审批。approved 会把审批结果作为新的系统触发消息重新入队，
+   * denied 则结束原 run；重复 resolve 返回当前记录，保证 IPC 重试幂等。
+   */
+  resolveUserApproval(input: {
+    roomId: string
+    requestId: string
+    decision: 'approved' | 'denied'
+    response?: string
+  }):
+    | { ok: true; request: CollaborationUserApprovalRequest; runId?: string }
+    | { ok: false; reason: string } {
+    const request = getUserApprovalRequest(input.requestId)
+    if (!request || request.roomId !== input.roomId) return { ok: false, reason: '审批请求不存在或不属于该房间' }
+    if (request.status !== 'pending') return { ok: true, request }
+    const room = getRoom(request.roomId)
+    const run = getRun(request.runId)
+    const member = getMember(request.memberId)
+    if (!room || !run || !member || run.roomId !== room.id || member.roomId !== room.id) {
+      return { ok: false, reason: '审批关联的房间、run 或成员不存在' }
+    }
+    const response = input.response?.trim() || undefined
+    if (response && response.length > 4000) return { ok: false, reason: 'response 不能超过 4000 个字符' }
+    const resolved: CollaborationUserApprovalRequest = {
+      ...request,
+      status: input.decision,
+      ...(response ? { response } : {}),
+      resolvedAt: Date.now(),
+    }
+    upsertUserApprovalRequest(resolved)
+
+    if (input.decision === 'denied') {
+      const failed = this.casRun(run.id, 'awaiting_user', 'failed', {
+        finishedAt: Date.now(),
+        error: { code: 'USER_DENIED', message: '用户拒绝了成员请求' },
+      })
+      if (failed) {
+        this.appendSystemMessage(room.id, `用户拒绝了成员「${member.displayName}」的请求。`)
+        this.syncMemberStatus(member.id)
+        this.broadcast(room.id, 'run-finished')
+      }
+      return { ok: true, request: resolved }
+    }
+
+    const completed = this.casRun(run.id, 'awaiting_user', 'done', { finishedAt: Date.now() })
+    if (!completed) return { ok: true, request: resolved }
+    const triggerMessage = this.appendSystemMessage(
+      room.id,
+      `用户已批准成员「${member.displayName}」的请求${response ? `：${response}` : '。'}`,
+    )
+    if (room.status !== 'active') {
+      this.syncMemberStatus(member.id)
+      this.broadcast(room.id, 'run-finished')
+      return { ok: true, request: resolved }
+    }
+    const idempotencyKey = `user-approval:${request.id}:${member.id}`
+    const existing = findRunByIdempotencyKey(idempotencyKey)
+    if (existing) return { ok: true, request: resolved, runId: existing.id }
+    const continuation: CollaborationRun = {
+      id: genId(COLLABORATION_RUN_ID_PREFIX),
+      roomId: room.id,
+      memberId: member.id,
+      triggerMessageId: triggerMessage.id,
+      idempotencyKey,
+      status: 'queued',
+      attempt: 0,
+    }
+    upsertRun(continuation)
+    this.scheduler.enqueue({
+      runId: continuation.id,
+      roomId: room.id,
+      memberId: member.id,
+      room,
+      member,
+      run: continuation,
+      triggerMessage,
+    })
+    if (!this.scheduler.isMemberRunning(member.id)) this.setMemberStatus(member.id, 'queued')
+    this.broadcast(room.id, 'run-continued')
+    return { ok: true, request: resolved, runId: continuation.id }
+  }
+
   /**
    * 推导一个 run 当前的 A2A 深度（安全字段，宿主补齐）。
    *
@@ -1272,6 +1425,20 @@ export class CollaborationRoomService {
                   }
                 : { output: `room_publish_artifact 被拒绝：${result.reason}`, isError: true }
             }
+            case 'room_request_user': {
+              const result = this.requestUserApproval({
+                roomId: room.id,
+                fromRunId: run.id,
+                question: call.arguments.question ?? '',
+                reason: call.arguments.reason,
+                options: call.arguments.options,
+              })
+              if (!result.ok) return { output: `room_request_user 被拒绝：${result.reason}`, isError: true }
+              return {
+                output: `已提交用户审批（request=${result.request.id}），等待用户决定。`,
+                awaitPeer: true,
+              }
+            }
             case 'workspace_read_file': {
               const result = this.workspaceReadFile({
                 roomId: room.id,
@@ -1317,7 +1484,10 @@ export class CollaborationRoomService {
                 command: call.arguments.command ?? '',
                 args: call.arguments.args,
                 cwd: call.arguments.cwd,
-                timeoutMs: call.arguments.timeoutMs,
+                timeoutMs:
+                  call.arguments.timeoutMs !== undefined && call.arguments.timeoutMs !== ''
+                    ? Number(call.arguments.timeoutMs)
+                    : undefined,
               })
               return result.ok
                 ? {
@@ -1390,6 +1560,7 @@ export class CollaborationRoomService {
         const current = getRun(run.id)
         if (
           current?.status === 'awaiting_peer' ||
+          current?.status === 'awaiting_user' ||
           current?.status === 'done' ||
           current?.status === 'blocked'
         ) {
@@ -2336,7 +2507,7 @@ export class CollaborationRoomService {
 
     const walk = (dirReal: string, dirRel: string, depth: number): void => {
       if (truncated) return
-      let entries: string[]
+      let entries: import('node:fs').Dirent[]
       try {
         entries = readdirSync(dirReal, { withFileTypes: true })
       } catch {
@@ -2429,10 +2600,11 @@ export class CollaborationRoomService {
     command: string
     args?: string
     cwd?: string
-    timeoutMs?: number
-  }):
+    timeoutMs?: number | string
+  }): Promise<
     | { ok: true; command: string; stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; truncated: boolean }
-    | { ok: false; reason: string } {
+    | { ok: false; reason: string }
+  > {
     const g = this.workspaceGuard({ roomId: input.roomId, fromRunId: input.fromRunId, needsWrite: true })
     if (!g.ok) return g
 
@@ -2447,7 +2619,7 @@ export class CollaborationRoomService {
     }
 
     let timeoutMs: number | undefined
-    if (input.timeoutMs !== undefined && input.timeoutMs.trim() !== '') {
+    if (input.timeoutMs !== undefined && String(input.timeoutMs).trim() !== '') {
       const n = Number(input.timeoutMs)
       if (!Number.isFinite(n) || n <= 0) {
         return { ok: false, reason: 'timeoutMs 必须是正整数' }
@@ -2699,7 +2871,7 @@ export class CollaborationRoomService {
   }
 
   /** 追加系统警告消息（failed / 无成员等） */
-  private appendSystemMessage(roomId: string, content: string): void {
+  private appendSystemMessage(roomId: string, content: string): CollaborationMessage {
     const message: CollaborationMessage = {
       id: genId(COLLABORATION_MESSAGE_ID_PREFIX),
       roomId,
@@ -2714,6 +2886,8 @@ export class CollaborationRoomService {
       createdAt: Date.now(),
     }
     appendMessage(message)
+    this.broadcast(roomId, 'message-appended')
+    return message
   }
 
   /**

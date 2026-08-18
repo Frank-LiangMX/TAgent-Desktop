@@ -23,6 +23,7 @@ import type {
   CollaborationMessage,
   CollaborationRoomTask,
   CollaborationRun,
+  CollaborationUserApprovalRequest,
   CreateCollaborationRoomInput,
   CreateCollaborationMemberInput,
   CreateCollaborationRoomTaskInput,
@@ -77,6 +78,10 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   LIST_BOARD_TASKS: 'collaboration-room:list-board-tasks',
   /** 获取房间挂载看板的投影统计摘要（S5 看板桥） */
   GET_BOARD_SUMMARY: 'collaboration-room:get-board-summary',
+  /** 列出房间内成员发起的用户审批请求 */
+  LIST_USER_APPROVALS: 'collaboration-room:list-user-approvals',
+  /** 解决一个用户审批请求 */
+  RESOLVE_USER_APPROVAL: 'collaboration-room:resolve-user-approval',
   /** 房间数据变更事件（main → renderer，Stage 2 起广播） */
   CHANGED: 'collaboration-room:changed',
   /** 成员 turn 流式正文增量（独立通道，避免走 CHANGED 全量刷新） */
@@ -176,6 +181,23 @@ export interface ReadCollaborationArtifactInput {
   artifactId: string
 }
 
+/** 列出某房间的用户审批请求。 */
+export interface ListCollaborationUserApprovalsInput {
+  roomId: string
+}
+
+/** 解决某房间的用户审批请求。 */
+export interface ResolveCollaborationUserApprovalInput {
+  roomId: string
+  requestId: string
+  decision: 'approved' | 'denied'
+  response?: string
+}
+
+export type ResolveCollaborationUserApprovalResult =
+  | { ok: true; request: CollaborationUserApprovalRequest; runId?: string }
+  | { ok: false; reason: string }
+
 /**
  * 预览产物文本结果（与 CollaborationRoomService.readArtifact 一致）。
  *
@@ -218,6 +240,7 @@ export interface CollaborationRoomChangedPayload {
     | 'run-finished'
     | 'run-cancelled'
     | 'run-awaiting-peer'
+    | 'run-awaiting-user'
     | 'mailbox-updated'
     | 'run-continued'
   /** 发生时间戳 */
@@ -264,6 +287,7 @@ export type {
   CollaborationRun,
   CollaborationRoomTask,
   CollaborationArtifact,
+  CollaborationUserApprovalRequest,
   BoardProjectedTask,
   BoardProjectedSummary,
 }

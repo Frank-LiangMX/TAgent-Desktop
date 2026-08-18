@@ -287,6 +287,22 @@ export interface CollaborationSerializedRunError {
   stack?: string
 }
 
+export type CollaborationUserApprovalStatus = 'pending' | 'approved' | 'denied' | 'cancelled'
+
+export interface CollaborationUserApprovalRequest {
+  id: string
+  roomId: string
+  memberId: string
+  runId: string
+  question: string
+  reason?: string
+  options?: string[]
+  status: CollaborationUserApprovalStatus
+  response?: string
+  createdAt: number
+  resolvedAt?: number
+}
+
 /**
  * 协作室成员可调用的宿主工具请求。名称和参数由宿主白名单约束；模型没有直接访问
  * 文件、终端或任意持久化层的能力。
@@ -310,6 +326,7 @@ export interface CollaborationHostToolCall {
     | 'workspace_apply_patch'
     | 'workspace_delete_file'
     | 'workspace_move_file'
+    | 'room_request_user'
   arguments: Record<string, string>
 }
 

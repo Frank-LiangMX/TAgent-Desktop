@@ -40,6 +40,7 @@ import type {
   CollaborationMailboxEnvelope,
   CollaborationRoomTask,
   CollaborationArtifact,
+  CollaborationUserApprovalRequest,
   CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
   AddCollaborationMemberInput,
@@ -51,6 +52,7 @@ import type {
   UpdateCollaborationRoomTaskInput,
   AppendCollaborationUserMessageInput,
   ReadCollaborationArtifactResult,
+  ResolveCollaborationUserApprovalResult,
   DeleteRolesResult,
   FetchModelsInput,
   FetchModelsForChannelInput,
@@ -729,6 +731,21 @@ const electronAPI = {
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.GET_BOARD_SUMMARY, {
       roomId,
     }) as Promise<BoardProjectedSummary | null>,
+  /** 列出成员请求用户决定的审批项。 */
+  listCollaborationUserApprovals: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_USER_APPROVALS, { roomId }) as Promise<
+      CollaborationUserApprovalRequest[]
+    >,
+  /** 批准或拒绝成员的用户审批请求。 */
+  resolveCollaborationUserApproval: (input: {
+    roomId: string
+    requestId: string
+    decision: 'approved' | 'denied'
+    response?: string
+  }) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.RESOLVE_USER_APPROVAL, input) as Promise<
+      ResolveCollaborationUserApprovalResult
+    >,
   /** 房间数据变更事件（main → renderer，run/member/message 变更时广播） */
   onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => {
     const handler = (_e: unknown, payload: { roomId: string; kind: string; at: number }): void => cb(payload)

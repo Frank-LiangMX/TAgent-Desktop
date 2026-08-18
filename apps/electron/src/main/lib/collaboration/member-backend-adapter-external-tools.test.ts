@@ -275,14 +275,14 @@ beforeEach(() => {
 // ===== buildRoomBridgeTools：schema 限权 =====
 
 describe('buildRoomBridgeTools — schema 限权', () => {
-  test('暴露协作室六把 room 工具 + 四把 workspace 工具，绝不混入会话工具', () => {
+  test('暴露协作室七把 room 工具 + 七把 workspace 工具，绝不混入会话工具', () => {
     const tools = buildRoomBridgeTools({
       hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
       abortAgent: vi.fn(),
       workspaceId: 'workspace-test',
       permissionProfile: 'workspace-write',
     })
-    expect(tools).toHaveLength(13)
+    expect(tools).toHaveLength(14)
     expect(tools.map((t) => t.name)).toEqual([
       'room_send',
       'room_ask',
@@ -290,6 +290,7 @@ describe('buildRoomBridgeTools — schema 限权', () => {
       'room_task_assign',
       'room_task_update',
       'room_publish_artifact',
+      'room_request_user',
       'workspace_read_file',
       'workspace_search',
       'workspace_write_file',
@@ -327,10 +328,10 @@ describe('buildRoomBridgeTools — schema 限权', () => {
     })
     expect(readOnly.map((t) => t.name)).toEqual([
       'room_send', 'room_ask', 'room_reply', 'room_task_assign', 'room_task_update',
-      'room_publish_artifact', 'workspace_read_file', 'workspace_search',
+      'room_publish_artifact', 'room_request_user', 'workspace_read_file', 'workspace_search',
     ])
     const unbound = buildRoomBridgeTools({ hostToolHandler: handler, abortAgent: vi.fn() })
-    expect(unbound).toHaveLength(6)
+    expect(unbound).toHaveLength(7)
   })
 
   test('room_send schema：toMemberId + message 必填，additionalProperties 锁死', () => {
@@ -672,6 +673,7 @@ describe('ChannelBackendAdapter.runTurn — Anthropic 外部渠道原生工具�
       'room_task_assign',
       'room_task_update',
       'room_publish_artifact',
+      'room_request_user',
       'workspace_read_file',
       'workspace_search',
       'workspace_write_file',

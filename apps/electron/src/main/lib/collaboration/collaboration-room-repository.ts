@@ -24,6 +24,7 @@ import type {
   CollaborationRoomSummary,
   CollaborationRoomTask,
   CollaborationArtifact,
+  CollaborationUserApprovalRequest,
 } from '@tagent/shared'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import {
@@ -35,6 +36,7 @@ import {
   getCollaborationSummariesPath,
   getCollaborationRoomTasksPath,
   getCollaborationArtifactsPath,
+  getCollaborationUserApprovalsPath,
 } from '../config/config-paths'
 
 /** 配置版本号 */
@@ -49,6 +51,40 @@ function normalizeRoom(room: CollaborationRoom): CollaborationRoom {
     return { ...room, a2aHandoffEnabled: true }
   }
   return room
+}
+
+// ===== user-approvals.json =====
+
+interface UserApprovalsConfig {
+  version: number
+  requests: CollaborationUserApprovalRequest[]
+}
+
+function readUserApprovalsConfig(): UserApprovalsConfig {
+  const parsed = readJsonSafe<UserApprovalsConfig | null>(getCollaborationUserApprovalsPath(), null)
+  if (!parsed || !Array.isArray(parsed.requests)) return { version: CONFIG_VERSION, requests: [] }
+  return parsed
+}
+
+function writeUserApprovalsConfig(config: UserApprovalsConfig): void {
+  writeJsonAtomic(getCollaborationUserApprovalsPath(), config)
+}
+
+export function listUserApprovalRequests(roomId?: string): CollaborationUserApprovalRequest[] {
+  const all = readUserApprovalsConfig().requests
+  return (roomId ? all.filter((r) => r.roomId === roomId) : all).sort((a, b) => a.createdAt - b.createdAt)
+}
+
+export function getUserApprovalRequest(id: string): CollaborationUserApprovalRequest | undefined {
+  return readUserApprovalsConfig().requests.find((r) => r.id === id)
+}
+
+export function upsertUserApprovalRequest(request: CollaborationUserApprovalRequest): void {
+  const config = readUserApprovalsConfig()
+  const index = config.requests.findIndex((r) => r.id === request.id)
+  if (index < 0) config.requests.push(request)
+  else config.requests[index] = request
+  writeUserApprovalsConfig(config)
 }
 
 // ===== rooms.json =====

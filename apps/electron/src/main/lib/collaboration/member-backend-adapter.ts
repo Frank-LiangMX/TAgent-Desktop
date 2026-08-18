@@ -25,6 +25,7 @@ import {
   isAgentCompatibleProvider,
   resolveChannelDefaultModelId,
   type Channel,
+  type ProviderType,
   type CollaborationHostToolCall,
   type CollaborationPermissionProfile,
   type CollaborationHostToolHandler,
@@ -94,6 +95,15 @@ const ROOM_TOOL_DESCRIPTORS = [
       content: { type: 'string', required: true },
       summary: { type: 'string' },
       taskId: { type: 'string' },
+    },
+  },
+  {
+    name: 'room_request_user',
+    description: '请求用户对当前工作进行批准或拒绝；调用后当前 run 会暂停等待用户决定。',
+    parameters: {
+      question: { type: 'string', required: true },
+      reason: { type: 'string' },
+      options: { type: 'string' },
     },
   },
   // ===== 受控工作区工具桥 =====
@@ -202,6 +212,10 @@ const roomPublishArtifactSchema = Type.Object(
   },
   { additionalProperties: false },
 )
+const roomRequestUserSchema = Type.Object(
+  { question: Type.String(), reason: Type.Optional(Type.String()), options: Type.Optional(Type.String()) },
+  { additionalProperties: false },
+)
 
 // ===== workspace 工具桥 TypeBox schema =====
 
@@ -273,7 +287,7 @@ interface ResolvedChannelBackend {
   /** 渠道记录（用于错误提示带上渠道名） */
   channelName: string
   /** 供应商类型（createPiHttpSeatRunner 需要；kscc 分支空串占位） */
-  provider: string
+  provider: ProviderType
   /** 实际使用的模型 ID（member.modelId > 渠道默认 > 首个 enabled） */
   modelId: string
   /** 外部渠道解密后的 apiKey（kind==='external' 时） */
@@ -502,7 +516,7 @@ export function channelSupportsRoomToolBridge(channelId?: string): boolean {
 }
 
 /**
- * 构造协作室工具桥的 13 把受控 AgentTool：6 把 room_* + 7 把 workspace_*。
+ * 构造协作室工具桥的 14 把受控 AgentTool：7 把 room_* + 7 把 workspace_*。
  *
  * 安全契约（02-RUNTIME-A2A-SPEC §9 / 03-IMPLEMENTATION-PHASES §12）：
  * - 工具 schema 由宿主白名单写死（TypeBox），绝不来自模型或 prompt 文本；这是模型在
@@ -563,20 +577,21 @@ export function buildRoomBridgeTools(args: {
       ROOM_TOOL_DESCRIPTORS[5].description,
       roomPublishArtifactSchema,
     ),
+    make('room_request_user', ROOM_TOOL_DESCRIPTORS[6].description, roomRequestUserSchema),
   ]
   if (!workspaceId) return roomTools
   // workspace 工具桥（按宿主绑定工作区/权限过滤）
   roomTools.push(
-    make('workspace_read_file', ROOM_TOOL_DESCRIPTORS[6].description, workspaceReadFileSchema),
-    make('workspace_search', ROOM_TOOL_DESCRIPTORS[7].description, workspaceSearchSchema),
+      make('workspace_read_file', ROOM_TOOL_DESCRIPTORS[7].description, workspaceReadFileSchema),
+      make('workspace_search', ROOM_TOOL_DESCRIPTORS[8].description, workspaceSearchSchema),
   )
   if (permissionProfile === 'workspace-write') {
     roomTools.push(
-      make('workspace_write_file', ROOM_TOOL_DESCRIPTORS[8].description, workspaceWriteFileSchema),
-      make('workspace_run_command', ROOM_TOOL_DESCRIPTORS[9].description, workspaceRunCommandSchema),
-      make('workspace_apply_patch', ROOM_TOOL_DESCRIPTORS[10].description, workspaceApplyPatchSchema),
-      make('workspace_delete_file', ROOM_TOOL_DESCRIPTORS[11].description, workspaceDeleteFileSchema),
-      make('workspace_move_file', ROOM_TOOL_DESCRIPTORS[12].description, workspaceMoveFileSchema),
+      make('workspace_write_file', ROOM_TOOL_DESCRIPTORS[9].description, workspaceWriteFileSchema),
+      make('workspace_run_command', ROOM_TOOL_DESCRIPTORS[10].description, workspaceRunCommandSchema),
+      make('workspace_apply_patch', ROOM_TOOL_DESCRIPTORS[11].description, workspaceApplyPatchSchema),
+      make('workspace_delete_file', ROOM_TOOL_DESCRIPTORS[12].description, workspaceDeleteFileSchema),
+      make('workspace_move_file', ROOM_TOOL_DESCRIPTORS[13].description, workspaceMoveFileSchema),
     )
   }
   return roomTools
@@ -593,9 +608,9 @@ function roomToolDescriptorsFor(input: MemberTurnInput) {
 }
 
 /**
- * 外部渠道原生工具桥：把协作室 13 把受控工具
+ * 外部渠道原生工具桥：把协作室 14 把受控工具
  *（room_send/room_ask/room_reply/room_task_assign/room_task_update/room_publish_artifact/
- * workspace_read_file/workspace_search/workspace_write_file/workspace_run_command/
+ * room_request_user/workspace_read_file/workspace_search/workspace_write_file/workspace_run_command/
  * workspace_apply_patch/workspace_delete_file/workspace_move_file）
  * 作为真实 AgentTool（TypeBox schema）接入 Pi Agent + createHttpDirectStreamFn。模型经供应商
  * 原生 function/tool calling 协议（Anthropic /v1/messages 的 tool_use）发起调用，Agent 调
