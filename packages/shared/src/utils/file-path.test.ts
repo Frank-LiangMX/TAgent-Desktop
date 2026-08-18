@@ -71,6 +71,16 @@ describe('isAbsoluteFilePath', () => {
     expect(isAbsoluteFilePath('\\\\server\\share\\workspace')).toBe(false)
   })
 
+  test('版本号目录不升 FileChip（UE_5.8 的 .8 不是扩展名）', () => {
+    expect(isAbsoluteFilePath('D:\\Program Files\\Epic Games\\UE_5.8')).toBe(false)
+    expect(isAbsoluteFilePath('D:/Program Files/Epic Games/UE_5.8')).toBe(false)
+    expect(isAbsoluteFilePath('C:\\Program Files\\dotnet\\sdk\\8.0.100')).toBe(false)
+    expect(isAbsoluteFilePath('/opt/unreal/UE_5.8')).toBe(false)
+    expect(isAbsoluteFilePath('D:\\Program Files\\Epic Games\\UE_5.8\\Engine\\Source\\Foo.cpp')).toBe(
+      true,
+    )
+  })
+
   test('点文件仍识别', () => {
     expect(isAbsoluteFilePath('/home/user/.env')).toBe(true)
     expect(isAbsoluteFilePath('C:\\proj\\.gitignore')).toBe(true)

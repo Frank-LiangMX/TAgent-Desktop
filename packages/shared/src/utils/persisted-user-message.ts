@@ -10,6 +10,10 @@ function isControlUserText(text: string): boolean {
   if (/^\[Request cancelled/i.test(t)) return true
   if (/^The user doesn't want to proceed with this tool use/i.test(t)) return true
   if (/^Permission for .{0,80} (was|has been) denied/i.test(t)) return true
+  // kscc 上下文续聊摘要：SDK 在压缩续接后注入的 user 控制文，与 [Request interrupted by user] 同类，
+  // 不应渲染为用户气泡、不计入用户回合边界（turn 切分 / turnCount）。见 SESSION-UX-RESIDUAL-SPEC §3。
+  if (/^This session is being continued from a previous conversation/i.test(t)) return true
+  if (/^\[会话已从上一段上下文续接\]/i.test(t)) return true
   return false
 }
 

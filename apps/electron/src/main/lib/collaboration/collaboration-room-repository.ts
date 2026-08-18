@@ -23,6 +23,7 @@ import type {
   CollaborationMailboxEnvelope,
   CollaborationRoomSummary,
   CollaborationRoomTask,
+  CollaborationArtifact,
 } from '@tagent/shared'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import {
@@ -33,6 +34,7 @@ import {
   getCollaborationMailboxPath,
   getCollaborationSummariesPath,
   getCollaborationRoomTasksPath,
+  getCollaborationArtifactsPath,
 } from '../config/config-paths'
 
 /** 配置版本号 */
@@ -611,4 +613,50 @@ export function saveRoomTaskIfCurrent(
   else config.tasks[idx] = next
   writeRoomTasksConfig(config)
   return true
+}
+
+// ===== 产物（artifacts.json，S5；append-only，无 CAS） =====
+
+interface ArtifactsConfig {
+  version: number
+  artifacts: CollaborationArtifact[]
+}
+
+function readArtifactsConfig(): ArtifactsConfig {
+  const parsed = readJsonSafe<ArtifactsConfig | null>(getCollaborationArtifactsPath(), null)
+  if (!parsed || !Array.isArray(parsed.artifacts)) {
+    return { version: CONFIG_VERSION, artifacts: [] }
+  }
+  return parsed
+}
+
+function writeArtifactsConfig(config: ArtifactsConfig): void {
+  try {
+    writeJsonAtomic(getCollaborationArtifactsPath(), config)
+  } catch (err) {
+    console.error('[协作室存储] 写入 artifacts.json 失败:', err)
+    throw new Error('写入协作室产物数据失败')
+  }
+}
+
+/** 列出某房间全部产物（按 createdAt 升序，次按 id 稳定） */
+export function listArtifactsByRoom(roomId: string): CollaborationArtifact[] {
+  return readArtifactsConfig()
+    .artifacts.filter((a) => a.roomId === roomId)
+    .sort((a, b) => {
+      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    })
+}
+
+/** 取单个产物（全局搜索） */
+export function getArtifact(artifactId: string): CollaborationArtifact | undefined {
+  return readArtifactsConfig().artifacts.find((a) => a.id === artifactId)
+}
+
+/** 追加单条产物（append-only，不做去重，由调用方保证 id 唯一） */
+export function appendArtifact(artifact: CollaborationArtifact): void {
+  const config = readArtifactsConfig()
+  config.artifacts.push(artifact)
+  writeArtifactsConfig(config)
 }

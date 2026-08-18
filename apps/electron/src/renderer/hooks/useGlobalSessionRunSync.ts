@@ -13,7 +13,8 @@
  * CL2 新增：idle / 断流看门狗
  * - 追踪每个会话最近流式事件时间（lastStreamEventAt）
  * - 定时轮询：atom 仍 running + 超过 N 秒无流式事件 + 主进程 idle → stopSessionRun 兜底
- * - 纯函数 shouldForceIdle 可单测；看门狗不替代 turn_end / result / session_error 正常路径
+ * - 纯函数 shouldForceIdle 可单测；看门狗不替代 result / session_error 正常路径
+ * - 工具循环 / 子代理等待：tool_start、task_* 也刷新 lastStreamEventAt，避免误杀
  */
 import { useEffect } from 'react'
 import { getDefaultStore, useSetAtom } from 'jotai'
@@ -82,6 +83,24 @@ const STREAM_ACTIVITY_KINDS = new Set([
   'sdk_message',
 ])
 
+/** 工具循环 / 子代理仍在干活：刷新看门狗，必要时把软停拉回 running（不重置 startedAt） */
+const KEEP_ALIVE_TAGENT_TYPES = new Set([
+  'tool_start',
+  'task_started',
+  'task_progress',
+  'task_notification',
+  'moa_roundtable',
+  'moa_discussion',
+])
+
+function isKeepAliveTagentPayload(p: NonNullable<StreamEnvelope['payload']>): boolean {
+  return (
+    p.kind === 'tagent_event' &&
+    typeof p.event?.type === 'string' &&
+    KEEP_ALIVE_TAGENT_TYPES.has(p.event.type)
+  )
+}
+
 export function useGlobalSessionRunSync(): void {
   const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
   const stopSessionRun = useSetAtom(stopSessionRunAtom)
@@ -135,13 +154,20 @@ export function useGlobalSessionRunSync(): void {
       }
 
       // 流式活动：保证 running + 保住已有 startedAt（勿用 Date.now 重置）
-      // 终态 assistant 跳过：turn_end 已 schedule 软/硬停，再 adopt 会把 UI 拉回「一直在跑」
-      if (STREAM_ACTIVITY_KINDS.has(p.kind) && !isTerminalAssistantPayload(p) && !isParentedSdkPayload(p)) {
+      // 终态 assistant 跳过：无在途工具的 turn_end 已 schedule 软停，再 adopt 会把 UI 拉回「一直在跑」
+      const isStreamActivity =
+        STREAM_ACTIVITY_KINDS.has(p.kind) &&
+        !isTerminalAssistantPayload(p) &&
+        !isParentedSdkPayload(p)
+      const isKeepAlive = isKeepAliveTagentPayload(p)
+      if (isStreamActivity || isKeepAlive) {
         // 新一轮开始后允许该会话再次发布完成通知。
         notifiedCompletionSessionIds.delete(sessionId)
         lastStreamEventAtMap.set(sessionId, Date.now())
         const entry = getDefaultStore().get(sessionRunMapAtom)[sessionId]
         if (entry?.running && entry.startedAt != null) return
+        // 子代理/工具 keep-alive：没有计时记忆就不要凭空开一轮（收口后迟到事件）
+        if (isKeepAlive && entry?.startedAt == null) return
         adoptSessionRun({
           id: sessionId,
           startedAt: entry?.startedAt ?? Date.now(),

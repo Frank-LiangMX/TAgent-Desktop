@@ -467,19 +467,21 @@ export function WorkspaceDock(): JSX.Element {
   useEffect(() => {
     const api = apiRef.current
     if (!api || !apiReady || !filePreviewReq) return
-    const { sessionId, path, title } = filePreviewReq
+    const { sessionId, path, title, review } = filePreviewReq
     const paneId = `file-preview:${sessionId}`
     const fileName = title ?? path.split(/[\\/]/).pop() ?? path
+    // 句尾 Files Changed 带 review → 审阅；正文 chip / 附件 → 预览
+    const paneTitle = review ? `审阅 · ${fileName}` : `预览 · ${fileName}`
     const existing = api.getPanel(paneId)
     if (existing) {
-      existing.setTitle?.(`预览 · ${fileName}`)
+      existing.setTitle?.(paneTitle)
       existing.api.setActive?.()
       return
     }
     const chatPanel = api.getPanel(sessionId)
     api.addPanel({
       id: paneId,
-      title: `预览 · ${fileName}`,
+      title: paneTitle,
       component: 'file-preview',
       params: { sessionId, paneType: 'file-preview' },
       ...(chatPanel ? { position: { direction: 'right', referencePanel: chatPanel } } : {}),

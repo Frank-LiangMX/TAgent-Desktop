@@ -11,6 +11,9 @@
  */
 import { ipcMain, dialog, type BrowserWindow } from 'electron'
 import { readFile, realpath, stat } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import path from 'node:path'
 import { AGENT_IPC_CHANNELS, cleanFilePathInput, msysPathToWindowsDrivePath } from '@tagent/shared'
 import type { AgentWorkspace } from '@tagent/shared'
@@ -21,6 +24,8 @@ import {
   reorderWorkspaces,
   resolveWorkspaceForSession,
 } from '../workspace/workspace-manager'
+
+const execFileAsync = promisify(execFile)
 
 export interface WorkspaceFileReadResult {
   /** 文本内容（html / markdown 等） */
@@ -85,7 +90,7 @@ const MIME_BY_EXT: Record<string, string> = {
 const TEXT_MIME_PREFIXES = ['text/', 'application/json', 'application/xml']
 
 /** 统一分隔符后 resolve；Win 上再试 MSYS `/f/...` → 盘符路径 */
-function normalizeToAbsolute(filePath: string): string {
+export function normalizeToAbsolute(filePath: string): string {
   const cleaned = cleanFilePathInput(filePath)
   if (!cleaned) return cleaned
   const msys = process.platform === 'win32' ? msysPathToWindowsDrivePath(cleaned) : null
@@ -95,7 +100,7 @@ function normalizeToAbsolute(filePath: string): string {
 }
 
 /** 尽量 realpath（处理 junction / 大小写 / 符号链接）；失败则用 resolve 结果 */
-async function resolveReal(absPath: string): Promise<string> {
+export async function resolveReal(absPath: string): Promise<string> {
   try {
     return await realpath(absPath)
   } catch {
@@ -219,6 +224,56 @@ async function readWorkspaceFile(
   return { dataUrl: `data:${mime};base64,${buf.toString('base64')}`, mime }
 }
 
+/**
+ * 从文件所在目录向上找 `.git`，返回仓库根（绝对路径）或 null。
+ * 用于 Files Changed 审阅兜底（git show HEAD:<rel>），不依赖工作区登记。
+ */
+function findGitRoot(startDir: string): string | null {
+  let dir = path.resolve(startDir)
+  for (let i = 0; i < 60; i++) {
+    try {
+      if (existsSync(path.join(dir, '.git'))) return dir
+    } catch {
+      /* 权限/不可达 → 继续 */
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return null
+}
+
+/**
+ * 读取文件在 git HEAD 的版本（Files Changed 审阅兜底：本轮补丁无法还原旧稿时，
+ * 用 `git -C <root> show HEAD:<relposix>` 取旧稿做 unified diff）。
+ *
+ * 无 git / 未跟踪 / 超时 / 文件不在 repo 内 / 二进制 → null。走现有 collectAllowedReadRoots
+ * 的诊断风格即可，不因工作区外拒读（与 readWorkspaceFile 同一产品原则：Agent 能改则应能看）。
+ */
+async function readGitHeadFile(
+  filePath: string,
+): Promise<string | null> {
+  const abs = normalizeToAbsolute(filePath)
+  if (!abs) return null
+  const root = findGitRoot(path.dirname(abs))
+  if (!root) return null
+  const rel = path.relative(root, abs).replace(/\\/g, '/')
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', root, 'show', `HEAD:${rel}`], {
+      encoding: 'utf8',
+      timeout: 5000,
+      maxBuffer: 10 * 1024 * 1024,
+      windowsHide: true,
+    })
+    return stdout
+  } catch (error) {
+    // 无 git / 未跟踪 / 超时 / 超大 / 非文本 → 兜底返回 null（上层再降级）
+    console.warn(`[工作区] git HEAD 兜底失败: ${abs}`, error instanceof Error ? error.message : error)
+    return null
+  }
+}
+
 export class WorkspaceService {
   private constructor(
     private readonly getWindow: () => BrowserWindow | null,
@@ -287,6 +342,20 @@ export class WorkspaceService {
           })
         } catch (error) {
           console.warn(`[工作区] 读取文件失败:`, input, error)
+          return null
+        }
+      },
+    )
+
+    // 读取文件在 git HEAD 的版本（Files Changed 审阅兜底；reconstructBefore 失败时用）
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.READ_GIT_HEAD_FILE,
+      async (_event, input: { path: string; sessionId?: string; bases?: string[] }): Promise<string | null> => {
+        try {
+          if (!input?.path) return null
+          return await readGitHeadFile(input.path)
+        } catch (error) {
+          console.warn(`[工作区] git HEAD 兜底 IPC 失败:`, input, error)
           return null
         }
       },

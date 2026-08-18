@@ -26,6 +26,7 @@ import type {
   TurnDuration,
   UserFacingError,
   FileAttachment,
+  type FileReviewContext,
 } from '@tagent/shared'
 import { migrateExecutionMode, DEFAULT_EXECUTION_MODE, parseMentions, classifyUserFacingError, isMoaModelId } from '@tagent/shared'
 import {
@@ -70,6 +71,12 @@ import {
 } from './session-collab-outline'
 import { cn } from '../../lib/utils'
 import {
+  applyMessageToInFlightToolIds,
+  collectPendingToolUseIds,
+  sessionHasInFlightWork,
+  shouldScheduleRunStopAfterTurnEnd,
+} from '../../lib/session-run-inflight'
+import {
   COMPACTION_IN_PROGRESS_LABEL,
   getCompactBoundaryLabel,
 } from '@tagent/shared'
@@ -81,9 +88,16 @@ import { MoaDiscussionRoom } from './MoaDiscussionRoom'
 import { SendSplitButton } from './ConsultMenu'
 import { SubagentDetailView } from './SubagentDetailView'
 import { ComposerRunTimer } from './ComposerRunTimer'
+import { ComposerActivityIsland } from './ComposerActivityIsland'
+import {
+  collectComposerActivity,
+  summarizeComposerActivity,
+} from './composer-activity-model'
+import { useSessionProcesses } from '../../atoms/session-processes'
 import {
   buildTurnPresentation,
   backfillTurnDurations,
+  classifyRunAbort,
   getLastMainAssistantCreatedAt,
   groupItemsIntoTurns,
   hasRunStartedProcessing,
@@ -131,10 +145,11 @@ import {
 } from '../../atoms/subagent-prefs'
 import { PermissionBanner } from '../permission/PermissionBanner'
 import { AskUserQuestionBanner } from './AskUserQuestionBanner'
+import { ExitPlanModeBanner } from './ExitPlanModeBanner'
 import { ExecutionModeSuggestionBanner } from './ExecutionModeSuggestionBanner'
 import { SessionErrorBanner } from './SessionErrorBanner'
 import { setSessionErrorAtom } from '../../atoms/session-error-atoms'
-import { allPendingAskUserRequestsAtom } from '../../atoms/ask-user-atoms'
+import { allPendingAskUserRequestsAtom, askUserDismissedAtAtom } from '../../atoms/ask-user-atoms'
 import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
 import { RunModeSelector } from './RunModeSelector'
 import { KanbanCrewPanel } from './KanbanCrewPanel'
@@ -248,12 +263,12 @@ const CREW_PANEL_WIDTH_MAX = 560
 const CREW_PANEL_WIDTH_DEFAULT = 380
 /**
  * turn_end 延迟停止：
- * - GRACE：宽限期内有新流式 → 取消停止（多工具循环不抖过程区）
- * - 到期先软停（running=false，短暂保留 startedAt）
- * - 再过 HARD：硬清 startedAt。否则 result 丢失时 isLiveTurn 因 startedAt 永真 →「跑完一直不停止」
+ * - 有未完成 tool_use / 子代理 / 圆桌时 **不安排停止**（工具间隙不是一轮结束）
+ * - GRACE：无在途工作且宽限期内有新流式 → 取消停止
+ * - 到期只软停（running=false，**保留 startedAt**）。硬清交给 result / 用户停 / 看门狗。
+ *   旧 HARD=2s 会在 Bash/Read 等 >5s 间隙清记忆，下一 delta 从 0 重计。
  */
 const RUN_STOP_GRACE_MS = 3000
-const RUN_STOP_HARD_AFTER_SOFT_MS = 2000
 function loadCrewPanelWidth(): number {
   try {
     const n = Number(localStorage.getItem(CREW_PANEL_WIDTH_KEY))
@@ -330,6 +345,13 @@ export function Chat({
   runningRef.current = running
   // 最后一个 assistant-turn 的 key：完成时把全程耗时记到它名下（按 turn.key 查）
   const lastAssistantTurnKeyRef = useRef<string | null>(null)
+  /**
+   * 同轮完成耗时幂等闸：completeRun / 用户停止 / session_error / 真 error 都走 recordCompletion，
+   * 任一终态先到即记一次；迟到的第二个终态 no-op（避免 turnDurations 同轮写多条碎片）。
+   * startRun 与切会话清零。配合 runStartedAtRef==null 守卫双保险。
+   * 见 SESSION-UX-RESIDUAL-SPEC §4。
+   */
+  const completionRecordedRef = useRef(false)
   /** 会话 meta 快照（加载时设置）：completeRun 持久化 turnDurations 时合并旧值 */
   const metaRef = useRef<Partial<AgentSessionMeta> | null>(null)
   /** 完成耗时表：turnKey → 耗时 + 结束方式（完成/停止/出错）。留存后供 AssistantTurnView 显示 */
@@ -361,6 +383,17 @@ export function Chat({
   } | null>(null)
   const pendingStopTimerRef = useRef<number | null>(null)
   const pendingHardStopTimerRef = useRef<number | null>(null)
+  /** 主线未完成 tool_use id：sdk_message 同步维护，避免 turn_end 读到尚未 flush 的 itemsRef */
+  const inFlightToolIdsRef = useRef<Set<string>>(new Set())
+  const sessionHasOpenWork = useCallback((): boolean => {
+    return sessionHasInFlightWork({
+      pendingToolUseIds:
+        inFlightToolIdsRef.current.size > 0
+          ? inFlightToolIdsRef.current
+          : collectPendingToolUseIds(itemsRef.current),
+      items: itemsRef.current,
+    })
+  }, [])
   const clearPendingStop = useCallback(() => {
     if (pendingStopTimerRef.current != null) {
       window.clearTimeout(pendingStopTimerRef.current)
@@ -372,28 +405,29 @@ export function Chat({
     }
   }, [])
   const scheduleRunStop = useCallback(() => {
+    if (!shouldScheduleRunStopAfterTurnEnd(sessionHasOpenWork())) return
     clearPendingStop()
     pendingStopTimerRef.current = window.setTimeout(() => {
       pendingStopTimerRef.current = null
-      // 软停：过程区可收起，短暂保留 startedAt；下一 delta adopt 续计时
+      // 宽限期内又派出工具 / 子代理：保持 running，勿软停（否则停止键/过程区闪一下）
+      if (sessionHasOpenWork()) return
+      // 只软停：保留 startedAt。硬清交给 result / 用户停 / 看门狗。
       softStopSessionRun(sessionId)
-      // 硬停兜底：无后续活动则清 startedAt，避免 UI 永远 isLiveTurn
-      pendingHardStopTimerRef.current = window.setTimeout(() => {
-        pendingHardStopTimerRef.current = null
-        stopSessionRun(sessionId)
-      }, RUN_STOP_HARD_AFTER_SOFT_MS)
     }, RUN_STOP_GRACE_MS)
-  }, [clearPendingStop, sessionId, softStopSessionRun, stopSessionRun])
+  }, [clearPendingStop, sessionHasOpenWork, sessionId, softStopSessionRun])
   /** 开始一轮运行：写 atom 置 running 并记起始时间戳 */
   const startRun = (): void => {
     clearPendingStop()
     userStoppedRef.current = false
+    completionRecordedRef.current = false
+    inFlightToolIdsRef.current = new Set()
     const now = Date.now()
     runStartedAtPersistRef.current = now
     startSessionRun({ id: sessionId, startedAt: now })
   }
   /** 硬停一轮（清 running + 起点记忆；发送失败 / result / error / 用户停止） */
   const stopRun = (): void => {
+    inFlightToolIdsRef.current = new Set()
     stopSessionRun(sessionId)
   }
   /**
@@ -417,11 +451,14 @@ export function Chat({
    * 覆盖思考期 + 所有工具轮，非 turn 内 assistant 间隔。
    */
   const recordCompletion = (endedBy: TurnDuration['endedBy']): void => {
+    // 同轮幂等：第二次终态到达 no-op（避免 turnDurations 同轮写多条碎片）
+    if (completionRecordedRef.current) return
     const startedAt = runStartedAtRef.current
     if (startedAt == null) return
     const durationMs = Math.max(0, Date.now() - startedAt)
     const turnKey = lastAssistantTurnKeyRef.current
     if (!turnKey) return
+    completionRecordedRef.current = true
     const dur: TurnDuration = { ms: durationMs, endedBy }
     setCompletedDurations((prev) => ({ ...prev, [turnKey]: dur }))
     // 持久化：最后一条主线 assistant 消息 createdAt 作稳定 key，写入 meta，重开回填
@@ -447,6 +484,7 @@ export function Chat({
    */
   const completeRun = (): void => {
     recordCompletion('complete')
+    inFlightToolIdsRef.current = new Set()
     stopSessionRun(sessionId)
   }
   /** 输入框是否有草稿（供发送/停止键同槽复用：运行中且有草稿→仍可追加发送，显示发送键；运行中无草稿→停止键） */
@@ -623,6 +661,19 @@ export function Chat({
     }
     return map
   }, [items])
+  const backgroundProcesses = useSessionProcesses(sessionId)
+  const composerActivity = useMemo(() => {
+    const cards: TaskCardState[] = []
+    for (const it of items) {
+      if (it.taskCard) cards.push(it.taskCard)
+    }
+    return summarizeComposerActivity(
+      collectComposerActivity({
+        processes: backgroundProcesses,
+        taskCards: cards,
+      }),
+    )
+  }, [backgroundProcesses, items])
 
   /** 当前打开的圆桌讨论 panel（按 discussionId 从 items 查；panel 不在 items 时回退关闭） */
   const openDiscussionPanel = useMemo(
@@ -853,6 +904,8 @@ export function Chat({
   // 钉底在 scrollReady 后立刻同步写 scrollTop；中间位等 fullyMounted 再还原。
   useEffect(() => {
     sessionIdRef.current = sessionId
+    // 切会话清同轮完成耗时幂等闸，避免上轮残留 true 屏蔽新会话首条终态记录
+    completionRecordedRef.current = false
     setItems([])
     setStreamState(clearSessionStreamState())
     // 运行态：不在此 stopRun（见下方 async reconcile 注释）。
@@ -923,6 +976,7 @@ export function Chat({
       if (cancelled) return
       // 子代理入口卡：运行时 taskCard 不落盘；从历史 tool_use(task)+tool_result 回填「派过 + 结论」
       const rehydrated = rehydrateSubagentTaskCardsFromHistory(irItems, taskCardApply)
+      inFlightToolIdsRef.current = collectPendingToolUseIds(rehydrated)
       setItems(rehydrated)
       // 从历史 assistant.usage 回填底栏（最近一条有 usage 的 assistant）
       for (let i = rehydrated.length - 1; i >= 0; i--) {
@@ -1232,7 +1286,16 @@ export function Chat({
 
   // AskUser / 权限弹窗出现或收起：强制重测（motion 高度动画时 RO 偶发滞后）
   useEffect(() => {
-    return scheduleComposerTopUpdate()
+    const cancel = scheduleComposerTopUpdate()
+    if (!hasBlockingBottomBanner) return cancel
+    const t = window.setTimeout(() => {
+      const ctx = scrollContextRef.current
+      if (ctx?.isAtBottom) void ctx.scrollToBottom('smooth')
+    }, 160)
+    return () => {
+      cancel()
+      clearTimeout(t)
+    }
   }, [hasBlockingBottomBanner, scheduleComposerTopUpdate])
 
   // 对话列宽度：右栏打开或窗口变窄 → 紧凑输入栏（图标优先，防文字叠压）
@@ -1357,6 +1420,18 @@ export function Chat({
     }
   }, [])
 
+  // 主进程发起的权限模式切换（EnterPlanMode 进入 / ExitPlanMode 审批后切目标模式）：
+  // 只更新当前会话的输入框 pill（setPermissionMode）。后台会话的 pill 在切回时从 meta 回显。
+  // 「正在规划」会话集合（planModeSessionsAtom，含后台）由 useExitPlanSync 全局维护，此处不重复。
+  // pill 手动切换由用户本地先设，主进程不回推 PLAN_MODE_CHANGED，故无回环。
+  useEffect(() => {
+    const off = window.electronAPI.onPlanModeChanged((payload) => {
+      if (!payload || payload.sessionId !== sessionIdRef.current) return
+      setPermissionMode(migratePermissionMode(payload.mode as TAgentPermissionMode))
+    })
+    return () => off?.()
+  }, [])
+
   /**
    * 任务卡片 apply：existing=undefined 新建（分配稳定 key），否则就地更新 taskCard
    * （保留 message / streamingText 等其他字段）。reduceTaskEvent 的承载项工厂。
@@ -1464,6 +1539,9 @@ export function Chat({
       const parentedMsg =
         (p.message.type === 'assistant' || p.message.type === 'user') &&
         Boolean(p.message.parentToolUseId)
+      if (!parentedMsg) {
+        applyMessageToInFlightToolIds(inFlightToolIdsRef.current, p.message)
+      }
       if (parentedMsg) {
         const msgUuid =
           p.message.type === 'assistant' || p.message.type === 'user'
@@ -1622,16 +1700,21 @@ export function Chat({
             : subtype === 'error_during_execution'
               ? '执行过程中出错'
               : subtype || '运行出错')
-        // 用户刚点停止 / abort 文案 / 上一轮被停止后迟到的 error result：
-        // 保持「已中断」，勿抬错误条、勿把 endedBy 改成 error
-        const STALE_ABORT_WINDOW_MS = 8000
-        const abortLike =
-          userStoppedRef.current ||
-          (lastUserStopAtRef.current > 0 && Date.now() - lastUserStopAtRef.current < STALE_ABORT_WINDOW_MS) ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|操作已中止|会话已结束/i.test(
-            raw,
-          )
-        if (abortLike) {
+        // 终态分类（classifyRunAbort）：区分真用户停止 / AskUser 关窗后迟到 interrupt / 真 error。
+        // 关窗后的迟到 interrupt 不当用户停止——按正常完成收口，勿抬错误条、勿把 endedBy 改 stopped。
+        const verdict = classifyRunAbort({
+          userStopped: userStoppedRef.current,
+          lastUserStopAt: lastUserStopAtRef.current,
+          lastAskUserDismissAt:
+            getDefaultStore().get(askUserDismissedAtAtom).get(sessionIdRef.current) ?? 0,
+          now: Date.now(),
+          errorText: raw,
+        })
+        if (verdict === 'complete') {
+          // AskUser 关窗后迟到的 interrupt：非用户停止，按完成收口（recordCompletion('complete')）
+          completeRun()
+        } else if (verdict === 'stopped') {
+          // 用户停止 / 迟到 abort 文案：保持「已中断」，勿抬错误条
           if (runStartedAtRef.current != null) recordCompletion('stopped')
           stopRun()
         } else {
@@ -1805,8 +1888,8 @@ export function Chat({
           return purgeStreamingItems(cleaned)
         })
         resetStreamState()
-        // 工具循环中 turn_end 只是单轮结束：延迟停止，宽限期内有下一轮 delta → 保持 running
-        // （过程区/思考链不闪断收起）；宽限期到且无后续 → 真正停止
+        // 工具循环中 turn_end 只是单轮结束。有未完成 tool_use 时不停表；
+        // 无在途工作才延迟软停（宽限期内有下一轮 delta → 保持 running）。
         scheduleRunStop()
         // 工具循环中的 turn_end：不切 resize=instant（留给真正 result 收尾的平滑折进）
         // followMode：不再清 liveMentionLabels——铭牌代表当前 activeSpeaker，续聊仍由该角色接。
@@ -1844,14 +1927,20 @@ export function Chat({
         // 独立错误条（非 assistant 气泡）：copy / dismiss / retryable→重试
         const userError = (evt as { error?: UserFacingError }).error
         const rawMessage = typeof evt.message === 'string' ? evt.message : ''
-        const STALE_ABORT_WINDOW_MS = 8000
-        const abortLike =
-          userStoppedRef.current ||
-          (lastUserStopAtRef.current > 0 && Date.now() - lastUserStopAtRef.current < STALE_ABORT_WINDOW_MS) ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|操作已中止|会话已结束/i.test(
-            `${userError?.message ?? ''} ${rawMessage}`,
-          )
-        if (abortLike) {
+        // 终态分类（同 result 分支）：AskUser 关窗后迟到的 interrupt 不当用户停止
+        const verdict = classifyRunAbort({
+          userStopped: userStoppedRef.current,
+          lastUserStopAt: lastUserStopAtRef.current,
+          lastAskUserDismissAt:
+            getDefaultStore().get(askUserDismissedAtAtom).get(sessionIdRef.current) ?? 0,
+          now: Date.now(),
+          errorText: `${userError?.message ?? ''} ${rawMessage}`,
+        })
+        if (verdict === 'complete') {
+          // AskUser 关窗后迟到的 interrupt：非用户停止，按完成收口，不抬错误条
+          clearPendingStop()
+          completeRun()
+        } else if (verdict === 'stopped') {
           // 用户打断 / 迟到的上轮错误：只收口运行态，不展示错误条、不把侧栏打成 error
           if (runStartedAtRef.current != null) recordCompletion('stopped')
           clearPendingStop()
@@ -2528,12 +2617,26 @@ export function Chat({
       basePaths: workspaceDirectory ? [workspaceDirectory] : undefined,
       // 点击文件 chip / Files Changed → 打开分屏 + 解析路径后开预览。
       // 须先 setSplitDockMode：非 dock 布局下 WorkspaceDock 不挂载，只写 atom 会像「点了没反应」。
-      onOpenFile: (path: string, options?: { basePaths?: string[] }): void => {
+      // options.review（句尾 Files Changed 卡片）→ 走「本轮 unified diff 审阅」；保留原始 path
+      // 与 review.files 对齐（FilePreviewPane 内部自行 resolve）。chip 不传 review，仍走预览。
+      onOpenFile: (
+        path: string,
+        options?: { basePaths?: string[]; review?: FileReviewContext },
+      ): void => {
         const sid = sessionIdRef.current
         const bases =
           options?.basePaths ??
           (workspaceDirectory ? [workspaceDirectory] : undefined)
         if (!splitDockMode) setSplitDockMode(true)
+        if (options?.review) {
+          setFilePreviewRequest({
+            sessionId: sid,
+            path,
+            bases,
+            review: options.review,
+          })
+          return
+        }
         void (async () => {
           const resolved = await window.electronAPI.resolveFile({
             sessionId: sid,
@@ -2748,7 +2851,7 @@ export function Chat({
               !holdInstantResize && !streamTransitioning ? 'smooth' : 'instant'
             }
           >
-            <ConversationContent className="session-conversation-pad pt-2 pb-44">
+            <ConversationContent className="session-conversation-pad pt-2 pb-[max(11rem,calc(var(--session-composer-top,11rem)+12px))]">
               <div className="tagent-thread">
               {/* 虚拟化加载提示：未全挂时常驻显示（说清楚在加载、剩多少条），不闪烁 */}
               {!fullyMounted && items.length > 0 && (
@@ -2955,11 +3058,23 @@ export function Chat({
         />
         <PermissionBanner sessionId={sessionId} />
         <AskUserQuestionBanner sessionId={sessionId} />
+        <ExitPlanModeBanner sessionId={sessionId} />
         <div
           ref={composerClusterRef}
           className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''}`}
         >
-          <ComposerRunTimer startedAt={runStartedAt} />
+          <div className="composer-float-row">
+            <ComposerRunTimer startedAt={runStartedAt} />
+            <ComposerActivityIsland
+              items={composerActivity.items}
+              pillLabel={composerActivity.pillLabel}
+              headerLabel={composerActivity.headerLabel}
+              onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+              onStopProcess={(processId) => {
+                void window.electronAPI.killSessionProcess?.(sessionId, processId)
+              }}
+            />
+          </div>
           <div
             className="session-input-dock"
             data-permission-mode={permissionMode}

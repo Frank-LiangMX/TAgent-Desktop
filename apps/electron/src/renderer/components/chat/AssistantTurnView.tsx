@@ -20,13 +20,13 @@ import { ProcessGroupView } from './ProcessGroupView'
 import { ConciseTimelineView, joinNarrativeTexts } from './ConciseTimelineView'
 import {
   buildConciseTimeline,
-  classifyToolFamily,
   collectTurnEditedFiles,
-  type ConciseSegment,
+  collectTurnFilePatches,
 } from './concise-timeline-model'
 import { SubagentEntryCard } from './SubagentEntryCard'
 import { TurnFilesChangedCard } from './TurnFilesChangedCard'
 import {
+  assignSubagentHostStageKeys,
   buildTurnPresentation,
   capThinkingDurationsToTurn,
   filterSubagentItems,
@@ -196,6 +196,15 @@ export function AssistantTurnView({
       processLive,
     ],
   )
+  const subagentHostById = useMemo(() => {
+    const stages = conciseSegments
+      .filter((s) => s.kind === 'work_stage')
+      .map((s) => ({
+        key: s.key,
+        toolIds: s.kind === 'work_stage' ? s.tools.map((t) => t.tool.id) : [],
+      }))
+    return assignSubagentHostStageKeys(turn.items, stages, subagentEntryIds)
+  }, [conciseSegments, turn.items, subagentEntryIds])
 
   // concise 标题用：live 取当前已过秒；完成后优先 completedDuration
   const thinkingDurationSec = isLiveTurn
@@ -246,8 +255,13 @@ export function AssistantTurnView({
     () => (!processLive ? collectTurnEditedFiles(presentation.process) : []),
     [processLive, presentation.process],
   )
+  // 本轮编辑补丁（与 editedFiles 同源；分屏审阅还原旧稿 / 算 unified diff 用）
+  const editedPatches = useMemo(
+    () => (!processLive ? collectTurnFilePatches(presentation.process) : []),
+    [processLive, presentation.process],
+  )
   const filesCard =
-    editedFiles.length > 0 ? <TurnFilesChangedCard files={editedFiles} /> : null
+    editedFiles.length > 0 ? <TurnFilesChangedCard files={editedFiles} patches={editedPatches} /> : null
 
   // 回退模型 id：流式中 assistant 消息尚无 modelId 时用 effectiveSelection 的当前选中模型，
   // 让 SpeakerHeader 立刻显示「谁在生成」（完成 Chat 既有 fallbackModelId 透传）。
@@ -283,10 +297,12 @@ export function AssistantTurnView({
             getStageExtras={
               subagentEntryIds.length > 0
                 ? (seg) => {
-                    const hostKey = pickSubagentHostStageKey(conciseSegments)
-                    if (hostKey !== seg.key) return null
+                    const ids = subagentEntryIds.filter(
+                      (id) => subagentHostById.get(id) === seg.key,
+                    )
+                    if (ids.length === 0) return null
                     return renderConciseSubagents(
-                      subagentEntryIds,
+                      ids,
                       turn.items,
                       subagentCards,
                       processLive,
@@ -296,7 +312,6 @@ export function AssistantTurnView({
                 : undefined
             }
             processExtras={
-              // 尚无阶段时仍展示子代理行（挂在运行队列末尾）
               subagentEntryIds.length > 0 &&
               !conciseSegments.some((s) => s.kind === 'work_stage')
                 ? renderConciseSubagents(
@@ -439,23 +454,6 @@ function resolveAnswerContent(answer: string, stream: string): string {
   }
   // 多轮工具后新开一段 stream，与旧 answer 不相交 → 用 stream（过程区另有旧文）
   return s
-}
-
-/** 子代理优先挂探索/搜索阶段（对齐 Cursor）；否则挂最后一个阶段 */
-function pickSubagentHostStageKey(segments: ConciseSegment[]): string | null {
-  const stages = segments.filter(
-    (s): s is Extract<ConciseSegment, { kind: 'work_stage' }> => s.kind === 'work_stage',
-  )
-  if (stages.length === 0) return null
-  for (let i = stages.length - 1; i >= 0; i--) {
-    const stage = stages[i]!
-    const hasExplore = stage.tools.some((t) => {
-      const f = classifyToolFamily(t.tool.name)
-      return f === 'explore' || f === 'search'
-    })
-    if (hasExplore) return stage.key
-  }
-  return stages[stages.length - 1]!.key
 }
 
 function renderConciseSubagents(

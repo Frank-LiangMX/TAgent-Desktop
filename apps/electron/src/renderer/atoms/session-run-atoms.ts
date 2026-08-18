@@ -14,12 +14,14 @@
  * - Chat remount：主进程 running → adopt 保 startedAt；idle/error 且 atom 仍 running/startedAt 残留 → hard stop
  *
  * 软停 vs 硬停：
- * - softStop（turn_end 宽限期）：running=false，**保留 startedAt 记忆**，下一轮 delta adopt 续计时
- * - hardStop（result / error / 用户停止 / 发送失败）：running=false 且清 startedAt
+ * - softStop（无在途工具的 turn_end 宽限期）：running=false，**保留 startedAt 记忆**，下一轮 delta adopt 续计时
+ * - hardStop（result / error / 用户停止 / 发送失败 / 看门狗）：running=false 且清 startedAt
+ * 工具循环间隙禁止硬停：否则 adopt 失去记忆会用 Date.now()，pill 从 0 重计。
  *
  * 模式对齐 session-status-atoms.ts（Record map + 派生工厂）。Jotai 默认 store。
  */
 import { atom } from 'jotai'
+import { resolveAdoptStartedAt } from '../lib/session-run-inflight'
 import { sessionStatusMapAtom } from './session-status-atoms'
 
 /** 单会话运行态条目 */
@@ -115,8 +117,11 @@ export const adoptSessionRunAtom = atom(
         [payload.id]: { status: 'idle', archived: st.archived },
       })
     }
-    const startedAt =
-      prev?.startedAt ?? startedAtMemory.get(payload.id) ?? payload.startedAt
+    const startedAt = resolveAdoptStartedAt(
+      prev?.startedAt,
+      startedAtMemory.get(payload.id),
+      payload.startedAt,
+    )
     startedAtMemory.set(payload.id, startedAt)
     map[payload.id] = { running: true, startedAt }
     set(sessionRunMapAtom, map)

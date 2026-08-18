@@ -23,7 +23,9 @@
  *
  * 设计参考：apps/electron/src/main/lib/ipc/channel-service.ts（class + static create）
  */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 import {
   COLLABORATION_LOGICAL_SESSION_ID_PREFIX,
   COLLABORATION_MEMBER_ID_PREFIX,
@@ -34,6 +36,7 @@ import {
   COLLABORATION_RUN_ID_PREFIX,
   COLLABORATION_ROOM_TASK_ID_PREFIX,
   COLLABORATION_ROOM_TASK_SUMMARY_MAX_LENGTH,
+  COLLABORATION_ARTIFACT_ID_PREFIX,
   collaborationRunIdempotencyKey,
   collaborationContinuationIdempotencyKey,
   collaborationEnvelopeIdempotencyKey,
@@ -61,6 +64,7 @@ import {
   type CollaborationRoomChangedPayload,
   type CollaborationRoomTask,
   type CollaborationRoomTaskStatus,
+  type CollaborationArtifact,
   type CollaborationTextDeltaPayload,
   type CollaborationRun,
   type CollaborationRunStatus,
@@ -93,6 +97,7 @@ import {
   listRunsByRoom,
   listRunsByStatus,
   listRoomTasksByRoom,
+  appendArtifact,
   loadMembers,
   loadRooms,
   upsertMailboxEnvelope,
@@ -114,6 +119,8 @@ import {
   type CollaborationSummaryModelCaller,
 } from './collaboration-room-summary'
 import { RoomScheduler, type RoomSchedulerEntry } from './collaboration-room-scheduler'
+import { getWorkspaceById } from '../workspace/workspace-manager'
+import { isPathInsideRoot, normalizeToAbsolute, resolveReal } from '../ipc/workspace-service'
 
 /** CHANGED 广播类型（主进程 → renderer） */
 export type CollaborationRoomBroadcast = (
@@ -1583,8 +1590,126 @@ export class CollaborationRoomService {
     return { ok: true, taskId: task.id, status: targetStatus, version: next.version }
   }
 
-  /** 严格状态迁移：非法则抛错，返回目标状态 */
-  private validateTaskTransition(
+  /**
+   * 发布产物：宿主代写文件到房间绑定工作区，再登记元数据 + artifact 消息。
+   *
+   * 偏离 spec 02-RUNTIME-A2A-SPEC §5「只登记」：当前 channel 后端成员无写文件工具，
+   * 故由宿主按 content 代写；CLI 后端（backend==='cli'）补齐、成员具备真实写工具后，
+   * 回归「只登记」——移除 content 参数与宿主 writeFile，仅校验路径/权限/越界并登记元数据。
+   *
+   * 守卫顺序（每步 fail-closed）：房间 active → run running/awaiting_peer → 成员归属 →
+   * permissionProfile==='workspace-write' → workspaceId 存在 → 解析 projectDirectory →
+   * relativePath 安全校验（拒绝对路径/越界/symlink）→ 写文件 → sha256 → 落 artifact + 消息 → 广播。
+   */
+  async roomPublishArtifact(input: {
+    roomId: string
+    fromRunId: string
+    relativePath: string
+    content: string
+    summary?: string
+    taskId?: string
+  }): Promise<
+    | { ok: true; artifactId: string; relativePath: string; hash: string; size: number }
+    | { ok: false; reason: string }
+  > {
+    const room = getRoom(input.roomId)
+    if (!room) return { ok: false, reason: '房间不存在' }
+    if (room.status !== 'active') return { ok: false, reason: `房间状态非 active：${room.status}` }
+
+    const run = getRun(input.fromRunId)
+    if (!run) return { ok: false, reason: 'run 不存在' }
+    if (run.status !== 'running' && run.status !== 'awaiting_peer') {
+      return { ok: false, reason: `run 非 running/awaiting_peer：${run.status}` }
+    }
+    const fromMember = getMember(run.memberId)
+    if (!fromMember || fromMember.roomId !== room.id) {
+      return { ok: false, reason: '发起成员不存在或不属于本房间' }
+    }
+    // permissionProfile 授权：仅 workspace-write 可发布产物（read-only 拒绝）
+    if (fromMember.permissionProfile !== 'workspace-write') {
+      return { ok: false, reason: '成员为 read-only 权限，禁止发布产物' }
+    }
+    // workspaceId 存在（无则 fail-closed，无法解析写入根）
+    if (!room.workspaceId) return { ok: false, reason: '房间未绑定工作区，无法发布产物' }
+    const ws = getWorkspaceById(room.workspaceId)
+    if (!ws?.projectDirectory) {
+      return { ok: false, reason: '工作区不存在或无 projectDirectory，无法发布产物' }
+    }
+
+    // relativePath 安全校验：拒空 / 绝对盘符 / POSIX 绝对 / UNC；.. 越界交 isPathInsideRoot 兜底
+    if (!isRelativePathSafe(input.relativePath)) {
+      return { ok: false, reason: 'relativePath 不能为空或绝对路径' }
+    }
+    const rootAbs = normalizeToAbsolute(ws.projectDirectory)
+    const fileAbs = normalizeToAbsolute(path.join(rootAbs, input.relativePath))
+    // 写前 realpath 根（处理 junction/symlink）；目标文件尚不存在时 resolveReal 回落为自身
+    const realRoot = await resolveReal(rootAbs)
+    const realFile = await resolveReal(fileAbs)
+    if (!isPathInsideRoot(realFile, realRoot)) {
+      return { ok: false, reason: '产物路径越出工作区根，已拒绝' }
+    }
+
+    // 写文件（mkdir -p 父目录 + 原子写 UTF-8 文本）
+    try {
+      await mkdir(path.dirname(realFile), { recursive: true })
+      await writeFile(realFile, input.content, 'utf8')
+    } catch (err) {
+      return { ok: false, reason: `写文件失败：${err instanceof Error ? err.message : String(err)}` }
+    }
+
+    // sha256（按内容字节计算；append-only，无 CAS）
+    const buf = Buffer.from(input.content, 'utf8')
+    const hash = createHash('sha256').update(buf).digest('hex')
+    const size = buf.byteLength
+    const now = Date.now()
+    const artifact: CollaborationArtifact = {
+      id: genId(COLLABORATION_ARTIFACT_ID_PREFIX),
+      roomId: room.id,
+      relativePath: input.relativePath.replace(/\\/g, '/'),
+      hash,
+      size,
+      authorMemberId: fromMember.id,
+      runId: run.id,
+      taskId: input.taskId?.trim() || undefined,
+      summary: input.summary?.trim() || undefined,
+      createdAt: now,
+    }
+    appendArtifact(artifact)
+
+    this.appendArtifactMessage(room, fromMember, artifact, run)
+    this.broadcast(room.id, 'updated')
+    return { ok: true, artifactId: artifact.id, relativePath: artifact.relativePath, hash, size }
+  }
+
+  /** relativePath 是否安全可写：拒绝空 / 绝对盘符 / POSIX 绝对 / UNC；.. 越界交 isPathInsideRoot 兜底。 */
+  private appendArtifactMessage(
+    room: CollaborationRoom,
+    member: CollaborationMember,
+    artifact: CollaborationArtifact,
+    run: CollaborationRun,
+  ): void {
+    const taskHint = artifact.taskId ? `（关联任务 ${artifact.taskId}）` : ''
+    const summaryHint = artifact.summary ? `：${artifact.summary}` : ''
+    const content = `产物已发布：${artifact.relativePath} by ${member.displayName}${taskHint}${summaryHint}`
+    const message: CollaborationMessage = {
+      id: genId(COLLABORATION_MESSAGE_ID_PREFIX),
+      roomId: room.id,
+      authorType: 'member',
+      authorId: member.id,
+      kind: 'artifact',
+      content,
+      visibility: 'room',
+      targetMemberIds: [],
+      replyToMessageId: undefined,
+      rootMessageId: run.triggerMessageId,
+      causationId: run.id,
+      runId: run.id,
+      taskId: artifact.taskId,
+      depth: 0,
+      createdAt: Date.now(),
+    }
+    appendMessage(message)
+  }
     from: CollaborationRoomTaskStatus,
     to: CollaborationRoomTaskStatus,
   ): CollaborationRoomTaskStatus {

@@ -66,6 +66,11 @@ function readMeta(sanitizedPath: string): AgentWorkspace | undefined {
   return readJsonSafe<AgentWorkspace | undefined>(metaPath, undefined)
 }
 
+/** 按 workspace id（= sanitizedPath）取工作区元数据；不存在返回 undefined。供协作室按 room.workspaceId 解析 projectDirectory。 */
+export function getWorkspaceById(id: string): AgentWorkspace | undefined {
+  return readMeta(id)
+}
+
 /** 写 workspace-meta.json（原子写） */
 function writeMeta(workspace: AgentWorkspace): void {
   const metaPath = join(getProjectDir(workspace.id), META_FILENAME)

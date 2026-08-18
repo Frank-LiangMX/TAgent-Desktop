@@ -20,7 +20,7 @@ import { tabsAtom } from '../../atoms/tabs'
 import { formatElapsedDuration, useLiveElapsedMs } from '../../lib/time-utils'
 import { cn } from '../../lib/utils'
 import { AppTooltip, Popover, PopoverAnchor, PopoverContent } from '@tagent/ui'
-import { LIVE_SESSION_STACK_MAX_VISIBLE, LiveSessionStack } from './LiveSessionStack'
+import { LiveSessionStack } from './LiveSessionStack'
 
 function formatTickerTime(at: number): string {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -202,10 +202,7 @@ export function StatusTicker({
   const visualHistoryPrimary = frozenCapsule?.historyPrimary ?? historyPrimary
   const primaryText = frozenCapsule?.text ?? livePrimaryText
   const long = primaryText.length > 42
-  const hiddenLiveCount = showLiveStack
-    ? Math.max(0, liveSessions.length - LIVE_SESSION_STACK_MAX_VISIBLE)
-    : Math.max(0, liveSessions.length - 1)
-  const extraCount = hiddenLiveCount + queue.length + history.length
+  const extraCount = queue.length + history.length
 
   const hasTickerContent =
     !!displayed || !!liveSingle || showLiveStack || historyPrimary || hostCollapsing

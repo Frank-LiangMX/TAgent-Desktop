@@ -1773,6 +1773,12 @@ export interface ExitPlanModeRequest {
   sessionId: string
   /** SDK 工具原始输入 */
   toolInput: Record<string, unknown>
+  /**
+   * 解析后的计划正文（Markdown）。
+   * 优先 toolInput.plan；空则主进程读 toolInput.planFilePath（UTF-8，限 64KB）回填。
+   * Banner 内 Markdown 渲染展示给用户审批。
+   */
+  plan?: string
   /** 解析后的 allowedPrompts 列表 */
   allowedPrompts: ExitPlanAllowedPrompt[]
 }
@@ -2151,6 +2157,12 @@ export const AGENT_IPC_CHANNELS = {
   OPEN_PATH: 'agent:open-path',
   /** 解析相对/绝对路径是否存在（文件 chip 存在性检查；相对路径按候选 base 或会话工作区解析） */
   RESOLVE_FILE: 'agent:resolve-file',
+  /**
+   * 读取文件在 git HEAD 的版本（Files Changed 审阅兜底：本轮补丁无法还原旧稿时，
+   * 用 `git -C <root> show HEAD:<relposix>` 取旧稿做 unified diff）。
+   * 无 git / 未跟踪 / 超时 → null。payload: { sessionId, path, bases? }。
+   */
+  READ_GIT_HEAD_FILE: 'agent:read-git-head-file',
 
   // 标题自动生成通知（主进程 → 渲染进程推送）
   /** 标题已更新（首次对话完成后自动生成） */
@@ -2199,8 +2211,16 @@ export const AGENT_IPC_CHANNELS = {
   ASK_USER_RESOLVED: 'agent:ask-user:resolved',
 
   // ExitPlanMode 计划审批
+  /** ExitPlanMode 请求（主进程 → 渲染进程，弹审批横幅） */
+  EXIT_PLAN_MODE_REQUEST: 'agent:exit-plan-mode:request',
   /** ExitPlanMode 响应（渲染进程 → 主进程） */
   EXIT_PLAN_MODE_RESPOND: 'agent:exit-plan-mode:respond',
+  /** ExitPlanMode 已决（主进程 → 渲染进程：用户 respond / 会话清理，渲染层按 requestId 出队） */
+  EXIT_PLAN_MODE_RESOLVED: 'agent:exit-plan-mode:resolved',
+
+  // 计划模式切换（主进程 → 渲染进程：EnterPlanMode 进入 / ExitPlanMode 审批后切换输入框 pill）
+  /** 权限模式变更通知（主进程 → 渲染进程，更新输入框权限 pill；与 pill 手动切换同路径） */
+  PLAN_MODE_CHANGED: 'agent:plan-mode-changed',
 
   // 队列消息（Agent 运行中排队发送）
   /** 排队发送消息 */

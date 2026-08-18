@@ -18,6 +18,7 @@ import {
   msysPathToWindowsDrivePath,
   fileLangBadgeForName,
   type FileLangBadgeTone,
+  type FileReviewContext,
 } from '@tagent/shared'
 import { cn } from '../../lib/utils'
 
@@ -39,8 +40,12 @@ interface FilePathChipProps {
   className?: string
   /** 解析文件是否存在（应用层注入 IPC 调用） */
   onResolveFile?: (path: string, bases?: string[]) => Promise<string | null>
-  /** 打开文件预览（应用层注入） */
-  onOpenFile?: (filePath: string, options?: { basePaths?: string[] }) => void
+  /**
+   * 打开文件预览（应用层注入）。
+   * options.review：句尾 Files Changed 卡片打开时分屏走「本轮 unified diff 审阅」；
+   * 正文文件 chip 不传 review（仍只预览当前文件）。
+   */
+  onOpenFile?: (filePath: string, options?: { basePaths?: string[]; review?: FileReviewContext }) => void
   /** 获取当前会话 ID（应用层注入） */
   getSessionId?: () => string | null
   /** 文件类型图标组件 */
@@ -57,7 +62,8 @@ export interface MessageFilePathContextValue {
   basePath?: string
   basePaths?: string[]
   onResolveFile?: (path: string, bases?: string[]) => Promise<string | null>
-  onOpenFile?: (filePath: string, options?: { basePaths?: string[] }) => void
+  /** 见 FilePathChipProps.onOpenFile：options.review 仅句尾 Files Changed 卡片打开时传 */
+  onOpenFile?: (filePath: string, options?: { basePaths?: string[]; review?: FileReviewContext }) => void
   getSessionId?: () => string | null
   FileIcon?: React.ComponentType<{ name: string; isDirectory?: boolean; size?: number }>
 }

@@ -419,4 +419,152 @@ describe('rehydrateSubagentTaskCardsFromHistory', () => {
     expect(card?.status).toBe('stopped')
     expect(card?.summary).toContain('无回传结论')
   })
+
+  it('endedAt 用末条 parented 消息 createdAt，不用 launcher 的 stub tool_result 时间', () => {
+    const create = mkFactory()
+    const dispatchAt = 1_000_000
+    const items: HistItem[] = [
+      {
+        key: 'a1',
+        message: {
+          type: 'assistant',
+          createdAt: dispatchAt,
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_1',
+              name: 'task',
+              input: { description: '探索项目', subagent_type: 'explorer' },
+            },
+          ],
+        } as TAgentMessage,
+      },
+      // stub tool_result：派发后 23ms 的占位（launcher 结论回灌）
+      {
+        key: 'u1',
+        message: {
+          type: 'user',
+          createdAt: dispatchAt + 23,
+          content: [
+            {
+              type: 'tool_result',
+              toolUseId: 'call_1',
+              content: 'stub 结论',
+            },
+          ],
+        } as TAgentMessage,
+      },
+      // 真实子代理过程：派发后 60s 的末条 parented 消息
+      {
+        key: 'p1',
+        message: {
+          type: 'assistant',
+          parentToolUseId: 'call_1',
+          createdAt: dispatchAt + 60_000,
+          content: [{ type: 'text', text: '子代理最终回答' }],
+        } as TAgentMessage,
+      },
+    ]
+    const out = rehydrateSubagentTaskCardsFromHistory(items, create)
+    const card = out.find((i) => i.taskCard?.toolUseId === 'call_1')?.taskCard
+    expect(card).toBeDefined()
+    // endedAt 取末条 parented（60s 后），不是 stub tool_result（23ms 后）
+    expect(card?.endedAt).toBe(dispatchAt + 60_000)
+    expect(card?.startedAt).toBe(dispatchAt)
+    // 耗时 ≈ 60s（而非 23ms）
+    expect(card!.endedAt! - card!.startedAt!).toBe(60_000)
+  })
+
+  it('多条 parented 消息取末条（最大 createdAt）作 endedAt', () => {
+    const create = mkFactory()
+    const dispatchAt = 2_000_000
+    const items: HistItem[] = [
+      {
+        key: 'a1',
+        message: {
+          type: 'assistant',
+          createdAt: dispatchAt,
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_2',
+              name: 'task',
+              input: { description: '探索' },
+            },
+          ],
+        } as TAgentMessage,
+      },
+      {
+        key: 'p1',
+        message: {
+          type: 'assistant',
+          parentToolUseId: 'call_2',
+          createdAt: dispatchAt + 10_000,
+          content: [{ type: 'text', text: '中间' }],
+        } as TAgentMessage,
+      },
+      {
+        key: 'p2',
+        message: {
+          type: 'user',
+          parentToolUseId: 'call_2',
+          createdAt: dispatchAt + 52_000,
+          content: [{ type: 'tool_result', toolUseId: 'inner', content: '子代理内部工具结果' }],
+        } as TAgentMessage,
+      },
+      {
+        key: 'p3',
+        message: {
+          type: 'assistant',
+          parentToolUseId: 'call_2',
+          createdAt: dispatchAt + 120_000,
+          content: [{ type: 'text', text: '最终' }],
+        } as TAgentMessage,
+      },
+    ]
+    const out = rehydrateSubagentTaskCardsFromHistory(items, create)
+    const card = out.find((i) => i.taskCard?.toolUseId === 'call_2')?.taskCard
+    // 末条 parented（120s 后）胜出，不是 10s 或 52s
+    expect(card?.endedAt).toBe(dispatchAt + 120_000)
+  })
+
+  it('无 parented 消息时 endedAt 回退 stub tool_result 时间（不回归）', () => {
+    const create = mkFactory()
+    const dispatchAt = 5_000_000
+    const items: HistItem[] = [
+      {
+        key: 'a1',
+        message: {
+          type: 'assistant',
+          createdAt: dispatchAt,
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_3',
+              name: 'task',
+              input: { description: '探索' },
+            },
+          ],
+        } as TAgentMessage,
+      },
+      {
+        key: 'u1',
+        message: {
+          type: 'user',
+          createdAt: dispatchAt + 30_000,
+          content: [
+            {
+              type: 'tool_result',
+              toolUseId: 'call_3',
+              content: '结论',
+            },
+          ],
+        } as TAgentMessage,
+      },
+    ]
+    const out = rehydrateSubagentTaskCardsFromHistory(items, create)
+    const card = out.find((i) => i.taskCard?.toolUseId === 'call_3')?.taskCard
+    // 无 parented → 回退 tool_result 时间（旧行为，避免未落盘子代理过程时 endedAt 丢失）
+    expect(card?.endedAt).toBe(dispatchAt + 30_000)
+  })
 })

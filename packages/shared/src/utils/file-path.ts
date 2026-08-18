@@ -188,12 +188,17 @@ function isEllipsisPlaceholderPath(clean: string): boolean {
   return /(?:^|[\\/])\.\.\.(?:[\\/]|$)/.test(clean) || clean.includes('…')
 }
 
-/** 路径末段是否像文件名（含扩展名或点文件）；纯目录名 / 工作区名返回 false */
+/** 路径末段是否像可打开的文件；纯目录 / 版本号文件夹返回 false */
 function basenameLooksLikeFile(filePath: string): boolean {
   const name = getFileName(stripLineCol(filePath).path)
   if (!name || name === '.' || name === '..') return false
-  if (name.startsWith('.')) return name.length > 1
-  return name.includes('.') && !name.endsWith('.')
+  // .env / .gitignore：点文件当文件
+  if (name.startsWith('.') && name.length > 1 && !name.endsWith('.')) return true
+  const ext = getExtension(name)
+  if (!ext) return false
+  // UE_5.8 / v1.2.3：末段纯数字是版本目录，不是扩展名
+  if (/^\d+$/.test(ext)) return false
+  return ALL_PREVIEWABLE_EXTS.has(ext)
 }
 
 /**
@@ -203,7 +208,7 @@ function basenameLooksLikeFile(filePath: string): boolean {
  * - 分隔符：`\` / `/`（如 `F:/proj/a.ts`）
  * - UNC：`\\server\share\...`
  *
- * 末段无扩展名（目录 / 工作区名如 `TAgent-Desktop`）→ false，勿升 FileChip。
+ * 末段不是可预览文件（目录 / 工作区 / 版本号如 `UE_5.8`）→ false，勿升 FileChip。
  * POSIX：拒绝 API/URL 风格路径（如 `/v1/messages`、`/api/foo`）。
  */
 export function isAbsoluteFilePath(text: string): boolean {

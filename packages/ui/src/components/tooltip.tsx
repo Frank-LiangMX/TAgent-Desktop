@@ -79,7 +79,11 @@ export function AppTooltip({
   className,
   contentClassName,
 }: AppTooltipProps): React.ReactElement {
-  if (disabled || label == null || label === false || label === '') {
+  const [open, setOpen] = React.useState(false)
+
+  // 无文案才不包 Tooltip。disabled 不能拆包装——顶栏通知开弹窗时
+  // disabled 会来回切，拆掉会重挂 children，胶囊文字闪进场动画。
+  if (label == null || label === false || label === '') {
     return children
   }
 
@@ -94,7 +98,13 @@ export function AppTooltip({
       : children
 
   return (
-    <Tooltip delayDuration={delayDuration}>
+    <Tooltip
+      delayDuration={delayDuration}
+      open={disabled ? false : open}
+      onOpenChange={(next) => {
+        if (!disabled) setOpen(next)
+      }}
+    >
       <TooltipTrigger asChild>{trigger}</TooltipTrigger>
       <TooltipContent
         side={side}

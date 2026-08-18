@@ -25,6 +25,7 @@ import type {
   Channel,
   AgentSessionMeta,
   AskUserResponse,
+  ExitPlanModeResponse,
 } from '@tagent/shared'
 import { AGENT_IPC_CHANNELS, MEMORY_IPC_CHANNELS, msysPathToWindowsDrivePath } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
@@ -33,6 +34,7 @@ import {
   attachImageBlocksToText,
 } from '../agent/build-user-content-with-attachments'
 import { askUserService } from '../agent/agent-ask-user-service'
+import { exitPlanService } from '../agent/agent-exit-plan-service'
 import { getAdapter, PiAgentAdapter, type ChannelKind } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
 import {
@@ -99,6 +101,7 @@ import {
   dismissModeSuggestion,
   clearModeSuggestionDismissal,
   setOnChatModeBlock,
+  setPermissionModeSwitcher,
 } from '../permission/permission-service'
 import { buildBuiltinSubagentDefinitions, buildSubagentDelegationPrompt } from '../agent/subagent-definitions'
 import { buildExecutionModePrompt } from '../agent/execution-mode-prompt'
@@ -421,6 +424,9 @@ export class SessionService {
     const svc = new SessionService(getWindow, permissionService)
     if (permissionService) {
       setOnChatModeBlock((sessionId, toolName) => svc.handleChatModeBlock(sessionId, toolName))
+      // EnterPlanMode / ExitPlanMode 审批后由 permission-service 回调切模式：
+      // persist meta + 通知 runtime + 推 PLAN_MODE_CHANGED 更新输入框 pill（与 pill 手动切换同路径）
+      setPermissionModeSwitcher((sessionId, mode) => svc.applyPermissionModeChange(sessionId, mode))
     }
     // Phase 4：软重置钩子
     ksccSoftReset.setHooks({
@@ -477,6 +483,12 @@ export class SessionService {
       this.clearPendingSteer(sessionId)
       // 清待处理 AskUser 请求（resolve deny「会话已结束」；abort signal 兜底已 deny，此处幂等）
       askUserService.clearSessionPending(sessionId)
+      // 清待处理 ExitPlanMode 审批请求（resolve deny「会话已结束」+ 推 RESOLVED 让渲染层出队，避免停后残留横幅）
+      for (const rid of exitPlanService.clearSessionPending(sessionId)) {
+        this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, {
+          requestId: rid,
+        })
+      }
       // MoA 会诊在途：abort 杀未完成 bare 进程（runMoaTurn 检测 signal 后推 cancelled 卡）。
       // MoA 不经 SessionRuntime，下方 rt 为 null，靠此 controller 中止。
       const moaCtrl = this.moaAbortBySession.get(sessionId)
@@ -611,6 +623,22 @@ export class SessionService {
         const sessionId = askUserService.dismissToAskUser(requestId)
         if (sessionId) {
           this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.ASK_USER_RESOLVED, { requestId })
+        }
+      }
+    )
+
+    // 响应 ExitPlanMode：渲染层回用户选择 → exitPlanService resolve allow/deny + targetMode。
+    // 权限模式切换由 permission-service 在 canUseTool 返回前经 permissionModeSwitcher 完成
+    // （在 resolve 后的微task 里 await switcher，避免下一工具跑在旧模式）；此处只 resolve
+    // + 推 EXIT_PLAN_MODE_RESOLVED 让渲染层按 requestId 出队（Banner 乐观出队的兜底）。
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESPOND,
+      async (_e, response: ExitPlanModeResponse): Promise<void> => {
+        const requestId = response?.requestId
+        if (!requestId) return
+        const sessionId = exitPlanService.respondToExitPlanMode(response)
+        if (sessionId) {
+          this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, { requestId })
         }
       }
     )
@@ -1094,6 +1122,12 @@ export class SessionService {
       PermissionService.clearWhitelist(sessionId)
       // 清待处理 AskUser 请求（resolve deny「会话已结束」）
       askUserService.clearSessionPending(sessionId)
+      // 清待处理 ExitPlanMode 审批请求（resolve deny「会话已结束」+ 推 RESOLVED 让渲染层出队）
+      for (const rid of exitPlanService.clearSessionPending(sessionId)) {
+        this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, {
+          requestId: rid,
+        })
+      }
       // E/落盘闸口：清会话级 delta 追踪器 + 落盘闸口，防 Map 无界增长
       this.deltaTrackerBySession.delete(sessionId)
       this.streamPersistGateBySession.delete(sessionId)
@@ -2095,6 +2129,40 @@ export class SessionService {
     return meta?.permissionMode
       ? migratePermissionMode(meta.permissionMode)
       : TAGENT_DEFAULT_PERMISSION_MODE
+  }
+
+  /**
+   * 主进程侧切换会话权限模式（EnterPlanMode 进入 / ExitPlanMode 审批后由 permission-service
+   * 经 permissionModeSwitcher 回调）。与 pill 手动切换（UPDATE_SESSION_PERMISSION_MODE）同路径：
+   * persist meta + 通知 runtime setPermissionMode；额外推 PLAN_MODE_CHANGED 让渲染层更新输入框 pill
+   * （主进程发起的切换，渲染层 pill 不会自更；pill 手动切换不推，避免回环）。
+   */
+  private async applyPermissionModeChange(
+    sessionId: string,
+    mode: TAgentPermissionMode,
+  ): Promise<void> {
+    const normalized = migratePermissionMode(mode)
+    try {
+      updateSessionMeta(sessionId, { permissionMode: normalized })
+    } catch (err) {
+      console.warn(`[session-service] applyPermissionModeChange persist 失败:`, err)
+    }
+    const rt = this.runtimes.get(sessionId)
+    if (rt) {
+      try {
+        await rt.setPermissionMode(normalized)
+      } catch (err) {
+        console.error(
+          `[会话 ${sessionId}] applyPermissionModeChange setPermissionMode 失败:`,
+          err instanceof Error ? err.message : err,
+        )
+      }
+    }
+    this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.PLAN_MODE_CHANGED, {
+      sessionId,
+      mode: normalized,
+      source: 'tool',
+    })
   }
 
   /** 读会话 executionMode（Chat|Work）；缺省按新会话默认 work（与 DEFAULT_EXECUTION_MODE 一致） */

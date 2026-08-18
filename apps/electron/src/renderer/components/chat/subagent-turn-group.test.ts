@@ -16,6 +16,7 @@ import {
   isRealUserInput,
   isSubagentLauncherTool,
   listSubagentEntryIds,
+  assignSubagentHostStageKeys,
   type TurnSourceItem,
 } from './session-turn-model'
 
@@ -393,5 +394,73 @@ describe('buildTurnPresentation excludes Agent launcher from process', () => {
     expect(toolNames).toEqual(['Read'])
     expect(toolNames).not.toContain('Agent')
     expect(pres.modelId).toBe('glm-5.2')
+  })
+})
+
+describe('assignSubagentHostStageKeys', () => {
+  function assistantTools(
+    key: string,
+    tools: Array<{ id: string; name: string }>,
+  ): TurnSourceItem {
+    return {
+      key,
+      message: {
+        type: 'assistant',
+        content: tools.map((t) => ({
+          type: 'tool_use',
+          id: t.id,
+          name: t.name,
+          input: {},
+        })),
+      } as TAgentMessage,
+    }
+  }
+
+  it('pins earlier launchers to the stage that existed at creation, not the latest explore stage', () => {
+    const items: TurnSourceItem[] = [
+      assistantTools('m1', [
+        { id: 'read_1', name: 'Read' },
+        { id: 'call_a', name: 'Agent' },
+        { id: 'call_b', name: 'Agent' },
+      ]),
+      assistantTools('m2', [
+        { id: 'read_2', name: 'Read' },
+        { id: 'call_c', name: 'Agent' },
+        { id: 'call_d', name: 'Agent' },
+      ]),
+    ]
+    const host = assignSubagentHostStageKeys(
+      items,
+      [
+        { key: 'stage-1', toolIds: ['read_1'] },
+        { key: 'stage-2', toolIds: ['read_2'] },
+      ],
+      ['call_a', 'call_b', 'call_c', 'call_d'],
+    )
+    expect(host.get('call_a')).toBe('stage-1')
+    expect(host.get('call_b')).toBe('stage-1')
+    expect(host.get('call_c')).toBe('stage-2')
+    expect(host.get('call_d')).toBe('stage-2')
+  })
+
+  it('pins launchers before any process tool to the first stage once it exists', () => {
+    const items: TurnSourceItem[] = [
+      assistantTools('m1', [{ id: 'call_a', name: 'Agent' }]),
+      assistantTools('m2', [{ id: 'read_1', name: 'Read' }]),
+    ]
+    const host = assignSubagentHostStageKeys(
+      items,
+      [{ key: 'stage-1', toolIds: ['read_1'] }],
+      ['call_a'],
+    )
+    expect(host.get('call_a')).toBe('stage-1')
+  })
+
+  it('returns null host when there is no stage yet', () => {
+    const items: TurnSourceItem[] = [
+      assistantTools('m1', [{ id: 'call_a', name: 'Agent' }]),
+    ]
+    const host = assignSubagentHostStageKeys(items, [], ['call_a'])
+    expect(host.get('call_a')).toBeNull()
   })
 })

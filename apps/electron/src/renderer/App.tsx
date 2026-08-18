@@ -12,6 +12,8 @@ import type {
   AgentWorkspace,
   AskUserRequest,
   AskUserResponse,
+  ExitPlanModeRequest,
+  ExitPlanModeResponse,
   Channel,
   ChannelBalanceResult,
   ChannelCreateInput,
@@ -118,6 +120,7 @@ import {
 import { useGlobalSessionRunSync } from './hooks/useGlobalSessionRunSync'
 import { useGlobalPermissionSync } from './hooks/useGlobalPermissionSync'
 import { useAskUserSync } from './hooks/useAskUserSync'
+import { useExitPlanSync } from './hooks/useExitPlanSync'
 import { useInitUpdaterListener } from './atoms/updater'
 import { acknowledgeSessionStatusAtom } from './atoms/session-status-atoms'
 import { sessionRunMapAtom } from './atoms/session-run-atoms'
@@ -223,6 +226,11 @@ declare global {
         path: string
         bases?: string[]
       }) => Promise<string | null>
+      /**
+       * 读取文件在 git HEAD 的版本（Files Changed 审阅兜底：本轮补丁无法还原旧稿时取旧稿做 diff）。
+       * 无 git / 未跟踪 / 超时 → null。
+       */
+      readGitHeadFile: (input: { sessionId: string; path: string; bases?: string[] }) => Promise<string | null>
       /** 读取会话附件为 base64（localPath 相对 ~/.tagent/attachments/） */
       readAttachment: (localPath: string) => Promise<string>
       /** 解析会话附件相对路径为绝对路径 */
@@ -302,6 +310,14 @@ declare global {
       askUserRespond: (response: AskUserResponse) => Promise<void>
       /** 关闭 AskUser 选项卡（软 deny「用户未选择」，不停止当前轮） */
       askUserDismiss: (requestId: string) => Promise<void>
+      // ExitPlanMode 计划审批（主进程推请求 / 已决回听 / renderer 回用户选择）
+      onExitPlanModeRequest: (cb: (request: ExitPlanModeRequest) => void) => () => void
+      onExitPlanModeResolved: (cb: (e: { requestId: string }) => void) => () => void
+      respondExitPlanMode: (response: ExitPlanModeResponse) => Promise<void>
+      // 计划模式切换（主进程 → 渲染进程：EnterPlanMode / ExitPlanMode 审批后更新输入框 pill）
+      onPlanModeChanged: (
+        cb: (payload: { sessionId: string; mode: string; source: string }) => void,
+      ) => () => void
       // 热切换会话权限模式
       setSessionPermissionMode: (sessionId: string, mode: string) => Promise<{ ok: boolean; error?: string }>
       /** 热切换 Chat|Work（仅用户源） */
@@ -554,6 +570,8 @@ export function App(): JSX.Element {
   useGlobalPermissionSync()
   // 全局 AskUserQuestion 队列同步（REQUEST 入队 / RESOLVED 出队，切会话不丢选项卡）
   useAskUserSync()
+  // 全局 ExitPlanMode 审批队列同步（REQUEST 入队 / RESOLVED 出队，切会话不丢审批横幅）
+  useExitPlanSync()
   // 自动更新状态监听（主进程推送 → atom → 顶栏 UpdateBanner）
   useInitUpdaterListener()
 

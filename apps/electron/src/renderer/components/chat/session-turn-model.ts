@@ -135,6 +135,55 @@ export function groupSubagentItems(items: TurnSourceItem[]): TurnSourceItem[][] 
 }
 
 /**
+ * 把每个子代理入口钉到「创建当时」的 work_stage。
+ *
+ * 主线 Agent/task tool_use 不进过程区，旧逻辑会把全部入口挂到最新探索阶段，
+ * 后一轮子代理会把已完成入口拽到新入口。按 launcher 之前最近的过程工具所属阶段锚定。
+ * 发起时尚无过程工具时：有阶段则钉在第一段，否则仍为 null（时间线尚无 stage）。
+ */
+export function assignSubagentHostStageKeys(
+  items: TurnSourceItem[],
+  stages: ReadonlyArray<{ key: string; toolIds: readonly string[] }>,
+  subagentIds: readonly string[],
+): Map<string, string | null> {
+  const toolIdToStage = new Map<string, string>()
+  for (const stage of stages) {
+    for (const id of stage.toolIds) {
+      toolIdToStage.set(id, stage.key)
+    }
+  }
+
+  const wanted = new Set(subagentIds)
+  const result = new Map<string, string | null>()
+  let currentStage: string | null = null
+
+  for (const it of items) {
+    const m = it.message
+    if (m?.type !== 'assistant' || m.parentToolUseId) continue
+    for (const b of m.content) {
+      if (b.type !== 'tool_use') continue
+      const tu = b as TAgentToolUseBlock
+      if (isSubagentLauncherTool(tu.name)) {
+        if (wanted.has(tu.id)) result.set(tu.id, currentStage)
+        continue
+      }
+      const mapped = toolIdToStage.get(tu.id)
+      if (mapped) currentStage = mapped
+    }
+  }
+
+  const firstStage = stages[0]?.key ?? null
+  for (const id of subagentIds) {
+    if (!result.has(id)) {
+      result.set(id, currentStage ?? firstStage)
+      continue
+    }
+    if (result.get(id) == null) result.set(id, firstStage)
+  }
+  return result
+}
+
+/**
  * 主会话应展示的子代理入口 id 列表（保序、去重）。
  *
  * 来源（白名单，禁止「凡 taskCard 即入口」）：
@@ -236,6 +285,46 @@ export function backfillTurnDurations(
 /** 用户已发、尚无 assistant 落盘时的合成 live turn key（与 Chat 渲染一致） */
 export function syntheticLiveTurnKeyForUser(userTurnKey: string): string {
   return `turn-${userTurnKey}-live`
+}
+
+/**
+ * 终态 error 文案分类：决定一轮结束时 recordCompletion 的 endedBy 与是否抬 SessionErrorBanner。
+ *
+ * Chat 的 result 分支（isErrorResult / errorTexts）与 session_error 分支共用此纯函数收口，
+ * 避免 abortLike 误判把 AskUser 关窗后的迟到 interrupt 当成用户停止（SESSION-UX-RESIDUAL-SPEC §1/§4）：
+ * - 'stopped'：真用户停止 / 上一轮停止窗口内迟到的 abort 文案 → recordCompletion('stopped')，不抬错误条
+ * - 'complete'：AskUser 关窗后短窗口内的迟到 interrupt → 视为正常完成（**非**用户停止），
+ *   走 completeRun，不抬错误条、不把整轮标 stopped
+ * - 'error'：真错误文案 → 抬 SessionErrorBanner + recordCompletion('error')
+ */
+export const RUN_ABORT_STALE_WINDOW_MS = 8000
+export const RUN_ASK_DISMISS_WINDOW_MS = 3000
+const RUN_ABORT_LIKE_RE =
+  /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|操作已中止|会话已结束/i
+
+export type RunCompletionVerdict = 'stopped' | 'complete' | 'error'
+
+export function classifyRunAbort(input: {
+  userStopped: boolean
+  lastUserStopAt: number
+  lastAskUserDismissAt: number
+  now: number
+  errorText: string
+}): RunCompletionVerdict {
+  const { userStopped, lastUserStopAt, lastAskUserDismissAt, now, errorText } = input
+  const abortLike =
+    userStopped ||
+    (lastUserStopAt > 0 && now - lastUserStopAt < RUN_ABORT_STALE_WINDOW_MS) ||
+    RUN_ABORT_LIKE_RE.test(errorText)
+  if (!abortLike) return 'error'
+  // 真用户停止优先（用户显式点 STOP）：仍标 stopped
+  if (userStopped) return 'stopped'
+  // AskUser 关窗后短窗口内的迟到 interrupt：非用户停止，按正常完成收口
+  if (lastAskUserDismissAt > 0 && now - lastAskUserDismissAt < RUN_ASK_DISMISS_WINDOW_MS) {
+    return 'complete'
+  }
+  // 其余 abort（迟到 interrupt 文案 / 上一轮停止窗口内的 error）→ 已中断
+  return 'stopped'
 }
 
 export function isSyntheticRunTurnKey(turnKey: string): boolean {

@@ -24,6 +24,8 @@ import type {
   AgentWorkspace,
   AskUserRequest,
   AskUserResponse,
+  ExitPlanModeRequest,
+  ExitPlanModeResponse,
   Channel,
   ChannelBalanceResult,
   ChannelCreateInput,
@@ -155,6 +157,12 @@ const electronAPI = {
   /** 解析路径是否存在（文件 chip 存在性检查），返回存在的绝对路径或 null */
   resolveFile: (input: { sessionId: string; path: string; bases?: string[] }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.RESOLVE_FILE, input),
+  /**
+   * 读取文件在 git HEAD 的版本（Files Changed 审阅兜底：本轮补丁无法还原旧稿时取旧稿做 diff）。
+   * 无 git / 未跟踪 / 超时 → null。payload: { sessionId, path, bases? }。
+   */
+  readGitHeadFile: (input: { sessionId: string; path: string; bases?: string[] }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.READ_GIT_HEAD_FILE, input) as Promise<string | null>,
   /** 销毁会话（杀进程 + 删元数据/JSONL） */
   deleteSession: (sessionId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_SESSION, sessionId),
@@ -376,6 +384,31 @@ const electronAPI = {
   /** 用户关闭选项卡：软 deny「用户未选择」，当前轮继续 */
   askUserDismiss: (requestId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.ASK_USER_DISMISS, requestId),
+  // ExitPlanMode 计划审批（主进程推请求 / 已决回听 / renderer 回用户选择）
+  onExitPlanModeRequest: (cb: (request: ExitPlanModeRequest) => void) => {
+    const handler = (_e: unknown, request: ExitPlanModeRequest): void => cb(request)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_REQUEST, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_REQUEST, handler)
+  },
+  /** 用户 respond / 会话清理后推送，渲染层按 requestId 出队 */
+  onExitPlanModeResolved: (cb: (e: { requestId: string }) => void) => {
+    const handler = (_e: unknown, payload: { requestId: string }): void => cb(payload)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, handler)
+  },
+  respondExitPlanMode: (response: ExitPlanModeResponse) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESPOND, response),
+  // 计划模式切换（主进程 → 渲染进程：EnterPlanMode / ExitPlanMode 审批后更新输入框 pill）
+  onPlanModeChanged: (
+    cb: (payload: { sessionId: string; mode: string; source: string }) => void,
+  ) => {
+    const handler = (
+      _e: unknown,
+      payload: { sessionId: string; mode: string; source: string },
+    ): void => cb(payload)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.PLAN_MODE_CHANGED, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.PLAN_MODE_CHANGED, handler)
+  },
   // 热切换指定会话的权限模式（持久化 meta + 通知运行时）
   setSessionPermissionMode: (sessionId: string, mode: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_PERMISSION_MODE, { sessionId, mode }) as Promise<{ ok: boolean; error?: string }>,

@@ -275,7 +275,12 @@ export interface CollaborationSerializedRunError {
  * 文件、终端或房间内部持久化层的能力。
  */
 export interface CollaborationHostToolCall {
-  name: 'room_send' | 'room_ask' | 'room_reply' | 'room_task_update'
+  name:
+    | 'room_send'
+    | 'room_ask'
+    | 'room_reply'
+    | 'room_task_update'
+    | 'room_publish_artifact'
   arguments: Record<string, string>
 }
 
@@ -605,6 +610,38 @@ export interface CollaborationRoomTask {
   updatedAt: number
 }
 
+/**
+ * 协作室产物（collaboration_artifacts 的一行，S5）。
+ *
+ * 02-RUNTIME-A2A-SPEC §2.6：`collaboration_artifacts` 保存工作区相对路径、作者 member/run/task、
+ * hash；绝不信任模型提供的任意绝对路径。产物是 append-only（无 CAS，无并发改写）。
+ *
+ * 当前实现（偏离 spec §5「只登记」）：由宿主代写文件到工作区再登记元数据，
+ * 因 channel 后端成员无写文件工具；CLI 后端补齐后回归「只登记」——见 service.roomPublishArtifact。
+ */
+export interface CollaborationArtifact {
+  /** 产物 ID，格式 art_xxxx */
+  id: string
+  /** 所属房间 ID */
+  roomId: string
+  /** 工作区内相对路径（已归一化、已通过越界校验，正斜杠分隔） */
+  relativePath: string
+  /** 文件内容 sha256（宿主代写后按内容字节计算） */
+  hash: string
+  /** 文件字节数 */
+  size: number
+  /** 发布该产物的成员 ID */
+  authorMemberId: string
+  /** 关联 run ID（因果追溯） */
+  runId?: string
+  /** 关联 room task ID（可选） */
+  taskId?: string
+  /** 成员提供的摘要（可选，仅展示/审计，非指令） */
+  summary?: string
+  /** 创建时间戳 */
+  createdAt: number
+}
+
 // ===== 默认值与上限（02-RUNTIME-A2A-SPEC §9） =====
 
 /** 房间默认最大并发 run 数 */
@@ -631,6 +668,8 @@ export const COLLABORATION_LOGICAL_SESSION_ID_PREFIX = 'ls_'
 export const COLLABORATION_RUN_ID_PREFIX = 'run_'
 /** room task ID 前缀 */
 export const COLLABORATION_ROOM_TASK_ID_PREFIX = 'crt_'
+/** artifact ID 前缀 */
+export const COLLABORATION_ARTIFACT_ID_PREFIX = 'art_'
 
 /**
  * room_task_update 工具 summary 的最大长度（字符）。

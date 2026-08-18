@@ -2,10 +2,9 @@
  * AskUserQuestionBanner — Agent AskUserQuestion 交互式问答
  *
  * 机制：多题 Tab、草稿 atom 持久化、↑↓ / Enter 键盘流（与 General 移植一致）。
- * 视觉：对齐 Desktop 底栏玻璃栈（PermissionBanner / MessageQueue）——
- * 软表面、细边框、Phosphor 图标；选项用描边+淡底选中，不用整行实心 primary 填色。
+ * 视觉：与输入框 / MessageQueue 同宽、同玻璃填色；不叠第二层 backdrop-filter，避免字糊。
  */
-import { useAtom } from 'jotai'
+import { useAtom, useSetAtom } from 'jotai'
 import { ArrowUp, ChatCircleDots, Check, X } from '@phosphor-icons/react'
 import { motion, AnimatePresence } from 'motion/react'
 import * as React from 'react'
@@ -17,6 +16,7 @@ import { cn } from '../../lib/utils'
 import {
   allPendingAskUserRequestsAtom,
   askUserDraftsAtom,
+  askUserDismissedAtAtom,
   type AskUserQuestionDraft,
   type AskUserRequestDraft,
 } from '../../atoms/ask-user-atoms'
@@ -32,6 +32,7 @@ export function AskUserQuestionBanner({
 }: AskUserQuestionBannerProps): React.ReactElement | null {
   const [allRequests, setAllRequests] = useAtom(allPendingAskUserRequestsAtom)
   const [drafts, setDrafts] = useAtom(askUserDraftsAtom)
+  const setAskUserDismissedAt = useSetAtom(askUserDismissedAtAtom)
   const requests = allRequests.get(sessionId) ?? []
   const [submitting, setSubmitting] = React.useState(false)
 
@@ -134,6 +135,13 @@ export function AskUserQuestionBanner({
     })
     clearDrafts(ids)
     // 关闭只表示「未选择」：软 deny 回灌给 Agent，保持当前轮运行，由 Agent 决定后续。
+    // 记 dismiss 时间戳：Chat 据此在短窗口内把随后迟到的 abort（[Request interrupted by user]）
+    // 视作关窗副作用而非用户停止，不 recordCompletion('stopped') / 不硬停。
+    setAskUserDismissedAt((prev) => {
+      const map = new Map(prev)
+      map.set(sessionId, Date.now())
+      return map
+    })
     void (async () => {
       try {
         for (const requestId of ids) {
@@ -282,9 +290,9 @@ export function AskUserQuestionBanner({
       {request && (
         <motion.div
           key={request.requestId}
-          initial={{ opacity: 0, y: 12, height: 0 }}
-          animate={{ opacity: 1, y: 0, height: 'auto' }}
-          exit={{ opacity: 0, y: 12, height: 0 }}
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          exit={{ opacity: 0, height: 0 }}
           transition={{ type: 'spring', stiffness: 380, damping: 32 }}
           onAnimationComplete={remeasureComposerTop}
           className="session-permission-banner pointer-events-auto overflow-hidden"
@@ -318,12 +326,12 @@ export function AskUserQuestionBanner({
                     </span>
                   </AppTooltip>
                 ) : null}
-                <AppTooltip label="关闭并终止 Agent" side="top">
+                <AppTooltip label="关闭，未选择（Agent 自行默认继续）" side="top">
                   <button
                     type="button"
                     className="ask-user-card__icon-btn"
                     onClick={handleDismiss}
-                    aria-label="关闭并终止 Agent"
+                    aria-label="关闭，未选择（Agent 自行默认继续）"
                   >
                     <X size={14} weight="bold" />
                   </button>

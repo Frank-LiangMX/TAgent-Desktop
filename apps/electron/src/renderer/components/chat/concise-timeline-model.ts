@@ -14,6 +14,7 @@ import {
   isToolCallArtifactText,
   sanitizeAssistantTextForDisplay,
 } from '@tagent/shared'
+import type { FileEditPatch } from '@tagent/shared'
 import type { ProcessEntry } from './session-turn-model'
 import { formatThinkingSummary, resolveThinkingDurationSec } from './session-turn-model'
 import { getToolPhrase } from './tool-phrase'
@@ -314,6 +315,65 @@ export function collectTurnEditedFiles(process: ProcessEntry[]): TurnEditedFile[
     }
   }
   return [...map.values()]
+}
+
+/**
+ * 本轮编辑工具的行级补丁（供 Files Changed 审阅还原旧稿 / 算 unified diff）。
+ *
+ * 与 {@link collectTurnEditedFiles} 同源：只收 `family===edit` 且**已有 result** 的工具，
+ * 路径用 {@link toolFilePath}；pending / Read 不收。MultiEdit 拆成多条 replace（按 edits[] 顺序）。
+ *
+ * 字段别名兼容 pi（oldText/newText/old_str/new_str）与 kscc（old_string/new_string）两套；
+ * Write 的 content（或 new_*）视为整文件新内容 → kind:'write'（无 oldText，reconstructBefore 返回 ''）。
+ */
+export function collectTurnFilePatches(process: ProcessEntry[]): FileEditPatch[] {
+  const patches: FileEditPatch[] = []
+  for (const entry of process) {
+    if (entry.type !== 'tool') continue
+    if (classifyToolFamily(entry.tool.name) !== 'edit') continue
+    if (!entry.result) continue
+    const path = toolFilePath(entry)
+    if (!path) continue
+    const input = entry.tool.input ?? {}
+    const name = entry.tool.name.trim()
+
+    if (/^write$/i.test(name)) {
+      const content = input.content ?? input.new_string ?? input.newText ?? input.new_str
+      if (typeof content === 'string') {
+        patches.push({ path, kind: 'write', newText: content })
+      }
+      continue
+    }
+
+    if (/^multiedit$/i.test(name)) {
+      const edits = input.edits
+      if (Array.isArray(edits)) {
+        for (const e of edits) {
+          if (!e || typeof e !== 'object') continue
+          const o = (e as Record<string, unknown>).old_string
+            ?? (e as Record<string, unknown>).oldText
+            ?? (e as Record<string, unknown>).old_str
+          const n = (e as Record<string, unknown>).new_string
+            ?? (e as Record<string, unknown>).newText
+            ?? (e as Record<string, unknown>).new_str
+          if (typeof o === 'string' && typeof n === 'string') {
+            patches.push({ path, kind: 'replace', oldText: o, newText: n })
+          }
+        }
+      }
+      continue
+    }
+
+    if (/^(edit|strreplace|search_replace)$/i.test(name)) {
+      const o = input.old_string ?? input.oldText ?? input.old_str
+      const n = input.new_string ?? input.newText ?? input.new_str
+      if (typeof o === 'string' && typeof n === 'string') {
+        patches.push({ path, kind: 'replace', oldText: o, newText: n })
+      }
+      continue
+    }
+  }
+  return patches
 }
 
 /**

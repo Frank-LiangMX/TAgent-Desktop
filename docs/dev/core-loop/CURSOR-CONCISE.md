@@ -31,7 +31,7 @@
 | live 扫光 | 运行中 / 思考中 / 阶段摘要 / 子代理进度 |
 | 最终正文 | `narrative.final` 在容器外，无卡片边框 |
 | 句尾状态 | 结束（完成/已中断/出错）统一在消息尾：`已中断 · 1m 24s · 03/15 14:32` |
-| Files Changed | 有编辑工具时句尾卡片：`N Files Changed` + 文件名 + `+N -M`；Review/行点击 → 文件预览（非 git diff） |
+| Files Changed | 有编辑工具时句尾卡片：`N Files Changed` + 文件名 + `+N -M`；Review/行点击 → **本轮 unified diff 审阅**（红删绿增 + 折叠未改行；before 还原失败走 git HEAD 兜底，再失败退回当前文件预览）。正文文件 chip 仍只预览当前文件（非 diff） |
 | 句尾状态 | 完成 / 已中断 / 出错 · 耗时 · 墙钟；常显（非仅 hover） |
 | full | ProcessGroupView 不变；句尾状态 / Files Changed 同上 |
 

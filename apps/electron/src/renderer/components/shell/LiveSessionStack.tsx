@@ -1,14 +1,12 @@
 /**
- * 顶栏运行中会话堆叠卡片
- * 默认：单 pill + 层叠描边；悬停：下方弹出会话列表（非 tooltip 重复文案）。
+ * 顶栏多会话运行态：单胶囊 + 悬停下拉列表。
+ * 不要再叠 peek 描边——半透明前景会把内圈边框透出来，看起来像胶囊套娃。
  */
 import { useState } from 'react'
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react'
 import type { TabItem } from '../../atoms/tabs'
 import { formatElapsedDuration, useLiveElapsedMs } from '../../lib/time-utils'
 import { cn } from '../../lib/utils'
-
-const MAX_VISIBLE = 3
 
 export interface LiveSessionStackProps {
   sessions: TabItem[]
@@ -36,8 +34,6 @@ export function LiveSessionStack({
   const [open, setOpen] = useState(false)
   const count = sessions.length
   const front = sessions[sessions.length - 1]
-  const peekDepth = Math.min(Math.max(0, count - 1), 2)
-  const hiddenCount = Math.max(0, count - MAX_VISIBLE)
   const panelSessions = [...sessions].reverse()
 
   if (!front) return <></>
@@ -57,11 +53,6 @@ export function LiveSessionStack({
         }
       }}
     >
-      <div className="status-ticker-stack__deck" aria-hidden={peekDepth === 0}>
-        {peekDepth >= 2 ? <span className="status-ticker-stack__peek status-ticker-stack__peek--2" /> : null}
-        {peekDepth >= 1 ? <span className="status-ticker-stack__peek status-ticker-stack__peek--1" /> : null}
-      </div>
-
       <button
         type="button"
         className="status-ticker status-ticker--live status-ticker-stack__front titlebar-no-drag"
@@ -80,11 +71,6 @@ export function LiveSessionStack({
           {' · '}
           <SessionElapsed startedAt={frontStartedAt} live />
         </span>
-        {hiddenCount > 0 ? (
-          <span className="status-ticker-stack__more" aria-hidden>
-            +{hiddenCount}
-          </span>
-        ) : null}
       </button>
 
       <AnimatePresence initial={false}>
@@ -113,7 +99,7 @@ export function LiveSessionStack({
             role="list"
             aria-label="运行中的会话"
           >
-            <div className="status-ticker-stack__panel">
+            <div className="status-ticker-stack__panel session-glass-surface session-glass-popover">
             {panelSessions.map((session, index) => {
               const title = session.title || '未命名会话'
               return (
@@ -151,4 +137,3 @@ export function LiveSessionStack({
   )
 }
 
-export { MAX_VISIBLE as LIVE_SESSION_STACK_MAX_VISIBLE }

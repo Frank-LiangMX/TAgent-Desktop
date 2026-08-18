@@ -262,7 +262,7 @@ export function rehydrateSubagentTaskCardsFromHistory<
           : 'local_agent'
       const conc = conclusions.get(id)
       const summaryText = conc?.text?.replace(/\s+/g, ' ').trim() ?? ''
-      // 结论消息时间：扫 user tool_result 的 createdAt
+      // 结论消息时间：扫 user tool_result 的 createdAt（无 parented 消息时作 endedAt 回退）
       let resultAt: number | undefined
       for (const it2 of items) {
         const m2 = it2.message
@@ -270,6 +270,19 @@ export function rehydrateSubagentTaskCardsFromHistory<
         for (const b2 of m2.content) {
           if (b2.type === 'tool_result' && (b2 as { toolUseId?: string }).toolUseId === id) {
             if (typeof m2.createdAt === 'number') resultAt = m2.createdAt
+          }
+        }
+      }
+      // 真实结束时刻：末条 parented（子代理自己的 assistant/user）消息 createdAt。
+      // 不用 launcher 的 stub tool_result 时间——派发后 9–23ms 的占位，会让卡片显示「秒完」，
+      // 而真实子代理工作 52–218s。见 SESSION-UX-RESIDUAL-SPEC §5。
+      let parentedEndAt: number | undefined
+      for (const it2 of items) {
+        const m2 = it2.message
+        if (!m2 || m2.parentToolUseId !== id) continue
+        if (typeof m2.createdAt === 'number') {
+          if (parentedEndAt === undefined || m2.createdAt > parentedEndAt) {
+            parentedEndAt = m2.createdAt
           }
         }
       }
@@ -286,7 +299,8 @@ export function rehydrateSubagentTaskCardsFromHistory<
           : '（无回传结论）',
         // 历史：起点用发起 task 的 assistant 时间戳
         startedAt: typeof m.createdAt === 'number' ? m.createdAt : undefined,
-        endedAt: resultAt,
+        // 末条 parented 消息 createdAt 优先；无 parented（子代理过程未落盘）回退 stub tool_result 时间
+        endedAt: parentedEndAt ?? resultAt,
       }
       out.push(apply(undefined, card))
     }
