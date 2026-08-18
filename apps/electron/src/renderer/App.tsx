@@ -26,6 +26,7 @@ import type {
   CollaborationMailboxEnvelope,
   CollaborationRoomTask,
   CollaborationArtifact,
+  CollaborationUserApprovalRequest,
   CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
   AddCollaborationMemberInput,
@@ -487,6 +488,13 @@ declare global {
         roomId: string
         artifactId: string
       }) => Promise<ReadCollaborationArtifactResult>
+      listCollaborationUserApprovals: (roomId: string) => Promise<CollaborationUserApprovalRequest[]>
+      resolveCollaborationUserApproval: (input: {
+        roomId: string
+        requestId: string
+        decision: 'approved' | 'denied'
+        response?: string
+      }) => Promise<{ ok: true; request: CollaborationUserApprovalRequest; runId?: string } | { ok: false; reason: string }>
       onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => () => void
       onCollaborationTextDelta: (cb: (payload: CollaborationTextDeltaPayload) => void) => () => void
       // 自动更新

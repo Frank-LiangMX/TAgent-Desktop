@@ -40,6 +40,7 @@ import type {
   CollaborationRoomStatus,
   CollaborationRoomTask,
   CollaborationRun,
+  CollaborationUserApprovalRequest,
 } from '@tagent/shared'
 import { AppTooltip } from '@tagent/ui'
 import { ChatInput, type ChatInputHandle } from '../chat/ChatInput'
@@ -49,6 +50,7 @@ import { CollaborationMemberSettings } from './CollaborationMemberSettings'
 import { CollaborationAddMemberDialog } from './CollaborationAddMemberDialog'
 import { CollaborationTimeline } from './CollaborationTimeline'
 import { CollaborationWorkPanel } from './CollaborationWorkPanel'
+import { CollaborationApprovalCard } from './CollaborationApprovalCard'
 import { MemberAvatar } from './CollaborationAvatars'
 import { cn } from '../../lib/utils'
 
@@ -152,6 +154,8 @@ export function CollaborationRoomsPage({
   /** S5：室级任务/产物（主进程真值，CHANGED 后重新拉取；渲染层不是真值源） */
   const [tasks, setTasks] = useState<CollaborationRoomTask[]>([])
   const [artifacts, setArtifacts] = useState<CollaborationArtifact[]>([])
+  const [approvals, setApprovals] = useState<CollaborationUserApprovalRequest[]>([])
+  const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(null)
   /** S5：右侧工作面板展开态（默认展开；窄屏可收起，键盘可达） */
   const [workPanelOpen, setWorkPanelOpen] = useState(true)
   /** S4.5：本地已「停止」关闭的深度停止信封 id（仅前端态，不持久化、不触后端） */
@@ -183,11 +187,12 @@ export function CollaborationRoomsPage({
         setMailbox([])
         setTasks([])
         setArtifacts([])
+        setApprovals([])
         setStreamByRun({})
         return
       }
       try {
-        const [r, msgs, mems, rs, box, tks, arts] = await Promise.all([
+        const [r, msgs, mems, rs, box, tks, arts, aps] = await Promise.all([
           window.electronAPI.getCollaborationRoom(roomId),
           window.electronAPI.listCollaborationMessages(roomId),
           window.electronAPI.listCollaborationMembers(roomId),
@@ -195,6 +200,7 @@ export function CollaborationRoomsPage({
           window.electronAPI.listCollaborationMailbox(roomId),
           window.electronAPI.listCollaborationRoomTasks(roomId),
           window.electronAPI.listCollaborationArtifacts(roomId),
+          window.electronAPI.listCollaborationUserApprovals(roomId),
         ])
         if (cancelled) return
         setRoom(r ?? null)
@@ -204,6 +210,7 @@ export function CollaborationRoomsPage({
         setMailbox(Array.isArray(box) ? box : [])
         setTasks(Array.isArray(tks) ? tks : [])
         setArtifacts(Array.isArray(arts) ? arts : [])
+        setApprovals(Array.isArray(aps) ? aps : [])
         const live = new Set(
           (Array.isArray(rs) ? rs : [])
             .filter((run) => run.status === 'running')
@@ -226,6 +233,7 @@ export function CollaborationRoomsPage({
         setMailbox([])
         setTasks([])
         setArtifacts([])
+        setApprovals([])
       }
     })()
     return () => {
@@ -325,6 +333,31 @@ export function CollaborationRoomsPage({
         toast.error('取消失败', { description: err instanceof Error ? err.message : String(err) })
       } finally {
         setCancellingId(null)
+      }
+    },
+    [room, onRoomsChanged],
+  )
+
+  const handleResolveApproval = useCallback(
+    async (requestId: string, decision: 'approved' | 'denied', response?: string): Promise<void> => {
+      if (!room) return
+      setResolvingApprovalId(requestId)
+      try {
+        const result = await window.electronAPI.resolveCollaborationUserApproval({
+          roomId: room.id,
+          requestId,
+          decision,
+          response,
+        })
+        if (!result.ok) {
+          toast.error('审批操作失败', { description: result.reason })
+          return
+        }
+        onRoomsChanged()
+      } catch (err) {
+        toast.error('审批操作失败', { description: err instanceof Error ? err.message : String(err) })
+      } finally {
+        setResolvingApprovalId(null)
       }
     },
     [room, onRoomsChanged],
@@ -758,6 +791,19 @@ export function CollaborationRoomsPage({
            使其只覆盖左列宽度、不遮挡右侧面板；面板收起时左列自动占满。 */}
       <div className="flex min-h-0 flex-1">
         <div className="session-chat-col relative flex min-h-0 min-w-0 flex-1 flex-col">
+          {approvals
+            .filter((approval) => approval.status === 'pending')
+            .map((approval) => (
+              <CollaborationApprovalCard
+                key={approval.id}
+                request={approval}
+                memberName={memberName(approval.memberId)}
+                busy={resolvingApprovalId === approval.id}
+                onResolve={(decision, response) =>
+                  void handleResolveApproval(approval.id, decision, response)
+                }
+              />
+            ))}
           {/* 时间线（S3.5-c：一 run 一卡，对齐会话信息流） */}
           <CollaborationTimeline
             messages={messages}
