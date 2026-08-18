@@ -20,6 +20,7 @@ import { filePreviewRequestAtom } from '../../atoms/file-preview'
 import {
   allNewHunks,
   computePatchBlockHunks,
+  computeTurnReviewHunks,
   computeUnifiedHunks,
   countDiffHunks,
   DIFF_LARGE_LINE_LIMIT,
@@ -448,6 +449,30 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
         const patchesForPath = review.patches.filter(
           (p) => normalizeFilePath(p.path) === normalizeFilePath(activePath),
         )
+        const replacePatches = patchesForPath.filter((p) => p.kind === 'replace')
+
+        // 有 Edit 补丁：按 old↔new 出 hunk（才能看见删除行）。整文件 LCS 会把
+        // 仍留在文件里的旧行收成上下文，红行就没了。
+        if (replacePatches.length > 0) {
+          const hunks = isLargeDiff(
+            replacePatches.map((p) => p.oldText).join('\n'),
+            replacePatches.map((p) => p.newText).join('\n'),
+          )
+            ? computePatchBlockHunks(replacePatches, after)
+            : computeTurnReviewHunks(replacePatches, after)
+          const c = countDiffHunks(hunks)
+          setReviewState({
+            status: 'ready',
+            hunks,
+            add: c.add,
+            del: c.del,
+            banner: hunks.length === 0 ? '本轮补丁无行级差异' : undefined,
+            fallbackToCurrent: hunks.length === 0,
+            after,
+            absPath: abs,
+          })
+          return
+        }
 
         let before = reconstructBefore(after, patchesForPath)
         let banner: string | undefined
@@ -546,8 +571,9 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
     const activeFile = review.files.find(
       (f) => normalizeFilePath(f.path) === normalizeFilePath(activePath),
     )
-    const addN = activeFile?.add ?? reviewState.add
-    const delN = activeFile?.del ?? reviewState.del
+    // 顶栏 +/- 跟审阅 hunk 走，避免卡片按 old/new 整段行数估的 -35 对不上红行
+    const addN = reviewState.status === 'ready' ? reviewState.add : (activeFile?.add ?? 0)
+    const delN = reviewState.status === 'ready' ? reviewState.del : (activeFile?.del ?? 0)
     const showToggle = !reviewState.fallbackToCurrent
     const showReview = showToggle && viewMode === 'review' && reviewState.status === 'ready'
 
@@ -689,6 +715,18 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
     )
   } else if (mime === 'application/pdf' && state.dataUrl) {
     body = <iframe title={fileName} src={state.dataUrl} className="h-full w-full border-0 bg-background" />
+  } else if (ext === 'html' && state.content != null) {
+    // HTML 预览：iframe 沙箱渲染（而非源码高亮），样式/图片生效、脚本受限。
+    // sandbox 给 allow-same-origin 让本地相对资源解析，去 allow-scripts 防 XSS 执行
+    // 影响主应用；用户要看脚本跑起来的效果时仍可右键在新窗口打开原文件。
+    body = (
+      <iframe
+        title={fileName}
+        srcDoc={state.content}
+        sandbox="allow-same-origin allow-popups allow-forms"
+        className="h-full w-full border-0 bg-background"
+      />
+    )
   } else if ((ext === 'md' || ext === 'markdown') && state.content != null) {
     body = (
       <div className="h-full overflow-auto p-4">
