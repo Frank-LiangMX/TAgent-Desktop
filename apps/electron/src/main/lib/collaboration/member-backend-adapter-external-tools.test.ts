@@ -2,8 +2,8 @@
  * 成员后端适配器 —— 外部渠道原生受限工具桥单测（Stage 4-3b 外部渠道）
  *
  * 验证 runExternalRoomToolTurn / buildRoomBridgeTools 的安全契约：
- * - schema 限权：只暴露 room_send/room_ask/room_reply/room_task_update 四把 TypeBox 受限工具，
- *   additionalProperties:false 锁死参数；绝不混入 Read/Bash/Edit/Write/Task 等会话工具。
+ * - schema 限权：只暴露 room_send/room_ask/room_reply/room_task_update/room_publish_artifact 五把
+ *   TypeBox 受限工具，additionalProperties:false 锁死参数；绝不混入 Read/Bash/Edit/Write/Task 等会话工具。
  * - tool-call 转发：execute 把调用转发给宿主 hostToolHandler 真实校验/执行，绝不就地伪造。
  * - result 回注：工具结果由 Agent 回注下一轮 context（第二次 streamFn 调用的上下文里含工具输出）。
  * - unsupported fail-closed：无原生工具能力的渠道（openai/zhipu/custom/google）或未注入
@@ -275,17 +275,18 @@ beforeEach(() => {
 // ===== buildRoomBridgeTools：schema 限权 =====
 
 describe('buildRoomBridgeTools — schema 限权', () => {
-  test('仅暴露 room_send/room_ask/room_reply/room_task_update 四把工具，绝不混入会话工具', () => {
+  test('仅暴露 room_send/room_ask/room_reply/room_task_update/room_publish_artifact 五把工具，绝不混入会话工具', () => {
     const tools = buildRoomBridgeTools({
       hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
       abortAgent: vi.fn(),
     })
-    expect(tools).toHaveLength(4)
+    expect(tools).toHaveLength(5)
     expect(tools.map((t) => t.name)).toEqual([
       'room_send',
       'room_ask',
       'room_reply',
       'room_task_update',
+      'room_publish_artifact',
     ])
     // 绝不暴露 filesystem/shell/database 或会话工具
     const forbidden = [
@@ -352,6 +353,25 @@ describe('buildRoomBridgeTools — schema 限权', () => {
     expect(schema.required).toEqual(['taskId', 'status'])
     // 锁死：不接受模型塞进来的额外参数（如 description/acceptanceCriteria/assigneeMemberId ——
     // 模型不能经此工具改这些权威字段）
+    expect(schema.additionalProperties).toBe(false)
+  })
+
+  test('room_publish_artifact schema：relativePath + content 必填，summary/taskId 可选，additionalProperties 锁死', () => {
+    const tools = buildRoomBridgeTools({
+      hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
+      abortAgent: vi.fn(),
+    })
+    const schema = tools[4]!.parameters as Record<string, unknown>
+    expect(schema.type).toBe('object')
+    expect(Object.keys(schema.properties as object).sort()).toEqual([
+      'content',
+      'relativePath',
+      'summary',
+      'taskId',
+    ])
+    expect(schema.required).toEqual(['relativePath', 'content'])
+    // 锁死：不接受模型塞进来的额外参数（如 absolutePath/overwrite/sha256 ——
+    // 路径只允许相对、hash 由宿主求，模型不能自报）
     expect(schema.additionalProperties).toBe(false)
   })
 })
@@ -469,6 +489,55 @@ describe('buildRoomBridgeTools — tool-call 转发到宿主 hostToolHandler', (
     })
     expect(abortAgent).not.toHaveBeenCalled()
   })
+
+  test('room_publish_artifact.execute：把 {name, arguments(字符串化)} 转发给 handler 并返回其 output', async () => {
+    const handler = vi.fn(
+      async () => ({ output: '产物已发布（artifact=cart_1，路径=docs/api.md，sha256=abcdef…，128B）' }),
+    ) as unknown as CollaborationHostToolHandler
+    const tools = buildRoomBridgeTools({ hostToolHandler: handler, abortAgent: vi.fn() })
+    const publish = tools.find((t) => t.name === 'room_publish_artifact')!
+    const res = (await publish.execute('tc-8', {
+      relativePath: 'docs/api.md',
+      content: '# API\n',
+      summary: '接口文档初稿',
+      taskId: 'crt_1',
+    })) as {
+      content: Array<{ type: string; text: string }>
+      details: { output: string }
+    }
+    expect(handler).toHaveBeenCalledOnce()
+    expect(handler).toHaveBeenCalledWith({
+      name: 'room_publish_artifact',
+      arguments: {
+        relativePath: 'docs/api.md',
+        content: '# API\n',
+        summary: '接口文档初稿',
+        taskId: 'crt_1',
+      },
+    })
+    expect(res.content).toEqual([
+      { type: 'text', text: '产物已发布（artifact=cart_1，路径=docs/api.md，sha256=abcdef…，128B）' },
+    ])
+    expect(res.details).toEqual({
+      output: '产物已发布（artifact=cart_1，路径=docs/api.md，sha256=abcdef…，128B）',
+    })
+  })
+
+  test('room_publish_artifact.execute：summary/taskId 缺省时不塞空串；awaitPeer 缺省不触发 abortAgent', async () => {
+    const handler = vi.fn(async () => ({ output: 'ok' })) as unknown as CollaborationHostToolHandler
+    const abortAgent = vi.fn()
+    const tools = buildRoomBridgeTools({ hostToolHandler: handler, abortAgent })
+    await tools.find((t) => t.name === 'room_publish_artifact')!.execute('tc-9', {
+      relativePath: 'out.txt',
+      content: 'hello',
+    })
+    // summary/taskId 未传 → arguments 不含这两键（handler 据缺省视为无说明/无关联任务）
+    expect(handler).toHaveBeenCalledWith({
+      name: 'room_publish_artifact',
+      arguments: { relativePath: 'out.txt', content: 'hello' },
+    })
+    expect(abortAgent).not.toHaveBeenCalled()
+  })
 })
 
 // ===== runTurn：unsupported fail-closed 路由 =====
@@ -541,6 +610,7 @@ describe('ChannelBackendAdapter.runTurn — Anthropic 外部渠道原生工具�
       'room_ask',
       'room_reply',
       'room_task_update',
+      'room_publish_artifact',
     ])
   })
 

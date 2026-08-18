@@ -221,3 +221,8 @@ export function getCollaborationSummariesPath(): string {
 export function getCollaborationRoomTasksPath(): string {
   return join(getCollaborationDir(), 'room-tasks.json')
 }
+
+/** 协作室产物索引：~/.tagent[-dev]/collaboration/artifacts.json（S5 room_publish_artifact） */
+export function getCollaborationArtifactsPath(): string {
+  return join(getCollaborationDir(), 'artifacts.json')
+}

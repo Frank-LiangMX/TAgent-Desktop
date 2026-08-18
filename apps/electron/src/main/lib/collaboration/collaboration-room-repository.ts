@@ -23,6 +23,7 @@ import type {
   CollaborationMailboxEnvelope,
   CollaborationRoomSummary,
   CollaborationRoomTask,
+  CollaborationArtifact,
 } from '@tagent/shared'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import {
@@ -33,6 +34,7 @@ import {
   getCollaborationMailboxPath,
   getCollaborationSummariesPath,
   getCollaborationRoomTasksPath,
+  getCollaborationArtifactsPath,
 } from '../config/config-paths'
 
 /** 配置版本号 */
@@ -611,4 +613,63 @@ export function saveRoomTaskIfCurrent(
   else config.tasks[idx] = next
   writeRoomTasksConfig(config)
   return true
+}
+
+// ===== artifacts.json（S5 room_publish_artifact 产物审计） =====
+//
+// 02-RUNTIME-A2A-SPEC §2.6：保存工作区相对路径、作者 member/run/task、hash。相对路径与 hash
+// 由 service 严格校验后写入，模型不得自报绝对路径或 hash。本表只追加（产物不可变），
+// 不提供 update；service 负责全部守卫，仓库只做持久化与查询。
+
+interface ArtifactsConfig {
+  version: number
+  artifacts: CollaborationArtifact[]
+}
+
+function readArtifactsConfig(): ArtifactsConfig {
+  const parsed = readArtifactsConfigSafe()
+  if (!parsed || !Array.isArray(parsed.artifacts)) {
+    return { version: CONFIG_VERSION, artifacts: [] }
+  }
+  return parsed
+}
+
+function readArtifactsConfigSafe(): ArtifactsConfig | null {
+  return readJsonSafe<ArtifactsConfig | null>(getCollaborationArtifactsPath(), null)
+}
+
+function writeArtifactsConfig(config: ArtifactsConfig): void {
+  try {
+    writeJsonAtomic(getCollaborationArtifactsPath(), config)
+  } catch (err) {
+    console.error('[协作室存储] 写入 artifacts.json 失败:', err)
+    throw new Error('写入协作室产物数据失败')
+  }
+}
+
+/** 读取全部产物（原始顺序） */
+export function loadArtifacts(): CollaborationArtifact[] {
+  return readArtifactsConfig().artifacts
+}
+
+/** 列出某房间全部产物（按 createdAt 升序，次按 id 稳定） */
+export function listArtifactsByRoom(roomId: string): CollaborationArtifact[] {
+  return readArtifactsConfig()
+    .artifacts.filter((a) => a.roomId === roomId)
+    .sort((a, b) => {
+      if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    })
+}
+
+/** 取单个产物（全局搜索） */
+export function getArtifact(artifactId: string): CollaborationArtifact | undefined {
+  return readArtifactsConfig().artifacts.find((a) => a.id === artifactId)
+}
+
+/** 追加单个产物（只追加；由 service 保证 id 唯一与全部字段已校验） */
+export function appendArtifact(artifact: CollaborationArtifact): void {
+  const config = readArtifactsConfig()
+  config.artifacts.push(artifact)
+  writeArtifactsConfig(config)
 }

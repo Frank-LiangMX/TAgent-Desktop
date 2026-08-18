@@ -23,7 +23,9 @@
  *
  * 设计参考：apps/electron/src/main/lib/ipc/channel-service.ts（class + static create）
  */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { existsSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   COLLABORATION_LOGICAL_SESSION_ID_PREFIX,
   COLLABORATION_MEMBER_ID_PREFIX,
@@ -34,6 +36,9 @@ import {
   COLLABORATION_RUN_ID_PREFIX,
   COLLABORATION_ROOM_TASK_ID_PREFIX,
   COLLABORATION_ROOM_TASK_SUMMARY_MAX_LENGTH,
+  COLLABORATION_ARTIFACT_ID_PREFIX,
+  COLLABORATION_ARTIFACT_MAX_CONTENT_BYTES,
+  COLLABORATION_ARTIFACT_SUMMARY_MAX_LENGTH,
   collaborationRunIdempotencyKey,
   collaborationContinuationIdempotencyKey,
   collaborationEnvelopeIdempotencyKey,
@@ -53,6 +58,7 @@ import {
   transitionCollaborationMailboxState,
   transitionCollaborationRoomTaskStatus,
   validateCreateCollaborationRoomInput,
+  type CollaborationArtifact,
   type CollaborationMailboxEnvelope,
   type CollaborationMember,
   type CollaborationMemberCapabilities,
@@ -79,6 +85,8 @@ import {
   appendMembers,
   appendMessage,
   appendMailboxEnvelope,
+  appendArtifact,
+  getArtifact,
   getCollaborationSummary,
   getMailboxEnvelope,
   getMember,
@@ -86,6 +94,7 @@ import {
   getRun,
   getRoomTask,
   listActiveMailboxForMember,
+  listArtifactsByRoom,
   listMailboxByRequest,
   listMailboxByRoom,
   listMembersByRoom,
@@ -114,6 +123,7 @@ import {
   type CollaborationSummaryModelCaller,
 } from './collaboration-room-summary'
 import { RoomScheduler, type RoomSchedulerEntry } from './collaboration-room-scheduler'
+import { resolveWorkspaceById } from '../workspace/workspace-manager'
 
 /** CHANGED 广播类型（主进程 → renderer） */
 export type CollaborationRoomBroadcast = (
@@ -1178,6 +1188,24 @@ export class CollaborationRoomService {
                   }
                 : { output: `room_task_update 被拒绝：${result.reason}`, isError: true }
             }
+            case 'room_publish_artifact': {
+              // 受控产物发布：宿主校验房间/成员/run/权限/工作区/路径/hash 后落盘审计。
+              // 安全字段（roomId/memberId/runId）取自 run 上下文；relativePath/content 由模型给出但
+              // 经严格路径校验与尺寸上限；绝不暴露任意 filesystem/shell，只能在绑定工作区内写文本。
+              const result = this.roomPublishArtifact({
+                roomId: room.id,
+                fromRunId: run.id,
+                relativePath: call.arguments.relativePath ?? '',
+                content: call.arguments.content ?? '',
+                summary: call.arguments.summary,
+                taskId: call.arguments.taskId,
+              })
+              return result.ok
+                ? {
+                    output: `产物已发布（artifact=${result.artifactId}，路径=${result.relativePath}，sha256=${result.sha256.slice(0, 12)}…，${result.byteSize}B）`,
+                  }
+                : { output: `room_publish_artifact 被拒绝：${result.reason}`, isError: true }
+            }
           }
         },
       }
@@ -1583,6 +1611,158 @@ export class CollaborationRoomService {
     return { ok: true, taskId: task.id, status: targetStatus, version: next.version }
   }
 
+  // ===== Room Artifact（S5：room_publish_artifact 受控产物发布） =====
+  //
+  // 02-RUNTIME-A2A-SPEC §2.6 / §5 / §11：成员只能把「文本内容」写入「协作室绑定工作区的相对路径」，
+  // 宿主校验路径、权限、按实际字节求 sha256 后落盘审计。绝不信任模型提供的绝对路径 / .. / 符号链接，
+  // 也绝不暴露 filesystem/shell/database（不复用 Pi 会话的 Read/Bash/Edit/Write）。安全字段
+  //（roomId/memberId/runId）取自 run 上下文；taskId 须经验证属于同一房间。
+
+  /** 列出某房间全部产物（按 createdAt 升序，次按 id 稳定） */
+  listArtifacts(roomId: string): CollaborationArtifact[] {
+    return listArtifactsByRoom(roomId)
+  }
+
+  /** 取单个产物（不存在返回 undefined） */
+  getArtifactById(artifactId: string): CollaborationArtifact | undefined {
+    return getArtifact(artifactId)
+  }
+
+  /**
+   * room_publish_artifact：成员把文本内容写入协作室绑定工作区的相对路径，宿主校验后落盘审计。
+   *
+   * 守卫（全部 fail-closed，返回 { ok: false, reason } 由宿主回注安全文本）：
+   * - 房间须存在且 active；run 须 running/awaiting_peer；发起成员须存在且属于本房间。
+   * - 发起成员权限须为 workspace-write（read-only 成员不能发布产物；权限档位 enforce 第一刀）。
+   * - 房间须已绑定工作区且工作区项目目录存在、可解析。
+   * - summary（可选）超长拒绝；仅作审计，绝不作为指令。
+   * - taskId（可选）须存在且属于同一房间（拒绝跨房间关联）。
+   * - content 须为非空文本，UTF-8 字节数不超过 COLLABORATION_ARTIFACT_MAX_CONTENT_BYTES。
+   * - relativePath 须为相对路径：拒绝绝对路径 / 反斜杠 / `..` 越界 / 符号链接逃逸（见
+   *   resolveArtifactTargetPath）；越出工作区根一律拒绝。
+   * - 目标已存在且是目录 → 拒绝（不能把目录覆盖成文件）；叶子已存在且是符号链接已被路径校验拒绝。
+   *
+   * 写入后按实际写入字节求 sha256（hex）与 byteSize，落 artifacts.json 审计记录，并追加一条
+   * kind='artifact' 的可追溯房间消息（authorId=成员、runId、taskId、rootMessageId、causationId）。
+   * 不迁移 run 状态（发布产物不暂停当前 turn）。
+   */
+  roomPublishArtifact(input: {
+    roomId: string
+    fromRunId: string
+    relativePath: string
+    content: string
+    summary?: string
+    taskId?: string
+  }):
+    | { ok: true; artifactId: string; sha256: string; byteSize: number; relativePath: string }
+    | { ok: false; reason: string } {
+    const room = getRoom(input.roomId)
+    if (!room) return { ok: false, reason: '房间不存在' }
+    if (room.status !== 'active') return { ok: false, reason: `房间状态非 active：${room.status}` }
+
+    const run = getRun(input.fromRunId)
+    if (!run) return { ok: false, reason: 'run 不存在' }
+    if (run.status !== 'running' && run.status !== 'awaiting_peer') {
+      return { ok: false, reason: `run 非 running/awaiting_peer：${run.status}` }
+    }
+    const fromMember = getMember(run.memberId)
+    if (!fromMember || fromMember.roomId !== room.id) {
+      return { ok: false, reason: '发起成员不存在或不属于本房间' }
+    }
+
+    // 权限档位 enforce：只有 workspace-write 成员可发布产物
+    if (fromMember.permissionProfile !== 'workspace-write') {
+      return { ok: false, reason: '成员权限非 workspace-write，不能发布产物' }
+    }
+
+    // 绑定工作区：房间须有 workspaceId 且项目目录存在、可解析为真实路径
+    if (!room.workspaceId) {
+      return { ok: false, reason: '房间未绑定工作区，不能发布产物' }
+    }
+    const workspace = resolveWorkspaceById(room.workspaceId)
+    if (!workspace || !workspace.projectDirectory) {
+      return { ok: false, reason: '房间绑定的工作区不存在或无项目目录' }
+    }
+    if (!existsSync(workspace.projectDirectory)) {
+      return { ok: false, reason: '工作区项目目录不存在' }
+    }
+    const rootReal = realpathSafe(workspace.projectDirectory)
+    if (!rootReal) {
+      return { ok: false, reason: '工作区项目目录不可访问' }
+    }
+
+    // summary 长度（先于路径/写入，便宜 fail-closed）
+    const summary = input.summary !== undefined ? input.summary.trim() : undefined
+    if (summary && summary.length > COLLABORATION_ARTIFACT_SUMMARY_MAX_LENGTH) {
+      return {
+        ok: false,
+        reason: `说明过长（超过 ${COLLABORATION_ARTIFACT_SUMMARY_MAX_LENGTH} 字），请精简`,
+      }
+    }
+
+    // taskId 归属：非空时须存在且属于同一房间（拒绝跨房间关联）
+    let taskId: string | undefined
+    if (input.taskId !== undefined && input.taskId.trim() !== '') {
+      const task = getRoomTask(input.taskId.trim())
+      if (!task) return { ok: false, reason: '关联任务不存在' }
+      if (task.roomId !== room.id) return { ok: false, reason: '关联任务不属于该房间' }
+      taskId = task.id
+    }
+
+    // content 尺寸：非空文本，UTF-8 字节上限
+    const contentBuf = Buffer.from(input.content ?? '', 'utf8')
+    if (contentBuf.byteLength === 0) {
+      return { ok: false, reason: '产物内容不能为空' }
+    }
+    if (contentBuf.byteLength > COLLABORATION_ARTIFACT_MAX_CONTENT_BYTES) {
+      return {
+        ok: false,
+        reason: `产物内容过大（超过 ${COLLABORATION_ARTIFACT_MAX_CONTENT_BYTES} 字节）`,
+      }
+    }
+
+    // 路径校验：绝对 / 反斜杠 / `..` / 符号链接逃逸 / 越出根
+    const target = resolveArtifactTargetPath(rootReal, input.relativePath)
+    if (!target.ok) return { ok: false, reason: target.reason }
+    const absPath = target.absPath
+
+    // 目标已存在且是目录 → 拒绝（叶子是符号链接已被路径校验拦截）
+    if (existsSync(absPath) && lstatSync(absPath).isDirectory()) {
+      return { ok: false, reason: '目标路径已存在且是目录，不能覆盖为文件' }
+    }
+
+    // 写入：确保父目录存在（已在根内），按实际写入字节求 sha256
+    const parentDir = dirname(absPath)
+    if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true })
+    writeFileSync(absPath, contentBuf)
+    const sha256 = createHash('sha256').update(contentBuf).digest('hex')
+    const byteSize = contentBuf.byteLength
+
+    const now = Date.now()
+    const artifact: CollaborationArtifact = {
+      id: genId(COLLABORATION_ARTIFACT_ID_PREFIX),
+      roomId: room.id,
+      memberId: fromMember.id,
+      runId: run.id,
+      taskId,
+      relativePath: target.relativePath,
+      sha256,
+      byteSize,
+      summary,
+      createdAt: now,
+    }
+    appendArtifact(artifact)
+    this.appendArtifactMessage(room, fromMember, artifact, run)
+    this.broadcast(room.id, 'updated')
+    return {
+      ok: true,
+      artifactId: artifact.id,
+      sha256,
+      byteSize,
+      relativePath: artifact.relativePath,
+    }
+  }
+
   /** 严格状态迁移：非法则抛错，返回目标状态 */
   private validateTaskTransition(
     from: CollaborationRoomTaskStatus,
@@ -1762,6 +1942,44 @@ export class CollaborationRoomService {
     }
     appendMessage(message)
   }
+
+  /**
+   * 落盘一条 artifact 消息（room_publish_artifact 的可追溯审计事件）。
+   *
+   * kind='artifact'，与成员正文同级（系统提示已声明非指令）；携带 runId/taskId/rootMessageId/
+   * causationId 供时间线与任务面板双向链接。summary 仅作时间线说明，绝不作为指令。
+   */
+  private appendArtifactMessage(
+    room: CollaborationRoom,
+    member: CollaborationMember,
+    artifact: CollaborationArtifact,
+    run: CollaborationRun,
+  ): void {
+    const content = [
+      `产物「${artifact.relativePath}」已发布（sha256=${artifact.sha256.slice(0, 12)}…，${artifact.byteSize}B）`,
+      artifact.summary ? `说明：${artifact.summary}` : '',
+    ]
+      .filter(Boolean)
+      .join('。')
+    const message: CollaborationMessage = {
+      id: genId(COLLABORATION_MESSAGE_ID_PREFIX),
+      roomId: room.id,
+      authorType: 'member',
+      authorId: member.id,
+      kind: 'artifact',
+      content,
+      visibility: 'room',
+      targetMemberIds: [],
+      replyToMessageId: undefined,
+      rootMessageId: run.triggerMessageId,
+      causationId: run.id,
+      runId: run.id,
+      taskId: artifact.taskId,
+      depth: 0,
+      createdAt: Date.now(),
+    }
+    appendMessage(message)
+  }
 }
 
 /**
@@ -1872,4 +2090,107 @@ function buildMember(
     createdAt: now,
     updatedAt: now,
   }
+}
+
+// ===== room_publish_artifact 路径安全（纯函数，便于分层单测） =====
+//
+// 02-RUNTIME-A2A-SPEC §11：只允许已注册 workspace 的相对路径；符号链接逃逸、绝对路径和 `..`
+// 由宿主拒绝。下列函数不读 DB、不依赖时间；rootAbs 由调用方解析为真实路径后传入。
+
+/** realpath 兜底：解析失败（不存在/无权限）时返回空串，由调用方 fail-closed。 */
+function realpathSafe(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return ''
+  }
+}
+
+/** file 是否在 root 内（含 root 自身）。用 path.relative，避免 startsWith 在尾斜杠/大小写/混分隔符下误判。 */
+function isPathInsideRoot(fileAbs: string, rootAbs: string): boolean {
+  if (!fileAbs || !rootAbs) return false
+  let file = fileAbs
+  let root = rootAbs
+  if (process.platform === 'win32') {
+    file = file.toLowerCase()
+    root = root.toLowerCase()
+  }
+  const rel = relative(root, file)
+  if (!rel) return true
+  if (rel.startsWith('..')) return false
+  if (isAbsolute(rel)) return false
+  return true
+}
+
+/**
+ * 检查 root → target 路径上是否存在符号链接组件。任一已存在的组件是符号链接即拒绝
+ *（fail-closed：即便该链接指向工作区内也拒，避免经符号链接写入产物造成逃逸/意外覆盖）。
+ * 不存在的组件后续会被创建为普通目录/文件，不会成为符号链接。
+ *
+ * 返回非空 reason 表示检测到符号链接；返回 null 表示安全。
+ */
+function assertNoSymlinkOnPath(rootAbs: string, targetAbs: string): string | null {
+  const rel = relative(rootAbs, targetAbs)
+  if (!rel) return null
+  const segments = rel.split(sep).filter((s) => s !== '' && s !== '.')
+  let cur = rootAbs
+  for (const seg of segments) {
+    cur = join(cur, seg)
+    if (!existsSync(cur)) continue
+    let st: ReturnType<typeof lstatSync>
+    try {
+      st = lstatSync(cur)
+    } catch {
+      continue
+    }
+    if (st.isSymbolicLink()) {
+      return `路径组件「${seg}」是符号链接，禁止经符号链接写入产物（防逃逸）`
+    }
+  }
+  return null
+}
+
+/**
+ * 解析产物相对路径为目标绝对路径，校验全部路径安全约束。
+ *
+ * 约束（任一不满足 fail-closed）：
+ * - 非空、不含 NUL、不含反斜杠（只允许正斜杠 `/` 分隔，避免 Win 盘符/分隔符歧义）；
+ * - 非绝对路径（不以 `/` 开头、非 `//`、非 `C:` 盘符）；
+ * - 不含 `..` 段（拒绝越界）；`.` 与空段被规范化忽略；
+ * - resolve 后仍在 rootAbs 内（isPathInsideRoot 兜底）；
+ * - root → target 路径上无符号链接组件（assertNoSymlinkOnPath）。
+ *
+ * 返回 `{ ok: true, absPath, relativePath }`（relativePath 为规范化后的正斜杠相对路径）或
+ * `{ ok: false, reason }`。纯函数：不读 DB、不写盘、不依赖时间（realpath 由调用方预先解析）。
+ */
+export function resolveArtifactTargetPath(
+  rootAbs: string,
+  relativePath: string,
+): { ok: true; absPath: string; relativePath: string } | { ok: false; reason: string } {
+  const trimmed = (relativePath ?? '').trim()
+  if (!trimmed) return { ok: false, reason: 'relativePath 不能为空' }
+  if (trimmed.includes('\0')) return { ok: false, reason: 'relativePath 含非法字符' }
+  if (trimmed.includes('\\')) {
+    return { ok: false, reason: 'relativePath 只允许使用正斜杠 / 分隔，不允许反斜杠' }
+  }
+  if (isAbsolute(trimmed)) return { ok: false, reason: 'relativePath 不能是绝对路径' }
+  if (/^[a-zA-Z]:/.test(trimmed)) return { ok: false, reason: 'relativePath 不能是绝对路径' }
+  if (trimmed.startsWith('//')) return { ok: false, reason: 'relativePath 不能是绝对路径' }
+
+  const segments: string[] = []
+  for (const seg of trimmed.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..') return { ok: false, reason: 'relativePath 不允许 .. 越界' }
+    if (seg.includes('\0')) return { ok: false, reason: 'relativePath 含非法字符' }
+    segments.push(seg)
+  }
+  if (segments.length === 0) return { ok: false, reason: 'relativePath 不能为空' }
+
+  const absPath = resolve(rootAbs, ...segments)
+  if (!isPathInsideRoot(absPath, rootAbs)) {
+    return { ok: false, reason: 'relativePath 越出工作区根目录' }
+  }
+  const esc = assertNoSymlinkOnPath(rootAbs, absPath)
+  if (esc) return { ok: false, reason: esc }
+  return { ok: true, absPath, relativePath: segments.join('/') }
 }
