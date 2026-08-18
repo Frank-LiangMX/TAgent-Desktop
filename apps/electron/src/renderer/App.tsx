@@ -78,6 +78,7 @@ import { PluginStoreSettings } from './components/settings/PluginStoreSettings'
 import { RolesPage } from './components/roles/RolesPage'
 import { CollaborationRoomSidebar } from './components/collaboration/CollaborationRoomSidebar'
 import { CollaborationRoomsPage } from './components/collaboration/CollaborationRoomsPage'
+import { CollaborationCreateRoomDialog } from './components/collaboration/CollaborationCreateRoomDialog'
 import {
   SettingsDialog,
   normalizeSettingsTab,
@@ -516,6 +517,7 @@ export function App(): JSX.Element {
   // 协作室：当前选中房间 + 列表刷新版本（rename/pause/archive/send 后 bump 重新拉取）
   const [activeCollaborationRoomId, setActiveCollaborationRoomId] = useState<string | null>(null)
   const [collabRefreshKey, setCollabRefreshKey] = useState(0)
+  const [collaborationCreateDialogOpen, setCollaborationCreateDialogOpen] = useState(false)
   const bumpCollab = useCallback(() => setCollabRefreshKey((k) => k + 1), [])
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
@@ -546,16 +548,16 @@ export function App(): JSX.Element {
   }, [])
 
   /** 新建协作室（默认只有协调者；其余成员创建后用「添加成员」弹窗选内核/渠道 + 模型加入） */
-  const newCollaborationRoom = useCallback(async (): Promise<void> => {
+  const newCollaborationRoom = useCallback((): void => {
+    setCollaborationCreateDialogOpen(true)
+  }, [])
+
+  const createCollaborationRoom = useCallback(async (input: CreateCollaborationRoomInput): Promise<void> => {
     try {
-      const created = await window.electronAPI.createCollaborationRoom({
-        title: '新协作室',
-        members: [
-          { displayName: '协调者', isCoordinator: true },
-        ],
-      })
+      const created = await window.electronAPI.createCollaborationRoom(input)
       setActiveCollaborationRoomId(created.id)
       setSidebarOpen(true)
+      setCollaborationCreateDialogOpen(false)
       bumpCollab()
     } catch (err) {
       toast.error('创建协作室失败', { description: err instanceof Error ? err.message : String(err) })
@@ -846,9 +848,9 @@ export function App(): JSX.Element {
   }, [pushTicker, requestCrewOpen])
 
   /** 打开项目目录并注册为工作区；从新建会话入口调用时直接绑定新会话 */
-  const handleOpenProject = async (startSession = false): Promise<void> => {
+  const handleOpenProject = async (startSession = false): Promise<AgentWorkspace | null> => {
     const workspace = await window.electronAPI.createProjectWorkspace()
-    if (!workspace) return
+    if (!workspace) return null
 
     await loadWorkspaces()
     setLastActiveWorkspaceId(workspace.id)
@@ -856,6 +858,7 @@ export function App(): JSX.Element {
       // 注册工作区后开新会话：进入草稿（无 tab），发送首条消息才物化为 tab
       setDraftSession({ id: 'session-' + Date.now(), title: '新会话', workspaceId: workspace.id })
     }
+    return workspace
   }
 
   const newSession = (workspaceId?: string): void => {
@@ -1099,6 +1102,16 @@ export function App(): JSX.Element {
         initialTab={settingsInitialTab}
         onOpenChange={setShowSettings}
         onTabChange={setSettingsInitialTab}
+      />
+      <CollaborationCreateRoomDialog
+        open={collaborationCreateDialogOpen}
+        onOpenChange={setCollaborationCreateDialogOpen}
+        defaultWorkspaceId={lastActiveWorkspaceId ?? workspaces[0]?.id}
+        onSubmit={createCollaborationRoom}
+        onOpenProject={async () => {
+          const workspace = await handleOpenProject(false)
+          return workspace?.id
+        }}
       />
       <Dialog open={tabCapacityDialogOpen} onOpenChange={setTabCapacityDialogOpen}>
         <DialogContent className="w-[min(380px,calc(100vw-32px))] gap-5 p-5 sm:max-w-none" hideClose>
