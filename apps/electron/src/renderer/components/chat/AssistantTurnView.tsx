@@ -26,7 +26,6 @@ import {
 import { SubagentEntryCard } from './SubagentEntryCard'
 import { TurnFilesChangedCard } from './TurnFilesChangedCard'
 import {
-  assignSubagentHostStageKeys,
   buildTurnPresentation,
   capThinkingDurationsToTurn,
   filterSubagentItems,
@@ -88,8 +87,16 @@ export function AssistantTurnView({
   subagentCards,
   onOpenSubagent,
 }: AssistantTurnViewProps): JSX.Element {
-  // 主会话只留入口卡：按 launcher tool_use id / parentToolUseId 列入口，过程细节不进主时间线
-  const subagentEntryIds = listSubagentEntryIds(turn.items)
+  // 主会话只留入口卡：按派出顺序钉死，本轮内只增不减。
+  // 过程阶段 key 重建 / 虚拟化切片丢 launcher 时，也不要把已经出现过的入口卸掉。
+  const pinnedSubagentIdsRef = useRef<string[]>([])
+  const seenPinned = new Set(pinnedSubagentIdsRef.current)
+  for (const id of listSubagentEntryIds(turn.items)) {
+    if (seenPinned.has(id)) continue
+    pinnedSubagentIdsRef.current.push(id)
+    seenPinned.add(id)
+  }
+  const subagentEntryIds = pinnedSubagentIdsRef.current
   // 主线源：剔除子代理消息、委派合成 user、纯 taskCard（状态机只服务入口卡）
   const mainItems = turn.items.filter((it) => {
     if (it.taskCard && !it.message && !it.streaming) return false
@@ -196,16 +203,6 @@ export function AssistantTurnView({
       processLive,
     ],
   )
-  const subagentHostById = useMemo(() => {
-    const stages = conciseSegments
-      .filter((s) => s.kind === 'work_stage')
-      .map((s) => ({
-        key: s.key,
-        toolIds: s.kind === 'work_stage' ? s.tools.map((t) => t.tool.id) : [],
-      }))
-    return assignSubagentHostStageKeys(turn.items, stages, subagentEntryIds)
-  }, [conciseSegments, turn.items, subagentEntryIds])
-
   // concise 标题用：live 取当前已过秒；完成后优先 completedDuration
   const thinkingDurationSec = isLiveTurn
     ? Math.floor(elapsedMs / 1000)
@@ -287,6 +284,19 @@ export function AssistantTurnView({
         />
       ) : null}
 
+      {subagentEntryIds.length > 0 ? (
+        <div className="agent-concise-subagent-dock">
+          {renderTurnSubagents(
+            subagentEntryIds,
+            turn.items,
+            subagentCards,
+            processLive,
+            onOpenSubagent,
+            isConcise ? 'timeline' : 'card',
+          )}
+        </div>
+      ) : null}
+
       {isConcise ? (
         <>
           <ConciseTimelineView
@@ -294,35 +304,6 @@ export function AssistantTurnView({
             isLive={processLive}
             isLatestTurn={isLatestAssistantTurn}
             workedMs={workedMs}
-            getStageExtras={
-              subagentEntryIds.length > 0
-                ? (seg) => {
-                    const ids = subagentEntryIds.filter(
-                      (id) => subagentHostById.get(id) === seg.key,
-                    )
-                    if (ids.length === 0) return null
-                    return renderConciseSubagents(
-                      ids,
-                      turn.items,
-                      subagentCards,
-                      processLive,
-                      onOpenSubagent,
-                    )
-                  }
-                : undefined
-            }
-            processExtras={
-              subagentEntryIds.length > 0 &&
-              !conciseSegments.some((s) => s.kind === 'work_stage')
-                ? renderConciseSubagents(
-                    subagentEntryIds,
-                    turn.items,
-                    subagentCards,
-                    processLive,
-                    onOpenSubagent,
-                  )
-                : undefined
-            }
           />
           {filesCard}
           {!processLive && (copyText || endFooter) ? (
@@ -350,23 +331,6 @@ export function AssistantTurnView({
           </div>
         )
       )}
-
-      {!isConcise &&
-        subagentEntryIds.map((parentToolUseId) => {
-          const group = filterSubagentItems(turn.items, parentToolUseId).filter(
-            (it) => it.message?.type === 'assistant',
-          )
-          return (
-            <SubagentEntryCard
-              key={parentToolUseId}
-              items={group}
-              card={subagentCards?.get(parentToolUseId)}
-              launcher={findSubagentTaskTool(turn.items, parentToolUseId)}
-              isLive={processLive}
-              onOpen={() => onOpenSubagent(parentToolUseId)}
-            />
-          )
-        })}
 
       {/* full：无回答壳时仍展示 Files Changed */}
       {!isConcise && !showAnswerShell ? filesCard : null}
@@ -456,12 +420,13 @@ function resolveAnswerContent(answer: string, stream: string): string {
   return s
 }
 
-function renderConciseSubagents(
+function renderTurnSubagents(
   ids: string[],
   items: TurnSourceItem[],
   cards: Map<string, TaskCardState> | undefined,
   isLive: boolean,
   onOpen: (parentToolUseId: string) => void,
+  variant: 'card' | 'timeline',
 ): JSX.Element {
   return (
     <>
@@ -472,7 +437,7 @@ function renderConciseSubagents(
         return (
           <SubagentEntryCard
             key={parentToolUseId}
-            variant="timeline"
+            variant={variant}
             items={group}
             card={cards?.get(parentToolUseId)}
             launcher={findSubagentTaskTool(items, parentToolUseId)}

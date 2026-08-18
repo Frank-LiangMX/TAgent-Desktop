@@ -590,7 +590,9 @@ export function Chat({
 
   useEffect(() => {
     if (crewExternalized) return
-    setCrewPanelOpenMap((prev) => ({ ...prev, [sessionId]: crewPanelOpen }))
+    setCrewPanelOpenMap((prev) =>
+      prev[sessionId] === crewPanelOpen ? prev : { ...prev, [sessionId]: crewPanelOpen },
+    )
     return () => {
       setCrewPanelOpenMap((prev) => {
         if (!(sessionId in prev)) return prev
@@ -662,18 +664,13 @@ export function Chat({
     return map
   }, [items])
   const backgroundProcesses = useSessionProcesses(sessionId)
-  const composerActivity = useMemo(() => {
-    const cards: TaskCardState[] = []
-    for (const it of items) {
-      if (it.taskCard) cards.push(it.taskCard)
-    }
-    return summarizeComposerActivity(
-      collectComposerActivity({
-        processes: backgroundProcesses,
-        taskCards: cards,
-      }),
-    )
-  }, [backgroundProcesses, items])
+  const composerActivity = useMemo(
+    () =>
+      summarizeComposerActivity(
+        collectComposerActivity({ processes: backgroundProcesses }),
+      ),
+    [backgroundProcesses],
+  )
 
   /** 当前打开的圆桌讨论 panel（按 discussionId 从 items 查；panel 不在 items 时回退关闭） */
   const openDiscussionPanel = useMemo(
@@ -822,6 +819,36 @@ export function Chat({
    * 在虚拟化切片上分组（底栏近期完整，超长会话旧段渐进加载）。
    */
   const visibleTurns = useMemo(() => groupItemsIntoTurns(visibleItems), [visibleItems])
+
+  /**
+   * 单条消息入场动画门控：只给「本轮新出现的末尾 turn」加 message-enter。
+   * - 跟踪上一帧的末尾 turn key；末尾 key 变化 + 运行中 → 该 key 挂淡入上滑。
+   * - 历史虚拟化补齐（头部增、末尾不变）、切空闲会话（非运行）都不触发，避免整列闪。
+   * - 合成占位壳（liveKey / stoppedSyntheticKey）也参与：发送后空窗的占位壳同样丝滑出现。
+   * - enterKey 用 state 保持，动画时长（280ms）+余量后才清空——保证流式每帧 re-render
+   *   期间 class 持续挂着，CSS animation 只触发一次且不被中途移除断帧。
+   */
+  const prevLastTurnKeyRef = useRef<string | null>(null)
+  const lastVisibleTurn = visibleTurns[visibleTurns.length - 1]
+  const syntheticLiveTurnKey =
+    (running || runStartedAt != null) && lastVisibleTurn?.kind !== 'assistant-turn'
+      ? resolveRunTurnKey(visibleTurns, sessionId, true)
+      : null
+  const finalLastTurnKey = syntheticLiveTurnKey ?? lastVisibleTurn?.key ?? null
+  const [enterKey, setEnterKey] = useState<string | null>(null)
+  useEffect(() => {
+    if (
+      finalLastTurnKey &&
+      finalLastTurnKey !== prevLastTurnKeyRef.current &&
+      (running || runStartedAt != null)
+    ) {
+      prevLastTurnKeyRef.current = finalLastTurnKey
+      setEnterKey(finalLastTurnKey)
+      const timer = window.setTimeout(() => setEnterKey(null), 340)
+      return () => window.clearTimeout(timer)
+    }
+    prevLastTurnKeyRef.current = finalLastTurnKey
+  }, [finalLastTurnKey, running, runStartedAt])
 
   // 选择优先级：本会话最近选择 > 持久化会话选择 > 新会话全局选择。
   // 旧会话只有 channelId 没有 modelId 时，用该渠道当前默认模型做一次迁移。
@@ -1307,8 +1334,12 @@ export function Chat({
     }
     const measure = (): void => {
       const w = el.getBoundingClientRect().width
-      // 约 560：再塞满模型名+token 标签就会叠；右栏打开通常 < 560
-      setComposerCompact(crewPanelOpen || w < 560)
+      // 滞回：避免列宽贴着阈值时 compact class 和 RO 互推，打出 Maximum update depth
+      setComposerCompact((prev) => {
+        if (crewPanelOpen) return true
+        if (prev) return w < 576
+        return w < 544
+      })
     }
     measure()
     const ro = new ResizeObserver(() => measure())
@@ -2879,10 +2910,16 @@ export function Chat({
                   // 最新 assistant-turn 且本轮未硬停：过程区「一条路」展开。
                   // 用 startedAt 而非仅 running——turn_end 软停会短暂 running=false，
                   // 若据此收过程/拆回答会整段跳变；硬停才清 startedAt。
+                  //
+                  // 已记完成耗时的一轮禁止再标 live：send() 先 startRun、用户气泡
+                  // 要等 IPC/流式回声才进 items。中间那一帧 last turn 仍是上一轮
+                  // 助手，若仅看 runActive 会把已完成轮重新展开过程区，视口被顶到
+                  // 上一轮用户气泡，再闪回底部。
                   const isLiveTurn =
                     runActive &&
                     turnIndex === visibleTurns.length - 1 &&
-                    turn.kind === 'assistant-turn'
+                    turn.kind === 'assistant-turn' &&
+                    completedDurations[turn.key] == null
                   // 简洁：末尾 assistant 跑完可保持展开；发新一轮后 isLatest=false → 折叠
                   const isLatestAssistantTurn =
                     turn.kind === 'assistant-turn' &&
@@ -2919,6 +2956,7 @@ export function Chat({
                         onOpenDiscussion={(discussionId) => setOpenDiscussionId(discussionId)}
                         sessionId={sessionId}
                         onOpenAttachment={openAttachmentPreview}
+                        animateEnter={turn.key === enterKey}
                       />
                       {stoppedSyntheticKey ? (
                         <TurnView
@@ -2932,6 +2970,7 @@ export function Chat({
                           mentionRoles={mentionRoles}
                           subagentCards={subagentCards}
                           onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+                          animateEnter={stoppedSyntheticKey === enterKey}
                         />
                       ) : null}
                     </Fragment>
@@ -2963,6 +3002,7 @@ export function Chat({
                     mentionRoles={mentionRoles}
                     subagentCards={subagentCards}
                     onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+                    animateEnter={liveKey === enterKey}
                   />
                 )
               })()}
@@ -3069,7 +3109,6 @@ export function Chat({
               items={composerActivity.items}
               pillLabel={composerActivity.pillLabel}
               headerLabel={composerActivity.headerLabel}
-              onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
               onStopProcess={(processId) => {
                 void window.electronAPI.killSessionProcess?.(sessionId, processId)
               }}
@@ -3313,6 +3352,7 @@ function TurnView({
   onOpenDiscussion,
   sessionId,
   onOpenAttachment,
+  animateEnter = false,
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
@@ -3334,10 +3374,13 @@ function TurnView({
   /** 当前会话 id（MoA 圆桌卡建看板 CTA 用） */
   sessionId?: string
   onOpenAttachment?: (attachment: FileAttachment) => void
+  /** 本轮新出现的末尾消息：挂 message-enter 淡入上滑，取代「跳一下」。 */
+  animateEnter?: boolean
 }): JSX.Element {
+  const enterClass = animateEnter ? 'message-enter' : undefined
   if (turn.kind === 'user') {
     return (
-      <div data-message-id={turn.key}>
+      <div className={enterClass} data-message-id={turn.key}>
         <MessageView
           message={turn.message}
           onRefillToInput={onRefillToInput}
@@ -3349,7 +3392,7 @@ function TurnView({
   }
   if (turn.kind === 'assistant-turn') {
     return (
-      <div data-message-id={turn.key}>
+      <div className={enterClass} data-message-id={turn.key}>
         <AssistantTurnView
           turn={turn}
           isLiveTurn={isLiveTurn}
