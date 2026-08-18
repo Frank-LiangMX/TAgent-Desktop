@@ -1,31 +1,30 @@
 /**
- * 输入框旁「活动浮岛」数据：主会话外仍在跑的后台进程 + 子代理。
- * 纯函数，对齐 Cursor 输入框左上「1 Terminal」pill / 展开列表。
+ * 输入框旁「活动浮岛」数据：主会话时间线里没有的后台任务
+ *（Bash / 单独拉起的 CLI 工人）。主线子代理走消息流 + 摘要，不进这里。
  */
 import type { SessionBackgroundProcess } from '@tagent/shared'
-import type { TaskCardState } from './subagent-ui-model'
 
-export type ComposerActivityKind = 'process' | 'subagent'
+export type ComposerActivityKind = 'process'
 
 export type ComposerActivityItem = {
   id: string
   kind: ComposerActivityKind
-  /** 列表主文案：命令或子代理描述 */
+  /** 列表主文案：命令行 */
   title: string
   startedAt: number
-  /** 行左侧短标：终端 / CLI / 子代理 */
+  /** 行左侧短标：终端 / CLI */
   badge: string
-  processId?: string
-  parentToolUseId?: string
+  processId: string
 }
 
 export type ComposerActivitySummary = {
   items: ComposerActivityItem[]
   processCount: number
-  subagentCount: number
-  /** 收起 pill：`1 终端` / `1 子代理` / `1 终端 · 1 子代理` */
+  terminalCount: number
+  cliCount: number
+  /** 收起 pill：`1 终端` / `1 CLI` / `1 终端 · 1 CLI` */
   pillLabel: string
-  /** 展开头：`1 终端运行中` / `1 子代理运行中` / `2 项运行中` */
+  /** 展开头：`1 终端运行中` / `2 CLI 运行中` / `3 项后台运行中` */
   headerLabel: string
 }
 
@@ -38,17 +37,8 @@ function processTitle(command: string): string {
   return t || '后台命令'
 }
 
-function subagentTitle(card: TaskCardState): string {
-  const d = card.description?.replace(/\s+/g, ' ').trim()
-  if (d) return d
-  if (card.progressText?.trim()) return card.progressText.trim()
-  if (card.lastToolName?.trim()) return card.lastToolName.trim()
-  return '子代理'
-}
-
 export function collectComposerActivity(input: {
   processes?: readonly SessionBackgroundProcess[]
-  taskCards?: readonly TaskCardState[]
 }): ComposerActivityItem[] {
   const items: ComposerActivityItem[] = []
   for (const p of input.processes ?? []) {
@@ -61,17 +51,6 @@ export function collectComposerActivity(input: {
       processId: p.id,
     })
   }
-  for (const card of input.taskCards ?? []) {
-    if (card.status !== 'running') continue
-    items.push({
-      id: `sub:${card.taskId}`,
-      kind: 'subagent',
-      title: subagentTitle(card),
-      startedAt: card.startedAt ?? 0,
-      badge: '子代理',
-      parentToolUseId: card.toolUseId,
-    })
-  }
   items.sort((a, b) => a.startedAt - b.startedAt)
   return items
 }
@@ -79,19 +58,26 @@ export function collectComposerActivity(input: {
 export function summarizeComposerActivity(
   items: readonly ComposerActivityItem[],
 ): ComposerActivitySummary {
-  let processCount = 0
-  let subagentCount = 0
+  let terminalCount = 0
+  let cliCount = 0
   for (const it of items) {
-    if (it.kind === 'process') processCount++
-    else subagentCount++
+    if (it.badge === 'CLI') cliCount += 1
+    else terminalCount += 1
   }
   const parts: string[] = []
-  if (processCount > 0) parts.push(`${processCount} 终端`)
-  if (subagentCount > 0) parts.push(`${subagentCount} 子代理`)
+  if (terminalCount > 0) parts.push(`${terminalCount} 终端`)
+  if (cliCount > 0) parts.push(`${cliCount} CLI`)
   const pillLabel = parts.join(' · ')
-  const total = processCount + subagentCount
-  let headerLabel = `${total} 项运行中`
-  if (processCount > 0 && subagentCount === 0) headerLabel = `${processCount} 终端运行中`
-  else if (subagentCount > 0 && processCount === 0) headerLabel = `${subagentCount} 子代理运行中`
-  return { items: [...items], processCount, subagentCount, pillLabel, headerLabel }
+  const processCount = terminalCount + cliCount
+  let headerLabel = `${processCount} 项后台运行中`
+  if (cliCount === 0 && terminalCount > 0) headerLabel = `${terminalCount} 终端运行中`
+  else if (terminalCount === 0 && cliCount > 0) headerLabel = `${cliCount} CLI 运行中`
+  return {
+    items: [...items],
+    processCount,
+    terminalCount,
+    cliCount,
+    pillLabel,
+    headerLabel,
+  }
 }

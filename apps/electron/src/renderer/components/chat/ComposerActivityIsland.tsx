@@ -1,13 +1,13 @@
 /**
  * 输入框左上活动浮岛（Cursor「1 Terminal」）。
  *
- * 主会话外仍在跑的 Bash/CLI 后台进程 + 子代理：
- * 收起 pill 贴在运行计时胶囊右侧；点开列出命令/子代理与耗时。
- * 点 × 只收起；进程行可停；子代理行跳转详情。
+ * 只列主会话时间线里没有的后台任务：Bash / 单独拉起的 CLI 工人。
+ * 主线子代理走消息流入口 + 右上角摘要，不进这里。
+ * 收起 pill 贴在运行计时胶囊右侧；点开列出命令与耗时，进程行可停。
  */
 import { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
-import { Stop, TerminalWindow, Robot } from '@phosphor-icons/react'
+import { Stop, TerminalWindow } from '@phosphor-icons/react'
 import { AppTooltip } from '@tagent/ui'
 import { formatElapsedDuration, useLiveElapsedMs } from '../../lib/time-utils'
 import type { ComposerActivityItem } from './composer-activity-model'
@@ -23,13 +23,11 @@ export function ComposerActivityIsland({
   items,
   pillLabel,
   headerLabel,
-  onOpenSubagent,
   onStopProcess,
 }: {
   items: ComposerActivityItem[]
   pillLabel: string
   headerLabel: string
-  onOpenSubagent?: (parentToolUseId: string) => void
   onStopProcess?: (processId: string) => void
 }): JSX.Element | null {
   const [open, setOpen] = useState(false)
@@ -88,54 +86,31 @@ export function ComposerActivityIsland({
             </button>
           </div>
           <ul className="composer-activity-island__list">
-            {items.map((it) => {
-              const clickable = it.kind === 'subagent' && it.parentToolUseId && onOpenSubagent
-              return (
-                <li key={it.id} className="composer-activity-island__row">
-                  <span className="composer-activity-island__prompt" aria-hidden>
-                    {it.kind === 'subagent' ? (
-                      <Robot className="size-3.5" weight="bold" />
-                    ) : (
-                      <>
-                        <TerminalWindow className="size-3.5" weight="bold" />
-                        <span className="composer-activity-island__chevron">&gt;</span>
-                      </>
-                    )}
-                  </span>
-                  {clickable ? (
+            {items.map((it) => (
+              <li key={it.id} className="composer-activity-island__row">
+                <span className="composer-activity-island__prompt" aria-hidden>
+                  <TerminalWindow className="size-3.5" weight="bold" />
+                  <span className="composer-activity-island__chevron">&gt;</span>
+                </span>
+                <span className="composer-activity-island__title" title={it.title}>
+                  {it.title}
+                </span>
+                <ItemElapsed startedAt={it.startedAt} />
+                {it.processId && onStopProcess ? (
+                  <AppTooltip label={`停止 ${it.title}`}>
                     <button
                       type="button"
-                      className="composer-activity-island__title"
-                      title={it.title}
-                      onClick={() => {
-                        onOpenSubagent?.(it.parentToolUseId!)
-                        setOpen(false)
-                      }}
+                      className="composer-activity-island__stop"
+                      disabled={busyId === it.processId}
+                      aria-label={`停止 ${it.title}`}
+                      onClick={() => void stop(it.processId)}
                     >
-                      {it.title}
+                      <Stop className="size-3" weight="fill" />
                     </button>
-                  ) : (
-                    <span className="composer-activity-island__title" title={it.title}>
-                      {it.title}
-                    </span>
-                  )}
-                  <ItemElapsed startedAt={it.startedAt} />
-                  {it.kind === 'process' && it.processId && onStopProcess ? (
-                    <AppTooltip label={`停止 ${it.title}`}>
-                      <button
-                        type="button"
-                        className="composer-activity-island__stop"
-                        disabled={busyId === it.processId}
-                        aria-label={`停止 ${it.title}`}
-                        onClick={() => void stop(it.processId!)}
-                      >
-                        <Stop className="size-3" weight="fill" />
-                      </button>
-                    </AppTooltip>
-                  ) : null}
-                </li>
-              )
-            })}
+                  </AppTooltip>
+                ) : null}
+              </li>
+            ))}
           </ul>
         </div>
       ) : (

@@ -5,6 +5,7 @@ import { collectTurnFilePatches } from '../components/chat/concise-timeline-mode
 import {
   allNewHunks,
   computePatchBlockHunks,
+  computeTurnReviewHunks,
   computeUnifiedHunks,
   countDiffHunks,
   isLargeDiff,
@@ -204,6 +205,33 @@ describe('computeUnifiedHunks', () => {
     const hunks = computeUnifiedHunks(oldText, newText)
     const d = dump(hunks)
     expect(d.startsWith('+A')).toBe(true)
+  })
+})
+
+describe('computeTurnReviewHunks', () => {
+  it('shows deleted lines that whole-file LCS would hide as context', () => {
+    const oldText = 'keep\nremoved-only\nkeep2'
+    const newText = 'keep\nadded-only\nkeep2'
+    const after = `header\n${newText}\nfooter`
+    const hunks = computeTurnReviewHunks(
+      [patch({ kind: 'replace', oldText, newText })],
+      after,
+    )
+    const lines = hunks.flatMap((h) => h.lines)
+    expect(lines.some((l) => l.type === 'del' && l.text === 'removed-only')).toBe(true)
+    expect(lines.some((l) => l.type === 'add' && l.text === 'added-only')).toBe(true)
+    const del = lines.find((l) => l.type === 'del') as Extract<DiffLine, { type: 'del' }>
+    expect(del.oldNo).toBeGreaterThan(1)
+  })
+
+  it('keeps insert-only patches green-only', () => {
+    const hunks = computeTurnReviewHunks(
+      [patch({ kind: 'replace', oldText: 'a\nb', newText: 'a\nNEW\nb' })],
+      'a\nNEW\nb',
+    )
+    const lines = hunks.flatMap((h) => h.lines)
+    expect(lines.some((l) => l.type === 'add' && l.text === 'NEW')).toBe(true)
+    expect(lines.some((l) => l.type === 'del')).toBe(false)
   })
 })
 

@@ -7,6 +7,27 @@ import type { SessionBackgroundProcess } from '@tagent/shared'
 
 export const sessionProcessesMapAtom = atom<Record<string, SessionBackgroundProcess[]>>({})
 
+const EMPTY_PROCESSES: SessionBackgroundProcess[] = []
+
+function sameProcessList(
+  prev: SessionBackgroundProcess[] | undefined,
+  next: SessionBackgroundProcess[],
+): boolean {
+  if (prev === next) return true
+  if (!prev || prev.length !== next.length) return false
+  return prev.every((item, i) => {
+    const other = next[i]
+    return (
+      item === other ||
+      (item.id === other?.id &&
+        item.command === other.command &&
+        item.source === other.source &&
+        item.startedAt === other.startedAt &&
+        item.pid === other.pid)
+    )
+  })
+}
+
 export function useSessionProcesses(sessionId: string | null): SessionBackgroundProcess[] {
   const map = useAtomValue(sessionProcessesMapAtom)
   const setMap = useSetAtom(sessionProcessesMapAtom)
@@ -14,18 +35,23 @@ export function useSessionProcesses(sessionId: string | null): SessionBackground
   useEffect(() => {
     if (!sessionId) return
     let cancelled = false
+    const write = (list: SessionBackgroundProcess[]): void => {
+      setMap((prev) => {
+        if (sameProcessList(prev[sessionId], list)) return prev
+        return { ...prev, [sessionId]: list }
+      })
+    }
     void window.electronAPI.listSessionProcesses?.(sessionId).then((list) => {
       if (cancelled) return
-      setMap((prev) => ({ ...prev, [sessionId]: Array.isArray(list) ? list : [] }))
+      write(Array.isArray(list) ? list : [])
     })
     const off = window.electronAPI.onSessionProcessesChanged?.((payload) => {
       if (payload.sessionId !== sessionId) return
-      setMap((prev) => ({
-        ...prev,
-        [sessionId]: Array.isArray(payload.processes)
+      write(
+        Array.isArray(payload.processes)
           ? (payload.processes as SessionBackgroundProcess[])
           : [],
-      }))
+      )
     })
     return () => {
       cancelled = true
@@ -33,6 +59,6 @@ export function useSessionProcesses(sessionId: string | null): SessionBackground
     }
   }, [sessionId, setMap])
 
-  if (!sessionId) return []
-  return map[sessionId] ?? []
+  if (!sessionId) return EMPTY_PROCESSES
+  return map[sessionId] ?? EMPTY_PROCESSES
 }

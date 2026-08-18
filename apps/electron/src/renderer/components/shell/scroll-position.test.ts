@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import {
   compensateScrollForHeightDelta,
   hasSavedMidPosition,
+  shouldRepinScrollerToBottom,
   targetScrollTop,
 } from './scroll-position'
 
@@ -30,5 +31,48 @@ describe('scroll-position', () => {
   test('高度未增或缩短时不改 scrollTop', () => {
     expect(compensateScrollForHeightDelta(1200, 2000, 2000)).toBe(1200)
     expect(compensateScrollForHeightDelta(1200, 2000, 1600)).toBe(1200)
+  })
+
+  test('scroller RO：只在尚未揭开且明显不在底时再钉', () => {
+    expect(
+      shouldRepinScrollerToBottom({
+        restored: true,
+        settled: false,
+        hasMidPosition: false,
+        distanceFromBottom: 80,
+      }),
+    ).toBe(true)
+    expect(
+      shouldRepinScrollerToBottom({
+        restored: true,
+        settled: false,
+        hasMidPosition: false,
+        distanceFromBottom: 1,
+      }),
+    ).toBe(false)
+    expect(
+      shouldRepinScrollerToBottom({
+        restored: true,
+        settled: true,
+        hasMidPosition: false,
+        distanceFromBottom: 8,
+      }),
+    ).toBe(false)
+    expect(
+      shouldRepinScrollerToBottom({
+        restored: false,
+        settled: false,
+        hasMidPosition: false,
+        distanceFromBottom: 80,
+      }),
+    ).toBe(false)
+    expect(
+      shouldRepinScrollerToBottom({
+        restored: true,
+        settled: false,
+        hasMidPosition: true,
+        distanceFromBottom: 80,
+      }),
+    ).toBe(false)
   })
 })

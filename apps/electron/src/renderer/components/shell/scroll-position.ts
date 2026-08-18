@@ -37,3 +37,19 @@ export function compensateScrollForHeightDelta(
   if (delta <= 0) return scrollTop
   return scrollTop + delta
 }
+
+/**
+ * 打开会话时 scroller 从 0 高长到实际高度，内容 ResizeObserver 不响，
+ * 要靠盯 scroller 再钉一次。钉住之后绝不能再跟 RO：
+ * scrollToBottom → setIsAtBottom 会让 StickToBottom 重渲，列宽/滚动条 1px
+ * 抖动再触发 RO，就会 Maximum update depth exceeded。
+ */
+export function shouldRepinScrollerToBottom(args: {
+  restored: boolean
+  settled: boolean
+  hasMidPosition: boolean
+  distanceFromBottom: number
+}): boolean {
+  if (!args.restored || args.settled || args.hasMidPosition) return false
+  return args.distanceFromBottom > 2
+}

@@ -326,6 +326,37 @@ function countNewlinesUpto(text: string, upto: number): number {
  * 大文件回退：不跑全量 LCS，把每个 replace 当一个 hunk（del 块 + add 块），
  * Write 当全绿。newText 在 after 里的位置用于估算新行号（best-effort，旧行号近似同位置）。
  */
+/**
+ * 本轮审阅主路径：按 Edit 补丁做 old↔new 的 unified hunk（不是整文件 LCS）。
+ * 整文件 LCS 会把仍留在文件里的旧行收成上下文，补丁里的删除就看不见红。
+ */
+export function computeTurnReviewHunks(patches: FileEditPatch[], after: string): DiffHunk[] {
+  const hunks: DiffHunk[] = []
+  for (const p of patches) {
+    if (p.kind === 'write') {
+      hunks.push(...allNewHunks(p.newText))
+      continue
+    }
+    const raw = computeUnifiedHunks(p.oldText, p.newText)
+    if (raw.length === 0) continue
+    const atIdx = after.indexOf(p.newText)
+    const offset = atIdx >= 0 ? countNewlinesUpto(after, atIdx) : 0
+    for (const h of raw) {
+      hunks.push({
+        lines: h.lines.map((l) => {
+          if (l.type === 'add') return { ...l, newNo: l.newNo + offset }
+          if (l.type === 'del') return { ...l, oldNo: l.oldNo + offset }
+          if (l.type === 'ctx') {
+            return { ...l, oldNo: l.oldNo + offset, newNo: l.newNo + offset }
+          }
+          return l
+        }),
+      })
+    }
+  }
+  return hunks
+}
+
 export function computePatchBlockHunks(patches: FileEditPatch[], after: string): DiffHunk[] {
   const hunks: DiffHunk[] = []
   for (const p of patches) {

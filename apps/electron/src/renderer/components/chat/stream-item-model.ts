@@ -31,6 +31,7 @@ export function applyTextDelta(state: SessionStreamState, delta: string): Sessio
  * 不盲目 append，防重复/丢字。
  */
 export function applyTextReplace(state: SessionStreamState, text: string): SessionStreamState {
+  if (state.text === text) return state
   return { ...state, text }
 }
 
@@ -49,6 +50,7 @@ export function applyThinkingReplaceToState(
   state: SessionStreamState,
   text: string,
 ): SessionStreamState {
+  if (state.thinking === text) return state
   return { ...state, thinking: text }
 }
 
