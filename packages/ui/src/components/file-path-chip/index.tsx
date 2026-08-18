@@ -312,9 +312,8 @@ export function FilePathChip({
           onClick={handleClick}
           data-file-status={fileStatus}
           className={cn(
-            // 路径芯片：轻底 + 语言标；圆角适中（非 pill、非 2px 硬角）
-            // leading 略松：leading-none + truncate(overflow:hidden) 会裁掉 g/p 下沉
-            'inline-flex items-center gap-1 rounded-md border px-1.5 py-[0.2em] text-[0.9em] font-medium leading-[1.35]',
+            // 路径芯片：轻底 + 语言标。行高与徽章同高，避免中文字体基线把拉丁字沉下去。
+            'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[0.9em] font-medium leading-none',
             'cursor-pointer transition-colors align-middle not-prose',
             fileStatus === 'broken'
               ? 'border-dashed border-muted-foreground/30 bg-muted/10 text-muted-foreground opacity-60 hover:bg-muted/20 hover:opacity-80'
@@ -337,9 +336,11 @@ export function FilePathChip({
               {langBadge.label}
             </span>
           )}
-          <span className="max-w-[240px] truncate font-normal leading-[inherit] text-foreground/88">
-            {filename}
-            {lineColSuffix}
+          <span className="inline-flex h-4 max-w-[240px] min-w-0 items-center font-normal leading-none text-foreground/88">
+            <span className="min-w-0 truncate leading-none">
+              {filename}
+              {lineColSuffix}
+            </span>
           </span>
         </button>
       </TooltipTrigger>

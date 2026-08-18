@@ -95,16 +95,22 @@ export function TurnFilesChangedCard({ files, patches }: TurnFilesChangedCardPro
           </li>
         ))}
       </ul>
-      {!expanded && hidden > 0 ? (
+      {hidden > 0 ? (
         <button
           type="button"
           className="agent-files-changed__more"
-          onClick={() => setExpanded(true)}
+          onClick={() => setExpanded((v) => !v)}
         >
-          <span className="agent-files-changed__more-dots" aria-hidden>
-            …
-          </span>
-          Show {hidden} more
+          {expanded ? (
+            'Show less'
+          ) : (
+            <>
+              <span className="agent-files-changed__more-dots" aria-hidden>
+                …
+              </span>
+              Show {hidden} more
+            </>
+          )}
         </button>
       ) : null}
     </div>

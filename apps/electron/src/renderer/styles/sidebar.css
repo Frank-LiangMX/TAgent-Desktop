@@ -572,8 +572,11 @@
   background: hsl(var(--primary) / 0.1);
 }
 .ws-sub {
-  flex-basis: 100%;
-  margin: 2px 0 0 32px; /* 对齐 caret+ico 后的文字列 */
+  flex: 1 0 100%;
+  box-sizing: border-box;
+  margin: 2px 0 0;
+  /* 与工作区名左缘对齐：.ws-ico 14 + .group-head gap 6（组头已无 caret） */
+  padding-left: 20px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -582,9 +585,13 @@
 }
 .ws-sub .live {
   display: inline-flex;
+  align-items: center;
+  flex: none;
   gap: 3px;
 }
 .ws-sub .live i {
+  display: block;
+  flex: none;
   width: 5px;
   height: 5px;
   border-radius: 999px;
