@@ -275,16 +275,17 @@ beforeEach(() => {
 // ===== buildRoomBridgeTools：schema 限权 =====
 
 describe('buildRoomBridgeTools — schema 限权', () => {
-  test('仅暴露 room_send/room_ask/room_reply/room_task_update/room_publish_artifact 五把工具，绝不混入会话工具', () => {
+  test('仅暴露协作室六把受控工具，绝不混入会话工具', () => {
     const tools = buildRoomBridgeTools({
       hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
       abortAgent: vi.fn(),
     })
-    expect(tools).toHaveLength(5)
+    expect(tools).toHaveLength(6)
     expect(tools.map((t) => t.name)).toEqual([
       'room_send',
       'room_ask',
       'room_reply',
+      'room_task_assign',
       'room_task_update',
       'room_publish_artifact',
     ])
@@ -342,12 +343,24 @@ describe('buildRoomBridgeTools — schema 限权', () => {
     expect(schema.required).toEqual(['requestId', 'answer'])
   })
 
-  test('room_task_update schema：taskId + status 必填，summary 可选，additionalProperties 锁死', () => {
+  test('room_task_assign schema：taskId + assigneeMemberId 必填，additionalProperties 锁死', () => {
     const tools = buildRoomBridgeTools({
       hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
       abortAgent: vi.fn(),
     })
     const schema = tools[3]!.parameters as Record<string, unknown>
+    expect(schema.type).toBe('object')
+    expect(Object.keys(schema.properties as object)).toEqual(['taskId', 'assigneeMemberId'])
+    expect(schema.required).toEqual(['taskId', 'assigneeMemberId'])
+    expect(schema.additionalProperties).toBe(false)
+  })
+
+  test('room_task_update schema：taskId + status 必填，summary 可选，additionalProperties 锁死', () => {
+    const tools = buildRoomBridgeTools({
+      hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
+      abortAgent: vi.fn(),
+    })
+    const schema = tools[4]!.parameters as Record<string, unknown>
     expect(schema.type).toBe('object')
     expect(Object.keys(schema.properties as object).sort()).toEqual(['status', 'summary', 'taskId'])
     expect(schema.required).toEqual(['taskId', 'status'])
@@ -361,7 +374,7 @@ describe('buildRoomBridgeTools — schema 限权', () => {
       hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
       abortAgent: vi.fn(),
     })
-    const schema = tools[4]!.parameters as Record<string, unknown>
+    const schema = tools[5]!.parameters as Record<string, unknown>
     expect(schema.type).toBe('object')
     expect(Object.keys(schema.properties as object).sort()).toEqual([
       'content',
@@ -462,6 +475,23 @@ describe('buildRoomBridgeTools — tool-call 转发到宿主 hostToolHandler', (
       { type: 'text', text: '任务已更新（task=crt_1，状态=in_progress，version=2）' },
     ])
     expect(res.details).toEqual({ output: '任务已更新（task=crt_1，状态=in_progress，version=2）' })
+  })
+
+  test('room_task_assign.execute：只转发 taskId + assigneeMemberId，不暂停当前 run', async () => {
+    const handler = vi.fn(async () => ({ output: '任务已分派（run=run_dev）' })) as unknown as CollaborationHostToolHandler
+    const abortAgent = vi.fn()
+    const tools = buildRoomBridgeTools({ hostToolHandler: handler, abortAgent })
+    const assign = tools.find((t) => t.name === 'room_task_assign')!
+    const res = (await assign.execute('tc-assign', {
+      taskId: 'crt_1',
+      assigneeMemberId: 'cm_dev',
+    })) as { content: Array<{ type: string; text: string }> }
+    expect(handler).toHaveBeenCalledWith({
+      name: 'room_task_assign',
+      arguments: { taskId: 'crt_1', assigneeMemberId: 'cm_dev' },
+    })
+    expect(abortAgent).not.toHaveBeenCalled()
+    expect(res.content).toEqual([{ type: 'text', text: '任务已分派（run=run_dev）' }])
   })
 
   test('room_task_update.execute：summary 缺省时不塞空串（handler 据缺省视为无说明）', async () => {
@@ -609,6 +639,7 @@ describe('ChannelBackendAdapter.runTurn — Anthropic 外部渠道原生工具�
       'room_send',
       'room_ask',
       'room_reply',
+      'room_task_assign',
       'room_task_update',
       'room_publish_artifact',
     ])

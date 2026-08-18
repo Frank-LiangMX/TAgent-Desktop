@@ -919,3 +919,105 @@ describe('CollaborationRoomService.roomTaskUpdate（受控 room_task_update 工�
     expect(svc.listMessages(room.id).filter((m) => m.kind === 'task_event')).toHaveLength(2)
   })
 })
+
+describe('CollaborationRoomService.roomTaskAssign（受控 room_task_assign 工具）', () => {
+  test('协调者分派未指派任务后，目标成员自动获得 run', async () => {
+    const { adapter, calls } = mkTaskTriggerAdapter()
+    const svc = CollaborationRoomService.create({ adapter })
+    const room = svc.createRoom({
+      title: '协调分派',
+      members: [{ displayName: '协调者', isCoordinator: true }, { displayName: '开发' }],
+    })
+    const members = svc.listMembers(room.id)
+    const coordinator = members.find((member) => member.isCoordinator)!
+    const developer = members.find((member) => !member.isCoordinator)!
+    const task = svc.createRoomTask({ roomId: room.id, title: '待分派' })
+    await svc.awaitAllRuns()
+
+    const coordinatorRunId = mkRunningRun(room.id, coordinator.id)
+    const result = svc.roomTaskAssign({
+      roomId: room.id,
+      fromRunId: coordinatorRunId,
+      taskId: task.id,
+      assigneeMemberId: developer.id,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.assigneeMemberId).toBe(developer.id)
+    expect(result.runId).toBeDefined()
+
+    await svc.awaitAllRuns()
+    expect(svc.getRoomTaskById(task.id)?.assigneeMemberId).toBe(developer.id)
+    expect(svc.getRoomTaskById(task.id)?.version).toBe(2)
+    expect(svc.listRuns(room.id).find((run) => run.id === result.runId)?.memberId).toBe(developer.id)
+    expect(svc.listRuns(room.id).find((run) => run.id === result.runId)?.status).toBe('done')
+    expect(calls.some((call) => call.memberId === developer.id && call.prompt.includes('待分派'))).toBe(
+      true,
+    )
+
+    const assignment = svc
+      .listMessages(room.id)
+      .find((message) => message.kind === 'task_event' && message.taskId === task.id)!
+    expect(assignment.authorId).toBe(coordinator.id)
+    expect(assignment.targetMemberIds).toEqual([developer.id])
+  })
+
+  test('非协调者、跨房间成员和已有负责人均拒绝分派', async () => {
+    const { adapter } = mkTaskTriggerAdapter()
+    const svc = CollaborationRoomService.create({ adapter })
+    const room = svc.createRoom({
+      title: '分派权限',
+      members: [{ displayName: '协调者', isCoordinator: true }, { displayName: '开发' }],
+    })
+    const otherRoom = svc.createRoom({ title: '另一个房间', members: [{ displayName: '外部' }] })
+    const members = svc.listMembers(room.id)
+    const coordinator = members.find((member) => member.isCoordinator)!
+    const developer = members.find((member) => !member.isCoordinator)!
+    const outsider = svc.listMembers(otherRoom.id)[0]!
+    const task = svc.createRoomTask({ roomId: room.id, title: '待分派' })
+    await svc.awaitAllRuns()
+
+    const developerRun: CollaborationRun = {
+      id: `run_${room.id}_${developer.id}`,
+      roomId: room.id,
+      memberId: developer.id,
+      triggerMessageId: `msg_${room.id}_${developer.id}`,
+      idempotencyKey: `msg_${room.id}_${developer.id}:${developer.id}`,
+      status: 'running',
+      attempt: 0,
+    }
+    upsertRun(developerRun)
+    const notCoordinator = svc.roomTaskAssign({
+      roomId: room.id,
+      fromRunId: developerRun.id,
+      taskId: task.id,
+      assigneeMemberId: coordinator.id,
+    })
+    expect(notCoordinator).toEqual({ ok: false, reason: '只有协调者可以分派任务' })
+
+    const coordinatorRun = mkRunningRun(room.id, coordinator.id)
+    const crossRoom = svc.roomTaskAssign({
+      roomId: room.id,
+      fromRunId: coordinatorRun,
+      taskId: task.id,
+      assigneeMemberId: outsider.id,
+    })
+    expect(crossRoom).toEqual({ ok: false, reason: '负责人不属于该房间' })
+
+    const assigned = svc.createRoomTask({
+      roomId: room.id,
+      title: '已有负责人',
+      assigneeMemberId: developer.id,
+    })
+    const alreadyAssigned = svc.roomTaskAssign({
+      roomId: room.id,
+      fromRunId: coordinatorRun,
+      taskId: assigned.id,
+      assigneeMemberId: coordinator.id,
+    })
+    expect(alreadyAssigned).toEqual({
+      ok: false,
+      reason: '任务已有负责人，不能通过工具覆盖（请由用户/面板重新指派）',
+    })
+  })
+})

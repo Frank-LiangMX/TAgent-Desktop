@@ -279,6 +279,7 @@ export interface CollaborationHostToolCall {
     | 'room_send'
     | 'room_ask'
     | 'room_reply'
+    | 'room_task_assign'
     | 'room_task_update'
     | 'room_publish_artifact'
   arguments: Record<string, string>

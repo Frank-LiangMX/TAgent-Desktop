@@ -1183,6 +1183,21 @@ export class CollaborationRoomService {
                 ? { output: `回复已发送（envelope=${result.envelopeId}）` }
                 : { output: `room_reply 被拒绝：${result.reason}`, isError: true }
             }
+            case 'room_task_assign': {
+              // 受控任务分派：只有协调者可以把未指派任务交给本房间成员；成功后
+              // 宿主会把 assignment 事件作为新 trigger，自动启动目标成员。
+              const result = this.roomTaskAssign({
+                roomId: room.id,
+                fromRunId: run.id,
+                taskId: call.arguments.taskId ?? '',
+                assigneeMemberId: call.arguments.assigneeMemberId ?? '',
+              })
+              return result.ok
+                ? {
+                    output: `任务已分派（task=${result.taskId}，负责人=${result.assigneeMemberId}，run=${result.runId ?? 'queued'}）`,
+                  }
+                : { output: `room_task_assign 被拒绝：${result.reason}`, isError: true }
+            }
             case 'room_task_update': {
               // 受控任务更新：宿主校验归属/挂板/负责人/状态机；summary 仅作可审计事件。
               // 成功/失败均回注安全文本；绝不暴露 filesystem/shell/database，也改不了权威字段。
@@ -1401,7 +1416,7 @@ export class CollaborationRoomService {
   // 02-RUNTIME-A2A-SPEC §2.6 / 03-IMPLEMENTATION-PHASES §7：room task 仅在房间未挂载看板
   // （attachedBoardId 为空）时是任务真值。挂载看板后任务真值归看板，room 不再维护另一份
   // 独立任务状态（不变量 §15.7）；此处 create/update 一律 fail closed，list/get 仍开放
-  // 供历史追溯。本切片不做看板桥 / 产物 / 模型工具（room_task_update 等）。
+  // 供历史追溯。本切片不做看板桥；模型侧通过受控任务分派/更新与产物工具推进。
 
   /**
    * 创建轻量 room task（仅未挂载看板时）。
@@ -1539,6 +1554,78 @@ export class CollaborationRoomService {
     }
     this.broadcast(room.id, 'updated')
     return next
+  }
+
+  /**
+   * room_task_assign：协调者把未指派任务交给本房间成员，并自动触发目标成员 run。
+   *
+   * 这是“无 @ 建任务 → 协调者读到 → 协调者派发”的闭环。安全边界：房间必须 active、
+   * run 必须属于协调者且处于 running/awaiting_peer、任务和目标成员必须同房间、
+   * 任务不能已挂板或已有负责人；任务版本用 CAS 自增，分派事件带 run/task 因果链。
+   */
+  roomTaskAssign(input: {
+    roomId: string
+    fromRunId: string
+    taskId: string
+    assigneeMemberId: string
+  }):
+    | { ok: true; taskId: string; assigneeMemberId: string; version: number; runId?: string }
+    | { ok: false; reason: string } {
+    const room = getRoom(input.roomId)
+    if (!room) return { ok: false, reason: '房间不存在' }
+    if (room.status !== 'active') return { ok: false, reason: `房间状态非 active：${room.status}` }
+
+    const run = getRun(input.fromRunId)
+    if (!run) return { ok: false, reason: 'run 不存在' }
+    if (run.status !== 'running' && run.status !== 'awaiting_peer') {
+      return { ok: false, reason: `run 非 running/awaiting_peer：${run.status}` }
+    }
+    if (run.roomId !== room.id) return { ok: false, reason: 'run 不属于该房间' }
+
+    const fromMember = getMember(run.memberId)
+    if (!fromMember || fromMember.roomId !== room.id) {
+      return { ok: false, reason: '发起成员不存在或不属于本房间' }
+    }
+    if (room.coordinatorMemberId !== fromMember.id) {
+      return { ok: false, reason: '只有协调者可以分派任务' }
+    }
+
+    const task = getRoomTask(input.taskId)
+    if (!task) return { ok: false, reason: '任务不存在' }
+    if (task.roomId !== room.id) return { ok: false, reason: '任务不属于该房间' }
+    if (this.roomHasAttachedBoard(room)) {
+      return { ok: false, reason: '房间已挂载看板，任务真值由看板维护，不能在房间内分派任务' }
+    }
+    if (task.assigneeMemberId) {
+      return { ok: false, reason: '任务已有负责人，不能通过工具覆盖（请由用户/面板重新指派）' }
+    }
+
+    const assigneeMemberId = input.assigneeMemberId.trim()
+    const assignee = getMember(assigneeMemberId)
+    if (!assignee || assignee.roomId !== room.id) {
+      return { ok: false, reason: '负责人不属于该房间' }
+    }
+
+    const next: CollaborationRoomTask = {
+      ...task,
+      assigneeMemberId: assignee.id,
+      version: task.version + 1,
+      updatedAt: Date.now(),
+    }
+    if (!saveRoomTaskIfCurrent(task.id, task.version, next)) {
+      return { ok: false, reason: '任务已被其他操作更新，请刷新后重试' }
+    }
+
+    const assignment = this.appendTaskAssignmentMessage(room, fromMember, next, run)
+    const dispatched = this.triggerRunForMessage(room, assignment)
+    this.broadcast(room.id, 'updated')
+    return {
+      ok: true,
+      taskId: next.id,
+      assigneeMemberId: assignee.id,
+      version: next.version,
+      runId: dispatched[0]?.id,
+    }
   }
 
   /**
@@ -2071,6 +2158,7 @@ export class CollaborationRoomService {
   ): CollaborationMessage {
     const content = [
       `新任务待处理：「${task.title}」`,
+      `任务 ID：${task.id}`,
       task.description ? `任务说明：${task.description}` : '',
       task.acceptanceCriteria ? `验收标准：${task.acceptanceCriteria}` : '',
       task.assigneeMemberId
@@ -2092,6 +2180,34 @@ export class CollaborationRoomService {
       visibility: 'room',
       targetMemberIds: task.assigneeMemberId ? [task.assigneeMemberId] : [],
       rootMessageId: id,
+      taskId: task.id,
+      depth: 0,
+      createdAt: Date.now(),
+    }
+    appendMessage(message)
+    return message
+  }
+
+  /** 落盘一条协调者分派任务事件；该事件同时作为目标成员的 trigger。 */
+  private appendTaskAssignmentMessage(
+    room: CollaborationRoom,
+    coordinator: CollaborationMember,
+    task: CollaborationRoomTask,
+    run: CollaborationRun,
+  ): CollaborationMessage {
+    const assignee = task.assigneeMemberId ?? ''
+    const message: CollaborationMessage = {
+      id: genId(COLLABORATION_MESSAGE_ID_PREFIX),
+      roomId: room.id,
+      authorType: 'member',
+      authorId: coordinator.id,
+      kind: 'task_event',
+      content: `协调者已将任务「${task.title}」（任务 ID：${task.id}）分派给成员 ${assignee}，请开始处理。`,
+      visibility: 'room',
+      targetMemberIds: [assignee],
+      rootMessageId: run.triggerMessageId,
+      causationId: run.id,
+      runId: run.id,
       taskId: task.id,
       depth: 0,
       createdAt: Date.now(),
