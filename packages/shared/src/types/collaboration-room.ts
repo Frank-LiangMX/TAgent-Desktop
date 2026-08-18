@@ -216,6 +216,23 @@ export interface CollaborationRoomBudget {
   maxUsageTokens?: number
 }
 
+/** 校验房间预算；未提供的上限表示不启用该项。 */
+export function validateCollaborationRoomBudget(budget?: CollaborationRoomBudget): string[] {
+  if (!budget) return []
+  const errors: string[] = []
+  const check = (name: keyof CollaborationRoomBudget, min: number, max: number): void => {
+    const value = budget[name]
+    if (value === undefined) return
+    if (!Number.isInteger(value) || value < min || value > max) {
+      errors.push(`${String(name)} 须为 ${min}–${max} 的整数`)
+    }
+  }
+  check('maxTurns', 1, 10_000)
+  check('maxWallTimeMs', 1_000, 86_400_000)
+  check('maxUsageTokens', 1, 100_000_000)
+  return errors
+}
+
 /**
  * 角色快照（02-RUNTIME-A2A-SPEC §2.2）
  *
@@ -1698,5 +1715,6 @@ export function validateCreateCollaborationRoomInput(
       `summaryEveryUtterances 须在 ${COLLABORATION_SUMMARY_MIN_EVERY_UTTERANCES}–${COLLABORATION_SUMMARY_MAX_EVERY_UTTERANCES}`,
     )
   }
+  errors.push(...validateCollaborationRoomBudget(input.budget))
   return errors
 }

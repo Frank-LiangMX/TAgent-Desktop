@@ -15,6 +15,7 @@ import {
   parseCollaborationMentions,
   resolveCollaborationMentions,
   stripCollaborationRoutableMentions,
+  validateCollaborationRoomBudget,
   validateCreateCollaborationRoomInput,
   type CollaborationMember,
   type CreateCollaborationRoomInput,
@@ -431,5 +432,14 @@ describe('nextCollaborationMentionAliases', () => {
   test('同名改写（仅大小写）不堆积别名', () => {
     expect(nextCollaborationMentionAliases(undefined, '开发', '开发')).toEqual([])
     expect(nextCollaborationMentionAliases(['开发'], '开发', '开发')).toEqual([])
+  })
+})
+
+describe('validateCollaborationRoomBudget', () => {
+  test('接受有效预算，拒绝非整数和越界值', () => {
+    expect(validateCollaborationRoomBudget({ maxTurns: 10, maxWallTimeMs: 60_000, maxUsageTokens: 20_000 })).toEqual([])
+    expect(validateCollaborationRoomBudget({ maxTurns: 0 })).not.toEqual([])
+    expect(validateCollaborationRoomBudget({ maxWallTimeMs: 500 })).not.toEqual([])
+    expect(validateCollaborationRoomBudget({ maxUsageTokens: 1.5 })).not.toEqual([])
   })
 })

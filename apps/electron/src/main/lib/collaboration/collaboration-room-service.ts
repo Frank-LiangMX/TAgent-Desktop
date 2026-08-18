@@ -70,6 +70,7 @@ import {
   transitionCollaborationMailboxState,
   transitionCollaborationRoomTaskStatus,
   validateCreateCollaborationRoomInput,
+  validateCollaborationRoomBudget,
   mapKanbanTaskToProjected,
   summarizeProjectedBoardTasks,
   type CollaborationArtifact,
@@ -321,6 +322,8 @@ export class CollaborationRoomService {
     if (input.status !== undefined && !isCollaborationRoomStatus(input.status)) {
       throw new Error(`非法房间状态：${String(input.status)}`)
     }
+    const budgetErrors = validateCollaborationRoomBudget(input.budget)
+    if (budgetErrors.length > 0) throw new Error(budgetErrors.join('；'))
 
     const now = Date.now()
     const nextStatus = input.status ?? existing.status
@@ -1102,6 +1105,9 @@ export class CollaborationRoomService {
     const controller = new AbortController()
     this.abortControllers.set(run.id, controller)
     const startedAt = Date.now()
+    let budgetExceeded = false
+    let toolCallCount = 0
+    let budgetTimer: ReturnType<typeof setTimeout> | undefined
 
     try {
       // queued → running（scheduler 启动后；若已被取消则 CAS 失败 → 退出，finally 仍 release）
@@ -1111,6 +1117,12 @@ export class CollaborationRoomService {
       this.setMemberStatus(member.id, 'running')
       this.markEnvelopeAccepted(run.id, room.id)
       this.broadcast(room.id, 'run-started')
+      if (room.budget.maxWallTimeMs !== undefined) {
+        budgetTimer = setTimeout(() => {
+          budgetExceeded = true
+          controller.abort()
+        }, room.budget.maxWallTimeMs)
+      }
 
       // 组装上下文投影 + 调后端
       const allMembers = loadMembers(room.id)
@@ -1168,6 +1180,12 @@ export class CollaborationRoomService {
           })
         },
         hostToolHandler: async (call) => {
+          toolCallCount += 1
+          if (room.budget.maxTurns !== undefined && toolCallCount > room.budget.maxTurns) {
+            budgetExceeded = true
+            controller.abort()
+            return { output: `已达到本根消息的 maxTurns 预算（${room.budget.maxTurns}）`, isError: true }
+          }
           switch (call.name) {
             case 'room_send': {
               const result = this.roomSend({
@@ -1348,6 +1366,25 @@ export class CollaborationRoomService {
       }
       const result = await this.adapter.runTurn(input)
 
+      const usage = result.usage ?? { wallTimeMs: Date.now() - startedAt }
+      if (
+        room.budget.maxUsageTokens !== undefined &&
+        usage.totalTokens !== undefined &&
+        usage.totalTokens > room.budget.maxUsageTokens
+      ) {
+        budgetExceeded = true
+      }
+      if (budgetExceeded) {
+        const error: CollaborationSerializedRunError = {
+          code: 'BUDGET_EXCEEDED',
+          message: '协作室预算已耗尽，已阻止本次 run 完成',
+        }
+        this.casRun(run.id, 'running', 'failed', { finishedAt: Date.now(), error, usage })
+        this.appendSystemMessage(room.id, `成员「${member.displayName}」执行达到预算上限，run 已停止。`)
+        this.broadcast(room.id, 'run-finished')
+        return
+      }
+
       // 被取消则不写成员消息。awaiting_peer / 已被 continuation 收口的 run 不得覆盖为 cancelled。
       if (controller.signal.aborted) {
         const current = getRun(run.id)
@@ -1367,12 +1404,22 @@ export class CollaborationRoomService {
       const finishedAt = Date.now()
       this.casRun(run.id, 'running', 'done', {
         finishedAt,
-        usage: result.usage ?? { wallTimeMs: finishedAt - startedAt },
+        usage,
       })
       this.appendMemberMessage(room, member, triggerMessage, result.text, run.id)
       this.broadcast(room.id, 'run-finished')
       this.kickSummary(room)
     } catch (err) {
+      if (budgetExceeded) {
+        const error: CollaborationSerializedRunError = {
+          code: 'BUDGET_EXCEEDED',
+          message: '协作室预算已耗尽，已中止本次 run',
+        }
+        this.casRun(run.id, 'running', 'failed', { finishedAt: Date.now(), error })
+        this.appendSystemMessage(room.id, `成员「${member.displayName}」执行达到预算上限，run 已停止。`)
+        this.broadcast(room.id, 'run-finished')
+        return
+      }
       if (controller.signal.aborted) {
         const current = getRun(run.id)
         if (
@@ -1396,6 +1443,7 @@ export class CollaborationRoomService {
       )
       this.broadcast(room.id, 'run-finished')
     } finally {
+      if (budgetTimer) clearTimeout(budgetTimer)
       this.abortControllers.delete(run.id)
       this.inflight.delete(run.id)
       // 释放调度器 slot → drain 启动后续排队 run；再同步成员状态（queued/idle）
