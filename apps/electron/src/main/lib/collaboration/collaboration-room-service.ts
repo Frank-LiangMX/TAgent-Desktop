@@ -1409,6 +1409,9 @@ export class CollaborationRoomService {
    * - 房间须存在且未挂载看板：挂载后任务真值归看板，不能在房间内创建（不变量 §15.7）。
    * - 标题必填非空；负责人（若指定）须为本房间成员。
    * - 初始 status='todo'、version=1。
+   * - 房间 active 时自动落一条系统 warning 并触发一次协作 run：有明确负责人时直达负责人，
+   *   未指派时按普通无 @ 消息路由给协调者。这样从工作面板新建任务也会进入协作流程，
+   *   不要求用户再回到聊天框手动 @。
    */
   createRoomTask(input: CreateCollaborationRoomTaskInput): CollaborationRoomTask {
     const room = getRoom(input.roomId)
@@ -1441,7 +1444,19 @@ export class CollaborationRoomService {
       updatedAt: now,
     }
     upsertRoomTask(task)
+    // 创建任务也是房间活动，刷新侧栏排序和房间更新时间。
+    upsertRoom({ ...room, updatedAt: now })
     this.broadcast(room.id, 'updated')
+
+    // 工作面板创建任务不是“只写数据库”的死路：把任务投影成系统 warning，
+    // 再复用现有消息路由/调度器。未指定负责人时 targetMemberIds 为空，
+    // triggerRunForMessage 会按既有规则投递协调者；指定负责人则视为显式目标。
+    if (room.status === 'active') {
+      const trigger = this.appendTaskCreatedMessage(room, task)
+      this.triggerRunForMessage(room, trigger)
+      this.kickSummary(room)
+    }
+
     return task
   }
 
@@ -2041,6 +2056,48 @@ export class CollaborationRoomService {
       createdAt: Date.now(),
     }
     appendMessage(message)
+  }
+
+  /**
+   * 落盘一条“新任务待处理”系统通知。
+   *
+   * 这是工作面板创建任务与聊天触发链之间的桥：事件本身可在时间线审计，
+   * 同时作为 triggerMessage 交给现有协调者路由。显式负责人是直接目标；
+   * targetMemberIds 为空时沿用“无 @ → 协调者”的默认路由。
+   */
+  private appendTaskCreatedMessage(
+    room: CollaborationRoom,
+    task: CollaborationRoomTask,
+  ): CollaborationMessage {
+    const content = [
+      `新任务待处理：「${task.title}」`,
+      task.description ? `任务说明：${task.description}` : '',
+      task.acceptanceCriteria ? `验收标准：${task.acceptanceCriteria}` : '',
+      task.assigneeMemberId
+        ? '请直接开始处理该任务，并在完成后更新任务状态。'
+        : '请判断合适的负责人并推进；如需用户指派，请明确提出。',
+    ]
+      .filter(Boolean)
+      .join('\n')
+    const id = genId(COLLABORATION_MESSAGE_ID_PREFIX)
+    const message: CollaborationMessage = {
+      id,
+      roomId: room.id,
+      authorType: 'system',
+      authorId: 'system',
+      // 任务状态变更专用 task_event 仍只由 room_task_update 产生；创建通知使用
+      // warning，避免被误认成一次状态迁移。
+      kind: 'warning',
+      content,
+      visibility: 'room',
+      targetMemberIds: task.assigneeMemberId ? [task.assigneeMemberId] : [],
+      rootMessageId: id,
+      taskId: task.id,
+      depth: 0,
+      createdAt: Date.now(),
+    }
+    appendMessage(message)
+    return message
   }
 
   /**

@@ -24,6 +24,10 @@ import {
   type CollaborationRoomTask,
   type CollaborationRoomTaskStatus,
   type CollaborationRun,
+  type CollaborationMemberCapabilities,
+  type MemberBackendAdapter,
+  type MemberTurnInput,
+  type MemberTurnResult,
 } from '@tagent/shared'
 import { CollaborationRoomService } from './collaboration-room-service'
 import { getRoom, upsertRoom, upsertRun } from './collaboration-room-repository'
@@ -51,6 +55,25 @@ function mkRoomWithCoordinator(
   })
   const coordinatorId = svc.listMembers(room.id)[0]!.id
   return { room, coordinatorId }
+}
+
+const TASK_TEST_CAPABILITIES: CollaborationMemberCapabilities = {
+  supportsResume: false,
+  supportsLiveInput: false,
+  supportsToolBridge: false,
+  supportsStructuredEvents: false,
+}
+
+function mkTaskTriggerAdapter(): { adapter: MemberBackendAdapter; calls: MemberTurnInput[] } {
+  const calls: MemberTurnInput[] = []
+  const adapter: MemberBackendAdapter = {
+    capabilities: () => TASK_TEST_CAPABILITIES,
+    runTurn: async (input: MemberTurnInput): Promise<MemberTurnResult> => {
+      calls.push(input)
+      return { text: '已收到任务' }
+    },
+  }
+  return { adapter, calls }
 }
 
 // ===== 纯状态机（不读 DB / 不依赖时间） =====
@@ -126,6 +149,62 @@ describe('transitionCollaborationRoomTaskStatus 纯状态机', () => {
 // ===== service 集成（持久化 / 校验 / 重启） =====
 
 describe('CollaborationRoomService.createRoomTask', () => {
+  test('未 @ / 未指派：建任务自动触发协调者，并把任务内容投影给它', async () => {
+    const { adapter, calls } = mkTaskTriggerAdapter()
+    const svc = CollaborationRoomService.create({ adapter })
+    const { room, coordinatorId } = mkRoomWithCoordinator(svc, '自动协调')
+
+    const task = svc.createRoomTask({
+      roomId: room.id,
+      title: '补任务入口',
+      description: '不能只停在面板里',
+      acceptanceCriteria: '创建后能看到 run',
+    })
+    await svc.awaitAllRuns()
+
+    const runs = svc.listRuns(room.id)
+    expect(runs).toHaveLength(1)
+    expect(runs[0]!.memberId).toBe(coordinatorId)
+    expect(runs[0]!.status).toBe('done')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.prompt).toContain('补任务入口')
+    expect(calls[0]!.prompt).toContain('不能只停在面板里')
+    expect(calls[0]!.prompt).toContain('创建后能看到 run')
+
+    const notice = svc.listMessages(room.id).find((m) => m.taskId === task.id)!
+    expect(notice.kind).toBe('warning')
+    expect(notice.authorType).toBe('system')
+    expect(notice.targetMemberIds).toEqual([])
+  })
+
+  test('显式负责人：建任务直接触发负责人，不再额外批量启动', async () => {
+    const { adapter, calls } = mkTaskTriggerAdapter()
+    const svc = CollaborationRoomService.create({ adapter })
+    const room = svc.createRoom({
+      title: '直接指派',
+      members: [
+        { displayName: '协调者', isCoordinator: true },
+        { displayName: '开发', isCoordinator: false },
+      ],
+    })
+    const members = svc.listMembers(room.id)
+    const developer = members.find((member) => member.displayName === '开发')!
+
+    const task = svc.createRoomTask({
+      roomId: room.id,
+      title: '直接做',
+      assigneeMemberId: developer.id,
+    })
+    await svc.awaitAllRuns()
+
+    expect(svc.listRuns(room.id)).toHaveLength(1)
+    expect(svc.listRuns(room.id)[0]!.memberId).toBe(developer.id)
+    expect(calls[0]!.memberId).toBe(developer.id)
+    expect(svc.listMessages(room.id).find((m) => m.taskId === task.id)?.targetMemberIds).toEqual([
+      developer.id,
+    ])
+  })
+
   test('持久化：id 前缀 crt_ / version=1 / status=todo / timestamps', () => {
     const svc = CollaborationRoomService.create()
     const { room, coordinatorId } = mkRoomWithCoordinator(svc, '任务持久化')
