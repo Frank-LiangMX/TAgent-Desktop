@@ -33,6 +33,8 @@ import {
   readFileSync,
   readSync,
   realpathSync,
+  renameSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep, basename } from 'node:path'
@@ -103,6 +105,7 @@ import {
   COLLABORATION_WORKSPACE_SEARCH_MAX_DEPTH,
   COLLABORATION_WORKSPACE_SEARCH_MAX_RESULTS,
   COLLABORATION_WORKSPACE_WRITE_MAX_BYTES,
+  COLLABORATION_WORKSPACE_PATCH_MAX_BYTES,
 } from '@tagent/shared'
 import {
   runWorkspaceCommand,
@@ -1307,6 +1310,39 @@ export class CollaborationRoomService {
                   }
                 : { output: `workspace_run_command 被拒绝：${result.reason}`, isError: true }
             }
+            case 'workspace_apply_patch': {
+              const result = this.workspaceApplyPatch({
+                roomId: room.id,
+                fromRunId: run.id,
+                path: call.arguments.path ?? '',
+                oldText: call.arguments.oldText ?? '',
+                newText: call.arguments.newText ?? '',
+              })
+              return result.ok
+                ? { output: `文件补丁已应用（路径=${result.path}，${result.byteSize}B，sha256=${result.sha256.slice(0, 12)}…）` }
+                : { output: `workspace_apply_patch 被拒绝：${result.reason}`, isError: true }
+            }
+            case 'workspace_delete_file': {
+              const result = this.workspaceDeleteFile({
+                roomId: room.id,
+                fromRunId: run.id,
+                path: call.arguments.path ?? '',
+              })
+              return result.ok
+                ? { output: `文件已删除（路径=${result.path}）` }
+                : { output: `workspace_delete_file 被拒绝：${result.reason}`, isError: true }
+            }
+            case 'workspace_move_file': {
+              const result = this.workspaceMoveFile({
+                roomId: room.id,
+                fromRunId: run.id,
+                fromPath: call.arguments.fromPath ?? '',
+                toPath: call.arguments.toPath ?? '',
+              })
+              return result.ok
+                ? { output: `文件已移动（${result.fromPath} → ${result.toPath}）` }
+                : { output: `workspace_move_file 被拒绝：${result.reason}`, isError: true }
+            }
           }
         },
       }
@@ -2387,6 +2423,98 @@ export class CollaborationRoomService {
     }
   }
 
+  /** 对绑定工作区内的普通文本文件做唯一 oldText → newText 替换。 */
+  workspaceApplyPatch(input: {
+    roomId: string
+    fromRunId: string
+    path: string
+    oldText: string
+    newText: string
+  }):
+    | { ok: true; path: string; byteSize: number; sha256: string }
+    | { ok: false; reason: string } {
+    const g = this.workspaceGuard({ roomId: input.roomId, fromRunId: input.fromRunId, needsWrite: true })
+    if (!g.ok) return g
+    const target = resolveArtifactTargetPath(g.rootReal, input.path)
+    if (!target.ok) return { ok: false, reason: target.reason }
+    if (!input.oldText) return { ok: false, reason: 'oldText 不能为空' }
+    const oldBytes = Buffer.byteLength(input.oldText, 'utf8')
+    const newBytes = Buffer.byteLength(input.newText ?? '', 'utf8')
+    if (oldBytes > COLLABORATION_WORKSPACE_PATCH_MAX_BYTES || newBytes > COLLABORATION_WORKSPACE_PATCH_MAX_BYTES) {
+      return { ok: false, reason: `补丁文本超过 ${COLLABORATION_WORKSPACE_PATCH_MAX_BYTES} 字节上限` }
+    }
+    let st: ReturnType<typeof lstatSync>
+    try {
+      st = lstatSync(target.absPath)
+    } catch {
+      return { ok: false, reason: '文件不存在或不可访问' }
+    }
+    if (st.isSymbolicLink()) return { ok: false, reason: '目标是符号链接，禁止修改' }
+    if (!st.isFile()) return { ok: false, reason: '目标不是普通文件' }
+    if (st.size > COLLABORATION_WORKSPACE_WRITE_MAX_BYTES) return { ok: false, reason: '文件超过可修改大小上限' }
+    let content: string
+    try {
+      content = readFileSync(target.absPath, 'utf8')
+    } catch {
+      return { ok: false, reason: '读取文件失败' }
+    }
+    const patched = applyUniqueWorkspacePatch(
+      content,
+      input.oldText,
+      input.newText ?? '',
+      COLLABORATION_WORKSPACE_WRITE_MAX_BYTES,
+    )
+    if (!patched.ok) return patched
+    const next = patched.content
+    const nextBytes = Buffer.byteLength(next, 'utf8')
+    try {
+      writeFileSync(target.absPath, next, 'utf8')
+    } catch {
+      return { ok: false, reason: '写入补丁失败' }
+    }
+    return { ok: true, path: target.relativePath, byteSize: nextBytes, sha256: createHash('sha256').update(next, 'utf8').digest('hex') }
+  }
+
+  /** 删除绑定工作区内的普通文件；目录和符号链接一律拒绝。 */
+  workspaceDeleteFile(input: { roomId: string; fromRunId: string; path: string }):
+    | { ok: true; path: string }
+    | { ok: false; reason: string } {
+    const g = this.workspaceGuard({ roomId: input.roomId, fromRunId: input.fromRunId, needsWrite: true })
+    if (!g.ok) return g
+    const target = resolveArtifactTargetPath(g.rootReal, input.path)
+    if (!target.ok) return { ok: false, reason: target.reason }
+    let st: ReturnType<typeof lstatSync>
+    try { st = lstatSync(target.absPath) } catch { return { ok: false, reason: '文件不存在' } }
+    if (st.isSymbolicLink()) return { ok: false, reason: '目标是符号链接，禁止删除' }
+    if (!st.isFile()) return { ok: false, reason: '只允许删除普通文件' }
+    try { unlinkSync(target.absPath) } catch { return { ok: false, reason: '删除文件失败' } }
+    return { ok: true, path: target.relativePath }
+  }
+
+  /** 移动/重命名绑定工作区内的普通文件；目标存在或父目录不存在均拒绝。 */
+  workspaceMoveFile(input: { roomId: string; fromRunId: string; fromPath: string; toPath: string }):
+    | { ok: true; fromPath: string; toPath: string }
+    | { ok: false; reason: string } {
+    const g = this.workspaceGuard({ roomId: input.roomId, fromRunId: input.fromRunId, needsWrite: true })
+    if (!g.ok) return g
+    const from = resolveArtifactTargetPath(g.rootReal, input.fromPath)
+    if (!from.ok) return { ok: false, reason: from.reason }
+    const to = resolveArtifactTargetPath(g.rootReal, input.toPath)
+    if (!to.ok) return { ok: false, reason: to.reason }
+    let st: ReturnType<typeof lstatSync>
+    try { st = lstatSync(from.absPath) } catch { return { ok: false, reason: '源文件不存在' } }
+    if (st.isSymbolicLink() || !st.isFile()) return { ok: false, reason: '源路径必须是普通文件' }
+    if (existsSync(to.absPath)) return { ok: false, reason: '目标路径已存在，拒绝覆盖' }
+    const parent = dirname(to.absPath)
+    try {
+      if (!existsSync(parent) || !lstatSync(parent).isDirectory()) return { ok: false, reason: '目标父目录不存在' }
+      renameSync(from.absPath, to.absPath)
+    } catch {
+      return { ok: false, reason: '移动文件失败' }
+    }
+    return { ok: true, fromPath: from.relativePath, toPath: to.relativePath }
+  }
+
   // ===== Board Projection（S5：看板桥，只读投影） =====
   //
   // 02-RUNTIME-A2A-SPEC §2.6 / ADR-0007 §15.7：挂载看板的房间以 attachedBoardId 引用
@@ -2795,6 +2923,27 @@ function buildMember(
     createdAt: now,
     updatedAt: now,
   }
+}
+
+/** 纯函数：只允许把唯一出现的 oldText 替换为 newText，并限制结果大小。 */
+export function applyUniqueWorkspacePatch(
+  content: string,
+  oldText: string,
+  newText: string,
+  maxBytes: number,
+): { ok: true; content: string } | { ok: false; reason: string } {
+  if (!oldText) return { ok: false, reason: 'oldText 不能为空' }
+  if (Buffer.byteLength(oldText, 'utf8') > COLLABORATION_WORKSPACE_PATCH_MAX_BYTES ||
+      Buffer.byteLength(newText, 'utf8') > COLLABORATION_WORKSPACE_PATCH_MAX_BYTES) {
+    return { ok: false, reason: `补丁文本超过 ${COLLABORATION_WORKSPACE_PATCH_MAX_BYTES} 字节上限` }
+  }
+  const first = content.indexOf(oldText)
+  if (first < 0) return { ok: false, reason: 'oldText 在文件中不存在' }
+  const second = content.indexOf(oldText, first + oldText.length)
+  if (second >= 0) return { ok: false, reason: 'oldText 在文件中不唯一，拒绝修改' }
+  const next = content.slice(0, first) + newText + content.slice(first + oldText.length)
+  if (Buffer.byteLength(next, 'utf8') > maxBytes) return { ok: false, reason: '修改后文件超过大小上限' }
+  return { ok: true, content: next }
 }
 
 // ===== workspace_search glob 匹配 =====

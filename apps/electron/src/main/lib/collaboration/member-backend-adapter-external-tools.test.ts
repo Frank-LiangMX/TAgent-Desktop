@@ -282,7 +282,7 @@ describe('buildRoomBridgeTools — schema 限权', () => {
       workspaceId: 'workspace-test',
       permissionProfile: 'workspace-write',
     })
-    expect(tools).toHaveLength(10)
+    expect(tools).toHaveLength(13)
     expect(tools.map((t) => t.name)).toEqual([
       'room_send',
       'room_ask',
@@ -294,6 +294,9 @@ describe('buildRoomBridgeTools — schema 限权', () => {
       'workspace_search',
       'workspace_write_file',
       'workspace_run_command',
+      'workspace_apply_patch',
+      'workspace_delete_file',
+      'workspace_move_file',
     ])
     // 绝不暴露 filesystem/shell/database 或会话工具
     const forbidden = [
@@ -673,6 +676,9 @@ describe('ChannelBackendAdapter.runTurn — Anthropic 外部渠道原生工具�
       'workspace_search',
       'workspace_write_file',
       'workspace_run_command',
+      'workspace_apply_patch',
+      'workspace_delete_file',
+      'workspace_move_file',
     ])
   })
 

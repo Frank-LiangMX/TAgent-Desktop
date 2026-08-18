@@ -275,7 +275,8 @@ export interface CollaborationSerializedRunError {
  * 文件、终端或任意持久化层的能力。
  *
  * room_* 为 A2A / 任务 / 产物协调工具；workspace_* 为受控工作区工具桥，仅在房间绑定
- * 工作区且满足权限档位时可用（read/search 任意成员；write/run 仅 workspace-write）。
+ * 工作区且满足权限档位时可用（read/search 任意成员；write/run/apply_patch/delete_file/move_file
+ * 仅 workspace-write）。
  */
 export interface CollaborationHostToolCall {
   name:
@@ -289,6 +290,9 @@ export interface CollaborationHostToolCall {
     | 'workspace_search'
     | 'workspace_write_file'
     | 'workspace_run_command'
+    | 'workspace_apply_patch'
+    | 'workspace_delete_file'
+    | 'workspace_move_file'
   arguments: Record<string, string>
 }
 
@@ -328,7 +332,8 @@ export interface MemberTurnInput {
   workspaceId?: string
   /**
    * 成员权限档位（宿主组装，来自 member.permissionProfile；模型不可伪造）。
-   * 决定 workspace_write_file / workspace_run_command 是否放行。
+   * 决定 workspace_write_file / workspace_run_command / workspace_apply_patch /
+   * workspace_delete_file / workspace_move_file 是否放行。
    */
   permissionProfile?: CollaborationPermissionProfile
   /** 成员绑定的渠道 ID（缺省时 adapter 取第一个 enabled 外部渠道） */
@@ -876,6 +881,12 @@ export const COLLABORATION_WORKSPACE_READ_MAX_BYTES = 262_144
  * 与产物发布上限一致，防止模型借写文件刷盘/耗尽磁盘。
  */
 export const COLLABORATION_WORKSPACE_WRITE_MAX_BYTES = 1_048_576
+
+/**
+ * `workspace_apply_patch` 单次替换文本的最大字节数（UTF-8，取 newText）。
+ * 与写入上限一致，防止模型借替换刷盘/耗尽磁盘。
+ */
+export const COLLABORATION_WORKSPACE_PATCH_MAX_BYTES = 1_048_576
 
 /**
  * `workspace_search` 单次搜索返回的最大文件路径数（上限）。

@@ -136,6 +136,33 @@ const ROOM_TOOL_DESCRIPTORS = [
       timeoutMs: { type: 'string' },
     },
   },
+  {
+    name: 'workspace_apply_patch',
+    description:
+      '对绑定工作区内的一个文本文件做精确字符串替换：oldText 必须在文件里恰好出现一次（找不到或不唯一都拒绝），替换为新内容 newText。路径受绝对/..越界/符号链接约束。仅 workspace-write 成员可用。',
+    parameters: {
+      path: { type: 'string', required: true },
+      oldText: { type: 'string', required: true },
+      newText: { type: 'string', required: true },
+    },
+  },
+  {
+    name: 'workspace_delete_file',
+    description:
+      '删除绑定工作区内的一个普通文件（目录、符号链接或不存在一律拒绝）。路径受绝对/..越界/符号链接约束。仅 workspace-write 成员可用。',
+    parameters: {
+      path: { type: 'string', required: true },
+    },
+  },
+  {
+    name: 'workspace_move_file',
+    description:
+      '把绑定工作区内的一个文件移动/重命名到另一相对路径；目标已存在（文件或目录）一律拒绝。源与目标都受绝对/..越界/符号链接约束。仅 workspace-write 成员可用。',
+    parameters: {
+      fromPath: { type: 'string', required: true },
+      toPath: { type: 'string', required: true },
+    },
+  },
 ] as const
 
 const roomSendSchema = Type.Object(
@@ -206,6 +233,27 @@ const workspaceRunCommandSchema = Type.Object(
     args: Type.Optional(Type.String()),
     cwd: Type.Optional(Type.String()),
     timeoutMs: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+)
+const workspaceApplyPatchSchema = Type.Object(
+  {
+    path: Type.String(),
+    oldText: Type.String(),
+    newText: Type.String(),
+  },
+  { additionalProperties: false },
+)
+const workspaceDeleteFileSchema = Type.Object(
+  {
+    path: Type.String(),
+  },
+  { additionalProperties: false },
+)
+const workspaceMoveFileSchema = Type.Object(
+  {
+    fromPath: Type.String(),
+    toPath: Type.String(),
   },
   { additionalProperties: false },
 )
@@ -454,7 +502,7 @@ export function channelSupportsRoomToolBridge(channelId?: string): boolean {
 }
 
 /**
- * 构造协作室工具桥的 10 把受控 AgentTool：6 把 room_* + 4 把 workspace_*。
+ * 构造协作室工具桥的 13 把受控 AgentTool：6 把 room_* + 7 把 workspace_*。
  *
  * 安全契约（02-RUNTIME-A2A-SPEC §9 / 03-IMPLEMENTATION-PHASES §12）：
  * - 工具 schema 由宿主白名单写死（TypeBox），绝不来自模型或 prompt 文本；这是模型在
@@ -526,6 +574,9 @@ export function buildRoomBridgeTools(args: {
     roomTools.push(
       make('workspace_write_file', ROOM_TOOL_DESCRIPTORS[8].description, workspaceWriteFileSchema),
       make('workspace_run_command', ROOM_TOOL_DESCRIPTORS[9].description, workspaceRunCommandSchema),
+      make('workspace_apply_patch', ROOM_TOOL_DESCRIPTORS[10].description, workspaceApplyPatchSchema),
+      make('workspace_delete_file', ROOM_TOOL_DESCRIPTORS[11].description, workspaceDeleteFileSchema),
+      make('workspace_move_file', ROOM_TOOL_DESCRIPTORS[12].description, workspaceMoveFileSchema),
     )
   }
   return roomTools
@@ -542,9 +593,10 @@ function roomToolDescriptorsFor(input: MemberTurnInput) {
 }
 
 /**
- * 外部渠道原生工具桥：把协作室 10 把受控工具
+ * 外部渠道原生工具桥：把协作室 13 把受控工具
  *（room_send/room_ask/room_reply/room_task_assign/room_task_update/room_publish_artifact/
- * workspace_read_file/workspace_search/workspace_write_file/workspace_run_command）
+ * workspace_read_file/workspace_search/workspace_write_file/workspace_run_command/
+ * workspace_apply_patch/workspace_delete_file/workspace_move_file）
  * 作为真实 AgentTool（TypeBox schema）接入 Pi Agent + createHttpDirectStreamFn。模型经供应商
  * 原生 function/tool calling 协议（Anthropic /v1/messages 的 tool_use）发起调用，Agent 调
  * execute → hostToolHandler 真实执行，结果由 Agent 自动回注下一轮 context。工具 schema 仅
