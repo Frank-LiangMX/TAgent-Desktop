@@ -30,6 +30,7 @@ import {
   capThinkingDurationsToTurn,
   filterSubagentItems,
   findSubagentTaskTool,
+  classifySubagentLaunchers,
   listSubagentEntryIds,
   type SessionRenderTurn,
   type TurnSourceItem,
@@ -87,11 +88,14 @@ export function AssistantTurnView({
   subagentCards,
   onOpenSubagent,
 }: AssistantTurnViewProps): JSX.Element {
-  // 主会话只留入口卡：按派出顺序钉死，本轮内只增不减。
-  // 过程阶段 key 重建 / 虚拟化切片丢 launcher 时，也不要把已经出现过的入口卸掉。
+  // 入口只认主线直系。已钉住的保序；判明是嵌套派出的立刻摘掉（避免先闪孙辈再钉死）。
+  // 虚拟化切掉 launcher 时仍留着，除非被标成 nested。
   const pinnedSubagentIdsRef = useRef<string[]>([])
+  const liveIds = listSubagentEntryIds(turn.items)
+  const nestedIds = classifySubagentLaunchers(turn.items).nested
+  pinnedSubagentIdsRef.current = pinnedSubagentIdsRef.current.filter((id) => !nestedIds.has(id))
   const seenPinned = new Set(pinnedSubagentIdsRef.current)
-  for (const id of listSubagentEntryIds(turn.items)) {
+  for (const id of liveIds) {
     if (seenPinned.has(id)) continue
     pinnedSubagentIdsRef.current.push(id)
     seenPinned.add(id)

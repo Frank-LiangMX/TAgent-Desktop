@@ -184,34 +184,55 @@ export function assignSubagentHostStageKeys(
 }
 
 /**
- * 主会话应展示的子代理入口 id 列表（保序、去重）。
+ * 主线直系 vs 嵌套派出。
+ * 嵌套 = 子代理自己的 assistant（已有 parentToolUseId）里又出现 Agent/task。
+ */
+export function classifySubagentLaunchers(items: TurnSourceItem[]): {
+  direct: string[]
+  nested: Set<string>
+} {
+  const direct: string[] = []
+  const nested = new Set<string>()
+  const seenDirect = new Set<string>()
+  for (const it of items) {
+    const m = it.message
+    if (m?.type !== 'assistant') continue
+    for (const b of m.content) {
+      if (b.type !== 'tool_use') continue
+      const tu = b as TAgentToolUseBlock
+      if (!isSubagentLauncherTool(tu.name)) continue
+      if (m.parentToolUseId) {
+        nested.add(tu.id)
+        continue
+      }
+      if (seenDirect.has(tu.id)) continue
+      seenDirect.add(tu.id)
+      direct.push(tu.id)
+    }
+  }
+  return { direct, nested }
+}
+
+/**
+ * 主会话应展示的子代理入口 id（只含主线直系，不含孙辈）。
  *
- * 来源（白名单，禁止「凡 taskCard 即入口」）：
- * 1. 主线 tool_use（Agent / task / Task）—— 一点就出卡
- * 2. 带 parentToolUseId 的子代理 assistant（无 launcher 时的兜底）
- * 3. taskCard.toolUseId **且** `taskType` 为 agent runtime（local_bash 等不得由此冒充）
+ * 1. 主线 assistant 上的 Agent/task tool_use
+ * 2. 主线 launcher 还没进 items 时：parented / taskCard 里「不是嵌套派出」的 id（流式兜底）
  */
 export function listSubagentEntryIds(items: TurnSourceItem[]): string[] {
+  const { direct, nested } = classifySubagentLaunchers(items)
+  if (direct.length > 0) return direct
+
   const order: string[] = []
   const seen = new Set<string>()
   const push = (id: string | null | undefined): void => {
-    if (!id || seen.has(id)) return
+    if (!id || seen.has(id) || nested.has(id)) return
     seen.add(id)
     order.push(id)
   }
-
   for (const it of items) {
     const m = it.message
-    if (m?.type === 'assistant' && !m.parentToolUseId) {
-      for (const b of m.content) {
-        if (b.type !== 'tool_use') continue
-        const tu = b as TAgentToolUseBlock
-        if (isSubagentLauncherTool(tu.name)) push(tu.id)
-      }
-    }
-    if (m?.type === 'assistant' && m.parentToolUseId) {
-      push(m.parentToolUseId)
-    }
+    if (m?.type === 'assistant' && m.parentToolUseId) push(m.parentToolUseId)
     const card = it.taskCard as { toolUseId?: string; taskType?: string } | undefined
     if (card?.toolUseId && isSubagentRuntimeTaskType(card.taskType)) {
       push(card.toolUseId)
