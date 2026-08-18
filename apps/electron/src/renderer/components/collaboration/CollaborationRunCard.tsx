@@ -84,7 +84,7 @@ export function CollaborationRunCard({
   const cancellable = !waitingPeer && (running || queued)
 
   return (
-    <li className="flex justify-start">
+    <li data-run-id={run.id} className="flex justify-start">
       <div className="max-w-[28rem]">
         <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
           {member ? <MemberAvatar member={member} channels={channels} size={20} /> : null}

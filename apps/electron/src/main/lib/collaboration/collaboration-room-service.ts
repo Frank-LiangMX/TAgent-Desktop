@@ -24,7 +24,17 @@
  * 设计参考：apps/electron/src/main/lib/ipc/channel-service.ts（class + static create）
  */
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   COLLABORATION_LOGICAL_SESSION_ID_PREFIX,
@@ -80,6 +90,7 @@ import {
   type UpdateCollaborationRoomTaskInput,
   type MemberBackendAdapter,
   type MemberTurnInput,
+  type ReadCollaborationArtifactResult,
 } from '@tagent/shared'
 import {
   appendMembers,
@@ -1626,6 +1637,95 @@ export class CollaborationRoomService {
   /** 取单个产物（不存在返回 undefined） */
   getArtifactById(artifactId: string): CollaborationArtifact | undefined {
     return getArtifact(artifactId)
+  }
+
+  /**
+   * 预览产物文本（S5 面板）：宿主按 artifactId 反查记录后复用同一条安全路径解析再读盘。
+   *
+   * 渲染层只传 { roomId, artifactId }，绝不传路径——文件访问面与 room_publish_artifact
+   * 完全一致：仍走 resolveArtifactTargetPath（拒绝绝对 / `..` / 反斜杠 / 符号链接逃逸），
+   * 且须落在房间绑定工作区的真实根内。不扩权、不暴露任意文件读。
+   *
+   * 守卫（全部 fail-closed，返回 { ok: false, reason }）：
+   * - 产物须存在且属于 input.roomId（拒绝跨房间预览：模型/渲染层即便知道别房间 artifactId 也碰不到）。
+   * - 房间须存在且已绑定工作区，工作区项目目录存在、可解析为真实路径。
+   * - 按 artifact.relativePath 复用 resolveArtifactTargetPath 解析；越界 / 符号链接一律拒绝。
+   * - 目标须存在且为普通文件：目录 / 符号链接 / 不存在一律拒绝（防逃逸与误读）。
+   * - 按 COLLABORATION_ARTIFACT_MAX_CONTENT_BYTES 上限有界读取（仅读首 cap 字节，避免大文件爆内存），
+   *   超限置 truncated=true；sha256 取自产物审计记录，仅作展示，不据其阻断预览（盘上文件可能已被合法改动）。
+   *
+   * 不迁移 run 状态、不写盘、不广播；纯只读预览。
+   */
+  readArtifact(input: { roomId: string; artifactId: string }): ReadCollaborationArtifactResult {
+    const artifact = getArtifact(input.artifactId)
+    if (!artifact) return { ok: false, reason: '产物不存在' }
+    if (artifact.roomId !== input.roomId) {
+      return { ok: false, reason: '产物不属于该房间' }
+    }
+    const room = getRoom(input.roomId)
+    if (!room) return { ok: false, reason: '房间不存在' }
+    if (!room.workspaceId) {
+      return { ok: false, reason: '房间未绑定工作区，无法预览产物' }
+    }
+    const workspace = resolveWorkspaceById(room.workspaceId)
+    if (!workspace || !workspace.projectDirectory) {
+      return { ok: false, reason: '工作区不存在或无项目目录' }
+    }
+    if (!existsSync(workspace.projectDirectory)) {
+      return { ok: false, reason: '工作区项目目录不存在' }
+    }
+    const rootReal = realpathSafe(workspace.projectDirectory)
+    if (!rootReal) return { ok: false, reason: '工作区项目目录不可访问' }
+
+    // 复用同一条安全路径解析（与发布时一致）；越界 / 符号链接 / 绝对路径一律拒绝
+    const target = resolveArtifactTargetPath(rootReal, artifact.relativePath)
+    if (!target.ok) return { ok: false, reason: target.reason }
+
+    if (!existsSync(target.absPath)) {
+      return { ok: false, reason: '产物文件不存在（可能已被移动或删除）' }
+    }
+    let st: ReturnType<typeof lstatSync>
+    try {
+      st = lstatSync(target.absPath)
+    } catch {
+      return { ok: false, reason: '产物文件不可访问' }
+    }
+    if (st.isSymbolicLink()) {
+      return { ok: false, reason: '产物路径是符号链接，禁止预览（防逃逸）' }
+    }
+    if (st.isDirectory()) return { ok: false, reason: '产物路径是目录，无法预览' }
+
+    // 有界读取：仅读首 cap 字节，避免大文件爆内存；超限标记 truncated
+    const cap = COLLABORATION_ARTIFACT_MAX_CONTENT_BYTES
+    const size = st.size
+    const truncated = size > cap
+    const toRead = Math.min(size, cap)
+    let fd: number | undefined
+    try {
+      fd = openSync(target.absPath, 'r')
+      const buf = Buffer.alloc(toRead)
+      const bytesRead = readSync(fd, buf, 0, toRead, 0)
+      const content = buf.subarray(0, bytesRead).toString('utf8')
+      return {
+        ok: true,
+        artifactId: artifact.id,
+        relativePath: artifact.relativePath,
+        content,
+        byteSize: size,
+        sha256: artifact.sha256,
+        truncated,
+      }
+    } catch {
+      return { ok: false, reason: '读取产物文件失败' }
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
   }
 
   /**

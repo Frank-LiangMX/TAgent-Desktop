@@ -2,7 +2,7 @@
  * 协作室时间线（S3.5-c）：用户/系统/A2A 独立条目 + 一 run 一卡。
  * 纯函数 groupCollaborationTimelineItems 负责收拢，本组件只渲染。
  */
-import type { RefObject } from 'react'
+import type { Ref } from 'react'
 import { MessageResponse } from '@tagent/ui'
 import {
   groupCollaborationTimelineItems,
@@ -28,7 +28,7 @@ export interface CollaborationTimelineProps {
   streamByRun: Record<string, string>
   cancellingId: string | null
   onCancelRun: (runId: string) => void
-  scrollRef: RefObject<HTMLDivElement | null>
+  scrollRef: Ref<HTMLDivElement>
   /** S4.5：A2A 信箱信封（深度停止卡从中筛选可呈现项） */
   mailbox: CollaborationMailboxEnvelope[]
   /** S4.5：房间 A2A 深度上限（room.maxA2ADepth） */
@@ -83,7 +83,7 @@ export function CollaborationTimeline({
             {items.map((item) => {
               if (item.type === 'user') {
                 return (
-                  <li key={item.message.id} className="flex justify-end gap-2">
+                  <li key={item.message.id} data-message-id={item.message.id} className="flex justify-end gap-2">
                     <div className="collab-glass-bubble max-w-[28rem] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm text-foreground">
                       {item.message.content}
                     </div>
@@ -93,7 +93,7 @@ export function CollaborationTimeline({
               }
               if (item.type === 'system') {
                 return (
-                  <li key={item.message.id} className="flex justify-center">
+                  <li key={item.message.id} data-message-id={item.message.id} className="flex justify-center">
                     <div className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
                       {item.message.content}
                     </div>
@@ -108,7 +108,7 @@ export function CollaborationTimeline({
                   .join('、')
                 const isAsk = item.message.kind === 'a2a_request'
                 return (
-                  <li key={item.message.id} className="flex justify-center">
+                  <li key={item.message.id} data-message-id={item.message.id} className="flex justify-center">
                     <div className="rounded-full border border-sky-500/20 bg-sky-500/5 px-3 py-1 text-[11px] text-sky-700 dark:text-sky-300">
                       {author} {isAsk ? '向' : '回复了'} {targets || '房间'}
                       {isAsk ? ' 询问：' : '：'}
@@ -120,7 +120,7 @@ export function CollaborationTimeline({
               if (item.type === 'member') {
                 const author = members.find((m) => m.id === item.message.authorId)
                 return (
-                  <li key={item.message.id} className="flex justify-start gap-2">
+                  <li key={item.message.id} data-message-id={item.message.id} className="flex justify-start gap-2">
                     {author ? <MemberAvatar member={author} channels={channels} /> : null}
                     <div className="max-w-[28rem]">
                       <div className="mb-0.5 text-[11px] text-muted-foreground">
@@ -135,18 +135,21 @@ export function CollaborationTimeline({
                   </li>
                 )
               }
-              return (
-                <CollaborationRunCard
-                  key={item.run.id}
-                  run={item.run}
-                  messages={item.messages}
-                  member={members.find((m) => m.id === item.run.memberId)}
-                  channels={channels}
-                  streamedText={streamByRun[item.run.id]}
-                  cancelling={cancellingId === item.run.id}
-                  onCancel={() => onCancelRun(item.run.id)}
-                />
-              )
+              if (item.type === 'run') {
+                return (
+                  <CollaborationRunCard
+                    key={item.run.id}
+                    run={item.run}
+                    messages={item.messages}
+                    member={members.find((m) => m.id === item.run.memberId)}
+                    channels={channels}
+                    streamedText={streamByRun[item.run.id]}
+                    cancelling={cancellingId === item.run.id}
+                    onCancel={() => onCancelRun(item.run.id)}
+                  />
+                )
+              }
+              return null
             })}
             {mailbox.map((env) => (
               <CollaborationDepthStopCard
