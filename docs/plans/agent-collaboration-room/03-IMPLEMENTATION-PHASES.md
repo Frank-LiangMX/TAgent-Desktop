@@ -6,13 +6,13 @@
 > Hermes 机制补强：[04-HERMES-BORROW-SPEC](./04-HERMES-BORROW-SPEC.md)
 > 当前进度与交接：[HANDOFF-2026-08-17](../../dev/collaboration-room/HANDOFF-2026-08-17.md)
 
-## 0. 当前进度（2026-08-17）
+## 0. 当前进度（2026-08-18）
 
 `feature/collab-room` 尚未合 main。按本文件切片，已完成 / 未完成的真实状态：
 
-**已完成**：S1 房间壳 → S2 单成员 turn → S3 多成员并行 + 协调者路由 → S3.5-a 结构化 mention + 上下文投影 → S3.5-c 安静时间线 / run 卡 → S3.5-b 房间共享摘要 → S4-1/2 信箱纯逻辑 + host 落盘 → S4-3a peer reply 唤醒 continuation → **S4-3b adapter 工具回路（kscc bare + Anthropic 协议外部渠道原生工具桥，四把受限工具）** → S4.5 深度停止 outbox → S5 第一刀 room task 真值层 + **S5 第二刀 `room_task_update` 模型工具**。
+**已完成**：S1 房间壳 → S2 单成员 turn → S3 多成员并行 + 协调者路由 → S3.5-a 结构化 mention + 上下文投影 → S3.5-c 安静时间线 / run 卡 → S3.5-b 房间共享摘要 → S4-1/2 信箱纯逻辑 + host 落盘 → S4-3a peer reply 唤醒 continuation → **S4-3b 六把 adapter 工具回路（kscc bare + Anthropic 协议外部渠道原生工具桥）** → S4.5 深度停止 outbox → S5 room task 真值层 + `room_task_assign` / `room_task_update` / `room_publish_artifact` + 工作面板 + 无 `@` 自动协调闭环。
 
-**尚未完成**：S5 看板桥（`attachedBoardId` 仅 fail-closed，无真实桥/投影）、S5 产物发布 `room_publish_artifact`、S6 全部（Git worktree / 文件租约、prompt injection 横向隔离、预算强制、时间线虚拟化）、CLI worker 成员后端（`backend==='cli'` 占位）、协调者自动拆任务派工、权限档位在 run 侧 enforce、事务性多文件写、scheduler 跨重启持久化。
+**尚未完成**：S5 看板桥（`attachedBoardId` 仅 fail-closed，无真实桥/投影）、`room_request_user`、S6 全部（Git worktree / 文件租约、prompt injection 横向隔离、预算强制、时间线虚拟化）、CLI worker 成员后端（`backend==='cli'` 占位）、权限档位在 run 侧 enforce、事务性多文件写、scheduler 跨重启持久化。
 
 > 详细对照、边界与下一步见 [HANDOFF-2026-08-17](../../dev/collaboration-room/HANDOFF-2026-08-17.md)。
 
@@ -151,8 +151,8 @@ S4 内部分切片（见 S4-A2A-NOTES 与 04 §7）：
 
 - S4-1 / S4-2 已交付：纯函数 + mailbox 落盘。
 - **S4-3a 已交付**：host 侧 peer reply 唤醒（B 回复 → 提问者 awaiting_peer 入队 continuation，幂等键含 requestId）。
-- **S4-3b 已交付**：adapter 工具回路 —— 把 `room_send/room_ask/room_reply/room_task_update` 四把受限工具以真实 AgentTool（TypeBox schema）经原生 tool-use 协议桥接给成员 turn；kscc bare（`createKsccBareStreamFn`）与 Anthropic 协议外部渠道（`createHttpDirectStreamFn`，`isAgentCompatibleProvider`）两条路径。OpenAI-completions / google 等无原生工具能力渠道仍走纯文本 runner（fail-closed，不伪造工具）。`hostToolHandler` 已接 service 的 roomSend/Ask/Reply/TaskUpdate。
-- **S4.5 已交付**：信封作 outbox（`attemptId` / `delivery`：outbox→dispatched→accepted，重启对已开跑 dispatch 标 `outcome_unknown`，未启动 outbox 安全重投）；深度停止可呈现卡 + 「继续一次」（`continueDepthStop`）；`room_publish_artifact` / `room_request_user` 仍未实现。
+- **S4-3b 已交付**：adapter 工具回路 —— 把 `room_send/room_ask/room_reply/room_task_assign/room_task_update/room_publish_artifact` 六把受限工具以真实 AgentTool（TypeBox schema）经原生 tool-use 协议桥接给成员 turn；kscc bare（`createKsccBareStreamFn`）与 Anthropic 协议外部渠道（`createHttpDirectStreamFn`，`isAgentCompatibleProvider`）两条路径。OpenAI-completions / google 等无原生工具能力渠道仍走纯文本 runner（fail-closed，不伪造工具）。
+- **S4.5 已交付**：信封作 outbox（`attemptId` / `delivery`：outbox→dispatched→accepted，重启对已开跑 dispatch 标 `outcome_unknown`，未启动 outbox 安全重投）；深度停止可呈现卡 + 「继续一次」（`continueDepthStop`）。
 
 ## 7. Stage 5：任务、看板与产物
 
@@ -166,7 +166,7 @@ S4 内部分切片（见 S4-A2A-NOTES 与 04 §7）：
 - 右侧任务/产物面板；从任务定位消息和 run。
 - 看板事件投影到房间，room 不反向覆盖未经授权的 task 状态。
 
-> **进度（2026-08-17）**：已完成「room task 真值层」（`CollaborationRoomTask` + 严格状态机 `transitionCollaborationRoomTaskStatus` + `createRoomTask/updateRoomTask/listRoomTasks`，version CAS，挂板后 fail-closed）+ 第二刀「`room_task_update` 受控模型工具」（仅负责人改自己任务状态 + summary 只落 `task_event` 审计、不进权威字段）。**未完成**：看板桥（`attachedBoardId` 仅作 fail-closed 标记，无真实桥与投影）、`room_publish_artifact`、右侧任务/产物面板、消息↔任务↔run 完整双向链接的 UI。
+> **进度（2026-08-18）**：已完成「room task 真值层」（`CollaborationRoomTask` + 严格状态机 + version CAS，挂板后 fail-closed）、`room_task_update`（负责人更新状态）、`room_task_assign`（协调者分派未指派任务并自动触发目标成员）、`room_publish_artifact`（路径安全 + 实际 hash/字节数）以及右侧任务/产物工作面板。**未完成**：看板桥（`attachedBoardId` 仅作 fail-closed 标记，无真实桥与投影）、`room_request_user` 和 S6 生产化约束。
 
 退出条件：用户能从最终结论追溯到任务、成员 run、文件和 diff；重启后链接完整；看板和房间不存在相互矛盾的状态副本。
 
@@ -199,7 +199,7 @@ S4 内部分切片（见 S4-A2A-NOTES 与 04 §7）：
 | S3.5-c | 一 run 一卡，时间线安静 | 把 Chat 编排搬进房间 | ✅ |
 | S4 | A 问 B 后等待并恢复 | continuation、副作用重复 | ✅（S4-1/2 + S4-3a/b） |
 | S4.5 | 深度停止可解释、重启不重放已开跑调用 | 另起 outbox 表、unlimited | ✅ |
-| S5 | 任务/产物互链 | 双真值、路径安全 | ◐（room task 真值层 + room_task_update 已完成；看板桥 / 产物 / 面板未做） |
+| S5 | 任务/产物互链 | 双真值、路径安全 | ◐（room task / assign / update / artifact / 面板已完成；看板桥未做） |
 | S6 | worktree/租约 + 生产恢复 | 文件冲突、清理与崩溃 | ⬜ |
 
 ## 10. 测试矩阵

@@ -1,7 +1,7 @@
 # Agent 协作室：产品与架构总纲
 
-> 状态：方案定稿，`feature/collab-room` 已实现 S1–S3 + S3.5 + S4（含 S4-3 工具回路、S4.5 深度停止）+ S5 room task 真值层；尚未合 main。详见[当前进度/交接](../../dev/collaboration-room/HANDOFF-2026-08-17.md)。
-> 日期：2026-08-11（2026-08-17 更新进度状态）
+> 状态：方案定稿，`feature/collab-room` 已实现 S1–S3 + S3.5 + S4（含 S4-3 工具回路、S4.5 深度停止）+ S5 任务/产物体验闭环（含无 `@` 自动协调、协调者分派）；尚未合 main。当前剩余重点为看板桥、用户确认、权限/预算强制、CLI 后端和 S6 生产化。详见[当前进度/交接](../../dev/collaboration-room/HANDOFF-2026-08-17.md)。
+> 日期：2026-08-11（2026-08-18 更新进度状态）
 > 决策：[ADR-0007](../../decisions/ADR-0007-agent-collaboration-room.md)
 > 详设：[01 UI/UX](./01-PRODUCT-UX-SPEC.md) · [02 Runtime/A2A](./02-RUNTIME-A2A-SPEC.md) · [03 实施计划](./03-IMPLEMENTATION-PHASES.md) · [04 Hermes 机制移植](./04-HERMES-BORROW-SPEC.md)
 > 进度：[HANDOFF-2026-08-17](../../dev/collaboration-room/HANDOFF-2026-08-17.md)
