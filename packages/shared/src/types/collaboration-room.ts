@@ -614,29 +614,32 @@ export interface CollaborationRoomTask {
  * 协作室产物（collaboration_artifacts 的一行，S5）。
  *
  * 02-RUNTIME-A2A-SPEC §2.6：`collaboration_artifacts` 保存工作区相对路径、作者 member/run/task、
- * hash；绝不信任模型提供的任意绝对路径。产物是 append-only（无 CAS，无并发改写）。
+ * hash、diff 或外链；绝不信任模型提供的任意绝对路径。
  *
- * 当前实现（偏离 spec §5「只登记」）：由宿主代写文件到工作区再登记元数据，
- * 因 channel 后端成员无写文件工具；CLI 后端补齐后回归「只登记」——见 service.roomPublishArtifact。
+ * `room_publish_artifact` 由宿主严格校验后落盘（02-spec §5）：
+ * - relativePath 必须是绑定工作区内的相对路径（拒绝绝对路径 / `..` 越界 / 符号链接逃逸）；
+ * - sha256 / byteSize 由宿主对实际写入字节求值得出，不接受模型传入；
+ * - roomId/memberId/runId 取自 run 上下文，taskId 须经验证属于同一房间；
+ * - 仅 active 房间、真实 active member/run、`workspace-write` 权限且房间已绑定工作区时放行。
  */
 export interface CollaborationArtifact {
-  /** 产物 ID，格式 art_xxxx */
+  /** 产物 ID，格式 cart_xxxx */
   id: string
   /** 所属房间 ID */
   roomId: string
-  /** 工作区内相对路径（已归一化、已通过越界校验，正斜杠分隔） */
-  relativePath: string
-  /** 文件内容 sha256（宿主代写后按内容字节计算） */
-  hash: string
-  /** 文件字节数 */
-  size: number
-  /** 发布该产物的成员 ID */
-  authorMemberId: string
-  /** 关联 run ID（因果追溯） */
+  /** 发布成员 ID */
+  memberId: string
+  /** 关联 run ID（可选，执行追溯） */
   runId?: string
-  /** 关联 room task ID（可选） */
+  /** 关联 room task ID（可选；已由 service 验证属于同一房间） */
   taskId?: string
-  /** 成员提供的摘要（可选，仅展示/审计，非指令） */
+  /** 工作区相对路径（经宿主校验：非绝对、无 `..` 越界、无符号链接逃逸） */
+  relativePath: string
+  /** 实际写入字节的 sha256（hex） */
+  sha256: string
+  /** 实际写入字节数 */
+  byteSize: number
+  /** 模型提供的说明（可选；仅作审计记录，长度受限） */
   summary?: string
   /** 创建时间戳 */
   createdAt: number
@@ -668,8 +671,6 @@ export const COLLABORATION_LOGICAL_SESSION_ID_PREFIX = 'ls_'
 export const COLLABORATION_RUN_ID_PREFIX = 'run_'
 /** room task ID 前缀 */
 export const COLLABORATION_ROOM_TASK_ID_PREFIX = 'crt_'
-/** artifact ID 前缀 */
-export const COLLABORATION_ARTIFACT_ID_PREFIX = 'art_'
 
 /**
  * room_task_update 工具 summary 的最大长度（字符）。
@@ -678,6 +679,25 @@ export const COLLABORATION_ARTIFACT_ID_PREFIX = 'art_'
  * acceptanceCriteria/assigneeMemberId）；超长拒绝（fail-closed），防止模型借超长说明注入指令或刷屏。
  */
 export const COLLABORATION_ROOM_TASK_SUMMARY_MAX_LENGTH = 2000
+
+/** 产物 ID 前缀 */
+export const COLLABORATION_ARTIFACT_ID_PREFIX = 'cart_'
+
+/**
+ * `room_publish_artifact` 单次写入文本内容的最大字节数（UTF-8）。
+ *
+ * 仅接受文本内容并设尺寸上限，防止模型借产物写超大文件刷盘 / 耗尽磁盘；超限 fail-closed。
+ * 该上限是单次写入的硬限制，Agent 不能自行提高。
+ */
+export const COLLABORATION_ARTIFACT_MAX_CONTENT_BYTES = 1_048_576
+
+/**
+ * `room_publish_artifact` 说明（summary）的最大长度（字符）。
+ *
+ * summary 仅作为可审计的 artifact 消息记录在时间线（与成员正文同级，系统提示已声明非指令），
+ * 绝不作为指令；超长拒绝（fail-closed），防借超长说明注入指令或刷屏。
+ */
+export const COLLABORATION_ARTIFACT_SUMMARY_MAX_LENGTH = 2000
 
 /**
  * 计算 run 幂等键：同一触发消息对同一成员只产生一个 run。

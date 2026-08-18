@@ -36,14 +36,19 @@ import type {
   CollaborationRoom,
   CollaborationRun,
   CollaborationMailboxEnvelope,
+  CollaborationRoomTask,
+  CollaborationArtifact,
   CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
   AddCollaborationMemberInput,
   ContinueCollaborationDepthStopInput,
   ContinueCollaborationDepthStopResult,
+  CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomInput,
   UpdateCollaborationMemberInput,
+  UpdateCollaborationRoomTaskInput,
   AppendCollaborationUserMessageInput,
+  ReadCollaborationArtifactResult,
   DeleteRolesResult,
   FetchModelsInput,
   FetchModelsForChannelInput,
@@ -684,6 +689,34 @@ const electronAPI = {
       COLLABORATION_ROOM_IPC_CHANNELS.CONTINUE_DEPTH_STOP,
       input,
     ) as Promise<ContinueCollaborationDepthStopResult>,
+  /** 列出某房间全部轻量 room task（S5 面板：任务真值，挂板后只读历史） */
+  listCollaborationRoomTasks: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_ROOM_TASKS, { roomId }) as Promise<
+      CollaborationRoomTask[]
+    >,
+  /** 创建轻量 room task（S5 面板；挂板时主进程 fail-closed 抛错） */
+  createCollaborationRoomTask: (input: CreateCollaborationRoomTaskInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.CREATE_ROOM_TASK, input) as Promise<
+      CollaborationRoomTask
+    >,
+  /** 更新轻量 room task（改派 / 状态 / 标题等；复用 service 守卫 + 严格状态机 + CAS） */
+  updateCollaborationRoomTask: (input: UpdateCollaborationRoomTaskInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.UPDATE_ROOM_TASK, input) as Promise<
+      CollaborationRoomTask
+    >,
+  /** 列出某房间全部产物（S5 面板：artifact 审计真值） */
+  listCollaborationArtifacts: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_ARTIFACTS, { roomId }) as Promise<
+      CollaborationArtifact[]
+    >,
+  /**
+   * 预览产物文本（S5 面板）：只传 { roomId, artifactId }，主进程按记录反查后复用安全路径解析读盘。
+   * 成功返回 content / sha256 / byteSize / truncated；失败返回 { ok: false, reason }（不抛）。
+   */
+  readCollaborationArtifact: (input: { roomId: string; artifactId: string }) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.READ_ARTIFACT, input) as Promise<
+      ReadCollaborationArtifactResult
+    >,
   /** 房间数据变更事件（main → renderer，run/member/message 变更时广播） */
   onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => {
     const handler = (_e: unknown, payload: { roomId: string; kind: string; at: number }): void => cb(payload)

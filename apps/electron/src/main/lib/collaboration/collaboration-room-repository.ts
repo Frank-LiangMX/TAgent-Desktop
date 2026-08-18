@@ -615,7 +615,11 @@ export function saveRoomTaskIfCurrent(
   return true
 }
 
-// ===== 产物（artifacts.json，S5；append-only，无 CAS） =====
+// ===== artifacts.json（S5 room_publish_artifact 产物审计） =====
+//
+// 02-RUNTIME-A2A-SPEC §2.6：保存工作区相对路径、作者 member/run/task、hash。相对路径与 hash
+// 由 service 严格校验后写入，模型不得自报绝对路径或 hash。本表只追加（产物不可变），
+// 不提供 update；service 负责全部守卫，仓库只做持久化与查询。
 
 interface ArtifactsConfig {
   version: number
@@ -623,11 +627,15 @@ interface ArtifactsConfig {
 }
 
 function readArtifactsConfig(): ArtifactsConfig {
-  const parsed = readJsonSafe<ArtifactsConfig | null>(getCollaborationArtifactsPath(), null)
+  const parsed = readArtifactsConfigSafe()
   if (!parsed || !Array.isArray(parsed.artifacts)) {
     return { version: CONFIG_VERSION, artifacts: [] }
   }
   return parsed
+}
+
+function readArtifactsConfigSafe(): ArtifactsConfig | null {
+  return readJsonSafe<ArtifactsConfig | null>(getCollaborationArtifactsPath(), null)
 }
 
 function writeArtifactsConfig(config: ArtifactsConfig): void {
@@ -637,6 +645,11 @@ function writeArtifactsConfig(config: ArtifactsConfig): void {
     console.error('[协作室存储] 写入 artifacts.json 失败:', err)
     throw new Error('写入协作室产物数据失败')
   }
+}
+
+/** 读取全部产物（原始顺序） */
+export function loadArtifacts(): CollaborationArtifact[] {
+  return readArtifactsConfig().artifacts
 }
 
 /** 列出某房间全部产物（按 createdAt 升序，次按 id 稳定） */
@@ -654,7 +667,7 @@ export function getArtifact(artifactId: string): CollaborationArtifact | undefin
   return readArtifactsConfig().artifacts.find((a) => a.id === artifactId)
 }
 
-/** 追加单条产物（append-only，不做去重，由调用方保证 id 唯一） */
+/** 追加单个产物（只追加；由 service 保证 id 唯一与全部字段已校验） */
 export function appendArtifact(artifact: CollaborationArtifact): void {
   const config = readArtifactsConfig()
   config.artifacts.push(artifact)

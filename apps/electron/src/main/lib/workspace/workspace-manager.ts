@@ -218,6 +218,18 @@ export function resolveWorkspaceForSession(sessionId: string): AgentWorkspace | 
   return readMeta(meta.workspaceId)
 }
 
+/**
+ * 按 workspace id（sanitized 目录名）直接反查工作区元数据。
+ *
+ * 与 resolveWorkspaceForSession 不同，不依赖 session meta；供协作室等只持有 workspaceId
+ * 的模块解析绑定的 projectDirectory。hidden 工作区也能读到（不经过 listWorkspaces 的过滤）。
+ * 不存在或 meta 缺失返回 undefined。
+ */
+export function resolveWorkspaceById(workspaceId: string): AgentWorkspace | undefined {
+  if (!workspaceId) return undefined
+  return readMeta(workspaceId)
+}
+
 /** 从项目路径提取显示名：取最后一段目录名 */
 function extractProjectName(projectPath: string): string {
   return basename(projectPath) || projectPath

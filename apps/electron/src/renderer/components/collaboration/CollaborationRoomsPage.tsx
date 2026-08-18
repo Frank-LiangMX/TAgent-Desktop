@@ -23,6 +23,7 @@ import {
   At,
   CirclesThreePlus,
   Database,
+  ListChecks,
   Pause,
   PencilSimple,
   Play,
@@ -30,12 +31,14 @@ import {
 } from '@phosphor-icons/react'
 import type {
   Channel,
+  CollaborationArtifact,
   CollaborationRoleSnapshot,
   CollaborationMailboxEnvelope,
   CollaborationMember,
   CollaborationMessage,
   CollaborationRoom,
   CollaborationRoomStatus,
+  CollaborationRoomTask,
   CollaborationRun,
 } from '@tagent/shared'
 import { AppTooltip } from '@tagent/ui'
@@ -45,6 +48,7 @@ import { CollaborationTextPrompt } from './CollaborationTextPrompt'
 import { CollaborationMemberSettings } from './CollaborationMemberSettings'
 import { CollaborationAddMemberDialog } from './CollaborationAddMemberDialog'
 import { CollaborationTimeline } from './CollaborationTimeline'
+import { CollaborationWorkPanel } from './CollaborationWorkPanel'
 import { MemberAvatar } from './CollaborationAvatars'
 import { cn } from '../../lib/utils'
 
@@ -145,6 +149,11 @@ export function CollaborationRoomsPage({
   const [composerMentionIds, setComposerMentionIds] = useState<string[]>([])
   const [mailbox, setMailbox] = useState<CollaborationMailboxEnvelope[]>([])
   const [streamByRun, setStreamByRun] = useState<Record<string, string>>({})
+  /** S5：室级任务/产物（主进程真值，CHANGED 后重新拉取；渲染层不是真值源） */
+  const [tasks, setTasks] = useState<CollaborationRoomTask[]>([])
+  const [artifacts, setArtifacts] = useState<CollaborationArtifact[]>([])
+  /** S5：右侧工作面板展开态（默认展开；窄屏可收起，键盘可达） */
+  const [workPanelOpen, setWorkPanelOpen] = useState(true)
   /** S4.5：本地已「停止」关闭的深度停止信封 id（仅前端态，不持久化、不触后端） */
   const [dismissedDepthStopIds, setDismissedDepthStopIds] = useState<Set<string>>(new Set())
   /** S4.5：正在继续的深度停止信封 id（主操作 loading 态） */
@@ -172,16 +181,20 @@ export function CollaborationRoomsPage({
         setMembers([])
         setRuns([])
         setMailbox([])
+        setTasks([])
+        setArtifacts([])
         setStreamByRun({})
         return
       }
       try {
-        const [r, msgs, mems, rs, box] = await Promise.all([
+        const [r, msgs, mems, rs, box, tks, arts] = await Promise.all([
           window.electronAPI.getCollaborationRoom(roomId),
           window.electronAPI.listCollaborationMessages(roomId),
           window.electronAPI.listCollaborationMembers(roomId),
           window.electronAPI.listCollaborationRuns(roomId),
           window.electronAPI.listCollaborationMailbox(roomId),
+          window.electronAPI.listCollaborationRoomTasks(roomId),
+          window.electronAPI.listCollaborationArtifacts(roomId),
         ])
         if (cancelled) return
         setRoom(r ?? null)
@@ -189,6 +202,8 @@ export function CollaborationRoomsPage({
         setMembers(Array.isArray(mems) ? mems : [])
         setRuns(Array.isArray(rs) ? rs : [])
         setMailbox(Array.isArray(box) ? box : [])
+        setTasks(Array.isArray(tks) ? tks : [])
+        setArtifacts(Array.isArray(arts) ? arts : [])
         const live = new Set(
           (Array.isArray(rs) ? rs : [])
             .filter((run) => run.status === 'running')
@@ -209,6 +224,8 @@ export function CollaborationRoomsPage({
         setMembers([])
         setRuns([])
         setMailbox([])
+        setTasks([])
+        setArtifacts([])
       }
     })()
     return () => {
@@ -357,6 +374,27 @@ export function CollaborationRoomsPage({
       return next
     })
   }, [])
+
+  // S5：从工作面板定位到时间线 run / 消息。通过 scrollRef 在时间线内查询 [data-run-id] /
+  // [data-message-id] 元素并滚动入视 + 短时高亮闪示，便于用户在长时间线里找到关联项。
+  // 不传引用给时间线组件，避免侵入其 props；定位完全在页面侧用 scrollRef 完成。
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const locateTimeline = useCallback((selector: string): void => {
+    const el = scrollRef.current?.querySelector(selector)
+    if (!el) return
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    el.classList.add('collab-locate-flash')
+    if (flashTimer.current) clearTimeout(flashTimer.current)
+    flashTimer.current = setTimeout(() => el.classList.remove('collab-locate-flash'), 1600)
+  }, [])
+  const handleLocateRun = useCallback(
+    (runId: string): void => locateTimeline(`[data-run-id="${CSS.escape(runId)}"]`),
+    [locateTimeline],
+  )
+  const handleLocateMessage = useCallback(
+    (messageId: string): void => locateTimeline(`[data-message-id="${CSS.escape(messageId)}"]`),
+    [locateTimeline],
+  )
 
   const confirmAddMember = useCallback(
     async (patch: {
@@ -612,6 +650,20 @@ export function CollaborationRoomsPage({
               <Archive size={14} />
             </button>
           </AppTooltip>
+          <AppTooltip label={workPanelOpen ? '收起工作面板' : '展开工作面板'} side="bottom">
+            <button
+              type="button"
+              className={cn(
+                'flex size-7 items-center justify-center rounded-md transition-colors hover:bg-accent hover:text-foreground',
+                workPanelOpen ? 'text-primary' : 'text-muted-foreground',
+              )}
+              aria-label={workPanelOpen ? '收起工作面板' : '展开工作面板'}
+              aria-pressed={workPanelOpen}
+              onClick={() => setWorkPanelOpen((v) => !v)}
+            >
+              <ListChecks size={14} />
+            </button>
+          </AppTooltip>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
           {room.goal ? <span className="truncate" title={room.goal}>目标：{room.goal}</span> : null}
@@ -702,74 +754,95 @@ export function CollaborationRoomsPage({
         ) : null}
       </header>
 
-      {/* 时间线（S3.5-c：一 run 一卡，对齐会话信息流） */}
-      <CollaborationTimeline
-        messages={messages}
-        runs={runs}
-        members={members}
-        channels={channels}
-        streamByRun={streamByRun}
-        cancellingId={cancellingId}
-        onCancelRun={(runId) => void handleCancelRun(runId)}
-        scrollRef={scrollRef}
-        mailbox={mailbox}
-        maxDepth={room.maxA2ADepth}
-        handoffEnabled={room.a2aHandoffEnabled}
-        dismissedDepthStopIds={dismissedDepthStopIds}
-        continuingDepthStopId={continuingDepthStopId}
-        depthStopErrorByEnvelope={depthStopErrorByEnvelope}
-        onContinueDepthStop={(envelopeId) => void handleContinueDepthStop(envelopeId)}
-        onDismissDepthStop={handleDismissDepthStop}
-      />
+      {/* S5：主区改为「左：时间线+输入 | 右：工作面板」行布局。输入栈移入左列（session-chat-col），
+           使其只覆盖左列宽度、不遮挡右侧面板；面板收起时左列自动占满。 */}
+      <div className="flex min-h-0 flex-1">
+        <div className="session-chat-col relative flex min-h-0 min-w-0 flex-1 flex-col">
+          {/* 时间线（S3.5-c：一 run 一卡，对齐会话信息流） */}
+          <CollaborationTimeline
+            messages={messages}
+            runs={runs}
+            members={members}
+            channels={channels}
+            streamByRun={streamByRun}
+            cancellingId={cancellingId}
+            onCancelRun={(runId) => void handleCancelRun(runId)}
+            scrollRef={scrollRef}
+            mailbox={mailbox}
+            maxDepth={room.maxA2ADepth}
+            handoffEnabled={room.a2aHandoffEnabled}
+            dismissedDepthStopIds={dismissedDepthStopIds}
+            continuingDepthStopId={continuingDepthStopId}
+            depthStopErrorByEnvelope={depthStopErrorByEnvelope}
+            onContinueDepthStop={(envelopeId) => void handleContinueDepthStop(envelopeId)}
+            onDismissDepthStop={handleDismissDepthStop}
+          />
 
-      {/* 底部输入栈（绝对定位，输入框底与侧栏底对齐，对齐会话 composer） */}
-      <div className="collab-bottom-stack session-bottom-stack absolute inset-x-0">
-        <div className="composer-blur-underlay" aria-hidden="true" />
-        <div className="session-composer-cluster">
-          {archived ? (
-            <div className="rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
-              已归档房间不再发送新消息。可在侧栏「已归档」中恢复。
+          {/* 底部输入栈（绝对定位，锚在左列 session-chat-col，输入框底与侧栏底对齐） */}
+          <div className="collab-bottom-stack session-bottom-stack absolute inset-x-0">
+            <div className="composer-blur-underlay" aria-hidden="true" />
+            <div className="session-composer-cluster">
+              {archived ? (
+                <div className="rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
+                  已归档房间不再发送新消息。可在侧栏「已归档」中恢复。
+                </div>
+              ) : paused ? (
+                <div className="rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
+                  房间已暂停，不会启动新运行。恢复运行后可继续发送。
+                </div>
+              ) : allMembersMissingBackend ? (
+                <div className="flex flex-col items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-3 text-center">
+                  <p className="text-xs text-amber-700 dark:text-amber-300">
+                    所有成员都未绑定可用渠道（kscc / 外部渠道），发送后无法跑起任何回复。
+                  </p>
+                  <button
+                    type="button"
+                    className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                    onClick={() => onOpenSettings?.('channels')}
+                  >
+                    去渠道设置
+                  </button>
+                </div>
+              ) : anyMemberMissingBackend ? (
+                <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                  <span>部分成员未绑定渠道（@ 到他们时不会回复）。</span>
+                  <button
+                    type="button"
+                    className="rounded-full bg-primary px-2.5 py-0.5 font-medium text-primary-foreground hover:bg-primary/90"
+                    onClick={() => onOpenSettings?.('channels')}
+                  >
+                    去渠道设置
+                  </button>
+                </div>
+              ) : (
+                <div className="session-input-dock">
+                  <ChatInput
+                    ref={inputRef}
+                    onSubmit={() => void send()}
+                  placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@all 唤醒全部）"
+                  mentionRoles={members.map((m) => ({ id: m.id, displayName: m.displayName }))}
+                  onMentionChange={setComposerMentionIds}
+                />
+                </div>
+              )}
             </div>
-          ) : paused ? (
-            <div className="rounded-lg bg-muted px-3 py-2 text-center text-xs text-muted-foreground">
-              房间已暂停，不会启动新运行。恢复运行后可继续发送。
-            </div>
-          ) : allMembersMissingBackend ? (
-            <div className="flex flex-col items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-3 text-center">
-              <p className="text-xs text-amber-700 dark:text-amber-300">
-                所有成员都未绑定可用渠道（kscc / 外部渠道），发送后无法跑起任何回复。
-              </p>
-              <button
-                type="button"
-                className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                onClick={() => onOpenSettings?.('channels')}
-              >
-                去渠道设置
-              </button>
-            </div>
-          ) : anyMemberMissingBackend ? (
-            <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-              <span>部分成员未绑定渠道（@ 到他们时不会回复）。</span>
-              <button
-                type="button"
-                className="rounded-full bg-primary px-2.5 py-0.5 font-medium text-primary-foreground hover:bg-primary/90"
-                onClick={() => onOpenSettings?.('channels')}
-              >
-                去渠道设置
-              </button>
-            </div>
-          ) : (
-            <div className="session-input-dock">
-              <ChatInput
-                ref={inputRef}
-                onSubmit={() => void send()}
-              placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@all 唤醒全部）"
-              mentionRoles={members.map((m) => ({ id: m.id, displayName: m.displayName }))}
-              onMentionChange={setComposerMentionIds}
-            />
-            </div>
-          )}
+          </div>
         </div>
+
+        {/* S5：右侧室级任务/产物面板（可折叠）。收起时不渲染，左列自动占满。 */}
+        {workPanelOpen ? (
+          <CollaborationWorkPanel
+            room={room}
+            tasks={tasks}
+            artifacts={artifacts}
+            members={members}
+            runs={runs}
+            onLocateRun={handleLocateRun}
+            onLocateMessage={handleLocateMessage}
+            onChanged={onRoomsChanged}
+            onClose={() => setWorkPanelOpen(false)}
+          />
+        ) : null}
       </div>
 
       <CollaborationTextPrompt

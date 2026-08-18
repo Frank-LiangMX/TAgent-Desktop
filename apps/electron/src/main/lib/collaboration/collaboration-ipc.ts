@@ -24,21 +24,29 @@ import {
   type AddCollaborationMemberInput,
   type AppendCollaborationUserMessageInput,
   type CancelCollaborationRunInput,
+  type CollaborationArtifact,
   type CollaborationMailboxEnvelope,
   type CollaborationMember,
   type CollaborationMessage,
   type CollaborationRoom,
+  type CollaborationRoomTask,
   type CollaborationRun,
   type ContinueCollaborationDepthStopInput,
   type ContinueCollaborationDepthStopResult,
   type CreateCollaborationRoomInput,
+  type CreateCollaborationRoomTaskInput,
+  type ListCollaborationArtifactsInput,
   type ListCollaborationMailboxInput,
   type ListCollaborationMembersInput,
   type ListCollaborationMessagesInput,
+  type ListCollaborationRoomTasksInput,
   type ListCollaborationRoomsInput,
   type ListCollaborationRunsInput,
+  type ReadCollaborationArtifactInput,
+  type ReadCollaborationArtifactResult,
   type UpdateCollaborationMemberInput,
   type UpdateCollaborationRoomInput,
+  type UpdateCollaborationRoomTaskInput,
 } from '@tagent/shared'
 import { CollaborationRoomService } from './collaboration-room-service'
 
@@ -189,7 +197,47 @@ export function registerCollaborationRoomIpc(
     },
   )
 
+  // ===== S5 室级任务/产物面板：复用 service 既有真值层与守卫 =====
+  // 任务 create/update 的挂板 fail-closed、负责人归属、严格状态机、CAS 全在 service 内；
+  // handler 仅做薄转发，错误以 throw 传递（与 create/update room 一致，渲染层 try/catch）。
+  // READ_ARTIFACT 的跨房间校验在 service.readArtifact 内（按 artifactId 反查记录 + 安全区间解析）。
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.LIST_ROOM_TASKS,
+    async (_e, input: ListCollaborationRoomTasksInput): Promise<CollaborationRoomTask[]> => {
+      return service.listRoomTasks(input.roomId)
+    },
+  )
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.CREATE_ROOM_TASK,
+    async (_e, input: CreateCollaborationRoomTaskInput): Promise<CollaborationRoomTask> => {
+      return service.createRoomTask(input)
+    },
+  )
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.UPDATE_ROOM_TASK,
+    async (_e, input: UpdateCollaborationRoomTaskInput): Promise<CollaborationRoomTask> => {
+      return service.updateRoomTask(input)
+    },
+  )
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.LIST_ARTIFACTS,
+    async (_e, input: ListCollaborationArtifactsInput): Promise<CollaborationArtifact[]> => {
+      return service.listArtifacts(input.roomId)
+    },
+  )
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.READ_ARTIFACT,
+    async (_e, input: ReadCollaborationArtifactInput): Promise<ReadCollaborationArtifactResult> => {
+      return service.readArtifact(input)
+    },
+  )
+
   console.log(
-    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/update-member/list-runs/cancel-run/list-mailbox/continue-depth-stop；S4.5 深度停止继续）',
+    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/update-member/list-runs/cancel-run/list-mailbox/continue-depth-stop/list-room-tasks/create-room-task/update-room-task/list-artifacts/read-artifact；S4.5 深度停止继续；S5 任务/产物面板）',
   )
 }

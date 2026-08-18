@@ -24,14 +24,19 @@ import type {
   CollaborationRoom,
   CollaborationRun,
   CollaborationMailboxEnvelope,
+  CollaborationRoomTask,
+  CollaborationArtifact,
   CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
   AddCollaborationMemberInput,
   ContinueCollaborationDepthStopInput,
   ContinueCollaborationDepthStopResult,
+  CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomInput,
   UpdateCollaborationMemberInput,
+  UpdateCollaborationRoomTaskInput,
   AppendCollaborationUserMessageInput,
+  ReadCollaborationArtifactResult,
   FetchModelsInput,
   FetchModelsForChannelInput,
   FetchModelsResult,
@@ -470,6 +475,17 @@ declare global {
       continueCollaborationDepthStop: (
         input: ContinueCollaborationDepthStopInput,
       ) => Promise<ContinueCollaborationDepthStopResult>
+      // 协作室（S5 室级任务/产物面板：复用已落盘 room task / artifact 真值）
+      listCollaborationRoomTasks: (roomId: string) => Promise<CollaborationRoomTask[]>
+      createCollaborationRoomTask: (input: CreateCollaborationRoomTaskInput) => Promise<CollaborationRoomTask>
+      updateCollaborationRoomTask: (
+        input: UpdateCollaborationRoomTaskInput,
+      ) => Promise<CollaborationRoomTask>
+      listCollaborationArtifacts: (roomId: string) => Promise<CollaborationArtifact[]>
+      readCollaborationArtifact: (input: {
+        roomId: string
+        artifactId: string
+      }) => Promise<ReadCollaborationArtifactResult>
       onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => () => void
       onCollaborationTextDelta: (cb: (payload: CollaborationTextDeltaPayload) => void) => () => void
       // 自动更新

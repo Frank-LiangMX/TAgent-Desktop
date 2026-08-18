@@ -80,3 +80,96 @@
     box-shadow 180ms ease,
     opacity 180ms ease;
 }
+
+/*
+ * S5 室级任务/产物面板：右侧可折叠全高栏，对齐 .kanban-crew-panel 的玻璃右栏语言。
+ * 作为 .session-body 内 .session-chat-col 的兄弟：展开时占据右栏，收起时不渲染（由页面控制）。
+ * 底部输入框已移入 .session-chat-col，故面板全高不被输入框遮挡。
+ */
+.collab-work-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 min(360px, 36vw);
+  width: min(360px, 36vw);
+  min-width: 260px;
+  max-width: 520px;
+  height: 100%;
+  min-height: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: hsl(var(--foreground) / 0.9);
+  border-left: 1px solid var(--spatial-line, hsl(var(--border) / 0.55));
+  background: rgb(var(--glass-rgb) / 0.28);
+  -webkit-backdrop-filter: blur(16px) saturate(1.1);
+  backdrop-filter: blur(16px) saturate(1.1);
+  z-index: 15;
+}
+.dark .collab-work-panel {
+  background: rgb(var(--glass-rgb) / 0.22);
+  border-left-color: rgb(255 255 255 / 0.06);
+}
+/* 面板内滚动区：给底部留出与时间线一致的呼吸（pb-40 量级），避免末项贴底 */
+.collab-work-panel__scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px 12px 120px;
+}
+.collab-work-panel__section + .collab-work-panel__section {
+  margin-top: 10px;
+}
+.collab-work-panel__group + .collab-work-panel__group {
+  margin-top: 6px;
+}
+/* 任务/产物行：玻璃底、圆角、可聚焦（键盘可达） */
+.collab-work-panel__row {
+  border: 1px solid rgb(var(--glass-rgb) / 0.45);
+  background: linear-gradient(145deg, rgb(var(--glass-rgb) / 0.34), rgb(var(--glass-rgb) / 0.18));
+  border-radius: 10px;
+  padding: 7px 9px;
+}
+.dark .collab-work-panel__row {
+  border-color: rgb(255 255 255 / 0.08);
+}
+.collab-work-panel__row[data-status='blocked'] {
+  border-color: rgb(234 179 8 / 0.4);
+}
+.collab-work-panel__row[data-status='failed'] {
+  border-color: hsl(var(--destructive) / 0.4);
+}
+/* 产物文本预览：等宽、可滚、限高 */
+.collab-work-panel__preview {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  break-word: break-word;
+  font-family: var(--font-mono, ui-monospace), monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  border: 1px solid rgb(var(--glass-rgb) / 0.4);
+  border-radius: 8px;
+  padding: 8px;
+  background: hsl(var(--muted) / 0.4);
+}
+
+/* 工作面板「定位」到时间线项时，目标项短时高亮闪示（仅前端态，1.6s 自动移除） */
+.collab-locate-flash {
+  outline: 2px solid hsl(var(--primary) / 0.7);
+  outline-offset: 2px;
+  border-radius: 8px;
+  animation: collab-locate-flash 1.6s ease-out;
+}
+@keyframes collab-locate-flash {
+  0% {
+    outline-color: hsl(var(--primary) / 0.9);
+    background-color: hsl(var(--primary) / 0.12);
+  }
+  60% {
+    background-color: hsl(var(--primary) / 0.06);
+  }
+  100% {
+    outline-color: hsl(var(--primary) / 0);
+    background-color: transparent;
+  }
+}
