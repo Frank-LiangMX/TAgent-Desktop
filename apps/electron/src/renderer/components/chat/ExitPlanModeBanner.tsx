@@ -19,8 +19,8 @@ import {
   ArrowUp,
   Check,
   FileText,
-  MessageSquare,
-  Send,
+  ChatCircleDots,
+  PaperPlaneTilt,
   ShieldCheck,
   X,
 } from '@phosphor-icons/react'
@@ -67,7 +67,7 @@ const PLAN_OPTIONS: PlanOption[] = [
     action: 'feedback',
     label: '提供修改意见',
     description: '告诉 Agent 需要调整什么',
-    icon: <MessageSquare size={13} weight="bold" />,
+    icon: <ChatCircleDots size={13} weight="bold" />,
     tone: 'default',
   },
 ]
@@ -309,7 +309,7 @@ export function ExitPlanModeBanner({
                     disabled={submitting || !feedbackText.trim()}
                     aria-label="发送修改意见"
                   >
-                    <Send size={13} weight="bold" />
+                    <PaperPlaneTilt size={13} weight="bold" />
                     发送
                   </button>
                 </div>
