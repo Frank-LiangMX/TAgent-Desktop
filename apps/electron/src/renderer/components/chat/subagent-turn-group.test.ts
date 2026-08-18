@@ -239,7 +239,7 @@ describe('isSubagentLauncherTool / listSubagentEntryIds', () => {
     expect(listSubagentEntryIds(items)).toEqual(['call_a'])
   })
 
-  it('dedupes launcher id and parented messages', () => {
+  it('dedupes launcher id and parented messages; ignores unknown parented once launchers exist', () => {
     const items: TurnSourceItem[] = [
       {
         key: 'm1',
@@ -251,9 +251,105 @@ describe('isSubagentLauncherTool / listSubagentEntryIds', () => {
         } as TAgentMessage,
       },
       subagentMessage('call_a', '步骤', 's1'),
-      subagentMessage('call_b', '无 launcher 兜底', 's2'),
+      subagentMessage('call_b', '无主线 launcher 的嵌套/杂讯', 's2'),
     ]
-    expect(listSubagentEntryIds(items)).toEqual(['call_a', 'call_b'])
+    expect(listSubagentEntryIds(items)).toEqual(['call_a'])
+  })
+
+  it('falls back to parented / taskCard only before main-line launchers arrive', () => {
+    const items: TurnSourceItem[] = [
+      subagentMessage('call_a', '步骤', 's1'),
+      {
+        key: 'task1',
+        taskCard: {
+          taskId: 't1',
+          toolUseId: 'call_a',
+          status: 'running',
+          description: '探索',
+          taskType: 'local_agent',
+        },
+      },
+    ]
+    expect(listSubagentEntryIds(items)).toEqual(['call_a'])
+  })
+
+  it('hides nested Agent launches (child dispatched its own subagents)', () => {
+    const items: TurnSourceItem[] = [
+      {
+        key: 'm1',
+        message: {
+          type: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'call_a', name: 'Agent', input: { description: '探索仓库' } },
+            { type: 'tool_use', id: 'call_b', name: 'Agent', input: { description: '探索 B' } },
+            { type: 'tool_use', id: 'call_c', name: 'Agent', input: { description: '探索 C' } },
+            { type: 'tool_use', id: 'call_d', name: 'Agent', input: { description: '探索 D' } },
+          ],
+        } as TAgentMessage,
+      },
+      {
+        key: 'nested-launch',
+        message: {
+          type: 'assistant',
+          parentToolUseId: 'call_a',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call_a_app',
+              name: 'Agent',
+              input: { description: '分析 app.py' },
+            },
+            {
+              type: 'tool_use',
+              id: 'call_a_agent',
+              name: 'Agent',
+              input: { description: '分析 agent.py' },
+            },
+          ],
+        } as TAgentMessage,
+      },
+      subagentMessage('call_a_app', 'app.py 分析中', 'n1'),
+      subagentMessage('call_a_agent', 'agent.py 分析中', 'n2'),
+      {
+        key: 'task-nested',
+        taskCard: {
+          taskId: 'tn',
+          toolUseId: 'call_a_app',
+          status: 'running',
+          description: '分析 app.py',
+          taskType: 'local_agent',
+        },
+      },
+    ]
+    expect(listSubagentEntryIds(items)).toEqual(['call_a', 'call_b', 'call_c', 'call_d'])
+  })
+
+  it('live fallback excludes nested launch ids even before main-line launchers exist', () => {
+    const items: TurnSourceItem[] = [
+      {
+        key: 'nested-launch',
+        message: {
+          type: 'assistant',
+          parentToolUseId: 'call_a',
+          content: [
+            { type: 'tool_use', id: 'call_nested', name: 'Agent', input: {} },
+          ],
+        } as TAgentMessage,
+      },
+      subagentMessage('call_a', '直系过程', 's1'),
+      subagentMessage('call_nested', '孙辈过程', 's2'),
+      {
+        key: 'task-nested',
+        taskCard: {
+          taskId: 'tn',
+          toolUseId: 'call_nested',
+          status: 'running',
+          description: '孙辈',
+          taskType: 'local_agent',
+        },
+      },
+    ]
+    expect(listSubagentEntryIds(items)).toEqual(['call_a'])
   })
 
   it('ignores Bash tool_use with same id (not a launcher)', () => {
