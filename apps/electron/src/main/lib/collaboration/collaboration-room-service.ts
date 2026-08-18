@@ -35,7 +35,7 @@ import {
   realpathSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep, basename } from 'node:path'
 import {
   COLLABORATION_LOGICAL_SESSION_ID_PREFIX,
   COLLABORATION_MEMBER_ID_PREFIX,
@@ -96,6 +96,18 @@ import {
   type BoardProjectedSummary,
   type BoardProjectedTask,
 } from '@tagent/shared'
+import {
+  COLLABORATION_WORKSPACE_COMMAND_TIMEOUT_MS,
+  COLLABORATION_WORKSPACE_COMMAND_TOTAL_OUTPUT_BYTES,
+  COLLABORATION_WORKSPACE_READ_MAX_BYTES,
+  COLLABORATION_WORKSPACE_SEARCH_MAX_DEPTH,
+  COLLABORATION_WORKSPACE_SEARCH_MAX_RESULTS,
+  COLLABORATION_WORKSPACE_WRITE_MAX_BYTES,
+} from '@tagent/shared'
+import {
+  runWorkspaceCommand,
+  type WorkspaceCommandRunResult,
+} from './workspace-command-runner'
 import {
   appendMembers,
   appendMessage,
@@ -1134,6 +1146,8 @@ export class CollaborationRoomService {
         memberId: member.id,
         runId: run.id,
         triggerMessageId: triggerMessage.id,
+        workspaceId: room.workspaceId,
+        permissionProfile: member.permissionProfile,
         channelId: member.channelId,
         modelId: member.modelId,
         systemPrompt: projected.systemPrompt,
@@ -1236,6 +1250,62 @@ export class CollaborationRoomService {
                     output: `产物已发布（artifact=${result.artifactId}，路径=${result.relativePath}，sha256=${result.sha256.slice(0, 12)}…，${result.byteSize}B）`,
                   }
                 : { output: `room_publish_artifact 被拒绝：${result.reason}`, isError: true }
+            }
+            case 'workspace_read_file': {
+              const result = this.workspaceReadFile({
+                roomId: room.id,
+                fromRunId: run.id,
+                path: call.arguments.path ?? '',
+                maxBytes: call.arguments.maxBytes !== undefined && call.arguments.maxBytes !== ''
+                  ? Number(call.arguments.maxBytes) : undefined,
+              })
+              return result.ok
+                ? { output: `文件已读取（路径=${result.path}，${result.byteSize}B${result.truncated ? '，已截断' : ''}）\n${result.content}` }
+                : { output: `workspace_read_file 被拒绝：${result.reason}`, isError: true }
+            }
+            case 'workspace_search': {
+              const result = this.workspaceSearch({
+                roomId: room.id,
+                fromRunId: run.id,
+                path: call.arguments.path ?? '',
+                pattern: call.arguments.pattern,
+                maxResults: call.arguments.maxResults !== undefined && call.arguments.maxResults !== ''
+                  ? Number(call.arguments.maxResults) : undefined,
+              })
+              return result.ok
+                ? {
+                    output: `搜索结果（基础路径=${result.basePath}${result.pattern ? `，过滤=${result.pattern}` : ''}，共 ${result.count} 项${result.truncated ? '，已截断' : ''}）\n${result.results.join('\n')}`,
+                  }
+                : { output: `workspace_search 被拒绝：${result.reason}`, isError: true }
+            }
+            case 'workspace_write_file': {
+              const result = this.workspaceWriteFile({
+                roomId: room.id,
+                fromRunId: run.id,
+                path: call.arguments.path ?? '',
+                content: call.arguments.content ?? '',
+              })
+              return result.ok
+                ? { output: `文件已写入（路径=${result.path}，${result.byteSize}B，sha256=${result.sha256.slice(0, 12)}…）` }
+                : { output: `workspace_write_file 被拒绝：${result.reason}`, isError: true }
+            }
+            case 'workspace_run_command': {
+              const result = await this.workspaceRunCommand({
+                roomId: room.id,
+                fromRunId: run.id,
+                command: call.arguments.command ?? '',
+                args: call.arguments.args,
+                cwd: call.arguments.cwd,
+                timeoutMs: call.arguments.timeoutMs,
+              })
+              return result.ok
+                ? {
+                    output: `命令已执行（${result.command}，退出码=${result.exitCode ?? 'SIGKILL'}` +
+                      `${result.timedOut ? '，已超时' : ''}` +
+                      `${result.truncated ? '，输出已截断' : ''}` +
+                      `）\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`,
+                  }
+                : { output: `workspace_run_command 被拒绝：${result.reason}`, isError: true }
             }
           }
         },
@@ -2016,6 +2086,307 @@ export class CollaborationRoomService {
     return Boolean(room.attachedBoardId)
   }
 
+  // ===== Workspace 工具桥（受控文件/搜索/命令；只读成员可 read/search，write/run 需 workspace-write） =====
+  //
+  // 安全契约（与 room_publish_artifact 同源，复用 resolveArtifactTargetPath）：
+  // - 房间未绑定工作区 → 所有 workspace 工具一律拒绝（fail closed）。
+  // - 所有相对路径经 resolveArtifactTargetPath 解析：拒绝绝对 / 反斜杠 / `..` 越界 /
+  //   符号链接逃逸，且必须落在绑定工作区真实根内。
+  // - read/search 不要求写权限（read-only 成员可用）；write_file / run_command 仅
+  //   workspace-write 成员可用（权限档位 enforce，与 room_publish_artifact 一致）。
+  // - 安全字段（roomId/memberId/permissionProfile/workspaceId）全部取自 run 上下文，模型不可伪造。
+  //
+  // 渲染层不暴露任意写 IPC：这里只在模型经 hostToolHandler 发起调用时触达文件系统，
+  // 绝不把通用 Read/Write/Bash 工具暴露给模型（不复用 Pi 会话工具）。
+
+  /**
+   * workspace 工具通用守卫（fail-closed）。返回工作区真实根 + room/member，供具体工具复用。
+   *
+   * needsWrite=true 时额外 enforce workspace-write 权限档位。
+   */
+  private workspaceGuard(input: {
+    roomId: string
+    fromRunId: string
+    needsWrite: boolean
+  }): { ok: true; room: CollaborationRoom; member: CollaborationMember; rootReal: string } | { ok: false; reason: string } {
+    const room = getRoom(input.roomId)
+    if (!room) return { ok: false, reason: '房间不存在' }
+    if (room.status !== 'active') return { ok: false, reason: `房间状态非 active：${room.status}` }
+
+    const run = getRun(input.fromRunId)
+    if (!run) return { ok: false, reason: 'run 不存在' }
+    if (run.status !== 'running' && run.status !== 'awaiting_peer') {
+      return { ok: false, reason: `run 非 running/awaiting_peer：${run.status}` }
+    }
+    const member = getMember(run.memberId)
+    if (!member || member.roomId !== room.id) {
+      return { ok: false, reason: '发起成员不存在或不属于本房间' }
+    }
+
+    if (input.needsWrite && member.permissionProfile !== 'workspace-write') {
+      return { ok: false, reason: '成员权限非 workspace-write，不能写文件或执行命令' }
+    }
+
+    if (!room.workspaceId) {
+      return { ok: false, reason: '房间未绑定工作区，无法使用 workspace 工具' }
+    }
+    const workspace = resolveWorkspaceById(room.workspaceId)
+    if (!workspace || !workspace.projectDirectory) {
+      return { ok: false, reason: '房间绑定的工作区不存在或无项目目录' }
+    }
+    if (!existsSync(workspace.projectDirectory)) {
+      return { ok: false, reason: '工作区项目目录不存在' }
+    }
+    const rootReal = realpathSafe(workspace.projectDirectory)
+    if (!rootReal) return { ok: false, reason: '工作区项目目录不可访问' }
+    return { ok: true, room, member, rootReal }
+  }
+
+  /**
+   * workspace_read_file：从绑定工作区读一个文本文件（只读，任意成员可用）。
+   *
+   * 有界读取：默认上限 COLLABORATION_WORKSPACE_READ_MAX_BYTES，超过时返回截断内容并标记
+   * truncated。仅普通文件可读：目录 / 符号链接 / 不存在一律拒绝。
+   */
+  workspaceReadFile(input: {
+    roomId: string
+    fromRunId: string
+    path: string
+    maxBytes?: number
+  }):
+    | { ok: true; path: string; content: string; byteSize: number; truncated: boolean }
+    | { ok: false; reason: string } {
+    const g = this.workspaceGuard({ roomId: input.roomId, fromRunId: input.fromRunId, needsWrite: false })
+    if (!g.ok) return g
+
+    const target = resolveArtifactTargetPath(g.rootReal, input.path)
+    if (!target.ok) return { ok: false, reason: target.reason }
+
+    if (!existsSync(target.absPath)) return { ok: false, reason: '文件不存在' }
+    let st: ReturnType<typeof lstatSync>
+    try {
+      st = lstatSync(target.absPath)
+    } catch {
+      return { ok: false, reason: '文件不可访问' }
+    }
+    if (st.isSymbolicLink()) return { ok: false, reason: '文件路径是符号链接，禁止读取（防逃逸）' }
+    if (st.isDirectory()) return { ok: false, reason: '目标路径是目录，无法读取文件内容' }
+
+    const requestedBytes = input.maxBytes ?? COLLABORATION_WORKSPACE_READ_MAX_BYTES
+    if (!Number.isFinite(requestedBytes) || requestedBytes <= 0) {
+      return { ok: false, reason: 'maxBytes 必须是正数' }
+    }
+    const cap = Math.min(Math.floor(requestedBytes), COLLABORATION_WORKSPACE_READ_MAX_BYTES)
+    const size = st.size
+    const truncated = size > cap
+    const toRead = Math.min(size, cap)
+    let fd: number | undefined
+    try {
+      fd = openSync(target.absPath, 'r')
+      const buf = Buffer.alloc(toRead)
+      const bytesRead = readSync(fd, buf, 0, toRead, 0)
+      const content = buf.subarray(0, bytesRead).toString('utf8')
+      return { ok: true, path: target.relativePath, content, byteSize: size, truncated }
+    } catch {
+      return { ok: false, reason: '读取文件失败' }
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  /**
+   * workspace_search：在绑定工作区根内递归列出文件路径（只读成员可用）。
+   *
+   * basePath 指向目录则递归搜索；指向文件则返回该文件（若匹配 pattern）。pattern 为可选的
+   * 大小写不敏感 glob（支持 `*` / `?`）；无 `*`/`?` 时按相对路径子串过滤；空 pattern 匹配全部。
+   * 结果数不超 COLLABORATION_WORKSPACE_SEARCH_MAX_RESULTS，超限截断；深度不超
+   * COLLABORATION_WORKSPACE_SEARCH_MAX_DEPTH。符号链接组件在路径解析阶段已被拒绝。
+   */
+  workspaceSearch(input: {
+    roomId: string
+    fromRunId: string
+    path: string
+    pattern?: string
+    maxResults?: number
+  }):
+    | { ok: true; basePath: string; pattern?: string; results: string[]; count: number; truncated: boolean }
+    | { ok: false; reason: string } {
+    const g = this.workspaceGuard({ roomId: input.roomId, fromRunId: input.fromRunId, needsWrite: false })
+    if (!g.ok) return g
+
+    // 根搜索：path 为空时 base=工作区根；否则经同一条安全路径解析
+    const trimmed = (input.path ?? '').trim()
+    let baseReal = g.rootReal
+    let baseRel = ''
+    if (trimmed !== '') {
+      const target = resolveArtifactTargetPath(g.rootReal, trimmed)
+      if (!target.ok) return { ok: false, reason: target.reason }
+      baseRel = target.relativePath
+      if (!existsSync(target.absPath)) return { ok: false, reason: '搜索路径不存在' }
+      try {
+        if (lstatSync(target.absPath).isSymbolicLink()) {
+          return { ok: false, reason: '搜索路径是符号链接，禁止（防逃逸）' }
+        }
+      } catch {
+        return { ok: false, reason: '搜索路径不可访问' }
+      }
+      baseReal = target.absPath
+    }
+
+    const pattern = input.pattern !== undefined && input.pattern.trim() !== '' ? input.pattern.trim() : undefined
+    const requestedResults = input.maxResults ?? COLLABORATION_WORKSPACE_SEARCH_MAX_RESULTS
+    if (!Number.isFinite(requestedResults) || requestedResults <= 0) {
+      return { ok: false, reason: 'maxResults 必须是正整数' }
+    }
+    const maxResults = Math.min(Math.floor(requestedResults), COLLABORATION_WORKSPACE_SEARCH_MAX_RESULTS)
+
+    const out: string[] = []
+    let truncated = false
+    const baseDepth = baseRel === '' ? 0 : baseRel.split('/').length
+
+    const walk = (dirReal: string, dirRel: string, depth: number): void => {
+      if (truncated) return
+      let entries: string[]
+      try {
+        entries = readdirSync(dirReal, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        if (truncated) break
+        const childReal = join(dirReal, entry.name)
+        const childRel = dirRel === '' ? entry.name : `${dirRel}/${entry.name}`
+        if (entry.isSymbolicLink()) continue // 拒搜符号链接，防逃逸
+        if (entry.isDirectory()) {
+          if (depth < COLLABORATION_WORKSPACE_SEARCH_MAX_DEPTH) walk(childReal, childRel, depth + 1)
+          continue
+        }
+        if (!entry.isFile()) continue
+        if (pattern && !simpleGlobMatch(pattern, entry.name)) continue
+        out.push(childRel)
+        if (out.length >= maxResults) {
+          truncated = true
+          break
+        }
+      }
+    }
+
+    // base 本身若是文件（非目录），直接尝试作为单条结果
+    let isDir = true
+    try {
+      isDir = lstatSync(baseReal).isDirectory()
+    } catch {
+      /* ignore */
+    }
+    if (isDir) {
+      walk(baseReal, baseRel, 0)
+    } else if ((!pattern || simpleGlobMatch(pattern, basename(baseReal))) && !truncated) {
+      out.push(baseRel)
+    }
+
+    return { ok: true, basePath: baseRel === '' ? '.' : baseRel, pattern, results: out, count: out.length, truncated }
+  }
+
+  /**
+   * workspace_write_file：向绑定工作区写一个文本文件（仅 workspace-write 成员）。
+   *
+   * 复用 resolveArtifactTargetPath 拒绝越界 / 符号链接；内容非空、UTF-8 字节上限内。
+   * 返回规范相对路径、实际字节数与 sha256（供宿主回注）。不写审计产物记录（非 room artifact）。
+   */
+  workspaceWriteFile(input: {
+    roomId: string
+    fromRunId: string
+    path: string
+    content: string
+  }):
+    | { ok: true; path: string; byteSize: number; sha256: string }
+    | { ok: false; reason: string } {
+    const g = this.workspaceGuard({ roomId: input.roomId, fromRunId: input.fromRunId, needsWrite: true })
+    if (!g.ok) return g
+
+    const target = resolveArtifactTargetPath(g.rootReal, input.path)
+    if (!target.ok) return { ok: false, reason: target.reason }
+
+    const contentBuf = Buffer.from(input.content ?? '', 'utf8')
+    if (contentBuf.byteLength === 0) return { ok: false, reason: '写入内容不能为空' }
+    if (contentBuf.byteLength > COLLABORATION_WORKSPACE_WRITE_MAX_BYTES) {
+      return {
+        ok: false,
+        reason: `写入内容过大（超过 ${COLLABORATION_WORKSPACE_WRITE_MAX_BYTES} 字节）`,
+      }
+    }
+
+    if (existsSync(target.absPath) && lstatSync(target.absPath).isDirectory()) {
+      return { ok: false, reason: '目标路径已存在且是目录，不能覆盖为文件' }
+    }
+
+    const parentDir = dirname(target.absPath)
+    if (!existsSync(parentDir)) mkdirSync(parentDir, { recursive: true })
+    writeFileSync(target.absPath, contentBuf)
+    const sha256 = createHash('sha256').update(contentBuf).digest('hex')
+    return { ok: true, path: target.relativePath, byteSize: contentBuf.byteLength, sha256 }
+  }
+
+  /**
+   * workspace_run_command：在绑定工作区根（或工作区内子目录）执行一条白名单命令
+   * （仅 workspace-write 成员）。命令与参数经 workspace-command-runner 校验（allowlist +
+   * spawn shell:false），cwd 经 resolveArtifactTargetPath 校验落在工作区内。超时、输出上限
+   * 由执行器兜底。返回 stdout / stderr / exitCode / 是否超时或截断。
+   */
+  async workspaceRunCommand(input: {
+    roomId: string
+    fromRunId: string
+    command: string
+    args?: string
+    cwd?: string
+    timeoutMs?: number
+  }):
+    | { ok: true; command: string; stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; truncated: boolean }
+    | { ok: false; reason: string } {
+    const g = this.workspaceGuard({ roomId: input.roomId, fromRunId: input.fromRunId, needsWrite: true })
+    if (!g.ok) return g
+
+    let runCwd = g.rootReal
+    if (input.cwd && input.cwd.trim() !== '') {
+      const c = resolveArtifactTargetPath(g.rootReal, input.cwd)
+      if (!c.ok) return { ok: false, reason: c.reason }
+      if (!existsSync(c.absPath) || !lstatSync(c.absPath).isDirectory()) {
+        return { ok: false, reason: 'cwd 目录不存在或不是目录' }
+      }
+      runCwd = c.absPath
+    }
+
+    let timeoutMs: number | undefined
+    if (input.timeoutMs !== undefined && input.timeoutMs.trim() !== '') {
+      const n = Number(input.timeoutMs)
+      if (!Number.isFinite(n) || n <= 0) {
+        return { ok: false, reason: 'timeoutMs 必须是正整数' }
+      }
+      timeoutMs = n
+    }
+
+    const result: WorkspaceCommandRunResult = await runWorkspaceCommand(input.command, input.args, {
+      cwd: runCwd,
+      timeoutMs,
+    })
+    if (!result.ok) return result
+    return {
+      ok: true,
+      command: input.command,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      truncated: result.truncated,
+    }
+  }
+
   // ===== Board Projection（S5：看板桥，只读投影） =====
   //
   // 02-RUNTIME-A2A-SPEC §2.6 / ADR-0007 §15.7：挂载看板的房间以 attachedBoardId 引用
@@ -2424,6 +2795,53 @@ function buildMember(
     createdAt: now,
     updatedAt: now,
   }
+}
+
+// ===== workspace_search glob 匹配 =====
+
+/**
+ * 简单 glob 匹配（仅 `*` `?`，大小写不敏感），用于 workspace_search 过滤文件名。
+ *
+ * - `*` 匹配任意数量的字符（含零个），`?` 匹配单个字符。
+ * - 不含 `*` `?` 时按子串匹配（大小写不敏感）。
+ * - 纯函数，不读盘不依赖时间。
+ */
+function simpleGlobMatch(pattern: string, str: string): boolean {
+  const lowerP = pattern.toLowerCase()
+  const lowerS = str.toLowerCase()
+  if (!pattern.includes('*') && !pattern.includes('?')) {
+    return lowerS.includes(lowerP)
+  }
+  const parts = lowerP.split(/(\*+|\?+)/)
+  let idx = 0
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]
+    if (part === '' || part === undefined) continue
+    if (part.startsWith('*') || part.startsWith('?')) {
+      // wildcard segment: * matches greedy, ? matches exactly one char
+      const isStar = part.startsWith('*')
+      if (isStar) {
+        // * can match zero or more chars; try all positions
+        const nextPart = parts[i + 1]
+        if (!nextPart) return true // trailing * matches everything
+        const nextIdx = lowerS.indexOf(nextPart, idx)
+        if (nextIdx === -1) return false
+        idx = nextIdx + nextPart.length
+        i++ // skip the next literal part we just consumed
+      } else {
+        // ? matches exactly one char
+        for (let q = 0; q < part.length; q++) {
+          if (idx >= lowerS.length) return false
+          idx++
+        }
+      }
+    } else {
+      // literal
+      if (!lowerS.startsWith(part, idx)) return false
+      idx += part.length
+    }
+  }
+  return idx <= lowerS.length
 }
 
 // ===== room_publish_artifact 路径安全（纯函数，便于分层单测） =====

@@ -25,6 +25,8 @@ import {
   isAgentCompatibleProvider,
   resolveChannelDefaultModelId,
   type Channel,
+  type CollaborationHostToolCall,
+  type CollaborationPermissionProfile,
   type CollaborationHostToolHandler,
   type CollaborationMemberCapabilities,
   type MemberBackendAdapter,
@@ -94,6 +96,46 @@ const ROOM_TOOL_DESCRIPTORS = [
       taskId: { type: 'string' },
     },
   },
+  // ===== 受控工作区工具桥 =====
+  {
+    name: 'workspace_read_file',
+    description:
+      '读取绑定工作区内的一个文本文件；路径只允许正斜杠/相对、不得绝对/..越界/符号链接。只读成员也可使用。',
+    parameters: {
+      path: { type: 'string', required: true },
+      maxBytes: { type: 'string' },
+    },
+  },
+  {
+    name: 'workspace_search',
+    description:
+      '在绑定工作区内递归搜索文件；path 为相对目录或根内路径，pattern 可选 glob/*?/子串过滤，maxResults 可设返回上限（默认 200）。只读成员也可使用。',
+    parameters: {
+      path: { type: 'string', required: true },
+      pattern: { type: 'string' },
+      maxResults: { type: 'string' },
+    },
+  },
+  {
+    name: 'workspace_write_file',
+    description:
+      '向绑定工作区的相对路径写入一个文本文件（仅在权限为 workspace-write 且房间绑定了工作区时可用）；路径同样受绝对/..越界/符号链接约束。',
+    parameters: {
+      path: { type: 'string', required: true },
+      content: { type: 'string', required: true },
+    },
+  },
+  {
+    name: 'workspace_run_command',
+    description:
+      '在绑定工作区内执行一条白名单项目命令（git/bun/npm/pnpm/yarn/node/python等）；args 传 JSON 字符串数组、cwd 可为工作区内相对子目录。仅 workspace-write 成员可用。',
+    parameters: {
+      command: { type: 'string', required: true },
+      args: { type: 'string' },
+      cwd: { type: 'string' },
+      timeoutMs: { type: 'string' },
+    },
+  },
 ] as const
 
 const roomSendSchema = Type.Object(
@@ -130,6 +172,40 @@ const roomPublishArtifactSchema = Type.Object(
     content: Type.String(),
     summary: Type.Optional(Type.String()),
     taskId: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+)
+
+// ===== workspace 工具桥 TypeBox schema =====
+
+const workspaceReadFileSchema = Type.Object(
+  {
+    path: Type.String(),
+    maxBytes: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+)
+const workspaceSearchSchema = Type.Object(
+  {
+    path: Type.String(),
+    pattern: Type.Optional(Type.String()),
+    maxResults: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+)
+const workspaceWriteFileSchema = Type.Object(
+  {
+    path: Type.String(),
+    content: Type.String(),
+  },
+  { additionalProperties: false },
+)
+const workspaceRunCommandSchema = Type.Object(
+  {
+    command: Type.String(),
+    args: Type.Optional(Type.String()),
+    cwd: Type.Optional(Type.String()),
+    timeoutMs: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
 )
@@ -378,13 +454,14 @@ export function channelSupportsRoomToolBridge(channelId?: string): boolean {
 }
 
 /**
- * 构造协作室工具桥的 6 把受限 AgentTool：room_send / room_ask / room_reply /
- * room_task_assign / room_task_update / room_publish_artifact。
+ * 构造协作室工具桥的 10 把受控 AgentTool：6 把 room_* + 4 把 workspace_*。
  *
  * 安全契约（02-RUNTIME-A2A-SPEC §9 / 03-IMPLEMENTATION-PHASES §12）：
  * - 工具 schema 由宿主白名单写死（TypeBox），绝不来自模型或 prompt 文本；这是模型在
- *   房间里能触发的全部副作用，绝不暴露 filesystem/shell/database（不复用 Pi 会话的
- *   Read/Bash/Edit/Write/Task 等）。
+ *   房间里能触发的全部副作用，绝不暴露任意 filesystem/shell/database（不复用 Pi 会话的
+ *   Read/Bash/Edit/Write 等）。
+ * - workspace_* 工具仅在本房间绑定了工作区、权限档位满足时有效；路由/守卫由 hostToolHandler
+ *   系统执行，模型不可绕过。
  * - execute 把调用转发给宿主 hostToolHandler 真实校验/落盘/状态机迁移，绝不就地伪造结果；
  *   返回值的 content 由 Agent 自动作为 tool_result 回注下一轮 context（result 回注）。
  * - ask 成功且 result.awaitPeer=true 时调用 abortAgent 停掉 Agent loop，让 service 把
@@ -394,16 +471,13 @@ export function channelSupportsRoomToolBridge(channelId?: string): boolean {
 export function buildRoomBridgeTools(args: {
   hostToolHandler: CollaborationHostToolHandler
   abortAgent: () => void
+  /** 宿主组装的权限/工作区上下文；不接受模型传入。 */
+  permissionProfile?: CollaborationPermissionProfile
+  workspaceId?: string
 }): AgentTool<any, { output: string }>[] {
-  const { hostToolHandler, abortAgent } = args
+  const { hostToolHandler, abortAgent, permissionProfile, workspaceId } = args
   const make = (
-    name:
-      | 'room_send'
-      | 'room_ask'
-      | 'room_reply'
-      | 'room_task_assign'
-      | 'room_task_update'
-      | 'room_publish_artifact',
+    name: CollaborationHostToolCall['name'],
     description: string,
     // TypeBox schema 具体泛型在各工具间不同；AgentTool 在此处按运行时 schema 消费。
     parameters: any,
@@ -430,7 +504,7 @@ export function buildRoomBridgeTools(args: {
       }
     },
   })
-  return [
+  const roomTools = [
     make('room_send', ROOM_TOOL_DESCRIPTORS[0].description, roomSendSchema),
     make('room_ask', ROOM_TOOL_DESCRIPTORS[1].description, roomAskSchema),
     make('room_reply', ROOM_TOOL_DESCRIPTORS[2].description, roomReplySchema),
@@ -442,11 +516,35 @@ export function buildRoomBridgeTools(args: {
       roomPublishArtifactSchema,
     ),
   ]
+  if (!workspaceId) return roomTools
+  // workspace 工具桥（按宿主绑定工作区/权限过滤）
+  roomTools.push(
+    make('workspace_read_file', ROOM_TOOL_DESCRIPTORS[6].description, workspaceReadFileSchema),
+    make('workspace_search', ROOM_TOOL_DESCRIPTORS[7].description, workspaceSearchSchema),
+  )
+  if (permissionProfile === 'workspace-write') {
+    roomTools.push(
+      make('workspace_write_file', ROOM_TOOL_DESCRIPTORS[8].description, workspaceWriteFileSchema),
+      make('workspace_run_command', ROOM_TOOL_DESCRIPTORS[9].description, workspaceRunCommandSchema),
+    )
+  }
+  return roomTools
+}
+
+function roomToolDescriptorsFor(input: MemberTurnInput) {
+  const allowWorkspace = Boolean(input.workspaceId)
+  const allowWrite = allowWorkspace && input.permissionProfile === 'workspace-write'
+  return ROOM_TOOL_DESCRIPTORS.filter((descriptor) => {
+    if (!descriptor.name.startsWith('workspace_')) return true
+    if (!allowWorkspace) return false
+    return descriptor.name === 'workspace_read_file' || descriptor.name === 'workspace_search' || allowWrite
+  })
 }
 
 /**
- * 外部渠道原生工具桥：把协作室六把受控工具
- *（room_send/room_ask/room_reply/room_task_assign/room_task_update/room_publish_artifact）
+ * 外部渠道原生工具桥：把协作室 10 把受控工具
+ *（room_send/room_ask/room_reply/room_task_assign/room_task_update/room_publish_artifact/
+ * workspace_read_file/workspace_search/workspace_write_file/workspace_run_command）
  * 作为真实 AgentTool（TypeBox schema）接入 Pi Agent + createHttpDirectStreamFn。模型经供应商
  * 原生 function/tool calling 协议（Anthropic /v1/messages 的 tool_use）发起调用，Agent 调
  * execute → hostToolHandler 真实执行，结果由 Agent 自动回注下一轮 context。工具 schema 仅
@@ -465,6 +563,8 @@ async function runExternalRoomToolTurn(args: {
   const tools = buildRoomBridgeTools({
     hostToolHandler: input.hostToolHandler!,
     abortAgent: () => agent?.abort(),
+    permissionProfile: input.permissionProfile,
+    workspaceId: input.workspaceId,
   })
   // createHttpDirectStreamFn 内部按 provider 预建 Model（含正确 api/baseUrl），Agent 的
   // initialState.model 仅作占位（streamFn 忽略传入 model）。进入此路径的外部渠道均为
@@ -525,8 +625,9 @@ async function runExternalRoomToolTurn(args: {
 
 /**
  * 把 kscc bare 接入 Pi Agent 的真实工具循环。模型输出的 antml 调用由
- * createKsccBareStreamFn 解析为 AgentTool；只构造下列六把房间工具，结果由 Agent
- * 自动写回下一轮 context。ask 成功后终止物理 loop，service 会把 run 保留为 awaiting_peer。
+ * createKsccBareStreamFn 解析为 AgentTool；只构造宿主按 workspace/permission 过滤后的
+ * room + workspace 工具，结果由 Agent 自动写回下一轮 context。ask 成功后终止物理 loop，
+ * service 会把 run 保留为 awaiting_peer。
  */
 async function runKsccRoomToolTurn(args: {
   input: MemberTurnInput
@@ -538,6 +639,8 @@ async function runKsccRoomToolTurn(args: {
   const tools = buildRoomBridgeTools({
     hostToolHandler: input.hostToolHandler!,
     abortAgent: () => agent?.abort(),
+    permissionProfile: input.permissionProfile,
+    workspaceId: input.workspaceId,
   })
   const model = {
     id: args.modelId,
@@ -562,7 +665,7 @@ async function runKsccRoomToolTurn(args: {
     streamFn: createKsccBareStreamFn({
       ksccPath: args.ksccPath,
       defaultModelId: args.modelId,
-      tools: ROOM_TOOL_DESCRIPTORS as any,
+      tools: roomToolDescriptorsFor(input) as any,
     }),
     toolExecution: 'sequential',
   } as never)

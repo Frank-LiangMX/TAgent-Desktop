@@ -275,12 +275,14 @@ beforeEach(() => {
 // ===== buildRoomBridgeTools：schema 限权 =====
 
 describe('buildRoomBridgeTools — schema 限权', () => {
-  test('仅暴露协作室六把受控工具，绝不混入会话工具', () => {
+  test('暴露协作室六把 room 工具 + 四把 workspace 工具，绝不混入会话工具', () => {
     const tools = buildRoomBridgeTools({
       hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
       abortAgent: vi.fn(),
+      workspaceId: 'workspace-test',
+      permissionProfile: 'workspace-write',
     })
-    expect(tools).toHaveLength(6)
+    expect(tools).toHaveLength(10)
     expect(tools.map((t) => t.name)).toEqual([
       'room_send',
       'room_ask',
@@ -288,6 +290,10 @@ describe('buildRoomBridgeTools — schema 限权', () => {
       'room_task_assign',
       'room_task_update',
       'room_publish_artifact',
+      'workspace_read_file',
+      'workspace_search',
+      'workspace_write_file',
+      'workspace_run_command',
     ])
     // 绝不暴露 filesystem/shell/database 或会话工具
     const forbidden = [
@@ -306,6 +312,22 @@ describe('buildRoomBridgeTools — schema 限权', () => {
     for (const name of forbidden) {
       expect(tools.find((t) => t.name === name)).toBeUndefined()
     }
+  })
+
+  test('read-only 仅获得 workspace read/search，未绑定工作区不暴露 workspace 工具', () => {
+    const handler = vi.fn() as unknown as CollaborationHostToolHandler
+    const readOnly = buildRoomBridgeTools({
+      hostToolHandler: handler,
+      abortAgent: vi.fn(),
+      workspaceId: 'workspace-test',
+      permissionProfile: 'read-only',
+    })
+    expect(readOnly.map((t) => t.name)).toEqual([
+      'room_send', 'room_ask', 'room_reply', 'room_task_assign', 'room_task_update',
+      'room_publish_artifact', 'workspace_read_file', 'workspace_search',
+    ])
+    const unbound = buildRoomBridgeTools({ hostToolHandler: handler, abortAgent: vi.fn() })
+    expect(unbound).toHaveLength(6)
   })
 
   test('room_send schema：toMemberId + message 必填，additionalProperties 锁死', () => {
@@ -623,7 +645,12 @@ describe('ChannelBackendAdapter.runTurn — Anthropic 外部渠道原生工具�
     httpState.scripts = [[{ type: 'done', reason: 'stop', message: { content: [{ type: 'text', text: '完成' }] } }]]
     const handler = vi.fn(async () => ({ output: 'x' })) as unknown as CollaborationHostToolHandler
     const systemPrompt = '你是协调者，只做协调。'
-    await new ChannelBackendAdapter().runTurn(baseInput({ systemPrompt, hostToolHandler: handler }))
+    await new ChannelBackendAdapter().runTurn(baseInput({
+      systemPrompt,
+      hostToolHandler: handler,
+      workspaceId: 'workspace-test',
+      permissionProfile: 'workspace-write',
+    }))
 
     // createHttpDirectStreamFn 被以解密凭据 + 渠道 provider/baseUrl/modelId 调用
     expect(httpState.factoryOpts).toMatchObject({
@@ -642,6 +669,10 @@ describe('ChannelBackendAdapter.runTurn — Anthropic 外部渠道原生工具�
       'room_task_assign',
       'room_task_update',
       'room_publish_artifact',
+      'workspace_read_file',
+      'workspace_search',
+      'workspace_write_file',
+      'workspace_run_command',
     ])
   })
 

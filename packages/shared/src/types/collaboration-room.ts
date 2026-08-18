@@ -272,7 +272,10 @@ export interface CollaborationSerializedRunError {
 
 /**
  * 协作室成员可调用的宿主工具请求。名称和参数由宿主白名单约束；模型没有直接访问
- * 文件、终端或房间内部持久化层的能力。
+ * 文件、终端或任意持久化层的能力。
+ *
+ * room_* 为 A2A / 任务 / 产物协调工具；workspace_* 为受控工作区工具桥，仅在房间绑定
+ * 工作区且满足权限档位时可用（read/search 任意成员；write/run 仅 workspace-write）。
  */
 export interface CollaborationHostToolCall {
   name:
@@ -282,6 +285,10 @@ export interface CollaborationHostToolCall {
     | 'room_task_assign'
     | 'room_task_update'
     | 'room_publish_artifact'
+    | 'workspace_read_file'
+    | 'workspace_search'
+    | 'workspace_write_file'
+    | 'workspace_run_command'
   arguments: Record<string, string>
 }
 
@@ -314,6 +321,16 @@ export interface MemberTurnInput {
   runId: string
   /** 触发消息 ID */
   triggerMessageId: string
+  /**
+   * 成员绑定工作区 ID（宿主组装，来自 room.workspaceId；模型不可伪造）。
+   * workspace_* 工具只允许在绑定工作区根内做受限文件访问；未绑定为空串。
+   */
+  workspaceId?: string
+  /**
+   * 成员权限档位（宿主组装，来自 member.permissionProfile；模型不可伪造）。
+   * 决定 workspace_write_file / workspace_run_command 是否放行。
+   */
+  permissionProfile?: CollaborationPermissionProfile
   /** 成员绑定的渠道 ID（缺省时 adapter 取第一个 enabled 外部渠道） */
   channelId?: string
   /** 成员绑定的模型 ID（缺省时 adapter 取渠道默认模型） */
@@ -845,6 +862,72 @@ export const COLLABORATION_ARTIFACT_MAX_CONTENT_BYTES = 1_048_576
  * 绝不作为指令；超长拒绝（fail-closed），防借超长说明注入指令或刷屏。
  */
 export const COLLABORATION_ARTIFACT_SUMMARY_MAX_LENGTH = 2000
+
+// ===== workspace 工具桥常量 =====
+
+/**
+ * `workspace_read_file` 单次读取的最大字节数（UTF-8）。
+ * 超过此上限时返回截断内容并标记 truncated=true；256KB 防单次读爆内存。
+ */
+export const COLLABORATION_WORKSPACE_READ_MAX_BYTES = 262_144
+
+/**
+ * `workspace_write_file` 单次写入文本内容的最大字节数（UTF-8）。
+ * 与产物发布上限一致，防止模型借写文件刷盘/耗尽磁盘。
+ */
+export const COLLABORATION_WORKSPACE_WRITE_MAX_BYTES = 1_048_576
+
+/**
+ * `workspace_search` 单次搜索返回的最大文件路径数（上限）。
+ * 防止递归遍历大目录时返回过多结果爆上下文。
+ */
+export const COLLABORATION_WORKSPACE_SEARCH_MAX_RESULTS = 200
+
+/**
+ * `workspace_search` 递归遍历的最大深度（防止循环/无限遍历）。
+ * 从搜索根算起（root=0），超过此深度停止递归。
+ */
+export const COLLABORATION_WORKSPACE_SEARCH_MAX_DEPTH = 12
+
+/**
+ * `workspace_run_command` 单次执行最大墙钟超时（ms）。
+ * 防止模型启动长时间运行命令阻塞调度器。
+ */
+export const COLLABORATION_WORKSPACE_COMMAND_TIMEOUT_MS = 120_000
+
+/**
+ * `workspace_run_command` stdout + stderr 合计最大字节数。
+ * 超过此上限时截断并以 truncated 标记；防止爆上下文。
+ */
+export const COLLABORATION_WORKSPACE_COMMAND_TOTAL_OUTPUT_BYTES = 262_144
+
+/**
+ * `workspace_run_command` args JSON 数组的最大元素数。
+ * 防止模型通过巨量参数绕过限制。
+ */
+export const COLLABORATION_WORKSPACE_COMMAND_MAX_ARGS = 64
+
+/**
+ * `workspace_run_command` 允许执行的命令白名单。
+ * 只包含常见项目开发命令；拒绝 shell 操作符/重定向/管道。
+ */
+export const COLLABORATION_WORKSPACE_COMMAND_ALLOWLIST = [
+  'git',
+  'bun',
+  'npm',
+  'pnpm',
+  'yarn',
+  'node',
+  'python',
+  'python3',
+  'pytest',
+  'cargo',
+  'go',
+  'dotnet',
+  'deno',
+  'tsx',
+  'npx',
+]
 
 /**
  * 计算 run 幂等键：同一触发消息对同一成员只产生一个 run。
