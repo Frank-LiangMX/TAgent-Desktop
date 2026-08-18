@@ -50,7 +50,6 @@ import { CollaborationMemberSettings } from './CollaborationMemberSettings'
 import { CollaborationAddMemberDialog } from './CollaborationAddMemberDialog'
 import { CollaborationTimeline } from './CollaborationTimeline'
 import { CollaborationWorkPanel } from './CollaborationWorkPanel'
-import { CollaborationApprovalCard } from './CollaborationApprovalCard'
 import { MemberAvatar } from './CollaborationAvatars'
 import { cn } from '../../lib/utils'
 
@@ -791,19 +790,6 @@ export function CollaborationRoomsPage({
            使其只覆盖左列宽度、不遮挡右侧面板；面板收起时左列自动占满。 */}
       <div className="flex min-h-0 flex-1">
         <div className="session-chat-col relative flex min-h-0 min-w-0 flex-1 flex-col">
-          {approvals
-            .filter((approval) => approval.status === 'pending')
-            .map((approval) => (
-              <CollaborationApprovalCard
-                key={approval.id}
-                request={approval}
-                memberName={memberName(approval.memberId)}
-                busy={resolvingApprovalId === approval.id}
-                onResolve={(decision, response) =>
-                  void handleResolveApproval(approval.id, decision, response)
-                }
-              />
-            ))}
           {/* 时间线（S3.5-c：一 run 一卡，对齐会话信息流） */}
           <CollaborationTimeline
             messages={messages}
@@ -822,6 +808,11 @@ export function CollaborationRoomsPage({
             depthStopErrorByEnvelope={depthStopErrorByEnvelope}
             onContinueDepthStop={(envelopeId) => void handleContinueDepthStop(envelopeId)}
             onDismissDepthStop={handleDismissDepthStop}
+            approvals={approvals}
+            resolvingApprovalId={resolvingApprovalId}
+            onResolveApproval={(requestId, decision, response) =>
+              void handleResolveApproval(requestId, decision, response)
+            }
           />
 
           {/* 底部输入栈（绝对定位，锚在左列 session-chat-col，输入框底与侧栏底对齐） */}

@@ -2,7 +2,7 @@
  * 协作室时间线（S3.5-c）：用户/系统/A2A 独立条目 + 一 run 一卡。
  * 纯函数 groupCollaborationTimelineItems 负责收拢，本组件只渲染。
  */
-import type { Ref } from 'react'
+import { Fragment, type Ref } from 'react'
 import { MessageResponse } from '@tagent/ui'
 import {
   groupCollaborationTimelineItems,
@@ -11,10 +11,12 @@ import {
   type CollaborationMember,
   type CollaborationMessage,
   type CollaborationRun,
+  type CollaborationUserApprovalRequest,
 } from '@tagent/shared'
 import { MemberAvatar, UserMessageAvatar } from './CollaborationAvatars'
 import { CollaborationDepthStopCard } from './CollaborationDepthStopCard'
 import { CollaborationRunCard } from './CollaborationRunCard'
+import { CollaborationApprovalCard } from './CollaborationApprovalCard'
 
 function memberDisplayName(authorId: string, members: CollaborationMember[]): string {
   return members.find((m) => m.id === authorId)?.displayName ?? '成员'
@@ -45,6 +47,10 @@ export interface CollaborationTimelineProps {
   onContinueDepthStop: (envelopeId: string) => void
   /** S4.5：仅本地关闭该提示（次操作，不触后端） */
   onDismissDepthStop: (envelopeId: string) => void
+  /** 待用户审批项，按 runId 绑定到对应成员 run 卡后显示 */
+  approvals: CollaborationUserApprovalRequest[]
+  resolvingApprovalId: string | null
+  onResolveApproval: (requestId: string, decision: 'approved' | 'denied', response?: string) => void
 }
 
 export function CollaborationTimeline({
@@ -64,6 +70,9 @@ export function CollaborationTimeline({
   depthStopErrorByEnvelope,
   onContinueDepthStop,
   onDismissDepthStop,
+  approvals,
+  resolvingApprovalId,
+  onResolveApproval,
 }: CollaborationTimelineProps): JSX.Element {
   const items = groupCollaborationTimelineItems(messages, runs)
   const empty = messages.length === 0 && runs.length === 0
@@ -136,17 +145,35 @@ export function CollaborationTimeline({
                 )
               }
               if (item.type === 'run') {
+                const pendingApprovals = approvals.filter(
+                  (approval) => approval.status === 'pending' && approval.runId === item.run.id,
+                )
                 return (
-                  <CollaborationRunCard
-                    key={item.run.id}
-                    run={item.run}
-                    messages={item.messages}
-                    member={members.find((m) => m.id === item.run.memberId)}
-                    channels={channels}
-                    streamedText={streamByRun[item.run.id]}
-                    cancelling={cancellingId === item.run.id}
-                    onCancel={() => onCancelRun(item.run.id)}
-                  />
+                  <Fragment key={item.run.id}>
+                    <CollaborationRunCard
+                      run={item.run}
+                      messages={item.messages}
+                      member={members.find((m) => m.id === item.run.memberId)}
+                      channels={channels}
+                      streamedText={streamByRun[item.run.id]}
+                      cancelling={cancellingId === item.run.id}
+                      onCancel={() => onCancelRun(item.run.id)}
+                    />
+                    {pendingApprovals.map((approval) => (
+                      <li key={approval.id} className="flex justify-start">
+                        <div className="max-w-[28rem]">
+                          <CollaborationApprovalCard
+                            request={approval}
+                            memberName={memberDisplayName(approval.memberId, members)}
+                            busy={resolvingApprovalId === approval.id}
+                            onResolve={(decision, response) =>
+                              onResolveApproval(approval.id, decision, response)
+                            }
+                          />
+                        </div>
+                      </li>
+                    ))}
+                  </Fragment>
                 )
               }
               return null
