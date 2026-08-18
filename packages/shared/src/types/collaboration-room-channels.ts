@@ -30,6 +30,10 @@ import type {
   UpdateCollaborationMemberInput,
   UpdateCollaborationRoomTaskInput,
   AppendCollaborationUserMessageInput,
+  ListBoardProjectedTasksInput,
+  GetBoardProjectedSummaryInput,
+  BoardProjectedTask,
+  BoardProjectedSummary,
 } from './collaboration-room'
 
 export const COLLABORATION_ROOM_IPC_CHANNELS = {
@@ -69,6 +73,10 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   LIST_ARTIFACTS: 'collaboration-room:list-artifacts',
   /** 预览产物文本（S5 面板：宿主按 artifactId 反查 + 复用安全路径解析后读盘，渲染层不传路径） */
   READ_ARTIFACT: 'collaboration-room:read-artifact',
+  /** 列出房间挂载看板的投影任务（S5 看板桥：从 kanban-store 读取后投影为只读形状） */
+  LIST_BOARD_TASKS: 'collaboration-room:list-board-tasks',
+  /** 获取房间挂载看板的投影统计摘要（S5 看板桥） */
+  GET_BOARD_SUMMARY: 'collaboration-room:get-board-summary',
   /** 房间数据变更事件（main → renderer，Stage 2 起广播） */
   CHANGED: 'collaboration-room:changed',
   /** 成员 turn 流式正文增量（独立通道，避免走 CHANGED 全量刷新） */
@@ -256,4 +264,6 @@ export type {
   CollaborationRun,
   CollaborationRoomTask,
   CollaborationArtifact,
+  BoardProjectedTask,
+  BoardProjectedSummary,
 }

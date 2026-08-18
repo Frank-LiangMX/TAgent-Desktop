@@ -23,6 +23,8 @@ import {
   COLLABORATION_ROOM_IPC_CHANNELS,
   type AddCollaborationMemberInput,
   type AppendCollaborationUserMessageInput,
+  type BoardProjectedSummary,
+  type BoardProjectedTask,
   type CancelCollaborationRunInput,
   type CollaborationArtifact,
   type CollaborationMailboxEnvelope,
@@ -35,6 +37,8 @@ import {
   type ContinueCollaborationDepthStopResult,
   type CreateCollaborationRoomInput,
   type CreateCollaborationRoomTaskInput,
+  type GetBoardProjectedSummaryInput,
+  type ListBoardProjectedTasksInput,
   type ListCollaborationArtifactsInput,
   type ListCollaborationMailboxInput,
   type ListCollaborationMembersInput,
@@ -49,6 +53,7 @@ import {
   type UpdateCollaborationRoomTaskInput,
 } from '@tagent/shared'
 import { CollaborationRoomService } from './collaboration-room-service'
+import { onKanbanTaskStatusChanged } from '../kanban/kanban-bootstrap'
 
 /**
  * S4.5 IPC 守卫：委托 service.continueDepthStop 前校验信封属于该房间且仍可继续一次。
@@ -237,7 +242,40 @@ export function registerCollaborationRoomIpc(
     },
   )
 
+  // ===== S5 看板桥：把挂载看板的只读投影暴露给房间（不反向覆盖真值） =====
+  // 房间未挂载 / 看板不存在时 projectBoard* 返回空/fail-open 只读；写操作仍由既有
+  // 挂板 fail-closed（createRoomTask / roomTaskUpdate）拒绝。
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.LIST_BOARD_TASKS,
+    async (_e, input: ListBoardProjectedTasksInput): Promise<BoardProjectedTask[]> => {
+      return service.projectBoardTasks(input.roomId)
+    },
+  )
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.GET_BOARD_SUMMARY,
+    async (_e, input: GetBoardProjectedSummaryInput): Promise<BoardProjectedSummary | null> => {
+      return service.projectBoardSummary(input.roomId)
+    },
+  )
+
+  // 看板任务状态变化 → 广播给「挂载了该看板」的协作室房间，让面板能及时刷新投影。
+  // 复用既有 kanban CHANGED 事件，不另造真值；对每个挂载该看板的房间发 collaboration-room:changed
+  // （kind 沿用 'updated'），渲染层收到后重新拉取投影。
+  const boardChangedHandler = (taskId: string): void => {
+    // 反查任务所属看板；取不到则跳过（任务可能已删除）
+    const task = service.getTaskByIdFromKanban(taskId)
+    if (!task) return
+    for (const room of service.listRooms(false)) {
+      if (room.attachedBoardId === task.boardId) {
+        service.broadcastBoardChanged(room.id)
+      }
+    }
+  }
+  onKanbanTaskStatusChanged(boardChangedHandler)
+
   console.log(
-    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/update-member/list-runs/cancel-run/list-mailbox/continue-depth-stop/list-room-tasks/create-room-task/update-room-task/list-artifacts/read-artifact；S4.5 深度停止继续；S5 任务/产物面板）',
+    '[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/update-member/list-runs/cancel-run/list-mailbox/continue-depth-stop/list-room-tasks/create-room-task/update-room-task/list-artifacts/read-artifact/list-board-tasks/get-board-summary；S4.5 深度停止继续；S5 任务/产物面板 + 看板桥）',
   )
 }

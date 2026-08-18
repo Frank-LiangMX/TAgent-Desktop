@@ -646,6 +646,152 @@ export interface CollaborationArtifact {
   createdAt: number
 }
 
+// ===== 看板投影（S5：看板桥，只读投影到协作室） =====
+//
+// 02-RUNTIME-A2A-SPEC §2.6 / ADR-0007 §15.7：挂载看板的协作室以 attachedBoardId 引用
+// 看板真值；看板任务状态由 kanban repository 提供，room 不再维护另一份独立任务状态。
+// 此处定义投影只读形状：房间内模型/面板可消费 看板任务数据，但不反向覆盖真值。
+
+/**
+ * 看板状态 → 室内友好中文标签（用于状态映射投影）
+ */
+export const KANBAN_STATUS_TO_ROOM_LABEL: Record<string, string> = {
+  pending: '等待依赖',
+  ready: '就绪',
+  running: '执行中',
+  blocked: '阻塞',
+  review: '待验收',
+  done: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+}
+
+/** 投影后的看板任务（只读，房间内可消费） */
+export interface BoardProjectedTask {
+  /** 看板任务 ID */
+  kanbanTaskId: string
+  /** 所属看板 ID */
+  boardId: string
+  /** 任务标题 */
+  title: string
+  /** 任务描述 / body */
+  description: string
+  /** 看板原生状态 */
+  kanbanStatus: string
+  /** 映射到室内友好标签 */
+  roomLabel: string
+  /** 绑定角色库 ID（如有） */
+  roleId?: string
+  /** 执行子会话 ID（工人领取后写入） */
+  assigneeSessionId?: string
+  /** 优先级（数字越大越优先） */
+  priority: number
+  /** 阻塞原因 */
+  blockedReason?: string
+  /** 失败信息 */
+  error?: string
+  /** 完成摘要 */
+  resultSummary?: string
+  /** 创建时间戳 */
+  createdAt: number
+  /** 更新时间戳 */
+  updatedAt: number
+}
+
+/** 看板投影摘要（房间可消费的全板统计） */
+export interface BoardProjectedSummary {
+  /** 看板 ID */
+  boardId: string
+  /** 看板标题 */
+  boardTitle: string
+  /** 任务总数 */
+  total: number
+  /** 已完成数 */
+  done: number
+  /** 失败数 */
+  failed: number
+  /** 阻塞数 */
+  blocked: number
+  /** 执行中数 */
+  running: number
+  /** 就绪数（含 ready） */
+  ready: number
+  /** 等待依赖数（含 pending） */
+  pending: number
+  /** 创建时间 */
+  boardCreatedAt: number
+}
+
+/**
+ * 将看板任务映射为投影形状
+ * @param task 看板任务（部分字段，仅使用投影所需的）
+ */
+export function mapKanbanTaskToProjected(task: {
+  id: string
+  boardId: string
+  title: string
+  body?: string
+  status: string
+  roleId?: string
+  assigneeSessionId?: string
+  priority?: number
+  blockedReason?: string
+  error?: string
+  resultSummary?: string
+  createdAt?: number
+  updatedAt?: number
+}): BoardProjectedTask {
+  return {
+    kanbanTaskId: task.id,
+    boardId: task.boardId,
+    title: task.title,
+    description: task.body ?? '',
+    kanbanStatus: task.status,
+    roomLabel: KANBAN_STATUS_TO_ROOM_LABEL[task.status] ?? task.status,
+    roleId: task.roleId,
+    assigneeSessionId: task.assigneeSessionId,
+    priority: task.priority ?? 0,
+    blockedReason: task.blockedReason,
+    error: task.error,
+    resultSummary: task.resultSummary,
+    createdAt: task.createdAt ?? 0,
+    updatedAt: task.updatedAt ?? 0,
+  }
+}
+
+/**
+ * 从看板任务列表统计投影摘要
+ */
+export function summarizeProjectedBoardTasks(
+  boardId: string,
+  boardTitle: string,
+  boardCreatedAt: number,
+  tasks: BoardProjectedTask[],
+): BoardProjectedSummary {
+  return {
+    boardId,
+    boardTitle,
+    total: tasks.length,
+    done: tasks.filter((t) => t.kanbanStatus === 'done').length,
+    failed: tasks.filter((t) => t.kanbanStatus === 'failed').length,
+    blocked: tasks.filter((t) => t.kanbanStatus === 'blocked').length,
+    running: tasks.filter((t) => t.kanbanStatus === 'running').length,
+    ready: tasks.filter((t) => t.kanbanStatus === 'ready').length,
+    pending: tasks.filter((t) => t.kanbanStatus === 'pending').length,
+    boardCreatedAt,
+  }
+}
+
+/** 输入：列出房间挂载看板的投影任务 */
+export interface ListBoardProjectedTasksInput {
+  roomId: string
+}
+
+/** 输入：获取房间挂载看板的投影摘要 */
+export interface GetBoardProjectedSummaryInput {
+  roomId: string
+}
+
 // ===== 默认值与上限（02-RUNTIME-A2A-SPEC §9） =====
 
 /** 房间默认最大并发 run 数 */

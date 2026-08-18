@@ -26,6 +26,8 @@ import type {
   AskUserResponse,
   ExitPlanModeRequest,
   ExitPlanModeResponse,
+  BoardProjectedSummary,
+  BoardProjectedTask,
   Channel,
   ChannelBalanceResult,
   ChannelCreateInput,
@@ -717,6 +719,16 @@ const electronAPI = {
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.READ_ARTIFACT, input) as Promise<
       ReadCollaborationArtifactResult
     >,
+  /** 列出房间挂载看板的投影任务（S5 看板桥：只读，不反向覆盖看板真值） */
+  listCollaborationBoardTasks: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_BOARD_TASKS, {
+      roomId,
+    }) as Promise<BoardProjectedTask[]>,
+  /** 获取房间挂载看板的投影统计摘要（S5 看板桥；未挂载/看板不存在返回 null） */
+  getCollaborationBoardSummary: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.GET_BOARD_SUMMARY, {
+      roomId,
+    }) as Promise<BoardProjectedSummary | null>,
   /** 房间数据变更事件（main → renderer，run/member/message 变更时广播） */
   onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => {
     const handler = (_e: unknown, payload: { roomId: string; kind: string; at: number }): void => cb(payload)

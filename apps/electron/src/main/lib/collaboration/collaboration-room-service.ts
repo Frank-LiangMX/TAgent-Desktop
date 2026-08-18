@@ -68,6 +68,8 @@ import {
   transitionCollaborationMailboxState,
   transitionCollaborationRoomTaskStatus,
   validateCreateCollaborationRoomInput,
+  mapKanbanTaskToProjected,
+  summarizeProjectedBoardTasks,
   type CollaborationArtifact,
   type CollaborationMailboxEnvelope,
   type CollaborationMember,
@@ -91,6 +93,8 @@ import {
   type MemberBackendAdapter,
   type MemberTurnInput,
   type ReadCollaborationArtifactResult,
+  type BoardProjectedSummary,
+  type BoardProjectedTask,
 } from '@tagent/shared'
 import {
   appendMembers,
@@ -135,6 +139,7 @@ import {
 } from './collaboration-room-summary'
 import { RoomScheduler, type RoomSchedulerEntry } from './collaboration-room-scheduler'
 import { resolveWorkspaceById } from '../workspace/workspace-manager'
+import * as kanbanStore from '../kanban/kanban-store'
 
 /** CHANGED 广播类型（主进程 → renderer） */
 export type CollaborationRoomBroadcast = (
@@ -2009,6 +2014,62 @@ export class CollaborationRoomService {
   /** 房间是否已挂载看板（true 时 room task 不再是任务真值） */
   private roomHasAttachedBoard(room: CollaborationRoom): boolean {
     return Boolean(room.attachedBoardId)
+  }
+
+  // ===== Board Projection（S5：看板桥，只读投影） =====
+  //
+  // 02-RUNTIME-A2A-SPEC §2.6 / ADR-0007 §15.7：挂载看板的房间以 attachedBoardId 引用
+  // 看板真值；房间内模型/面板只能「读」投影，绝不能反向覆盖。本桥直接复用 kanban-store
+  // 的只读读取（listTasksByBoard / getBoard），不缓存、不另造真值，返回形状经共享
+  // mapKanbanTaskToProjected 投影为室内可消费的只读数据。房间未挂载 / 看板不存在一律
+  // 返回空（fail-open 只读展示，不抛错）；挂板 fail-closed（不允许建/改 room task）由
+  // createRoomTask / roomTaskUpdate 既有守卫保证，此处只做读取投影。
+
+  /**
+   * 投影挂载看板的任务为只读形状（房间可消费）。
+   *
+   * - 房间不存在 / 未挂载看板 → 返回 []（只读展示 fail-open）。
+   * - 看板不存在 → 返回 []。
+   * - 每次直读 kanban-store，无副作用、不写盘、不广播。
+   */
+  projectBoardTasks(roomId: string): BoardProjectedTask[] {
+    const room = getRoom(roomId)
+    if (!room?.attachedBoardId) return []
+    const board = kanbanStore.getBoard(room.attachedBoardId)
+    if (!board) return []
+    return kanbanStore.listTasksByBoard(board.id).map(mapKanbanTaskToProjected)
+  }
+
+  /**
+   * 投影挂载看板的统计摘要。
+   *
+   * 房间未挂载 / 看板不存在 → 返回 null（区别于空数组：渲染层可据此区分「无看板」与
+   * 「空看板」）。
+   */
+  projectBoardSummary(roomId: string): BoardProjectedSummary | null {
+    const room = getRoom(roomId)
+    if (!room?.attachedBoardId) return null
+    const board = kanbanStore.getBoard(room.attachedBoardId)
+    if (!board) return null
+    const projected = kanbanStore.listTasksByBoard(board.id).map(mapKanbanTaskToProjected)
+    return summarizeProjectedBoardTasks(
+      board.id,
+      board.title || board.rootGoal || board.id,
+      board.createdAt,
+      projected,
+    )
+  }
+
+  /** 按任务 ID 读取看板任务（看板桥：IPC 侧反查任务所属看板用，只读） */
+  getTaskByIdFromKanban(taskId: string): { taskId: string; boardId: string } | undefined {
+    const task = kanbanStore.getTask(taskId)
+    if (!task) return undefined
+    return { taskId: task.id, boardId: task.boardId }
+  }
+
+  /** 广播房间变更（看板桥：看板任务变化 → 让挂载该看板的房间刷新投影） */
+  broadcastBoardChanged(roomId: string): void {
+    this.broadcast(roomId, 'updated')
   }
 
   // ===== 内部辅助 =====
