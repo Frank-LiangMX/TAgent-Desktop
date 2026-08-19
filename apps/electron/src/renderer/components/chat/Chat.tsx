@@ -5,7 +5,7 @@
  * 消息区用 Conversation 容器（自动钉底），输入区用 TipTap ChatInput。
  * 模型：首条消息只绑定运行内核（KSCC / 外部），同内核内渠道与模型可继续切换。
  */
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback, Fragment } from 'react'
 import { getDefaultStore, useAtomValue, useSetAtom } from 'jotai'
 import {
   sessionRunMapAtom,
@@ -26,6 +26,7 @@ import type {
   TurnDuration,
   UserFacingError,
   FileAttachment,
+  FileReviewContext,
 } from '@tagent/shared'
 import { migrateExecutionMode, DEFAULT_EXECUTION_MODE, parseMentions, classifyUserFacingError, isMoaModelId } from '@tagent/shared'
 import {
@@ -62,13 +63,19 @@ import {
   Button,
   AppTooltip,
 } from '@tagent/ui'
-import { Square, Compass, Zap, Plus, X } from 'lucide-react'
+import { Square, Plus, X } from 'lucide-react'
 import { UsersThree } from '@phosphor-icons/react'
 import {
   collectSessionCollabOutline,
   type SessionCollabItem,
 } from './session-collab-outline'
 import { cn } from '../../lib/utils'
+import {
+  applyMessageToInFlightToolIds,
+  collectPendingToolUseIds,
+  sessionHasInFlightWork,
+  shouldScheduleRunStopAfterTurnEnd,
+} from '../../lib/session-run-inflight'
 import {
   COMPACTION_IN_PROGRESS_LABEL,
   getCompactBoundaryLabel,
@@ -81,12 +88,25 @@ import { MoaDiscussionRoom } from './MoaDiscussionRoom'
 import { SendSplitButton } from './ConsultMenu'
 import { SubagentDetailView } from './SubagentDetailView'
 import { ComposerRunTimer } from './ComposerRunTimer'
+import { ComposerActivityIsland } from './ComposerActivityIsland'
+import {
+  collectComposerActivity,
+  summarizeComposerActivity,
+} from './composer-activity-model'
+import { useSessionProcesses } from '../../atoms/session-processes'
 import {
   buildTurnPresentation,
   backfillTurnDurations,
+  classifyRunAbort,
   getLastMainAssistantCreatedAt,
   groupItemsIntoTurns,
+  hasRunStartedProcessing,
   isRealUserInput,
+  isSyntheticRunTurnKey,
+  resolveRunTurnKey,
+  shouldRenderStoppedSyntheticShell,
+  sliceItemsBeforeLastRealUser,
+  syntheticLiveTurnKeyForUser,
 } from './session-turn-model'
 import {
   applySdkMessageToItems,
@@ -125,15 +145,27 @@ import {
 } from '../../atoms/subagent-prefs'
 import { PermissionBanner } from '../permission/PermissionBanner'
 import { AskUserQuestionBanner } from './AskUserQuestionBanner'
+import { ExitPlanModeBanner } from './ExitPlanModeBanner'
 import { ExecutionModeSuggestionBanner } from './ExecutionModeSuggestionBanner'
 import { SessionErrorBanner } from './SessionErrorBanner'
 import { setSessionErrorAtom } from '../../atoms/session-error-atoms'
-import { allPendingAskUserRequestsAtom } from '../../atoms/ask-user-atoms'
+import { allPendingAskUserRequestsAtom, askUserDismissedAtAtom } from '../../atoms/ask-user-atoms'
 import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
+import { isSessionAwaitingUser } from '../../lib/session-awaiting-user'
 import { RunModeSelector } from './RunModeSelector'
 import { KanbanCrewPanel } from './KanbanCrewPanel'
 import { MessageQueue } from './MessageQueue'
-import { ScrollPositionManager } from '../shell/ScrollPositionManager'
+import {
+  peekSessionScrollDistance,
+  ScrollPositionManager,
+} from '../shell/ScrollPositionManager'
+import { ReadingScrollGuard } from '../shell/ReadingScrollGuard'
+import { hasSavedMidPosition } from '../shell/scroll-position'
+import {
+  CHAT_MOUNT_BATCH,
+  CHAT_MOUNT_TOP_LOAD_PX,
+  CHAT_MOUNT_WINDOW,
+} from './chat-mount-window'
 import {
   channelsAtom,
   selectedModelSelectionAtom,
@@ -241,12 +273,12 @@ const CREW_PANEL_WIDTH_MAX = 560
 const CREW_PANEL_WIDTH_DEFAULT = 380
 /**
  * turn_end 延迟停止：
- * - GRACE：宽限期内有新流式 → 取消停止（多工具循环不抖过程区）
- * - 到期先软停（running=false，短暂保留 startedAt）
- * - 再过 HARD：硬清 startedAt。否则 result 丢失时 isLiveTurn 因 startedAt 永真 →「跑完一直不停止」
+ * - 有未完成 tool_use / 子代理 / 圆桌时 **不安排停止**（工具间隙不是一轮结束）
+ * - GRACE：无在途工作且宽限期内有新流式 → 取消停止
+ * - 到期只软停（running=false，**保留 startedAt**）。硬清交给 result / 用户停 / 看门狗。
+ *   旧 HARD=2s 会在 Bash/Read 等 >5s 间隙清记忆，下一 delta 从 0 重计。
  */
 const RUN_STOP_GRACE_MS = 3000
-const RUN_STOP_HARD_AFTER_SOFT_MS = 2000
 function loadCrewPanelWidth(): number {
   try {
     const n = Number(localStorage.getItem(CREW_PANEL_WIDTH_KEY))
@@ -323,6 +355,13 @@ export function Chat({
   runningRef.current = running
   // 最后一个 assistant-turn 的 key：完成时把全程耗时记到它名下（按 turn.key 查）
   const lastAssistantTurnKeyRef = useRef<string | null>(null)
+  /**
+   * 同轮完成耗时幂等闸：completeRun / 用户停止 / session_error / 真 error 都走 recordCompletion，
+   * 任一终态先到即记一次；迟到的第二个终态 no-op（避免 turnDurations 同轮写多条碎片）。
+   * startRun 与切会话清零。配合 runStartedAtRef==null 守卫双保险。
+   * 见 SESSION-UX-RESIDUAL-SPEC §4。
+   */
+  const completionRecordedRef = useRef(false)
   /** 会话 meta 快照（加载时设置）：completeRun 持久化 turnDurations 时合并旧值 */
   const metaRef = useRef<Partial<AgentSessionMeta> | null>(null)
   /** 完成耗时表：turnKey → 耗时 + 结束方式（完成/停止/出错）。留存后供 AssistantTurnView 显示 */
@@ -340,8 +379,32 @@ export function Chat({
   const userStoppedRef = useRef(false)
   /** 上次用户停止的时间戳：短窗口内到达的 error 视为迟到的 abort 副作用，不弹错误条 */
   const lastUserStopAtRef = useRef(0)
+  /** 本轮发送快照：未进入处理即停止时撤回气泡并回填输入框 */
+  const pendingSendRecallRef = useRef<{
+    text: string
+    attachments: Array<{
+      id: string
+      filename: string
+      mediaType: string
+      size: number
+      previewUrl?: string
+      data: string
+    }>
+  } | null>(null)
   const pendingStopTimerRef = useRef<number | null>(null)
   const pendingHardStopTimerRef = useRef<number | null>(null)
+  /** 主线未完成 tool_use id：sdk_message 同步维护，避免 turn_end 读到尚未 flush 的 itemsRef */
+  const inFlightToolIdsRef = useRef<Set<string>>(new Set())
+  const sessionHasOpenWork = useCallback((): boolean => {
+    return sessionHasInFlightWork({
+      pendingToolUseIds:
+        inFlightToolIdsRef.current.size > 0
+          ? inFlightToolIdsRef.current
+          : collectPendingToolUseIds(itemsRef.current),
+      items: itemsRef.current,
+      awaitingUser: isSessionAwaitingUser(sessionIdRef.current),
+    })
+  }, [])
   const clearPendingStop = useCallback(() => {
     if (pendingStopTimerRef.current != null) {
       window.clearTimeout(pendingStopTimerRef.current)
@@ -353,28 +416,29 @@ export function Chat({
     }
   }, [])
   const scheduleRunStop = useCallback(() => {
+    if (!shouldScheduleRunStopAfterTurnEnd(sessionHasOpenWork())) return
     clearPendingStop()
     pendingStopTimerRef.current = window.setTimeout(() => {
       pendingStopTimerRef.current = null
-      // 软停：过程区可收起，短暂保留 startedAt；下一 delta adopt 续计时
+      // 宽限期内又派出工具 / 子代理：保持 running，勿软停（否则停止键/过程区闪一下）
+      if (sessionHasOpenWork()) return
+      // 只软停：保留 startedAt。硬清交给 result / 用户停 / 看门狗。
       softStopSessionRun(sessionId)
-      // 硬停兜底：无后续活动则清 startedAt，避免 UI 永远 isLiveTurn
-      pendingHardStopTimerRef.current = window.setTimeout(() => {
-        pendingHardStopTimerRef.current = null
-        stopSessionRun(sessionId)
-      }, RUN_STOP_HARD_AFTER_SOFT_MS)
     }, RUN_STOP_GRACE_MS)
-  }, [clearPendingStop, sessionId, softStopSessionRun, stopSessionRun])
+  }, [clearPendingStop, sessionHasOpenWork, sessionId, softStopSessionRun])
   /** 开始一轮运行：写 atom 置 running 并记起始时间戳 */
   const startRun = (): void => {
     clearPendingStop()
     userStoppedRef.current = false
+    completionRecordedRef.current = false
+    inFlightToolIdsRef.current = new Set()
     const now = Date.now()
     runStartedAtPersistRef.current = now
     startSessionRun({ id: sessionId, startedAt: now })
   }
   /** 硬停一轮（清 running + 起点记忆；发送失败 / result / error / 用户停止） */
   const stopRun = (): void => {
+    inFlightToolIdsRef.current = new Set()
     stopSessionRun(sessionId)
   }
   /**
@@ -384,6 +448,7 @@ export function Chat({
    */
   const userStopRun = (): void => {
     clearPendingStop()
+    pendingSendRecallRef.current = null
     userStoppedRef.current = true
     lastUserStopAtRef.current = Date.now()
     recordCompletion('stopped')
@@ -397,15 +462,21 @@ export function Chat({
    * 覆盖思考期 + 所有工具轮，非 turn 内 assistant 间隔。
    */
   const recordCompletion = (endedBy: TurnDuration['endedBy']): void => {
+    // 同轮幂等：第二次终态到达 no-op（避免 turnDurations 同轮写多条碎片）
+    if (completionRecordedRef.current) return
     const startedAt = runStartedAtRef.current
     if (startedAt == null) return
     const durationMs = Math.max(0, Date.now() - startedAt)
     const turnKey = lastAssistantTurnKeyRef.current
     if (!turnKey) return
+    completionRecordedRef.current = true
     const dur: TurnDuration = { ms: durationMs, endedBy }
     setCompletedDurations((prev) => ({ ...prev, [turnKey]: dur }))
     // 持久化：最后一条主线 assistant 消息 createdAt 作稳定 key，写入 meta，重开回填
-    const createdAt = getLastMainAssistantCreatedAt(itemsRef.current)
+    // 合成 live turn 尚无 assistant 落盘：勿把 stopped/error 写到上一轮 assistant 的 createdAt
+    const createdAt = isSyntheticRunTurnKey(turnKey)
+      ? undefined
+      : getLastMainAssistantCreatedAt(itemsRef.current)
     if (createdAt != null) {
       const prevDurations = metaRef.current?.turnDurations ?? {}
       const nextDurations = { ...prevDurations, [createdAt]: dur }
@@ -424,6 +495,7 @@ export function Chat({
    */
   const completeRun = (): void => {
     recordCompletion('complete')
+    inFlightToolIdsRef.current = new Set()
     stopSessionRun(sessionId)
   }
   /** 输入框是否有草稿（供发送/停止键同槽复用：运行中且有草稿→仍可追加发送，显示发送键；运行中无草稿→停止键） */
@@ -463,8 +535,13 @@ export function Chat({
     }).catch(() => { /* 预置拉取失败：菜单空态，不阻塞正常发送 */ })
     return () => { cancelled = true }
   }, [moaPresetsRevision])
-  /** 历史加载完成的标志：false 时 Conversation resize=instant（无动画）+ ScrollPositionManager 恢复位置 */
+  /** 历史已写入 items：false 时 Conversation resize=instant；钉底只等这个，不等虚拟化全挂 */
   const [scrollReady, setScrollReady] = useState(false)
+  /**
+   * 全挂完后再吃几帧 instant，消化 Markdown/高亮后长高。
+   * 立刻切 smooth 会让 StickToBottom 弹簧扫视口。
+   */
+  const [holdInstantResize, setHoldInstantResize] = useState(true)
   /**
    * 流式结束 / 新消息发送过渡：切 resize=instant，短暂后回 smooth——
    * 防止高度变化（落盘切换、上一轮执行块折叠）触发平滑滚动扫视口。
@@ -489,9 +566,13 @@ export function Chat({
       }
     }
   }, [])
-  /** 虚拟化：当前挂载的消息条数（从尾部切）。20 首 batch，idle 帧递增 40/批，全挂完置 Infinity。
-   * 保近期：底部对话区永远全量渲染，旧的渐进补齐，超长会话不卡。 */
-  const [visibleCount, setVisibleCount] = useState<number>(20)
+  /**
+   * 虚拟化：尾部挂载窗口。默认只挂最近 CHAT_MOUNT_WINDOW 条；
+   * 上滑 / 中间位恢复 / 锚点跳转才允许拉满。开流且在底部时收回窗口，避免 60+ 轮拖死流式。
+   */
+  const [visibleCount, setVisibleCount] = useState<number>(CHAT_MOUNT_WINDOW)
+  /** 用户主动查历史或中间位恢复：允许突破尾部窗口 */
+  const [allowFullMount, setAllowFullMount] = useState(false)
   const [selectionOverride, setSelectionOverride] = useState<ModelSelection | null>(null)
   const [sentCoreKind, setSentCoreKind] = useState<ChannelCoreKind | null>(null)
   /** 会话当前权限模式（默认 bypassPermissions；切会话 key 重建后重置。运行中切换即时生效） */
@@ -524,7 +605,9 @@ export function Chat({
 
   useEffect(() => {
     if (crewExternalized) return
-    setCrewPanelOpenMap((prev) => ({ ...prev, [sessionId]: crewPanelOpen }))
+    setCrewPanelOpenMap((prev) =>
+      prev[sessionId] === crewPanelOpen ? prev : { ...prev, [sessionId]: crewPanelOpen },
+    )
     return () => {
       setCrewPanelOpenMap((prev) => {
         if (!(sessionId in prev)) return prev
@@ -595,6 +678,14 @@ export function Chat({
     }
     return map
   }, [items])
+  const backgroundProcesses = useSessionProcesses(sessionId)
+  const composerActivity = useMemo(
+    () =>
+      summarizeComposerActivity(
+        collectComposerActivity({ processes: backgroundProcesses }),
+      ),
+    [backgroundProcesses],
+  )
 
   /** 当前打开的圆桌讨论 panel（按 discussionId 从 items 查；panel 不在 items 时回退关闭） */
   const openDiscussionPanel = useMemo(
@@ -730,10 +821,18 @@ export function Chat({
     return result
   }, [items])
 
-  /** 虚拟化：是否已全挂（visibleCount 追上 items.length 或 Infinity） */
-  const fullyMounted = visibleCount >= items.length
   /** 实际挂载数（Infinity 当 items.length） */
   const effectiveVisible = visibleCount >= items.length ? items.length : visibleCount
+  /** 历史是否已全部挂载 */
+  const allMounted = effectiveVisible >= items.length
+  /**
+   * 首屏窗口已就绪（钉底 / 打开 settle 用）。不再等全历史挂满——
+   * 否则会回到「拉满 Infinity → 流式拖全树」的老路径。
+   */
+  const windowReady =
+    items.length === 0 ||
+    effectiveVisible >= Math.min(CHAT_MOUNT_WINDOW, items.length) ||
+    allMounted
   /** 挂载窗口起点（旧消息条数，未挂载） */
   const visibleStartOffset = Math.max(0, items.length - effectiveVisible)
   /** 虚拟化切片：尾部 effectiveVisible 条（最新在底） */
@@ -743,8 +842,36 @@ export function Chat({
    * 在虚拟化切片上分组（底栏近期完整，超长会话旧段渐进加载）。
    */
   const visibleTurns = useMemo(() => groupItemsIntoTurns(visibleItems), [visibleItems])
-  /** scrollReady 门控：历史加载完 && 全挂完才恢复滚动位置（对齐旧版 scrollReady = ready && fullyMounted） */
-  const effectiveScrollReady = scrollReady && fullyMounted
+
+  /**
+   * 单条消息入场动画门控：只给「本轮新出现的末尾 turn」加 message-enter。
+   * - 跟踪上一帧的末尾 turn key；末尾 key 变化 + 运行中 → 该 key 挂淡入上滑。
+   * - 历史虚拟化补齐（头部增、末尾不变）、切空闲会话（非运行）都不触发，避免整列闪。
+   * - 合成占位壳（liveKey / stoppedSyntheticKey）也参与：发送后空窗的占位壳同样丝滑出现。
+   * - enterKey 用 state 保持，动画时长（280ms）+余量后才清空——保证流式每帧 re-render
+   *   期间 class 持续挂着，CSS animation 只触发一次且不被中途移除断帧。
+   */
+  const prevLastTurnKeyRef = useRef<string | null>(null)
+  const lastVisibleTurn = visibleTurns[visibleTurns.length - 1]
+  const syntheticLiveTurnKey =
+    (running || runStartedAt != null) && lastVisibleTurn?.kind !== 'assistant-turn'
+      ? resolveRunTurnKey(visibleTurns, sessionId, true)
+      : null
+  const finalLastTurnKey = syntheticLiveTurnKey ?? lastVisibleTurn?.key ?? null
+  const [enterKey, setEnterKey] = useState<string | null>(null)
+  useEffect(() => {
+    if (
+      finalLastTurnKey &&
+      finalLastTurnKey !== prevLastTurnKeyRef.current &&
+      (running || runStartedAt != null)
+    ) {
+      prevLastTurnKeyRef.current = finalLastTurnKey
+      setEnterKey(finalLastTurnKey)
+      const timer = window.setTimeout(() => setEnterKey(null), 340)
+      return () => window.clearTimeout(timer)
+    }
+    prevLastTurnKeyRef.current = finalLastTurnKey
+  }, [finalLastTurnKey, running, runStartedAt])
 
   // 选择优先级：本会话最近选择 > 持久化会话选择 > 新会话全局选择。
   // 旧会话只有 channelId 没有 modelId 时，用该渠道当前默认模型做一次迁移。
@@ -813,16 +940,63 @@ export function Chat({
   /** 已绑定渠道即显示 token 栏；kscc 仅隐藏占用圆环（占用不可信），累计统计照常 */
   const showTokenBar = lockedKind !== null
 
-  // 切换会话时加载历史。滚动位置恢复交给 ScrollPositionManager（Conversation 内部），
-  // 它用 useLayoutEffect + stopScroll + 直接设 scrollTop（无动画、无可见滚动过程）。
+  // 旧会话打开后 Markdown / 高亮 / 底栏占位还会微抖一两秒。
+  // 过早切 smooth 会让 StickToBottom 弹簧跟每一次长高，看起来像文字在轻轻晃。
+  // 至少 hold 1s，并要求高度连续稳定 ~520ms；最迟 2.6s 放行。
+  useEffect(() => {
+    if (!scrollReady || !windowReady) {
+      setHoldInstantResize(true)
+      return
+    }
+    const el = scrollContextRef.current?.scrollRef.current
+    if (!el) {
+      const timer = window.setTimeout(() => setHoldInstantResize(false), 1000)
+      return () => window.clearTimeout(timer)
+    }
+    const openedAt = Date.now()
+    let lastHeight = el.scrollHeight
+    let stableSince = openedAt
+    const MIN_HOLD_MS = 1000
+    const STABLE_MS = 520
+    const FAIL_OPEN_MS = 2600
+    const poll = window.setInterval(() => {
+      const height = el.scrollHeight
+      if (Math.abs(height - lastHeight) > 1) {
+        lastHeight = height
+        stableSince = Date.now()
+        return
+      }
+      const now = Date.now()
+      if (now - openedAt >= MIN_HOLD_MS && now - stableSince >= STABLE_MS) {
+        window.clearInterval(poll)
+        setHoldInstantResize(false)
+      }
+    }, 50)
+    const failOpen = window.setTimeout(() => {
+      window.clearInterval(poll)
+      setHoldInstantResize(false)
+    }, FAIL_OPEN_MS)
+    return () => {
+      window.clearInterval(poll)
+      window.clearTimeout(failOpen)
+    }
+  }, [scrollReady, windowReady])
+
+  // 切换会话时加载历史。滚动位置恢复交给 ScrollPositionManager（Conversation 内部）：
+  // 钉底在 scrollReady + 尾部窗口就绪后即可；中间位才拉满历史再还原。
   useEffect(() => {
     sessionIdRef.current = sessionId
+    // 切会话清同轮完成耗时幂等闸，避免上轮残留 true 屏蔽新会话首条终态记录
+    completionRecordedRef.current = false
     setItems([])
     setStreamState(clearSessionStreamState())
     // 运行态：不在此 stopRun（见下方 async reconcile 注释）。
     setHasDraft(false)
     setScrollReady(false)
-    setVisibleCount(20) // 虚拟化：切会话重置首批 20
+    setHoldInstantResize(true)
+    const restoreMid = hasSavedMidPosition(peekSessionScrollDistance(sessionId))
+    setAllowFullMount(restoreMid)
+    setVisibleCount(restoreMid ? Number.POSITIVE_INFINITY : CHAT_MOUNT_WINDOW)
     streamStateRef.current = clearSessionStreamState()
     itemIdxRef.current = 0
     setSubagentEagerness('conservative') // 切会话重置，下面异步回显持久化值
@@ -856,8 +1030,12 @@ export function Chat({
           } else if (status?.status === 'idle' || status?.status === 'error') {
             // 主进程已空闲/出错：atom 仍 running 或 startedAt 残留 → 硬清（软停合法态
             // 若主进程仍 turnInFlight 会走上面 running 分支，不会被误杀）
+            // 等用户点选时主进程可能已 idle，禁止硬清，否则提交后从 0 重计。
             const latest = getDefaultStore().get(sessionRunMapAtom)[sessionId]
-            if (latest?.running || latest?.startedAt != null) {
+            if (
+              !isSessionAwaitingUser(sessionId) &&
+              (latest?.running || latest?.startedAt != null)
+            ) {
               runStartedAtPersistRef.current = null
               stopSessionRun(sessionId)
             }
@@ -886,7 +1064,13 @@ export function Chat({
       if (cancelled) return
       // 子代理入口卡：运行时 taskCard 不落盘；从历史 tool_use(task)+tool_result 回填「派过 + 结论」
       const rehydrated = rehydrateSubagentTaskCardsFromHistory(irItems, taskCardApply)
+      inFlightToolIdsRef.current = collectPendingToolUseIds(rehydrated)
       setItems(rehydrated)
+      // 默认只挂尾部窗口；中间位恢复才拉满。≤100 也曾 Infinity，60 轮流式会被历史树拖死。
+      setVisibleCount((prev) => {
+        if (prev === Number.POSITIVE_INFINITY) return prev
+        return Math.min(CHAT_MOUNT_WINDOW, Math.max(rehydrated.length, 1))
+      })
       // 从历史 assistant.usage 回填底栏（最近一条有 usage 的 assistant）
       for (let i = rehydrated.length - 1; i >= 0; i--) {
         const m = rehydrated[i]?.message
@@ -1123,7 +1307,7 @@ export function Chat({
     }
   }, [])
 
-  /** 布局变化后多帧校正（附件 DOM 插入、图片解码、功能栏动画、队列 spring） */
+  /** 布局变化后多帧校正（附件 DOM 插入、图片解码、功能栏动画、底栏进出） */
   const scheduleComposerTopUpdate = useCallback((): (() => void) => {
     updateComposerTop()
     const raf1 = requestAnimationFrame(() => {
@@ -1131,14 +1315,12 @@ export function Chat({
       requestAnimationFrame(updateComposerTop)
     })
     const t1 = window.setTimeout(updateComposerTop, 50)
-    const t2 = window.setTimeout(updateComposerTop, 200)
-    // MessageQueue / AskUser motion spring 常 >200ms，再补一帧避免胶囊/箭头压队列
-    const t3 = window.setTimeout(updateComposerTop, 420)
+    // 底栏 fade 约 200ms；不再跟 spring height，420ms 补测可省
+    const t2 = window.setTimeout(updateComposerTop, 220)
     return () => {
       cancelAnimationFrame(raf1)
       clearTimeout(t1)
       clearTimeout(t2)
-      clearTimeout(t3)
     }
   }, [updateComposerTop])
 
@@ -1153,11 +1335,12 @@ export function Chat({
     })
     ro.observe(stack)
     ro.observe(composer)
-    // MutationObserver：附件队列/横幅/预览卡片增删
+    // MutationObserver：附件队列/横幅/预览卡片增删。
+    // 勿开 attributes——motion 每帧改 style 会拖垮 updateComposerTop。
     const mo = new MutationObserver(() => {
       updateComposerTop()
     })
-    mo.observe(stack, { childList: true, subtree: true, attributes: true })
+    mo.observe(stack, { childList: true, subtree: true })
     const cancel = scheduleComposerTopUpdate()
     // 会话页入场动画结束后再校一次
     const t = window.setTimeout(updateComposerTop, 500)
@@ -1193,9 +1376,18 @@ export function Chat({
     return () => window.removeEventListener('tagent:composer-top-remeasure', onRemeasure)
   }, [scheduleComposerTopUpdate])
 
-  // AskUser / 权限弹窗出现或收起：强制重测（motion 高度动画时 RO 偶发滞后）
+  // AskUser / 权限弹窗出现或收起：重测底栏占位；钉底用 instant，避免与弹层入场抢主线程
   useEffect(() => {
-    return scheduleComposerTopUpdate()
+    const cancel = scheduleComposerTopUpdate()
+    if (!hasBlockingBottomBanner) return cancel
+    const t = window.setTimeout(() => {
+      const ctx = scrollContextRef.current
+      if (ctx?.isAtBottom) void ctx.scrollToBottom('instant')
+    }, 40)
+    return () => {
+      cancel()
+      clearTimeout(t)
+    }
   }, [hasBlockingBottomBanner, scheduleComposerTopUpdate])
 
   // 对话列宽度：右栏打开或窗口变窄 → 紧凑输入栏（图标优先，防文字叠压）
@@ -1207,8 +1399,12 @@ export function Chat({
     }
     const measure = (): void => {
       const w = el.getBoundingClientRect().width
-      // 约 560：再塞满模型名+token 标签就会叠；右栏打开通常 < 560
-      setComposerCompact(crewPanelOpen || w < 560)
+      // 滞回：避免列宽贴着阈值时 compact class 和 RO 互推，打出 Maximum update depth
+      setComposerCompact((prev) => {
+        if (crewPanelOpen) return true
+        if (prev) return w < 576
+        return w < 544
+      })
     }
     measure()
     const ro = new ResizeObserver(() => measure())
@@ -1280,10 +1476,12 @@ export function Chat({
       </div>
     ) : null
 
-  // 虚拟化分批递增：未全挂时，idle 帧每批 +40 补齐旧消息（保近期，底部对话不受影响）
+  // 虚拟化分批：默认只补到尾部窗口；allowFullMount（上滑/中间位/锚点）才继续往更早补。
   useEffect(() => {
-    if (fullyMounted) return
+    if (allMounted) return
     if (items.length === 0) return
+    const windowCap = Math.min(CHAT_MOUNT_WINDOW, items.length)
+    if (!allowFullMount && effectiveVisible >= windowCap) return
     // requestIdleCallback 兼容（Electron Chromium 原生支持，fallback setTimeout）
     const scheduleIdle: (cb: () => void) => number =
       typeof window !== 'undefined' && 'requestIdleCallback' in window
@@ -1295,13 +1493,76 @@ export function Chat({
         : (h) => window.clearTimeout(h)
     const handle = scheduleIdle(() => {
       setVisibleCount((prev) => {
-        if (prev >= items.length) return prev // 已全挂，不动
-        const next = Math.min(prev + 40, items.length)
-        return next >= items.length ? Number.POSITIVE_INFINITY : next // 全挂完置 Infinity，流式追加走全量分支
+        if (prev >= items.length) return prev
+        const cap = allowFullMount ? items.length : Math.min(CHAT_MOUNT_WINDOW, items.length)
+        const base = prev === Number.POSITIVE_INFINITY ? items.length : prev
+        const next = Math.min(base + CHAT_MOUNT_BATCH, cap)
+        return next >= items.length ? Number.POSITIVE_INFINITY : next
       })
     })
     return () => cancelIdle(handle)
-  }, [visibleCount, items.length, fullyMounted])
+  }, [visibleCount, items.length, allMounted, allowFullMount, effectiveVisible])
+
+  // 开流后若未在查历史，把过度挂载收回尾部窗口（中间位 allowFullMount 时不撤）。
+  useEffect(() => {
+    const live = running || runStartedAt != null
+    if (!live || allowFullMount) return
+    setVisibleCount((prev) => {
+      if (prev === Number.POSITIVE_INFINITY || prev > CHAT_MOUNT_WINDOW) {
+        return CHAT_MOUNT_WINDOW
+      }
+      return prev
+    })
+  }, [running, runStartedAt, allowFullMount])
+
+  // 滚近顶部 → 允许突破窗口，按批加载更早消息（补页时 ScrollPositionManager 会补偿 scrollTop）
+  useEffect(() => {
+    if (!scrollReady) return
+    const scroller = scrollContextRef.current?.scrollRef.current
+    if (!scroller) return
+    let coolUntil = 0
+
+    const onScroll = (): void => {
+      if (scroller.scrollTop > CHAT_MOUNT_TOP_LOAD_PX) return
+      if (items.length === 0) return
+      const now = Date.now()
+      if (now < coolUntil) return
+      coolUntil = now + 120
+      setVisibleCount((prev) => {
+        const mounted = prev >= items.length ? items.length : prev
+        if (mounted >= items.length) return prev
+        const next = Math.min(mounted + CHAT_MOUNT_BATCH, items.length)
+        return next >= items.length ? Number.POSITIVE_INFINITY : next
+      })
+      setAllowFullMount(true)
+    }
+
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    return () => scroller.removeEventListener('scroll', onScroll)
+  }, [scrollReady, sessionId, items.length])
+
+  // 流式中回到底部 → 收回窗口，把更早的 DOM 卸掉（ReadingScrollGuard 会在高度收缩时钉底）
+  useEffect(() => {
+    const live = running || runStartedAt != null
+    if (!live || !scrollReady) return
+    const scroller = scrollContextRef.current?.scrollRef.current
+    if (!scroller) return
+
+    const onScroll = (): void => {
+      const dist = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+      if (dist > 40) return
+      setVisibleCount((prev) => {
+        if (prev === Number.POSITIVE_INFINITY || prev > CHAT_MOUNT_WINDOW) {
+          return CHAT_MOUNT_WINDOW
+        }
+        return prev
+      })
+      setAllowFullMount(false)
+    }
+
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    return () => scroller.removeEventListener('scroll', onScroll)
+  }, [running, runStartedAt, scrollReady, sessionId])
 
   // 监听流式事件
   useEffect(() => {
@@ -1320,6 +1581,18 @@ export function Chat({
     }
   }, [])
 
+  // 主进程发起的权限模式切换（EnterPlanMode 进入 / ExitPlanMode 审批后切目标模式）：
+  // 只更新当前会话的输入框 pill（setPermissionMode）。后台会话的 pill 在切回时从 meta 回显。
+  // 「正在规划」会话集合（planModeSessionsAtom，含后台）由 useExitPlanSync 全局维护，此处不重复。
+  // pill 手动切换由用户本地先设，主进程不回推 PLAN_MODE_CHANGED，故无回环。
+  useEffect(() => {
+    const off = window.electronAPI.onPlanModeChanged((payload) => {
+      if (!payload || payload.sessionId !== sessionIdRef.current) return
+      setPermissionMode(migratePermissionMode(payload.mode as TAgentPermissionMode))
+    })
+    return () => off?.()
+  }, [])
+
   /**
    * 任务卡片 apply：existing=undefined 新建（分配稳定 key），否则就地更新 taskCard
    * （保留 message / streamingText 等其他字段）。reduceTaskEvent 的承载项工厂。
@@ -1336,6 +1609,45 @@ export function Chat({
     pendingThinkingRef.current = ''
     pendingThinkingUuidRef.current = undefined
   }, [])
+
+  /**
+   * 用户点停止：若 Agent 尚未开始处理 → 撤回 user 气泡、回填输入框；
+   * 否则走正常「已中断」收尾。
+   */
+  const handleUserStop = useCallback(async (): Promise<void> => {
+    clearPendingStop()
+    const canRecall = !hasRunStartedProcessing(itemsRef.current, streamStateRef.current)
+    await window.electronAPI.stopAgent(sessionIdRef.current)
+    if (canRecall) {
+      const recalled = await window.electronAPI.recallUnsentTurn(sessionIdRef.current)
+      if (recalled?.ok && recalled.text) {
+        const recallDraft = pendingSendRecallRef.current
+        pendingSendRecallRef.current = null
+        userStoppedRef.current = false
+        runStartedAtPersistRef.current = null
+        stopRun()
+        resetStreamState()
+        setItems((prev) => sliceItemsBeforeLastRealUser(prev) ?? prev)
+        setCompletedDurations((prev) => {
+          const next = { ...prev }
+          for (const key of Object.keys(next)) {
+            if (key.endsWith('-live')) delete next[key]
+          }
+          return next
+        })
+        chatInputRef.current?.setText(recallDraft?.text ?? recalled.text)
+        if (recallDraft?.attachments?.length) {
+          setPendingAttachments(recallDraft.attachments)
+        }
+        chatInputRef.current?.focus()
+        scheduleComposerTopUpdate()
+        bumpRefresh()
+        return
+      }
+    }
+    userStopRun()
+    scheduleComposerTopUpdate()
+  }, [bumpRefresh, clearPendingStop, resetStreamState, scheduleComposerTopUpdate, stopRun])
 
   // thinking delta 的 rAF 合并缓冲：同一帧内多次 delta 只 flush 一次（渲染频率从"每事件"降到"每帧"）
   const pendingThinkingRef = useRef('')
@@ -1388,6 +1700,9 @@ export function Chat({
       const parentedMsg =
         (p.message.type === 'assistant' || p.message.type === 'user') &&
         Boolean(p.message.parentToolUseId)
+      if (!parentedMsg) {
+        applyMessageToInFlightToolIds(inFlightToolIdsRef.current, p.message)
+      }
       if (parentedMsg) {
         const msgUuid =
           p.message.type === 'assistant' || p.message.type === 'user'
@@ -1529,7 +1844,8 @@ export function Chat({
       resetStreamState()
       // result = 整个 run 真正 idle（turn_end 只是单个 SDK turn 结束，工具循环还会继续）。
       clearPendingStop()
-      // 收尾「往上折」靠 live 底栏 CSS 过渡；勿立刻 resize=instant，否则高度变化会顿一下。
+      // 收尾高度骤降：切 instant，避免 StickToBottom smooth 再从头扫到底。
+      beginStreamTransition(500)
 
       // error_* 以前几乎对 UI 透明（只吃 usage）；抬到 SessionErrorBanner，避免「气泡里有失败但无错误条」
       const subtype = typeof p.subtype === 'string' ? p.subtype : ''
@@ -1545,16 +1861,21 @@ export function Chat({
             : subtype === 'error_during_execution'
               ? '执行过程中出错'
               : subtype || '运行出错')
-        // 用户刚点停止 / abort 文案 / 上一轮被停止后迟到的 error result：
-        // 保持「已中断」，勿抬错误条、勿把 endedBy 改成 error
-        const STALE_ABORT_WINDOW_MS = 8000
-        const abortLike =
-          userStoppedRef.current ||
-          (lastUserStopAtRef.current > 0 && Date.now() - lastUserStopAtRef.current < STALE_ABORT_WINDOW_MS) ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|操作已中止|会话已结束/i.test(
-            raw,
-          )
-        if (abortLike) {
+        // 终态分类（classifyRunAbort）：区分真用户停止 / AskUser 关窗后迟到 interrupt / 真 error。
+        // 关窗后的迟到 interrupt 不当用户停止——按正常完成收口，勿抬错误条、勿把 endedBy 改 stopped。
+        const verdict = classifyRunAbort({
+          userStopped: userStoppedRef.current,
+          lastUserStopAt: lastUserStopAtRef.current,
+          lastAskUserDismissAt:
+            getDefaultStore().get(askUserDismissedAtAtom).get(sessionIdRef.current) ?? 0,
+          now: Date.now(),
+          errorText: raw,
+        })
+        if (verdict === 'complete') {
+          // AskUser 关窗后迟到的 interrupt：非用户停止，按完成收口（recordCompletion('complete')）
+          completeRun()
+        } else if (verdict === 'stopped') {
+          // 用户停止 / 迟到 abort 文案：保持「已中断」，勿抬错误条
           if (runStartedAtRef.current != null) recordCompletion('stopped')
           stopRun()
         } else {
@@ -1573,6 +1894,9 @@ export function Chat({
           recordCompletion('error')
           stopRun()
         }
+      } else if (subtype === 'paused_no_progress' || sessionHasOpenWork()) {
+        // 等用户选 / 无进展暂停：本轮没完。软停只收过程区，startedAt 留下，提交后续计时。
+        softStopSessionRun(sessionId)
       } else {
         completeRun()
       }
@@ -1630,7 +1954,8 @@ export function Chat({
           // 影子模式：只发诊断，不改 UI
         } else if (npEvt.phase === 'paused') {
           clearPendingStop()
-          stopRun() // 清运行态/计时/停止键；不报错、不抬错误条（§11.3）
+          // 软停：等 AskUser 澄清时计时不能清零，用户提交后 adopt 续原 startedAt
+          softStopSessionRun(sessionId)
           pushTicker(
             makeStatusTickerItem(
               npEvt.summary?.trim() || '已暂停：连续多次操作未获得新进展',
@@ -1728,8 +2053,8 @@ export function Chat({
           return purgeStreamingItems(cleaned)
         })
         resetStreamState()
-        // 工具循环中 turn_end 只是单轮结束：延迟停止，宽限期内有下一轮 delta → 保持 running
-        // （过程区/思考链不闪断收起）；宽限期到且无后续 → 真正停止
+        // 工具循环中 turn_end 只是单轮结束。有未完成 tool_use 时不停表；
+        // 无在途工作才延迟软停（宽限期内有下一轮 delta → 保持 running）。
         scheduleRunStop()
         // 工具循环中的 turn_end：不切 resize=instant（留给真正 result 收尾的平滑折进）
         // followMode：不再清 liveMentionLabels——铭牌代表当前 activeSpeaker，续聊仍由该角色接。
@@ -1767,14 +2092,20 @@ export function Chat({
         // 独立错误条（非 assistant 气泡）：copy / dismiss / retryable→重试
         const userError = (evt as { error?: UserFacingError }).error
         const rawMessage = typeof evt.message === 'string' ? evt.message : ''
-        const STALE_ABORT_WINDOW_MS = 8000
-        const abortLike =
-          userStoppedRef.current ||
-          (lastUserStopAtRef.current > 0 && Date.now() - lastUserStopAtRef.current < STALE_ABORT_WINDOW_MS) ||
-          /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|操作已中止|会话已结束/i.test(
-            `${userError?.message ?? ''} ${rawMessage}`,
-          )
-        if (abortLike) {
+        // 终态分类（同 result 分支）：AskUser 关窗后迟到的 interrupt 不当用户停止
+        const verdict = classifyRunAbort({
+          userStopped: userStoppedRef.current,
+          lastUserStopAt: lastUserStopAtRef.current,
+          lastAskUserDismissAt:
+            getDefaultStore().get(askUserDismissedAtAtom).get(sessionIdRef.current) ?? 0,
+          now: Date.now(),
+          errorText: `${userError?.message ?? ''} ${rawMessage}`,
+        })
+        if (verdict === 'complete') {
+          // AskUser 关窗后迟到的 interrupt：非用户停止，按完成收口，不抬错误条
+          clearPendingStop()
+          completeRun()
+        } else if (verdict === 'stopped') {
           // 用户打断 / 迟到的上轮错误：只收口运行态，不展示错误条、不把侧栏打成 error
           if (runStartedAtRef.current != null) recordCompletion('stopped')
           clearPendingStop()
@@ -1935,6 +2266,10 @@ export function Chat({
     if (!isExistingTab && canMaterializeTab && !canMaterializeTab()) {
       return
     }
+    pendingSendRecallRef.current = {
+      text,
+      attachments: attachments?.map((att) => ({ ...att })) ?? [],
+    }
     // 保存附件到磁盘
     let savedAttachments: Array<{ id: string; filename: string; mediaType: string; localPath: string; size: number }> = []
     if (attachments?.length) {
@@ -1957,6 +2292,9 @@ export function Chat({
       }
       setPendingAttachments([])
     }
+    // 发送前收回挂载窗口：长会话若已拉满历史，避免本轮流式拖着全树重渲
+    setAllowFullMount(false)
+    setVisibleCount(CHAT_MOUNT_WINDOW)
     startRun()
     try {
       const res = await window.electronAPI.sendMessage({
@@ -2055,7 +2393,38 @@ export function Chat({
     await sendQueued({ text, selection: effectiveSelection })
   }, [getLastRealUserPrompt, effectiveSelection, running])
 
-  /** 用户发送：空闲→立即发；运行中→入队 */
+  /** 运行中引导：不中断；气泡夹进当前执行块；主进程落盘 isSteer 并注入模型。 */
+  const submitSteer = useCallback(async (text: string): Promise<void> => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    try {
+      const res = (await window.electronAPI.steerAgent(
+        sessionIdRef.current,
+        trimmed,
+      )) as { ok?: boolean; mode?: string; error?: string } | undefined
+      if (!res?.ok) {
+        pushTicker(
+          makeStatusTickerItem(`引导失败：${res?.error ?? '未知错误'}`, 'error', 5000),
+        )
+        return
+      }
+      if (res.mode === 'pending_next_turn') {
+        pushTicker(
+          makeStatusTickerItem('已记下引导：这场运行停稳后才会交给模型', 'info', 3500),
+        )
+      }
+    } catch (err) {
+      pushTicker(
+        makeStatusTickerItem(
+          `引导失败：${err instanceof Error ? err.message : String(err)}`,
+          'error',
+          5000,
+        ),
+      )
+    }
+  }, [pushTicker])
+
+  /** 用户发送：空闲→立即发；运行中→入队，由用户在队列里选「按序排队」或「引导」 */
   const send = async (): Promise<void> => {
     const text = chatInputRef.current?.getText().trim() ?? ''
     if (!text && pendingAttachments.length === 0) return
@@ -2076,9 +2445,9 @@ export function Chat({
     } else {
       setLiveMentionLabels([])
     }
-    chatInputRef.current?.clear()
-    if (running) {
-      // 运行中 → 入队，等当前轮结束自动消费
+    const inFlight = running || runStartedAtRef.current != null
+    if (inFlight) {
+      chatInputRef.current?.clear()
       if (effectiveSelection) {
         setMessageQueue((q) => [
           ...q,
@@ -2089,10 +2458,10 @@ export function Chat({
           },
         ])
       }
-      // 入队即清空输入框附件（已快照进队列项；drain 时 sendQueued 保存到磁盘并 revoke previewUrl）
       setPendingAttachments([])
       return
     }
+    chatInputRef.current?.clear()
     // 空闲 → 立即发
     if (!effectiveSelection) {
       alert('没有可用模型，请先在「设置 → 渠道」中启用渠道和模型')
@@ -2234,41 +2603,15 @@ export function Chat({
   /** 引导指定条目：不打断；成功后从 UI 队列移除 */
   const steerQueueItem = (index: number): void => {
     if (queueActionBusy) return
-    if (!running) return
+    if (!running && runStartedAtRef.current == null) return
     const item = messageQueue[index]
     if (!item) return
     setQueueActionBusy(true)
     void (async () => {
       try {
-        const res = (await window.electronAPI.steerAgent(
-          sessionIdRef.current,
-          item.text,
-        )) as { ok?: boolean; mode?: string; error?: string } | undefined
-        if (!res?.ok) {
-          pushTicker(
-            makeStatusTickerItem(`引导失败：${res?.error ?? '未知错误'}`, 'error', 5000),
-          )
-          return
-        }
+        await submitSteer(item.text)
         setMessageQueue((q) => q.filter((_, i) => i !== index))
         scheduleComposerTopUpdate()
-        pushTicker(
-          makeStatusTickerItem(
-            res.mode === 'live'
-              ? '已注入引导：将在下一轮边界生效'
-              : '已排队引导：本轮结束后自动发送',
-            'info',
-            4000,
-          ),
-        )
-      } catch (err) {
-        pushTicker(
-          makeStatusTickerItem(
-            `引导失败：${err instanceof Error ? err.message : String(err)}`,
-            'error',
-            5000,
-          ),
-        )
       } finally {
         setQueueActionBusy(false)
       }
@@ -2390,11 +2733,9 @@ export function Chat({
         <Button
           variant="ghost"
           size="icon"
-          className="size-9 rounded-full text-destructive hover:bg-destructive/10"
+          className="size-8 rounded-glass-popover text-destructive hover:bg-destructive/10"
           onClick={() => {
-            userStopRun()
-            void window.electronAPI.stopAgent(sessionIdRef.current)
-            scheduleComposerTopUpdate()
+            void handleUserStop()
           }}
           aria-label="停止"
         >
@@ -2444,12 +2785,26 @@ export function Chat({
       basePaths: workspaceDirectory ? [workspaceDirectory] : undefined,
       // 点击文件 chip / Files Changed → 打开分屏 + 解析路径后开预览。
       // 须先 setSplitDockMode：非 dock 布局下 WorkspaceDock 不挂载，只写 atom 会像「点了没反应」。
-      onOpenFile: (path: string, options?: { basePaths?: string[] }): void => {
+      // options.review（句尾 Files Changed 卡片）→ 走「本轮 unified diff 审阅」；保留原始 path
+      // 与 review.files 对齐（FilePreviewPane 内部自行 resolve）。chip 不传 review，仍走预览。
+      onOpenFile: (
+        path: string,
+        options?: { basePaths?: string[]; review?: FileReviewContext },
+      ): void => {
         const sid = sessionIdRef.current
         const bases =
           options?.basePaths ??
           (workspaceDirectory ? [workspaceDirectory] : undefined)
         if (!splitDockMode) setSplitDockMode(true)
+        if (options?.review) {
+          setFilePreviewRequest({
+            sessionId: sid,
+            path,
+            bases,
+            review: options.review,
+          })
+          return
+        }
         void (async () => {
           const resolved = await window.electronAPI.resolveFile({
             sessionId: sid,
@@ -2495,7 +2850,44 @@ export function Chat({
     [setFilePreviewRequest, setSplitDockMode, splitDockMode],
   )
 
+  /**
+   * 刻度/面板跳转到窗口外消息：只把「目标→末尾」扩进挂载，
+   * 不顺带把更早的历史 Markdown 全挂上。回到底部流式时仍会收回窗口。
+   */
+  const ensureMinimapMessageMounted = useCallback(
+    async (messageId: string): Promise<void> => {
+      let itemIdx = items.findIndex((it) => it.key === messageId)
+      if (itemIdx < 0) {
+        const turns = groupItemsIntoTurns(items)
+        const turn = turns.find((t) => t.key === messageId)
+        if (turn?.kind === 'user') {
+          itemIdx = items.findIndex((it) => it.key === turn.key || it.message === turn.message)
+        } else if (turn?.kind === 'assistant-turn') {
+          const first = turn.items[0]
+          itemIdx = first ? items.findIndex((it) => it.key === first.key) : -1
+        }
+      }
+      if (itemIdx < 0) {
+        setAllowFullMount(true)
+        setVisibleCount(Number.POSITIVE_INFINITY)
+        return
+      }
+      // 多挂几条上下文，避免目标贴在虚拟化切边上
+      const from = Math.max(0, itemIdx - 4)
+      const needCount = items.length - from
+      setAllowFullMount(true)
+      setVisibleCount(
+        needCount >= items.length ? Number.POSITIVE_INFINITY : Math.max(needCount, CHAT_MOUNT_WINDOW),
+      )
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve())
+      })
+    },
+    [items],
+  )
+
   const jumpToCollabAnchor = useCallback((anchorKey: string) => {
+    setAllowFullMount(true)
     setVisibleCount(Number.POSITIVE_INFINITY)
     const tryScroll = (attempt = 0): void => {
       const ctx = scrollContextRef.current
@@ -2647,7 +3039,7 @@ export function Chat({
         data-mention-open={mentionPickerOpen ? 'true' : 'false'}
         data-bottom-banner-open={hasBlockingBottomBanner ? 'true' : 'false'}
       >
-      {items.length === 0 && !running ? (
+      {items.length === 0 && !running && scrollReady ? (
         <NewConversationLanding
           composer={landingComposer}
           workspaceSlot={workspaceSlot}
@@ -2655,28 +3047,38 @@ export function Chat({
           onBack={onBack}
         />
       ) : (
-        <div className={`relative h-full min-h-0 chat-page-enter ${pageMounted ? 'is-mounted' : ''}`}>
+        <div className={`relative h-full min-h-0 chat-page-enter ${pageMounted && scrollReady ? 'is-mounted' : ''}`}>
           {/* 消息区：全高；线程有 max-width 居中；底栏输入/token 铺满对话列 */}
           <Conversation
             className="absolute inset-0 min-h-0"
             contextRef={scrollContextRef}
             resize={
-              effectiveScrollReady && !streamTransitioning ? 'smooth' : 'instant'
+              !holdInstantResize && !streamTransitioning ? 'smooth' : 'instant'
             }
           >
-            <ConversationContent className="session-conversation-pad pt-2 pb-44">
+            <ConversationContent className="session-conversation-pad pt-2 pb-[max(11rem,calc(var(--session-composer-top,11rem)+12px))]">
               <div className="tagent-thread">
               {/* 虚拟化加载提示：未全挂时常驻显示（说清楚在加载、剩多少条），不闪烁 */}
-              {!fullyMounted && items.length > 0 && (
+              {!allMounted && items.length > 0 && (
                 <div
                   className="flex items-center justify-center gap-2 py-2 text-xs text-muted-foreground"
                   aria-live="polite"
                 >
-                  <span className="size-3.5 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground/60" />
-                  <span>正在加载更早的 {items.length - effectiveVisible} 条…</span>
+                  {allowFullMount ? (
+                    <>
+                      <span className="size-3.5 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground/60" />
+                      <span>正在加载更早的 {items.length - effectiveVisible} 条…</span>
+                    </>
+                  ) : (
+                    <span>向上滚动加载更早的 {items.length - effectiveVisible} 条</span>
+                  )}
                 </div>
               )}
               {(() => {
+                const runActive = running || runStartedAt != null
+                const runTurnKey = resolveRunTurnKey(visibleTurns, sessionId, runActive)
+                if (runTurnKey) lastAssistantTurnKeyRef.current = runTurnKey
+
                 let lastAssistantIdx = -1
                 for (let i = visibleTurns.length - 1; i >= 0; i--) {
                   if (visibleTurns[i]!.kind === 'assistant-turn') {
@@ -2688,44 +3090,70 @@ export function Chat({
                   // 最新 assistant-turn 且本轮未硬停：过程区「一条路」展开。
                   // 用 startedAt 而非仅 running——turn_end 软停会短暂 running=false，
                   // 若据此收过程/拆回答会整段跳变；硬停才清 startedAt。
+                  //
+                  // 已记完成耗时的一轮禁止再标 live：send() 先 startRun、用户气泡
+                  // 要等 IPC/流式回声才进 items。中间那一帧 last turn 仍是上一轮
+                  // 助手，若仅看 runActive 会把已完成轮重新展开过程区，视口被顶到
+                  // 上一轮用户气泡，再闪回底部。
                   const isLiveTurn =
-                    (running || runStartedAt != null) &&
+                    runActive &&
                     turnIndex === visibleTurns.length - 1 &&
-                    turn.kind === 'assistant-turn'
+                    turn.kind === 'assistant-turn' &&
+                    completedDurations[turn.key] == null
                   // 简洁：末尾 assistant 跑完可保持展开；发新一轮后 isLatest=false → 折叠
                   const isLatestAssistantTurn =
                     turn.kind === 'assistant-turn' &&
                     turnIndex === lastAssistantIdx &&
                     turnIndex === visibleTurns.length - 1
-                  // 追踪最后一个 assistant-turn 的 key，供 completeRun 记完成耗时
-                  if (turn.kind === 'assistant-turn') lastAssistantTurnKeyRef.current = turn.key
+                  const stoppedSyntheticKey =
+                    turn.kind === 'user' &&
+                    shouldRenderStoppedSyntheticShell(visibleTurns, turnIndex, completedDurations)
+                      ? syntheticLiveTurnKeyForUser(turn.key)
+                      : null
                   return (
-                    <TurnView
-                      key={turn.key}
-                      turn={turn}
-                      isLiveTurn={isLiveTurn}
-                      runStartedAt={isLiveTurn ? runStartedAt : undefined}
-                      isLatestAssistantTurn={isLatestAssistantTurn}
-                      streamState={isLiveTurn ? streamState : undefined}
-                      fallbackModelId={
-                        isLiveTurn && effectiveSelection?.modelId && !isMoaModelId(effectiveSelection.modelId)
-                          ? effectiveSelection.modelId
-                          : undefined
-                      }
-                      onRefillToInput={pickSuggestion}
-                      mentionLabels={
-                        isLiveTurn && liveMentionLabels.length > 0
-                          ? liveMentionLabels
-                          : undefined
-                      }
-                      mentionRoles={mentionRoles}
-                      completedDuration={completedDurations[turn.key]}
-                      subagentCards={subagentCards}
-                      onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
-                      onOpenDiscussion={(discussionId) => setOpenDiscussionId(discussionId)}
-                      sessionId={sessionId}
-                      onOpenAttachment={openAttachmentPreview}
-                    />
+                    <Fragment key={turn.key}>
+                      <TurnView
+                        turn={turn}
+                        isLiveTurn={isLiveTurn}
+                        runStartedAt={isLiveTurn ? runStartedAt : undefined}
+                        isLatestAssistantTurn={isLatestAssistantTurn}
+                        streamState={isLiveTurn ? streamState : undefined}
+                        fallbackModelId={
+                          isLiveTurn && effectiveSelection?.modelId && !isMoaModelId(effectiveSelection.modelId)
+                            ? effectiveSelection.modelId
+                            : undefined
+                        }
+                        onRefillToInput={pickSuggestion}
+                        mentionLabels={
+                          isLiveTurn && liveMentionLabels.length > 0
+                            ? liveMentionLabels
+                            : undefined
+                        }
+                        mentionRoles={mentionRoles}
+                        completedDuration={completedDurations[turn.key]}
+                        subagentCards={subagentCards}
+                        onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+                        onOpenDiscussion={(discussionId) => setOpenDiscussionId(discussionId)}
+                        sessionId={sessionId}
+                        onOpenAttachment={openAttachmentPreview}
+                        animateEnter={turn.key === enterKey}
+                      />
+                      {stoppedSyntheticKey ? (
+                        <TurnView
+                          turn={{
+                            kind: 'assistant-turn',
+                            key: stoppedSyntheticKey,
+                            items: [],
+                            isStreaming: false,
+                          }}
+                          completedDuration={completedDurations[stoppedSyntheticKey]}
+                          mentionRoles={mentionRoles}
+                          subagentCards={subagentCards}
+                          onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+                          animateEnter={stoppedSyntheticKey === enterKey}
+                        />
+                      ) : null}
+                    </Fragment>
                   )
                 })
               })()}
@@ -2735,10 +3163,8 @@ export function Chat({
                 const needsSyntheticLiveTurn =
                   runActive && lastTurn?.kind !== 'assistant-turn'
                 if (!needsSyntheticLiveTurn) return null
-                const liveKey =
-                  lastTurn?.kind === 'user'
-                    ? `turn-${lastTurn.key}-live`
-                    : `turn-stream-${sessionId}`
+                const liveKey = resolveRunTurnKey(visibleTurns, sessionId, true)
+                if (!liveKey) return null
                 return (
                   <TurnView
                     key={liveKey}
@@ -2756,14 +3182,21 @@ export function Chat({
                     mentionRoles={mentionRoles}
                     subagentCards={subagentCards}
                     onOpenSubagent={(parentToolUseId) => setSubagentDetail(parentToolUseId)}
+                    animateEnter={liveKey === enterKey}
                   />
                 )
               })()}
             </div>
         </ConversationContent>
-        {/* 切会话恢复滚动位置（无动画、不打断查历史），对齐 TAgent_General ScrollPositionManager */}
-        <ScrollPositionManager id={sessionId} ready={effectiveScrollReady} />
-        <ScrollMinimap items={minimapItems} />
+        {/* 切会话恢复滚动：钉底等窗口就绪；中间位才等全挂 */}
+        <ScrollPositionManager
+          id={sessionId}
+          ready={scrollReady}
+          restoreReady={allowFullMount ? allMounted : windowReady}
+          layoutKey={effectiveVisible}
+        />
+        <ReadingScrollGuard live={running || runStartedAt != null} />
+        <ScrollMinimap items={minimapItems} onEnsureMessage={ensureMinimapMessageMounted} />
         <ConversationScrollButton />
       </Conversation>
 
@@ -2787,7 +3220,7 @@ export function Chat({
           onSteer={steerQueueItem}
           onEdit={editQueueItem}
           busy={queueActionBusy}
-          running={running}
+          running={running || runStartedAt != null}
         />
         {backgroundCrewBanner && executionMode === 'chat' ? (
           <div
@@ -2845,11 +3278,22 @@ export function Chat({
         />
         <PermissionBanner sessionId={sessionId} />
         <AskUserQuestionBanner sessionId={sessionId} />
+        <ExitPlanModeBanner sessionId={sessionId} />
         <div
           ref={composerClusterRef}
           className={`session-composer-cluster ${showTokenBar ? 'has-token-bar' : ''}`}
         >
-          <ComposerRunTimer startedAt={runStartedAt} />
+          <div className="composer-float-row">
+            <ComposerRunTimer startedAt={runStartedAt} />
+            <ComposerActivityIsland
+              items={composerActivity.items}
+              pillLabel={composerActivity.pillLabel}
+              headerLabel={composerActivity.headerLabel}
+              onStopProcess={(processId) => {
+                void window.electronAPI.killSessionProcess?.(sessionId, processId)
+              }}
+            />
+          </div>
           <div
             className="session-input-dock"
             data-permission-mode={permissionMode}
@@ -2859,7 +3303,9 @@ export function Chat({
               ref={chatInputRef}
               onSubmit={() => void send()}
               placeholder={
-                executionMode === 'chat'
+                running || runStartedAt != null
+                  ? '运行中回车会加入队列，再选排队或引导'
+                  : executionMode === 'chat'
                   ? '输入消息… @ 点名角色（Enter 发送）'
                   : '输入消息…（Enter 发送，Shift+Enter 换行）'
               }
@@ -2950,123 +3396,24 @@ export function Chat({
                       }}
                     />
                     {/*
-                      发送/停止/引导/立即发送 同槽复用：
-                      · 运行中 + 无草稿 → 停止键（中断当前轮，队列自动续发）
-                      · 运行中 + 有草稿 → [引导] [立即发送] [排队发送]
-                      · 空闲 + 有草稿 → 发送键（enabled，立即发）
+                      发送/停止同槽复用：
+                      · 运行中 + 无草稿 → 停止键
+                      · 运行中 + 有草稿 → Enter/发送=入队（队列里再选排队或引导）
+                      · 空闲 + 有草稿 → 发送键
                       · 空闲 + 无草稿 → 发送键（disabled）
                     */}
                     {running && !hasSendable ? (
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="size-9 rounded-full text-destructive hover:bg-destructive/10"
+                        className="size-8 rounded-glass-popover text-destructive hover:bg-destructive/10"
                         onClick={() => {
-                          // 停止当前轮后，已有队列会按顺序自动发送。
-                          userStopRun()
-                          window.electronAPI.stopAgent(sessionIdRef.current)
-                          scheduleComposerTopUpdate()
+                          void handleUserStop()
                         }}
                         aria-label="停止"
                       >
                         <Square className="size-4 fill-current" />
                       </Button>
-                    ) : running && hasSendable ? (
-                      <div className="flex items-center gap-1">
-                        <AppTooltip label="引导：不中断当前轮；本轮结束后 Agent 看到此消息（kscc 入队 / Pi 自动续发）">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                            onClick={() => {
-                              const text = chatInputRef.current?.getText().trim()
-                              if (!text) return
-                              chatInputRef.current?.clear()
-                              void (async () => {
-                                try {
-                                  const res = await window.electronAPI.steerAgent(
-                                    sessionIdRef.current,
-                                    text,
-                                  ) as { ok?: boolean; mode?: string; error?: string } | undefined
-                                  if (!res?.ok) {
-                                    pushTicker(
-                                      makeStatusTickerItem(
-                                        `引导失败：${res?.error ?? '未知错误'}`,
-                                        'error',
-                                        5000,
-                                      ),
-                                    )
-                                    return
-                                  }
-                                  if (res.mode === 'pending_next_turn') {
-                                    pushTicker(
-                                      makeStatusTickerItem(
-                                        '已排队引导：本轮结束后自动发送',
-                                        'info',
-                                        4000,
-                                      ),
-                                    )
-                                  } else if (res.mode === 'live') {
-                                    pushTicker(
-                                      makeStatusTickerItem(
-                                        '已注入引导：将在下一轮边界生效',
-                                        'info',
-                                        4000,
-                                      ),
-                                    )
-                                  }
-                                } catch (err) {
-                                  pushTicker(
-                                    makeStatusTickerItem(
-                                      `引导失败：${err instanceof Error ? err.message : String(err)}`,
-                                      'error',
-                                      5000,
-                                    ),
-                                  )
-                                }
-                              })()
-                            }}
-                            aria-label="引导"
-                          >
-                            <Compass className="size-4" />
-                          </Button>
-                        </AppTooltip>
-                        <AppTooltip label="立即发送：中断当前轮，立刻发送此消息">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-8 rounded-full text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                            onClick={() => {
-                              const text = chatInputRef.current?.getText().trim() ?? ''
-                              if ((!text && pendingAttachments.length === 0) || !effectiveSelection) return
-                              chatInputRef.current?.clear()
-                              // 草稿立即发送：优先发本条，再自动消费已有队列。
-                              deferQueueAutoConsumeRef.current = true
-                              userStopRun()
-                              void (async () => {
-                                await window.electronAPI.stopAgent(sessionIdRef.current)
-                                await sendQueued({
-                                  text,
-                                  selection: effectiveSelection,
-                                  attachments: pendingAttachments,
-                                })
-                              })()
-                            }}
-                            aria-label="立即发送"
-                          >
-                            <Zap className="size-4" />
-                          </Button>
-                        </AppTooltip>
-                        <SendSplitButton
-                          size="sm"
-                          presets={consultPresetsForMenu}
-                          channel={selectionChannel}
-                          hasDraft={hasSendable}
-                          onSend={() => void send()}
-                          onConsultPreset={(id) => void sendConsult(id)}
-                          onDiscussionPreset={(id) => void sendDiscussion(id)}
-                        />
-                      </div>
                     ) : (
                       <SendSplitButton
                         presets={consultPresetsForMenu}
@@ -3185,6 +3532,7 @@ function TurnView({
   onOpenDiscussion,
   sessionId,
   onOpenAttachment,
+  animateEnter = false,
 }: {
   turn: ReturnType<typeof groupItemsIntoTurns>[number]
   isLiveTurn?: boolean
@@ -3206,10 +3554,13 @@ function TurnView({
   /** 当前会话 id（MoA 圆桌卡建看板 CTA 用） */
   sessionId?: string
   onOpenAttachment?: (attachment: FileAttachment) => void
+  /** 本轮新出现的末尾消息：挂 message-enter 淡入上滑，取代「跳一下」。 */
+  animateEnter?: boolean
 }): JSX.Element {
+  const enterClass = animateEnter ? 'message-enter' : undefined
   if (turn.kind === 'user') {
     return (
-      <div data-message-id={turn.key}>
+      <div className={enterClass} data-message-id={turn.key}>
         <MessageView
           message={turn.message}
           onRefillToInput={onRefillToInput}
@@ -3221,7 +3572,7 @@ function TurnView({
   }
   if (turn.kind === 'assistant-turn') {
     return (
-      <div data-message-id={turn.key}>
+      <div className={enterClass} data-message-id={turn.key}>
         <AssistantTurnView
           turn={turn}
           isLiveTurn={isLiveTurn}

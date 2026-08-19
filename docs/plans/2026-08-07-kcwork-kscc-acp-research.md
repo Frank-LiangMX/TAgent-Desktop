@@ -3,6 +3,8 @@
 > **状态**：调研结论（2026-08-07），未动工
 > **触发**：用户想确认 kscc 出的桌面 agent「KCwork」能否给 TAgent 提供更稳定的调 kscc 思路
 > **结论先行**：KCwork 调 kscc 的方式 = spawn kscc CLI 进程（ACP 协议）+ utility worker 双层隔离，与 TAgent 的 spawn kscc 同源同路；**不是 http 反代、不是 API key 直连**。能给 TAgent 的实际收益有三块（context usage / 崩溃隔离 / 协议稳态），但都不解决"两核重复维护"的真痛点。是否动工取决于对这三块收益的取舍。
+> ⚠️ **2026-08-17 实测复核**：§2.2「spawn `kscc --experimental-acp`」前提已失效（终端 kscc 1.2.1 移除 ACP）；KCwork 8月14新版自包含 ksoc/aioncore，不再依赖系统终端 kscc。详见末尾 §11。
+> ⚠️ **2026-08-17 定论修正**：§11「kscc 去 ACP → ACP 死路」措辞需窄化为「**kscc 这条 ACP 路死**」——KCwork 改用自带 ksoc（opencode 改造版，带 `opencode acp`）跑 ACP，是另一条活路；但对 TAgent 定位不值得（甜头 context usage 未证实 + 代价大）。详见 `2026-08-17-ksoc-acp-route-research.md` §9 最终判定。
 
 ---
 
@@ -194,3 +196,43 @@ KCwork 登录后 sk 明文落在 `~/.claude/settings.json`：
 - [ ] **前置验证**：实跑 `kscc --experimental-acp`，确认 ACP 握手 + 是否保留 resume 续跑（决定 §7 取舍）
 - [ ] 用户拍板诉求优先级（context usage / 崩溃隔离 / 减重复 / 不动）
 - [ ] 拍板后按 §8 出实施计划
+
+---
+
+## 11. 2026-08-17 实测复核（§2.2 / §8 前提过时，结论：终端 kscc 无法劫持 KCwork）
+
+> 触发：用户问「终端 kscc CLI 能否劫持系统已安装的 KCwork」。复核发现 08-07 调研的多条前提已被版本演进推翻，劫持在四条路径上均走不通。本节只读取证、未动业务码。
+
+### 11.1 kscc 1.2.1（原钉 1.1.28）已移除 ACP
+- `kscc --experimental-acp` → `error: unknown option '--experimental-acp'`（实测）。
+- `kscc --help`（229 行）全文无 acp/experimental/protocol；子命令仅 `agents / auto-mode / doctor / gateway / install / mcp / plugin / project / setup-token / ultrareview / update`，**无 `acp`**。
+- → §2.2「KCwork spawn `kscc --experimental-acp`」对当前终端 kscc 不再成立；§8 可移植清单第 1 条（`--bare --stream-json` 换 `--experimental-acp`）失去前提。
+
+### 11.2 KCwork 8月14 新版已全自包含，不再依赖系统终端 kscc
+安装路径 `D:\Program Files\KCwork\`，`app-update.yml` → `owner: iOfficeAI / repo: KCwork`（已从 AionUi 独立为 KCwork 仓库）；`resources/` 新增三块自包含件：
+
+| 件 | 实测 | 作用 |
+|---|---|---|
+| `bundled-aioncore/win32-x64/aioncore.exe` | 93MB，`aioncore 0.0.1`，ks3 CDN（`fe-frame.ks3-cn-beijing.ksyuncs.com/kscc/aioncore/...`） | KCwork 自带 ACP 宿主主进程 |
+| `managed-resources/cli/ksoc/1.0.6/.../bin/ksoc.exe` | `1.0.6`（**非**系统 `kscc` 1.2.1，独立 ksoc 二进制） | KCwork 自带 CLI，不 spawn 系统 kscc |
+| `managed-resources/node/node-v24.11.0-win-x64` | 自带 node 24.11 | 跑 ACP 适配器（bunx） |
+| `hub/aionext-*.zip` | 扩展市场：auggie/claude/codebuddy/codex/goose/opencode/qwen | ACP 适配器按需装 |
+
+- `hub/aionext-claude` 实测：`defaultCliPath: "bunx @agentclientprotocol/claude-agent-acp"`，`cliCommand: "claude"`，`acpArgs: []`；`scripts/install.ts` 用 `bun install @anthropic-ai/claude-code @agentclientprotocol/claude-agent-acp`（多镜像源回退）+ 软链 `bin/claude` → `.bin/claude-agent-acp`。
+- → KCwork 调 Claude/kscc 渠道改走「aioncore 宿主 + npm 封装的 ACP 适配器」stdio，**不再依赖系统终端 kscc 是否带 ACP flag**。
+
+### 11.3 凭证仍共享，但不是劫持点
+- `~/.claude/settings.json` 实测仍含 `ANTHROPIC_AUTH_TOKEN` + `KSCC_AUTH_TOKEN` + `BASE_API=http://120.92.138.34`，`ksccModel` 现为 `deepseek-v4-flash`（08-07 记录为 glm-5.2）。
+- 此为 kscc-CLI 通用约定，终端 kscc 自己读、自己过网关指纹校验；KCwork 无法吊销或 gate 终端 kscc 的访问。共享凭证 ≠ 劫持入口。
+
+### 11.4 四条"劫持"路径全部走不通
+1. **接管运行中会话**：KCwork↔aioncore↔适配器是私有 stdio 父子管道，无网络端点可从外部 attach。
+2. **PATH 重定向让 KCwork spawn 终端 kscc**：KCwork 适配器期望 ACP 握手，终端 kscc 1.2.1 不讲 ACP → 握手即败。要救只能再套 `@agentclientprotocol/claude-agent-acp`（那是用 ACP 封装，非劫持）。
+3. **夺凭证**：本就不需要——终端 kscc 直读 settings.json 即过网关，KCwork 无法 gate。
+4. **借 KCwork 当子代理后端**（对应 F1 缺口）：KCwork aioncore 是常驻 ACP 宿主 + 会话管理器，非可一次性 spawn 喂 prompt 收 ndjson 的 CLI 形状，与 TAgent `runCliWorker`（`run-cli-worker.ts` 的 kscc/grok/codex/mimo/opencode/claude runner）模型对不上；KCwork 自带 ksoc 也不暴露给外部 spawn。
+
+### 11.5 净判
+- 终端 kscc 与 KCwork 比 08-07 文档写的**更解耦**：KCwork 走自带 ksoc + aioncore + npm-ACP 封装，终端 kscc 丢了 ACP。
+- **无可劫持的依赖方向**（KCwork 已不依赖终端 kscc）、**无兼容的协议入口**（终端 kscc 无 ACP）、**无 KCwork 能 gate 的凭证**。
+- 若目标是给子代理派工接线（F1），KCwork 这套自包含 GUI 栈帮不上；直连 `runCliWorker` 现有 runner 更对路。
+- §7 决策矩阵中「kscc 核整体转 ACP」一行：前置验证（kscc ACP 是否保留 resume）已无需做——终端 kscc 无 ACP 可转；若仍想要 context usage，需另寻路径（非借 KCwork）。

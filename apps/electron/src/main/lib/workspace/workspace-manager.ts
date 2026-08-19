@@ -66,6 +66,11 @@ function readMeta(sanitizedPath: string): AgentWorkspace | undefined {
   return readJsonSafe<AgentWorkspace | undefined>(metaPath, undefined)
 }
 
+/** 按 workspace id（= sanitizedPath）取工作区元数据；不存在返回 undefined。供协作室按 room.workspaceId 解析 projectDirectory。 */
+export function getWorkspaceById(id: string): AgentWorkspace | undefined {
+  return readMeta(id)
+}
+
 /** 写 workspace-meta.json（原子写） */
 function writeMeta(workspace: AgentWorkspace): void {
   const metaPath = join(getProjectDir(workspace.id), META_FILENAME)
@@ -211,6 +216,18 @@ export function resolveWorkspaceForSession(sessionId: string): AgentWorkspace | 
   const meta = getSessionMeta(sessionId)
   if (!meta?.workspaceId) return undefined
   return readMeta(meta.workspaceId)
+}
+
+/**
+ * 按 workspace id（sanitized 目录名）直接反查工作区元数据。
+ *
+ * 与 resolveWorkspaceForSession 不同，不依赖 session meta；供协作室等只持有 workspaceId
+ * 的模块解析绑定的 projectDirectory。hidden 工作区也能读到（不经过 listWorkspaces 的过滤）。
+ * 不存在或 meta 缺失返回 undefined。
+ */
+export function resolveWorkspaceById(workspaceId: string): AgentWorkspace | undefined {
+  if (!workspaceId) return undefined
+  return readMeta(workspaceId)
 }
 
 /** 从项目路径提取显示名：取最后一段目录名 */

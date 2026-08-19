@@ -18,6 +18,7 @@ import {
   msysPathToWindowsDrivePath,
   fileLangBadgeForName,
   type FileLangBadgeTone,
+  type FileReviewContext,
 } from '@tagent/shared'
 import { cn } from '../../lib/utils'
 
@@ -39,8 +40,12 @@ interface FilePathChipProps {
   className?: string
   /** 解析文件是否存在（应用层注入 IPC 调用） */
   onResolveFile?: (path: string, bases?: string[]) => Promise<string | null>
-  /** 打开文件预览（应用层注入） */
-  onOpenFile?: (filePath: string, options?: { basePaths?: string[] }) => void
+  /**
+   * 打开文件预览（应用层注入）。
+   * options.review：句尾 Files Changed 卡片打开时分屏走「本轮 unified diff 审阅」；
+   * 正文文件 chip 不传 review（仍只预览当前文件）。
+   */
+  onOpenFile?: (filePath: string, options?: { basePaths?: string[]; review?: FileReviewContext }) => void
   /** 获取当前会话 ID（应用层注入） */
   getSessionId?: () => string | null
   /** 文件类型图标组件 */
@@ -57,7 +62,8 @@ export interface MessageFilePathContextValue {
   basePath?: string
   basePaths?: string[]
   onResolveFile?: (path: string, bases?: string[]) => Promise<string | null>
-  onOpenFile?: (filePath: string, options?: { basePaths?: string[] }) => void
+  /** 见 FilePathChipProps.onOpenFile：options.review 仅句尾 Files Changed 卡片打开时传 */
+  onOpenFile?: (filePath: string, options?: { basePaths?: string[]; review?: FileReviewContext }) => void
   getSessionId?: () => string | null
   FileIcon?: React.ComponentType<{ name: string; isDirectory?: boolean; size?: number }>
 }
@@ -306,9 +312,8 @@ export function FilePathChip({
           onClick={handleClick}
           data-file-status={fileStatus}
           className={cn(
-            // 路径芯片：轻底 + 语言标；圆角适中（非 pill、非 2px 硬角）
-            // leading 略松：leading-none + truncate(overflow:hidden) 会裁掉 g/p 下沉
-            'inline-flex items-center gap-1 rounded-md border px-1.5 py-[0.2em] text-[0.9em] font-medium leading-[1.35]',
+            // 路径芯片：轻底 + 语言标。行高与徽章同高，避免中文字体基线把拉丁字沉下去。
+            'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[0.9em] font-medium leading-none',
             'cursor-pointer transition-colors align-middle not-prose',
             fileStatus === 'broken'
               ? 'border-dashed border-muted-foreground/30 bg-muted/10 text-muted-foreground opacity-60 hover:bg-muted/20 hover:opacity-80'
@@ -331,9 +336,11 @@ export function FilePathChip({
               {langBadge.label}
             </span>
           )}
-          <span className="max-w-[240px] truncate font-normal leading-[inherit] text-foreground/88">
-            {filename}
-            {lineColSuffix}
+          <span className="inline-flex h-4 max-w-[240px] min-w-0 items-center font-normal leading-none text-foreground/88">
+            <span className="min-w-0 truncate leading-none">
+              {filename}
+              {lineColSuffix}
+            </span>
           </span>
         </button>
       </TooltipTrigger>

@@ -10,7 +10,63 @@
  * - 成员不能给自己发 A2A；A→B→A 近重复问答应被阻断。
  */
 
-import type { CollaborationMailboxEnvelope, CollaborationMailboxState } from './collaboration-room'
+import type {
+  CollaborationMailboxDelivery,
+  CollaborationMailboxEnvelope,
+  CollaborationMailboxState,
+} from './collaboration-room'
+
+export const COLLABORATION_HARD_MAX_A2A_DEPTH = 10
+
+/** 两人起至少四跳，随活跃成员数增长，但永不越过硬上限。 */
+export function recommendedCollaborationHandoffDepth(activeMemberCount: number): number {
+  return Math.min(COLLABORATION_HARD_MAX_A2A_DEPTH, Math.max(4, Math.floor(activeMemberCount) + 1))
+}
+
+/** attemptId 必须是宿主签发的 UUID；空值/任意哨兵一律拒绝。 */
+export function isCollaborationAttemptId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+}
+
+/** 同一 attempt 只允许一封信封，防止重试重复唤醒目标成员。 */
+export function hasCollaborationAttempt(envelopes: CollaborationMailboxEnvelope[], attemptId: string): boolean {
+  return envelopes.some((envelope) => envelope.attemptId === attemptId)
+}
+
+/** 只有满足完整宿主元数据的 max-depth 停止，才可以在时间线呈现为「可继续一次」。 */
+export function isCollaborationDepthStopPresentable(input: {
+  envelope: CollaborationMailboxEnvelope
+  maxDepth: number
+  handoffEnabled: boolean
+}): boolean {
+  const { envelope, maxDepth, handoffEnabled } = input
+  return (
+    handoffEnabled &&
+    isCollaborationAttemptId(envelope.attemptId) &&
+    envelope.stopReason === 'max_depth' &&
+    envelope.depth >= maxDepth &&
+    Boolean(envelope.sourceMessageId) &&
+    Boolean(envelope.toMemberId)
+  )
+}
+
+/** 用户继续一次的严格守卫：仅 max-depth 停止且从未继续过才放行。 */
+export function canContinueCollaborationDepthStop(envelope: CollaborationMailboxEnvelope): boolean {
+  return envelope.stopReason === 'max_depth' && envelope.continueUsed !== true && isCollaborationAttemptId(envelope.attemptId)
+}
+
+/** delivery 迁移只前进；未知结果为终态，不能被自动重放覆盖。 */
+export function canTransitionCollaborationDelivery(
+  from: CollaborationMailboxDelivery | undefined,
+  to: CollaborationMailboxDelivery,
+): boolean {
+  const current = from ?? 'outbox'
+  return (
+    (current === 'outbox' && (to === 'dispatched' || to === 'failed' || to === 'outcome_unknown')) ||
+    (current === 'dispatched' && (to === 'accepted' || to === 'failed' || to === 'outcome_unknown')) ||
+    (current === 'accepted' && (to === 'failed' || to === 'outcome_unknown'))
+  )
+}
 
 // ===== Mailbox 状态机（02-RUNTIME-A2A-SPEC §2.5 / §6） =====
 

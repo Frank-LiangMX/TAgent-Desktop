@@ -14,7 +14,7 @@ import type {
   TAgentTextBlock,
   FileAttachment,
 } from '@tagent/shared'
-import { DEFAULT_USER_NAME } from '@tagent/shared'
+import { DEFAULT_USER_NAME, sanitizeAssistantTextForDisplay } from '@tagent/shared'
 
 import {
   AppTooltip,
@@ -93,7 +93,10 @@ function UserView({
   const toolResultBlocks = message.content.filter(
     (b): b is TAgentToolResultBlock => b.type === 'tool_result',
   )
-  const plainText = textBlocks.map((b) => b.text).join('\n')
+  const plainText = textBlocks
+    .map((b) => sanitizeAssistantTextForDisplay(b.text))
+    .filter(Boolean)
+    .join('\n')
   const hasAttachments = (message.attachments?.length ?? 0) > 0
   const hasText = textBlocks.length > 0
   const showChrome = hasText || hasAttachments
@@ -146,17 +149,12 @@ function UserView({
 
   return (
     <Message from="user">
-      {/*
-        右对齐 flex：左列 = 气泡 +（时间|复制）；右列 = 头像。
-        气泡 width:fit-content，避免 grid minmax(0,auto) 把短句压成竖排。
-      */}
       <div className={cn('agent-user-block', showChrome && 'has-avatar')}>
         <div className="agent-user-block__col">
           <MessageContent className="agent-user-block__bubble">{bubbleBody}</MessageContent>
 
           {showChrome && (message.createdAt || plainText.trim() || hasAttachments) ? (
             <div className="agent-user-block__meta">
-              {/* 工具在左、时间贴右；隐藏工具时不占宽，时间始终贴气泡右缘 */}
               {plainText.trim() ? (
                 <div className="agent-user-block__tools agent-user-toolbar">
                   {onRefillToInput ? (
@@ -175,11 +173,13 @@ function UserView({
         </div>
 
         {showChrome ? (
-          <AppTooltip label={userName}>
-            <span className="agent-user-block__avatar" aria-label={userName}>
-              {avatarLetter}
-            </span>
-          </AppTooltip>
+          <div className="agent-user-block__avatar-wrap">
+            <AppTooltip label={userName}>
+              <span className="agent-user-block__avatar" aria-label={userName}>
+                {avatarLetter}
+              </span>
+            </AppTooltip>
+          </div>
         ) : null}
       </div>
     </Message>
@@ -231,7 +231,7 @@ function AssistantView({
             )}
             <ChevronDown
               className={cn(
-                'size-3 shrink-0 transition-transform',
+                'size-3 shrink-0 transition-transform ease-linear',
                 open ? 'rotate-180' : 'rotate-0',
               )}
             />

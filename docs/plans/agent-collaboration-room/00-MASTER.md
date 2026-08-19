@@ -1,9 +1,10 @@
 # Agent 协作室：产品与架构总纲
 
-> 状态：方案定稿，待分阶段实现
-> 日期：2026-08-11
+> 状态：方案定稿，`feature/collab-room` 已实现 S1–S3 + S3.5 + S4（含 S4-3 工具回路、S4.5 深度停止）+ S5 任务/产物体验闭环（含无 `@` 自动协调、协调者分派）；尚未合 main。当前剩余重点为看板桥、用户确认、权限/预算强制、CLI 后端和 S6 生产化。详见[当前进度/交接](../../dev/collaboration-room/HANDOFF-2026-08-17.md)。
+> 日期：2026-08-11（2026-08-18 更新进度状态）
 > 决策：[ADR-0007](../../decisions/ADR-0007-agent-collaboration-room.md)
-> 详设：[01 UI/UX](./01-PRODUCT-UX-SPEC.md) · [02 Runtime/A2A](./02-RUNTIME-A2A-SPEC.md) · [03 实施计划](./03-IMPLEMENTATION-PHASES.md)
+> 详设：[01 UI/UX](./01-PRODUCT-UX-SPEC.md) · [02 Runtime/A2A](./02-RUNTIME-A2A-SPEC.md) · [03 实施计划](./03-IMPLEMENTATION-PHASES.md) · [04 Hermes 机制移植](./04-HERMES-BORROW-SPEC.md)
+> 进度：[HANDOFF-2026-08-17](../../dev/collaboration-room/HANDOFF-2026-08-17.md)
 
 ## 1. 一句话目标
 
@@ -108,21 +109,24 @@ MVP 不是“能看到多个头像”，而是下面的闭环真实成立：
 
 ## 7. Hermes 参考：借什么，不借什么
 
-本方案参考 `F:\hermes-studio` 的 group chat：房间成员持有 profile/provider/model/executor；按房间和成员构造稳定逻辑 session；从房间摘要、近期记录和当前消息投影上下文；同消息多目标并行扇出；用 mention depth 限制递归。
+实现级清单见 [04-HERMES-BORROW-SPEC](./04-HERMES-BORROW-SPEC.md)。对照仓是本机 `C:\Users\loumi\Desktop\AI\hermes-studio`（旧路径 `F:\hermes-studio` 作废）。8 月 8 日 MoA 取经文把群聊标成「勿整室搬迁」，已被 ADR-0007 推翻；现在借的是机制件，不是它的房间子系统。
 
 借鉴：
 
-- room/member/message 三类持久实体。
-- 每成员独立逻辑 session 与上下文投影。
-- mention/A2A 路由、并行扇出、深度保护。
-- 临时物理 session 执行后释放，逻辑身份继续存在。
+- 结构化 mention + 引用块 / 歧义名 / `@all` 守卫。
+- 按成员投影历史（自己 assistant、别人 user）。
+- 独立总结者维护的跨席位房间摘要。
+- mailbox 信封作 outbox：宿主签发 attempt，重启不重放已开跑调用。
+- 一 run 一卡的安静时间线。
+- 每成员独立逻辑 session；物理进程按 turn 释放。
 
 不照搬：
 
-- 远程多人配对、服务端 Python bridge、Koa/Socket 结构。
+- 远程多人配对、invite、guest-agent relay、Koa/Socket、`gc_*` 独立宇宙。
+- Agent 文本 `@` 当投递协议；unlimited 深度。
 - 让群聊 Agent 自行开启更深层的后台导演。
-- 将所有协作都塞进自由文本 mention 解析。
 - 用共享目录直接承受无保护的并发写入。
+- `profile = 配置+凭证+技能+记忆`；看板大脑 shell 到外部 CLI；自由 DAG 当默认干活路径。
 
 ## 8. 决策优先级
 

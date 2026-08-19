@@ -25,7 +25,13 @@ import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { rmSyncRobust } from '../fs-robust'
 import type { AgentSessionMeta, ExecutionMode, MoADiscussionPanel, TAgentPermissionMode } from '@tagent/shared'
-import { DEFAULT_EXECUTION_MODE, TAGENT_DEFAULT_PERMISSION_MODE } from '@tagent/shared'
+import {
+  DEFAULT_EXECUTION_MODE,
+  TAGENT_DEFAULT_PERMISSION_MODE,
+  extractPersistedUserText,
+  isPersistedMainAssistantMessage,
+  isPersistedRealUserMessage,
+} from '@tagent/shared'
 import {
   getAgentSessionsIndexPath,
   getAgentSessionMessagesPath,
@@ -294,6 +300,83 @@ export function writeSdkMessages(
   }
   const lines = messages.map((m) => JSON.stringify(m)).join('\n') + '\n'
   writeFileSync(path, lines, 'utf8')
+}
+
+/**
+ * 全量重写面板消息 JSONL（撤回未开始 user 轮次用；面板份平时只追加）。
+ */
+export function writePanelMessages(
+  workspaceId: string | undefined,
+  sessionId: string,
+  messages: unknown[],
+): void {
+  const path = resolvePanelMessagesPath(workspaceId, sessionId)
+  const dir = dirname(path)
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true })
+  }
+  if (messages.length === 0) {
+    writeFileSync(path, '', 'utf8')
+    return
+  }
+  const lines = messages.map((m) => JSON.stringify(m)).join('\n') + '\n'
+  writeFileSync(path, lines, 'utf8')
+}
+
+export interface RecallLastUnsentUserTurnResult {
+  ok: boolean
+  text?: string
+  reason?: 'no_user' | 'already_started' | 'empty'
+}
+
+/**
+ * 撤回「已落盘但 Agent 尚未开始处理」的最后一轮 user 输入。
+ * 去掉该 user 及其后所有行（含 interrupt 控制文）；双写 panel + SDK。
+ */
+export function recallLastUnsentUserTurn(
+  workspaceId: string | undefined,
+  sessionId: string,
+): RecallLastUnsentUserTurnResult {
+  const panel = readPanelMessages(workspaceId, sessionId)
+  let lastUserIdx = -1
+  for (let i = panel.length - 1; i >= 0; i--) {
+    if (isPersistedRealUserMessage(panel[i])) {
+      lastUserIdx = i
+      break
+    }
+  }
+  if (lastUserIdx < 0) return { ok: false, reason: 'no_user' }
+
+  for (let i = lastUserIdx + 1; i < panel.length; i++) {
+    if (isPersistedMainAssistantMessage(panel[i])) {
+      return { ok: false, reason: 'already_started' }
+    }
+  }
+
+  const text = extractPersistedUserText(panel[lastUserIdx])
+  if (!text) return { ok: false, reason: 'empty' }
+
+  const nextPanel = panel.slice(0, lastUserIdx)
+  writePanelMessages(workspaceId, sessionId, nextPanel)
+
+  const sdk = readSdkMessages(workspaceId, sessionId)
+  let sdkUserIdx = -1
+  for (let i = sdk.length - 1; i >= 0; i--) {
+    if (isPersistedRealUserMessage(sdk[i])) {
+      sdkUserIdx = i
+      break
+    }
+  }
+  if (sdkUserIdx >= 0) {
+    for (let i = sdkUserIdx + 1; i < sdk.length; i++) {
+      if (isPersistedMainAssistantMessage(sdk[i])) {
+        return { ok: false, reason: 'already_started' }
+      }
+    }
+    writeSdkMessages(workspaceId, sessionId, sdk.slice(0, sdkUserIdx))
+  }
+
+  return { ok: true, text }
 }
 
 /**

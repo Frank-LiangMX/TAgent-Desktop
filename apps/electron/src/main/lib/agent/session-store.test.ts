@@ -348,4 +348,35 @@ describe('session-store moa-discussion persistence (T8)', () => {
     expect(existsSync(path)).toBe(false)
     expect(store.readMoADiscussionPanels(meta.workspaceId, meta.id)).toEqual([])
   })
+
+  it('recallLastUnsentUserTurn removes last user when agent has not replied', async () => {
+    const store = await loadStore()
+    const meta = store.createSession({ id: 'session-recall', workspaceId: 'ws-recall' })
+    const history = [
+      userMessage('旧问题'),
+      { type: 'assistant', createdAt: Date.now(), content: [{ type: 'text', text: '旧回答' }] },
+      userMessage('撤回我'),
+    ]
+    store.appendPanelMessages(meta.workspaceId, meta.id, history)
+    store.appendSdkMessages(meta.workspaceId, meta.id, history)
+
+    const res = store.recallLastUnsentUserTurn(meta.workspaceId, meta.id)
+    expect(res).toEqual({ ok: true, text: '撤回我' })
+    expect(store.readPanelMessages(meta.workspaceId, meta.id)).toHaveLength(2)
+    expect(store.readSdkMessages(meta.workspaceId, meta.id)).toHaveLength(2)
+  })
+
+  it('recallLastUnsentUserTurn refuses when assistant already followed user', async () => {
+    const store = await loadStore()
+    const meta = store.createSession({ id: 'session-recall-no', workspaceId: 'ws-recall-no' })
+    store.appendPanelMessages(meta.workspaceId, meta.id, [
+      userMessage('新问题'),
+      { type: 'assistant', createdAt: Date.now(), content: [{ type: 'text', text: '已开始' }] },
+    ])
+
+    expect(store.recallLastUnsentUserTurn(meta.workspaceId, meta.id)).toEqual({
+      ok: false,
+      reason: 'already_started',
+    })
+  })
 })

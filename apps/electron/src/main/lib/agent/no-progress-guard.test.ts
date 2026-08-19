@@ -19,6 +19,11 @@ import {
   actionSignature,
   normalizePath,
   scrubNoise,
+  successSignature,
+  strategySignature,
+  buildNoProgressAskUserInput,
+  buildVerifyOnStopAskUserInput,
+  VERIFY_ON_STOP_PAUSE_ERRORS,
 } from './no-progress-guard'
 import {
   resolveNoProgressGuardMode,
@@ -98,6 +103,20 @@ function editCall(file: string, opts: { oldStr?: string; newStr?: string; error?
 
 function readCall(file: string, at?: number): ToolBatchObservation {
   return batch([{ toolName: 'Read', input: { file_path: file }, output: 'file content' }], { at })
+}
+
+function writeCall(file: string, opts: { content?: string; error?: string; at?: number } = {}): ToolBatchObservation {
+  return batch(
+    [
+      {
+        toolName: 'Write',
+        input: { file_path: file, content: opts.content ?? 'default content' },
+        output: opts.error ? undefined : { ok: true },
+        error: opts.error,
+      },
+    ],
+    { at: opts.at },
+  )
 }
 
 // ===== 归一化与签名稳定性 =====
@@ -399,6 +418,219 @@ describe('NoProgressGuard 模式与拦截', () => {
   })
 })
 
+// ===== brief 2026-08-19 §1 / §2：重复成功签名与策略签名稳定性 =====
+
+describe('NoProgressGuard 重复成功与策略签名归一', () => {
+  it('successSignature：Write 同内容同文件 → 同签名；不同内容 → 不同签名；不含正文', () => {
+    const s1 = successSignature('Write', { file_path: '/a.ts', content: 'hello world body' })
+    const s2 = successSignature('Write', { file_path: '/a.ts', content: 'hello world body' })
+    expect(s1).toBe(s2)
+    const s3 = successSignature('Write', { file_path: '/a.ts', content: 'a completely different body' })
+    expect(s3).not.toBe(s1)
+    // 不保留正文
+    expect(s1).not.toContain('hello world body')
+  })
+
+  it('successSignature：Edit 复用 actionSignature（同区域同签名）', () => {
+    const a = successSignature('Edit', { file_path: '/a.ts', old_string: 'x', new_string: 'y' })
+    const b = successSignature('Edit', { file_path: '/a.ts', old_string: 'x', new_string: 'y' })
+    expect(a).toBe(b)
+    const c = successSignature('Edit', { file_path: '/a.ts', old_string: 'other', new_string: 'z' })
+    expect(c).not.toBe(a)
+  })
+
+  it('successSignature：非 edit 类返回 undefined（不参与重复成功追踪）', () => {
+    expect(successSignature('Bash', { command: 'ls' })).toBeUndefined()
+    expect(successSignature('Read', { file_path: '/a.ts' })).toBeUndefined()
+  })
+
+  it('strategySignature：Bash 去掉 flag，同主干同策略（仅换相近参数）', () => {
+    expect(strategySignature('Bash', { command: 'node tools/a0.js --foo' })).toBe(
+      strategySignature('Bash', { command: 'node tools/a0.js --bar' }),
+    )
+    // 多空格 / 无 flag 等价
+    expect(strategySignature('Bash', { command: 'node  tools/a0.js' })).toBe(
+      strategySignature('Bash', { command: 'node tools/a0.js --foo' }),
+    )
+  })
+
+  it('strategySignature：Bash 不同主干 → 不同策略', () => {
+    expect(strategySignature('Bash', { command: 'node tools/a0.js' })).not.toBe(
+      strategySignature('Bash', { command: 'npm test' }),
+    )
+  })
+
+  it('strategySignature：同文件 Edit/Write 视为同策略（编辑不同区域不算实质变化）', () => {
+    expect(strategySignature('Edit', { file_path: '/a.ts', old_string: 'x', new_string: 'y' })).toBe(
+      strategySignature('Edit', { file_path: '/a.ts', old_string: 'p', new_string: 'q' }),
+    )
+    expect(strategySignature('Write', { file_path: '/a.ts', content: 'a' })).toBe(
+      strategySignature('Write', { file_path: '/a.ts', content: 'b' }),
+    )
+    expect(strategySignature('Edit', { file_path: '/a.ts' })).not.toBe(
+      strategySignature('Edit', { file_path: '/b.ts' }),
+    )
+  })
+})
+
+// ===== brief 2026-08-19 §1：重复成功也视为无效进展 =====
+
+describe('NoProgressGuard 重复成功检测（brief 2026-08-19 §1）', () => {
+  it('同一 Write 内容连续重复 3 次 → 一级提醒 same_success_repeated，且计入无进展批次', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    const file = 'tools/a0.js'
+    const d1 = g.observe(writeCall(file, { content: 'same body', at: 100 }))
+    const d2 = g.observe(writeCall(file, { content: 'same body', at: 200 }))
+    expect(d1.kind).toBe('continue')
+    expect(d2.kind).toBe('continue')
+    expect(g.getState().maxSuccessRepeat).toBe(2)
+    const d3 = g.observe(writeCall(file, { content: 'same body', at: 300 }))
+    expect(d3.kind).toBe('warn')
+    expect(d3.emitPhase).toBe('warning')
+    expect(d3.reasonCodes).toContain('same_success_repeated')
+    expect(d3.phase).toBe('reflection_required')
+    // 第 3 次被分类为 noProgress → noProgressBatchCount 计入
+    expect(g.getState().noProgressBatchCount).toBe(1)
+    expect(g.getState().successRepeatStreak).toBe(3)
+  })
+
+  it('同文件不同内容 Write（迭代开发）不触发 same_success_repeated', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    const file = 'tools/a0.js'
+    g.observe(writeCall(file, { content: 'body v1', at: 100 }))
+    g.observe(writeCall(file, { content: 'body v2 different', at: 200 }))
+    const d3 = g.observe(writeCall(file, { content: 'body v3 also different', at: 300 }))
+    expect(d3.kind).toBe('continue')
+    expect(d3.reasonCodes).not.toContain('same_success_repeated')
+    expect(g.getState().maxSuccessRepeat).toBe(1)
+    expect(g.getState().phase).toBe('observing')
+  })
+
+  it('同一 Edit 区域连续重复成功 3 次 → same_success_repeated', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    const file = 'tools/a0.js'
+    g.observe(editCall(file, { oldStr: 'foo', newStr: 'bar', at: 100 }))
+    g.observe(editCall(file, { oldStr: 'foo', newStr: 'bar', at: 200 }))
+    const d3 = g.observe(editCall(file, { oldStr: 'foo', newStr: 'bar', at: 300 }))
+    expect(d3.kind).toBe('warn')
+    expect(d3.reasonCodes).toContain('same_success_repeated')
+  })
+
+  it('非相同成功调用打断 streak：Write,Write,Read,Write,Write 不触发', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    const file = 'tools/a0.js'
+    g.observe(writeCall(file, { content: 'same body', at: 100 })) // streak=1
+    g.observe(writeCall(file, { content: 'same body', at: 200 })) // streak=2
+    g.observe(readCall(file, 300)) // Read 打断 streak → 0
+    g.observe(writeCall(file, { content: 'same body', at: 400 })) // streak=1
+    const d = g.observe(writeCall(file, { content: 'same body', at: 500 })) // streak=2
+    expect(d.kind).toBe('continue')
+    expect(d.reasonCodes).not.toContain('same_success_repeated')
+    expect(g.getState().maxSuccessRepeat).toBe(2)
+  })
+
+  it('重复成功经现有暂停语义收敛（warn→reflection→final→pause），不立即暂停', () => {
+    // 验证不改变现有暂停语义：same_success_repeated 只新增一级入口，收敛仍走既有三级 escalation
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0, thresholds: { batchesAfterReflection: 2 } })
+    g.resetForNewTurn(0)
+    const file = 'tools/a0.js'
+    g.observe(writeCall(file, { content: 'same body', at: 100 })) // streak=1
+    g.observe(writeCall(file, { content: 'same body', at: 200 })) // streak=2
+    const dWarn = g.observe(writeCall(file, { content: 'same body', at: 300 })) // streak=3 → warn
+    expect(dWarn.kind).toBe('warn')
+    // reflection_required 后继续重复写（noProgress）→ 推进 batchesSinceReflection
+    g.observe(writeCall(file, { content: 'same body', at: 400 })) // bsR=1
+    const dFinal = g.observe(writeCall(file, { content: 'same body', at: 500 })) // bsR=2 → final_response_only
+    expect(dFinal.kind).toBe('require_reflection')
+    expect(g.getState().phase).toBe('final_response_only')
+    // 强制复盘后仍尝试工具：PreToolUse 拦截 2 次 → pause（现有语义，reason=reflection_ignored）
+    const a1 = g.onPreToolUse('Write', { file_path: file, content: 'same body' })
+    expect(a1.allow).toBe(false)
+    expect(a1.pause).toBeFalsy()
+    const a2 = g.onPreToolUse('Write', { file_path: file, content: 'same body' })
+    expect(a2.allow).toBe(false)
+    expect(a2.pause).toBe(true)
+    expect(a2.decision?.reasonCodes).toContain('reflection_ignored')
+    expect(g.getState().phase).toBe('paused')
+  })
+})
+
+// ===== brief 2026-08-19 §2：只有策略发生实质变化才允许继续 =====
+
+describe('NoProgressGuard 策略未实质变化检测（brief 2026-08-19 §2）', () => {
+  it('同一策略下 3 个不同失败动作变体 → strategy_unchanged（same_failure_repeated 不误触发）', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(bashFail('node tools/a0.js --foo', { error: 'Exit code 1', output: 'err', at: 100 }))
+    g.observe(bashFail('node tools/a0.js --bar', { error: 'Exit code 1', output: 'err', at: 200 }))
+    const d3 = g.observe(bashFail('node tools/a0.js --baz', { error: 'Exit code 1', output: 'err', at: 300 }))
+    expect(d3.kind).toBe('warn')
+    expect(d3.reasonCodes).toContain('strategy_unchanged')
+    // 三个动作签名各不相同 → 精确重复未达 sameFailureRepeat(3) 阈值
+    expect(d3.reasonCodes).not.toContain('same_failure_repeated')
+    expect(g.getState().maxStrategyVariants).toBe(3)
+    expect(g.getState().phase).toBe('reflection_required')
+  })
+
+  it('每次都换实质策略（不同主干）→ 不触发 strategy_unchanged', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    const cmds = ['node tools/a0.js', 'npm test', 'git status', 'node tools/b0.js']
+    let last = undefined as unknown as ReturnType<typeof g.observe>
+    for (let i = 0; i < cmds.length; i++) {
+      last = g.observe(bashFail(cmds[i]!, { error: 'Exit code 1', output: 'err', at: 100 * (i + 1) }))
+      expect(last.kind).toBe('continue')
+    }
+    expect(last.reasonCodes).not.toContain('strategy_unchanged')
+    expect(g.getState().maxStrategyVariants).toBe(1)
+    expect(g.getState().phase).toBe('observing')
+  })
+
+  it('实质策略变化不被误判：S1 两变体后换 S2 不触发；回到 S1 第三变体才触发', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(bashFail('node tools/a0.js --foo', { error: 'Exit code 1', output: 'err', at: 100 })) // S1 size 1
+    g.observe(bashFail('node tools/a0.js --bar', { error: 'Exit code 1', output: 'err', at: 200 })) // S1 size 2
+    const dSwitch = g.observe(bashFail('npm test', { error: 'Exit code 1', output: 'err', at: 300 })) // S2 size 1，实质换策略
+    expect(dSwitch.kind).toBe('continue')
+    expect(dSwitch.reasonCodes).not.toContain('strategy_unchanged') // 实质变化不被误判
+    const dBack = g.observe(bashFail('node tools/a0.js --baz', { error: 'Exit code 1', output: 'err', at: 400 })) // S1 size 3
+    expect(dBack.kind).toBe('warn')
+    expect(dBack.reasonCodes).toContain('strategy_unchanged') // 回到同策略再换相近参数 → 触发
+  })
+
+  it('同文件 3 个不同失败 Edit 区域 → strategy_unchanged', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    const file = 'tools/a0.js'
+    g.observe(editCall(file, { oldStr: 'a1', newStr: 'b1', error: 'old_string not found', at: 100 }))
+    g.observe(editCall(file, { oldStr: 'a2', newStr: 'b2', error: 'old_string not found', at: 200 }))
+    const d3 = g.observe(editCall(file, { oldStr: 'a3', newStr: 'b3', error: 'old_string not found', at: 300 }))
+    expect(d3.kind).toBe('warn')
+    expect(d3.reasonCodes).toContain('strategy_unchanged')
+  })
+
+  it('有效进展重置策略变体计数', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(bashFail('node tools/a0.js --foo', { error: 'Exit code 1', output: 'err', at: 100 })) // S1 size 1
+    g.observe(bashFail('node tools/a0.js --bar', { error: 'Exit code 1', output: 'err', at: 200 })) // S1 size 2
+    // 同命令失败→成功（结果实质变化）→ progress → 重置策略变体计数
+    g.observe(bashSuccess('node tools/a0.js --foo', 300))
+    expect(g.getState().maxStrategyVariants).toBe(0)
+    expect(g.getState().phase).toBe('observing')
+  })
+
+  it('新阈值默认值：sameSuccessRepeat=3、strategyUnchangedVariants=3', () => {
+    expect(DEFAULT_NO_PROGRESS_THRESHOLDS.sameSuccessRepeat).toBe(3)
+    expect(DEFAULT_NO_PROGRESS_THRESHOLDS.strategyUnchangedVariants).toBe(3)
+  })
+})
+
 describe('resolveNoProgressGuardMode（§23.1 白名单归一）', () => {
   it('合法值直传', () => {
     expect(resolveNoProgressGuardMode({ TAGENT_NO_PROGRESS_GUARD_MODE: 'off' })).toBe('off')
@@ -427,8 +659,285 @@ describe('resolveNoProgressGuardMode（§23.1 白名单归一）', () => {
     expect(DEFAULT_NO_PROGRESS_THRESHOLDS.sameCommandEmptyTimeoutWarn).toBe(2)
     expect(DEFAULT_NO_PROGRESS_THRESHOLDS.batchesAfterReflection).toBe(3)
     expect(DEFAULT_NO_PROGRESS_THRESHOLDS.finalResponseViolationsPause).toBe(2)
+    expect(DEFAULT_NO_PROGRESS_THRESHOLDS.sameSuccessRepeat).toBe(3)
+    expect(DEFAULT_NO_PROGRESS_THRESHOLDS.strategyUnchangedVariants).toBe(3)
     expect(DEFAULT_NO_PROGRESS_THRESHOLDS.totalNoProgressBatchesPause).toBe(12)
     expect(DEFAULT_NO_PROGRESS_THRESHOLDS.totalEmptyTimeoutPause).toBe(4)
     expect(DEFAULT_NO_PROGRESS_THRESHOLDS.noProgressDurationMs).toBe(10 * 60 * 1000)
+  })
+})
+
+// ===== brief 2026-08-19 §3：无进展暂停 → AskUserQuestion 结构化澄清 =====
+
+describe('buildNoProgressAskUserInput（brief 2026-08-19 §3）', () => {
+  it('生成含已确认事实、无进展摘要和三方向选项的 AskUserQuestion 输入', () => {
+    const g = new NoProgressGuard({
+      mode: 'enforce',
+      now: () => 0,
+      // 关闭 7.1.1 与 7.2，隔离 7.3.2（totalNoProgressBatchesPause=12 → no_new_evidence）
+      thresholds: { sameFailureRepeat: 100, batchesAfterReflection: 100 },
+    })
+    g.resetForNewTurn(0)
+    const cmd = 'node tools/a0.js'
+    // 12 个无进展批次 → 第 13 批触发暂停 no_new_evidence（batch1 neutral，batch2..13 共 12 个 np）
+    let pauseDecision = null as null | ReturnType<typeof g.observe>
+    for (let i = 0; i < 13; i++) {
+      const d = g.observe(bashFail(cmd, { error: 'Exit code 1', output: 'err', at: 100 * (i + 1) }))
+      if (d.kind === 'pause') pauseDecision = d
+    }
+    expect(pauseDecision).not.toBeNull()
+    expect(pauseDecision!.reasonCodes).toContain('no_new_evidence')
+
+    const state = g.getState()
+    const input = buildNoProgressAskUserInput(pauseDecision!, state)
+    const questions = input.questions as Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>
+    expect(questions).toHaveLength(1)
+    const q = questions[0]!
+    // 事实：批次计数
+    expect(q.question).toContain('已尝试')
+    expect(q.question).toContain('未获得新证据')
+    // 摘要：reason code → 人话
+    expect(q.question).toContain('无进展摘要')
+    expect(q.question).toContain('连续工具批次未获得新证据')
+    // 三方向选项
+    expect(q.options).toHaveLength(3)
+    const labels = q.options.map((o) => o.label)
+    expect(labels).toContain('补充信息后继续')
+    expect(labels).toContain('换一个方案')
+    expect(labels).toContain('继续当前方向')
+    expect(q.multiSelect).toBe(false)
+    expect(q.header).toBe('无进展澄清')
+  })
+
+  it('state 提供 maxSuccessRepeat / maxStrategyVariants 时事实更丰富', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    const file = 'tools/a0.js'
+    // 连续相同成功 Write 触发 same_success_repeated → warn → ... → 最终 pause
+    g.observe(writeCall(file, { content: 'same body', at: 100 }))
+    g.observe(writeCall(file, { content: 'same body', at: 200 }))
+    g.observe(writeCall(file, { content: 'same body', at: 300 })) // warn (streak=3)
+    const state = g.getState()
+    expect(state.maxSuccessRepeat).toBe(3)
+
+    const decision = g.getState() // 非 pause decision，但 buildNoProgressAskUserInput 接受任意 decision
+    // 用一个 pause decision 测试
+    const g2 = new NoProgressGuard({ mode: 'enforce', now: () => 0, thresholds: { totalNoProgressBatchesPause: 2 } })
+    g2.resetForNewTurn(0)
+    g2.observe(bashFail('node tools/a0.js', { error: 'Exit code 1', output: 'err', at: 100 }))
+    g2.observe(bashFail('node tools/a0.js', { error: 'Exit code 1', output: 'err', at: 200 }))
+    g2.observe(bashFail('node tools/a0.js', { error: 'Exit code 1', output: 'err', at: 300 }))
+    const pauseD = g2.getState()
+    const pauseDecision = g2.observe(bashFail('node tools/a0.js', { error: 'Exit code 1', output: 'err', at: 400 }))
+    expect(pauseDecision.kind).toBe('pause')
+
+    // 用含 maxSuccessRepeat 的 state
+    const input = buildNoProgressAskUserInput(pauseDecision, { ...pauseD, maxSuccessRepeat: 5, maxStrategyVariants: 4 })
+    const q = (input.questions as Array<{ question: string }>)[0]!
+    expect(q.question).toContain('同一成功操作连续重复 5 次')
+    expect(q.question).toContain('同一策略下尝试了 4 个不同变体')
+    void decision
+  })
+
+  it('缺省 state 时退化为仅用 decision 计数（不崩）', () => {
+    const decision = {
+      kind: 'pause' as const,
+      reasonCodes: ['empty_timeout_repeated' as const],
+      phase: 'paused' as const,
+      batchCount: 10,
+      noProgressBatchCount: 8,
+      repeatedFailureCount: 3,
+      emptyTimeoutCount: 4,
+      emitPhase: 'paused' as const,
+      userMessage: '已暂停：连续多次操作未获得新进展',
+    }
+    const input = buildNoProgressAskUserInput(decision)
+    const q = (input.questions as Array<{ question: string; options: Array<{ label: string }> }>)[0]!
+    expect(q.question).toContain('已尝试 10 个工具批次')
+    expect(q.question).toContain('同一动作重复失败 3 次')
+    expect(q.question).toContain('空输出超时 4 次')
+    // 缺省 state → 不含重复成功 / 策略变体事实
+    expect(q.question).not.toContain('同一成功操作连续重复')
+    expect(q.question).not.toContain('同一策略下尝试了')
+    // 摘要仍正确
+    expect(q.question).toContain('同一命令重复空输出超时')
+    // 三方向选项仍存在
+    expect(q.options).toHaveLength(3)
+  })
+
+  it('reasonCodes 为空时摘要回退为通用文案', () => {
+    const decision = {
+      kind: 'pause' as const,
+      reasonCodes: [],
+      phase: 'paused' as const,
+      batchCount: 1,
+      noProgressBatchCount: 1,
+      repeatedFailureCount: 0,
+      emptyTimeoutCount: 0,
+      emitPhase: 'paused' as const,
+      userMessage: undefined,
+    }
+    const input = buildNoProgressAskUserInput(decision)
+    const q = (input.questions as Array<{ question: string }>)[0]!
+    expect(q.question).toContain('连续多次操作未获得新进展')
+    // userMessage 缺省 → 用 PAUSE_USER_MESSAGE
+    expect(q.question).toContain('已暂停')
+  })
+})
+
+// ===== brief 2026-08-19 §4：verify-on-stop 验证提示 =====
+
+describe('NoProgressGuard verify-on-stop 判定（brief 2026-08-19 §4）', () => {
+  it('本轮无 edit → checkVerifyOnStop 返回 null（放行）', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    // 只跑 Bash（verify），无 edit
+    g.observe(bashSuccess('npm test', 100))
+    expect(g.checkVerifyOnStop()).toBeNull()
+  })
+
+  it('本轮有 edit 无 verify 证据 → 首次返回 pause decision，reasonCodes 含 verify_needed', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(editCall('src/a.ts', { at: 100 })) // edit 成功
+    const d = g.checkVerifyOnStop()
+    expect(d).not.toBeNull()
+    expect(d!.kind).toBe('pause')
+    expect(d!.reasonCodes).toContain('verify_needed')
+    expect(d!.emitPhase).toBe('paused')
+    expect(d!.userMessage).toContain('验证')
+  })
+
+  it('本轮有 Write 无 verify 证据 → 触发（Write 也算 edit 类）', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(writeCall('src/new.ts', { content: 'content', at: 100 }))
+    const d = g.checkVerifyOnStop()
+    expect(d).not.toBeNull()
+    expect(d!.reasonCodes).toContain('verify_needed')
+  })
+
+  it('本轮有 edit + 有 verify 证据（Bash）→ 返回 null（放行）', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(editCall('src/a.ts', { at: 100 })) // edit 成功
+    g.observe(bashSuccess('npm test', 200)) // verify 证据
+    expect(g.checkVerifyOnStop()).toBeNull()
+  })
+
+  it('本轮有 edit + 失败的 Bash（仍是验证证据）→ 返回 null', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(editCall('src/a.ts', { at: 100 }))
+    g.observe(bashFail('npm test', { error: 'Exit code 1', output: '1 failing', at: 200 }))
+    // 失败的 Bash 也是验证证据（运行过测试）
+    expect(g.checkVerifyOnStop()).toBeNull()
+  })
+
+  it('防重复：同回合第二次调用返回 null（verifyPromptFired）', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(editCall('src/a.ts', { at: 100 }))
+    const d1 = g.checkVerifyOnStop()
+    expect(d1).not.toBeNull()
+    const d2 = g.checkVerifyOnStop()
+    expect(d2).toBeNull() // 已提示过 → 放行
+  })
+
+  it('新回合重置：resetForNewTurn 后可再次触发', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(editCall('src/a.ts', { at: 100 }))
+    const d1 = g.checkVerifyOnStop()
+    expect(d1).not.toBeNull()
+    g.resetForNewTurn(200)
+    g.observe(editCall('src/b.ts', { at: 300 }))
+    const d2 = g.checkVerifyOnStop()
+    expect(d2).not.toBeNull() // 新回合可再触发
+  })
+
+  it('有效进展重置 edit/verify 追踪但保留 verifyPromptFired', () => {
+    // edit → Bash 首失败后成功（progress）→ edit（无 verify）→ checkVerifyOnStop 应触发
+    // 但若同回合已触发过，则不再触发
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(editCall('src/a.ts', { at: 100 }))
+    // 首次 Bash 建基线（neutral），第二次结果变化才 progress
+    g.observe(bashFail('npm test', { error: 'Exit code 1', output: '1 failing', at: 150 }))
+    g.observe(bashSuccess('npm test', 200)) // progress → 重置 hadEditThisTurn/hadVerifyEvidenceThisTurn
+    expect(g.getState().hadEditThisTurn).toBe(false)
+    expect(g.getState().hadVerifyEvidenceThisTurn).toBe(false)
+    // 进展后再次 edit（无 verify）
+    g.observe(editCall('src/a.ts', { oldStr: 'x', newStr: 'y', at: 300 }))
+    const d = g.checkVerifyOnStop()
+    expect(d).not.toBeNull() // 第二次 edit 无 verify → 触发
+    expect(d!.reasonCodes).toContain('verify_needed')
+  })
+
+  it('有效进展后若同回合已提示过，第二次 edit 仍不重复触发', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(editCall('src/a.ts', { at: 100 }))
+    const d1 = g.checkVerifyOnStop()
+    expect(d1).not.toBeNull()
+    // 进展（首失败后成功 = 结果变化 = progress）后再次 edit
+    g.observe(bashFail('npm test', { error: 'Exit code 1', output: 'fail', at: 150 }))
+    g.observe(bashSuccess('npm test', 200)) // 真实 progress
+    g.observe(editCall('src/b.ts', { at: 300 }))
+    const d2 = g.checkVerifyOnStop()
+    expect(d2).toBeNull() // verifyPromptFired 仍 true（progress 不复位）→ 防重复
+  })
+
+  it('edit 失败不计入 hadEditThisTurn', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    g.observe(editCall('src/a.ts', { error: 'old_string not found', at: 100 }))
+    expect(g.getState().hadEditThisTurn).toBe(false)
+    expect(g.checkVerifyOnStop()).toBeNull()
+  })
+
+  it('getState 反映 verify-on-stop 追踪字段', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    expect(g.getState().hadEditThisTurn).toBe(false)
+    expect(g.getState().hadVerifyEvidenceThisTurn).toBe(false)
+    expect(g.getState().verifyPromptFired).toBe(false)
+    g.observe(editCall('src/a.ts', { at: 100 }))
+    expect(g.getState().hadEditThisTurn).toBe(true)
+    // checkVerifyOnStop 命中（无 verify 证据）→ verifyPromptFired 置 true
+    g.checkVerifyOnStop()
+    expect(g.getState().verifyPromptFired).toBe(true)
+    // 有 verify 证据时 hadVerifyEvidenceThisTurn 为 true
+    g.observe(bashFail('npm test', { at: 200 }))
+    expect(g.getState().hadVerifyEvidenceThisTurn).toBe(true)
+  })
+})
+
+describe('buildVerifyOnStopAskUserInput（brief 2026-08-19 §4）', () => {
+  it('生成含验证提示和三方向选项的 AskUserQuestion 输入', () => {
+    const input = buildVerifyOnStopAskUserInput()
+    const questions = input.questions as Array<{
+      question: string
+      header?: string
+      options: Array<{ label: string; description?: string }>
+      multiSelect?: boolean
+    }>
+    expect(questions).toHaveLength(1)
+    const q = questions[0]!
+    expect(q.question).toContain('验证')
+    expect(q.question).toContain('修改了文件')
+    expect(q.header).toBe('验证提示')
+    expect(q.options).toHaveLength(3)
+    const labels = q.options.map((o) => o.label)
+    expect(labels).toContain('请先验证再结束')
+    expect(labels).toContain('我来手动确认')
+    expect(labels).toContain('直接结束')
+    expect(q.multiSelect).toBe(false)
+  })
+
+  it('VERIFY_ON_STOP_PAUSE_ERRORS 含验证提示文案', () => {
+    expect(VERIFY_ON_STOP_PAUSE_ERRORS).toHaveLength(1)
+    expect(VERIFY_ON_STOP_PAUSE_ERRORS[0]).toContain('验证')
+    expect(VERIFY_ON_STOP_PAUSE_ERRORS[0]).toContain('会话与历史保留')
   })
 })

@@ -1,26 +1,28 @@
 /**
- * 协作室侧栏 — Stage 1
+ * 协作室侧栏 — 对齐会话侧栏视觉
  *
  * 结构对齐 SessionSidebar：顶行（新建）→ 滚动房间列表（选中 + 状态 + 更多菜单）→ 已归档底栏。
- * 只做静态房间壳的列表/选中/重命名/暂停/归档；不运行 Agent、不 A2A。
+ * 标题中/英 + 新建胶囊、搜索（Ctrl+K）、状态点房间行、玻璃归档抽屉均复用会话样式类。
  * 复用 app-sidebar-body / side-title / pill-new / side-scroll / arch-foot 等既有样式类。
  *
  * 数据通过 window.electronAPI.collaborationRoom.* IPC（见 preload）。
  * 变更后调 onRoomsChanged 通知 App bump refreshKey，触发本侧栏 + 主区页面重新拉取。
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import {
   Archive,
   CaretRight,
   DotsThreeVertical,
+  MagnifyingGlass,
   Pause,
   PencilSimple,
   Play,
-  Plus,
+  UsersThree,
 } from '@phosphor-icons/react'
 import type { CollaborationRoom, CollaborationRoomStatus } from '@tagent/shared'
 import { cn } from '../../lib/utils'
+import { getPlatform } from '../../lib/platform'
 import {
   AppTooltip,
   DropdownMenu,
@@ -44,14 +46,16 @@ function roomStatusLabel(status: CollaborationRoomStatus): string {
   }
 }
 
-/** 相对时间（刚刚 / N 分钟前 / N 小时前 / N 天前 / 日期） */
+/** 相对时间：对齐会话侧栏（刚刚 / N分钟前 / N小时前 / 昨天 / N天前 / 上周） */
 function formatRelativeTime(ts: number): string {
   const diff = Date.now() - ts
-  if (diff < 60_000) return '刚刚'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
-  return new Date(ts).toLocaleDateString()
+  const ageMin = diff / 60000
+  if (ageMin < 1) return '刚刚'
+  if (ageMin < 60) return `${Math.floor(ageMin)}分钟前`
+  if (ageMin < 24 * 60) return `${Math.floor(ageMin / 60)}小时前`
+  if (ageMin < 48 * 60) return '昨天'
+  if (ageMin < 7 * 24 * 60) return `${Math.floor(ageMin / (24 * 60))}天前`
+  return '上周'
 }
 
 interface CollaborationRoomSidebarProps {
@@ -65,6 +69,8 @@ interface CollaborationRoomSidebarProps {
   refreshKey: number
   /** 房间列表发生变更时通知 App（rename/pause/archive 后） */
   onRoomsChanged: () => void
+  /** 当前房间被归档后清空主区选中态 */
+  onRoomArchived?: (roomId: string) => void
 }
 
 export function CollaborationRoomSidebar({
@@ -73,9 +79,12 @@ export function CollaborationRoomSidebar({
   onNewRoom,
   refreshKey,
   onRoomsChanged,
+  onRoomArchived,
 }: CollaborationRoomSidebarProps): JSX.Element {
   const [rooms, setRooms] = useState<CollaborationRoom[]>([])
   const [archivedExpanded, setArchivedExpanded] = useState(false)
+  const [query, setQuery] = useState('')
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -91,8 +100,25 @@ export function CollaborationRoomSidebar({
     void refresh()
   }, [refresh, refreshKey])
 
-  const activeRooms = rooms.filter((r) => r.status !== 'archived')
-  const archivedRooms = rooms.filter((r) => r.status === 'archived')
+  const q = query.trim().toLowerCase()
+  const matchesQuery = (room: CollaborationRoom): boolean =>
+    !q || room.title.toLowerCase().includes(q)
+  const activeRooms = rooms.filter((r) => r.status !== 'archived' && matchesQuery(r))
+  const archivedRooms = rooms.filter((r) => r.status === 'archived' && matchesQuery(r))
+  // 对齐会话侧栏：手动展开，或搜索有结果时自动展开
+  const archivedOpen = archivedExpanded || Boolean(q && archivedRooms.length)
+
+  // Ctrl+K / ⌘K 聚焦搜索（对齐会话侧栏）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   const [renameTarget, setRenameTarget] = useState<CollaborationRoom | null>(null)
 
@@ -134,12 +160,13 @@ export function CollaborationRoomSidebar({
     async (room: CollaborationRoom): Promise<void> => {
       try {
         await window.electronAPI.updateCollaborationRoom({ roomId: room.id, status: 'archived' })
+        onRoomArchived?.(room.id)
         onRoomsChanged()
       } catch (err) {
         toast.error('归档失败', { description: err instanceof Error ? err.message : String(err) })
       }
     },
-    [onRoomsChanged],
+    [onRoomArchived, onRoomsChanged],
   )
 
   /** 恢复归档 → active */
@@ -157,27 +184,47 @@ export function CollaborationRoomSidebar({
 
   return (
     <div className="app-sidebar-body flex h-full min-h-0 flex-col">
-      {/* 顶行：标题 + 新建 */}
-      <div className="side-title flex items-center justify-between px-3 py-2">
-        <span className="text-sm font-medium text-foreground">协作室</span>
-        <button
-          type="button"
-          className="pill-new flex items-center gap-1 rounded-full px-2.5 py-1 text-xs"
-          onClick={onNewRoom}
-        >
-          <Plus size={12} weight="bold" />
-          新建
-        </button>
+      {/* 顶行：标题（中/英）+ 新建胶囊（对齐会话侧栏） */}
+      <div className="side-title">
+        <span className="label">
+          <span className="zh">协作室</span>
+          <span className="en">Rooms</span>
+        </span>
+        <span className="title-actions">
+          <AppTooltip label="新建协作室" side="bottom">
+            <button type="button" className="pill-new" onClick={onNewRoom}>
+              <span className="btn-ico">
+                <UsersThree size={15} weight="regular" />
+              </span>
+              新建
+            </button>
+          </AppTooltip>
+        </span>
+      </div>
+
+      {/* 搜索行 */}
+      <div className="side-head">
+        <div className="search">
+          <MagnifyingGlass size={13} weight="regular" />
+          <input
+            ref={searchInputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索协作室…"
+            aria-label="搜索协作室"
+          />
+          <span className="kbd">{getPlatform() === 'mac' ? '⌘K' : 'Ctrl+K'}</span>
+        </div>
       </div>
 
       {/* 滚动列表 */}
-      <div className="side-scroll min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
+      <div className="side-scroll scrollbar-thin">
         {activeRooms.length === 0 ? (
           <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-            暂无协作室。点「新建」创建一个房间。
+            {q ? '没有匹配的协作室。' : '暂无协作室。点「新建」创建一个房间。'}
           </div>
         ) : (
-          <ul className="flex flex-col gap-0.5">
+          <ul className="flex flex-col">
             {activeRooms.map((room) => (
               <RoomRow
                 key={room.id}
@@ -195,43 +242,35 @@ export function CollaborationRoomSidebar({
 
       {/* 已归档底栏 */}
       {archivedRooms.length > 0 ? (
-        <div className="arch-foot border-t border-border/50 px-1.5 py-1.5">
-          <button
-            type="button"
-            className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
-            onClick={() => setArchivedExpanded((v) => !v)}
-          >
-            <CaretRight
-              size={12}
-              weight="bold"
-              className={cn('transition-transform', archivedExpanded && 'rotate-90')}
-            />
-            已归档（{archivedRooms.length}）
-          </button>
-          {archivedExpanded ? (
-            <ul className="mt-0.5 flex flex-col gap-0.5">
-              {archivedRooms.map((room) => (
-                <li
-                  key={room.id}
-                  className="group flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
-                >
-                  <span className="flex-1 truncate" title={room.title}>
-                    {room.title}
-                  </span>
-                  <AppTooltip label="恢复" side="top">
-                    <button
-                      type="button"
-                      className="opacity-0 transition-opacity group-hover:opacity-100"
-                      aria-label="恢复"
-                      onClick={() => void handleRestore(room)}
-                    >
-                      <Play size={12} />
-                    </button>
-                  </AppTooltip>
-                </li>
-              ))}
-            </ul>
-          ) : null}
+        <div className="arch-foot">
+          <div className={cn('group group-archived', archivedOpen && 'open')}>
+            <button
+              type="button"
+              className="group-head"
+              onClick={() => setArchivedExpanded((v) => !v)}
+              aria-expanded={archivedOpen}
+            >
+              <CaretRight
+                size={12}
+                weight="regular"
+                className="caret"
+                aria-hidden
+              />
+              <span className="gname">已归档</span>
+              <span className="ws-badge">{archivedRooms.length}</span>
+            </button>
+            <div className="rows">
+              <ul className="flex flex-col">
+                {archivedRooms.map((room) => (
+                  <ArchivedRoomRow
+                    key={room.id}
+                    room={room}
+                    onRestore={() => void handleRestore(room)}
+                  />
+                ))}
+              </ul>
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -247,7 +286,7 @@ export function CollaborationRoomSidebar({
   )
 }
 
-/** 单个房间行 */
+/** 单个房间行：状态点 + 标题 + 时间同一行，三点菜单在标题行，第二行状态文字对齐标题（对齐会话卡） */
 function RoomRow({
   room,
   active,
@@ -265,62 +304,92 @@ function RoomRow({
 }): JSX.Element {
   return (
     <li
-      className={cn(
-        'group relative flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors',
-        active ? 'bg-primary/10 text-foreground' : 'text-foreground/80 hover:bg-accent',
-      )}
+      className={cn('row', active && 'is-open')}
+      onClick={onSelect}
     >
-      <button type="button" className="flex min-w-0 flex-1 flex-col items-start gap-0.5" onClick={onSelect}>
-        <span className="flex w-full items-center gap-1.5">
-          <span className="truncate font-medium" title={room.title}>
-            {room.title}
-          </span>
-        </span>
-        <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <div className="body">
+        <div className="title">
           <span
             className={cn(
-              'inline-block size-1.5 rounded-full',
-              room.status === 'paused' && 'bg-amber-500',
-              room.status === 'active' && 'bg-emerald-500',
-              room.status === 'completed' && 'bg-blue-500',
+              'stat-dot',
+              room.status === 'active' && 'done',
+              room.status === 'paused' && 'pending',
+              room.status === 'completed' && 'done',
             )}
           />
-          <span>{roomStatusLabel(room.status)}</span>
-          <span>· {formatRelativeTime(room.updatedAt)}</span>
-        </span>
-      </button>
+          <span className="t">{room.title}</span>
+          <span className="m time">{formatRelativeTime(room.updatedAt)}</span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="dots"
+                onClick={(e) => e.stopPropagation()}
+                aria-label="房间操作"
+              >
+                <DotsThreeVertical size={14} weight="regular" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={onRename}>
+                <PencilSimple size={13} weight="regular" className="mr-1.5" /> 重命名
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onTogglePause}>
+                {room.status === 'paused' ? (
+                  <>
+                    <Play size={13} weight="regular" className="mr-1.5" /> 恢复运行
+                  </>
+                ) : (
+                  <>
+                    <Pause size={13} weight="regular" className="mr-1.5" /> 暂停新运行
+                  </>
+                )}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onArchive}>
+                <Archive size={13} weight="regular" className="mr-1.5" /> 归档
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+        <div className="meta">
+          <span className="m turns">{roomStatusLabel(room.status)}</span>
+        </div>
+      </div>
+    </li>
+  )
+}
 
-      <div className="opacity-0 transition-opacity group-hover:opacity-100">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
+/** 归档房间行：arch-mark + 标题 + 内联「已归档」+ hover 恢复（对齐会话归档行） */
+function ArchivedRoomRow({
+  room,
+  onRestore,
+}: {
+  room: CollaborationRoom
+  onRestore: () => void
+}): JSX.Element {
+  return (
+    <li className="row row-archived" onClick={onRestore}>
+      <div className="body">
+        <div className="title">
+          <span className="arch-mark" />
+          <span className="t" title={room.title}>
+            {room.title}
+          </span>
+          <span className="arch-status">已归档</span>
+          <AppTooltip label="恢复" side="top">
             <button
               type="button"
-              className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-              aria-label="更多操作"
+              className="dots"
+              aria-label="恢复"
+              onClick={(e) => {
+                e.stopPropagation()
+                onRestore()
+              }}
             >
-              <DotsThreeVertical size={14} />
+              <Play size={12} />
             </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onRename}>
-              <PencilSimple size={14} className="mr-1.5" /> 重命名
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onTogglePause}>
-              {room.status === 'paused' ? (
-                <>
-                  <Play size={14} className="mr-1.5" /> 恢复运行
-                </>
-              ) : (
-                <>
-                  <Pause size={14} className="mr-1.5" /> 暂停新运行
-                </>
-              )}
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={onArchive}>
-              <Archive size={14} className="mr-1.5" /> 归档
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+          </AppTooltip>
+        </div>
       </div>
     </li>
   )

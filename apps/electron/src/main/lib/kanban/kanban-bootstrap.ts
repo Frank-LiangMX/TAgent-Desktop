@@ -9,6 +9,16 @@ import { getChannel } from '../channel/channel-store'
 import { notifyBoardComplete, notifyTaskTerminal } from './kanban-notify'
 import { refluxBoardCompletion } from './kanban-reflux'
 
+type KanbanTaskStatus = import('@tagent/shared').KanbanTaskStatus
+type KanbanTaskStatusChangedHandler = (taskId: string, status: KanbanTaskStatus) => void
+const taskStatusChangedHandlers = new Set<KanbanTaskStatusChangedHandler>()
+
+/** 供主进程内其他模块订阅看板状态变化；看板真值仍由 kanban-store 持有。 */
+export function onKanbanTaskStatusChanged(handler: KanbanTaskStatusChangedHandler): () => void {
+  taskStatusChangedHandlers.add(handler)
+  return () => taskStatusChangedHandlers.delete(handler)
+}
+
 export function bootstrapKanban(getWindow: () => BrowserWindow | null): void {
   configureKanbanDispatcher({
     runner: runKanbanWorkerHeadless,
@@ -24,6 +34,13 @@ export function bootstrapKanban(getWindow: () => BrowserWindow | null): void {
     onTaskStatusChanged: (taskId, status) => {
       const win = getWindow()
       win?.webContents.send(KANBAN_IPC_CHANNELS.CHANGED, { taskId, status, at: Date.now() })
+      for (const handler of taskStatusChangedHandlers) {
+        try {
+          handler(taskId, status)
+        } catch (err) {
+          console.error('[看板] 状态订阅回调失败:', err)
+        }
+      }
       notifyTaskTerminal(taskId, status, getWindow)
     },
     onBoardCompleted: (boardId, parentSessionId, summary) => {

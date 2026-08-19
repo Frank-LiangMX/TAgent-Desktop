@@ -100,6 +100,20 @@ describe('shouldForceIdle', () => {
     ).toBe(false)
   })
 
+  test('awaiting user → never force idle（提交后要续原 startedAt）', () => {
+    const lastAt = 100_000
+    expect(
+      shouldForceIdle({
+        lastStreamEventAt: lastAt,
+        now: lastAt + IDLE_WATCHDOG_TIMEOUT_MS + 60_000,
+        isMainProcessIdle: true,
+        isAtomRunning: false,
+        hasStartedAt: true,
+        awaitingUser: true,
+      }),
+    ).toBe(false)
+  })
+
   test('atom already stopped even if timeout → do not force idle', () => {
     const lastAt = 100_000
     const now = lastAt + IDLE_WATCHDOG_TIMEOUT_MS + 60_000

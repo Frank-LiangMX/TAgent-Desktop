@@ -22,6 +22,40 @@ export type CliReasoning = 'low' | 'medium' | 'high'
 export type CliModality = 'text' | 'vision'
 
 /**
+ * 擅长任务类型标签枚举（结构化编排主匹配维度）。
+ *
+ * 供主 Agent 在 task 调用时按 require.tag（硬筛）/ prefer.tag（软排）挑选工人，
+ * 比自由文本 goodFor 更结构化、更易匹配。goodFor 保留作补充说明。
+ * 标签 id 稳定（落盘用 id），label 仅供 UI/能力卡展示。
+ */
+export interface CliCapabilityTag {
+  id: string
+  label: string
+}
+
+export const CLI_CAPABILITY_TAGS: CliCapabilityTag[] = [
+  { id: 'frontend', label: '前端开发' },
+  { id: 'backend', label: '后端 / 复杂实现' },
+  { id: 'reasoning', label: '深度推理' },
+  { id: 'scaffold', label: '杂活 / 脚手架' },
+  { id: 'test', label: '测试 / 单测' },
+  { id: 'review', label: '代码审查' },
+  { id: 'research', label: '调研 / 探索' },
+  { id: 'refactor', label: '重构 / 长改造' },
+  { id: 'command', label: '命令 / 构建执行' },
+]
+
+/** 合法标签 id 集合（校验用） */
+export const CLI_CAPABILITY_TAG_IDS: ReadonlySet<string> = new Set(
+  CLI_CAPABILITY_TAGS.map((t) => t.id),
+)
+
+/** id → label 查表（能力卡拼接 / UI 展示用）；未知 id 原样返回 */
+export function cliCapabilityTagLabel(id: string): string {
+  return CLI_CAPABILITY_TAGS.find((t) => t.id === id)?.label ?? id
+}
+
+/**
  * CLI 工人能力画像。
  *
  * 供主 Agent 在 task 调用时按 require（硬性过滤）/ prefer（软性打分）挑选工人，
@@ -33,7 +67,9 @@ export interface CliWorkerCapability {
   reasoning: CliReasoning
   /** 输入模态；缺省 ['text']，显式含 'vision' 才支持视觉 */
   modalities?: CliModality[]
-  /** 适合场景一句话（注入能力卡给主 Agent 自选用） */
+  /** 擅长任务类型标签（结构化主匹配）；元素须 ∈ CLI_CAPABILITY_TAG_IDS */
+  tags?: string[]
+  /** 适合场景一句话（注入能力卡给主 Agent 自选用，作 tags 的补充说明） */
   goodFor?: string
 }
 
@@ -105,28 +141,28 @@ export const CLI_WORKERS_DEFAULT_SEED: CliWorkersConfig = {
       enabled: true,
       bin: 'kscc',
       defaultModel: 'glm-5.2',
-      capability: { cost: 3, reasoning: 'high', goodFor: '跨层接线 / 编排 / 复杂实现' },
+      capability: { cost: 3, reasoning: 'high', tags: ['backend', 'reasoning', 'refactor'], goodFor: '跨层接线 / 编排 / 复杂实现' },
     },
     {
       id: 'grok',
       enabled: true,
       bin: 'grok',
       defaultModel: undefined,
-      capability: { cost: 2, reasoning: 'medium', goodFor: '探索 / 对照 / 草稿实现' },
+      capability: { cost: 2, reasoning: 'medium', tags: ['frontend', 'research'], goodFor: '探索 / 对照 / 草稿实现' },
     },
     {
       id: 'codex',
       enabled: true,
       bin: 'codex',
       defaultModel: undefined,
-      capability: { cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造' },
+      capability: { cost: 4, reasoning: 'high', tags: ['reasoning', 'refactor', 'backend'], goodFor: '长任务 / 深改造' },
     },
     {
       id: 'mimo',
       enabled: true,
       bin: 'mimo',
       defaultModel: undefined,
-      capability: { cost: 1, reasoning: 'low', goodFor: '单测 / 机械改动 / 小包' },
+      capability: { cost: 1, reasoning: 'low', tags: ['test', 'scaffold', 'command'], goodFor: '单测 / 机械改动 / 小包' },
     },
   ],
 }
@@ -156,12 +192,12 @@ export interface CliWorkerDiscoveryEntry {
  * - false：仅显示「已检测·暂不支持派工」，resolve 候选池过滤剔除，永不 spawn。
  */
 export const CLI_WORKER_DISCOVERY_CATALOG: CliWorkerDiscoveryEntry[] = [
-  { id: 'kscc', bins: ['kscc'], supported: true, defaultModel: 'glm-5.2', capability: { cost: 3, reasoning: 'high', goodFor: '跨层接线 / 编排 / 复杂实现' } },
-  { id: 'grok', bins: ['grok'], supported: true, capability: { cost: 2, reasoning: 'medium', goodFor: '探索 / 对照 / 草稿实现' } },
-  { id: 'codex', bins: ['codex'], supported: true, capability: { cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造' } },
-  { id: 'mimo', bins: ['mimo'], supported: true, capability: { cost: 1, reasoning: 'low', goodFor: '单测 / 机械改动 / 小包' } },
-  { id: 'opencode', bins: ['opencode'], supported: true, capability: { cost: 2, reasoning: 'medium', goodFor: '通用编码 / 多 Agent 协作' } },
-  { id: 'claude', bins: ['claude'], supported: true, capability: { cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造 / 重构' } },
+  { id: 'kscc', bins: ['kscc'], supported: true, defaultModel: 'glm-5.2', capability: { cost: 3, reasoning: 'high', tags: ['backend', 'reasoning', 'refactor'], goodFor: '跨层接线 / 编排 / 复杂实现' } },
+  { id: 'grok', bins: ['grok'], supported: true, capability: { cost: 2, reasoning: 'medium', tags: ['frontend', 'research'], goodFor: '探索 / 对照 / 草稿实现' } },
+  { id: 'codex', bins: ['codex'], supported: true, capability: { cost: 4, reasoning: 'high', tags: ['reasoning', 'refactor', 'backend'], goodFor: '长任务 / 深改造' } },
+  { id: 'mimo', bins: ['mimo'], supported: true, capability: { cost: 1, reasoning: 'low', tags: ['test', 'scaffold', 'command'], goodFor: '单测 / 机械改动 / 小包' } },
+  { id: 'opencode', bins: ['opencode'], supported: true, capability: { cost: 2, reasoning: 'medium', tags: ['backend', 'scaffold'], goodFor: '通用编码 / 多 Agent 协作' } },
+  { id: 'claude', bins: ['claude'], supported: true, capability: { cost: 4, reasoning: 'high', tags: ['reasoning', 'refactor', 'backend'], goodFor: '长任务 / 深改造 / 重构' } },
 ]
 
 /** 有 runner 的工人 id（resolve 候选过滤 / run-cli-worker 路由 / UI 徽标共用） */
@@ -211,6 +247,12 @@ function isValidCapability(c: unknown): boolean {
       if (typeof m !== 'string' || !CLI_MODALITY_VALUES.has(m as CliModality)) return false
     }
   }
+  if (cap.tags != null) {
+    if (!Array.isArray(cap.tags)) return false
+    for (const t of cap.tags) {
+      if (typeof t !== 'string' || !CLI_CAPABILITY_TAG_IDS.has(t)) return false
+    }
+  }
   if (cap.goodFor != null && typeof cap.goodFor !== 'string') return false
   return true
 }
@@ -237,6 +279,16 @@ function validateCapability(c: unknown, label: string): string | null {
     for (const m of cap.modalities) {
       if (typeof m !== 'string' || !CLI_MODALITY_VALUES.has(m as CliModality)) {
         return `CLI 工人条目「${label}」结构不合法：capability.modalities 元素须为 text / vision`
+      }
+    }
+  }
+  if (cap.tags != null) {
+    if (!Array.isArray(cap.tags)) {
+      return `CLI 工人条目「${label}」结构不合法：capability.tags 须为数组`
+    }
+    for (const t of cap.tags) {
+      if (typeof t !== 'string' || !CLI_CAPABILITY_TAG_IDS.has(t)) {
+        return `CLI 工人条目「${label}」结构不合法：capability.tags 元素须为已知标签（${CLI_CAPABILITY_TAGS.map((x) => x.id).join(' / ')}）`
       }
     }
   }
@@ -459,20 +511,24 @@ export function ensureSeedWorkers(cfg: CliWorkersConfig): CliWorkersConfig {
  * task 工具 `require` 参数：硬性能力要求。
  * - vision: true 需工人 modalities 含 'vision'
  * - reasoningMin: 工人 reasoning 档须 ≥ 此值（low < medium < high）
+ * - tag: 工人 tags 须含此标签（无 tags 视为不满足）
  */
 export interface CliCapabilityRequire {
   vision?: boolean
   reasoningMin?: CliReasoning
+  tag?: string
 }
 
 /**
  * task 工具 `prefer` 参数：软性偏好（仅影响同合格候选排序，不剔除）。
  * - costMax: 视为硬上限（见 C2 候选过滤，cost > costMax 剔除），不参与打分
  * - goodFor: 关键词命中 worker.goodFor 时打分加 3
+ * - tag: 工人 tags 含此标签时打分加 3
  */
 export interface CliCapabilityPrefer {
   costMax?: 1 | 2 | 3 | 4 | 5
   goodFor?: string
+  tag?: string
 }
 
 /** reasoning 档位排序：low < medium < high */
@@ -510,6 +566,10 @@ export function workerSupportsRequire(
       return false
     }
   }
+  if (require.tag) {
+    const tags = cap.tags ?? []
+    if (!tags.includes(require.tag)) return false
+  }
   return true
 }
 
@@ -518,6 +578,7 @@ export function workerSupportsRequire(
  * - 无 prefer → 返回 0（不参与重排，保持数组顺序）
  * - cost 越低分越高（6 - cost）
  * - prefer.goodFor 关键词命中 worker.goodFor 加 3 分
+ * - prefer.tag 命中 worker.tags 加 3 分
  * - costMax 不参与打分（它是上限约束，见 C2 候选过滤）
  */
 export function workerPreferScore(
@@ -528,6 +589,9 @@ export function workerPreferScore(
   const cap = resolveWorkerCapability(w)
   let score = 6 - cap.cost
   if (prefer.goodFor && cap.goodFor && cap.goodFor.includes(prefer.goodFor)) {
+    score += 3
+  }
+  if (prefer.tag && (cap.tags ?? []).includes(prefer.tag)) {
     score += 3
   }
   return score

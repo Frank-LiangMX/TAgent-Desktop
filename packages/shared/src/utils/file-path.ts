@@ -188,15 +188,28 @@ function isEllipsisPlaceholderPath(clean: string): boolean {
   return /(?:^|[\\/])\.\.\.(?:[\\/]|$)/.test(clean) || clean.includes('…')
 }
 
+/** 路径末段是否像可打开的文件；纯目录 / 版本号文件夹返回 false */
+function basenameLooksLikeFile(filePath: string): boolean {
+  const name = getFileName(stripLineCol(filePath).path)
+  if (!name || name === '.' || name === '..') return false
+  // .env / .gitignore：点文件当文件
+  if (name.startsWith('.') && name.length > 1 && !name.endsWith('.')) return true
+  const ext = getExtension(name)
+  if (!ext) return false
+  // UE_5.8 / v1.2.3：末段纯数字是版本目录，不是扩展名
+  if (/^\d+$/.test(ext)) return false
+  return ALL_PREVIEWABLE_EXTS.has(ext)
+}
+
 /**
  * 检测文本是否为绝对文件路径
  *
- * Windows 同时接受：
  * - 盘符大小写：`C:\` / `c:\`
  * - 分隔符：`\` / `/`（如 `F:/proj/a.ts`）
  * - UNC：`\\server\share\...`
  *
- * POSIX：拒绝 API/URL 风格路径（如 `/v1/messages`、`/api/foo`），避免行内代码误升 FileChip。
+ * 末段不是可预览文件（目录 / 工作区 / 版本号如 `UE_5.8`）→ false，勿升 FileChip。
+ * POSIX：拒绝 API/URL 风格路径（如 `/v1/messages`、`/api/foo`）。
  */
 export function isAbsoluteFilePath(text: string): boolean {
   const trimmed = text.trim()
@@ -204,20 +217,14 @@ export function isAbsoluteFilePath(text: string): boolean {
 
   const { path: clean } = stripLineCol(trimmed)
   if (isEllipsisPlaceholderPath(clean)) return false
+  if (!basenameLooksLikeFile(clean)) return false
 
   if (clean.startsWith('/')) {
     // Anthropic `/v1/messages`、REST `/api/...` 等：不是本地文件
     if (isApiStyleAbsolutePath(clean)) return false
-    // 至少两段（/a/b）；目录尾斜杠且无点 → 不当文件
+    // 至少两段（/a/b）；目录尾斜杠 → 不当文件
     if (!/^\/[^\n]+\/[^\n]+$/.test(clean)) return false
-    if (clean.endsWith('/') && !clean.includes('.')) return false
-    // 无扩展名时要求像真实文件系统根 / MSYS 盘符挂载，避免 `/foo/bar` 误伤
-    const ext = getExtension(getFileName(clean))
-    if (!ext) {
-      if (msysPathToWindowsDrivePath(clean)) return true
-      if (POSIX_FS_ROOT_RE.test(clean)) return true
-      return false
-    }
+    if (clean.endsWith('/')) return false
     return true
   }
 
@@ -234,11 +241,6 @@ export function isAbsoluteFilePath(text: string): boolean {
 function isApiStyleAbsolutePath(clean: string): boolean {
   return /^\/(?:v\d+|api|graphql|oauth|rest|rpc|healthz?|status|webhook)(?:\/|$)/i.test(clean)
 }
-
-/** 常见 Unix / macOS 绝对路径前缀（无扩展名时仍可能是目录或二进制路径） */
-const POSIX_FS_ROOT_RE =
-  /^\/(?:Users|home|tmp|var|etc|opt|usr|mnt|media|private|Volumes|Applications|Library|System|root|data|workspace|workspaces|projects)(?:\/|$)/i
-
 
 /**
  * 检测文本是否为相对文件路径（需要 basePath 才有意义）

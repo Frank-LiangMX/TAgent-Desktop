@@ -51,3 +51,10 @@ release-notes/__generated/
 
 # Claude 本地会话配置（agent 产物，不入库）
 .claude/
+
+# BEGIN KCWork auto-injected skill symlinks (managed — do not commit)
+.claude/skills/cron
+.claude/skills/kcwork-config
+.claude/skills/officecli
+.claude/skills/skill-creator
+# END KCWork auto-injected skill symlinks

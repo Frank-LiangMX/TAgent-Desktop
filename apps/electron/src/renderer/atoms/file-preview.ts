@@ -3,6 +3,7 @@
  * 全局单例（同时只有一个活跃请求），pane 按 sessionId 匹配自己的会话。
  */
 import { atom } from 'jotai'
+import type { FileReviewContext } from '@tagent/shared'
 
 export interface FilePreviewRequest {
   sessionId: string
@@ -22,6 +23,11 @@ export interface FilePreviewRequest {
     mediaType: string
     data: string
   }
+  /**
+   * 「本轮 Files Changed」审阅上下文（仅句尾卡片打开时分屏走 diff 审阅）。
+   * 正文文件 chip 不传 → 仍只预览当前文件。FilePreviewPane 据 patches 还原旧稿 + 算 unified diff。
+   */
+  review?: FileReviewContext
 }
 
 export const filePreviewRequestAtom = atom<FilePreviewRequest | null>(null)

@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AlertCircle, CheckCircle2 } from 'lucide-react'
 import {
+  SettingsCard,
   SettingsSection,
   SettingsSelect,
 } from '@tagent/ui'
@@ -98,23 +99,27 @@ export function NoProgressGuardSettings(): JSX.Element {
           <span className="agent-behavior-notice-copy">{ok}</span>
         </div>
       ) : null}
-      <SettingsSelect
-        label="保护模式"
-        value={selectValue}
-        onValueChange={(v) => void handleChange(v)}
-        options={MODE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-        disabled={saving || !state}
-      />
-      {state?.envOverride ? (
-        <p className="agent-behavior-field-hint">
-          环境变量 <code>TAGENT_NO_PROGRESS_GUARD_MODE={state.envOverride}</code> 正在覆盖设置页偏好。
-          当前实际生效：{state.effective}。
-        </p>
-      ) : (
-        <p className="agent-behavior-field-hint">
-          当前生效：{state?.effective ?? '…'}。紧急可用环境变量临时覆盖。
-        </p>
-      )}
+      <SettingsCard divided={false}>
+        <SettingsSelect
+          label="保护模式"
+          value={selectValue}
+          onValueChange={(v) => void handleChange(v)}
+          options={MODE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+          disabled={saving || !state}
+        />
+        <div className="settings-card-footnote">
+          {state?.envOverride ? (
+            <p className="agent-behavior-field-hint">
+              环境变量 <code>TAGENT_NO_PROGRESS_GUARD_MODE={state.envOverride}</code>{' '}
+              正在覆盖设置页偏好。当前实际生效：{state.effective}。
+            </p>
+          ) : (
+            <p className="agent-behavior-field-hint">
+              当前生效：{state?.effective ?? '…'}。紧急可用环境变量临时覆盖。
+            </p>
+          )}
+        </div>
+      </SettingsCard>
     </SettingsSection>
   )
 }

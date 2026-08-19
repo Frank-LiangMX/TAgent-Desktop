@@ -306,7 +306,7 @@ function TaskPromptBlock({
           size={12}
           weight="bold"
           className={cn(
-            'shrink-0 text-muted-foreground/45 transition-transform duration-150',
+            'shrink-0 text-muted-foreground/45 transition-transform duration-150 ease-linear',
             open && 'rotate-90',
           )}
         />

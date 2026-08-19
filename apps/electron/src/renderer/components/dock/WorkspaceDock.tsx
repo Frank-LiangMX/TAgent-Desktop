@@ -35,6 +35,7 @@ import {
 import { filePreviewRequestAtom } from '../../atoms/file-preview'
 import { richPreviewRequestAtom } from '../../atoms/rich-preview'
 import { sessionRunMapAtom } from '../../atoms/session-run-atoms'
+import { disableVoidGroupDrag, isGroupHeaderDrag, pruneEmptyDockGroups } from './dock-dnd'
 
 const DOCK_LAYOUT_KEY = 'tagent:dockLayout'
 
@@ -113,6 +114,7 @@ function resolveTabInsertIndex(
 
 /**
  * 拖放策略：
+ * - 标签栏右侧空白整组拖（panelId 空）→ 禁止，避免拖出空标签
  * - tab / header_space（含跨分屏、同组换序、插到末尾）→ 显式 moveTo
  * - content 中心 → 禁止
  * - content 边缘 → 分屏；单 tab 同源 no-op 时拦截后 addGroup+moveTo
@@ -129,6 +131,12 @@ function handleWillDrop(e: {
 }): void {
   const data = e.getData()
   const dest = e.group
+
+  // void / 整组拖：panelId 为 null，落下会留下空 group + "Multiple Panels (N)" 幽灵
+  if (isGroupHeaderDrag(data)) {
+    e.preventDefault()
+    return
+  }
 
   // —— 标签栏落点：一律显式 move（跨组并入 + 同组换序 + 插末尾）——
   if ((e.kind === 'tab' || e.kind === 'header_space') && data?.panelId && dest) {
@@ -171,7 +179,9 @@ export function WorkspaceDock(): JSX.Element {
   const crewOpenRequest = useAtomValue(crewOpenRequestAtom)
   const setCrewPanelOpenMap = useSetAtom(crewPanelOpenMapAtom)
   const filePreviewReq = useAtomValue(filePreviewRequestAtom)
+  const setFilePreviewRequest = useSetAtom(filePreviewRequestAtom)
   const richPreviewReq = useAtomValue(richPreviewRequestAtom)
+  const setRichPreviewRequest = useSetAtom(richPreviewRequestAtom)
 
   const apiRef = useRef<DockviewApi | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -320,6 +330,17 @@ export function WorkspaceDock(): JSX.Element {
         const sid = panel.id.slice('crew:'.length)
         setCrewPanelOpenMap((prev) => ({ ...prev, [sid]: false }))
       }
+      // 用户主动关预览分屏（× / 拖走）→ 清掉对应请求 atom。否则切走 rail 再回来时
+      // WorkspaceDock 重新挂载、apiReady 转 true 会触发预览 effect 重跑，凭残留 atom
+      // 把已关的预览 pane 又建出来（切 rail 卸载重挂稳定复现）。
+      if (panel.id.startsWith('file-preview:')) {
+        const sid = panel.id.slice('file-preview:'.length)
+        setFilePreviewRequest((prev) => (prev && prev.sessionId === sid ? null : prev))
+      }
+      if (panel.id.startsWith('rich-preview:')) {
+        const sid = panel.id.slice('rich-preview:'.length)
+        setRichPreviewRequest((prev) => (prev && prev.sessionId === sid ? null : prev))
+      }
       if (isReconcilingRef.current) return
       if (isNonSessionPane(panel.id)) return
       const sessionId = panel.id
@@ -384,6 +405,7 @@ export function WorkspaceDock(): JSX.Element {
           /* 存储失败（配额/隐私模式）忽略 */
         }
         setVisibleSessions(collectVisibleSessions(api))
+        if (rootRef.current) disableVoidGroupDrag(rootRef.current)
         if (isReconcilingRef.current) return
         const missing: TabItem[] = []
         api.panels.forEach((p: IDockviewPanel) => {
@@ -406,6 +428,22 @@ export function WorkspaceDock(): JSX.Element {
 
     // 挂载时修一次已有漂移（例如此前搬迁误删 tabs、panel 仍在）
     persistAndRepairTabs()
+    if (rootRef.current) disableVoidGroupDrag(rootRef.current)
+    pruneEmptyDockGroups(api)
+
+    const dAddGroup = api.onDidAddGroup(() => {
+      if (rootRef.current) disableVoidGroupDrag(rootRef.current)
+    })
+
+    const blockVoidGroupDrag = (event: DragEvent): void => {
+      const target = event.target
+      if (target instanceof Element && target.closest('.dv-void-container')) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+    }
+    const dockRoot = rootRef.current
+    dockRoot?.addEventListener('dragstart', blockVoidGroupDrag, true)
 
     return () => {
       dRemove.dispose()
@@ -413,6 +451,8 @@ export function WorkspaceDock(): JSX.Element {
       dUnhandled.dispose()
       dOverlay.dispose()
       dLayout.dispose()
+      dAddGroup.dispose()
+      dockRoot?.removeEventListener('dragstart', blockVoidGroupDrag, true)
       if (rafId != null) window.cancelAnimationFrame(rafId)
       // 卸载时最后存一次（关 flag / 切走）
       try {
@@ -427,19 +467,21 @@ export function WorkspaceDock(): JSX.Element {
   useEffect(() => {
     const api = apiRef.current
     if (!api || !apiReady || !filePreviewReq) return
-    const { sessionId, path, title } = filePreviewReq
+    const { sessionId, path, title, review } = filePreviewReq
     const paneId = `file-preview:${sessionId}`
     const fileName = title ?? path.split(/[\\/]/).pop() ?? path
+    // 句尾 Files Changed 带 review → 审阅；正文 chip / 附件 → 预览
+    const paneTitle = review ? `审阅 · ${fileName}` : `预览 · ${fileName}`
     const existing = api.getPanel(paneId)
     if (existing) {
-      existing.setTitle?.(`预览 · ${fileName}`)
+      existing.setTitle?.(paneTitle)
       existing.api.setActive?.()
       return
     }
     const chatPanel = api.getPanel(sessionId)
     api.addPanel({
       id: paneId,
-      title: `预览 · ${fileName}`,
+      title: paneTitle,
       component: 'file-preview',
       params: { sessionId, paneType: 'file-preview' },
       ...(chatPanel ? { position: { direction: 'right', referencePanel: chatPanel } } : {}),
@@ -506,6 +548,8 @@ export function WorkspaceDock(): JSX.Element {
       })
     }
     setVisibleSessions(collectVisibleSessions(e.api))
+    if (rootRef.current) disableVoidGroupDrag(rootRef.current)
+    pruneEmptyDockGroups(e.api)
     setApiReady(true)
   }
 
@@ -533,6 +577,7 @@ export function WorkspaceDock(): JSX.Element {
         }}
         defaultTabComponent={DockTab}
         rightHeaderActionsComponent={DockSummaryActions}
+        disableFloatingGroups
         theme={dockTheme}
         onWillDrop={handleWillDrop}
         /**

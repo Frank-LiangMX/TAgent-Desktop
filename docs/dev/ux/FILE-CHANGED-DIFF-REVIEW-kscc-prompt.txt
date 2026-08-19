@@ -1,0 +1,10 @@
+读 docs/dev/ux/FILE-CHANGED-DIFF-REVIEW-brief.md，严格按 brief 实现。
+
+工作区：F:\TAgent-Desktop
+
+把消息底部 Files Changed 打开的分屏，从「当前文件预览」做成 Codex/GitHub 式本轮 unified diff 审阅（红删绿增、未改行折叠、审阅/当前切换、多文件条）。正文文件 chip 仍只预览。
+
+禁止 commit / push。不要加 npm 依赖。不要改 collab room、session-run、AskUser、plan mode、MoA。
+
+完成后写 docs/dev/ux/FILE-CHANGED-DIFF-REVIEW-NOTES.md。
+stdout 用中文：改了哪些文件、测试命令与结果、手测步骤、已知限制。

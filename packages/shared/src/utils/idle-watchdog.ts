@@ -27,6 +27,8 @@ export function shouldForceIdle(input: {
   isMainProcessIdle: boolean
   isAtomRunning: boolean
   hasStartedAt?: boolean
+  /** AskUser / 权限 / 退出计划：人还没选，不能当 idle 硬清计时 */
+  awaitingUser?: boolean
 }): boolean {
   const {
     lastStreamEventAt,
@@ -34,10 +36,14 @@ export function shouldForceIdle(input: {
     isMainProcessIdle,
     isAtomRunning,
     hasStartedAt = false,
+    awaitingUser = false,
   } = input
 
   // 既不 running、也无 startedAt 残留 → 无需兜底
   if (!isAtomRunning && !hasStartedAt) return false
+
+  // 等用户点选：本轮没完，禁止硬清 startedAt（提交后要续计时）
+  if (awaitingUser) return false
 
   // 主进程不是 idle → 可能真的在跑（长工具调用等），不动
   if (!isMainProcessIdle) return false

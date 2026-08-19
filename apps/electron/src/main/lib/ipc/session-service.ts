@@ -25,6 +25,7 @@ import type {
   Channel,
   AgentSessionMeta,
   AskUserResponse,
+  ExitPlanModeResponse,
 } from '@tagent/shared'
 import { AGENT_IPC_CHANNELS, MEMORY_IPC_CHANNELS, msysPathToWindowsDrivePath } from '@tagent/shared'
 import { SessionRuntime } from '../agent/runtime/session-runtime'
@@ -33,6 +34,7 @@ import {
   attachImageBlocksToText,
 } from '../agent/build-user-content-with-attachments'
 import { askUserService } from '../agent/agent-ask-user-service'
+import { exitPlanService } from '../agent/agent-exit-plan-service'
 import { getAdapter, PiAgentAdapter, type ChannelKind } from '../adapters'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
 import {
@@ -57,6 +59,7 @@ import {
   readMoADiscussionPanels,
   deleteSession as deleteSessionMeta,
   deleteSessionsByWorkspace,
+  recallLastUnsentUserTurn,
 } from '../agent/session-store'
 import {
   createStreamPersistGateState,
@@ -98,6 +101,7 @@ import {
   dismissModeSuggestion,
   clearModeSuggestionDismissal,
   setOnChatModeBlock,
+  setPermissionModeSwitcher,
 } from '../permission/permission-service'
 import { buildBuiltinSubagentDefinitions, buildSubagentDelegationPrompt } from '../agent/subagent-definitions'
 import { buildExecutionModePrompt } from '../agent/execution-mode-prompt'
@@ -133,12 +137,19 @@ import {
 import { readAgentDiscussPrefs, writeAgentDiscussPrefs } from '../agent/agent-discuss-prefs'
 import { readAgentCrewPrefs, writeAgentCrewPrefs } from '../agent/agent-crew-prefs'
 import type { NoProgressGuardMode, AgentDiscussPrefs, AgentCrewPrefs } from '@tagent/shared'
+import {
+  extractSdkUserText,
+  isSteerPromptEcho,
+  wrapSteerPromptForModel,
+} from '../agent/steer-prompt'
 
 interface SendMessageInput {
   sessionId: string
   prompt: string
   /** 运行中引导的后续自动发送：在消息列表内并入前一执行回合。 */
   isSteer?: boolean
+  /** 引导已先落盘广播过，flush 时不要再写一条用户气泡。 */
+  skipUserPersist?: boolean
   /** 渠道 ID（决定选哪个 adapter + 绑核）。不传默认 kscc-internal */
   channelId?: string
   /** 模型 ID */
@@ -171,6 +182,20 @@ interface SendMessageInput {
   moaDiscussionPresetId?: string
 }
 
+/** 模型侧注入的 [用户附件] 附录，不应再当第二条用户气泡展示。 */
+function userContentHasAttachmentAppendix(content: unknown): boolean {
+  if (typeof content === 'string') return content.includes('[用户附件]')
+  if (!Array.isArray(content)) return false
+  return content.some(
+    (b) =>
+      b &&
+      typeof b === 'object' &&
+      (b as { type?: string }).type === 'text' &&
+      typeof (b as { text?: string }).text === 'string' &&
+      (b as { text: string }).text.includes('[用户附件]'),
+  )
+}
+
 export class SessionService {
   private runtimes = new Map<string, SessionRuntime>()
   /**
@@ -179,6 +204,8 @@ export class SessionService {
    * STOP / 删会话时丢弃，避免停后仍自动开跑。
    */
   private pendingSteerBySession = new Map<string, string[]>()
+  /** 刚落盘的引导原文，用来丢掉 kscc enqueue 回声（无 isSteer 的第二条用户气泡）。 */
+  private lastSteerBySession = new Map<string, { text: string; at: number }>()
 
   /**
    * kscc 流式落盘闸口状态（REGRESS-G）：按会话维护「同 uuid 去重 + 内容放行」的待提交 assistant。
@@ -200,6 +227,14 @@ export class SessionService {
    */
   private moaAbortBySession = new Map<string, AbortController>()
   private moaInFlight = new Set<string>()
+
+  /**
+   * 无进展暂停 AskUserQuestion 的 AbortController（brief 2026-08-19 §3）。
+   * 适配层进入 paused_no_progress 时经 onNoProgressPauseAskUser 回调注入 askUserService；
+   * 用户回答 → handleSend 续跑；dismiss → 保持暂停。新 turn（handleSend）abort 旧请求，
+   * 防止用户手动发消息后旧 AskUser 回调再触发一次续跑。
+   */
+  private noProgressAskUserAbortBySession = new Map<string, AbortController>()
 
   /**
    * 活跃圆桌讨论注册表（§5.3 用户插话/喊停）：按会话存当前讨论的 discussionId + 待注入插话队列 +
@@ -239,10 +274,10 @@ export class SessionService {
   }
 
   /**
-   * kscc 的实时引导直接写入长驻 channel，不会像 handleSend 那样自然经过消息落盘。
-   * 这里补齐持久化和 renderer 广播，保证用户点击「引导」后既能在对话中看见，也不会重开丢失。
+   * 引导立刻落盘 + 推 renderer（isSteer），夹进当前执行回合，不另起用户气泡。
+   * kscc 再写 resume JSONL；Pi 只写面板。
    */
-  private persistLiveSteerMessage(sessionId: string, text: string): void {
+  private persistSteerUserMessage(sessionId: string, text: string): void {
     const meta = getSessionMeta(sessionId)
     const workspaceId = meta?.workspaceId
     const now = Date.now()
@@ -253,16 +288,18 @@ export class SessionService {
       createdAt: now,
       isSteer: true,
     } as unknown as SDKMessage
+    this.lastSteerBySession.set(sessionId, { text, at: now })
     try {
       appendPanelMessages(workspaceId, sessionId, [userMsg])
-      appendSdkMessages(workspaceId, sessionId, [userMsg])
+      if (this.resolveAdapterKindForSession(sessionId) === 'kscc') {
+        appendSdkMessages(workspaceId, sessionId, [userMsg])
+      }
       const { message: userIR } = sdkMessageToIR(userMsg)
       if (userIR) {
         this.sendPayload(sessionId, { kind: 'sdk_message', message: userIR })
       }
     } catch (err) {
-      // 引导已成功入 channel；记录失败不应把成功结果变成失败或重复注入。
-      console.warn(`[会话 ${sessionId}] 实时引导落盘失败:`, err)
+      console.warn(`[会话 ${sessionId}] 引导落盘失败:`, err)
     }
   }
 
@@ -332,7 +369,7 @@ export class SessionService {
       console.warn(`[session-service] pending steer 丢弃（无 meta）: ${sessionId}`)
       return
     }
-    const prompt = pending.join('\n\n')
+    const prompt = wrapSteerPromptForModel(pending.join('\n\n'))
     console.log(
       `[会话 ${sessionId}] pending steer → 自动下一轮（${pending.length} 条合并）`,
     )
@@ -343,6 +380,7 @@ export class SessionService {
       model: meta.modelId,
       workspaceId: meta.workspaceId,
       isSteer: true,
+      skipUserPersist: true,
     }).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err)
       console.warn(`[session-service] pending steer flush 失败: ${msg}`)
@@ -394,6 +432,9 @@ export class SessionService {
     const svc = new SessionService(getWindow, permissionService)
     if (permissionService) {
       setOnChatModeBlock((sessionId, toolName) => svc.handleChatModeBlock(sessionId, toolName))
+      // EnterPlanMode / ExitPlanMode 审批后由 permission-service 回调切模式：
+      // persist meta + 通知 runtime + 推 PLAN_MODE_CHANGED 更新输入框 pill（与 pill 手动切换同路径）
+      setPermissionModeSwitcher((sessionId, mode) => svc.applyPermissionModeChange(sessionId, mode))
     }
     // Phase 4：软重置钩子
     ksccSoftReset.setHooks({
@@ -450,6 +491,14 @@ export class SessionService {
       this.clearPendingSteer(sessionId)
       // 清待处理 AskUser 请求（resolve deny「会话已结束」；abort signal 兜底已 deny，此处幂等）
       askUserService.clearSessionPending(sessionId)
+      // 清无进展暂停 AskUser 的 abort controller（clearSessionPending 已 resolve deny，此处只清 Map）
+      this.noProgressAskUserAbortBySession.delete(sessionId)
+      // 清待处理 ExitPlanMode 审批请求（resolve deny「会话已结束」+ 推 RESOLVED 让渲染层出队，避免停后残留横幅）
+      for (const rid of exitPlanService.clearSessionPending(sessionId)) {
+        this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, {
+          requestId: rid,
+        })
+      }
       // MoA 会诊在途：abort 杀未完成 bare 进程（runMoaTurn 检测 signal 后推 cancelled 卡）。
       // MoA 不经 SessionRuntime，下方 rt 为 null，靠此 controller 中止。
       const moaCtrl = this.moaAbortBySession.get(sessionId)
@@ -469,6 +518,25 @@ export class SessionService {
       }
       this.sendPayload(sessionId, { kind: 'tagent_event', event: { type: 'turn_end' } })
       return { ok: true }
+    })
+
+    ipcMain.handle(AGENT_IPC_CHANNELS.RECALL_UNSENT_TURN, async (_e, sessionId: string) => {
+      try {
+        const meta = getSessionMeta(sessionId)
+        const workspaceId = meta?.workspaceId
+        const recalled = recallLastUnsentUserTurn(workspaceId, sessionId)
+        if (!recalled.ok) return recalled
+        if (meta && (meta.turnCount ?? 0) > 0) {
+          updateSessionMeta(sessionId, {
+            turnCount: Math.max(0, (meta.turnCount ?? 1) - 1),
+          })
+        }
+        return recalled
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.warn('[session-service] recall unsent turn failed:', msg)
+        return { ok: false, reason: 'empty' as const }
+      }
     })
 
     /**
@@ -569,6 +637,22 @@ export class SessionService {
       }
     )
 
+    // 响应 ExitPlanMode：渲染层回用户选择 → exitPlanService resolve allow/deny + targetMode。
+    // 权限模式切换由 permission-service 在 canUseTool 返回前经 permissionModeSwitcher 完成
+    // （在 resolve 后的微task 里 await switcher，避免下一工具跑在旧模式）；此处只 resolve
+    // + 推 EXIT_PLAN_MODE_RESOLVED 让渲染层按 requestId 出队（Banner 乐观出队的兜底）。
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESPOND,
+      async (_e, response: ExitPlanModeResponse): Promise<void> => {
+        const requestId = response?.requestId
+        if (!requestId) return
+        const sessionId = exitPlanService.respondToExitPlanMode(response)
+        if (sessionId) {
+          this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, { requestId })
+        }
+      }
+    )
+
     /**
      * 引导 Agent（不中断当前轮）。
      * - kscc + live loop → enqueue，mode:'live'
@@ -588,19 +672,21 @@ export class SessionService {
           const kind = this.resolveAdapterKindForSession(sessionId)
           const rt = this.runtimes.get(sessionId)
 
-          // kscc 真长驻：loop 存活时 enqueue 到下一轮边界。
+          // 先落盘原文，会话里立刻出现「引导」气泡。
+          this.persistSteerUserMessage(sessionId, text)
+          const modelText = wrapSteerPromptForModel(text)
+
+          // kscc 长驻：注入同一场运行，当前工具结束后的下一次思考就会带上引导。
+          // 这才和「排队」（整场运行结束再新开一轮）不是一回事。
           if (kind === 'kscc' && rt?.hasLiveProcess()) {
-            const mode = await rt.steerMessage(text)
+            const mode = await rt.steerMessage(modelText)
             if (mode === 'live') {
-              this.persistLiveSteerMessage(sessionId, text)
               return { ok: true, mode: 'live' }
             }
-            // live 判定竞态失败 → 降级 pending
           }
 
-          // Pi 核（或 kscc 已无 live）：下一轮注入，避免 agent.steer 静默失效
+          // Pi / 无 live loop：只能等本场运行停稳再发，语义接近排队。
           this.enqueuePendingSteer(sessionId, text)
-          // 仅当 turn 与 loop 都已停稳才立刻 flush（避免 Pi result 后 generator 未 done 窗口误 enqueue）
           if (!rt || (!rt.isTurnInFlight() && !rt.isRunning())) {
             this.flushPendingSteer(sessionId)
           }
@@ -1046,6 +1132,14 @@ export class SessionService {
       PermissionService.clearWhitelist(sessionId)
       // 清待处理 AskUser 请求（resolve deny「会话已结束」）
       askUserService.clearSessionPending(sessionId)
+      // 清无进展暂停 AskUser 的 abort controller
+      this.noProgressAskUserAbortBySession.delete(sessionId)
+      // 清待处理 ExitPlanMode 审批请求（resolve deny「会话已结束」+ 推 RESOLVED 让渲染层出队）
+      for (const rid of exitPlanService.clearSessionPending(sessionId)) {
+        this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, {
+          requestId: rid,
+        })
+      }
       // E/落盘闸口：清会话级 delta 追踪器 + 落盘闸口，防 Map 无界增长
       this.deltaTrackerBySession.delete(sessionId)
       this.streamPersistGateBySession.delete(sessionId)
@@ -1181,6 +1275,10 @@ export class SessionService {
 
   /** 处理发消息：解析渠道→锁定运行内核→首次 spawn / 后续同内核切换模型 */
   private async handleSend(input: SendMessageInput): Promise<void> {
+    // 用户手动新开一轮 → abort 旧的无进展 AskUser（若仍 pending），防止回答旧问题时再触发一次续跑
+    this.noProgressAskUserAbortBySession.get(input.sessionId)?.abort()
+    this.noProgressAskUserAbortBySession.delete(input.sessionId)
+
     const channelId = input.channelId ?? getKsccChannelId()
     if (!channelId) {
       throw new Error('未选择渠道，且未找到 kscc 内置渠道（请在渠道管理中添加）')
@@ -1290,6 +1388,7 @@ export class SessionService {
     // 持久化用户消息到 JSONL 并推渲染层。按核分流：
     // - kscc：落盘 SDKMessage（resume 读 JSONL 要此格式）+ sdkMessageToIR 推 IR
     // - pi：直接落盘 IR（pi 自管上下文，不靠 SDK resume）+ 直推 IR
+    if (!input.skipUserPersist) {
     if (adapterKind === 'kscc') {
       const now = Date.now()
       const userMsg: SDKMessage = {
@@ -1331,6 +1430,7 @@ export class SessionService {
         console.warn('[session-service] appendPanelMessages failed (pi user):', err)
       }
       this.sendPayload(input.sessionId, { kind: 'sdk_message', message: userIR })
+    }
     }
 
     // T7 续聊注入 + P0 #1（AUDIT-fresh-session-consult）：夹中场景「普通轮 → 圆桌（快速/研讨）→ 续聊」
@@ -1811,6 +1911,49 @@ export class SessionService {
       )
     }
 
+    // 无进展暂停 → AskUserQuestion 结构化澄清（brief 2026-08-19 §3）。
+    // 适配层在进入 paused_no_progress 时把 buildNoProgressAskUserInput 产出的工具输入推这里，
+    // 注入 askUserService.handleAskUserQuestion 复用现有 AskUserQuestion 事件 / UI。
+    // 用户回答 → handleSend 续跑（方向即用户选择）；dismiss → 保持暂停；新 turn abort 旧请求。
+    const onNoProgressPauseAskUser = (askInput: Record<string, unknown>): void => {
+      // 先 abort 上一条未答的 no-progress AskUser（防御性，同轮不应有两条）
+      this.noProgressAskUserAbortBySession.get(input.sessionId)?.abort()
+      const ac = new AbortController()
+      this.noProgressAskUserAbortBySession.set(input.sessionId, ac)
+      void askUserService
+        .handleAskUserQuestion(
+          input.sessionId,
+          askInput,
+          ac.signal,
+          (request) => {
+            this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.ASK_USER_REQUEST, request)
+          },
+        )
+        .then((result) => {
+          this.noProgressAskUserAbortBySession.delete(input.sessionId)
+          if (result.behavior !== 'allow') return // dismiss → 保持暂停，不自动继续
+          // 用户已选择方向 → 续跑（复用 handleSend，不改暂停 / 恢复总体语义）
+          const answers = (result.updatedInput.answers ?? {}) as Record<string, string>
+          const answerText = Object.values(answers).filter(Boolean).join('；')
+          const meta = getSessionMeta(input.sessionId)
+          if (!meta?.channelId) return
+          void this.handleSend({
+            sessionId: input.sessionId,
+            prompt: `[无进展澄清] 用户选择：${answerText || '继续当前方向'}`,
+            channelId: meta.channelId,
+            model: meta.modelId,
+            workspaceId: meta.workspaceId,
+            isSteer: true,
+            skipUserPersist: true,
+          }).catch((err) => {
+            console.warn(`[session-service] 无进展 AskUser 续跑失败:`, err)
+          })
+        })
+        .catch(() => {
+          this.noProgressAskUserAbortBySession.delete(input.sessionId)
+        })
+    }
+
     // 工作区 MCP 配置（无 workspace → 空，pi-core buildMcpTools 自动跳过）
     const enabledMcpServers = sanitizedPath ? getEnabledMcpServers(sanitizedPath) : {}
     const mcpConfig = { servers: enabledMcpServers }
@@ -1926,6 +2069,7 @@ export class SessionService {
         // 无进展守卫（KSCC：PostToolBatch 注入 / PreToolUse 拦截 / interrupt 暂停）
         noProgressGuardMode,
         onNoProgressEvent,
+        onNoProgressPauseAskUser,
         mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
         // 子代理定义：仅 Work 注册（Chat 硬拦 Task，注册无意义）。
         // claudeAvailable 按渠道判定（isClaudeAvailableForChannel）：非 Anthropic 系（kscc-internal 等）
@@ -2017,6 +2161,7 @@ export class SessionService {
       // 无进展守卫（Pi：afterToolCall observe / beforeToolCall 拦截 / abort 暂停）
       noProgressGuardMode,
       onNoProgressEvent,
+      onNoProgressPauseAskUser,
       // Work：看板 AgentTool
       ...(kanbanExtra.length > 0 ? { extraTools: kanbanExtra } : {}),
       // Phase 2.2：记忆模式透传（Frozen 快照 / L-rag）
@@ -2045,6 +2190,40 @@ export class SessionService {
     return meta?.permissionMode
       ? migratePermissionMode(meta.permissionMode)
       : TAGENT_DEFAULT_PERMISSION_MODE
+  }
+
+  /**
+   * 主进程侧切换会话权限模式（EnterPlanMode 进入 / ExitPlanMode 审批后由 permission-service
+   * 经 permissionModeSwitcher 回调）。与 pill 手动切换（UPDATE_SESSION_PERMISSION_MODE）同路径：
+   * persist meta + 通知 runtime setPermissionMode；额外推 PLAN_MODE_CHANGED 让渲染层更新输入框 pill
+   * （主进程发起的切换，渲染层 pill 不会自更；pill 手动切换不推，避免回环）。
+   */
+  private async applyPermissionModeChange(
+    sessionId: string,
+    mode: TAgentPermissionMode,
+  ): Promise<void> {
+    const normalized = migratePermissionMode(mode)
+    try {
+      updateSessionMeta(sessionId, { permissionMode: normalized })
+    } catch (err) {
+      console.warn(`[session-service] applyPermissionModeChange persist 失败:`, err)
+    }
+    const rt = this.runtimes.get(sessionId)
+    if (rt) {
+      try {
+        await rt.setPermissionMode(normalized)
+      } catch (err) {
+        console.error(
+          `[会话 ${sessionId}] applyPermissionModeChange setPermissionMode 失败:`,
+          err instanceof Error ? err.message : err,
+        )
+      }
+    }
+    this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.PLAN_MODE_CHANGED, {
+      sessionId,
+      mode: normalized,
+      source: 'tool',
+    })
   }
 
   /** 读会话 executionMode（Chat|Work）；缺省按新会话默认 work（与 DEFAULT_EXECUTION_MODE 一致） */
@@ -2099,6 +2278,16 @@ export class SessionService {
    *  替原「按 IR `_partial` 一刀切跳过」——glm 每 content 块为独立 uuid 且 `stop_reason` 始终 null，旧规则全标 `_partial` 全跳过 → 段间短文/工具/思考落盘全丢。
    *  live 推流（sendPayload）不受影响——闸口只管落盘。 */
   private handleSdkStreamMessage(sessionId: string, workspaceId: string | undefined, msg: SDKMessage): void {
+    // 模型侧附件附录：面板已有带图的原用户气泡，SDK 回显再推会变成第二条无图消息。
+    if ((msg as { type?: string }).type === 'user') {
+      const content = (msg as { message?: { content?: unknown } }).message?.content
+      if (userContentHasAttachmentAppendix(content)) return
+      const last = this.lastSteerBySession.get(sessionId)
+      if (last && Date.now() - last.at < 60_000) {
+        const incoming = extractSdkUserText(msg as { message?: { content?: unknown } })
+        if (isSteerPromptEcho(incoming, last.text)) return
+      }
+    }
     // 注入 createdAt（落盘带上，加载时 sdkMessageToIR 读回 → 渲染层显示时间）
     ;(msg as any).createdAt = (msg as any).createdAt ?? Date.now()
     const { message, event } = sdkMessageToIR(msg)
@@ -2176,6 +2365,9 @@ export class SessionService {
   private handlePiStreamPayload(sessionId: string, workspaceId: string | undefined, p: TAgentDesktopStreamPayload): void {
     if (p.kind === 'sdk_message') {
       const msg = p.message
+      if (msg.type === 'user' && userContentHasAttachmentAppendix(msg.content)) {
+        return
+      }
       ;(msg as any).createdAt = (msg as any).createdAt ?? Date.now()
       const isPartial =
         msg.type === 'assistant' && (msg as { _partial?: boolean })._partial === true

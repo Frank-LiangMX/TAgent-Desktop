@@ -51,6 +51,8 @@ export interface AntmlToolResult {
 
 const INVOKE_RE = /<antml:invoke\s+name\s*=\s*["']?([^"'\s>]+)["']?[^>]*>([\s\S]*?)<\/antml:invoke>/g;
 const PARAM_RE = /<antml:parameter\s+name\s*=\s*["']?([^"'\s>]+)["']?[^>]*>([\s\S]*?)<\/antml:parameter>/g;
+const INVOKE_OPEN_RE = /<antml:invoke\s+name\s*=\s*["']?([^"'\s>]+)["']?[^>]*>/g;
+const PARAM_PARTIAL_RE = /<antml:parameter\s+name\s*=\s*["']?([^"'\s>]+)["']?[^>]*>([\s\S]*?)(?:<\/antml:parameter>|$)/g;
 
 /**
  * 从一段完整文本里解析所有 antml:invoke 工具调用。
@@ -83,6 +85,33 @@ export function parseAntmlInvokes(text: string): AntmlToolCall[] {
       end: m.index + full.length,
       raw: full,
     });
+  }
+
+  // 某些 kscc/模型输出会在 text block 结束前丢失 `</antml:invoke>`，甚至重复输出
+  // 开标签。不能把这种内容当成正常正文，否则工具协议会泄漏给用户且 Agent loop
+  // 会提前收口。将第一个未闭合 invoke 宽容地收口为一次工具调用；空参数交给宿主
+  // 校验（workspace_search 的空 path 正好表示工作区根目录）。
+  INVOKE_OPEN_RE.lastIndex = 0;
+  let open: RegExpExecArray | null;
+  while ((open = INVOKE_OPEN_RE.exec(text)) !== null) {
+    const start = open.index;
+    if (calls.some((call) => call.start === start)) continue;
+    const name = open[1] ?? '';
+    const tail = text.slice(start + open[0].length);
+    const args: Record<string, string> = {};
+    PARAM_PARTIAL_RE.lastIndex = 0;
+    let pm: RegExpExecArray | null;
+    while ((pm = PARAM_PARTIAL_RE.exec(tail)) !== null) {
+      args[pm[1] ?? ''] = pm[2] ?? '';
+    }
+    calls.push({
+      name,
+      arguments: args,
+      start,
+      end: text.length,
+      raw: text.slice(start),
+    });
+    break;
   }
   return calls;
 }

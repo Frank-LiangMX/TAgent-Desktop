@@ -2,7 +2,8 @@
  * MessageQueue — 运行中排队消息面板
  *
  * 放在底栏栈内、composer 上方。每条消息各自可：
- * - 引导：不打断，steer 到下一轮边界
+ * - 默认：本场运行结束后按序发送（排队）
+ * - 引导：不打断，夹进这次运行
  * - 编辑：移回输入框继续改
  * - 移除 / 面板清空
  */
@@ -51,18 +52,23 @@ export function MessageQueue({
       {queue.length > 0 && (
         <motion.div
           key="message-queue"
-          initial={{ opacity: 0, y: 12, height: 0 }}
-          animate={{ opacity: 1, y: 0, height: 'auto' }}
-          exit={{ opacity: 0, y: 8, height: 0 }}
-          transition={{ type: 'spring', stiffness: 420, damping: 36 }}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 8 }}
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
           onAnimationComplete={remeasureComposerTop}
-          className="message-queue pointer-events-auto overflow-hidden"
+          className="message-queue pointer-events-auto"
         >
           <div className="message-queue-panel">
             <div className="message-queue-panel__head">
               <div className="message-queue-panel__title">
                 <ListNumbers size={14} weight="regular" aria-hidden />
-                <span>队列中 {queue.length} 条消息</span>
+                <div className="message-queue-panel__title-copy">
+                  <span>队列中 {queue.length} 条</span>
+                  <span className="message-queue-panel__hint">
+                    默认结束后按序发送，点引导可夹进这次运行
+                  </span>
+                </div>
               </div>
               <div className="message-queue-panel__actions">
                 <button
@@ -84,7 +90,7 @@ export function MessageQueue({
                   </span>
                   <div className="message-queue-panel__row-actions">
                     {onSteer && running ? (
-                      <AppTooltip label="引导此消息（不中断当前轮）" side="top">
+                      <AppTooltip label="夹进这次运行：当前工具结束后就会带上，不用等整场结束" side="top">
                         <button
                           type="button"
                           disabled={busy}

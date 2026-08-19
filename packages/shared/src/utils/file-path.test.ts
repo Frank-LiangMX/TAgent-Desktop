@@ -58,10 +58,32 @@ describe('isAbsoluteFilePath', () => {
     expect(isAbsoluteFilePath('/Anthropic/v1/messages')).toBe(false)
   })
 
-  test('MSYS 盘符挂载与常见 FS 根仍识别', () => {
+  test('MSYS 盘符挂载仍识别带扩展名文件', () => {
     expect(isAbsoluteFilePath('/f/TAgent-Desktop/a.ts')).toBe(true)
-    expect(isAbsoluteFilePath('/home/user/bin/tool')).toBe(true)
     expect(isAbsoluteFilePath('/tmp/out.log')).toBe(true)
+  })
+
+  test('无扩展名绝对路径不升 FileChip（目录 / 工作区）', () => {
+    expect(isAbsoluteFilePath('C:\\Users\\loumi\\Desktop\\AI\\TAgent-Desktop')).toBe(false)
+    expect(isAbsoluteFilePath('F:/TAgent-Desktop')).toBe(false)
+    expect(isAbsoluteFilePath('/f/TAgent-Desktop')).toBe(false)
+    expect(isAbsoluteFilePath('/home/user/bin/tool')).toBe(false)
+    expect(isAbsoluteFilePath('\\\\server\\share\\workspace')).toBe(false)
+  })
+
+  test('版本号目录不升 FileChip（UE_5.8 的 .8 不是扩展名）', () => {
+    expect(isAbsoluteFilePath('D:\\Program Files\\Epic Games\\UE_5.8')).toBe(false)
+    expect(isAbsoluteFilePath('D:/Program Files/Epic Games/UE_5.8')).toBe(false)
+    expect(isAbsoluteFilePath('C:\\Program Files\\dotnet\\sdk\\8.0.100')).toBe(false)
+    expect(isAbsoluteFilePath('/opt/unreal/UE_5.8')).toBe(false)
+    expect(isAbsoluteFilePath('D:\\Program Files\\Epic Games\\UE_5.8\\Engine\\Source\\Foo.cpp')).toBe(
+      true,
+    )
+  })
+
+  test('点文件仍识别', () => {
+    expect(isAbsoluteFilePath('/home/user/.env')).toBe(true)
+    expect(isAbsoluteFilePath('C:\\proj\\.gitignore')).toBe(true)
   })
 
   test('省略号截断路径不升 FileChip（D:/proj/...）', () => {

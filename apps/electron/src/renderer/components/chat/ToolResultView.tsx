@@ -52,7 +52,7 @@ export function ToolResultView({ block }: ToolResultViewProps): React.ReactEleme
         </span>
         <ChevronDown
           className={cn(
-            'size-3.5 transition-transform duration-200',
+            'size-3.5 transition-transform duration-200 ease-linear',
             isOpen ? 'rotate-180' : 'rotate-0'
           )}
         />

@@ -193,7 +193,7 @@ export function ProcessGroupView({
           size={12}
           weight="bold"
           className={cn(
-            'shrink-0 text-muted-foreground/45 transition-transform duration-150',
+            'shrink-0 text-muted-foreground/45 transition-transform duration-150 ease-linear',
             showBody && 'rotate-90',
           )}
         />
@@ -341,6 +341,16 @@ export const ThinkingActivityRow = memo(function ThinkingActivityRow({
   })
 
   const panelId = useId()
+  // 收起后延迟卸正文，让 grid 0fr 过渡有内容可动画（与 concise fold 一致）
+  const [bodyMounted, setBodyMounted] = useState(open)
+  useEffect(() => {
+    if (open) {
+      setBodyMounted(true)
+      return
+    }
+    const id = window.setTimeout(() => setBodyMounted(false), 280)
+    return () => window.clearTimeout(id)
+  }, [open])
 
   return (
     <div className={cn('agent-thinking-row', isLive && 'is-live')}>
@@ -365,15 +375,15 @@ export const ThinkingActivityRow = memo(function ThinkingActivityRow({
         <CaretRight
           size={11}
           className={cn(
-            'ml-auto shrink-0 text-muted-foreground/35 transition-transform',
+            'ml-auto shrink-0 text-muted-foreground/35 transition-transform ease-linear',
             open && 'rotate-90',
           )}
         />
       </button>
-      {/* B：折叠时卸载重型正文（不挂 MessageResponse/Markdown/useSmoothStream）；展开才挂 body */}
+      {/* B：折叠后延迟卸重型正文；收起走 grid 动画 */}
       <div className={cn('agent-thinking-row__panel', open && 'is-open')} aria-hidden={!open}>
         <div className="agent-thinking-row__panel-inner">
-          {open ? <ThinkingActivityRowBody thinking={thinking} isLive={isLive} /> : null}
+          {bodyMounted ? <ThinkingActivityRowBody thinking={thinking} isLive={isLive} /> : null}
         </div>
       </div>
     </div>
@@ -532,7 +542,7 @@ const ToolActivityRow = memo(function ToolActivityRow({
         <CaretRight
           size={11}
           className={cn(
-            'shrink-0 text-muted-foreground/35 transition-transform',
+            'shrink-0 text-muted-foreground/35 transition-transform ease-linear',
             open && 'rotate-90',
           )}
         />

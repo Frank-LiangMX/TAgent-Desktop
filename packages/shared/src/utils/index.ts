@@ -90,12 +90,24 @@ export type { RichOutputIssue } from './rich-output-validate'
 // 主会话输出风格（kscc / Pi 双核共用沟通红线）
 export { buildOutputStylePrompt } from './output-style-prompt'
 export { stripStructuralEmojiFromMarkdown } from './markdown-strip-emoji'
+export {
+  extractPersistedUserText,
+  isControlUserTextBlock,
+  isPersistedMainAssistantMessage,
+  isPersistedRealUserMessage,
+} from './persisted-user-message'
 
 // idle / 断流看门狗纯函数（超时判定）
 export {
   IDLE_WATCHDOG_TIMEOUT_MS,
   shouldForceIdle,
 } from './idle-watchdog'
+
+export {
+  isToolCallArtifactText,
+  sanitizeAssistantTextForDisplay,
+  stripToolInvocationMarkup,
+} from './tool-markup-text'
 
 // 流式 delta 协议（E）：累计快照 → 增量 suffix delta + resync + 落盘快照校准
 export {

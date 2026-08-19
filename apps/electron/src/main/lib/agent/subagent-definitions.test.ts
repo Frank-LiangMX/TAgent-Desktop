@@ -18,6 +18,12 @@ vi.mock('../atomic-json', () => ({
   },
 }))
 
+// 本地 CLI 编排段注入依赖：默认返回空串（未启用），个别用例覆盖覆盖
+let mockCliCards = ''
+vi.mock('../agent/cli-workers/resolve-backend', () => ({
+  listEnabledCliWorkerCards: () => mockCliCards,
+}))
+
 const { buildBuiltinSubagentDefinitions, resolveSubagentDefinition, buildSubagentDelegationPrompt } =
   await import('./subagent-definitions')
 const { DEFAULT_ROLES } = await import('@tagent/shared')
@@ -70,6 +76,22 @@ describe('subagent-definitions 角色投影', () => {
     expect(text).toContain('code-reviewer')
     expect(text).toContain('analyst')
     expect(text).toMatch(/角色库/)
+  })
+
+  test('未启用 CLI 工人 → 委派策略含禁用提示段', () => {
+    mockCliCards = ''
+    const text = buildSubagentDelegationPrompt('conservative')
+    expect(text).toContain('本地 CLI 编排')
+    expect(text).toContain('未启用本机 CLI 工人')
+  })
+
+  test('启用 CLI 工人 → 委派策略注入能力卡 + Bash spawn 用法', () => {
+    mockCliCards = 'CLI 工人能力卡（按优先级）：\n  codex — cost 3 · reasoning high · text'
+    const text = buildSubagentDelegationPrompt('conservative')
+    expect(text).toContain('本地 CLI 编排')
+    expect(text).toContain('codex — cost 3 · reasoning high · text')
+    expect(text).toContain('Bash 工具')
+    expect(text).toContain('按特长选 CLI')
   })
 
   test('claudeAvailable:false → 内置角色均无 model（继承父会话模型）', () => {

@@ -256,12 +256,12 @@ export function RolesPage(): JSX.Element {
           >
             <ArrowsClockwise className={cn('size-3.5', loading && 'animate-spin')} weight="bold" />
           </Button>
-          <Button size="sm" variant="secondary" disabled={busy} onClick={() => void onImportMd()}>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => void onImportMd()}>
             <FileArrowUp className="mr-1.5 size-3.5" weight="bold" />
             导入
           </Button>
           {view === 'team' && (
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => void onReset()}>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => void onReset()}>
               重置内置
             </Button>
           )}

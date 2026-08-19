@@ -17,12 +17,15 @@ interface WorkspaceSelectorProps {
   onSelect: (id: string) => void
   /** 打开其他项目（原生目录选择 + 注册工作区） */
   onOpenProject: () => void
+  /** 允许调用方调整触发器布局（例如在表单中占满一行） */
+  className?: string
 }
 
 export function WorkspaceSelector({
   value,
   onSelect,
   onOpenProject,
+  className,
 }: WorkspaceSelectorProps): JSX.Element {
   const workspaces = useAtomValue(workspacesAtom)
   const [open, setOpen] = useState(false)
@@ -36,15 +39,16 @@ export function WorkspaceSelector({
           className={cn(
             'flex min-w-0 max-w-[320px] items-center gap-1.5 rounded-full px-2.5 py-1 text-xs transition-colors',
             'text-muted-foreground hover:bg-accent hover:text-foreground',
+            className,
           )}
           aria-label="选择工作区"
         >
           <FolderOpen className="size-3.5 shrink-0" />
-          <span className="min-w-0 truncate font-medium text-foreground/85">
+          <span className="min-w-0 shrink truncate font-medium text-foreground/85">
             {active?.name || '选择工作区'}
           </span>
           {active && (
-            <span className="min-w-0 truncate text-[10px] text-foreground/40">
+            <span className="min-w-0 flex-1 truncate text-[10px] text-foreground/40">
               · {active.projectDirectory ?? active.id}
             </span>
           )}

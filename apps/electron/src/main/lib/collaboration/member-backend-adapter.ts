@@ -13,13 +13,23 @@
  * - apps/electron/src/main/lib/memory/memory-llm-client.ts（resolveMemoryLlmChannel：取第一个 enabled 外部渠道）
  */
 import {
+  createKsccBareStreamFn,
   createKsccSeatRunner,
   createPiHttpSeatRunner,
+  createHttpDirectStreamFn,
   type MoASeatRunner,
 } from '@tagent/pi-core'
+import { Agent, type AgentTool, type AgentToolResult } from '@earendil-works/pi-agent-core'
+import { Type } from '@earendil-works/pi-ai'
 import {
+  isAgentCompatibleProvider,
   resolveChannelDefaultModelId,
+  sanitizeAssistantTextForDisplay,
   type Channel,
+  type ProviderType,
+  type CollaborationHostToolCall,
+  type CollaborationPermissionProfile,
+  type CollaborationHostToolHandler,
   type CollaborationMemberCapabilities,
   type MemberBackendAdapter,
   type MemberTurnInput,
@@ -30,6 +40,270 @@ import { resolveKsccPath } from '../adapters/claude/kscc-path'
 
 /** 单 turn 超时（ms）；外部渠道长回复兜底，取消由 AbortSignal 即时生效 */
 const MEMBER_TURN_TIMEOUT_MS = 120_000
+
+type RoomAssistantSnapshot = {
+  role?: string
+  content?: unknown
+}
+
+/**
+ * Pi 的 message_update.partial 是一条 assistant turn 的累计快照；不能把每一轮
+ * text_delta 直接拼成最终正文，否则工具循环中的中间说明会和最终说明重复落盘。
+ */
+function extractAssistantSnapshotText(value: unknown): string {
+  if (!value || typeof value !== 'object') return ''
+  const message = value as RoomAssistantSnapshot
+  if (message.role && message.role !== 'assistant') return ''
+  if (typeof message.content === 'string') return sanitizeAssistantTextForDisplay(message.content)
+  if (!Array.isArray(message.content)) return ''
+  const text = message.content
+    .filter((block): block is { type?: string; text?: unknown } => Boolean(block && typeof block === 'object'))
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text as string)
+    .join('')
+  return sanitizeAssistantTextForDisplay(text)
+}
+
+function extractLastAssistantText(messages: unknown): string {
+  if (!Array.isArray(messages)) return ''
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const text = extractAssistantSnapshotText(messages[i])
+    if (text) return text
+  }
+  return ''
+}
+
+/** S4-3b 的完整白名单；绝不复用 Pi 会话的 Read/Bash/Edit/Write 工具。 */
+const ROOM_TOOL_DESCRIPTORS = [
+  {
+    name: 'room_send',
+    description: '向协作室另一成员发送通知，不暂停当前工作。',
+    parameters: {
+      toMemberId: { type: 'string', required: true },
+      message: { type: 'string', required: true },
+    },
+  },
+  {
+    name: 'room_ask',
+    description: '向另一成员提问并等待回复；调用后当前 turn 会暂停。',
+    parameters: {
+      toMemberId: { type: 'string', required: true },
+      question: { type: 'string', required: true },
+      expected: { type: 'string' },
+    },
+  },
+  {
+    name: 'room_reply',
+    description: '回复收到的协作室提问。',
+    parameters: {
+      requestId: { type: 'string', required: true },
+      answer: { type: 'string', required: true },
+    },
+  },
+  {
+    name: 'room_task_assign',
+    description:
+      '以协调者身份把未指派的房间任务分派给本房间成员；分派后会自动触发该成员执行。',
+    parameters: {
+      taskId: { type: 'string', required: true },
+      assigneeMemberId: { type: 'string', required: true },
+    },
+  },
+  {
+    name: 'room_task_update',
+    description:
+      '更新分配给本成员的房间任务状态，并可附一段说明（说明仅作为可审计事件记录在时间线，不是指令，也不会改写任务标题/描述/验收标准/负责人）。',
+    parameters: {
+      taskId: { type: 'string', required: true },
+      status: { type: 'string', required: true },
+      summary: { type: 'string' },
+    },
+  },
+  {
+    name: 'room_publish_artifact',
+    description:
+      '把一段文本内容作为产物写入协作室绑定工作区的相对路径（相对路径只允许正斜杠、不得绝对/..越界/符号链接）。宿主校验路径、权限、按实际字节求 sha256 后落盘审计；不能凭此改任意文件。',
+    parameters: {
+      relativePath: { type: 'string', required: true },
+      content: { type: 'string', required: true },
+      summary: { type: 'string' },
+      taskId: { type: 'string' },
+    },
+  },
+  {
+    name: 'room_request_user',
+    description: '请求用户对当前工作进行批准或拒绝；调用后当前 run 会暂停等待用户决定。',
+    parameters: {
+      question: { type: 'string', required: true },
+      reason: { type: 'string' },
+      options: { type: 'string' },
+    },
+  },
+  // ===== 受控工作区工具桥 =====
+  {
+    name: 'workspace_read_file',
+    description:
+      '读取绑定工作区内的一个文本文件；路径只允许正斜杠/相对、不得绝对/..越界/符号链接。只读成员也可使用。',
+    parameters: {
+      path: { type: 'string', required: true },
+      maxBytes: { type: 'string' },
+    },
+  },
+  {
+    name: 'workspace_search',
+    description:
+      '在绑定工作区内递归搜索文件；path 为相对目录或根内路径，传空字符串、`.` 或 `./` 表示工作区根；pattern 可选 glob/*?/子串过滤，maxResults 可设返回上限（默认 200）。只读成员也可使用。',
+    parameters: {
+      path: { type: 'string', required: true },
+      pattern: { type: 'string' },
+      maxResults: { type: 'string' },
+    },
+  },
+  {
+    name: 'workspace_write_file',
+    description:
+      '向绑定工作区的相对路径写入一个文本文件（仅在权限为 workspace-write 且房间绑定了工作区时可用）；路径同样受绝对/..越界/符号链接约束。',
+    parameters: {
+      path: { type: 'string', required: true },
+      content: { type: 'string', required: true },
+    },
+  },
+  {
+    name: 'workspace_run_command',
+    description:
+      '在绑定工作区内执行一条白名单项目命令（git/bun/npm/pnpm/yarn/node/python等）；args 传 JSON 字符串数组、cwd 可为工作区内相对子目录。仅 workspace-write 成员可用。',
+    parameters: {
+      command: { type: 'string', required: true },
+      args: { type: 'string' },
+      cwd: { type: 'string' },
+      timeoutMs: { type: 'string' },
+    },
+  },
+  {
+    name: 'workspace_apply_patch',
+    description:
+      '对绑定工作区内的一个文本文件做精确字符串替换：oldText 必须在文件里恰好出现一次（找不到或不唯一都拒绝），替换为新内容 newText。路径受绝对/..越界/符号链接约束。仅 workspace-write 成员可用。',
+    parameters: {
+      path: { type: 'string', required: true },
+      oldText: { type: 'string', required: true },
+      newText: { type: 'string', required: true },
+    },
+  },
+  {
+    name: 'workspace_delete_file',
+    description:
+      '删除绑定工作区内的一个普通文件（目录、符号链接或不存在一律拒绝）。路径受绝对/..越界/符号链接约束。仅 workspace-write 成员可用。',
+    parameters: {
+      path: { type: 'string', required: true },
+    },
+  },
+  {
+    name: 'workspace_move_file',
+    description:
+      '把绑定工作区内的一个文件移动/重命名到另一相对路径；目标已存在（文件或目录）一律拒绝。源与目标都受绝对/..越界/符号链接约束。仅 workspace-write 成员可用。',
+    parameters: {
+      fromPath: { type: 'string', required: true },
+      toPath: { type: 'string', required: true },
+    },
+  },
+] as const
+
+const roomSendSchema = Type.Object(
+  { toMemberId: Type.String(), message: Type.String() },
+  { additionalProperties: false },
+)
+const roomAskSchema = Type.Object(
+  {
+    toMemberId: Type.String(),
+    question: Type.String(),
+    expected: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+)
+const roomReplySchema = Type.Object(
+  { requestId: Type.String(), answer: Type.String() },
+  { additionalProperties: false },
+)
+const roomTaskAssignSchema = Type.Object(
+  { taskId: Type.String(), assigneeMemberId: Type.String() },
+  { additionalProperties: false },
+)
+const roomTaskUpdateSchema = Type.Object(
+  {
+    taskId: Type.String(),
+    status: Type.String(),
+    summary: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+)
+const roomPublishArtifactSchema = Type.Object(
+  {
+    relativePath: Type.String(),
+    content: Type.String(),
+    summary: Type.Optional(Type.String()),
+    taskId: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+)
+const roomRequestUserSchema = Type.Object(
+  { question: Type.String(), reason: Type.Optional(Type.String()), options: Type.Optional(Type.String()) },
+  { additionalProperties: false },
+)
+
+// ===== workspace 工具桥 TypeBox schema =====
+
+const workspaceReadFileSchema = Type.Object(
+  {
+    path: Type.String(),
+    maxBytes: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+)
+const workspaceSearchSchema = Type.Object(
+  {
+    path: Type.String(),
+    pattern: Type.Optional(Type.String()),
+    maxResults: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+)
+const workspaceWriteFileSchema = Type.Object(
+  {
+    path: Type.String(),
+    content: Type.String(),
+  },
+  { additionalProperties: false },
+)
+const workspaceRunCommandSchema = Type.Object(
+  {
+    command: Type.String(),
+    args: Type.Optional(Type.String()),
+    cwd: Type.Optional(Type.String()),
+    timeoutMs: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+)
+const workspaceApplyPatchSchema = Type.Object(
+  {
+    path: Type.String(),
+    oldText: Type.String(),
+    newText: Type.String(),
+  },
+  { additionalProperties: false },
+)
+const workspaceDeleteFileSchema = Type.Object(
+  {
+    path: Type.String(),
+  },
+  { additionalProperties: false },
+)
+const workspaceMoveFileSchema = Type.Object(
+  {
+    fromPath: Type.String(),
+    toPath: Type.String(),
+  },
+  { additionalProperties: false },
+)
 
 /** channel 后端能力（S2 诚实标记：无 resume/工具/实时输入） */
 const CHANNEL_BACKEND_CAPABILITIES: CollaborationMemberCapabilities = {
@@ -46,7 +320,7 @@ interface ResolvedChannelBackend {
   /** 渠道记录（用于错误提示带上渠道名） */
   channelName: string
   /** 供应商类型（createPiHttpSeatRunner 需要；kscc 分支空串占位） */
-  provider: string
+  provider: ProviderType
   /** 实际使用的模型 ID（member.modelId > 渠道默认 > 首个 enabled） */
   modelId: string
   /** 外部渠道解密后的 apiKey（kind==='external' 时） */
@@ -221,6 +495,25 @@ export class ChannelBackendAdapter implements MemberBackendAdapter {
 
   async runTurn(input: MemberTurnInput): Promise<MemberTurnResult> {
     const cfg = resolveChannelBackendConfig({ channelId: input.channelId, modelId: input.modelId })
+
+    // 只有本机 kscc 模型泵具备「Pi Agent 执行受限 host tools，再把结果回灌模型」的
+    // 实际闭环。外部 HTTP 渠道仍走纯文本 runner，保持 fail-closed。
+    if (cfg.kind === 'kscc' && input.hostToolHandler) {
+      return runKsccRoomToolTurn({
+        input,
+        modelId: cfg.modelId,
+        ksccPath: cfg.ksccPath,
+      })
+    }
+
+    // 外部渠道：仅原生 function/tool calling 协议（Anthropic /v1/messages）且宿主注入
+    // hostToolHandler 时，才用真实 AgentTool 经供应商原生 tool_use 接桥；execute 转发宿主
+    // handler 真实校验/执行，结果由 Agent 自动回注下一轮 context。绝不通过 prompt 文本
+    // 伪造工具。无原生工具能力 / 无 host handler → fail closed 走下方纯文本 runner。
+    if (cfg.kind === 'external' && input.hostToolHandler && isAgentCompatibleProvider(cfg.provider)) {
+      return runExternalRoomToolTurn({ input, cfg })
+    }
+
     const runner: MoASeatRunner =
       cfg.kind === 'kscc'
         ? createKsccSeatRunner({ ksccPath: cfg.ksccPath })
@@ -236,6 +529,387 @@ export class ChannelBackendAdapter implements MemberBackendAdapter {
     })
     return { text }
   }
+}
+
+/**
+ * 能力声明用的保守 probe：
+ * - kscc-internal：走 antml 文本协议工具桥（runKsccRoomToolTurn）。
+ * - 外部渠道：仅当走原生 function/tool calling 协议（Anthropic /v1/messages，即
+ *   isAgentCompatibleProvider）时才声明支持；此时 runExternalRoomToolTurn 用真实
+ *   AgentTool 经供应商原生 tool_use 接桥。
+ * - OpenAI-completions / google 等不在此列 → false，保持纯文本回复（fail closed），
+ *   绝不通过 prompt 文本伪造工具，也绝不假装支持。
+ */
+export function channelSupportsRoomToolBridge(channelId?: string): boolean {
+  if (!channelId) return false
+  const channel = getChannel(channelId)
+  if (!channel) return false
+  if (channel.provider === 'kscc-internal') return true
+  return isAgentCompatibleProvider(channel.provider)
+}
+
+/**
+ * 构造协作室工具桥的 14 把受控 AgentTool：7 把 room_* + 7 把 workspace_*。
+ *
+ * 安全契约（02-RUNTIME-A2A-SPEC §9 / 03-IMPLEMENTATION-PHASES §12）：
+ * - 工具 schema 由宿主白名单写死（TypeBox），绝不来自模型或 prompt 文本；这是模型在
+ *   房间里能触发的全部副作用，绝不暴露任意 filesystem/shell/database（不复用 Pi 会话的
+ *   Read/Bash/Edit/Write 等）。
+ * - workspace_* 工具仅在本房间绑定了工作区、权限档位满足时有效；路由/守卫由 hostToolHandler
+ *   系统执行，模型不可绕过。
+ * - execute 把调用转发给宿主 hostToolHandler 真实校验/落盘/状态机迁移，绝不就地伪造结果；
+ *   返回值的 content 由 Agent 自动作为 tool_result 回注下一轮 context（result 回注）。
+ * - ask 成功且 result.awaitPeer=true 时调用 abortAgent 停掉 Agent loop，让 service 把
+ *   run 迁移到 awaiting_peer，避免模型在等待期间再做副作用。room_task_update /
+ *   room_publish_artifact 不设 awaitPeer（更新任务/发布产物不暂停当前 run）。
+ */
+export function buildRoomBridgeTools(args: {
+  hostToolHandler: CollaborationHostToolHandler
+  abortAgent: () => void
+  /** 宿主组装的权限/工作区上下文；不接受模型传入。 */
+  permissionProfile?: CollaborationPermissionProfile
+  workspaceId?: string
+}): AgentTool<any, { output: string }>[] {
+  const { hostToolHandler, abortAgent, permissionProfile, workspaceId } = args
+  const make = (
+    name: CollaborationHostToolCall['name'],
+    description: string,
+    // TypeBox schema 具体泛型在各工具间不同；AgentTool 在此处按运行时 schema 消费。
+    parameters: any,
+  ): AgentTool<any, { output: string }> => ({
+    name,
+    label: name,
+    description,
+    parameters: parameters as any,
+    execute: async (_id, raw): Promise<AgentToolResult<{ output: string }>> => {
+      const result = await hostToolHandler({
+        name,
+        arguments: Object.fromEntries(
+          Object.entries(raw as Record<string, unknown>).map(([key, value]) => [
+            key,
+            String(value ?? ''),
+          ]),
+        ),
+      })
+      // ask 的宿主状态已以 CAS 迁移；停掉 Agent loop 以免模型在等待期间再做副作用。
+      if (result.awaitPeer) abortAgent()
+      return {
+        content: [{ type: 'text', text: result.output }],
+        details: { output: result.output },
+      }
+    },
+  })
+  const roomTools = [
+    make('room_send', ROOM_TOOL_DESCRIPTORS[0].description, roomSendSchema),
+    make('room_ask', ROOM_TOOL_DESCRIPTORS[1].description, roomAskSchema),
+    make('room_reply', ROOM_TOOL_DESCRIPTORS[2].description, roomReplySchema),
+    make('room_task_assign', ROOM_TOOL_DESCRIPTORS[3].description, roomTaskAssignSchema),
+    make('room_task_update', ROOM_TOOL_DESCRIPTORS[4].description, roomTaskUpdateSchema),
+    make(
+      'room_publish_artifact',
+      ROOM_TOOL_DESCRIPTORS[5].description,
+      roomPublishArtifactSchema,
+    ),
+    make('room_request_user', ROOM_TOOL_DESCRIPTORS[6].description, roomRequestUserSchema),
+  ]
+  if (!workspaceId) return roomTools
+  // workspace 工具桥（按宿主绑定工作区/权限过滤）
+  roomTools.push(
+      make('workspace_read_file', ROOM_TOOL_DESCRIPTORS[7].description, workspaceReadFileSchema),
+      make('workspace_search', ROOM_TOOL_DESCRIPTORS[8].description, workspaceSearchSchema),
+  )
+  if (permissionProfile === 'workspace-write') {
+    roomTools.push(
+      make('workspace_write_file', ROOM_TOOL_DESCRIPTORS[9].description, workspaceWriteFileSchema),
+      make('workspace_run_command', ROOM_TOOL_DESCRIPTORS[10].description, workspaceRunCommandSchema),
+      make('workspace_apply_patch', ROOM_TOOL_DESCRIPTORS[11].description, workspaceApplyPatchSchema),
+      make('workspace_delete_file', ROOM_TOOL_DESCRIPTORS[12].description, workspaceDeleteFileSchema),
+      make('workspace_move_file', ROOM_TOOL_DESCRIPTORS[13].description, workspaceMoveFileSchema),
+    )
+  }
+  return roomTools
+}
+
+function roomToolDescriptorsFor(input: MemberTurnInput) {
+  const allowWorkspace = Boolean(input.workspaceId)
+  const allowWrite = allowWorkspace && input.permissionProfile === 'workspace-write'
+  return ROOM_TOOL_DESCRIPTORS.filter((descriptor) => {
+    if (!descriptor.name.startsWith('workspace_')) return true
+    if (!allowWorkspace) return false
+    return descriptor.name === 'workspace_read_file' || descriptor.name === 'workspace_search' || allowWrite
+  })
+}
+
+/**
+ * 外部渠道原生工具桥：把协作室 14 把受控工具
+ *（room_send/room_ask/room_reply/room_task_assign/room_task_update/room_publish_artifact/
+ * room_request_user/workspace_read_file/workspace_search/workspace_write_file/workspace_run_command/
+ * workspace_apply_patch/workspace_delete_file/workspace_move_file）
+ * 作为真实 AgentTool（TypeBox schema）接入 Pi Agent + createHttpDirectStreamFn。模型经供应商
+ * 原生 function/tool calling 协议（Anthropic /v1/messages 的 tool_use）发起调用，Agent 调
+ * execute → hostToolHandler 真实执行，结果由 Agent 自动回注下一轮 context。工具 schema 仅
+ * 通过原生 API 暴露，绝不注入 prompt 文本伪造。仅 isAgentCompatibleProvider 的外部渠道进入
+ * 此路径；其余 fail closed。
+ *
+ * 取消/超时/awaitPeer 与 runKsccRoomToolTurn 同款：signal/timer 调 agent.abort，
+ * ask 成功后 abortAgent 停 loop，service 据此把 run 保留为 awaiting_peer。
+ */
+async function runExternalRoomToolTurn(args: {
+  input: MemberTurnInput
+  cfg: ResolvedChannelBackend
+}): Promise<MemberTurnResult> {
+  const { input, cfg } = args
+  let agent: Agent | undefined
+  const tools = buildRoomBridgeTools({
+    hostToolHandler: input.hostToolHandler!,
+    abortAgent: () => agent?.abort(),
+    permissionProfile: input.permissionProfile,
+    workspaceId: input.workspaceId,
+  })
+  // createHttpDirectStreamFn 内部按 provider 预建 Model（含正确 api/baseUrl），Agent 的
+  // initialState.model 仅作占位（streamFn 忽略传入 model）。进入此路径的外部渠道均为
+  // Anthropic 协议 → anthropic-messages。
+  const model = {
+    id: cfg.modelId,
+    name: cfg.modelId,
+    api: 'anthropic-messages' as const,
+    provider: 'anthropic',
+    baseUrl: cfg.baseUrl ?? '',
+    reasoning: false,
+    input: ['text'] as ('text' | 'image')[],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 200_000,
+    maxTokens: 8_192,
+  }
+  agent = new Agent({
+    initialState: {
+      systemPrompt: input.systemPrompt,
+      model,
+      thinkingLevel: 'off',
+      tools,
+      messages: [],
+    },
+    streamFn: createHttpDirectStreamFn({
+      provider: cfg.provider,
+      apiKey: cfg.apiKey ?? '',
+      baseUrl: cfg.baseUrl,
+      modelId: cfg.modelId,
+    }),
+    toolExecution: 'sequential',
+  } as never)
+
+  let fallbackTurnText = ''
+  let visibleTurnText = ''
+  let latestAssistantText = ''
+  let timedOut = false
+  const emitSnapshot = (snapshot: string): void => {
+    const nextVisible = sanitizeAssistantTextForDisplay(snapshot)
+    if (nextVisible.startsWith(visibleTurnText)) {
+      const delta = nextVisible.slice(visibleTurnText.length)
+      if (delta) input.onTextDelta?.(delta)
+    }
+    visibleTurnText = nextVisible
+    if (nextVisible) latestAssistantText = nextVisible
+  }
+  const resetTurn = (): void => {
+    fallbackTurnText = ''
+    visibleTurnText = ''
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const armTimer = (): void => {
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      timedOut = true
+      agent?.abort()
+    }, MEMBER_TURN_TIMEOUT_MS)
+  }
+  const resetTimer = (): void => armTimer()
+  const unsubscribe = agent.subscribe((event) => {
+    if (event.type === 'turn_start') {
+      resetTurn()
+      resetTimer()
+      return
+    }
+    if (event.type === 'message_update') {
+      resetTimer()
+      const update = (event as {
+        assistantMessageEvent?: { type?: string; delta?: string; partial?: unknown }
+      }).assistantMessageEvent
+      const partialText = extractAssistantSnapshotText(update?.partial)
+      if (partialText) {
+        emitSnapshot(partialText)
+        return
+      }
+      if (update?.type === 'text_delta' && update.delta) {
+        fallbackTurnText += update.delta
+        emitSnapshot(fallbackTurnText)
+      }
+      return
+    }
+    if (event.type === 'message_end' || event.type === 'turn_end') {
+      resetTimer()
+      const messageText = extractAssistantSnapshotText((event as { message?: unknown }).message)
+      if (messageText) {
+        latestAssistantText = messageText
+        visibleTurnText = messageText
+      }
+      return
+    }
+    if (event.type === 'agent_end') {
+      resetTimer()
+      const finalText = extractLastAssistantText((event as { messages?: unknown }).messages)
+      if (finalText) latestAssistantText = finalText
+      return
+    }
+    resetTimer()
+  })
+  armTimer()
+  const abort = () => agent?.abort()
+  if (input.signal.aborted) abort()
+  else input.signal.addEventListener('abort', abort, { once: true })
+  try {
+    await agent.prompt(input.prompt)
+    await agent.waitForIdle()
+  } finally {
+    clearTimeout(timer)
+    input.signal.removeEventListener('abort', abort)
+    unsubscribe()
+    agent.abort()
+  }
+  if (timedOut) {
+    throw new Error(`协作室成员回合连续 ${MEMBER_TURN_TIMEOUT_MS / 1000} 秒无响应，已停止本次执行`)
+  }
+  return { text: latestAssistantText || sanitizeAssistantTextForDisplay(fallbackTurnText) }
+}
+
+/**
+ * 把 kscc bare 接入 Pi Agent 的真实工具循环。模型输出的 antml 调用由
+ * createKsccBareStreamFn 解析为 AgentTool；只构造宿主按 workspace/permission 过滤后的
+ * room + workspace 工具，结果由 Agent 自动写回下一轮 context。ask 成功后终止物理 loop，
+ * service 会把 run 保留为 awaiting_peer。
+ */
+async function runKsccRoomToolTurn(args: {
+  input: MemberTurnInput
+  modelId: string
+  ksccPath?: string
+}): Promise<MemberTurnResult> {
+  const { input } = args
+  let agent: Agent | undefined
+  const tools = buildRoomBridgeTools({
+    hostToolHandler: input.hostToolHandler!,
+    abortAgent: () => agent?.abort(),
+    permissionProfile: input.permissionProfile,
+    workspaceId: input.workspaceId,
+  })
+  const model = {
+    id: args.modelId,
+    name: args.modelId,
+    api: 'openai-completions' as const,
+    provider: 'kscc',
+    baseUrl: '',
+    reasoning: false,
+    input: ['text'] as ('text' | 'image')[],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 200_000,
+    maxTokens: 8_192,
+  }
+  agent = new Agent({
+    initialState: {
+      systemPrompt: input.systemPrompt,
+      model,
+      thinkingLevel: 'off',
+      tools,
+      messages: [],
+    },
+    streamFn: createKsccBareStreamFn({
+      ksccPath: args.ksccPath,
+      defaultModelId: args.modelId,
+      tools: roomToolDescriptorsFor(input) as any,
+    }),
+    toolExecution: 'sequential',
+  } as never)
+
+  let fallbackTurnText = ''
+  let visibleTurnText = ''
+  let latestAssistantText = ''
+  let timedOut = false
+  const emitSnapshot = (snapshot: string): void => {
+    const nextVisible = sanitizeAssistantTextForDisplay(snapshot)
+    if (nextVisible.startsWith(visibleTurnText)) {
+      const delta = nextVisible.slice(visibleTurnText.length)
+      if (delta) input.onTextDelta?.(delta)
+    }
+    visibleTurnText = nextVisible
+    if (nextVisible) latestAssistantText = nextVisible
+  }
+  const resetTurn = (): void => {
+    fallbackTurnText = ''
+    visibleTurnText = ''
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const armTimer = (): void => {
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      timedOut = true
+      agent?.abort()
+    }, MEMBER_TURN_TIMEOUT_MS)
+  }
+  const resetTimer = (): void => armTimer()
+  const unsubscribe = agent.subscribe((event) => {
+    if (event.type === 'turn_start') {
+      resetTurn()
+      resetTimer()
+      return
+    }
+    if (event.type === 'message_update') {
+      resetTimer()
+      const update = (event as {
+        assistantMessageEvent?: { type?: string; delta?: string; partial?: unknown }
+      }).assistantMessageEvent
+      const partialText = extractAssistantSnapshotText(update?.partial)
+      if (partialText) {
+        emitSnapshot(partialText)
+        return
+      }
+      if (update?.type === 'text_delta' && update.delta) {
+        fallbackTurnText += update.delta
+        emitSnapshot(fallbackTurnText)
+      }
+      return
+    }
+    if (event.type === 'message_end' || event.type === 'turn_end') {
+      resetTimer()
+      const messageText = extractAssistantSnapshotText((event as { message?: unknown }).message)
+      if (messageText) {
+        latestAssistantText = messageText
+        visibleTurnText = messageText
+      }
+      return
+    }
+    if (event.type === 'agent_end') {
+      resetTimer()
+      const finalText = extractLastAssistantText((event as { messages?: unknown }).messages)
+      if (finalText) latestAssistantText = finalText
+      return
+    }
+    resetTimer()
+  })
+  const abort = () => agent?.abort()
+  if (input.signal.aborted) abort()
+  else input.signal.addEventListener('abort', abort, { once: true })
+  try {
+    await agent.prompt(input.prompt)
+    await agent.waitForIdle()
+  } finally {
+    clearTimeout(timer)
+    input.signal.removeEventListener('abort', abort)
+    unsubscribe()
+    agent.abort()
+  }
+  if (timedOut) {
+    throw new Error(`协作室成员回合连续 ${MEMBER_TURN_TIMEOUT_MS / 1000} 秒无响应，已停止本次执行`)
+  }
+  return { text: latestAssistantText || sanitizeAssistantTextForDisplay(fallbackTurnText) }
 }
 
 /** 默认工厂（service 在未注入 adapter 时用） */

@@ -205,7 +205,7 @@ export function McpSettings({ embedded = false, workspaceId }: McpSettingsProps 
               <h2 className="settings-page-intro-title">MCP 服务器</h2>
               <p className="settings-page-intro-desc">按工作区管理 MCP 工具服务器，并测试真实连接</p>
             </div>
-            <Button size="sm" disabled={!slug} onClick={() => setEditor({ mode: 'add' })}>
+            <Button size="sm" variant="outline" disabled={!slug} onClick={() => setEditor({ mode: 'add' })}>
               <Plus size={14} />
               添加服务器
             </Button>
@@ -236,7 +236,7 @@ export function McpSettings({ embedded = false, workspaceId }: McpSettingsProps 
             <span aria-hidden>·</span>
             <span>{enabledCount} 个已启用</span>
           </div>
-          <Button size="sm" disabled={!slug} onClick={() => setEditor({ mode: 'add' })}>
+          <Button size="sm" variant="outline" disabled={!slug} onClick={() => setEditor({ mode: 'add' })}>
             <Plus size={14} />
             添加服务器
           </Button>

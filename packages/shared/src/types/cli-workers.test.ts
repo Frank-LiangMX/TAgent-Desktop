@@ -341,27 +341,27 @@ describe('ensureSeedWorkers', () => {
     // 用户已有 kscc 字段不被覆盖
     expect(merged.workers[0]!.bin).toBe('/my/kscc')
     expect(merged.workers[0]!.defaultModel).toBe('glm-5.2')
-    // 补的三条用 seed 默认（含 SLICE-5 能力画像）
+    // 补的三条用 seed 默认（含 SLICE-5 能力画像 + tags）
     expect(merged.workers[1]).toEqual({
       id: 'grok',
       enabled: true,
       bin: 'grok',
       defaultModel: undefined,
-      capability: { cost: 2, reasoning: 'medium', goodFor: '探索 / 对照 / 草稿实现' },
+      capability: { cost: 2, reasoning: 'medium', tags: ['frontend', 'research'], goodFor: '探索 / 对照 / 草稿实现' },
     })
     expect(merged.workers[2]).toEqual({
       id: 'codex',
       enabled: true,
       bin: 'codex',
       defaultModel: undefined,
-      capability: { cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造' },
+      capability: { cost: 4, reasoning: 'high', tags: ['reasoning', 'refactor', 'backend'], goodFor: '长任务 / 深改造' },
     })
     expect(merged.workers[3]).toEqual({
       id: 'mimo',
       enabled: true,
       bin: 'mimo',
       defaultModel: undefined,
-      capability: { cost: 1, reasoning: 'low', goodFor: '单测 / 机械改动 / 小包' },
+      capability: { cost: 1, reasoning: 'low', tags: ['test', 'scaffold', 'command'], goodFor: '单测 / 机械改动 / 小包' },
     })
     // 其余顶层字段不变
     expect(merged.enabled).toBe(true)
@@ -415,10 +415,10 @@ function cfgWithCapability(cap: unknown): unknown {
 describe('CLI_WORKERS_DEFAULT_SEED · 能力画像默认', () => {
   it('四工人各带 cost / reasoning / goodFor（modalities 缺省 = text-only）', () => {
     const byId = (id: string) => CLI_WORKERS_DEFAULT_SEED.workers.find((w) => w.id === id)
-    expect(byId('kscc')?.capability).toEqual({ cost: 3, reasoning: 'high', goodFor: '跨层接线 / 编排 / 复杂实现' })
-    expect(byId('grok')?.capability).toEqual({ cost: 2, reasoning: 'medium', goodFor: '探索 / 对照 / 草稿实现' })
-    expect(byId('codex')?.capability).toEqual({ cost: 4, reasoning: 'high', goodFor: '长任务 / 深改造' })
-    expect(byId('mimo')?.capability).toEqual({ cost: 1, reasoning: 'low', goodFor: '单测 / 机械改动 / 小包' })
+    expect(byId('kscc')?.capability).toEqual({ cost: 3, reasoning: 'high', tags: ['backend', 'reasoning', 'refactor'], goodFor: '跨层接线 / 编排 / 复杂实现' })
+    expect(byId('grok')?.capability).toEqual({ cost: 2, reasoning: 'medium', tags: ['frontend', 'research'], goodFor: '探索 / 对照 / 草稿实现' })
+    expect(byId('codex')?.capability).toEqual({ cost: 4, reasoning: 'high', tags: ['reasoning', 'refactor', 'backend'], goodFor: '长任务 / 深改造' })
+    expect(byId('mimo')?.capability).toEqual({ cost: 1, reasoning: 'low', tags: ['test', 'scaffold', 'command'], goodFor: '单测 / 机械改动 / 小包' })
     // modalities 均缺省（text-only，由 resolveWorkerCapability 折算）
     for (const w of CLI_WORKERS_DEFAULT_SEED.workers) {
       expect(w.capability?.modalities).toBeUndefined()
@@ -564,6 +564,69 @@ describe('workerPreferScore', () => {
     const prefer: CliCapabilityPrefer = { costMax: 2 }
     expect(workerPreferScore(capWorker('a', { cost: 1, reasoning: 'low' }), prefer)).toBe(5)
     expect(workerPreferScore(capWorker('a', { cost: 2, reasoning: 'low' }), prefer)).toBe(4)
+  })
+
+  it('prefer.tag 命中 worker.tags 加 3 分；未命中仅 cost 分', () => {
+    const prefer: CliCapabilityPrefer = { tag: 'frontend' }
+    const hit = capWorker('grok', { cost: 2, reasoning: 'medium', tags: ['frontend', 'research'] })
+    const miss = capWorker('codex', { cost: 4, reasoning: 'high', tags: ['reasoning', 'refactor'] })
+    expect(workerPreferScore(hit, prefer)).toBe(7) // (6-2) + 3
+    expect(workerPreferScore(miss, prefer)).toBe(2) // 6-4
+  })
+
+  it('prefer.tag 与 goodFor 命中可叠加（+3 +3）', () => {
+    const prefer: CliCapabilityPrefer = { tag: 'test', goodFor: '单测' }
+    const w = capWorker('mimo', { cost: 1, reasoning: 'low', tags: ['test', 'scaffold'], goodFor: '单测 / 机械改动' })
+    expect(workerPreferScore(w, prefer)).toBe(11) // (6-1) +3(tag) +3(goodFor)
+  })
+
+  it('prefer.tag 命中空 tags 旧工人不加分', () => {
+    const old = capWorker('old', { cost: 3, reasoning: 'medium' })
+    expect(workerPreferScore(old, { tag: 'frontend' })).toBe(3) // 仅 6-3
+  })
+})
+
+describe('workerSupportsRequire · tag 硬筛', () => {
+  it('require.tag 命中通过；未命中剔除；无 tags 视为不满足', () => {
+    const grok = capWorker('grok', { cost: 2, reasoning: 'medium', tags: ['frontend', 'research'] })
+    const codex = capWorker('codex', { cost: 4, reasoning: 'high', tags: ['reasoning', 'refactor'] })
+    const old = capWorker('old', { cost: 3, reasoning: 'medium' })
+    expect(workerSupportsRequire(grok, { tag: 'frontend' })).toBe(true)
+    expect(workerSupportsRequire(grok, { tag: 'backend' })).toBe(false)
+    expect(workerSupportsRequire(codex, { tag: 'reasoning' })).toBe(true)
+    expect(workerSupportsRequire(old, { tag: 'frontend' })).toBe(false) // 无 tags
+  })
+
+  it('require.tag 与 vision / reasoningMin 可叠加（全部满足才通过）', () => {
+    const w = capWorker('a', { cost: 3, reasoning: 'high', modalities: ['text', 'vision'], tags: ['backend', 'reasoning'] })
+    expect(workerSupportsRequire(w, { tag: 'backend', vision: true, reasoningMin: 'high' })).toBe(true)
+    expect(workerSupportsRequire(w, { tag: 'frontend', vision: true })).toBe(false) // tag 不中
+  })
+})
+
+describe('capability.tags 校验', () => {
+  it('接受合法 tags', () => {
+    const ok = cfgWithCapability({ cost: 3, reasoning: 'high', tags: ['frontend', 'backend'] })
+    expect(isValidCliWorkersConfig(ok)).toBe(true)
+    expect(validateCliWorkersConfig(ok)).toBeNull()
+  })
+
+  it('接受缺省 tags（旧配置不回归）', () => {
+    expect(isValidCliWorkersConfig(cfgWithCapability({ cost: 3, reasoning: 'high' }))).toBe(true)
+  })
+
+  it('拒绝未知 tag id', () => {
+    expect(isValidCliWorkersConfig(cfgWithCapability({ cost: 3, reasoning: 'high', tags: ['frontend', 'typo'] }))).toBe(false)
+  })
+
+  it('拒绝 tags 非数组', () => {
+    expect(isValidCliWorkersConfig(cfgWithCapability({ cost: 3, reasoning: 'high', tags: 'frontend' }))).toBe(false)
+  })
+
+  it('validateCliWorkersConfig 对未知 tag 给中文错误', () => {
+    const cfg = cfgWithCapability({ cost: 3, reasoning: 'high', tags: ['typo'] })
+    const err = validateCliWorkersConfig(cfg)
+    expect(err).toContain('capability.tags 元素须为已知标签')
   })
 })
 

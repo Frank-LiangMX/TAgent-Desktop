@@ -9,7 +9,12 @@
  * - work_stage.steps：阶段内 chronological 步骤（thinking + tool）
  * - narrative.progress / final：方向短总结 / 最终正文
  */
-import { cleanFilePathInput } from '@tagent/shared'
+import {
+  cleanFilePathInput,
+  isToolCallArtifactText,
+  sanitizeAssistantTextForDisplay,
+} from '@tagent/shared'
+import type { FileEditPatch } from '@tagent/shared'
 import type { ProcessEntry } from './session-turn-model'
 import { formatThinkingSummary, resolveThinkingDurationSec } from './session-turn-model'
 import { getToolPhrase } from './tool-phrase'
@@ -310,6 +315,65 @@ export function collectTurnEditedFiles(process: ProcessEntry[]): TurnEditedFile[
     }
   }
   return [...map.values()]
+}
+
+/**
+ * 本轮编辑工具的行级补丁（供 Files Changed 审阅还原旧稿 / 算 unified diff）。
+ *
+ * 与 {@link collectTurnEditedFiles} 同源：只收 `family===edit` 且**已有 result** 的工具，
+ * 路径用 {@link toolFilePath}；pending / Read 不收。MultiEdit 拆成多条 replace（按 edits[] 顺序）。
+ *
+ * 字段别名兼容 pi（oldText/newText/old_str/new_str）与 kscc（old_string/new_string）两套；
+ * Write 的 content（或 new_*）视为整文件新内容 → kind:'write'（无 oldText，reconstructBefore 返回 ''）。
+ */
+export function collectTurnFilePatches(process: ProcessEntry[]): FileEditPatch[] {
+  const patches: FileEditPatch[] = []
+  for (const entry of process) {
+    if (entry.type !== 'tool') continue
+    if (classifyToolFamily(entry.tool.name) !== 'edit') continue
+    if (!entry.result) continue
+    const path = toolFilePath(entry)
+    if (!path) continue
+    const input = entry.tool.input ?? {}
+    const name = entry.tool.name.trim()
+
+    if (/^write$/i.test(name)) {
+      const content = input.content ?? input.new_string ?? input.newText ?? input.new_str
+      if (typeof content === 'string') {
+        patches.push({ path, kind: 'write', newText: content })
+      }
+      continue
+    }
+
+    if (/^multiedit$/i.test(name)) {
+      const edits = input.edits
+      if (Array.isArray(edits)) {
+        for (const e of edits) {
+          if (!e || typeof e !== 'object') continue
+          const o = (e as Record<string, unknown>).old_string
+            ?? (e as Record<string, unknown>).oldText
+            ?? (e as Record<string, unknown>).old_str
+          const n = (e as Record<string, unknown>).new_string
+            ?? (e as Record<string, unknown>).newText
+            ?? (e as Record<string, unknown>).new_str
+          if (typeof o === 'string' && typeof n === 'string') {
+            patches.push({ path, kind: 'replace', oldText: o, newText: n })
+          }
+        }
+      }
+      continue
+    }
+
+    if (/^(edit|strreplace|search_replace)$/i.test(name)) {
+      const o = input.old_string ?? input.oldText ?? input.old_str
+      const n = input.new_string ?? input.newText ?? input.new_str
+      if (typeof o === 'string' && typeof n === 'string') {
+        patches.push({ path, kind: 'replace', oldText: o, newText: n })
+      }
+      continue
+    }
+  }
+  return patches
 }
 
 /**
@@ -676,7 +740,8 @@ export function buildConciseTimeline(
     }
 
     if (cur.type === 'text') {
-      if (!cur.text.trim()) continue
+      const displayText = sanitizeAssistantTextForDisplay(cur.text)
+      if (!displayText.trim()) continue
       flushLeadingThink()
       // REGRESS-N（否决 REGRESS-J J1/J4 的 isShortIdleProgress → continue）：
       // 旧规则按长度（≤ SHORT_PROGRESS_MAX_CHARS）一刀切，idle 把「正在跑验证」「准备编辑」
@@ -688,13 +753,15 @@ export function buildConciseTimeline(
       // （禁止 live 一套、idle 把总结删光）。回合末文本（isRoundFinal）即便是 filler 也保留
       // ——那可能是用户的短回答，不得丢。
       const isRoundFinal = i > lastToolIdx || lastToolIdx < 0
-      const isFiller = !isRoundFinal && isFillerProgressText(cur.text)
-      if (isFiller) continue
+      const isFiller = !isRoundFinal && isFillerProgressText(displayText)
+      // 工具调用前的 call / antml 尾段 / function_call 标记 → 不单独占 narrative 行
+      const isArtifact = !isRoundFinal && isToolCallArtifactText(displayText)
+      if (isFiller || isArtifact) continue
       flushStage()
       // live 时尾部正文先当 progress（运行队列打字机），避免 final 卡片闪现；
       // 回合结束后再升为 final。
       const tone: 'progress' | 'final' = i < lastToolIdx || isLive ? 'progress' : 'final'
-      pushNarrative(segments, cur.key, cur.text, tone)
+      pushNarrative(segments, cur.key, displayText, tone)
     }
   }
 

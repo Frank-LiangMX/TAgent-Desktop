@@ -192,7 +192,7 @@ export function ChannelsSettings(): JSX.Element {
         title="渠道"
         description="管理 AI 供应商、访问凭据和会话可用的模型"
         action={
-          <Button size="sm" onClick={() => setEditor({ mode: 'add' })}>
+          <Button size="sm" variant="outline" onClick={() => setEditor({ mode: 'add' })}>
             <Plus size={14} />
             添加渠道
           </Button>

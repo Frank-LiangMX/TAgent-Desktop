@@ -25,6 +25,7 @@ import type {
   MoARoundtablePanel,
   MoADiscussionPanel,
 } from '@tagent/shared'
+import { isControlUserTextBlock, sanitizeAssistantTextForDisplay } from '@tagent/shared'
 import type { ProcessDisplayMode } from './process-group-model'
 import { isSubagentRuntimeTaskType } from './subagent-ui-model'
 import { formatElapsedDuration } from '../../lib/time-utils'
@@ -134,34 +135,104 @@ export function groupSubagentItems(items: TurnSourceItem[]): TurnSourceItem[][] 
 }
 
 /**
- * 主会话应展示的子代理入口 id 列表（保序、去重）。
+ * 把每个子代理入口钉到「创建当时」的 work_stage。
  *
- * 来源（白名单，禁止「凡 taskCard 即入口」）：
- * 1. 主线 tool_use（Agent / task / Task）—— 一点就出卡
- * 2. 带 parentToolUseId 的子代理 assistant（无 launcher 时的兜底）
- * 3. taskCard.toolUseId **且** `taskType` 为 agent runtime（local_bash 等不得由此冒充）
+ * 主线 Agent/task tool_use 不进过程区，旧逻辑会把全部入口挂到最新探索阶段，
+ * 后一轮子代理会把已完成入口拽到新入口。按 launcher 之前最近的过程工具所属阶段锚定。
+ * 发起时尚无过程工具时：有阶段则钉在第一段，否则仍为 null（时间线尚无 stage）。
  */
-export function listSubagentEntryIds(items: TurnSourceItem[]): string[] {
-  const order: string[] = []
-  const seen = new Set<string>()
-  const push = (id: string | null | undefined): void => {
-    if (!id || seen.has(id)) return
-    seen.add(id)
-    order.push(id)
+export function assignSubagentHostStageKeys(
+  items: TurnSourceItem[],
+  stages: ReadonlyArray<{ key: string; toolIds: readonly string[] }>,
+  subagentIds: readonly string[],
+): Map<string, string | null> {
+  const toolIdToStage = new Map<string, string>()
+  for (const stage of stages) {
+    for (const id of stage.toolIds) {
+      toolIdToStage.set(id, stage.key)
+    }
   }
+
+  const wanted = new Set(subagentIds)
+  const result = new Map<string, string | null>()
+  let currentStage: string | null = null
 
   for (const it of items) {
     const m = it.message
-    if (m?.type === 'assistant' && !m.parentToolUseId) {
-      for (const b of m.content) {
-        if (b.type !== 'tool_use') continue
-        const tu = b as TAgentToolUseBlock
-        if (isSubagentLauncherTool(tu.name)) push(tu.id)
+    if (m?.type !== 'assistant' || m.parentToolUseId) continue
+    for (const b of m.content) {
+      if (b.type !== 'tool_use') continue
+      const tu = b as TAgentToolUseBlock
+      if (isSubagentLauncherTool(tu.name)) {
+        if (wanted.has(tu.id)) result.set(tu.id, currentStage)
+        continue
       }
+      const mapped = toolIdToStage.get(tu.id)
+      if (mapped) currentStage = mapped
     }
-    if (m?.type === 'assistant' && m.parentToolUseId) {
-      push(m.parentToolUseId)
+  }
+
+  const firstStage = stages[0]?.key ?? null
+  for (const id of subagentIds) {
+    if (!result.has(id)) {
+      result.set(id, currentStage ?? firstStage)
+      continue
     }
+    if (result.get(id) == null) result.set(id, firstStage)
+  }
+  return result
+}
+
+/**
+ * 主线直系 vs 嵌套派出。
+ * 嵌套 = 子代理自己的 assistant（已有 parentToolUseId）里又出现 Agent/task。
+ */
+export function classifySubagentLaunchers(items: TurnSourceItem[]): {
+  direct: string[]
+  nested: Set<string>
+} {
+  const direct: string[] = []
+  const nested = new Set<string>()
+  const seenDirect = new Set<string>()
+  for (const it of items) {
+    const m = it.message
+    if (m?.type !== 'assistant') continue
+    for (const b of m.content) {
+      if (b.type !== 'tool_use') continue
+      const tu = b as TAgentToolUseBlock
+      if (!isSubagentLauncherTool(tu.name)) continue
+      if (m.parentToolUseId) {
+        nested.add(tu.id)
+        continue
+      }
+      if (seenDirect.has(tu.id)) continue
+      seenDirect.add(tu.id)
+      direct.push(tu.id)
+    }
+  }
+  return { direct, nested }
+}
+
+/**
+ * 主会话应展示的子代理入口 id（只含主线直系，不含孙辈）。
+ *
+ * 1. 主线 assistant 上的 Agent/task tool_use
+ * 2. 主线 launcher 还没进 items 时：parented / taskCard 里「不是嵌套派出」的 id（流式兜底）
+ */
+export function listSubagentEntryIds(items: TurnSourceItem[]): string[] {
+  const { direct, nested } = classifySubagentLaunchers(items)
+  if (direct.length > 0) return direct
+
+  const order: string[] = []
+  const seen = new Set<string>()
+  const push = (id: string | null | undefined): void => {
+    if (!id || seen.has(id) || nested.has(id)) return
+    seen.add(id)
+    order.push(id)
+  }
+  for (const it of items) {
+    const m = it.message
+    if (m?.type === 'assistant' && m.parentToolUseId) push(m.parentToolUseId)
     const card = it.taskCard as { toolUseId?: string; taskType?: string } | undefined
     if (card?.toolUseId && isSubagentRuntimeTaskType(card.taskType)) {
       push(card.toolUseId)
@@ -232,6 +303,140 @@ export function backfillTurnDurations(
   return result
 }
 
+/** 用户已发、尚无 assistant 落盘时的合成 live turn key（与 Chat 渲染一致） */
+export function syntheticLiveTurnKeyForUser(userTurnKey: string): string {
+  return `turn-${userTurnKey}-live`
+}
+
+/**
+ * 终态 error 文案分类：决定一轮结束时 recordCompletion 的 endedBy 与是否抬 SessionErrorBanner。
+ *
+ * Chat 的 result 分支（isErrorResult / errorTexts）与 session_error 分支共用此纯函数收口，
+ * 避免 abortLike 误判把 AskUser 关窗后的迟到 interrupt 当成用户停止（SESSION-UX-RESIDUAL-SPEC §1/§4）：
+ * - 'stopped'：真用户停止 / 上一轮停止窗口内迟到的 abort 文案 → recordCompletion('stopped')，不抬错误条
+ * - 'complete'：AskUser 关窗后短窗口内的迟到 interrupt → 视为正常完成（**非**用户停止），
+ *   走 completeRun，不抬错误条、不把整轮标 stopped
+ * - 'error'：真错误文案 → 抬 SessionErrorBanner + recordCompletion('error')
+ */
+export const RUN_ABORT_STALE_WINDOW_MS = 8000
+export const RUN_ASK_DISMISS_WINDOW_MS = 3000
+const RUN_ABORT_LIKE_RE =
+  /aborted|interrupted by user|Request interrupted|用户取消|用户中止|用户停止|操作已中止|会话已结束/i
+
+export type RunCompletionVerdict = 'stopped' | 'complete' | 'error'
+
+export function classifyRunAbort(input: {
+  userStopped: boolean
+  lastUserStopAt: number
+  lastAskUserDismissAt: number
+  now: number
+  errorText: string
+}): RunCompletionVerdict {
+  const { userStopped, lastUserStopAt, lastAskUserDismissAt, now, errorText } = input
+  const abortLike =
+    userStopped ||
+    (lastUserStopAt > 0 && now - lastUserStopAt < RUN_ABORT_STALE_WINDOW_MS) ||
+    RUN_ABORT_LIKE_RE.test(errorText)
+  if (!abortLike) return 'error'
+  // 真用户停止优先（用户显式点 STOP）：仍标 stopped
+  if (userStopped) return 'stopped'
+  // AskUser 关窗后短窗口内的迟到 interrupt：非用户停止，按正常完成收口
+  if (lastAskUserDismissAt > 0 && now - lastAskUserDismissAt < RUN_ASK_DISMISS_WINDOW_MS) {
+    return 'complete'
+  }
+  // 其余 abort（迟到 interrupt 文案 / 上一轮停止窗口内的 error）→ 已中断
+  return 'stopped'
+}
+
+export function isSyntheticRunTurnKey(turnKey: string): boolean {
+  return turnKey.endsWith('-live') || turnKey.startsWith('turn-stream-')
+}
+
+/**
+ * 当前 run 应记完成耗时的 turn key。
+ * 末尾是 user 且 run 仍 active → 合成 live key；否则取末尾 assistant-turn。
+ */
+export function resolveRunTurnKey(
+  turns: SessionRenderTurn[],
+  sessionId: string,
+  runActive: boolean,
+): string | null {
+  const last = turns[turns.length - 1]
+  if (!last) return null
+  if (last.kind === 'assistant-turn') return last.key
+  if (!runActive) return null
+  if (last.kind === 'user') return syntheticLiveTurnKeyForUser(last.key)
+  return `turn-stream-${sessionId}`
+}
+
+/** 用户发完即停、尚无 assistant-turn 时，在 user 气泡后补「已中断」占位 */
+export function shouldRenderStoppedSyntheticShell(
+  turns: SessionRenderTurn[],
+  turnIndex: number,
+  completedDurations: Record<string, TurnDuration>,
+): boolean {
+  const turn = turns[turnIndex]
+  if (turn?.kind !== 'user') return false
+  const syntheticKey = syntheticLiveTurnKeyForUser(turn.key)
+  if (completedDurations[syntheticKey] == null) return false
+  const next = turns[turnIndex + 1]
+  return next?.kind !== 'assistant-turn'
+}
+
+export type RunStreamSnapshot = {
+  text?: string
+  thinking?: string
+}
+
+/**
+ * 本轮是否已进入 Agent 处理（有流式/assistant/工具/MoA 等）。
+ * 停止前仍为 false → 视为「未开始」，可走撤回而非「已中断」。
+ */
+export function hasRunStartedProcessing(
+  items: TurnSourceItem[],
+  stream?: RunStreamSnapshot | null,
+): boolean {
+  if (stream?.text?.trim() || stream?.thinking?.trim()) return true
+
+  let lastUserIdx = -1
+  for (let i = items.length - 1; i >= 0; i--) {
+    const m = items[i]?.message
+    if (m?.type === 'user' && isRealUserInput(m)) {
+      lastUserIdx = i
+      break
+    }
+  }
+  if (lastUserIdx < 0) return false
+
+  for (let i = lastUserIdx + 1; i < items.length; i++) {
+    const it = items[i]!
+    if (it.compactStatus) return true
+    if (it.streaming || it.streamingText || it.streamingThinking) return true
+    if (it.taskCard) return true
+    if (it.moaRoundtable || it.moaDiscussion) return true
+    const m = it.message
+    if (!m) continue
+    if (m.type === 'assistant') {
+      if (m.parentToolUseId) continue
+      if (isCrewNoticeMessage(m)) continue
+      return true
+    }
+    if (m.type === 'user') return true
+  }
+  return false
+}
+
+/** 撤回未开始轮：去掉末尾真实 user 及其后的占位（应无后续内容） */
+export function sliceItemsBeforeLastRealUser(items: TurnSourceItem[]): TurnSourceItem[] | null {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const m = items[i]?.message
+    if (m?.type === 'user' && isRealUserInput(m)) {
+      return items.slice(0, i)
+    }
+  }
+  return null
+}
+
 /** 取 items 中最后一条主线（无 parentToolUseId）assistant 消息的 createdAt（完整轮的稳定标识） */
 export function getLastMainAssistantCreatedAt(items: TurnSourceItem[]): number | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
@@ -273,11 +478,7 @@ export function isSdkControlUserMessage(message: TAgentUserMessage): boolean {
   for (const b of message.content) {
     if (b.type !== 'text') continue
     const t = (b as TAgentTextBlock).text?.trim() ?? ''
-    if (!t) continue
-    if (/^\[Request interrupted by user/i.test(t)) return true
-    if (/^\[Request cancelled/i.test(t)) return true
-    if (/^The user doesn't want to proceed with this tool use/i.test(t)) return true
-    if (/^Permission for .{0,80} (was|has been) denied/i.test(t)) return true
+    if (t && isControlUserTextBlock(t)) return true
   }
   return false
 }
@@ -524,7 +725,9 @@ export function buildTurnPresentation(
 
   // live 轮：会话级 streamState 为权威来源（delta 不绑 DisplayItem）
   if (isLiveTurn && externalStream) {
-    streamingText = externalStream.text ? externalStream.text : undefined
+    streamingText = externalStream.text
+      ? sanitizeAssistantTextForDisplay(externalStream.text) || undefined
+      : undefined
     streamingThinking = externalStream.thinking ? externalStream.thinking : undefined
     if (externalStream.text || externalStream.thinking) {
       isStreaming = true
@@ -692,7 +895,7 @@ export function buildTurnPresentation(
         at,
       })
     } else if (block.type === 'text') {
-      const text = (block as TAgentTextBlock).text
+      const text = sanitizeAssistantTextForDisplay((block as TAgentTextBlock).text)
       if (text.trim()) process.push({ type: 'text', key, text, at })
     }
   }
@@ -701,7 +904,7 @@ export function buildTurnPresentation(
     for (let i = trailingTextStart; i < allBlocks.length; i++) {
       const { block } = allBlocks[i]!
       if (block.type === 'text') {
-        const text = (block as TAgentTextBlock).text
+        const text = sanitizeAssistantTextForDisplay((block as TAgentTextBlock).text)
         if (text.trim()) answerTexts.push(text)
       }
     }

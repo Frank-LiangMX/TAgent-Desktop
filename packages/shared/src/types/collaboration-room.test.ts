@@ -6,11 +6,16 @@ import {
   COLLABORATION_ROOM_HARD_MAX_A2A_DEPTH,
   COLLABORATION_ROOM_MAX_MEMBERS,
   COLLABORATION_RUN_ID_PREFIX,
+  collaborationContinuationIdempotencyKey,
   collaborationRunIdempotencyKey,
+  nextCollaborationMentionAliases,
   isCollaborationMemberStatus,
   isCollaborationRoomStatus,
   isCollaborationRunStatus,
   parseCollaborationMentions,
+  resolveCollaborationMentions,
+  stripCollaborationRoutableMentions,
+  validateCollaborationRoomBudget,
   validateCreateCollaborationRoomInput,
   type CollaborationMember,
   type CreateCollaborationRoomInput,
@@ -84,6 +89,26 @@ describe('collaborationRunIdempotencyKey', () => {
     )
     expect(collaborationRunIdempotencyKey('msg_a', 'cm_b')).not.toBe(
       collaborationRunIdempotencyKey('msg_a', 'cm_c'),
+    )
+  })
+})
+
+describe('collaborationContinuationIdempotencyKey', () => {
+  test('由 requestId + 提问者 memberId 稳定派生', () => {
+    expect(collaborationContinuationIdempotencyKey('req_1', 'cm_a')).toBe(
+      'a2a-continue:req_1:cm_a',
+    )
+    expect(collaborationContinuationIdempotencyKey('req_1', 'cm_a')).toBe(
+      collaborationContinuationIdempotencyKey('req_1', 'cm_a'),
+    )
+  })
+
+  test('不同 request 或不同成员得到不同键', () => {
+    expect(collaborationContinuationIdempotencyKey('req_1', 'cm_a')).not.toBe(
+      collaborationContinuationIdempotencyKey('req_2', 'cm_a'),
+    )
+    expect(collaborationContinuationIdempotencyKey('req_1', 'cm_a')).not.toBe(
+      collaborationContinuationIdempotencyKey('req_1', 'cm_b'),
     )
   })
 })
@@ -249,5 +274,172 @@ describe('parseCollaborationMentions', () => {
 
   test('@all 特殊常量值为 all', () => {
     expect(COLLABORATION_MENTION_ALL).toBe('all')
+  })
+
+  test('改名后 @旧名 仍命中 mentionAliases', () => {
+    const members = [
+      mkMember('cm_dev', '主程'),
+    ]
+    members[0]!.mentionAliases = ['开发']
+    expect(parseCollaborationMentions('@开发 看下', members)).toEqual(['cm_dev'])
+    expect(parseCollaborationMentions('@主程 看下', members)).toEqual(['cm_dev'])
+  })
+
+  test('当前 displayName 占用同名时优先于别人的别名', () => {
+    const oldDev = mkMember('cm_old', '主程')
+    oldDev.mentionAliases = ['开发']
+    const newDev = mkMember('cm_new', '开发')
+    expect(parseCollaborationMentions('@开发', [oldDev, newDev])).toEqual(['cm_new'])
+  })
+
+  test('@memberId 精确命中', () => {
+    const members = [mkMember('cm_dev', '开发')]
+    expect(parseCollaborationMentions('@cm_dev 看下', members)).toEqual(['cm_dev'])
+  })
+})
+
+describe('resolveCollaborationMentions（S3.5-a H1，04 §4.5）', () => {
+  const members = () => [
+    mkMember('cm_coord', '协调者'),
+    mkMember('cm_dev', '开发'),
+    mkMember('cm_qa', '测试'),
+  ]
+  const resolve = (
+    text: string,
+    opts: Partial<Parameters<typeof resolveCollaborationMentions>[0]> = {},
+  ) =>
+    resolveCollaborationMentions({
+      text,
+      members: members(),
+      sender: { type: 'user' },
+      ...opts,
+    })
+
+  test('M1 无 @、无 structured → []（调用方回落协调者）', () => {
+    expect(resolve('你好').targetMemberIds).toEqual([])
+    expect(resolve('').targetMemberIds).toEqual([])
+  })
+
+  test('M2 @开发 文本兜底 → 开发 id', () => {
+    const r = resolve('@开发 看下')
+    expect(r.targetMemberIds).toEqual(['cm_dev'])
+    expect(r.dropped).toEqual([])
+  })
+
+  test('M3 结构化 {memberId:开发}，正文写 @协调者 → 只开发（正文忽略）', () => {
+    const r = resolve('@协调者 你好', {
+      structured: [{ kind: 'agent', memberId: 'cm_dev', displayNameSnapshot: '开发' }],
+    })
+    expect(r.targetMemberIds).toEqual(['cm_dev'])
+  })
+
+  test('M4 structured: [] + 正文 @开发 → []（明确无目标，不再扫正文）', () => {
+    expect(resolve('@开发', { structured: [] }).targetMemberIds).toEqual([])
+  })
+
+  test('M5 @all 用户 → 全部成员原序', () => {
+    const r = resolve('@all 一起上')
+    expect(r.targetMemberIds).toEqual(['cm_coord', 'cm_dev', 'cm_qa'])
+    expect(r.usedAll).toBe(true)
+  })
+
+  test('M6 成员 sender + 正文 @all → []', () => {
+    const r = resolveCollaborationMentions({
+      text: '@all',
+      members: members(),
+      sender: { type: 'member', memberId: 'cm_dev' },
+    })
+    expect(r.targetMemberIds).toEqual([])
+    expect(r.usedAll).toBe(false)
+  })
+
+  test('M7 引用块内 @开发 不命中', () => {
+    expect(
+      resolve('<quoted_message message_id="m1" author="用户">@开发</quoted_message> 请看')
+        .targetMemberIds,
+    ).toEqual([])
+  })
+
+  test('M8 请看@开发。 → 命中（末尾句号剥离）', () => {
+    expect(resolve('请看@开发。').targetMemberIds).toEqual(['cm_dev'])
+  })
+
+  test('M9 a@开发 → 不命中（ASCII 前边界）', () => {
+    expect(resolve('a@开发').targetMemberIds).toEqual([])
+  })
+
+  test('M10 请@开发@开发 → 开发一次', () => {
+    expect(resolve('请@开发@开发').targetMemberIds).toEqual(['cm_dev'])
+  })
+
+  test('M11 两成员都叫「开发」+ 文本 @开发 → [] + dropped ambiguous-name', () => {
+    const dup = [mkMember('cm_a', '开发'), mkMember('cm_b', '开发')]
+    const r = resolveCollaborationMentions({
+      text: '@开发',
+      members: dup,
+      sender: { type: 'user' },
+    })
+    expect(r.targetMemberIds).toEqual([])
+    expect(r.dropped).toEqual([{ token: '开发', reason: 'ambiguous-name' }])
+  })
+
+  test('M12 同名 + 结构化 memberId → 命中该 id', () => {
+    const dup = [mkMember('cm_a', '开发'), mkMember('cm_b', '开发')]
+    const r = resolveCollaborationMentions({
+      text: '@开发',
+      members: dup,
+      sender: { type: 'user' },
+      structured: [{ kind: 'agent', memberId: 'cm_b' }],
+    })
+    expect(r.targetMemberIds).toEqual(['cm_b'])
+  })
+
+  test('M14 未知 memberId 结构化项 → 丢掉，不抛', () => {
+    const r = resolve('@开发', {
+      structured: [
+        { kind: 'agent', memberId: 'cm_ghost', displayNameSnapshot: '幽灵' },
+        { kind: 'agent', memberId: 'cm_dev' },
+      ],
+    })
+    expect(r.targetMemberIds).toEqual(['cm_dev'])
+    expect(r.dropped).toEqual([{ token: '幽灵', reason: 'unknown-member-id' }])
+  })
+})
+
+describe('stripCollaborationRoutableMentions（S3.5-a 投影剥 @）', () => {
+  test('剥掉 routable @token 保留句末标点', () => {
+    expect(stripCollaborationRoutableMentions('请看@开发。')).toBe('请看。')
+    expect(stripCollaborationRoutableMentions('请@开发@开发')).toBe('请')
+  })
+
+  test('邮箱 / ASCII 前边界保留', () => {
+    expect(stripCollaborationRoutableMentions('a@开发 联系 foo@bar.com')).toBe(
+      'a@开发 联系 foo@bar.com',
+    )
+  })
+
+  test('代码围栏内 @开发 保留', () => {
+    expect(stripCollaborationRoutableMentions('```\n@开发\n```')).toBe('```\n@开发\n```')
+  })
+})
+
+describe('nextCollaborationMentionAliases', () => {
+  test('旧名进入别名，新名从别名摘掉', () => {
+    expect(nextCollaborationMentionAliases(['前端'], '开发', '主程')).toEqual(['前端', '开发'])
+    expect(nextCollaborationMentionAliases(['主程', '开发'], '主程', '开发')).toEqual(['主程'])
+  })
+
+  test('同名改写（仅大小写）不堆积别名', () => {
+    expect(nextCollaborationMentionAliases(undefined, '开发', '开发')).toEqual([])
+    expect(nextCollaborationMentionAliases(['开发'], '开发', '开发')).toEqual([])
+  })
+})
+
+describe('validateCollaborationRoomBudget', () => {
+  test('接受有效预算，拒绝非整数和越界值', () => {
+    expect(validateCollaborationRoomBudget({ maxTurns: 10, maxWallTimeMs: 60_000, maxUsageTokens: 20_000 })).toEqual([])
+    expect(validateCollaborationRoomBudget({ maxTurns: 0 })).not.toEqual([])
+    expect(validateCollaborationRoomBudget({ maxWallTimeMs: 500 })).not.toEqual([])
+    expect(validateCollaborationRoomBudget({ maxUsageTokens: 1.5 })).not.toEqual([])
   })
 })

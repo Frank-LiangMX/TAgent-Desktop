@@ -77,4 +77,85 @@ describe('channel settings model', () => {
     })
     expect(buildUpdateInput(draft).apiKey).toBeUndefined()
   })
+
+  it('normalizeModels 保留 contextWindow / safeContextLimit', () => {
+    const result = normalizeModels(
+      [
+        {
+          id: 'glm-5.2',
+          name: 'GLM-5.2',
+          enabled: true,
+          contextWindow: 1_000_000,
+        },
+        {
+          id: 'kimi-k2.5',
+          name: 'Kimi',
+          enabled: true,
+          contextWindow: 200_000,
+          safeContextLimit: 180_000,
+        },
+      ],
+      'glm-5.2',
+    )
+    expect(result.models).toEqual([
+      {
+        id: 'glm-5.2',
+        name: 'GLM-5.2',
+        enabled: true,
+        contextWindow: 1_000_000,
+      },
+      {
+        id: 'kimi-k2.5',
+        name: 'Kimi',
+        enabled: true,
+        contextWindow: 200_000,
+        safeContextLimit: 180_000,
+      },
+    ])
+  })
+
+  it('normalizeModels 无额外字段时不新增键（保持精简）', () => {
+    const result = normalizeModels([{ id: 'm', name: 'M', enabled: true }], 'm')
+    expect(result.models[0]!).toEqual({ id: 'm', name: 'M', enabled: true })
+    expect(Object.keys(result.models[0]!).sort()).toEqual(['enabled', 'id', 'name'])
+  })
+
+  it('mergeFetchedModels 保留本地窗口字段（优先本地，回退远端）', () => {
+    const result = mergeFetchedModels(
+      [
+        {
+          id: 'kimi-k2.5',
+          name: 'Kimi',
+          enabled: true,
+          contextWindow: 200_000,
+        },
+        { id: 'glm-5.2', name: 'GLM', enabled: true, contextWindow: 1_000_000 },
+      ],
+      [
+        {
+          id: 'kimi-k2.5',
+          name: 'Remote Kimi',
+          enabled: false,
+          contextWindow: 128_000,
+        },
+        {
+          id: 'new-vl',
+          name: 'New VL',
+          enabled: true,
+          contextWindow: 64_000,
+        },
+      ],
+      'kimi-k2.5',
+    )
+    const kimi = result.models.find((m) => m.id === 'kimi-k2.5')
+    expect(kimi).toMatchObject({
+      contextWindow: 200_000,
+      enabled: true,
+      name: 'Kimi',
+    })
+    const glm = result.models.find((m) => m.id === 'glm-5.2')
+    expect(glm).toMatchObject({ contextWindow: 1_000_000, enabled: true })
+    const newVl = result.models.find((m) => m.id === 'new-vl')
+    expect(newVl).toMatchObject({ contextWindow: 64_000 })
+  })
 })

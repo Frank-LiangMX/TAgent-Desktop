@@ -12,19 +12,34 @@ import type {
   AgentWorkspace,
   AskUserRequest,
   AskUserResponse,
+  ExitPlanModeRequest,
+  ExitPlanModeResponse,
   Channel,
   ChannelBalanceResult,
   ChannelCreateInput,
   ChannelUpdateInput,
   ChannelTestResult,
   CollaborationMember,
+  CollaborationMemberPreset,
   CollaborationMessage,
   CollaborationRoom,
   CollaborationRun,
+  CollaborationMailboxEnvelope,
+  CollaborationRoomTask,
+  CollaborationArtifact,
+  CollaborationUserApprovalRequest,
+  CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
+  SaveCollaborationMemberPresetInput,
   AddCollaborationMemberInput,
+  ContinueCollaborationDepthStopInput,
+  ContinueCollaborationDepthStopResult,
+  CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomInput,
+  UpdateCollaborationMemberInput,
+  UpdateCollaborationRoomTaskInput,
   AppendCollaborationUserMessageInput,
+  ReadCollaborationArtifactResult,
   FetchModelsInput,
   FetchModelsForChannelInput,
   FetchModelsResult,
@@ -66,6 +81,7 @@ import { PluginStoreSettings } from './components/settings/PluginStoreSettings'
 import { RolesPage } from './components/roles/RolesPage'
 import { CollaborationRoomSidebar } from './components/collaboration/CollaborationRoomSidebar'
 import { CollaborationRoomsPage } from './components/collaboration/CollaborationRoomsPage'
+import { CollaborationCreateRoomDialog } from './components/collaboration/CollaborationCreateRoomDialog'
 import {
   SettingsDialog,
   normalizeSettingsTab,
@@ -113,6 +129,7 @@ import {
 import { useGlobalSessionRunSync } from './hooks/useGlobalSessionRunSync'
 import { useGlobalPermissionSync } from './hooks/useGlobalPermissionSync'
 import { useAskUserSync } from './hooks/useAskUserSync'
+import { useExitPlanSync } from './hooks/useExitPlanSync'
 import { useInitUpdaterListener } from './atoms/updater'
 import { acknowledgeSessionStatusAtom } from './atoms/session-status-atoms'
 import { sessionRunMapAtom } from './atoms/session-run-atoms'
@@ -130,6 +147,11 @@ declare global {
         moaOneShotPresetId?: string
       }) => Promise<{ ok: boolean; error?: string }>
       stopAgent: (sessionId: string) => Promise<{ ok: boolean }>
+      recallUnsentTurn: (sessionId: string) => Promise<{
+        ok: boolean
+        text?: string
+        reason?: 'no_user' | 'already_started' | 'empty'
+      }>
       listSessionProcesses: (sessionId: string) => Promise<
         Array<{
           id: string
@@ -213,6 +235,11 @@ declare global {
         path: string
         bases?: string[]
       }) => Promise<string | null>
+      /**
+       * 读取文件在 git HEAD 的版本（Files Changed 审阅兜底：本轮补丁无法还原旧稿时取旧稿做 diff）。
+       * 无 git / 未跟踪 / 超时 → null。
+       */
+      readGitHeadFile: (input: { sessionId: string; path: string; bases?: string[] }) => Promise<string | null>
       /** 读取会话附件为 base64（localPath 相对 ~/.tagent/attachments/） */
       readAttachment: (localPath: string) => Promise<string>
       /** 解析会话附件相对路径为绝对路径 */
@@ -292,6 +319,14 @@ declare global {
       askUserRespond: (response: AskUserResponse) => Promise<void>
       /** 关闭 AskUser 选项卡（软 deny「用户未选择」，不停止当前轮） */
       askUserDismiss: (requestId: string) => Promise<void>
+      // ExitPlanMode 计划审批（主进程推请求 / 已决回听 / renderer 回用户选择）
+      onExitPlanModeRequest: (cb: (request: ExitPlanModeRequest) => void) => () => void
+      onExitPlanModeResolved: (cb: (e: { requestId: string }) => void) => () => void
+      respondExitPlanMode: (response: ExitPlanModeResponse) => Promise<void>
+      // 计划模式切换（主进程 → 渲染进程：EnterPlanMode / ExitPlanMode 审批后更新输入框 pill）
+      onPlanModeChanged: (
+        cb: (payload: { sessionId: string; mode: string; source: string }) => void,
+      ) => () => void
       // 热切换会话权限模式
       setSessionPermissionMode: (sessionId: string, mode: string) => Promise<{ ok: boolean; error?: string }>
       /** 热切换 Chat|Work（仅用户源） */
@@ -439,7 +474,34 @@ declare global {
       listCollaborationRuns: (roomId: string) => Promise<CollaborationRun[]>
       cancelCollaborationRun: (input: { roomId: string; runId: string }) => Promise<CollaborationRun | null>
       addCollaborationMember: (input: AddCollaborationMemberInput) => Promise<CollaborationMember>
+      updateCollaborationMember: (input: UpdateCollaborationMemberInput) => Promise<CollaborationMember>
+      listCollaborationMemberPresets: () => Promise<CollaborationMemberPreset[]>
+      saveCollaborationMemberPreset: (input: SaveCollaborationMemberPresetInput) => Promise<CollaborationMemberPreset>
+      deleteCollaborationMemberPreset: (id: string) => Promise<{ ok: boolean }>
+      listCollaborationMailbox: (roomId: string) => Promise<CollaborationMailboxEnvelope[]>
+      continueCollaborationDepthStop: (
+        input: ContinueCollaborationDepthStopInput,
+      ) => Promise<ContinueCollaborationDepthStopResult>
+      // 协作室（S5 室级任务/产物面板：复用已落盘 room task / artifact 真值）
+      listCollaborationRoomTasks: (roomId: string) => Promise<CollaborationRoomTask[]>
+      createCollaborationRoomTask: (input: CreateCollaborationRoomTaskInput) => Promise<CollaborationRoomTask>
+      updateCollaborationRoomTask: (
+        input: UpdateCollaborationRoomTaskInput,
+      ) => Promise<CollaborationRoomTask>
+      listCollaborationArtifacts: (roomId: string) => Promise<CollaborationArtifact[]>
+      readCollaborationArtifact: (input: {
+        roomId: string
+        artifactId: string
+      }) => Promise<ReadCollaborationArtifactResult>
+      listCollaborationUserApprovals: (roomId: string) => Promise<CollaborationUserApprovalRequest[]>
+      resolveCollaborationUserApproval: (input: {
+        roomId: string
+        requestId: string
+        decision: 'approved' | 'denied'
+        response?: string
+      }) => Promise<{ ok: true; request: CollaborationUserApprovalRequest; runId?: string } | { ok: false; reason: string }>
       onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => () => void
+      onCollaborationTextDelta: (cb: (payload: CollaborationTextDeltaPayload) => void) => () => void
       // 自动更新
       updater?: {
         checkForUpdates: () => Promise<void>
@@ -468,6 +530,7 @@ export function App(): JSX.Element {
   // 协作室：当前选中房间 + 列表刷新版本（rename/pause/archive/send 后 bump 重新拉取）
   const [activeCollaborationRoomId, setActiveCollaborationRoomId] = useState<string | null>(null)
   const [collabRefreshKey, setCollabRefreshKey] = useState(0)
+  const [collaborationCreateDialogOpen, setCollaborationCreateDialogOpen] = useState(false)
   const bumpCollab = useCallback(() => setCollabRefreshKey((k) => k + 1), [])
   const loadChannels = useSetAtom(loadChannelsAtom)
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom)
@@ -497,18 +560,21 @@ export function App(): JSX.Element {
     setSidebarOpen(true)
   }, [])
 
-  /** 新建协作室（默认带协调者 + 开发两个成员，S3 即可手测 @点名 / 多成员并行；可在头部重命名 / 添加成员） */
-  const newCollaborationRoom = useCallback(async (): Promise<void> => {
+  const clearArchivedCollaborationRoom = useCallback((roomId: string): void => {
+    setActiveCollaborationRoomId((current) => (current === roomId ? null : current))
+  }, [])
+
+  /** 新建协作室（默认只有协调者；其余成员创建后用「添加成员」弹窗选内核/渠道 + 模型加入） */
+  const newCollaborationRoom = useCallback((): void => {
+    setCollaborationCreateDialogOpen(true)
+  }, [])
+
+  const createCollaborationRoom = useCallback(async (input: CreateCollaborationRoomInput): Promise<void> => {
     try {
-      const created = await window.electronAPI.createCollaborationRoom({
-        title: '新协作室',
-        members: [
-          { displayName: '协调者', isCoordinator: true },
-          { displayName: '开发' },
-        ],
-      })
+      const created = await window.electronAPI.createCollaborationRoom(input)
       setActiveCollaborationRoomId(created.id)
       setSidebarOpen(true)
+      setCollaborationCreateDialogOpen(false)
       bumpCollab()
     } catch (err) {
       toast.error('创建协作室失败', { description: err instanceof Error ? err.message : String(err) })
@@ -539,6 +605,8 @@ export function App(): JSX.Element {
   useGlobalPermissionSync()
   // 全局 AskUserQuestion 队列同步（REQUEST 入队 / RESOLVED 出队，切会话不丢选项卡）
   useAskUserSync()
+  // 全局 ExitPlanMode 审批队列同步（REQUEST 入队 / RESOLVED 出队，切会话不丢审批横幅）
+  useExitPlanSync()
   // 自动更新状态监听（主进程推送 → atom → 顶栏 UpdateBanner）
   useInitUpdaterListener()
 
@@ -797,9 +865,9 @@ export function App(): JSX.Element {
   }, [pushTicker, requestCrewOpen])
 
   /** 打开项目目录并注册为工作区；从新建会话入口调用时直接绑定新会话 */
-  const handleOpenProject = async (startSession = false): Promise<void> => {
+  const handleOpenProject = async (startSession = false): Promise<AgentWorkspace | null> => {
     const workspace = await window.electronAPI.createProjectWorkspace()
-    if (!workspace) return
+    if (!workspace) return null
 
     await loadWorkspaces()
     setLastActiveWorkspaceId(workspace.id)
@@ -807,6 +875,7 @@ export function App(): JSX.Element {
       // 注册工作区后开新会话：进入草稿（无 tab），发送首条消息才物化为 tab
       setDraftSession({ id: 'session-' + Date.now(), title: '新会话', workspaceId: workspace.id })
     }
+    return workspace
   }
 
   const newSession = (workspaceId?: string): void => {
@@ -912,6 +981,7 @@ export function App(): JSX.Element {
               onNewRoom={() => void newCollaborationRoom()}
               refreshKey={collabRefreshKey}
               onRoomsChanged={bumpCollab}
+              onRoomArchived={clearArchivedCollaborationRoom}
             />
           ) : (
             <SessionSidebar
@@ -945,19 +1015,29 @@ export function App(): JSX.Element {
             roomId={activeCollaborationRoomId}
             refreshKey={collabRefreshKey}
             onRoomsChanged={bumpCollab}
+            onRoomArchived={clearArchivedCollaborationRoom}
             onNewRoom={() => void newCollaborationRoom()}
             onOpenSettings={(tab) => openSettings(tab)}
           />
         ) : activeRail === 'plugins' ? (
-          <div className="plugins-main-view scrollbar-thin">
+          <div
+            key="plugins"
+            className="plugins-main-view scrollbar-thin animate-in fade-in duration-300"
+          >
             <PluginStoreSettings />
           </div>
         ) : activeRail === 'memory' ? (
-          <div className="app-shell-content-stage relative h-full min-h-0 animate-in fade-in duration-300">
+          <div
+            key="memory"
+            className="app-shell-content-stage relative h-full min-h-0 animate-in fade-in duration-300"
+          >
             <MemoryMonitorPanel />
           </div>
         ) : activeRail === 'roles' ? (
-          <div className="plugins-main-view scrollbar-thin animate-in fade-in duration-300">
+          <div
+            key="roles"
+            className="plugins-main-view scrollbar-thin animate-in fade-in duration-300"
+          >
             <RolesPage />
           </div>
         ) : workspaces.length === 0 ? (
@@ -1041,6 +1121,16 @@ export function App(): JSX.Element {
         initialTab={settingsInitialTab}
         onOpenChange={setShowSettings}
         onTabChange={setSettingsInitialTab}
+      />
+      <CollaborationCreateRoomDialog
+        open={collaborationCreateDialogOpen}
+        onOpenChange={setCollaborationCreateDialogOpen}
+        defaultWorkspaceId={lastActiveWorkspaceId ?? workspaces[0]?.id}
+        onSubmit={createCollaborationRoom}
+        onOpenProject={async () => {
+          const workspace = await handleOpenProject(false)
+          return workspace?.id
+        }}
       />
       <Dialog open={tabCapacityDialogOpen} onOpenChange={setTabCapacityDialogOpen}>
         <DialogContent className="w-[min(380px,calc(100vw-32px))] gap-5 p-5 sm:max-w-none" hideClose>

@@ -211,3 +211,28 @@ export function getCollaborationRunsPath(): string {
 export function getCollaborationMailboxPath(): string {
   return join(getCollaborationDir(), 'mailbox.json')
 }
+
+/** 协作室房间共享摘要索引：~/.tagent[-dev]/collaboration/summaries.json（S3.5-b） */
+export function getCollaborationSummariesPath(): string {
+  return join(getCollaborationDir(), 'summaries.json')
+}
+
+/** 协作室轻量 room task 索引：~/.tagent[-dev]/collaboration/room-tasks.json（S5） */
+export function getCollaborationRoomTasksPath(): string {
+  return join(getCollaborationDir(), 'room-tasks.json')
+}
+
+/** 协作室产物索引：~/.tagent[-dev]/collaboration/artifacts.json（S5 room_publish_artifact） */
+export function getCollaborationArtifactsPath(): string {
+  return join(getCollaborationDir(), 'artifacts.json')
+}
+
+/** 协作室用户审批请求索引：~/.tagent[-dev]/collaboration/user-approvals.json */
+export function getCollaborationUserApprovalsPath(): string {
+  return join(getCollaborationDir(), 'user-approvals.json')
+}
+
+/** 协作室成员配置模板：~/.tagent[-dev]/collaboration/member-presets.json */
+export function getCollaborationMemberPresetsPath(): string {
+  return join(getCollaborationDir(), 'member-presets.json')
+}

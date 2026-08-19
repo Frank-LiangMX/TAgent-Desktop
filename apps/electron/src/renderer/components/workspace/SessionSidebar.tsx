@@ -21,6 +21,7 @@ import {
   Plus,
   Archive,
   MagnifyingGlass,
+  Browsers,
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import { getPlatform } from '../../lib/platform'
@@ -48,6 +49,7 @@ import {
 import { sessionRunMapAtom } from '../../atoms/session-run-atoms'
 import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
 import { allPendingAskUserRequestsAtom } from '../../atoms/ask-user-atoms'
+import { isSessionAwaitingUser } from '../../lib/session-awaiting-user'
 import { tabsAtom, activeTabIdAtom, closeTab } from '../../atoms/tabs'
 import { dockApiAtom, visibleSessionsAtom } from '../../atoms/dock-api'
 import { resolveVisibleSessionChips } from './resolve-visible-session-chips'
@@ -278,6 +280,8 @@ export function SessionSidebar({
       const evt = env.payload.event
       if (!evt || !env.sessionId) return
       if (evt.type === 'turn_end') {
+        // 等用户点选时 turn_end 只是单轮间隙，不能标成「已完成」
+        if (isSessionAwaitingUser(env.sessionId)) return
         const viewing = viewingIdsRef.current.has(env.sessionId)
         markTurnEnded({ id: env.sessionId, viewing })
       }
@@ -326,8 +330,17 @@ export function SessionSidebar({
 
   const onArchiveToggle = async (s: SessionMeta, e: React.MouseEvent): Promise<void> => {
     e.stopPropagation()
+    const shouldCloseMain =
+      !s.archived && openTabs.some((tab) => tab.sessionId === s.id && tab.id === activeTabId)
     setArchived({ id: s.id, archived: !s.archived })
     await window.electronAPI.toggleArchive(s.id)
+    // 归档当前会话后，主区不能继续显示已经从侧栏移出的内容；关闭 tab 不会停止后台运行。
+    if (shouldCloseMain) {
+      const result = closeTab(openTabs, activeTabId, s.id)
+      setTabs(result.tabs)
+      setActiveTabId(result.activeTabId)
+      dockApi?.getPanel(s.id)?.api.close()
+    }
     void refresh()
   }
 
@@ -787,12 +800,14 @@ export function SessionSidebar({
         title="删除会话？"
         description={
           <>
-            <span className="mb-1 block break-words text-foreground/80">
+            <p className="mb-1.5 text-foreground/80">
               “{deleteSessionTarget?.title ?? ''}”
-            </span>
-            {deleteSessionTarget && tabSessionIds.has(deleteSessionTarget.id)
-              ? '该会话当前已打开，删除将同时关闭对应标签页，聊天记录将永久删除且无法撤销。'
-              : '该会话的全部聊天记录将被永久删除，此操作无法撤销。'}
+            </p>
+            <p>
+              {deleteSessionTarget && tabSessionIds.has(deleteSessionTarget.id)
+                ? '该会话当前已打开，删除将同时关闭对应标签页，聊天记录将永久删除且无法撤销。'
+                : '该会话的全部聊天记录将被永久删除，此操作无法撤销。'}
+            </p>
           </>
         }
         confirmLabel="删除会话"
@@ -803,8 +818,17 @@ export function SessionSidebar({
         open={Boolean(deleteWorkspaceTarget)}
         onOpenChange={(open) => !open && setDeleteWorkspaceTarget(null)}
         icon={<Trash size={15} weight="duotone" />}
-        title={`删除工作区“${deleteWorkspaceTarget?.name ?? ''}”？`}
-        description={`将永久删除其中 ${deleteWorkspaceSessionCount} 个会话及全部聊天记录。本地项目目录不会受影响。`}
+        title="删除工作区？"
+        description={
+          <>
+            <p className="mb-1.5 text-foreground/80">
+              “{deleteWorkspaceTarget?.name ?? ''}”
+            </p>
+            <p>
+              将永久删除其中 {deleteWorkspaceSessionCount} 个会话及全部聊天记录。本地项目目录不会受影响。
+            </p>
+          </>
+        }
         confirmLabel="删除工作区"
         onConfirm={() =>
           deleteWorkspaceTarget ? deleteWorkspace(deleteWorkspaceTarget) : Promise.resolve()
@@ -902,6 +926,7 @@ function SessionRow({
       className={cn(
         'row',
         isOpen && 'is-open',
+        isInTabs && !isOpen && 'is-background-open',
         archived && 'row-archived',
         dotsOpen && 'is-dots-open',
       )}
@@ -945,7 +970,9 @@ function SessionRow({
           )}
           {/* 末尾时间：第一行右侧，margin-left:auto 由 .meta .m.time 提供 */}
           {!archived && !editing && (
-            <span className="m time">{s.updatedAt ? relTime(s.updatedAt) : ''}</span>
+            <>
+              <span className="m time">{s.updatedAt ? relTime(s.updatedAt) : ''}</span>
+            </>
           )}
           {/* 归档行：内联「已归档」状态贴右，与标题同一基线，单行不落第二行 */}
           {archived && !editing && <span className="arch-status">已归档</span>}
@@ -983,9 +1010,18 @@ function SessionRow({
           </DropdownMenu>
         </div>
         {/* meta 第二行从标题正文起点对齐，仅非归档行渲染轮数；时间已上提到 title 行 */}
-        {!archived && s.turnCount != null && s.turnCount > 0 && (
+        {!archived && ((s.turnCount != null && s.turnCount > 0) || (isInTabs && !isOpen)) && (
           <div className="meta">
-            <span className="m turns">{s.turnCount} 轮</span>
+            {s.turnCount != null && s.turnCount > 0 ? (
+              <span className="m turns">{s.turnCount} 轮</span>
+            ) : null}
+            {isInTabs && !isOpen ? (
+              <AppTooltip label="已打开 · 非当前焦点" side="top">
+                <span className="tab-open-indicator" aria-label="已打开 · 非当前焦点">
+                  <Browsers size={12} weight="regular" aria-hidden="true" />
+                </span>
+              </AppTooltip>
+            ) : null}
           </div>
         )}
       </div>

@@ -3,6 +3,18 @@
 > 上位文档：[00-MASTER](./00-MASTER.md)
 > UI：[01-PRODUCT-UX-SPEC](./01-PRODUCT-UX-SPEC.md)
 > Runtime：[02-RUNTIME-A2A-SPEC](./02-RUNTIME-A2A-SPEC.md)
+> Hermes 机制补强：[04-HERMES-BORROW-SPEC](./04-HERMES-BORROW-SPEC.md)
+> 当前进度与交接：[HANDOFF-2026-08-17](../../dev/collaboration-room/HANDOFF-2026-08-17.md)
+
+## 0. 当前进度（2026-08-18）
+
+`feature/collab-room` 尚未合 main。按本文件切片，已完成 / 未完成的真实状态：
+
+**已完成**：S1 房间壳 → S2 单成员 turn → S3 多成员并行 + 协调者路由 → S3.5-a 结构化 mention + 上下文投影 → S3.5-c 安静时间线 / run 卡 → S3.5-b 房间共享摘要 → S4-1/2 信箱纯逻辑 + host 落盘 → S4-3a peer reply 唤醒 continuation → **S4-3b 六把 adapter 工具回路（kscc bare + Anthropic 协议外部渠道原生工具桥）** → S4.5 深度停止 outbox → S5 room task 真值层 + `room_task_assign` / `room_task_update` / `room_publish_artifact` + 工作面板 + 无 `@` 自动协调闭环。
+
+**尚未完成**：S5 看板桥（`attachedBoardId` 仅 fail-closed，无真实桥/投影）、`room_request_user`、S6 全部（Git worktree / 文件租约、prompt injection 横向隔离、预算强制、时间线虚拟化）、CLI worker 成员后端（`backend==='cli'` 占位）、权限档位在 run 侧 enforce、事务性多文件写、scheduler 跨重启持久化。
+
+> 详细对照、边界与下一步见 [HANDOFF-2026-08-17](../../dev/collaboration-room/HANDOFF-2026-08-17.md)。
 
 ## 1. 实施策略
 
@@ -107,6 +119,20 @@ apps/electron/src/main/lib/collaboration/
 
 退出条件：A/B 两成员可以使用不同模型/CLI 并行完成独立任务；任何一方失败不吞掉另一方结果；并发限制重启后仍正确。
 
+## 5.5 Stage 3.5：Hermes 机制补强（不依赖工具回路）
+
+目标：在 S4-3 被 pi-core 挡住时，先把路由、投影、摘要和时间线做到不丢人。真源：[04](./04-HERMES-BORROW-SPEC.md)。
+
+工作（三个可独立 PR）：
+
+- **S3.5-a** 结构化 mention + 引用块 / `@all` / 歧义名守卫；`projectCollaborationTurnContext` 替换 `buildTurnPrompts`。
+- **S3.5-b** `summaries.json` + 有效发言阈值 + 总结者六段 prompt + CAS。无模型 fail-closed，不阻塞发言。
+- **S3.5-c** 按 `runId` 收成 run 卡；去掉每人一条「思考中」灰泡。
+
+退出条件：04 §4.5 / §5.4 / §6.7 单测绿；04 §9 手测 T1–T8 通过；普通 Chat / 会诊 / 圆桌无回归。成员正文 `@` 仍不能产生 run。
+
+> **进度（2026-08-17）**：**S3.5-a / b / c 均已交付**。a：`resolveCollaborationMentions`（结构化优先 + 文本兜底守卫 + 成员正文 `@` 永不投递 + 引用块 mask + 同名冲突 fail closed）+ `projectCollaborationTurnContext`（自己=assistant / 别人=user + 剥 routable `@` + 摘要 + 信箱预览 + A2A 恢复段）+ `appendUserMessage.mentions`。b：`CollaborationSummaryRunner`（独立总结者，CAS 租约，六段契约 prompt，fail-closed 不阻塞发言，不占 RoomScheduler 槽）。c：`groupCollaborationTimelineItems` + `CollaborationTimeline` / `CollaborationRunCard`（一 run 一卡，流式正文，聚合成员消息）。
+
 ## 6. Stage 4：结构化 A2A 与等待恢复
 
 目标：完成本功能与“主会话派工”的本质差异。
@@ -121,6 +147,13 @@ apps/electron/src/main/lib/collaboration/
 
 退出条件：自动化场景“A 询问 B → B 回复 → A 恢复完成”稳定通过；深度超限、自发给自己、重复 reply 和 A↔B 循环均被阻断并可解释。
 
+S4 内部分切片（见 S4-A2A-NOTES 与 04 §7）：
+
+- S4-1 / S4-2 已交付：纯函数 + mailbox 落盘。
+- **S4-3a 已交付**：host 侧 peer reply 唤醒（B 回复 → 提问者 awaiting_peer 入队 continuation，幂等键含 requestId）。
+- **S4-3b 已交付**：adapter 工具回路 —— 把 `room_send/room_ask/room_reply/room_task_assign/room_task_update/room_publish_artifact` 六把受限工具以真实 AgentTool（TypeBox schema）经原生 tool-use 协议桥接给成员 turn；kscc bare（`createKsccBareStreamFn`）与 Anthropic 协议外部渠道（`createHttpDirectStreamFn`，`isAgentCompatibleProvider`）两条路径。OpenAI-completions / google 等无原生工具能力渠道仍走纯文本 runner（fail-closed，不伪造工具）。
+- **S4.5 已交付**：信封作 outbox（`attemptId` / `delivery`：outbox→dispatched→accepted，重启对已开跑 dispatch 标 `outcome_unknown`，未启动 outbox 安全重投）；深度停止可呈现卡 + 「继续一次」（`continueDepthStop`）。
+
 ## 7. Stage 5：任务、看板与产物
 
 目标：让聊天协作能落到可验收工作，而不复制看板真值。
@@ -132,6 +165,8 @@ apps/electron/src/main/lib/collaboration/
 - 成员发布产物时校验相对路径、文件、hash 和权限。
 - 右侧任务/产物面板；从任务定位消息和 run。
 - 看板事件投影到房间，room 不反向覆盖未经授权的 task 状态。
+
+> **进度（2026-08-18）**：已完成「room task 真值层」（`CollaborationRoomTask` + 严格状态机 + version CAS，挂板后 fail-closed）、`room_task_update`（负责人更新状态）、`room_task_assign`（协调者分派未指派任务并自动触发目标成员）、`room_publish_artifact`（路径安全 + 实际 hash/字节数）以及右侧任务/产物工作面板。**未完成**：看板桥（`attachedBoardId` 仅作 fail-closed 标记，无真实桥与投影）、`room_request_user` 和 S6 生产化约束。
 
 退出条件：用户能从最终结论追溯到任务、成员 run、文件和 diff；重启后链接完整；看板和房间不存在相互矛盾的状态副本。
 
@@ -154,21 +189,29 @@ apps/electron/src/main/lib/collaboration/
 
 每个切片以可测试纵向闭环提交，避免按“先把所有 UI / 再把所有 backend”横切：
 
-| 切片 | 用户可见结果 | 关键风险 |
-| --- | --- | --- |
-| S1 | Rail 可进入、创建/恢复静态房间 | 导航回归、DB migration |
-| S2 | 一个独立成员可回答 | 幂等、取消、上下文隔离 |
-| S3 | 两成员并行 + 协调者 | 公平调度、成本倍增 |
-| S4 | A 问 B 后等待并恢复 | continuation、副作用重复 |
-| S5 | 任务/产物互链 | 双真值、路径安全 |
-| S6 | worktree/租约 + 生产恢复 | 文件冲突、清理与崩溃 |
+| 切片 | 用户可见结果 | 关键风险 | 状态 |
+| --- | --- | --- | --- |
+| S1 | Rail 可进入、创建/恢复静态房间 | 导航回归、DB migration | ✅ |
+| S2 | 一个独立成员可回答 | 幂等、取消、上下文隔离 | ✅ |
+| S3 | 两成员并行 + 协调者 | 公平调度、成本倍增 | ✅ |
+| S3.5-a | `@` 按成员 ID 投递；投影分自己/别人 | 误把成员文本当路由 | ✅ |
+| S3.5-b | 成员能读到六段式房间摘要 | 摘要抢槽、注入、双跑 | ✅ |
+| S3.5-c | 一 run 一卡，时间线安静 | 把 Chat 编排搬进房间 | ✅ |
+| S4 | A 问 B 后等待并恢复 | continuation、副作用重复 | ✅（S4-1/2 + S4-3a/b） |
+| S4.5 | 深度停止可解释、重启不重放已开跑调用 | 另起 outbox 表、unlimited | ✅ |
+| S5 | 任务/产物互链 | 双真值、路径安全 | ◐（room task / assign / update / artifact / 面板已完成；看板桥未做） |
+| S6 | worktree/租约 + 生产恢复 | 文件冲突、清理与崩溃 | ⬜ |
 
 ## 10. 测试矩阵
 
 ### 单元测试
 
 - 所有状态转换与非法转换。
-- mention/target 路由、`@all` 权限、成员内串行。
+- mention/target 路由、结构化 mention、引用块屏蔽、歧义 displayName、`@all` 仅用户、成员正文不路由。
+- 上下文投影：自己/别人角色、可见性、围栏内 `@` 保留。
+- 房间摘要：有效发言计数、CAS、超预算 fail-closed。
+- 时间线按 `runId` 聚合；handoff `attemptId` 去重与 `outcome_unknown`。
+- 成员内串行、房间并发。
 - A2A depth、request/reply 幂等、循环 fingerprint。
 - budget、并发、公平队列、scheduler lease。
 - 路径归一化、workspace escape、租约冲突。
@@ -227,6 +270,8 @@ apps/electron/src/main/lib/collaboration/
 - 不得在无法确认副作用时自动无限重试。
 - 不得让 renderer 成为调度或任务真值源。
 - 不得为了“实时感”先绑定一个不可靠的长驻进程架构。
+- 不得让成员正文中的 `@` 产生 run 或 A2A 投递。
+- 不得另起一套与 mailbox 平行的 Hermes handoff 表，也不得开放 unlimited 深度。
 
 ## 13. 上线门槛
 

@@ -267,7 +267,12 @@ describe('SessionRuntime steerMessage', () => {
     await waitFor(() => messages.length > 0)
     expect(rt.hasLiveProcess()).toBe(true)
     expect(await rt.steerMessage('nudge')).toBe('live')
-    expect(queued).toMatchObject({ message: { role: 'user', content: 'nudge' } })
+    expect(queued).toMatchObject({
+      type: 'user',
+      session_id: 's-steer-live',
+      parent_tool_use_id: null,
+      message: { role: 'user', content: 'nudge' },
+    })
   })
 })
 

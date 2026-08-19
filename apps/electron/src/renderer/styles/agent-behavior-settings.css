@@ -292,17 +292,38 @@
 }
 .cli-workers-inline-hint {
   margin: 0;
-  padding: 0 2px;
+  padding: 0;
   color: var(--spatial-muted);
   font-size: 11.5px;
   line-height: 1.45;
+}
+
+/* ── 子代理设置页：统一左缘（区块标题 / 卡片 / CLI 列表同一竖线） ── */
+.agent-cli-settings-page .settings-block-head {
+  padding: 0;
+}
+.agent-cli-settings-page .settings-card-footnote {
+  padding: 0 14px 12px;
+}
+.agent-cli-settings-page .settings-card-footnote .agent-behavior-field-hint {
+  margin: 0;
+}
+.agent-cli-settings-page .cli-workers-toolbar {
+  padding: 0;
+  margin-bottom: 10px;
+}
+.agent-cli-settings-page .cli-workers-adv-hint,
+.agent-cli-settings-page .cli-workers-advanced-toggle {
+  padding-left: 0;
+  padding-right: 0;
 }
 .cli-workers-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  padding: 0 2px;
+  padding: 0;
+  margin-bottom: 10px;
 }
 .cli-workers-btn {
   display: inline-flex;
@@ -333,10 +354,8 @@
 .cli-workers-table {
   display: flex;
   flex-direction: column;
-  border: 1px solid color-mix(in srgb, var(--spatial-ink) 10%, transparent);
-  border-radius: 12px;
+  /* 圆角 / 边框 / 背景与 SettingsCard 同壳（settings-card-surface） */
   overflow: hidden;
-  background: var(--settings-chip-fill, transparent);
 }
 .cli-workers-row {
   display: flex;
@@ -379,28 +398,38 @@
 .cli-workers-move {
   display: inline-flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
+  padding: 1px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--spatial-ink) 4%, transparent);
 }
 .cli-workers-icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 16px;
+  width: 24px;
+  height: 18px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--spatial-ink) 10%, transparent);
-  border-radius: 5px;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--spatial-muted);
   cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
 }
 .cli-workers-icon-btn:hover:not(:disabled) {
-  background: var(--settings-hover-fill, color-mix(in srgb, var(--spatial-ink) 6%, transparent));
+  background: var(--settings-hover-fill, color-mix(in srgb, var(--spatial-ink) 8%, transparent));
   color: var(--spatial-ink);
 }
 .cli-workers-icon-btn:disabled {
-  opacity: 0.35;
+  opacity: 0.28;
   cursor: not-allowed;
+}
+.cli-workers-icon-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--spatial-ink) 14%, transparent);
 }
 .cli-workers-name {
   display: inline-flex;
@@ -418,6 +447,31 @@
   color: var(--spatial-muted);
   font-size: 10px;
   font-weight: 600;
+}
+/* 擅长任务类型多选 chip */
+.cli-workers-tag-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cli-workers-tag-chip {
+  border: 1px solid color-mix(in srgb, var(--spatial-ink) 14%, transparent);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--spatial-muted);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.cli-workers-tag-chip:hover {
+  border-color: color-mix(in srgb, var(--spatial-ink) 28%, transparent);
+}
+.cli-workers-tag-chip.is-on {
+  background: color-mix(in srgb, var(--spatial-ink) 88%, transparent);
+  color: var(--spatial-paper, #fff);
+  border-color: transparent;
 }
 .cli-workers-badge {
   border-radius: 999px;
@@ -478,7 +532,7 @@
 }
 .cli-workers-adv-hint {
   margin: 0;
-  padding: 0 2px;
+  padding: 0;
   color: var(--spatial-faint);
   font-size: 10.5px;
   line-height: 1.45;
@@ -488,9 +542,7 @@
   flex-direction: column;
   gap: 10px;
   padding: 12px 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--spatial-ink) 10%, transparent);
-  border-radius: 12px;
-  background: var(--settings-chip-fill, transparent);
+  /* 圆角 / 边框 / 背景与 SettingsCard 同壳 */
 }
 .cli-workers-adv-card-head {
   display: flex;

@@ -24,20 +24,37 @@ import type {
   AgentWorkspace,
   AskUserRequest,
   AskUserResponse,
+  ExitPlanModeRequest,
+  ExitPlanModeResponse,
+  BoardProjectedSummary,
+  BoardProjectedTask,
   Channel,
   ChannelBalanceResult,
   ChannelCreateInput,
   ChannelUpdateInput,
   ChannelTestResult,
   CollaborationMember,
+  CollaborationMemberPreset,
   CollaborationMessage,
   CollaborationRoom,
   CollaborationRun,
   CollaborationMailboxEnvelope,
+  CollaborationRoomTask,
+  CollaborationArtifact,
+  CollaborationUserApprovalRequest,
+  CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
+  SaveCollaborationMemberPresetInput,
   AddCollaborationMemberInput,
+  ContinueCollaborationDepthStopInput,
+  ContinueCollaborationDepthStopResult,
+  CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomInput,
+  UpdateCollaborationMemberInput,
+  UpdateCollaborationRoomTaskInput,
   AppendCollaborationUserMessageInput,
+  ReadCollaborationArtifactResult,
+  ResolveCollaborationUserApprovalResult,
   DeleteRolesResult,
   FetchModelsInput,
   FetchModelsForChannelInput,
@@ -92,6 +109,13 @@ const electronAPI = {
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.SEND_MESSAGE, input),
   /** 停止当前轮（软中断；主进程另推 turn_end 清 running） */
   stopAgent: (sessionId: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.STOP_AGENT, sessionId),
+  /** 撤回尚未开始 Agent 处理的最后一轮 user 输入（双写 panel + SDK） */
+  recallUnsentTurn: (sessionId: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.RECALL_UNSENT_TURN, sessionId) as Promise<{
+      ok: boolean
+      text?: string
+      reason?: 'no_user' | 'already_started' | 'empty'
+    }>,
   /**
    * 引导 Agent（不中断当前轮）。
    * 返回 `{ ok, mode: 'live' | 'pending_next_turn' }`：
@@ -144,6 +168,12 @@ const electronAPI = {
   /** 解析路径是否存在（文件 chip 存在性检查），返回存在的绝对路径或 null */
   resolveFile: (input: { sessionId: string; path: string; bases?: string[] }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.RESOLVE_FILE, input),
+  /**
+   * 读取文件在 git HEAD 的版本（Files Changed 审阅兜底：本轮补丁无法还原旧稿时取旧稿做 diff）。
+   * 无 git / 未跟踪 / 超时 → null。payload: { sessionId, path, bases? }。
+   */
+  readGitHeadFile: (input: { sessionId: string; path: string; bases?: string[] }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.READ_GIT_HEAD_FILE, input) as Promise<string | null>,
   /** 销毁会话（杀进程 + 删元数据/JSONL） */
   deleteSession: (sessionId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_SESSION, sessionId),
@@ -365,6 +395,31 @@ const electronAPI = {
   /** 用户关闭选项卡：软 deny「用户未选择」，当前轮继续 */
   askUserDismiss: (requestId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.ASK_USER_DISMISS, requestId),
+  // ExitPlanMode 计划审批（主进程推请求 / 已决回听 / renderer 回用户选择）
+  onExitPlanModeRequest: (cb: (request: ExitPlanModeRequest) => void) => {
+    const handler = (_e: unknown, request: ExitPlanModeRequest): void => cb(request)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_REQUEST, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_REQUEST, handler)
+  },
+  /** 用户 respond / 会话清理后推送，渲染层按 requestId 出队 */
+  onExitPlanModeResolved: (cb: (e: { requestId: string }) => void) => {
+    const handler = (_e: unknown, payload: { requestId: string }): void => cb(payload)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, handler)
+  },
+  respondExitPlanMode: (response: ExitPlanModeResponse) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESPOND, response),
+  // 计划模式切换（主进程 → 渲染进程：EnterPlanMode / ExitPlanMode 审批后更新输入框 pill）
+  onPlanModeChanged: (
+    cb: (payload: { sessionId: string; mode: string; source: string }) => void,
+  ) => {
+    const handler = (
+      _e: unknown,
+      payload: { sessionId: string; mode: string; source: string },
+    ): void => cb(payload)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.PLAN_MODE_CHANGED, handler)
+    return () => ipcRenderer.removeListener(AGENT_IPC_CHANNELS.PLAN_MODE_CHANGED, handler)
+  },
   // 热切换指定会话的权限模式（持久化 meta + 通知运行时）
   setSessionPermissionMode: (sessionId: string, mode: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_PERMISSION_MODE, { sessionId, mode }) as Promise<{ ok: boolean; error?: string }>,
@@ -618,6 +673,16 @@ const electronAPI = {
   /** 向已有房间追加一个成员（displayName + 自动绑默认渠道，Stage 3） */
   addCollaborationMember: (input: AddCollaborationMemberInput) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.ADD_MEMBER, input) as Promise<CollaborationMember>,
+  /** 更新成员（显示名 / 渠道 / 模型） */
+  updateCollaborationMember: (input: UpdateCollaborationMemberInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.UPDATE_MEMBER, input) as Promise<CollaborationMember>,
+  /** 用户保存的成员配置模板 */
+  listCollaborationMemberPresets: () =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MEMBER_PRESETS) as Promise<CollaborationMemberPreset[]>,
+  saveCollaborationMemberPreset: (input: SaveCollaborationMemberPresetInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.SAVE_MEMBER_PRESET, input) as Promise<CollaborationMemberPreset>,
+  deleteCollaborationMemberPreset: (id: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.DELETE_MEMBER_PRESET, { id }) as Promise<{ ok: boolean }>,
   /** 列出某房间全部 run（按入队顺序，Stage 2） */
   listCollaborationRuns: (roomId: string) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_RUNS, { roomId }) as Promise<CollaborationRun[]>,
@@ -627,11 +692,80 @@ const electronAPI = {
   /** 列出某房间全部 A2A 信箱信封（S4 审计视图） */
   listCollaborationMailbox: (roomId: string) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MAILBOX, { roomId }) as Promise<CollaborationMailboxEnvelope[]>,
+  /**
+   * 继续一次已达 A2A 深度上限的交接（S4.5）。
+   * 主进程校验信封属于该房间且仍可继续一次后委托 service；成功返回新信封 id，
+   * 失败（已继续过 / 不属于该房间 / 硬深度上限）返回 { ok: false, reason }，不抛错。
+   */
+  continueCollaborationDepthStop: (input: ContinueCollaborationDepthStopInput) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.CONTINUE_DEPTH_STOP,
+      input,
+    ) as Promise<ContinueCollaborationDepthStopResult>,
+  /** 列出某房间全部轻量 room task（S5 面板：任务真值，挂板后只读历史） */
+  listCollaborationRoomTasks: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_ROOM_TASKS, { roomId }) as Promise<
+      CollaborationRoomTask[]
+    >,
+  /** 创建轻量 room task（S5 面板；挂板时主进程 fail-closed 抛错） */
+  createCollaborationRoomTask: (input: CreateCollaborationRoomTaskInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.CREATE_ROOM_TASK, input) as Promise<
+      CollaborationRoomTask
+    >,
+  /** 更新轻量 room task（改派 / 状态 / 标题等；复用 service 守卫 + 严格状态机 + CAS） */
+  updateCollaborationRoomTask: (input: UpdateCollaborationRoomTaskInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.UPDATE_ROOM_TASK, input) as Promise<
+      CollaborationRoomTask
+    >,
+  /** 列出某房间全部产物（S5 面板：artifact 审计真值） */
+  listCollaborationArtifacts: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_ARTIFACTS, { roomId }) as Promise<
+      CollaborationArtifact[]
+    >,
+  /**
+   * 预览产物文本（S5 面板）：只传 { roomId, artifactId }，主进程按记录反查后复用安全路径解析读盘。
+   * 成功返回 content / sha256 / byteSize / truncated；失败返回 { ok: false, reason }（不抛）。
+   */
+  readCollaborationArtifact: (input: { roomId: string; artifactId: string }) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.READ_ARTIFACT, input) as Promise<
+      ReadCollaborationArtifactResult
+    >,
+  /** 列出房间挂载看板的投影任务（S5 看板桥：只读，不反向覆盖看板真值） */
+  listCollaborationBoardTasks: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_BOARD_TASKS, {
+      roomId,
+    }) as Promise<BoardProjectedTask[]>,
+  /** 获取房间挂载看板的投影统计摘要（S5 看板桥；未挂载/看板不存在返回 null） */
+  getCollaborationBoardSummary: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.GET_BOARD_SUMMARY, {
+      roomId,
+    }) as Promise<BoardProjectedSummary | null>,
+  /** 列出成员请求用户决定的审批项。 */
+  listCollaborationUserApprovals: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_USER_APPROVALS, { roomId }) as Promise<
+      CollaborationUserApprovalRequest[]
+    >,
+  /** 批准或拒绝成员的用户审批请求。 */
+  resolveCollaborationUserApproval: (input: {
+    roomId: string
+    requestId: string
+    decision: 'approved' | 'denied'
+    response?: string
+  }) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.RESOLVE_USER_APPROVAL, input) as Promise<
+      ResolveCollaborationUserApprovalResult
+    >,
   /** 房间数据变更事件（main → renderer，run/member/message 变更时广播） */
   onCollaborationRoomChanged: (cb: (payload: { roomId: string; kind: string; at: number }) => void) => {
     const handler = (_e: unknown, payload: { roomId: string; kind: string; at: number }): void => cb(payload)
     ipcRenderer.on(COLLABORATION_ROOM_IPC_CHANNELS.CHANGED, handler)
     return () => ipcRenderer.removeListener(COLLABORATION_ROOM_IPC_CHANNELS.CHANGED, handler)
+  },
+  /** 成员 turn 流式正文增量（不走 CHANGED，避免每 token 全量刷新） */
+  onCollaborationTextDelta: (cb: (payload: CollaborationTextDeltaPayload) => void) => {
+    const handler = (_e: unknown, payload: CollaborationTextDeltaPayload): void => cb(payload)
+    ipcRenderer.on(COLLABORATION_ROOM_IPC_CHANNELS.TEXT_DELTA, handler)
+    return () => ipcRenderer.removeListener(COLLABORATION_ROOM_IPC_CHANNELS.TEXT_DELTA, handler)
   },
 
   // ===== 自动更新 =====

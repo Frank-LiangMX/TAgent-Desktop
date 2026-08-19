@@ -5,9 +5,11 @@ import {
   capThinkingDurationsToTurn,
   dedupeAnswerTexts,
   groupItemsIntoTurns,
+  hasRunStartedProcessing,
   isRealUserInput,
   isSteerUserMessage,
   isToolResultOnlyUser,
+  sliceItemsBeforeLastRealUser,
   summarizeProcess,
   type TurnSourceItem,
 } from './session-turn-model'
@@ -292,5 +294,31 @@ describe('capThinkingDurationsToTurn', () => {
     capThinkingDurationsToTurn(process, 59_000)
 
     expect(process.map((entry) => entry.durationSec)).toEqual([45, 14])
+  })
+})
+
+describe('hasRunStartedProcessing', () => {
+  test('false when only user bubble exists after send', () => {
+    const items: TurnSourceItem[] = [{ key: 'u1', message: userText('撤回我') }]
+    expect(hasRunStartedProcessing(items, { text: '', thinking: '' })).toBe(false)
+  })
+
+  test('true once assistant message follows user', () => {
+    const items: TurnSourceItem[] = [
+      { key: 'u1', message: userText('你好') },
+      { key: 'a1', message: assistantText('deepseek', '思考中…') },
+    ]
+    expect(hasRunStartedProcessing(items)).toBe(true)
+  })
+})
+
+describe('sliceItemsBeforeLastRealUser', () => {
+  test('removes trailing real user bubble only', () => {
+    const items: TurnSourceItem[] = [
+      { key: 'u1', message: userText('旧') },
+      { key: 'a1', message: assistantText('m', '答') },
+      { key: 'u2', message: userText('撤回') },
+    ]
+    expect(sliceItemsBeforeLastRealUser(items)?.map((it) => it.key)).toEqual(['u1', 'a1'])
   })
 })

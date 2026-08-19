@@ -9,11 +9,8 @@ import {
   Pulse,
   Robot,
   SquaresFour,
-  Stop,
-  TerminalWindow,
   UsersThree,
 } from '@phosphor-icons/react'
-import type { SessionBackgroundProcess } from '@tagent/shared'
 import {
   AppTooltip,
   Popover,
@@ -50,7 +47,6 @@ interface SessionSummaryPopoverProps {
   compact?: boolean
   /** tab：标签栏右侧轻图标 */
   placement?: 'composer' | 'tab'
-  processes?: SessionBackgroundProcess[]
   onSelect: (item: SessionCollabItem) => void
 }
 
@@ -91,7 +87,6 @@ export function SessionSummaryPopover({
   sessionId,
   compact = false,
   placement = 'composer',
-  processes = [],
   onSelect,
 }: SessionSummaryPopoverProps): JSX.Element | null {
   const [open, setOpen] = useState(false)
@@ -112,7 +107,7 @@ export function SessionSummaryPopover({
     return collectSessionCollabOutline(items ?? [])
   }, [items, timelineItems])
 
-  const visible = outline.items.length > 0 || processes.length > 0
+  const visible = outline.items.length > 0
   const running = useMemo(() => runningCollabItems(outline.items), [outline.items])
   const groups = useMemo(() => groupCollabItems(outline.items, filter), [outline.items, filter])
 
@@ -173,7 +168,7 @@ export function SessionSummaryPopover({
             {!isTab && !compact ? (
               <span className="tab-summary-btn__label text-[11px] font-semibold">摘要</span>
             ) : null}
-            {isTab && (runningCount > 0 || processes.length > 0) ? (
+            {isTab && runningCount > 0 ? (
               <span className="tab-summary-btn__dot" aria-hidden />
             ) : runningCount > 0 ? (
               <span className="session-summary-badge" aria-hidden>
@@ -198,13 +193,11 @@ export function SessionSummaryPopover({
           <div className="min-w-0">
             <div className="text-[12px] font-semibold tracking-tight">本场摘要</div>
             <div className="truncate text-[10.5px] text-muted-foreground">
-              {processes.length > 0
-                ? `${processes.length} 个后台进程${total > 0 ? ` · ${total} 项协作` : ''}`
-                : total === 0
-                  ? '会诊、圆桌、班组会汇总在这里'
-                  : runningCount > 0
-                    ? `${runningCount} 项进行中 · 共 ${total} 项`
-                    : `共 ${total} 项协作`}
+              {total === 0
+                ? '会诊、圆桌、班组会汇总在这里'
+                : runningCount > 0
+                  ? `${runningCount} 项进行中 · 共 ${total} 项`
+                  : `共 ${total} 项协作`}
             </div>
           </div>
         </div>
@@ -236,14 +229,11 @@ export function SessionSummaryPopover({
         ) : null}
 
         <div className="session-summary-body">
-          {processes.length > 0 && (filter === 'all') ? (
-            <ProcessSection sessionId={sessionId} processes={processes} />
-          ) : null}
-          {outline.items.length === 0 && groups.length === 0 && processes.length === 0 ? (
+          {outline.items.length === 0 && groups.length === 0 ? (
             <div className="px-3 py-6 text-center text-[11.5px] text-muted-foreground">
               本场还没有会诊、圆桌或班组
             </div>
-          ) : outline.items.length === 0 && processes.length > 0 ? null : (
+          ) : (
             <>
               {filter === 'all' && running.length > 0 ? (
                 <Section
@@ -328,66 +318,6 @@ function Section({
         {hidden > 0 ? (
           <button type="button" className="session-summary-more" onClick={onToggle}>
             再显示 {hidden} 个
-          </button>
-        ) : null}
-      </div>
-    </section>
-  )
-}
-
-function ProcessSection({
-  sessionId,
-  processes,
-}: {
-  sessionId: string
-  processes: SessionBackgroundProcess[]
-}): JSX.Element {
-  const [busyId, setBusyId] = useState<string | null>(null)
-  const [expanded, setExpanded] = useState(true)
-  const visible = expanded ? processes : processes.slice(0, 0)
-
-  const stop = async (id: string): Promise<void> => {
-    if (busyId) return
-    setBusyId(id)
-    try {
-      await window.electronAPI.killSessionProcess?.(sessionId, id)
-    } finally {
-      setBusyId(null)
-    }
-  }
-
-  return (
-    <section className="session-summary-section">
-      <div className="session-summary-section__head">
-        <TerminalWindow className="size-3 shrink-0" weight="bold" />
-        <span className="flex-1 truncate">后台进程</span>
-        <span className="tabular-nums text-muted-foreground/70">{processes.length}</span>
-      </div>
-      <div className="flex flex-col">
-        {visible.map((proc) => (
-          <div key={proc.id} className="session-summary-proc">
-            <StatusDot status="running" />
-            <span className="session-summary-proc__cmd" title={proc.command}>
-              {proc.command}
-            </span>
-            <button
-              type="button"
-              className="session-summary-proc__stop"
-              disabled={busyId === proc.id}
-              onClick={() => void stop(proc.id)}
-              aria-label={`停止 ${proc.command}`}
-            >
-              <Stop className="size-3" weight="fill" />
-            </button>
-          </div>
-        ))}
-        {processes.length > 0 ? (
-          <button
-            type="button"
-            className="session-summary-more"
-            onClick={() => setExpanded((v) => !v)}
-          >
-            {expanded ? '收起' : `展开 ${processes.length} 个`}
           </button>
         ) : null}
       </div>

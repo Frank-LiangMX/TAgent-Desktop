@@ -2,7 +2,7 @@
  * 协作室文本输入弹层 — 替代 Electron 沙箱中不可用的 window.prompt()。
  */
 import { useEffect, useRef, useState } from 'react'
-import { Button } from '@tagent/ui'
+import { Button, Input } from '@tagent/ui'
 
 export interface CollaborationTextPromptProps {
   open: boolean
@@ -48,7 +48,7 @@ export function CollaborationTextPrompt({
 
   return (
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-4"
+      className="absolute inset-0 z-[80] flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="collab-text-prompt-title"
@@ -56,14 +56,14 @@ export function CollaborationTextPrompt({
         if (e.target === e.currentTarget) onCancel()
       }}
     >
-      <div className="w-full max-w-sm rounded-xl border border-border bg-background p-4 shadow-xl">
+      <div className="w-full max-w-sm animate-in rounded-xl border border-border bg-background p-4 shadow-xl fade-in zoom-in-95 duration-200">
         <h2 id="collab-text-prompt-title" className="text-sm font-semibold text-foreground">
           {title}
         </h2>
         {label ? <p className="mt-1 text-xs text-muted-foreground">{label}</p> : null}
-        <input
+        <Input
           ref={inputRef}
-          className="mt-3 w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="mt-3"
           value={value}
           placeholder={placeholder}
           onChange={(e) => setValue(e.target.value)}

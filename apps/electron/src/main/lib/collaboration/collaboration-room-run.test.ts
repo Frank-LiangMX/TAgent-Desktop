@@ -77,7 +77,13 @@ function createMockAdapter(opts: MockAdapterOptions = {}): {
         })
       }
       if (opts.throwErr) throw opts.throwErr
-      return { text: opts.text ?? 'mock reply' }
+      const text = opts.text ?? 'mock reply'
+      if (input.onTextDelta) {
+        const mid = Math.max(1, Math.floor(text.length / 2))
+        input.onTextDelta(text.slice(0, mid))
+        input.onTextDelta(text.slice(mid))
+      }
+      return { text }
     },
   }
   return { adapter, calls }
@@ -200,7 +206,7 @@ describe('CollaborationRoomService run 行为（Stage 2）', () => {
     expect(svc.listMembers(roomId)[0]!.status).toBe('idle')
   })
 
-  test('失败：adapter 抛错 → run failed + 系统警告，成员回 idle', async () => {
+  test('失败：adapter 抛错 → run failed，错误只由 run 卡展示，成员回 idle', async () => {
     const { adapter } = createMockAdapter({ throwErr: new Error('boom') })
     const svc = createService(adapter)
     const { roomId } = createRoomWithCoordinator(svc)
@@ -213,10 +219,8 @@ describe('CollaborationRoomService run 行为（Stage 2）', () => {
     expect(run.error?.message).toBe('boom')
 
     const msgs = svc.listMessages(roomId)
-    // 用户消息 + 系统警告（无成员消息）
-    expect(msgs.map((m) => m.content)).toEqual(['会失败', '成员「协调者」回复失败：boom'])
-    expect(msgs[1]!.authorType).toBe('system')
-    expect(msgs[1]!.kind).toBe('warning')
+    // 只有用户消息；run.error 会由时间线中的失败卡统一展示，避免重复气泡。
+    expect(msgs.map((m) => m.content)).toEqual(['会失败'])
     expect(svc.listMembers(roomId)[0]!.status).toBe('idle')
   })
 
@@ -264,5 +268,58 @@ describe('CollaborationRoomService run 行为（Stage 2）', () => {
     expect(run.error?.code).toBe('INTERRUPTED')
     expect(run.finishedAt).toBeTypeOf('number')
     expect(svc2.listMembers(roomId)[0]!.status).toBe('idle')
+  })
+
+  test('runTurn 流式增量累积转发给 onTextDelta', async () => {
+    const deltas: Array<{ runId: string; text: string }> = []
+    const { adapter } = createMockAdapter({ text: '你好世界' })
+    const svc = CollaborationRoomService.create({
+      adapter,
+      onTextDelta: (p) => deltas.push({ runId: p.runId, text: p.text }),
+    })
+    const { roomId } = createRoomWithCoordinator(svc)
+    svc.appendUserMessage({ roomId, content: '嗨' })
+    await svc.awaitAllRuns()
+
+    expect(deltas.length).toBeGreaterThanOrEqual(2)
+    expect(deltas[deltas.length - 1]!.text).toBe('你好世界')
+    expect(deltas[0]!.text.length).toBeLessThan(deltas[deltas.length - 1]!.text.length)
+  })
+
+  test('上下文投影含成员名册与路由规则', async () => {
+    const { adapter, calls } = createMockAdapter({ text: 'ok' })
+    const svc = createService(adapter)
+    const { roomId } = createRoomWithCoordinator(svc)
+    svc.appendUserMessage({ roomId, content: '嗨' })
+    await svc.awaitAllRuns()
+    expect(calls[0]!.systemPrompt).toMatch(/房间成员/)
+    expect(calls[0]!.systemPrompt).toMatch(/不能仅靠输出/)
+  })
+
+  test('角色快照 systemPrompt 注入成员系统提示词', async () => {
+    const { adapter, calls } = createMockAdapter({ text: 'ok' })
+    const svc = createService(adapter)
+    const room = svc.createRoom({
+      title: '角色测试',
+      members: [
+        {
+          displayName: '分析师',
+          isCoordinator: true,
+          roleId: 'analyst',
+          roleSnapshot: {
+            roleId: 'analyst',
+            displayName: '分析师',
+            description: '做数据分析',
+            systemPrompt: '你是资深数据分析师，输出必须包含数据表格。',
+          },
+        },
+      ],
+    })
+    svc.appendUserMessage({ roomId: room.id, content: '看看数据' })
+    await svc.awaitAllRuns()
+
+    expect(calls[0]!.systemPrompt).toContain('### 角色设定')
+    expect(calls[0]!.systemPrompt).toContain('资深数据分析师')
+    expect(calls[0]!.systemPrompt).toContain('你的职责：做数据分析。')
   })
 })

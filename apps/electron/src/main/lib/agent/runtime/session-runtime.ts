@@ -555,10 +555,14 @@ export class SessionRuntime {
   async steerMessage(message: string): Promise<'live' | 'noop'> {
     if (!this.hasLiveProcess()) return 'noop'
     if (!this.adapter.sendQueuedMessage) return 'noop'
-    const steerInput = {
-      message: { role: 'user' as const, content: message },
+    // 必须是完整 SDKUserMessage：缺 type/session_id 时 SDK 会丢弃，引导永远不生效。
+    const steerInput: SDKUserMessageInput = {
+      type: 'user',
+      session_id: this.sessionId,
+      parent_tool_use_id: null,
+      message: { role: 'user', content: message },
     }
-    await this.adapter.sendQueuedMessage(this.sessionId, steerInput as any)
+    await this.adapter.sendQueuedMessage(this.sessionId, steerInput)
     return 'live'
   }
 

@@ -572,8 +572,11 @@
   background: hsl(var(--primary) / 0.1);
 }
 .ws-sub {
-  flex-basis: 100%;
-  margin: 2px 0 0 32px; /* 对齐 caret+ico 后的文字列 */
+  flex: 1 0 100%;
+  box-sizing: border-box;
+  margin: 2px 0 0;
+  /* 与工作区名左缘对齐：.ws-ico 14 + .group-head gap 6（组头已无 caret） */
+  padding-left: 20px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -582,9 +585,13 @@
 }
 .ws-sub .live {
   display: inline-flex;
+  align-items: center;
+  flex: none;
   gap: 3px;
 }
 .ws-sub .live i {
+  display: block;
+  flex: none;
   width: 5px;
   height: 5px;
   border-radius: 999px;
@@ -618,8 +625,8 @@
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   transition:
-    max-height 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.2s ease;
+    max-height 0.28s var(--app-shell-expand-ease),
+    opacity 0.2s var(--app-shell-expand-ease);
 }
 .group:not(.open) > .rows {
   max-height: 0;
@@ -774,6 +781,18 @@
   /* 放 title 行内，由 .title 的 align-items:center 与标题垂直居中；
      无需再 translateY 微调（旧两行几何中心偏下的场景已移除） */
   --status-pulse-rgb: 59 130 246;
+}
+/* 标签仍挂在工作集里，但当前没有焦点：第二行常驻浏览器标签图标。 */
+.tab-open-indicator {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: hsl(167 62% 48% / 0.82);
+  line-height: 1;
+  opacity: 0.9;
+}
+.light .tab-open-indicator {
+  color: hsl(167 55% 38% / 0.76);
 }
 .stat-dot.stream {
   background: rgb(59 130 246);

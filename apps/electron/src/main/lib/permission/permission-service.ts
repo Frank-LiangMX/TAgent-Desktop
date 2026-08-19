@@ -30,6 +30,7 @@ import {
   isSessionWhitelisted,
 } from './session-whitelist'
 import { askUserService } from '../agent/agent-ask-user-service'
+import { exitPlanService } from '../agent/agent-exit-plan-service'
 
 /** 权限请求（推 renderer） */
 export interface PermissionRequest {
@@ -180,6 +181,23 @@ export function setOnChatModeBlock(
   handler: ((sessionId: string, toolName: string) => void) | undefined,
 ): void {
   chatModeBlockHandler = handler
+}
+
+/**
+ * 主进程侧切换会话权限模式（EnterPlanMode 进入 / ExitPlanMode 审批后调用）。
+ * 由 session-service 注入：persist meta + 通知 runtime setPermissionMode + 推 PLAN_MODE_CHANGED 给 pill。
+ * 与 pill 手动切换（UPDATE_SESSION_PERMISSION_MODE）同路径，确保 SDK 侧与 UI 同步。
+ * 缺省（未注入）时静默跳过——仅 plan 文 / SDK 侧不切，不影响 canUseTool 返回。
+ */
+let permissionModeSwitcher:
+  | ((sessionId: string, mode: TAgentPermissionMode) => Promise<void> | void)
+  | undefined
+export function setPermissionModeSwitcher(
+  handler:
+    | ((sessionId: string, mode: TAgentPermissionMode) => Promise<void> | void)
+    | undefined,
+): void {
+  permissionModeSwitcher = handler
 }
 
 function emitWorkSwitchSuggestion(
@@ -359,6 +377,46 @@ export class PermissionService {
             this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.ASK_USER_REQUEST, request)
           }
         )
+      }
+
+      // EnterPlanMode / ExitPlanMode：先过 Chat 只读拦截（与 checkPermission 内规则一致），再做计划逻辑。
+      // Chat 下 Plan 工具不开放（软拒绝 + 建议切 Work），与 spec §2.1「executionMode=chat 仍软拒绝」一致。
+      if (toolName === 'EnterPlanMode' || toolName === 'ExitPlanMode') {
+        const executionMode = migrateExecutionMode(getExecutionMode?.())
+        if (executionMode === 'chat' && isChatModeBlockedTool(toolName, input, cwd)) {
+          const hardStop = isChatModeHardStopTool(toolName, input, cwd)
+          if (hardStop) chatModeBlockHandler?.(sessionId, toolName)
+          emitWorkSwitchSuggestion(this.getWindow(), sessionId, toolName)
+          return {
+            behavior: 'deny',
+            message: CHAT_MODE_BLOCK_REASON,
+            ...(hardStop ? { interrupt: true } : {}),
+          }
+        }
+        // EnterPlanMode：切 plan + allow（与 pill 手动切换同路径：persist meta + 通知 runtime + 推 pill）
+        if (toolName === 'EnterPlanMode') {
+          await permissionModeSwitcher?.(sessionId, 'plan')
+          return { behavior: 'allow', updatedInput: input }
+        }
+        // ExitPlanMode：始终走审批服务（不论 bypass/auto/plan），阻塞等用户选择；
+        // bypass 下不再 SDK 自动「User has approved」（spec §2.2 §5 禁止项）。
+        const exitSignal = options?.signal ?? new AbortController().signal
+        const exitResult = await exitPlanService.handleExitPlanMode(
+          sessionId,
+          input,
+          exitSignal,
+          (request) => {
+            this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_REQUEST, request)
+          },
+        )
+        if (exitResult.behavior === 'allow' && exitResult.targetMode) {
+          // 用户批准 → 切目标模式（persist + 通知 runtime + 推 pill）；在 canUseTool 返回前完成，
+          // 避免下一工具跑在旧模式（竞态）。
+          await permissionModeSwitcher?.(sessionId, exitResult.targetMode)
+        }
+        return exitResult.behavior === 'allow'
+          ? { behavior: 'allow', updatedInput: exitResult.updatedInput }
+          : { behavior: 'deny', message: exitResult.message }
       }
 
       const { allow, reason, interrupt } = await checkPermission({

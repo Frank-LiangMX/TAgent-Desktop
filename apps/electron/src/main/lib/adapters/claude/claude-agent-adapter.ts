@@ -35,7 +35,7 @@ import type {
 import { createMessageChannel, type MessageChannel } from '../shared/message-channel'
 import { getDiscardedMemoryDir } from '../../memory/discarded-memory'
 import { spawnKscc } from './spawn-kscc'
-import { NoProgressGuard, buildNoProgressEventFromDecision } from '../../agent/no-progress-guard'
+import { NoProgressGuard, buildNoProgressEventFromDecision, buildNoProgressAskUserInput, buildVerifyOnStopAskUserInput, VERIFY_ON_STOP_PAUSE_ERRORS } from '../../agent/no-progress-guard'
 import {
   attachImageBlocksToText,
 } from '../../agent/build-user-content-with-attachments'
@@ -99,6 +99,13 @@ export interface KsccQueryOptions extends AgentQueryInput {
    * 由 session-service sendPayload 转发 renderer。shadow 模式也发（带 shadow=true），UI 忽略。
    */
   onNoProgressEvent?: (event: NoProgressEvent) => void
+  /**
+   * 无进展暂停 AskUserQuestion 回调（brief 2026-08-19 §3）。适配层在进入 paused_no_progress
+   * 时把 `buildNoProgressAskUserInput` 产出的工具输入推这里，由 session-service 注入
+   * `askUserService.handleAskUserQuestion`，复用现有 AskUserQuestion 事件 / UI。
+   * 用户未选择前不自动继续；同一次暂停只触发一次（per-turn reset 复位标志）。
+   */
+  onNoProgressPauseAskUser?: (input: Record<string, unknown>) => void
 }
 
 /** 活跃会话状态（长驻：一个会话一个进程） */
@@ -122,10 +129,16 @@ interface NoProgressCtx {
   guard: NoProgressGuard
   mode: NoProgressGuardMode
   onNoProgressEvent?: (event: NoProgressEvent) => void
+  /** 无进展暂停 AskUserQuestion 回调（brief 2026-08-19 §3） */
+  onNoProgressPauseAskUser?: (input: Record<string, unknown>) => void
   /** 本轮 turn id（观察回放/日志用，guard 不依赖） */
   turnId: string
   /** 已触发暂停、待终态归一化的标志（单真源终态闸口，§20.5） */
   pendingPauseNoProgress: boolean
+  /** brief 2026-08-19 §4：verify-on-stop 触发的暂停（待终态归一化为带验证文案的 paused_no_progress） */
+  pendingVerifyOnStop: boolean
+  /** 本轮已发过暂停 AskUserQuestion（防 PostToolBatch + PreToolUse 双触发，per-turn reset 复位） */
+  pauseAskUserFired: boolean
   /** 停止当前 turn（保进程）：query.interrupt()，由 query() 创建后回填 */
   interrupt?: () => void
 }
@@ -160,8 +173,11 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       guard: new NoProgressGuard({ mode: npMode }),
       mode: npMode,
       onNoProgressEvent: input.onNoProgressEvent,
+      onNoProgressPauseAskUser: input.onNoProgressPauseAskUser,
       turnId: `${input.sessionId}-t1`,
       pendingPauseNoProgress: false,
+      pendingVerifyOnStop: false,
+      pauseAskUserFired: false,
     }
     np.guard.resetForNewTurn() // fresh guard = observing，首 turn 无 cleared 事件
 
@@ -199,13 +215,36 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
           input.onSessionId?.(msgAny.session_id)
         }
 
+        // brief 2026-08-19 §4：verify-on-stop 终态收束前判定。
+        // 仅当无进展守卫未暂停且 enforce 模式时检查：本轮有 edit 无 verify 证据 → 触发验证提示。
+        // 复用 pendingPauseNoProgress 终态闸口 + onNoProgressPauseAskUser 回调（不新增第二套问答协议）；
+        // pendingVerifyOnStop 标记决定终态归一化文案（验证提示 vs 无进展暂停）。
+        if (
+          msg.type === 'result' &&
+          !np.pendingPauseNoProgress &&
+          np.mode === 'enforce'
+        ) {
+          const verifyDecision = np.guard.checkVerifyOnStop()
+          if (verifyDecision) {
+            np.pendingPauseNoProgress = true
+            np.pendingVerifyOnStop = true
+            emitNoProgressFromDecision(np, verifyDecision)
+            fireVerifyOnStopAskUser(np)
+          }
+        }
+
         // 单真源终态归一化（§20.5）：暂停触发后，底层 result（error_max_turns /
         // error_during_execution / 乃至 success）一律归一为 paused_no_progress，且只一次。
+        // brief 2026-08-19 §4：verify-on-stop 暂停用验证提示文案。
         const out =
           msg.type === 'result' && np.pendingPauseNoProgress
-            ? normalizeResultToPausedNoProgress(msg)
+            ? normalizeResultToPausedNoProgress(
+                msg,
+                np.pendingVerifyOnStop ? VERIFY_ON_STOP_PAUSE_ERRORS : undefined,
+              )
             : msg
         np.pendingPauseNoProgress = false
+        np.pendingVerifyOnStop = false
 
         yield out
 
@@ -298,6 +337,8 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
     if (sess.np) {
       const cleared = sess.np.guard.resetForNewTurn()
       emitNoProgressFromDecision(sess.np, cleared)
+      sess.np.pauseAskUserFired = false // 复位暂停 AskUser 标志（新回合可再触发）
+      sess.np.pendingVerifyOnStop = false // 复位 verify-on-stop 标志（brief §4）
     }
     sess.channel.enqueue(message as SDKUserMessage)
   }
@@ -429,16 +470,49 @@ function emitNoProgressFromDecision(
 }
 
 /**
+ * 无进展暂停时触发 AskUserQuestion（brief 2026-08-19 §3）。
+ * 复用现有 ask-user 管线：把 decision + state 翻成 AskUserQuestion 工具输入，
+ * 经 {@link NoProgressCtx.onNoProgressPauseAskUser} 回调交 session-service 注入 askUserService。
+ * 同一次暂停只触发一次（`pauseAskUserFired` 防双触发；per-turn reset 复位）。
+ */
+function firePauseAskUser(np: NoProgressCtx, decision: NoProgressDecision): void {
+  if (np.pauseAskUserFired) return
+  if (!np.onNoProgressPauseAskUser) return
+  np.pauseAskUserFired = true
+  const input = buildNoProgressAskUserInput(decision, np.guard.getState())
+  np.onNoProgressPauseAskUser(input)
+}
+
+/**
+ * brief 2026-08-19 §4：verify-on-stop 触发验证提示。
+ * 复用现有 ask-user 管线（onNoProgressPauseAskUser 回调 → askUserService.handleAskUserQuestion），
+ * 把 {@link buildVerifyOnStopAskUserInput} 产出的工具输入注入。提示不写入持久化会话历史
+ *（askUserService 事件/UI 临时态 + 续跑 skipUserPersist:true）。
+ * 防重复由守卫 checkVerifyOnStop 的 verifyPromptFired 标志保证；若无进展暂停已发过 AskUser 则跳过。
+ */
+function fireVerifyOnStopAskUser(np: NoProgressCtx): void {
+  if (np.pauseAskUserFired) return // 无进展暂停已发 AskUser → 不重复
+  if (!np.onNoProgressPauseAskUser) return
+  np.pauseAskUserFired = true
+  const input = buildVerifyOnStopAskUserInput()
+  np.onNoProgressPauseAskUser(input)
+}
+
+/**
  * 把底层终态 result 归一化为唯一的 `paused_no_progress`（§20.5）。
  * 抑制 error_max_turns / error_during_execution 等重复终态；errors 用友好暂停文案。
+ * brief 2026-08-19 §4：`errors` 可选，verify-on-stop 传验证提示文案。
  */
-export function normalizeResultToPausedNoProgress(msg: SDKMessage): SDKMessage {
+export function normalizeResultToPausedNoProgress(
+  msg: SDKMessage,
+  errors?: string[],
+): SDKMessage {
   if (msg.type !== 'result') return msg
   const r = msg as SDKResultMessage
   return {
     ...r,
     subtype: 'paused_no_progress',
-    errors: ['已暂停：连续多次操作未获得新进展。会话与历史保留，可在原会话继续发送消息。'],
+    errors: errors ?? ['已暂停：连续多次操作未获得新进展。会话与历史保留，可在原会话继续发送消息。'],
     // 清掉可能误导的 terminal_reason / 后台任务终态分类
     terminal_reason: undefined,
   } as SDKResultMessage
@@ -465,6 +539,7 @@ function buildNoProgressHooks(
     if (np.mode === 'enforce') {
       if (decision.kind === 'pause') {
         np.pendingPauseNoProgress = true
+        firePauseAskUser(np, decision)
         np.interrupt?.()
         return {}
       }
@@ -486,6 +561,7 @@ function buildNoProgressHooks(
     if (advice.pause) {
       np.pendingPauseNoProgress = true
       if (advice.decision) emitNoProgressFromDecision(np, advice.decision)
+      if (advice.decision) firePauseAskUser(np, advice.decision)
       np.interrupt?.()
     }
     return {

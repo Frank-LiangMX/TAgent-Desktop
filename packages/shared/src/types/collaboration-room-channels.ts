@@ -8,18 +8,38 @@
  * Stage 2：在 Stage 1 的 7 个通道基础上新增 LIST_RUNS / CANCEL_RUN，并启用 CHANGED
  * 广播（run/member/message 变更时主进程主动推送，渲染层据此重新拉取）。
  * Stage 3：新增 ADD_MEMBER（向已有房间追加成员，「添加成员」按钮用）。
+ * Stage 4.5：新增 CONTINUE_DEPTH_STOP（继续一次已达 A2A 深度上限的交接）。
+ * S5 面板：新增 LIST_ROOM_TASKS / CREATE_ROOM_TASK / UPDATE_ROOM_TASK / LIST_ARTIFACTS /
+ * READ_ARTIFACT，供右侧室级任务/产物面板读写已落盘的 room task / artifact 真值。
+ *   - 任务 create/update 复用 service 既有守卫（挂板 fail-closed、负责人归属、严格状态机、CAS）；
+ *   - READ_ARTIFACT 由宿主按 artifactId 反查记录后经 resolveArtifactTargetPath 复用同一条安全
+ *     路径解析再读盘，渲染层只传 artifactId、永不传路径，不越权扩大文件访问面。
  */
 
 import type {
+  CollaborationArtifact,
   CollaborationRoom,
   CollaborationMember,
+  CollaborationMemberPreset,
   CollaborationMessage,
+  CollaborationRoomTask,
   CollaborationRun,
+  CollaborationUserApprovalRequest,
   CreateCollaborationRoomInput,
   CreateCollaborationMemberInput,
+  SaveCollaborationMemberPresetInput,
+  CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomInput,
+  UpdateCollaborationMemberInput,
+  UpdateCollaborationRoomTaskInput,
   AppendCollaborationUserMessageInput,
+  ListBoardProjectedTasksInput,
+  GetBoardProjectedSummaryInput,
+  BoardProjectedTask,
+  BoardProjectedSummary,
 } from './collaboration-room'
+
+export type { CollaborationMemberPreset, SaveCollaborationMemberPresetInput }
 
 export const COLLABORATION_ROOM_IPC_CHANNELS = {
   /** 列出全部协作室房间（默认不含 archived） */
@@ -38,15 +58,55 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   LIST_MEMBERS: 'collaboration-room:list-members',
   /** 向已有房间追加一个成员（Stage 3：「添加成员」按钮；displayName + 自动绑默认渠道） */
   ADD_MEMBER: 'collaboration-room:add-member',
+  /** 更新已有成员（改显示名 / 渠道 / 模型） */
+  UPDATE_MEMBER: 'collaboration-room:update-member',
+  /** 列出用户保存的成员配置模板 */
+  LIST_MEMBER_PRESETS: 'collaboration-room:list-member-presets',
+  /** 保存/更新成员配置模板 */
+  SAVE_MEMBER_PRESET: 'collaboration-room:save-member-preset',
+  /** 删除成员配置模板 */
+  DELETE_MEMBER_PRESET: 'collaboration-room:delete-member-preset',
   /** 列出某房间全部 run（按 createdAt 升序，Stage 2） */
   LIST_RUNS: 'collaboration-room:list-runs',
   /** 取消某 run（abort 后端调用 + 置 cancelled，Stage 2） */
   CANCEL_RUN: 'collaboration-room:cancel-run',
   /** 列出某房间全部 A2A 信箱信封（S4 审计视图） */
   LIST_MAILBOX: 'collaboration-room:list-mailbox',
+  /** 继续一次已达 A2A 深度上限的交接（S4.5：仅 max_depth 停止且未继续过可继续一次） */
+  CONTINUE_DEPTH_STOP: 'collaboration-room:continue-depth-stop',
+  /** 列出某房间全部轻量 room task（S5 面板：右侧任务/产物面板读取任务真值） */
+  LIST_ROOM_TASKS: 'collaboration-room:list-room-tasks',
+  /** 创建轻量 room task（S5 面板：复用 service 守卫，挂板时 fail-closed） */
+  CREATE_ROOM_TASK: 'collaboration-room:create-room-task',
+  /** 更新轻量 room task（S5 面板：改派 / 状态 / 标题等；复用 service 守卫 + 严格状态机 + CAS） */
+  UPDATE_ROOM_TASK: 'collaboration-room:update-room-task',
+  /** 列出某房间全部产物（S5 面板：读取 artifact 审计真值） */
+  LIST_ARTIFACTS: 'collaboration-room:list-artifacts',
+  /** 预览产物文本（S5 面板：宿主按 artifactId 反查 + 复用安全路径解析后读盘，渲染层不传路径） */
+  READ_ARTIFACT: 'collaboration-room:read-artifact',
+  /** 列出房间挂载看板的投影任务（S5 看板桥：从 kanban-store 读取后投影为只读形状） */
+  LIST_BOARD_TASKS: 'collaboration-room:list-board-tasks',
+  /** 获取房间挂载看板的投影统计摘要（S5 看板桥） */
+  GET_BOARD_SUMMARY: 'collaboration-room:get-board-summary',
+  /** 列出房间内成员发起的用户审批请求 */
+  LIST_USER_APPROVALS: 'collaboration-room:list-user-approvals',
+  /** 解决一个用户审批请求 */
+  RESOLVE_USER_APPROVAL: 'collaboration-room:resolve-user-approval',
   /** 房间数据变更事件（main → renderer，Stage 2 起广播） */
   CHANGED: 'collaboration-room:changed',
+  /** 成员 turn 流式正文增量（独立通道，避免走 CHANGED 全量刷新） */
+  TEXT_DELTA: 'collaboration-room:text-delta',
 } as const
+
+/** 成员 turn 流式正文增量（累积文本，非单 token） */
+export interface CollaborationTextDeltaPayload {
+  roomId: string
+  runId: string
+  memberId: string
+  /** 截至当前的累积正文 */
+  text: string
+  at: number
+}
 
 /** 列出全部房间输入 */
 export interface ListCollaborationRoomsInput {
@@ -98,6 +158,78 @@ export interface ListCollaborationMailboxInput {
   roomId: string
 }
 
+/** 继续一次 A2A 深度停止输入（S4.5） */
+export interface ContinueCollaborationDepthStopInput {
+  /** 房间 ID（校验信封归属，防跨房间继续） */
+  roomId: string
+  /** 已达深度上限的停止信封 ID */
+  envelopeId: string
+}
+
+/** 继续一次 A2A 深度停止结果（与 CollaborationRoomService.continueDepthStop 一致） */
+export type ContinueCollaborationDepthStopResult =
+  | { ok: true; envelopeId: string }
+  | { ok: false; reason: string }
+
+/** 列出某房间全部轻量 room task 输入（S5 面板） */
+export interface ListCollaborationRoomTasksInput {
+  /** 房间 ID */
+  roomId: string
+}
+
+/** 列出某房间全部产物输入（S5 面板） */
+export interface ListCollaborationArtifactsInput {
+  /** 房间 ID */
+  roomId: string
+}
+
+/** 预览产物文本输入（S5 面板）：渲染层只传 artifactId，路径由宿主反查记录后安全解析 */
+export interface ReadCollaborationArtifactInput {
+  /** 房间 ID（校验产物归属，防跨房间预览） */
+  roomId: string
+  /** 产物 ID */
+  artifactId: string
+}
+
+/** 列出某房间的用户审批请求。 */
+export interface ListCollaborationUserApprovalsInput {
+  roomId: string
+}
+
+/** 解决某房间的用户审批请求。 */
+export interface ResolveCollaborationUserApprovalInput {
+  roomId: string
+  requestId: string
+  decision: 'approved' | 'denied'
+  response?: string
+}
+
+export type ResolveCollaborationUserApprovalResult =
+  | { ok: true; request: CollaborationUserApprovalRequest; runId?: string }
+  | { ok: false; reason: string }
+
+/**
+ * 预览产物文本结果（与 CollaborationRoomService.readArtifact 一致）。
+ *
+ * 成功返回当前盘上文件经 UTF-8 解码的文本（按 COLLABORATION_ARTIFACT_MAX_CONTENT_BYTES
+ * 上限截断并置 truncated）、产物记录里的 relativePath / sha256，以及盘上文件的实际字节数。
+ * sha256 取自产物审计记录（发布时按实际写入字节求得），仅作展示与比对，不据其阻断预览。
+ */
+export type ReadCollaborationArtifactResult =
+  | {
+      ok: true
+      artifactId: string
+      relativePath: string
+      content: string
+      /** 盘上文件实际字节数（可能大于返回 content 的字节数，当 truncated=true） */
+      byteSize: number
+      /** 产物审计记录里的 sha256（hex），供面板展示短码 */
+      sha256: string
+      /** 盘上文件超过预览上限时被截断 */
+      truncated: boolean
+    }
+  | { ok: false; reason: string }
+
 /**
  * 房间数据变更事件 payload（main → renderer，Stage 2 起广播）
  *
@@ -118,7 +250,9 @@ export interface CollaborationRoomChangedPayload {
     | 'run-finished'
     | 'run-cancelled'
     | 'run-awaiting-peer'
+    | 'run-awaiting-user'
     | 'mailbox-updated'
+    | 'run-continued'
   /** 发生时间戳 */
   at: number
 }
@@ -141,14 +275,29 @@ export interface CollaborationRoomChangedPayload {
 //   - ADD_MEMBER        → CollaborationMember
 //   - LIST_RUNS         → CollaborationRun[]
 //   - CANCEL_RUN        → CollaborationRun | null
+//   - LIST_MAILBOX      → CollaborationMailboxEnvelope[]
+//   - CONTINUE_DEPTH_STOP → ContinueCollaborationDepthStopResult
+//   - LIST_ROOM_TASKS    → CollaborationRoomTask[]
+//   - CREATE_ROOM_TASK   → CollaborationRoomTask
+//   - UPDATE_ROOM_TASK   → CollaborationRoomTask
+//   - LIST_ARTIFACTS     → CollaborationArtifact[]
+//   - READ_ARTIFACT      → ReadCollaborationArtifactResult
 
 /** 重新导出领域输入类型，便于 handler / preload / 渲染层统一引用 */
 export type {
   CreateCollaborationRoomInput,
   UpdateCollaborationRoomInput,
+  UpdateCollaborationMemberInput,
   AppendCollaborationUserMessageInput,
+  CreateCollaborationRoomTaskInput,
+  UpdateCollaborationRoomTaskInput,
   CollaborationRoom,
   CollaborationMember,
   CollaborationMessage,
   CollaborationRun,
+  CollaborationRoomTask,
+  CollaborationArtifact,
+  CollaborationUserApprovalRequest,
+  BoardProjectedTask,
+  BoardProjectedSummary,
 }
