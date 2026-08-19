@@ -43,7 +43,7 @@ jobs:
               apps/electron/out/*.exe
               apps/electron/out/*.blockmap
               apps/electron/out/*.yml
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             package_args: --linux --x64
             workdir: apps/electron
             artifact: desktop-linux
@@ -73,9 +73,8 @@ jobs:
       - name: Install Linux build deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libarchive-tools libgtk-3-dev libnotify-dev libnss3-dev libxss1 libasound2t64 libappindicator3-dev 2>/dev/null || \
-          sudo apt-get install -y libarchive-tools libgtk-3-dev libnotify-dev libnss3-dev libxss1 libasound2 libayatana-appindicator3-dev
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get install -y --no-install-recommends libarchive-tools libgtk-3-dev libnotify-dev libnss3-dev libxss1 libasound2 libayatana-appindicator3-dev
 
       - name: Install dependencies
         env:
@@ -134,7 +133,7 @@ jobs:
               check_file "TAgent-${VERSION}-x64.exe.blockmap" "Windows blockmap"
               check_file "latest.yml" "Windows update manifest"
               ;;
-            ubuntu-latest)
+            ubuntu-22.04)
               check_file "TAgent-${VERSION}-x86_64.AppImage" "Linux AppImage"
               check_file "latest-linux.yml" "Linux update manifest"
               ;;
