@@ -293,9 +293,14 @@ app.whenReady().then(async () => {
   registerKanbanIpc()
   const { bootstrapKanban } = await import('./lib/kanban/kanban-bootstrap')
   bootstrapKanban(() => mainWindow)
-  // 协作室 IPC（Stage 2：房间壳 + 静态成员 + 单成员真实 turn；run 状态机 + 取消 + 重启恢复）
-  const { registerCollaborationRoomIpc } = await import('./lib/collaboration/collaboration-ipc')
-  registerCollaborationRoomIpc(() => mainWindow)
+  // 协作室发布闸门：开发环境继续联调；打包版暂时不注册入口和运行链路。
+  // 协作室代码保留在主线，待稳定后只需重新开放此闸门即可恢复功能。
+  if (!app.isPackaged) {
+    const { registerCollaborationRoomIpc } = await import('./lib/collaboration/collaboration-ipc')
+    registerCollaborationRoomIpc(() => mainWindow)
+  } else {
+    console.log('[collaboration] disabled in packaged build')
+  }
   // 通知偏好 IPC（通用设置 ↔ 主进程系统通知）
   const {
     loadNotificationPrefs,

@@ -34,5 +34,14 @@ export const loaderAnimationEnabledAtom = atomWithStorage<boolean>(
   true,
 )
 
+/**
+ * 协作室发布闸门：
+ * - 开发环境保留完整入口，便于继续联调和手测；
+ * - 打包环境暂时关闭，待协作室稳定后再开放。
+ *
+ * 这是构建期闸门，不写入 localStorage，避免 release 用户自行打开未完成功能。
+ */
+export const collaborationRoomEnabled = import.meta.env.DEV
+
 // 防止 RESET 类型未被引用的告警（atomWithStorage 内部用到）
 export type { RESET }

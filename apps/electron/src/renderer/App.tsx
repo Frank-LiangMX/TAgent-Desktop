@@ -106,7 +106,7 @@ import {
   type TabItem,
 } from './atoms/tabs'
 import { crewOpenRequestAtom, dockApiAtom } from './atoms/dock-api'
-import { splitDockModeAtom } from './atoms/feature-flags'
+import { collaborationRoomEnabled, splitDockModeAtom } from './atoms/feature-flags'
 import { pendingSuggestionAtom } from './atoms/pending-suggestion'
 import {
   makeStatusTickerItem,
@@ -542,6 +542,7 @@ export function App(): JSX.Element {
     item === 'chat' || item === 'collaboration'
 
   const selectRail = (next: Exclude<RailItem, 'settings'>): void => {
+    if (next === 'collaboration' && !collaborationRoomEnabled) return
     setShowSettings(false)
     if (next === activeRail) {
       // 再点当前项：chat/collaboration 可折叠侧栏；rail-only 页无操作
@@ -583,6 +584,7 @@ export function App(): JSX.Element {
 
   // 协作室 CHANGED 广播：run/member/message 变更时 bump，侧栏 + 主区重新拉取（实时刷新）
   useEffect(() => {
+    if (!collaborationRoomEnabled) return
     const off = window.electronAPI.onCollaborationRoomChanged(() => {
       bumpCollab()
     })
@@ -962,6 +964,7 @@ export function App(): JSX.Element {
         rail={
           <Rail
             active={railActive}
+            showCollaboration={collaborationRoomEnabled}
             onChat={() => {
               // 会话 rail 只负责：切到会话页 / 展开收起侧栏，不创建会话
               selectRail('chat')
@@ -1122,16 +1125,18 @@ export function App(): JSX.Element {
         onOpenChange={setShowSettings}
         onTabChange={setSettingsInitialTab}
       />
-      <CollaborationCreateRoomDialog
-        open={collaborationCreateDialogOpen}
-        onOpenChange={setCollaborationCreateDialogOpen}
-        defaultWorkspaceId={lastActiveWorkspaceId ?? workspaces[0]?.id}
-        onSubmit={createCollaborationRoom}
-        onOpenProject={async () => {
-          const workspace = await handleOpenProject(false)
-          return workspace?.id
-        }}
-      />
+      {collaborationRoomEnabled ? (
+        <CollaborationCreateRoomDialog
+          open={collaborationCreateDialogOpen}
+          onOpenChange={setCollaborationCreateDialogOpen}
+          defaultWorkspaceId={lastActiveWorkspaceId ?? workspaces[0]?.id}
+          onSubmit={createCollaborationRoom}
+          onOpenProject={async () => {
+            const workspace = await handleOpenProject(false)
+            return workspace?.id
+          }}
+        />
+      ) : null}
       <Dialog open={tabCapacityDialogOpen} onOpenChange={setTabCapacityDialogOpen}>
         <DialogContent className="w-[min(380px,calc(100vw-32px))] gap-5 p-5 sm:max-w-none" hideClose>
           <DialogHeader className="space-y-2 text-left">

@@ -14,6 +14,7 @@ export type RailItem = 'chat' | 'collaboration' | 'plugins' | 'memory' | 'roles'
 
 interface RailProps {
   active?: RailItem
+  showCollaboration?: boolean
   onChat?: () => void
   onCollaboration?: () => void
   onPlugins?: () => void
@@ -24,6 +25,7 @@ interface RailProps {
 
 export function Rail({
   active = 'chat',
+  showCollaboration = true,
   onChat,
   onCollaboration,
   onPlugins,
@@ -46,13 +48,15 @@ export function Rail({
           active={active === 'chat'}
           onClick={onChat}
         />
-        <RailIcon
-          railId="collaboration"
-          icon={<UsersThree {...RAIL_ICON} />}
-          label="协作"
-          active={active === 'collaboration'}
-          onClick={onCollaboration}
-        />
+        {showCollaboration ? (
+          <RailIcon
+            railId="collaboration"
+            icon={<UsersThree {...RAIL_ICON} />}
+            label="协作"
+            active={active === 'collaboration'}
+            onClick={onCollaboration}
+          />
+        ) : null}
         <RailIcon
           railId="plugins"
           icon={<PuzzlePiece {...RAIL_ICON} />}
