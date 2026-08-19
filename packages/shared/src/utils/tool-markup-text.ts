@@ -48,6 +48,12 @@ function looksLikeToolPayload(value: unknown): boolean {
 /** 剥离 antml / command / function_call / tool_call / DSML / think 等工具与思维标记，保留自然语言 */
 export function stripToolInvocationMarkup(text: string): string {
   const stripped = text
+    // kscc bare 偶尔丢掉 antml 标签开头的左尖括号（例如
+    // `antml:invoke name="workspace_read_file">`）。这仍是协议噪音，不能
+    // 让它穿透到协作室正文；完整标签由下面的规则继续兜底。
+    .replace(/(?:<)?antml:invoke\s+name\s*=\s*["']?[^"'\s>]+["']?[^>]*>[\s\S]*?(?:<\/?antml:invoke\s*>|$)/gi, '')
+    .replace(/(?:<)?antml:parameter\b[^>]*>[\s\S]*?(?:<\/?antml:parameter\s*>|$)/gi, '')
+    .replace(/<\/?antml:(?:invoke|parameter)\b[^>]*>/gi, '')
     // 模型偶发把 CoT 打进 text：整段 think 内容不应对用户展示
     .replace(/<think(?:ing)?\b[^>]*>[\s\S]*?(?:<\/think(?:ing)?>|$)/gi, '')
     // 开标签落在上一块或丢失时：从文首到 </think> 仍视为思维链

@@ -22,6 +22,12 @@ describe('stripToolInvocationMarkup', () => {
     ).toBe('准备读取')
   })
 
+  it('strips kscc bare output when antml opening angle brackets are missing', () => {
+    const raw =
+      '我先看一下项目。\nantml:invoke name="workspace_search">\nantml:parameter name="path">.\n</antml:parameter> </antml:invoke>'
+    expect(stripToolInvocationMarkup(raw)).toBe('我先看一下项目。')
+  })
+
   it('strips function_call / tool_call wrappers', () => {
     expect(stripToolInvocationMarkup('准备\n<function_call>\n{"name":"Read"}\n</function_call>')).toBe(
       '准备',

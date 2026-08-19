@@ -41,6 +41,38 @@ import { resolveKsccPath } from '../adapters/claude/kscc-path'
 /** 单 turn 超时（ms）；外部渠道长回复兜底，取消由 AbortSignal 即时生效 */
 const MEMBER_TURN_TIMEOUT_MS = 120_000
 
+type RoomAssistantSnapshot = {
+  role?: string
+  content?: unknown
+}
+
+/**
+ * Pi 的 message_update.partial 是一条 assistant turn 的累计快照；不能把每一轮
+ * text_delta 直接拼成最终正文，否则工具循环中的中间说明会和最终说明重复落盘。
+ */
+function extractAssistantSnapshotText(value: unknown): string {
+  if (!value || typeof value !== 'object') return ''
+  const message = value as RoomAssistantSnapshot
+  if (message.role && message.role !== 'assistant') return ''
+  if (typeof message.content === 'string') return sanitizeAssistantTextForDisplay(message.content)
+  if (!Array.isArray(message.content)) return ''
+  const text = message.content
+    .filter((block): block is { type?: string; text?: unknown } => Boolean(block && typeof block === 'object'))
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text as string)
+    .join('')
+  return sanitizeAssistantTextForDisplay(text)
+}
+
+function extractLastAssistantText(messages: unknown): string {
+  if (!Array.isArray(messages)) return ''
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const text = extractAssistantSnapshotText(messages[i])
+    if (text) return text
+  }
+  return ''
+}
+
 /** S4-3b 的完整白名单；绝不复用 Pi 会话的 Read/Bash/Edit/Write 工具。 */
 const ROOM_TOOL_DESCRIPTORS = [
   {
@@ -666,28 +698,72 @@ async function runExternalRoomToolTurn(args: {
     toolExecution: 'sequential',
   } as never)
 
-  let text = ''
-  let visibleText = ''
+  let fallbackTurnText = ''
+  let visibleTurnText = ''
+  let latestAssistantText = ''
   let timedOut = false
-  const unsubscribe = agent.subscribe((event) => {
-    if (event.type !== 'message_update') return
-    const update = (event as { assistantMessageEvent?: { type?: string; delta?: string } })
-      .assistantMessageEvent
-    if (update?.type !== 'text_delta' || !update.delta) return
-    text += update.delta
-    // 原生工具桥通常不会把协议标记放进 text，但仍做展示层防御，避免
-    // 某些兼容渠道把 XML/函数调用标记混入正文时泄漏到协作室气泡。
-    const nextVisible = sanitizeAssistantTextForDisplay(text)
-    if (nextVisible.startsWith(visibleText)) {
-      const delta = nextVisible.slice(visibleText.length)
+  const emitSnapshot = (snapshot: string): void => {
+    const nextVisible = sanitizeAssistantTextForDisplay(snapshot)
+    if (nextVisible.startsWith(visibleTurnText)) {
+      const delta = nextVisible.slice(visibleTurnText.length)
       if (delta) input.onTextDelta?.(delta)
     }
-    visibleText = nextVisible
+    visibleTurnText = nextVisible
+    if (nextVisible) latestAssistantText = nextVisible
+  }
+  const resetTurn = (): void => {
+    fallbackTurnText = ''
+    visibleTurnText = ''
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const armTimer = (): void => {
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      timedOut = true
+      agent?.abort()
+    }, MEMBER_TURN_TIMEOUT_MS)
+  }
+  const resetTimer = (): void => armTimer()
+  const unsubscribe = agent.subscribe((event) => {
+    if (event.type === 'turn_start') {
+      resetTurn()
+      resetTimer()
+      return
+    }
+    if (event.type === 'message_update') {
+      resetTimer()
+      const update = (event as {
+        assistantMessageEvent?: { type?: string; delta?: string; partial?: unknown }
+      }).assistantMessageEvent
+      const partialText = extractAssistantSnapshotText(update?.partial)
+      if (partialText) {
+        emitSnapshot(partialText)
+        return
+      }
+      if (update?.type === 'text_delta' && update.delta) {
+        fallbackTurnText += update.delta
+        emitSnapshot(fallbackTurnText)
+      }
+      return
+    }
+    if (event.type === 'message_end' || event.type === 'turn_end') {
+      resetTimer()
+      const messageText = extractAssistantSnapshotText((event as { message?: unknown }).message)
+      if (messageText) {
+        latestAssistantText = messageText
+        visibleTurnText = messageText
+      }
+      return
+    }
+    if (event.type === 'agent_end') {
+      resetTimer()
+      const finalText = extractLastAssistantText((event as { messages?: unknown }).messages)
+      if (finalText) latestAssistantText = finalText
+      return
+    }
+    resetTimer()
   })
-  const timer = setTimeout(() => {
-    timedOut = true
-    agent?.abort()
-  }, MEMBER_TURN_TIMEOUT_MS)
+  armTimer()
   const abort = () => agent?.abort()
   if (input.signal.aborted) abort()
   else input.signal.addEventListener('abort', abort, { once: true })
@@ -701,9 +777,9 @@ async function runExternalRoomToolTurn(args: {
     agent.abort()
   }
   if (timedOut) {
-    throw new Error(`协作室成员回合超过 ${MEMBER_TURN_TIMEOUT_MS / 1000} 秒，已停止本次执行`)
+    throw new Error(`协作室成员回合连续 ${MEMBER_TURN_TIMEOUT_MS / 1000} 秒无响应，已停止本次执行`)
   }
-  return { text: sanitizeAssistantTextForDisplay(text) }
+  return { text: latestAssistantText || sanitizeAssistantTextForDisplay(fallbackTurnText) }
 }
 
 /**
@@ -753,28 +829,71 @@ async function runKsccRoomToolTurn(args: {
     toolExecution: 'sequential',
   } as never)
 
-  let text = ''
-  let visibleText = ''
+  let fallbackTurnText = ''
+  let visibleTurnText = ''
+  let latestAssistantText = ''
   let timedOut = false
-  const unsubscribe = agent.subscribe((event) => {
-    if (event.type !== 'message_update') return
-    const update = (event as { assistantMessageEvent?: { type?: string; delta?: string } }).assistantMessageEvent
-    if (update?.type !== 'text_delta' || !update.delta) return
-    text += update.delta
-    // kscc bare 的 antml 调用在底层 text_delta 中仍是原始协议文本；
-    // 不能提前在 parser 层剥掉（parser 需要它来驱动真实工具循环），
-    // 这里只对流式展示做增量清洗，避免用户看到 XML 工具协议。
-    const nextVisible = sanitizeAssistantTextForDisplay(text)
-    if (nextVisible.startsWith(visibleText)) {
-      const delta = nextVisible.slice(visibleText.length)
+  const emitSnapshot = (snapshot: string): void => {
+    const nextVisible = sanitizeAssistantTextForDisplay(snapshot)
+    if (nextVisible.startsWith(visibleTurnText)) {
+      const delta = nextVisible.slice(visibleTurnText.length)
       if (delta) input.onTextDelta?.(delta)
     }
-    visibleText = nextVisible
+    visibleTurnText = nextVisible
+    if (nextVisible) latestAssistantText = nextVisible
+  }
+  const resetTurn = (): void => {
+    fallbackTurnText = ''
+    visibleTurnText = ''
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const armTimer = (): void => {
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      timedOut = true
+      agent?.abort()
+    }, MEMBER_TURN_TIMEOUT_MS)
+  }
+  const resetTimer = (): void => armTimer()
+  const unsubscribe = agent.subscribe((event) => {
+    if (event.type === 'turn_start') {
+      resetTurn()
+      resetTimer()
+      return
+    }
+    if (event.type === 'message_update') {
+      resetTimer()
+      const update = (event as {
+        assistantMessageEvent?: { type?: string; delta?: string; partial?: unknown }
+      }).assistantMessageEvent
+      const partialText = extractAssistantSnapshotText(update?.partial)
+      if (partialText) {
+        emitSnapshot(partialText)
+        return
+      }
+      if (update?.type === 'text_delta' && update.delta) {
+        fallbackTurnText += update.delta
+        emitSnapshot(fallbackTurnText)
+      }
+      return
+    }
+    if (event.type === 'message_end' || event.type === 'turn_end') {
+      resetTimer()
+      const messageText = extractAssistantSnapshotText((event as { message?: unknown }).message)
+      if (messageText) {
+        latestAssistantText = messageText
+        visibleTurnText = messageText
+      }
+      return
+    }
+    if (event.type === 'agent_end') {
+      resetTimer()
+      const finalText = extractLastAssistantText((event as { messages?: unknown }).messages)
+      if (finalText) latestAssistantText = finalText
+      return
+    }
+    resetTimer()
   })
-  const timer = setTimeout(() => {
-    timedOut = true
-    agent?.abort()
-  }, MEMBER_TURN_TIMEOUT_MS)
   const abort = () => agent?.abort()
   if (input.signal.aborted) abort()
   else input.signal.addEventListener('abort', abort, { once: true })
@@ -788,9 +907,9 @@ async function runKsccRoomToolTurn(args: {
     agent.abort()
   }
   if (timedOut) {
-    throw new Error(`协作室成员回合超过 ${MEMBER_TURN_TIMEOUT_MS / 1000} 秒，已停止本次执行`)
+    throw new Error(`协作室成员回合连续 ${MEMBER_TURN_TIMEOUT_MS / 1000} 秒无响应，已停止本次执行`)
   }
-  return { text: sanitizeAssistantTextForDisplay(text) }
+  return { text: latestAssistantText || sanitizeAssistantTextForDisplay(fallbackTurnText) }
 }
 
 /** 默认工厂（service 在未注入 adapter 时用） */

@@ -109,6 +109,24 @@ export function CollaborationCreateRoomDialog({
     setMembers((prev) => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== index)))
   }
 
+  const selectRole = (index: number, roleId: string): void => {
+    if (roleId === 'none') {
+      updateMember(index, { roleId: undefined, roleSnapshot: undefined })
+      return
+    }
+    const role = roles.find((item) => item.id === roleId)
+    if (!role) return
+    updateMember(index, {
+      roleId: role.id,
+      roleSnapshot: {
+        roleId: role.id,
+        displayName: role.displayName,
+        description: role.description,
+        systemPrompt: role.systemPrompt,
+      },
+    })
+  }
+
   const savePreset = async (): Promise<void> => {
     const name = presetName.trim()
     if (!name || members.length === 0) return
@@ -263,6 +281,9 @@ export function CollaborationCreateRoomDialog({
               {members.map((member, index) => {
                 const channel = enabledChannels.find((item) => item.id === member.channelId)
                 const models = channel?.models.filter((model) => model.enabled) ?? []
+                const selectedRole = member.roleId
+                  ? roles.find((role) => role.id === member.roleId)
+                  : undefined
                 const rolePrompt = member.roleSnapshot?.systemPrompt ?? ''
                 return (
                   <div key={index} className="rounded-md border border-border/50 bg-background/35 p-2.5">
@@ -304,6 +325,40 @@ export function CollaborationCreateRoomDialog({
                         </SelectContent>
                       </Select>
                     </div>
+                    <div className="mt-2">
+                      <label className="mb-1 block text-[11px] text-muted-foreground">
+                        角色库（可选）
+                      </label>
+                      <Select
+                        value={member.roleId || 'none'}
+                        onValueChange={(value) => selectRole(index, value)}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue placeholder="不绑定角色" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">不绑定角色</SelectItem>
+                          {roles.map((role) => (
+                            <SelectItem key={role.id} value={role.id}>
+                              {role.displayName}（{role.id}）
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {selectedRole ? (
+                        <div className="mt-1.5 rounded-md border border-border/40 bg-muted/20 px-2 py-1.5">
+                          <p className="text-[11px] font-medium text-foreground/85">
+                            {selectedRole.displayName}
+                            <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+                              {selectedRole.id}
+                            </span>
+                          </p>
+                          <p className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-muted-foreground">
+                            {selectedRole.description}
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
                     <Textarea
                       className="mt-2 min-h-14 resize-y text-xs"
                       value={rolePrompt}
@@ -311,12 +366,21 @@ export function CollaborationCreateRoomDialog({
                       onChange={(event) => {
                         const prompt = event.target.value
                         const snapshot: CollaborationRoleSnapshot | undefined = prompt.trim()
-                          ? { displayName: member.displayName || '自定义角色', description: '自定义角色', systemPrompt: prompt }
+                          ? {
+                              roleId: member.roleId,
+                              displayName: selectedRole?.displayName ?? (member.displayName || '自定义角色'),
+                              description: selectedRole?.description ?? '自定义角色',
+                              systemPrompt: prompt,
+                            }
                           : undefined
                         updateMember(index, { roleSnapshot: snapshot })
                       }}
                     />
-                    {member.roleId ? <p className="mt-1 text-[10px] text-muted-foreground">已保存角色库引用：{roles.find((role) => role.id === member.roleId)?.displayName ?? member.roleId}</p> : null}
+                    {member.roleId && !selectedRole ? (
+                      <p className="mt-1 text-[10px] text-muted-foreground">
+                        已保存角色库引用：{member.roleId}
+                      </p>
+                    ) : null}
                   </div>
                 )
               })}

@@ -206,7 +206,7 @@ describe('CollaborationRoomService run 行为（Stage 2）', () => {
     expect(svc.listMembers(roomId)[0]!.status).toBe('idle')
   })
 
-  test('失败：adapter 抛错 → run failed + 系统警告，成员回 idle', async () => {
+  test('失败：adapter 抛错 → run failed，错误只由 run 卡展示，成员回 idle', async () => {
     const { adapter } = createMockAdapter({ throwErr: new Error('boom') })
     const svc = createService(adapter)
     const { roomId } = createRoomWithCoordinator(svc)
@@ -219,10 +219,8 @@ describe('CollaborationRoomService run 行为（Stage 2）', () => {
     expect(run.error?.message).toBe('boom')
 
     const msgs = svc.listMessages(roomId)
-    // 用户消息 + 系统警告（无成员消息）
-    expect(msgs.map((m) => m.content)).toEqual(['会失败', '成员「协调者」回复失败：boom'])
-    expect(msgs[1]!.authorType).toBe('system')
-    expect(msgs[1]!.kind).toBe('warning')
+    // 只有用户消息；run.error 会由时间线中的失败卡统一展示，避免重复气泡。
+    expect(msgs.map((m) => m.content)).toEqual(['会失败'])
     expect(svc.listMembers(roomId)[0]!.status).toBe('idle')
   })
 

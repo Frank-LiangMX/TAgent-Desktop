@@ -1551,7 +1551,7 @@ export class CollaborationRoomService {
           message: '协作室预算已耗尽，已阻止本次 run 完成',
         }
         this.casRun(run.id, 'running', 'failed', { finishedAt: Date.now(), error, usage })
-        this.appendSystemMessage(room.id, `成员「${member.displayName}」执行达到预算上限，run 已停止。`)
+        // 失败原因由时间线中的 run 卡统一展示，避免再写一条重复的 system 气泡。
         this.broadcast(room.id, 'run-finished')
         return
       }
@@ -1588,7 +1588,7 @@ export class CollaborationRoomService {
           message: '协作室预算已耗尽，已中止本次 run',
         }
         this.casRun(run.id, 'running', 'failed', { finishedAt: Date.now(), error })
-        this.appendSystemMessage(room.id, `成员「${member.displayName}」执行达到预算上限，run 已停止。`)
+        // 失败原因由时间线中的 run 卡统一展示，避免再写一条重复的 system 气泡。
         this.broadcast(room.id, 'run-finished')
         return
       }
@@ -1605,14 +1605,10 @@ export class CollaborationRoomService {
         this.broadcast(room.id, 'run-cancelled')
         return
       }
-      // running → failed + 系统警告（一方失败不影响其他目标 run）
+      // running → failed（一方失败不影响其他目标 run）。run.error 是失败原因的
+      // 唯一可见出口，避免和 run 卡重复渲染一条 system 警告。
       const error = serializeRunError(err)
       this.casRun(run.id, 'running', 'failed', { finishedAt: Date.now(), error })
-      const reason = err instanceof Error ? err.message : String(err)
-      this.appendSystemMessage(
-        room.id,
-        `成员「${member.displayName}」回复失败：${reason}`,
-      )
       this.broadcast(room.id, 'run-finished')
     } finally {
       if (budgetTimer) clearTimeout(budgetTimer)
