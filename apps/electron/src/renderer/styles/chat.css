@@ -2003,6 +2003,22 @@
   right: auto;
 }
 
+/* 短轨视口：列向吃满对话区高度，内部滚出完整一轮一刻度 */
+.message-nav-bars-viewport {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  min-height: 0;
+}
+.message-nav-bars-viewport--scrollable {
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.message-nav-bars-viewport--scrollable::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 .message-nav-bar-slot {
   display: flex;
   align-items: center;

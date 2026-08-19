@@ -48,12 +48,13 @@ interface ScrollMinimapProps {
 }
 
 const MIN_ITEMS = 1
-const MAX_BARS = 20
-/** 每条刻度槽位高度（含间距）— 同时作为 hover 命中区 */
-const BAR_SLOT = 12
+/** 每条刻度槽位高度（含间距）— 同时作为 hover 命中区；略密以贴近 Codex 全高轨 */
+const BAR_SLOT = 10
 /** resting 刻度视觉尺寸（命中区固定为 BAR_SLOT，视觉用 transform 放大） */
 const BAR_HEIGHT_BASE = 2.5
 const BAR_WIDTH_BASE = 10
+/** 测量前的短轨视口回退高度（真正高度由 ResizeObserver 吃满对话列） */
+const RAIL_VIEWPORT_FALLBACK = 20 * BAR_SLOT
 /**
  * Codex 式离散鱼眼：每格相对 resting 的 scale，阶梯式明显缩短（非平滑曲线）。
  * distance 0 = 焦点，4+ = resting。
@@ -143,6 +144,9 @@ export function ScrollMinimap({
   const focusSearchOnOpenRef = React.useRef(false)
   const trackRef = React.useRef<HTMLDivElement>(null)
   const listRef = React.useRef<HTMLDivElement>(null)
+  const barsViewportRef = React.useRef<HTMLDivElement>(null)
+  const [railScrollTop, setRailScrollTop] = React.useState(0)
+  const [railViewportHeight, setRailViewportHeight] = React.useState(RAIL_VIEWPORT_FALLBACK)
 
   React.useEffect(() => {
     return () => {
@@ -443,24 +447,68 @@ export function ScrollMinimap({
     [scrollRef, stopScroll, stickyState]
   )
 
+  // 一轮一刻度；短轨只是视口，滚轮可翻完整列表（对齐 Codex）
   const bars = React.useMemo((): NavBar[] => {
     if (items.length < MIN_ITEMS) return []
-    const barCount = Math.min(items.length, MAX_BARS)
-    return Array.from({ length: barCount }, (_, i) => {
-      const start = Math.floor((i * items.length) / barCount)
-      const end = Math.floor(((i + 1) * items.length) / barCount)
-      const group = items.slice(start, end)
-      return {
-        index: i,
-        start,
-        end,
-        isVisible: group.some((it) => visibleIds.has(it.id)),
-        hasUser: group.some((it) => it.role === 'user'),
-        hasStatus: group.some((it) => it.role === 'status'),
-        turn: group[0] ?? null,
-      }
-    })
+    return items.map((item, i) => ({
+      index: i,
+      start: i,
+      end: i + 1,
+      isVisible: visibleIds.has(item.id),
+      hasUser: item.role === 'user',
+      hasStatus: item.role === 'status',
+      turn: item,
+    }))
   }, [items, visibleIds])
+
+  const railContentHeight = bars.length * BAR_SLOT
+  // 视口高度由 ResizeObserver 实测；内容更高才启用轨内滚动
+  const railScrollable = railContentHeight > railViewportHeight + 1
+
+  // 短轨吃满对话列剩余高度（对齐 Codex 近全高轨）
+  React.useEffect(() => {
+    const viewport = barsViewportRef.current
+    if (!viewport || typeof ResizeObserver === 'undefined') return
+    const measure = (): void => {
+      const next = viewport.clientHeight
+      if (next > 0) setRailViewportHeight(next)
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(viewport)
+    return () => ro.disconnect()
+  }, [canScroll, items.length])
+
+  // 会话滚动时，把当前锚点刻度滚进短轨视口中央
+  React.useEffect(() => {
+    const viewport = barsViewportRef.current
+    if (!viewport || !railScrollable) return
+    const idx =
+      anchorId != null ? items.findIndex((item) => item.id === anchorId) : -1
+    if (idx < 0) return
+    const maxScroll = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+    const next = Math.max(
+      0,
+      Math.min(maxScroll, idx * BAR_SLOT - (viewport.clientHeight - BAR_SLOT) / 2),
+    )
+    if (Math.abs(viewport.scrollTop - next) < 2) return
+    viewport.scrollTop = next
+    setRailScrollTop(next)
+  }, [anchorId, items, railScrollable, bars.length, railViewportHeight])
+
+  // wheel 需非 passive，才能在悬停短轨时拦下并只滚刻度
+  React.useEffect(() => {
+    const viewport = barsViewportRef.current
+    if (!viewport || !railScrollable) return
+    const onWheel = (event: WheelEvent): void => {
+      event.preventDefault()
+      event.stopPropagation()
+      viewport.scrollTop += event.deltaY
+      setRailScrollTop(viewport.scrollTop)
+    }
+    viewport.addEventListener('wheel', onWheel, { passive: false })
+    return () => viewport.removeEventListener('wheel', onWheel)
+  }, [railScrollable, bars.length])
 
   if (items.length < MIN_ITEMS || !canScroll) return null
 
@@ -473,7 +521,10 @@ export function ScrollMinimap({
 
   const peekBar = peekIndex !== null ? (bars[peekIndex] ?? null) : null
   const peekItem = peekBar?.turn ?? null
-  const peekTop = peekBar ? RAIL_HEAD_OFFSET + peekBar.index * BAR_SLOT : 0
+  // peek 相对短轨视口定位（扣掉轨内 scrollTop）
+  const peekTop = peekBar
+    ? RAIL_HEAD_OFFSET + Math.max(0, peekBar.index * BAR_SLOT - railScrollTop)
+    : 0
 
   const handleTrackKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
     const el = scrollRef.current
@@ -494,9 +545,13 @@ export function ScrollMinimap({
 
   return (
     <div className="message-nav-shell pointer-events-none absolute inset-0 z-30">
-      {/* 左侧刻度：鱼眼 + hover 用户轮次预览 */}
+      {/* 左侧刻度：近全高短轨 + 轨内可滚完整刻度（对齐 Codex） */}
       <div
-        className="message-nav-rail absolute left-2.5 top-0 bottom-0 flex w-8 items-start justify-center pt-1 pointer-events-none"
+        className="message-nav-rail absolute left-2.5 top-2 flex w-8 flex-col items-center pointer-events-none"
+        style={{
+          // 抬过输入/底栏，避免刻度扎进 composer
+          bottom: 'max(6.5rem, calc(var(--session-composer-top, 11rem) + 10px))',
+        }}
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             setPanelOpen(false)
@@ -506,7 +561,7 @@ export function ScrollMinimap({
         }}
       >
         <div
-          className="relative flex flex-col pointer-events-auto"
+          className="relative flex min-h-0 flex-1 flex-col pointer-events-auto"
           style={{ width: RAIL_VISUAL_WIDTH }}
         >
           {/* Rail open button: center on resting tick width */}
@@ -679,15 +734,22 @@ export function ScrollMinimap({
             </div>
           )}
 
-          {/* 鱼眼胶囊刻度：槽位固定 + transform 视觉，mousemove 整列命中 */}
+          {/* 短轨视口吃满列高；内容一轮一格，超出部分轨内滚 */}
           <div
-            className="message-nav-bars relative flex-shrink-0"
-            style={{ width: RAIL_VISUAL_WIDTH, height: bars.length * BAR_SLOT }}
+            ref={barsViewportRef}
+            className={cn(
+              'message-nav-bars-viewport relative min-h-0 flex-1',
+              railScrollable && 'message-nav-bars-viewport--scrollable',
+            )}
+            style={{ width: RAIL_VISUAL_WIDTH }}
+            onScroll={(event) => {
+              setRailScrollTop(event.currentTarget.scrollTop)
+            }}
             onPointerEnter={cancelClearPeek}
             onPointerMove={(event) => {
               cancelClearPeek()
               const rect = event.currentTarget.getBoundingClientRect()
-              const y = event.clientY - rect.top
+              const y = event.clientY - rect.top + event.currentTarget.scrollTop
               const index = Math.min(
                 bars.length - 1,
                 Math.max(0, Math.floor(y / BAR_SLOT)),
@@ -696,44 +758,49 @@ export function ScrollMinimap({
             }}
             onPointerLeave={scheduleClearPeek}
           >
-            {bars.map((bar) => {
-              const distance = peekIndex === null ? 99 : Math.abs(bar.index - peekIndex)
-              const scaleX = fisheyeScale(distance)
-              const focused = distance === 0
-              return (
-                <button
-                  key={bar.index}
-                  type="button"
-                  aria-label={`跳转到消息组 ${bar.start + 1}`}
-                  className={cn(
-                    'message-nav-bar-slot absolute left-0 border-0 bg-transparent p-0 cursor-pointer',
-                    focused && 'message-nav-bar-slot--focused',
-                  )}
-                  style={{
-                    top: bar.index * BAR_SLOT,
-                    width: RAIL_VISUAL_WIDTH,
-                    height: BAR_SLOT,
-                  }}
-                  onClick={() => scrollToGroup(bar.start)}
-                >
-                  <span
+            <div
+              className="message-nav-bars relative"
+              style={{ width: RAIL_VISUAL_WIDTH, height: railContentHeight }}
+            >
+              {bars.map((bar) => {
+                const distance = peekIndex === null ? 99 : Math.abs(bar.index - peekIndex)
+                const scaleX = fisheyeScale(distance)
+                const focused = distance === 0
+                return (
+                  <button
+                    key={bar.turn?.id ?? bar.index}
+                    type="button"
+                    aria-label={`跳转到第 ${bar.index + 1} 轮`}
                     className={cn(
-                      'message-nav-bar',
-                      bar.isVisible && 'message-nav-bar-visible',
-                      bar.hasStatus && !bar.isVisible && 'message-nav-bar-status',
-                      bar.hasUser && !bar.isVisible && !bar.hasStatus && 'message-nav-bar-user',
-                      !bar.isVisible && !bar.hasUser && !bar.hasStatus && 'message-nav-bar-assistant',
-                      focused && 'message-nav-bar-focused',
+                      'message-nav-bar-slot absolute left-0 border-0 bg-transparent p-0 cursor-pointer',
+                      focused && 'message-nav-bar-slot--focused',
                     )}
                     style={{
-                      width: BAR_WIDTH_BASE,
-                      height: BAR_HEIGHT_BASE,
-                      transform: `scaleX(${scaleX})`,
+                      top: bar.index * BAR_SLOT,
+                      width: RAIL_VISUAL_WIDTH,
+                      height: BAR_SLOT,
                     }}
-                  />
-                </button>
-              )
-            })}
+                    onClick={() => scrollToGroup(bar.start)}
+                  >
+                    <span
+                      className={cn(
+                        'message-nav-bar',
+                        bar.isVisible && 'message-nav-bar-visible',
+                        bar.hasStatus && !bar.isVisible && 'message-nav-bar-status',
+                        bar.hasUser && !bar.isVisible && !bar.hasStatus && 'message-nav-bar-user',
+                        !bar.isVisible && !bar.hasUser && !bar.hasStatus && 'message-nav-bar-assistant',
+                        focused && 'message-nav-bar-focused',
+                      )}
+                      style={{
+                        width: BAR_WIDTH_BASE,
+                        height: BAR_HEIGHT_BASE,
+                        transform: `scaleX(${scaleX})`,
+                      }}
+                    />
+                  </button>
+                )
+              })}
+            </div>
           </div>
         </div>
       </div>
