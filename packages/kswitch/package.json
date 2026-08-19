@@ -1,0 +1,17 @@
+{
+  "name": "@tagent/kswitch",
+  "version": "1.0.0",
+  "description": "kscc 账号切换 CLI 工具 — 在多个 kscc 账号间切换，无需退出登录",
+  "private": true,
+  "bin": {
+    "kswitch": "./bin/kswitch.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/",
+    "src/"
+  ],
+  "license": "UNLICENSED"
+}

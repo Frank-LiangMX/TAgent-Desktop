@@ -22,6 +22,20 @@ describe('stripToolInvocationMarkup', () => {
     )
     expect(stripToolInvocationMarkup('x\n<tool_call>')).toBe('x')
   })
+
+  it('strips MiniMax / Pai DSML AskUserQuestion dump', () => {
+    const raw =
+      '< | DSML | tool_calls > < | DSML | invoke name="AskUserQuestion" > < | DSML | parameter name="questions" string="false" >[{"header":"实现方向","multiSelect":false,"options":[{"label":"独立 CLI 工具","description":"放 PATH"}]}]</pai_toolcalls>'
+    expect(stripToolInvocationMarkup(raw)).toBe('')
+    expect(
+      stripToolInvocationMarkup('先确认方向\n' + raw),
+    ).toBe('先确认方向')
+  })
+
+  it('strips lone pai_toolcalls closer', () => {
+    expect(stripToolInvocationMarkup('</pai_toolcalls>')).toBe('')
+    expect(stripToolInvocationMarkup('好的\n</pai_toolcalls>')).toBe('好的')
+  })
 })
 
 describe('isToolCallArtifactText', () => {

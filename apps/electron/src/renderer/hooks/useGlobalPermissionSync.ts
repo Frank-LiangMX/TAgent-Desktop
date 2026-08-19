@@ -9,7 +9,7 @@
  * - PERMISSION_RESOLVED → 按 reqId 出队；超时 deny 推 SessionErrorBanner
  */
 import { useEffect } from 'react'
-import { useSetAtom } from 'jotai'
+import { getDefaultStore, useSetAtom } from 'jotai'
 import {
   enqueuePermissionAtom,
   resolvePermissionAtom,
@@ -18,17 +18,23 @@ import {
   type PermissionResolvedPayload,
 } from '../atoms/permission-atoms'
 import { setSessionErrorAtom } from '../atoms/session-error-atoms'
+import { adoptSessionRunAtom, sessionRunMapAtom } from '../atoms/session-run-atoms'
 
 export function useGlobalPermissionSync(): void {
   const enqueue = useSetAtom(enqueuePermissionAtom)
   const resolve = useSetAtom(resolvePermissionAtom)
   const setSessionError = useSetAtom(setSessionErrorAtom)
+  const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
 
   useEffect(() => {
     const offRequest = window.electronAPI.onPermissionRequest((raw: unknown) => {
       const pr = raw as PermissionReq
       if (!pr?.id || !pr.sessionId) return
       enqueue(pr)
+      const entry = getDefaultStore().get(sessionRunMapAtom)[pr.sessionId]
+      if (entry?.startedAt != null) {
+        adoptSessionRun({ id: pr.sessionId, startedAt: entry.startedAt })
+      }
     })
     const offResolved = window.electronAPI.onPermissionResolved?.((raw: unknown) => {
       const p = raw as PermissionResolvedPayload
@@ -45,5 +51,5 @@ export function useGlobalPermissionSync(): void {
       offRequest?.()
       offResolved?.()
     }
-  }, [enqueue, resolve, setSessionError])
+  }, [enqueue, resolve, setSessionError, adoptSessionRun])
 }

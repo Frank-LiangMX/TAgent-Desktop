@@ -510,8 +510,8 @@ export function StatusTicker({
                       ) : null}
                     </div>
                   </div>
-                  {inboxBadge}
                 </div>
+                {inboxBadge}
               </motion.div>
             )}
               </AnimatePresence>

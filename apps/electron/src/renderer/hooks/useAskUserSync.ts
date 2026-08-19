@@ -8,12 +8,14 @@
  * 切会话/切预览 Tab 不丢 pending 与填写进度（atoms 全局存活）。
  */
 import { useEffect } from 'react'
-import { useSetAtom } from 'jotai'
+import { getDefaultStore, useSetAtom } from 'jotai'
 import { allPendingAskUserRequestsAtom, askUserDraftsAtom } from '../atoms/ask-user-atoms'
+import { adoptSessionRunAtom, sessionRunMapAtom } from '../atoms/session-run-atoms'
 
 export function useAskUserSync(): void {
   const setAllRequests = useSetAtom(allPendingAskUserRequestsAtom)
   const setDrafts = useSetAtom(askUserDraftsAtom)
+  const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
 
   useEffect(() => {
     const offRequest = window.electronAPI.onAskUserRequest((request) => {
@@ -23,6 +25,11 @@ export function useAskUserSync(): void {
         map.set(request.sessionId, [...cur, request])
         return map
       })
+      // 弹窗等待不是一轮结束：拉回 running，沿用原 startedAt，提交后续计时
+      const entry = getDefaultStore().get(sessionRunMapAtom)[request.sessionId]
+      if (entry?.startedAt != null) {
+        adoptSessionRun({ id: request.sessionId, startedAt: entry.startedAt })
+      }
     })
     const offResolved = window.electronAPI.onAskUserResolved?.(({ requestId }) => {
       // 协作父会话代答等场景：清理所有会话中的残留请求与草稿
@@ -48,5 +55,5 @@ export function useAskUserSync(): void {
       offRequest?.()
       offResolved?.()
     }
-  }, [setAllRequests, setDrafts])
+  }, [setAllRequests, setDrafts, adoptSessionRun])
 }

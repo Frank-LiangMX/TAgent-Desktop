@@ -59,7 +59,10 @@ export function collectPendingToolUseIds(items: InFlightWorkItem[]): Set<string>
 export function sessionHasInFlightWork(input: {
   pendingToolUseIds?: Iterable<string>
   items?: InFlightWorkItem[]
+  /** AskUser / 权限 / 退出计划等弹窗：人还没选，本轮没完 */
+  awaitingUser?: boolean
 }): boolean {
+  if (input.awaitingUser) return true
   if (input.pendingToolUseIds) {
     for (const _id of input.pendingToolUseIds) {
       return true

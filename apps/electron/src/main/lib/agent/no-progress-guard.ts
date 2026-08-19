@@ -47,6 +47,147 @@ export function buildNoProgressEventFromDecision(
   }
 }
 
+// ===== brief 2026-08-19 §3：无进展暂停 → AskUserQuestion 结构化澄清 =====
+
+/** reason code → 用户可读的失败/无进展摘要片段 */
+const REASON_SUMMARY: Record<NoProgressReasonCode, string> = {
+  same_failure_repeated: '同一动作重复失败',
+  same_target_edited_without_verification_change: '同一文件多次编辑但验证结果未变',
+  no_new_evidence: '连续工具批次未获得新证据',
+  empty_timeout_repeated: '同一命令重复空输出超时',
+  action_success_goal_unchanged: '工具成功但任务目标未推进',
+  same_success_repeated: '同一成功操作连续重复',
+  strategy_unchanged: '重复失败但策略未实质变化',
+  reflection_ignored: '强制复盘后仍重复工具调用',
+  time_without_progress: '无进展状态持续超时',
+  verify_needed: '本轮有修改但缺少验证证据',
+}
+
+/** AskUserQuestion 选项：下一步方向（brief §3） */
+const NO_PROGRESS_DIRECTION_OPTIONS = [
+  { label: '补充信息后继续', description: '提供更多上下文或线索，再继续' },
+  { label: '换一个方案', description: '从不同角度重新尝试' },
+  { label: '继续当前方向', description: '保留当前策略，再试一次' },
+] as const
+
+/**
+ * 把无进展暂停 decision + state 翻成 AskUserQuestion 工具输入（brief 2026-08-19 §3）。
+ *
+ * 生成结构化澄清，复用现有 AskUserQuestion 事件 / UI（不新增第二套问答协议）：
+ * - 已确认的事实（批次计数 / 重复失败 / 空超时 / 重复成功 / 策略变体数）
+ * - 重复失败 / 无进展摘要（reason code → 人话）
+ * - 可选的下一步方向（补充信息 / 换方案 / 继续当前方向）
+ *
+ * 纯函数，不依赖 IPC / SDK；适配层在暂停分支调用，经回调把 input 交 session-service
+ * 注入 `askUserService.handleAskUserQuestion`，用户未选择前不自动继续。
+ *
+ * @param decision 守卫判定输出（暂停时的 decision）
+ * @param state    守卫状态快照（提供更丰富的已确认事实；缺省时退化为仅用 decision 计数）
+ */
+export function buildNoProgressAskUserInput(
+  decision: NoProgressDecision,
+  state?: NoProgressState,
+): Record<string, unknown> {
+  const facts: string[] = []
+  const totalBatches = decision.batchCount
+  const npBatches = decision.noProgressBatchCount
+  if (totalBatches > 0) {
+    facts.push(`已尝试 ${totalBatches} 个工具批次，其中 ${npBatches} 个未获得新证据。`)
+  }
+  if (decision.repeatedFailureCount > 0) {
+    facts.push(`同一动作重复失败 ${decision.repeatedFailureCount} 次。`)
+  }
+  if (decision.emptyTimeoutCount > 0) {
+    facts.push(`空输出超时 ${decision.emptyTimeoutCount} 次。`)
+  }
+  // state 提供更丰富的 facts（重复成功 / 策略变体数）
+  if (state) {
+    if (state.maxSuccessRepeat > 0) {
+      facts.push(`同一成功操作连续重复 ${state.maxSuccessRepeat} 次。`)
+    }
+    if (state.maxStrategyVariants > 0) {
+      facts.push(`同一策略下尝试了 ${state.maxStrategyVariants} 个不同变体。`)
+    }
+  }
+
+  // reason code → 人话摘要
+  const summaryParts = decision.reasonCodes
+    .map((r) => REASON_SUMMARY[r])
+    .filter(Boolean)
+  const summaryText = summaryParts.length > 0
+    ? summaryParts.join('；')
+    : '连续多次操作未获得新进展'
+
+  const factsBlock = facts.length > 0
+    ? `\n\n【已确认的事实】\n${facts.map((f) => `· ${f}`).join('\n')}`
+    : ''
+  const summaryBlock = `\n\n【无进展摘要】\n· ${summaryText}。`
+  const directionsIntro = '\n\n【请选择下一步方向】'
+
+  const question = `${decision.userMessage ?? PAUSE_USER_MESSAGE}${factsBlock}${summaryBlock}${directionsIntro}`
+
+  return {
+    questions: [
+      {
+        question,
+        header: '无进展澄清',
+        options: NO_PROGRESS_DIRECTION_OPTIONS.map((o) => ({
+          label: o.label,
+          description: o.description,
+        })),
+        multiSelect: false,
+      },
+    ],
+  }
+}
+
+// ===== brief 2026-08-19 §4：verify-on-stop 验证提示 =====
+
+/** verify-on-stop 暂停时终态 errors 文案（归一化为 paused_no_progress 时用） */
+export const VERIFY_ON_STOP_PAUSE_ERRORS = [
+  '已暂停：本轮修改了文件但尚未运行验证（测试 / 构建 / 命令检查）。会话与历史保留，可在原会话继续发送消息。',
+]
+
+/** verify-on-stop 用户可见摘要 */
+const VERIFY_ON_STOP_USER_MESSAGE = '已暂停：本轮修改了文件但尚未运行验证'
+
+/** AskUserQuestion 选项：验证提示方向（brief §4） */
+const VERIFY_ON_STOP_OPTIONS = [
+  { label: '请先验证再结束', description: '让助手运行测试 / 构建等验证后再收束' },
+  { label: '我来手动确认', description: '我会自行检查改动，确认后继续' },
+  { label: '直接结束', description: '不需要验证，本轮到此结束' },
+] as const
+
+/**
+ * 构造 verify-on-stop 验证提示的 AskUserQuestion 工具输入（brief 2026-08-19 §4）。
+ *
+ * 本轮发生 Write/Edit 但缺少 verify 类工具证据时，终态收束前触发一次验证提示。
+ * 复用现有 AskUserQuestion 事件 / UI（与 {@link buildNoProgressAskUserInput} 同管线），
+ * 不新增第二套问答协议；提示不写入持久化会话历史（经 askUserService 注入，skipUserPersist）。
+ *
+ * 纯函数，不依赖 IPC / SDK；适配层在 verify-on-stop 命中时调用，经
+ * {@link NoProgressCtx.onNoProgressPauseAskUser} 回调交 session-service 注入。
+ */
+export function buildVerifyOnStopAskUserInput(): Record<string, unknown> {
+  const question = [
+    VERIFY_ON_STOP_USER_MESSAGE + '。',
+    '为避免改动未被验证就结束，请选择下一步方向：',
+  ].join('\n')
+  return {
+    questions: [
+      {
+        question,
+        header: '验证提示',
+        options: VERIFY_ON_STOP_OPTIONS.map((o) => ({
+          label: o.label,
+          description: o.description,
+        })),
+        multiSelect: false,
+      },
+    ],
+  }
+}
+
 // ===== 阈值（§7；初始值，可按影子模式数据调整） =====
 
 export interface NoProgressThresholds {
@@ -62,6 +203,10 @@ export interface NoProgressThresholds {
   batchesAfterReflection: number
   /** §7.3.1 强制复盘后仍尝试重复工具调用 2 次 → 暂停 */
   finalResponseViolationsPause: number
+  /** brief 2026-08-19 §1：同一动作+同一目标+同一有效结果连续重复成功 N 次 → 一级提醒 */
+  sameSuccessRepeat: number
+  /** brief 2026-08-19 §2：同一策略签名下出现 N 个不同失败动作变体（仅换相近参数/路径/命令）→ 一级提醒 */
+  strategyUnchangedVariants: number
   /** §7.3.2 累计 12 个工具批次无有效进展 → 暂停 */
   totalNoProgressBatchesPause: number
   /** §7.3.3 相同空输出超时达到 4 次 → 暂停 */
@@ -77,6 +222,8 @@ export const DEFAULT_NO_PROGRESS_THRESHOLDS: NoProgressThresholds = {
   sameCommandEmptyTimeoutWarn: 2,
   batchesAfterReflection: 3,
   finalResponseViolationsPause: 2,
+  sameSuccessRepeat: 3,
+  strategyUnchangedVariants: 3,
   totalNoProgressBatchesPause: 12,
   totalEmptyTimeoutPause: 4,
   noProgressDurationMs: 10 * 60 * 1000,
@@ -96,6 +243,18 @@ export interface NoProgressState {
   lastUserInputAt: number
   lastActionSignature?: string
   lastOutcomeSignature?: string
+  /** brief 2026-08-19 §1：当前连续相同成功签名次数（edit/write 成功重复 streak） */
+  successRepeatStreak: number
+  /** brief 2026-08-19 §1：本无进展窗口内出现过的最大连续成功重复次数 */
+  maxSuccessRepeat: number
+  /** brief 2026-08-19 §2：同一策略签名下不同失败动作变体数的最大值 */
+  maxStrategyVariants: number
+  /** brief 2026-08-19 §4：本轮是否发生过成功的 edit 类工具调用（自上次进展 / 回合起点起） */
+  hadEditThisTurn: boolean
+  /** brief 2026-08-19 §4：本轮是否出现过 verify 类工具证据（Bash 调用，自上次进展 / 回合起点起） */
+  hadVerifyEvidenceThisTurn: boolean
+  /** brief 2026-08-19 §4：本轮 verify-on-stop 验证提示是否已触发（防重复，仅 per-turn reset 复位） */
+  verifyPromptFired: boolean
   triggerReasons: NoProgressReasonCode[]
 }
 
@@ -306,6 +465,74 @@ export function actionSignature(toolName: string, input: unknown): string {
   return `${name}:${stableInputString(input)}`
 }
 
+/**
+ * 重复成功签名（brief 2026-08-19 §1）。
+ *
+ * 用于判定「同一动作 + 同一目标 + 同一有效结果」连续重复成功。Edit 的 {@link actionSignature}
+ * 已包含文件 + 区域摘要，可直接复用；Write 的 actionSignature 只含长度桶（过粗，会把不同内容
+ * 误判为同动作），因此单独加入 content 摘要（scrubNoise + FNV，不保留正文）。非 edit 类返回
+ * undefined（不参与重复成功追踪——验证类成功由 prevOutcomeByAction 另行判定）。
+ */
+export function successSignature(toolName: string, input: unknown): string | undefined {
+  const name = toolName || 'unknown'
+  if (name === 'Edit' || name === 'MultiEdit') return actionSignature(name, input)
+  if (name === 'Write') {
+    const file = normalizePath(getField(input, 'file_path', 'path'))
+    const content = getField(input, 'content')
+    const body = typeof content === 'string' ? content : ''
+    return `Write:${file}|${digest(body)}`
+  }
+  return undefined
+}
+
+/**
+ * Bash 命令主干归一（brief 2026-08-19 §2 策略签名用）。
+ *
+ * 在 {@link normalizeCommand} 基础上去掉 flag 参数，只保留程序 + 第一个位置参数（主干目标）。
+ * 这样 `node tools/a0.js --foo` 与 `node tools/a0.js --bar` 被视为同一策略（仅换相近参数），
+ * 而 `node tools/a0.js` 与 `npm test` 视为不同策略。保守起见，不同文件路径不归并——
+ * 「策略确实变化时不会被误判为重复」，长时间无进展仍由 12 批硬上限兜底。
+ */
+function commandStem(raw: unknown): string {
+  const cmd = normalizeCommand(raw)
+  if (!cmd) return ''
+  const tokens = cmd.split(/\s+/).filter(Boolean)
+  const kept: string[] = []
+  for (const t of tokens) {
+    // 跳过 flag（-x / --x）；保留程序与位置参数（主干目标）
+    if (t.startsWith('-')) continue
+    kept.push(t)
+  }
+  if (kept.length === 0) return cmd // 全是 flag（如 git --version）：兜底用整条归一命令
+  if (kept.length === 1) return kept[0]!
+  return `${kept[0]!} ${kept[1]!}`
+}
+
+/**
+ * 策略签名（brief 2026-08-19 §2）。
+ *
+ * 比 {@link actionSignature} 更粗，用于「重复失败后策略是否实质变化」判定：同一策略签名下
+ * 出现多个不同失败动作变体（仅换相近参数/路径/命令）即视为策略未实质变化。保守归并：
+ * - Bash：程序 + 主干目标（去 flag）；
+ * - Edit/MultiEdit/Write：同一文件视为同一策略（编辑不同区域不算实质变化）；
+ * - Read/Grep/Glob：同一扫描路径视为同一调查方向；
+ * - MCP / 其它：与 actionSignature 一致（不强行归并）。
+ */
+export function strategySignature(toolName: string, input: unknown): string {
+  const name = toolName || 'unknown'
+  if (name === 'Bash') {
+    const cwd = normalizePath(getField(input, 'cwd'))
+    return `Bash:${cwd}|${commandStem(getField(input, 'command'))}`
+  }
+  if (name === 'Edit' || name === 'MultiEdit' || name === 'Write') {
+    return `edit:${normalizePath(getField(input, 'file_path', 'path'))}`
+  }
+  if (name === 'Read') return `scan:${normalizePath(getField(input, 'file_path', 'path'))}`
+  if (name === 'Grep') return `scan:${normalizePath(getField(input, 'path', 'glob'))}`
+  if (name === 'Glob') return `scan:${normalizePath(getField(input, 'path'))}`
+  return actionSignature(name, input)
+}
+
 // ===== 结果解析（§6.3：status + exitCode + timeoutKind + normalizedError + meaningfulOutputDigest） =====
 
 export interface ParsedOutcome {
@@ -464,6 +691,22 @@ export class NoProgressGuard {
   private lastActionSignature: string | undefined
   private lastOutcomeSignature: string | undefined
   private hadSuccessfulEditSinceLastProgress = false
+  /** brief 2026-08-19 §1：最近一次成功签名（用于连续相同成功 streak 判定） */
+  private lastSuccessSig: string | undefined
+  /** brief 2026-08-19 §1：当前连续相同成功签名次数 */
+  private successRepeatStreak = 0
+  /** brief 2026-08-19 §1：本无进展窗口内出现过的最大连续成功重复次数 */
+  private maxSuccessRepeat = 0
+  /** brief 2026-08-19 §2：同一策略签名下的不同失败动作签名集合 */
+  private readonly failedActionSigsByStrategy = new Map<string, Set<string>>()
+  /** brief 2026-08-19 §2：同一策略签名下不同失败动作变体数的最大值 */
+  private maxStrategyVariants = 0
+  /** brief 2026-08-19 §4：本轮是否发生过成功的 edit 类工具调用（自上次进展 / 回合起点起） */
+  private hadEditThisTurn = false
+  /** brief 2026-08-19 §4：本轮是否出现过 verify 类工具证据（Bash 调用，自上次进展 / 回合起点起） */
+  private hadVerifyEvidenceThisTurn = false
+  /** brief 2026-08-19 §4：本轮 verify-on-stop 验证提示是否已触发（防重复，仅 per-turn reset 复位） */
+  private verifyPromptFired = false
 
   /** 同一动作签名 + 相同失败结果签名 → 次数（§7.1.1） */
   private readonly actionOutcomeCounts = new Map<string, number>()
@@ -509,6 +752,12 @@ export class NoProgressGuard {
       lastUserInputAt: this.lastUserInputAt,
       lastActionSignature: this.lastActionSignature,
       lastOutcomeSignature: this.lastOutcomeSignature,
+      successRepeatStreak: this.successRepeatStreak,
+      maxSuccessRepeat: this.maxSuccessRepeat,
+      maxStrategyVariants: this.maxStrategyVariants,
+      hadEditThisTurn: this.hadEditThisTurn,
+      hadVerifyEvidenceThisTurn: this.hadVerifyEvidenceThisTurn,
+      verifyPromptFired: this.verifyPromptFired,
       triggerReasons: this.currentReasons(),
     }
   }
@@ -533,6 +782,14 @@ export class NoProgressGuard {
     this.lastActionSignature = undefined
     this.lastOutcomeSignature = undefined
     this.hadSuccessfulEditSinceLastProgress = false
+    this.lastSuccessSig = undefined
+    this.successRepeatStreak = 0
+    this.maxSuccessRepeat = 0
+    this.maxStrategyVariants = 0
+    this.hadEditThisTurn = false
+    this.hadVerifyEvidenceThisTurn = false
+    this.verifyPromptFired = false
+    this.failedActionSigsByStrategy.clear()
     this.actionOutcomeCounts.clear()
     this.perFileEditCount.clear()
     this.perCommandEmptyTimeout.clear()
@@ -584,7 +841,11 @@ export class NoProgressGuard {
         if (file) {
           this.perFileEditCount.set(file, (this.perFileEditCount.get(file) ?? 0) + 1)
         }
-        if (!cls.outcome.isFailure) this.hadSuccessfulEditSinceLastProgress = true
+        if (!cls.outcome.isFailure) {
+          this.hadSuccessfulEditSinceLastProgress = true
+          // brief 2026-08-19 §4：本轮成功的 edit → verify-on-stop 追踪
+          this.hadEditThisTurn = true
+        }
       }
 
       // verify 类空输出超时计数（§7.1.4 / §7.3.3）
@@ -594,6 +855,27 @@ export class NoProgressGuard {
           cls.actionSig,
           (this.perCommandEmptyTimeout.get(cls.actionSig) ?? 0) + 1,
         )
+      }
+
+      // brief 2026-08-19 §4：verify 类工具调用即视为验证证据（测试 / 构建 / 命令检查），
+      // 无论成功失败——失败也说明运行过验证。终态收束前据此判定是否需要验证提示。
+      if (classifyTool(call.toolName) === 'verify') {
+        this.hadVerifyEvidenceThisTurn = true
+      }
+
+      // brief 2026-08-19 §2 策略未实质变化：verify/edit 失败时，按策略签名聚合不同失败动作变体。
+      // 同一动作签名的精确重复由 §7.1.1 负责；此处只统计「同策略、不同动作」的变体数。
+      if (cls.outcome.isFailure) {
+        const tclass = classifyTool(call.toolName)
+        if (tclass === 'verify' || tclass === 'edit') {
+          const strat = strategySignature(call.toolName, call.input)
+          if (strat) {
+            const set = this.failedActionSigsByStrategy.get(strat) ?? new Set<string>()
+            set.add(cls.actionSig)
+            this.failedActionSigsByStrategy.set(strat, set)
+            if (set.size > this.maxStrategyVariants) this.maxStrategyVariants = set.size
+          }
+        }
       }
     }
 
@@ -626,6 +908,32 @@ export class NoProgressGuard {
     return { allow: false, blockReason: REFLECTION_PROMPT_FINAL }
   }
 
+  /**
+   * brief 2026-08-19 §4：verify-on-stop 终态收束前判定。
+   *
+   * 适配层在终态（result）收束前调用。仅当本轮发生过成功的 edit 类工具（Write/Edit/MultiEdit）
+   * 且缺少 verify 类工具证据（Bash 调用）时，返回 `pause` decision 触发一次验证提示；
+   * 已有验证证据或本轮已提示过则返回 null（放行）。
+   *
+   * - 返回 non-null：适配层应发 paused 事件 + 触发 {@link buildVerifyOnStopAskUserInput}，
+   *   并把终态归一化为 paused_no_progress（复用现有终态闸口）。
+   * - 返回 null：放行，终态按原路径收束。
+   *
+   * 防重复：`verifyPromptFired` 在首次命中后置 true，同回合再调直接返回 null；
+   * 仅 `resetForNewTurn` 复位（有效进展不复位，保证每轮最多一次验证提示）。
+   *
+   * 不改变守卫主状态机 phase（与无进展 escalation 解耦）；decision.phase 反映当前 phase 仅供日志。
+   */
+  checkVerifyOnStop(): NoProgressDecision | null {
+    if (this.verifyPromptFired) return null
+    if (!this.hadEditThisTurn) return null
+    if (this.hadVerifyEvidenceThisTurn) return null
+    this.verifyPromptFired = true
+    return this.buildDecision('pause', ['verify_needed'], 'paused', {
+      userMessage: VERIFY_ON_STOP_USER_MESSAGE,
+    })
+  }
+
   // ===== 内部：状态推进 =====
 
   private handleProgress(observedAt: number): NoProgressDecision {
@@ -638,6 +946,15 @@ export class NoProgressGuard {
     this.perFileEditCount.clear()
     this.perCommandEmptyTimeout.clear()
     this.hadSuccessfulEditSinceLastProgress = false
+    this.lastSuccessSig = undefined
+    this.successRepeatStreak = 0
+    this.maxSuccessRepeat = 0
+    this.maxStrategyVariants = 0
+    // brief 2026-08-19 §4：有效进展重置本轮 edit/verify 追踪（新证据 = 重新计 edit 窗口），
+    // 但保留 verifyPromptFired（防重复：每轮最多一次验证提示）
+    this.hadEditThisTurn = false
+    this.hadVerifyEvidenceThisTurn = false
+    this.failedActionSigsByStrategy.clear()
     this.lastProgressAt = observedAt
     this.phase = 'observing'
     return this.buildDecision('continue', [], wasNonObserving ? 'cleared' : null)
@@ -727,6 +1044,14 @@ export class NoProgressGuard {
       reasons.push('empty_timeout_repeated')
       hasFailingVerifyRepeat = true
     }
+    // brief 2026-08-19 §1：同一动作+同一目标+同一有效结果连续重复成功
+    if (this.maxSuccessRepeat >= this.thresholds.sameSuccessRepeat) {
+      reasons.push('same_success_repeated')
+    }
+    // brief 2026-08-19 §2：重复失败但策略未实质变化（仅在相近参数/路径/命令间切换）
+    if (this.maxStrategyVariants >= this.thresholds.strategyUnchangedVariants) {
+      reasons.push('strategy_unchanged')
+    }
     // §7.1.5 信号错位：工具持续成功但验证连续失败
     if (hasFailingVerifyRepeat && this.hadSuccessfulEditSinceLastProgress) {
       reasons.push('action_success_goal_unchanged')
@@ -748,6 +1073,8 @@ export class NoProgressGuard {
     const tclass = classifyTool(toolName)
 
     if (tclass === 'verify') {
+      // 验证类调用打断「连续相同成功」streak（writeA,writeA,verify,writeA 不算连续重复）
+      this.resetSuccessStreak()
       const prev = this.prevOutcomeByAction.get(actionSig)
       if (prev == null) {
         // 首次观测：建基线，不算进展也不算重复（避免首条失败即扣分）
@@ -762,12 +1089,39 @@ export class NoProgressGuard {
     }
 
     if (tclass === 'edit') {
-      // Edit/Write 成功只是动作完成，非目标进展（§6.4）；不进 np 计数，仅 per-file 计数
+      // Edit/Write 成功只是动作完成，非目标进展（§6.4）；不进 np 计数，仅 per-file 计数。
+      // 但「同一动作+同一目标+同一有效结果连续重复成功」应视为无进展（brief 2026-08-19 §1）。
+      if (outcome.isFailure) {
+        this.resetSuccessStreak()
+        return { cls: 'neutral', actionSig, outcomeSig, outcome }
+      }
+      const sig = successSignature(toolName, input)
+      if (sig != null) {
+        if (sig === this.lastSuccessSig) this.successRepeatStreak += 1
+        else {
+          this.lastSuccessSig = sig
+          this.successRepeatStreak = 1
+        }
+        if (this.successRepeatStreak > this.maxSuccessRepeat) {
+          this.maxSuccessRepeat = this.successRepeatStreak
+        }
+        if (this.successRepeatStreak >= this.thresholds.sameSuccessRepeat) {
+          // 连续相同成功达到阈值 → 无进展（会计入 noProgressBatchCount）
+          return { cls: 'noProgress', actionSig, outcomeSig, outcome }
+        }
+      }
       return { cls: 'neutral', actionSig, outcomeSig, outcome }
     }
 
-    // 调查 / MCP / Task / 未知：权重低，不计入
+    // 调查 / MCP / Task / 未知：权重低，不计入；同样打断成功 streak
+    this.resetSuccessStreak()
     return { cls: 'neutral', actionSig, outcomeSig, outcome }
+  }
+
+  /** 重置连续相同成功 streak（任何非「相同成功 edit」的调用都打断 streak） */
+  private resetSuccessStreak(): void {
+    this.lastSuccessSig = undefined
+    this.successRepeatStreak = 0
   }
 
   // ===== 内部：聚合查询 =====
@@ -795,6 +1149,10 @@ export class NoProgressGuard {
       if (this.noProgressBatchCount >= this.thresholds.consecutiveNoProgressBatches) reasons.push('no_new_evidence')
       if (this.maxPerCommandEmptyTimeout() >= this.thresholds.sameCommandEmptyTimeoutWarn) {
         reasons.push('empty_timeout_repeated')
+      }
+      if (this.maxSuccessRepeat >= this.thresholds.sameSuccessRepeat) reasons.push('same_success_repeated')
+      if (this.maxStrategyVariants >= this.thresholds.strategyUnchangedVariants) {
+        reasons.push('strategy_unchanged')
       }
     }
     return reasons

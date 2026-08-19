@@ -32,6 +32,7 @@ import {
   pushStatusTickerAtom,
 } from '../atoms/status-ticker'
 import { getNotificationPrefsSnapshot } from '../atoms/notification-prefs'
+import { isSessionAwaitingUser } from '../lib/session-awaiting-user'
 
 type StreamEnvelope = {
   sessionId?: string
@@ -114,6 +115,12 @@ export function useGlobalSessionRunSync(): void {
       if (!sessionId || !p?.kind) return
 
       if (p.kind === 'result') {
+        const subtype = typeof p.subtype === 'string' ? p.subtype : ''
+        // 等用户点选 / 无进展暂停：本轮没完，禁止硬清 startedAt，否则提交后从 0 重计
+        if (subtype === 'paused_no_progress' || isSessionAwaitingUser(sessionId)) {
+          lastStreamEventAtMap.set(sessionId, Date.now())
+          return
+        }
         lastStreamEventAtMap.delete(sessionId)
         stopSessionRun(sessionId)
         const isErrorResult =
@@ -203,6 +210,7 @@ export function useGlobalSessionRunSync(): void {
               isMainProcessIdle: status?.status === 'idle',
               isAtomRunning: latest?.running ?? false,
               hasStartedAt: latest?.startedAt != null,
+              awaitingUser: isSessionAwaitingUser(sessionId),
             })
             if (forceIdle) {
               lastStreamEventAtMap.delete(sessionId)

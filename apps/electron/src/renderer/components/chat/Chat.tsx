@@ -151,6 +151,7 @@ import { SessionErrorBanner } from './SessionErrorBanner'
 import { setSessionErrorAtom } from '../../atoms/session-error-atoms'
 import { allPendingAskUserRequestsAtom, askUserDismissedAtAtom } from '../../atoms/ask-user-atoms'
 import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
+import { isSessionAwaitingUser } from '../../lib/session-awaiting-user'
 import { RunModeSelector } from './RunModeSelector'
 import { KanbanCrewPanel } from './KanbanCrewPanel'
 import { MessageQueue } from './MessageQueue'
@@ -392,6 +393,7 @@ export function Chat({
           ? inFlightToolIdsRef.current
           : collectPendingToolUseIds(itemsRef.current),
       items: itemsRef.current,
+      awaitingUser: isSessionAwaitingUser(sessionIdRef.current),
     })
   }, [])
   const clearPendingStop = useCallback(() => {
@@ -973,8 +975,12 @@ export function Chat({
           } else if (status?.status === 'idle' || status?.status === 'error') {
             // 主进程已空闲/出错：atom 仍 running 或 startedAt 残留 → 硬清（软停合法态
             // 若主进程仍 turnInFlight 会走上面 running 分支，不会被误杀）
+            // 等用户点选时主进程可能已 idle，禁止硬清，否则提交后从 0 重计。
             const latest = getDefaultStore().get(sessionRunMapAtom)[sessionId]
-            if (latest?.running || latest?.startedAt != null) {
+            if (
+              !isSessionAwaitingUser(sessionId) &&
+              (latest?.running || latest?.startedAt != null)
+            ) {
               runStartedAtPersistRef.current = null
               stopSessionRun(sessionId)
             }
@@ -1764,6 +1770,9 @@ export function Chat({
           recordCompletion('error')
           stopRun()
         }
+      } else if (subtype === 'paused_no_progress' || sessionHasOpenWork()) {
+        // 等用户选 / 无进展暂停：本轮没完。软停只收过程区，startedAt 留下，提交后续计时。
+        softStopSessionRun(sessionId)
       } else {
         completeRun()
       }
@@ -1821,7 +1830,8 @@ export function Chat({
           // 影子模式：只发诊断，不改 UI
         } else if (npEvt.phase === 'paused') {
           clearPendingStop()
-          stopRun() // 清运行态/计时/停止键；不报错、不抬错误条（§11.3）
+          // 软停：等 AskUser 澄清时计时不能清零，用户提交后 adopt 续原 startedAt
+          softStopSessionRun(sessionId)
           pushTicker(
             makeStatusTickerItem(
               npEvt.summary?.trim() || '已暂停：连续多次操作未获得新进展',

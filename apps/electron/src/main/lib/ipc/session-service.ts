@@ -229,6 +229,14 @@ export class SessionService {
   private moaInFlight = new Set<string>()
 
   /**
+   * 无进展暂停 AskUserQuestion 的 AbortController（brief 2026-08-19 §3）。
+   * 适配层进入 paused_no_progress 时经 onNoProgressPauseAskUser 回调注入 askUserService；
+   * 用户回答 → handleSend 续跑；dismiss → 保持暂停。新 turn（handleSend）abort 旧请求，
+   * 防止用户手动发消息后旧 AskUser 回调再触发一次续跑。
+   */
+  private noProgressAskUserAbortBySession = new Map<string, AbortController>()
+
+  /**
    * 活跃圆桌讨论注册表（§5.3 用户插话/喊停）：按会话存当前讨论的 discussionId + 待注入插话队列 +
    * AbortController。runMoADiscussionTurn 启动时注册（ctx.interjections.drain 排空 pending），
    * discussion-interject IPC 据此 push 插话、discussion-stop IPC 据此 abort；讨论结束（finally）删除。
@@ -483,6 +491,8 @@ export class SessionService {
       this.clearPendingSteer(sessionId)
       // 清待处理 AskUser 请求（resolve deny「会话已结束」；abort signal 兜底已 deny，此处幂等）
       askUserService.clearSessionPending(sessionId)
+      // 清无进展暂停 AskUser 的 abort controller（clearSessionPending 已 resolve deny，此处只清 Map）
+      this.noProgressAskUserAbortBySession.delete(sessionId)
       // 清待处理 ExitPlanMode 审批请求（resolve deny「会话已结束」+ 推 RESOLVED 让渲染层出队，避免停后残留横幅）
       for (const rid of exitPlanService.clearSessionPending(sessionId)) {
         this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, {
@@ -1122,6 +1132,8 @@ export class SessionService {
       PermissionService.clearWhitelist(sessionId)
       // 清待处理 AskUser 请求（resolve deny「会话已结束」）
       askUserService.clearSessionPending(sessionId)
+      // 清无进展暂停 AskUser 的 abort controller
+      this.noProgressAskUserAbortBySession.delete(sessionId)
       // 清待处理 ExitPlanMode 审批请求（resolve deny「会话已结束」+ 推 RESOLVED 让渲染层出队）
       for (const rid of exitPlanService.clearSessionPending(sessionId)) {
         this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED, {
@@ -1263,6 +1275,10 @@ export class SessionService {
 
   /** 处理发消息：解析渠道→锁定运行内核→首次 spawn / 后续同内核切换模型 */
   private async handleSend(input: SendMessageInput): Promise<void> {
+    // 用户手动新开一轮 → abort 旧的无进展 AskUser（若仍 pending），防止回答旧问题时再触发一次续跑
+    this.noProgressAskUserAbortBySession.get(input.sessionId)?.abort()
+    this.noProgressAskUserAbortBySession.delete(input.sessionId)
+
     const channelId = input.channelId ?? getKsccChannelId()
     if (!channelId) {
       throw new Error('未选择渠道，且未找到 kscc 内置渠道（请在渠道管理中添加）')
@@ -1895,6 +1911,49 @@ export class SessionService {
       )
     }
 
+    // 无进展暂停 → AskUserQuestion 结构化澄清（brief 2026-08-19 §3）。
+    // 适配层在进入 paused_no_progress 时把 buildNoProgressAskUserInput 产出的工具输入推这里，
+    // 注入 askUserService.handleAskUserQuestion 复用现有 AskUserQuestion 事件 / UI。
+    // 用户回答 → handleSend 续跑（方向即用户选择）；dismiss → 保持暂停；新 turn abort 旧请求。
+    const onNoProgressPauseAskUser = (askInput: Record<string, unknown>): void => {
+      // 先 abort 上一条未答的 no-progress AskUser（防御性，同轮不应有两条）
+      this.noProgressAskUserAbortBySession.get(input.sessionId)?.abort()
+      const ac = new AbortController()
+      this.noProgressAskUserAbortBySession.set(input.sessionId, ac)
+      void askUserService
+        .handleAskUserQuestion(
+          input.sessionId,
+          askInput,
+          ac.signal,
+          (request) => {
+            this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.ASK_USER_REQUEST, request)
+          },
+        )
+        .then((result) => {
+          this.noProgressAskUserAbortBySession.delete(input.sessionId)
+          if (result.behavior !== 'allow') return // dismiss → 保持暂停，不自动继续
+          // 用户已选择方向 → 续跑（复用 handleSend，不改暂停 / 恢复总体语义）
+          const answers = (result.updatedInput.answers ?? {}) as Record<string, string>
+          const answerText = Object.values(answers).filter(Boolean).join('；')
+          const meta = getSessionMeta(input.sessionId)
+          if (!meta?.channelId) return
+          void this.handleSend({
+            sessionId: input.sessionId,
+            prompt: `[无进展澄清] 用户选择：${answerText || '继续当前方向'}`,
+            channelId: meta.channelId,
+            model: meta.modelId,
+            workspaceId: meta.workspaceId,
+            isSteer: true,
+            skipUserPersist: true,
+          }).catch((err) => {
+            console.warn(`[session-service] 无进展 AskUser 续跑失败:`, err)
+          })
+        })
+        .catch(() => {
+          this.noProgressAskUserAbortBySession.delete(input.sessionId)
+        })
+    }
+
     // 工作区 MCP 配置（无 workspace → 空，pi-core buildMcpTools 自动跳过）
     const enabledMcpServers = sanitizedPath ? getEnabledMcpServers(sanitizedPath) : {}
     const mcpConfig = { servers: enabledMcpServers }
@@ -2010,6 +2069,7 @@ export class SessionService {
         // 无进展守卫（KSCC：PostToolBatch 注入 / PreToolUse 拦截 / interrupt 暂停）
         noProgressGuardMode,
         onNoProgressEvent,
+        onNoProgressPauseAskUser,
         mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
         // 子代理定义：仅 Work 注册（Chat 硬拦 Task，注册无意义）。
         // claudeAvailable 按渠道判定（isClaudeAvailableForChannel）：非 Anthropic 系（kscc-internal 等）
@@ -2101,6 +2161,7 @@ export class SessionService {
       // 无进展守卫（Pi：afterToolCall observe / beforeToolCall 拦截 / abort 暂停）
       noProgressGuardMode,
       onNoProgressEvent,
+      onNoProgressPauseAskUser,
       // Work：看板 AgentTool
       ...(kanbanExtra.length > 0 ? { extraTools: kanbanExtra } : {}),
       // Phase 2.2：记忆模式透传（Frozen 快照 / L-rag）

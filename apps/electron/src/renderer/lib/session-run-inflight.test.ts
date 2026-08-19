@@ -60,6 +60,10 @@ describe('sessionHasInFlightWork', () => {
     expect(sessionHasInFlightWork({ pendingToolUseIds: [], items: [] })).toBe(false)
   })
 
+  test('等用户点选 → 在途（提交后应续计时，不得当本轮结束）', () => {
+    expect(sessionHasInFlightWork({ awaitingUser: true, pendingToolUseIds: [] })).toBe(true)
+  })
+
   test('running taskCard / 圆桌进行中 → 在途', () => {
     expect(
       sessionHasInFlightWork({

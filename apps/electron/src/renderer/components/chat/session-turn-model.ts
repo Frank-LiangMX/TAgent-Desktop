@@ -25,7 +25,7 @@ import type {
   MoARoundtablePanel,
   MoADiscussionPanel,
 } from '@tagent/shared'
-import { isControlUserTextBlock } from '@tagent/shared'
+import { isControlUserTextBlock, sanitizeAssistantTextForDisplay } from '@tagent/shared'
 import type { ProcessDisplayMode } from './process-group-model'
 import { isSubagentRuntimeTaskType } from './subagent-ui-model'
 import { formatElapsedDuration } from '../../lib/time-utils'
@@ -725,7 +725,9 @@ export function buildTurnPresentation(
 
   // live 轮：会话级 streamState 为权威来源（delta 不绑 DisplayItem）
   if (isLiveTurn && externalStream) {
-    streamingText = externalStream.text ? externalStream.text : undefined
+    streamingText = externalStream.text
+      ? sanitizeAssistantTextForDisplay(externalStream.text) || undefined
+      : undefined
     streamingThinking = externalStream.thinking ? externalStream.thinking : undefined
     if (externalStream.text || externalStream.thinking) {
       isStreaming = true
@@ -893,7 +895,7 @@ export function buildTurnPresentation(
         at,
       })
     } else if (block.type === 'text') {
-      const text = (block as TAgentTextBlock).text
+      const text = sanitizeAssistantTextForDisplay((block as TAgentTextBlock).text)
       if (text.trim()) process.push({ type: 'text', key, text, at })
     }
   }
@@ -902,7 +904,7 @@ export function buildTurnPresentation(
     for (let i = trailingTextStart; i < allBlocks.length; i++) {
       const { block } = allBlocks[i]!
       if (block.type === 'text') {
-        const text = (block as TAgentTextBlock).text
+        const text = sanitizeAssistantTextForDisplay((block as TAgentTextBlock).text)
         if (text.trim()) answerTexts.push(text)
       }
     }

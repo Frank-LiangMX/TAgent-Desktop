@@ -48,6 +48,7 @@ import {
 import { sessionRunMapAtom } from '../../atoms/session-run-atoms'
 import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
 import { allPendingAskUserRequestsAtom } from '../../atoms/ask-user-atoms'
+import { isSessionAwaitingUser } from '../../lib/session-awaiting-user'
 import { tabsAtom, activeTabIdAtom, closeTab } from '../../atoms/tabs'
 import { dockApiAtom, visibleSessionsAtom } from '../../atoms/dock-api'
 import { resolveVisibleSessionChips } from './resolve-visible-session-chips'
@@ -278,6 +279,8 @@ export function SessionSidebar({
       const evt = env.payload.event
       if (!evt || !env.sessionId) return
       if (evt.type === 'turn_end') {
+        // 等用户点选时 turn_end 只是单轮间隙，不能标成「已完成」
+        if (isSessionAwaitingUser(env.sessionId)) return
         const viewing = viewingIdsRef.current.has(env.sessionId)
         markTurnEnded({ id: env.sessionId, viewing })
       }

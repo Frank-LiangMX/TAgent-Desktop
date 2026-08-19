@@ -62,10 +62,16 @@ export type NoProgressReasonCode =
   | 'empty_timeout_repeated'
   /** 工具持续成功但任务级验证连续失败（§7.1.5） */
   | 'action_success_goal_unchanged'
+  /** 同一动作 + 同一目标 + 同一有效结果连续重复成功（brief 2026-08-19 §1；成功也不算进展） */
+  | 'same_success_repeated'
+  /** 重复失败后策略未实质变化：仅在相近参数/路径/命令间切换（brief 2026-08-19 §2） */
+  | 'strategy_unchanged'
   /** 强制复盘后仍尝试重复工具调用（§7.3.1） */
   | 'reflection_ignored'
   /** 无进展状态持续超时（§7.3.4） */
   | 'time_without_progress'
+  /** 本轮发生 Write/Edit 但缺少 verify 类工具证据（brief 2026-08-19 §4；verify-on-stop 判定器专用） */
+  | 'verify_needed'
 
 /**
  * 守卫阶段（§8 状态机）。

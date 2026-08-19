@@ -92,7 +92,7 @@ async function loadPiAgentCore(): Promise<PiAgentCoreModule> {
 
 import { createTaskTool } from './subagent-task-tool'
 import { getSessionMeta } from '../../agent/session-store'
-import { NoProgressGuard, buildNoProgressEventFromDecision } from '../../agent/no-progress-guard'
+import { NoProgressGuard, buildNoProgressEventFromDecision, buildNoProgressAskUserInput, buildVerifyOnStopAskUserInput, VERIFY_ON_STOP_PAUSE_ERRORS } from '../../agent/no-progress-guard'
 import { bashHooksForSession } from '../../agent/session-process-registry'
 
 // ===== 配置类型 =====
@@ -176,6 +176,13 @@ export interface PiQueryOptions extends AgentQueryInput {
    * 由 session-service sendPayload 转发 renderer。shadow 模式也发（带 shadow=true），UI 忽略。
    */
   onNoProgressEvent?: (event: NoProgressEvent) => void
+  /**
+   * 无进展暂停 AskUserQuestion 回调（brief 2026-08-19 §3）。适配层在进入 paused_no_progress
+   * 时把 `buildNoProgressAskUserInput` 产出的工具输入推这里，由 session-service 注入
+   * `askUserService.handleAskUserQuestion`，复用现有 AskUserQuestion 事件 / UI。
+   * 用户未选择前不自动继续；同一次暂停只触发一次（per-turn reset 复位标志）。
+   */
+  onNoProgressPauseAskUser?: (input: Record<string, unknown>) => void
 }
 
 // ===== 稳定性常量（turn 重试 / maxTurns）=====
@@ -320,6 +327,10 @@ interface SessionEntry {
   maxTurnsHit: boolean
   /** 是否因无进展守卫安全暂停（result → paused_no_progress；优先级高于 maxTurnsHit，§20.5） */
   pausedNoProgressHit: boolean
+  /** brief 2026-08-19 §4：是否因 verify-on-stop 触发暂停（result → paused_no_progress 带验证文案） */
+  verifyOnStopHit: boolean
+  /** 本轮已发过暂停 AskUserQuestion（brief 2026-08-19 §3；防 afterToolCall + beforeToolCall 双触发，per-turn reset 复位） */
+  pauseAskUserFired: boolean
   /** 无进展守卫上下文（per-session；query() 起每轮 reset） */
   np?: NoProgressCtx
 }
@@ -333,6 +344,8 @@ interface NoProgressCtx {
   guard: NoProgressGuard
   mode: NoProgressGuardMode
   onNoProgressEvent?: (event: NoProgressEvent) => void
+  /** 无进展暂停 AskUserQuestion 回调（brief 2026-08-19 §3） */
+  onNoProgressPauseAskUser?: (input: Record<string, unknown>) => void
   /** 本轮 turn id（观察/日志用，guard 不依赖） */
   turnId: string
 }
@@ -391,6 +404,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       maxTurns: maxTurnsOpt,
       noProgressGuardMode,
       onNoProgressEvent,
+      onNoProgressPauseAskUser,
     } = input
 
     // 创建或复用 Agent 实例。
@@ -412,6 +426,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         extraTools,
         noProgressGuardMode,
         onNoProgressEvent,
+        onNoProgressPauseAskUser,
       )
       this.sessions.set(sessionId, entry)
     } else {
@@ -438,6 +453,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           extraTools,
           noProgressGuardMode,
           onNoProgressEvent,
+          onNoProgressPauseAskUser,
         )
         ;(entry.agent.state as { messages: typeof previousMessages }).messages = previousMessages
         previousEntry.agent.abort()
@@ -458,10 +474,15 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     entry.turnCount = 0
     entry.maxTurnsHit = false
     entry.pausedNoProgressHit = false
+    entry.verifyOnStopHit = false
+    entry.pauseAskUserFired = false
     // 无进展守卫：新用户回合重置为 observing（§8）；上一轮非 observing 则发 cleared
     if (entry.np) {
       const cleared = entry.np.guard.resetForNewTurn()
       entry.np.turnId = `${sessionId}-t${Date.now()}`
+      // 复用 entry 时更新回调（session-service 每轮传入，闭包稳定但保持最新）
+      entry.np.onNoProgressEvent = onNoProgressEvent
+      entry.np.onNoProgressPauseAskUser = onNoProgressPauseAskUser
       if (cleared.emitPhase) {
         entry.np.onNoProgressEvent?.(buildNoProgressEventFromDecision(cleared, entry.np.mode))
       }
@@ -535,8 +556,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
 
     /**
      * 终态归一化（§20.5 单真源终态闸口）。
-     * pausedNoProgressHit 优先于 maxTurnsHit：二者不可共存，
+     * pausedNoProgressHit 优先于 verifyOnStopHit 优先于 maxTurnsHit：三者不可共存，
      * 暂停归一为 paused_no_progress（非错误），maxTurns 归一为 error_max_turns。
+     * brief 2026-08-19 §4：verifyOnStopHit 归一为带验证文案的 paused_no_progress。
      */
     const remapTerminal = (p: TAgentControlEvent): TAgentControlEvent => {
       if (p.kind !== 'result') return p
@@ -547,6 +569,15 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           usage: p.usage,
           totalCostUsd: p.totalCostUsd,
           errors: ['已暂停：连续多次操作未获得新进展。会话与历史保留，可在原会话继续发送消息。'],
+        }
+      }
+      if (entry.verifyOnStopHit) {
+        return {
+          kind: 'result',
+          subtype: 'paused_no_progress',
+          usage: p.usage,
+          totalCostUsd: p.totalCostUsd,
+          errors: VERIFY_ON_STOP_PAUSE_ERRORS,
         }
       }
       if (!entry.maxTurnsHit) return p
@@ -687,11 +718,34 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             }
           }
 
-          // agent_end result：终态归一化（paused_no_progress 优先 / maxTurns 覆盖）；可重试错误暂扣
+          // agent_end result：终态归一化（paused_no_progress 优先 / verify-on-stop / maxTurns 覆盖）；可重试错误暂扣
           if (event.type === 'agent_end' && p.kind === 'result') {
+            // brief 2026-08-19 §4：verify-on-stop 终态收束前判定。
+            // 仅当无进展守卫未暂停且 enforce 模式时检查：本轮有 edit 无 verify 证据 → 触发验证提示。
+            if (
+              !entry.pausedNoProgressHit &&
+              !entry.maxTurnsHit &&
+              entry.np?.mode === 'enforce'
+            ) {
+              const verifyDecision = entry.np.guard.checkVerifyOnStop()
+              if (verifyDecision) {
+                entry.verifyOnStopHit = true
+                if (verifyDecision.emitPhase) {
+                  entry.np.onNoProgressEvent?.(
+                    buildNoProgressEventFromDecision(verifyDecision, entry.np.mode),
+                  )
+                }
+                // brief 2026-08-19 §4：fire verify-on-stop AskUser（复用 onNoProgressPauseAskUser 管线）。
+                // 内联而非调 firePiVerifyOnStopAskUser（后者是 createSession 内闭包，query 不可见）。
+                if (entry.np.onNoProgressPauseAskUser && !entry.pauseAskUserFired) {
+                  entry.pauseAskUserFired = true
+                  entry.np.onNoProgressPauseAskUser(buildVerifyOnStopAskUserInput())
+                }
+              }
+            }
             const remapped = remapTerminal(p)
-            // 暂停 / maxTurns：终态已归一，直接推，不走重试
-            if (entry.pausedNoProgressHit || entry.maxTurnsHit) {
+            // 暂停 / verify-on-stop / maxTurns：终态已归一，直接推，不走重试
+            if (entry.pausedNoProgressHit || entry.verifyOnStopHit || entry.maxTurnsHit) {
               retryGate.heldErrorAssistant = null
               retryGate.heldResult = null
               retryGate.lastEndRetryableError = null
@@ -1090,6 +1144,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     extraTools?: AgentTool[],
     noProgressGuardMode?: NoProgressGuardMode,
     onNoProgressEvent?: (event: NoProgressEvent) => void,
+    onNoProgressPauseAskUser?: (input: Record<string, unknown>) => void,
   ): Promise<SessionEntry> {
     const controller = new AbortController()
 
@@ -1099,6 +1154,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       guard: new NoProgressGuard({ mode: npMode }),
       mode: npMode,
       onNoProgressEvent,
+      onNoProgressPauseAskUser,
       turnId: `${sessionId}-t1`,
     }
     np.guard.resetForNewTurn()
@@ -1345,6 +1401,18 @@ export class PiAgentAdapter implements AgentProviderAdapter {
 
     // 创建 Agent（挂 beforeToolCall 权限钩子 + maxTurns afterToolCall + 外部渠道 transformContext）
     const toolingKey = computeToolingKey(systemPromptAppend, extraTools)
+    /**
+     * 无进展暂停时触发 AskUserQuestion（brief 2026-08-19 §3）。
+     * 复用现有 ask-user 管线：经 {@link NoProgressCtx.onNoProgressPauseAskUser} 回调交
+     * session-service 注入 askUserService。同一次暂停只触发一次（`pauseAskUserFired` 防双触发）。
+     */
+    const firePiPauseAskUser = (decision: import('@tagent/shared').NoProgressDecision): void => {
+      if (!entryRef || entryRef.pauseAskUserFired) return
+      if (!entryRef.np?.onNoProgressPauseAskUser) return
+      entryRef.pauseAskUserFired = true
+      const askInput = buildNoProgressAskUserInput(decision, entryRef.np.guard.getState())
+      entryRef.np.onNoProgressPauseAskUser(askInput)
+    }
     const agent = new piAgentCore.Agent({
       initialState: {
         systemPrompt: fullSystemPrompt,
@@ -1367,6 +1435,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
               entryRef.pausedNoProgressHit = true
               if (advice.decision) {
                 entryRef.np.onNoProgressEvent?.(buildNoProgressEventFromDecision(advice.decision, entryRef.np.mode))
+                firePiPauseAskUser(advice.decision)
               }
               entryRef.agent.abort() // 软停（保 Agent+messages），终态在 agent_end 归一为 paused_no_progress
             }
@@ -1386,6 +1455,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           }
           if (entryRef.np.mode === 'enforce' && decision.kind === 'pause') {
             entryRef.pausedNoProgressHit = true
+            firePiPauseAskUser(decision)
             return { terminate: true }
           }
         }
@@ -1411,6 +1481,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       turnCount: 0,
       maxTurnsHit: false,
       pausedNoProgressHit: false,
+      verifyOnStopHit: false,
+      pauseAskUserFired: false,
       np,
     }
     entryRef = entry

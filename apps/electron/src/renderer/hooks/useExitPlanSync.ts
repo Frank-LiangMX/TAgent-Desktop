@@ -8,13 +8,15 @@
  * 切会话/切预览 Tab 不丢 pending（atom 全局存活）。
  */
 import { useEffect } from 'react'
-import { useSetAtom } from 'jotai'
+import { getDefaultStore, useSetAtom } from 'jotai'
 import { allPendingExitPlanRequestsAtom, agentPlanModeSessionsAtom } from '../atoms/exit-plan-atoms'
 import { updatePlanModeSessionSet } from '../lib/agent-plan-mode'
+import { adoptSessionRunAtom, sessionRunMapAtom } from '../atoms/session-run-atoms'
 
 export function useExitPlanSync(): void {
   const setAllRequests = useSetAtom(allPendingExitPlanRequestsAtom)
   const setPlanModeSessions = useSetAtom(agentPlanModeSessionsAtom)
+  const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
 
   useEffect(() => {
     const offRequest = window.electronAPI.onExitPlanModeRequest((request) => {
@@ -24,6 +26,10 @@ export function useExitPlanSync(): void {
         map.set(request.sessionId, [...cur, request])
         return map
       })
+      const entry = getDefaultStore().get(sessionRunMapAtom)[request.sessionId]
+      if (entry?.startedAt != null) {
+        adoptSessionRun({ id: request.sessionId, startedAt: entry.startedAt })
+      }
     })
     const offResolved = window.electronAPI.onExitPlanModeResolved?.(({ requestId }) => {
       // 协作父会话代答等场景：清理所有会话中的残留请求
@@ -51,5 +57,5 @@ export function useExitPlanSync(): void {
       offResolved?.()
       offPlanMode?.()
     }
-  }, [setAllRequests, setPlanModeSessions])
+  }, [setAllRequests, setPlanModeSessions, adoptSessionRun])
 }
