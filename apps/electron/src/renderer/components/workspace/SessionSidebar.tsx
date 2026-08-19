@@ -922,8 +922,6 @@ function SessionRow({
       animate={{ opacity: 1, height: archived ? undefined : 'auto' }}
       exit={archived ? undefined : { opacity: 0, height: 0 }}
       transition={SPRING}
-      title={isInTabs && !isOpen ? '已打开 · 非当前焦点' : undefined}
-      aria-label={isInTabs && !isOpen ? '已打开 · 非当前焦点' : undefined}
       onClick={() => onSelect(s)}
       className={cn(
         'row',
