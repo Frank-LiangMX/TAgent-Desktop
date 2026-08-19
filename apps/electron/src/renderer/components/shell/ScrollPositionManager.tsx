@@ -26,6 +26,11 @@ import {
 /** 模块级缓存：会话 ID → 距底部像素距离 */
 const scrollPositionCache = new Map<string, number>()
 
+/** 供 Chat 打开会话时判断是否需要为中间位恢复拉满历史挂载 */
+export function peekSessionScrollDistance(id: string): number | undefined {
+  return scrollPositionCache.get(id)
+}
+
 export function ScrollPositionManager({
   id,
   ready,

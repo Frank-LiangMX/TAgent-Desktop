@@ -155,8 +155,17 @@ import { isSessionAwaitingUser } from '../../lib/session-awaiting-user'
 import { RunModeSelector } from './RunModeSelector'
 import { KanbanCrewPanel } from './KanbanCrewPanel'
 import { MessageQueue } from './MessageQueue'
-import { ScrollPositionManager } from '../shell/ScrollPositionManager'
+import {
+  peekSessionScrollDistance,
+  ScrollPositionManager,
+} from '../shell/ScrollPositionManager'
 import { ReadingScrollGuard } from '../shell/ReadingScrollGuard'
+import { hasSavedMidPosition } from '../shell/scroll-position'
+import {
+  CHAT_MOUNT_BATCH,
+  CHAT_MOUNT_TOP_LOAD_PX,
+  CHAT_MOUNT_WINDOW,
+} from './chat-mount-window'
 import {
   channelsAtom,
   selectedModelSelectionAtom,
@@ -557,9 +566,13 @@ export function Chat({
       }
     }
   }, [])
-  /** 虚拟化：当前挂载的消息条数（从尾部切）。20 首 batch，idle 帧递增 40/批，全挂完置 Infinity。
-   * 保近期：底部对话区永远全量渲染，旧的渐进补齐，超长会话不卡。 */
-  const [visibleCount, setVisibleCount] = useState<number>(20)
+  /**
+   * 虚拟化：尾部挂载窗口。默认只挂最近 CHAT_MOUNT_WINDOW 条；
+   * 上滑 / 中间位恢复 / 锚点跳转才允许拉满。开流且在底部时收回窗口，避免 60+ 轮拖死流式。
+   */
+  const [visibleCount, setVisibleCount] = useState<number>(CHAT_MOUNT_WINDOW)
+  /** 用户主动查历史或中间位恢复：允许突破尾部窗口 */
+  const [allowFullMount, setAllowFullMount] = useState(false)
   const [selectionOverride, setSelectionOverride] = useState<ModelSelection | null>(null)
   const [sentCoreKind, setSentCoreKind] = useState<ChannelCoreKind | null>(null)
   /** 会话当前权限模式（默认 bypassPermissions；切会话 key 重建后重置。运行中切换即时生效） */
@@ -808,10 +821,18 @@ export function Chat({
     return result
   }, [items])
 
-  /** 虚拟化：是否已全挂（visibleCount 追上 items.length 或 Infinity） */
-  const fullyMounted = visibleCount >= items.length
   /** 实际挂载数（Infinity 当 items.length） */
   const effectiveVisible = visibleCount >= items.length ? items.length : visibleCount
+  /** 历史是否已全部挂载 */
+  const allMounted = effectiveVisible >= items.length
+  /**
+   * 首屏窗口已就绪（钉底 / 打开 settle 用）。不再等全历史挂满——
+   * 否则会回到「拉满 Infinity → 流式拖全树」的老路径。
+   */
+  const windowReady =
+    items.length === 0 ||
+    effectiveVisible >= Math.min(CHAT_MOUNT_WINDOW, items.length) ||
+    allMounted
   /** 挂载窗口起点（旧消息条数，未挂载） */
   const visibleStartOffset = Math.max(0, items.length - effectiveVisible)
   /** 虚拟化切片：尾部 effectiveVisible 条（最新在底） */
@@ -923,7 +944,7 @@ export function Chat({
   // 过早切 smooth 会让 StickToBottom 弹簧跟每一次长高，看起来像文字在轻轻晃。
   // 至少 hold 1s，并要求高度连续稳定 ~520ms；最迟 2.6s 放行。
   useEffect(() => {
-    if (!scrollReady || !fullyMounted) {
+    if (!scrollReady || !windowReady) {
       setHoldInstantResize(true)
       return
     }
@@ -959,10 +980,10 @@ export function Chat({
       window.clearInterval(poll)
       window.clearTimeout(failOpen)
     }
-  }, [scrollReady, fullyMounted])
+  }, [scrollReady, windowReady])
 
   // 切换会话时加载历史。滚动位置恢复交给 ScrollPositionManager（Conversation 内部）：
-  // 钉底在 scrollReady 后立刻同步写 scrollTop；中间位等 fullyMounted 再还原。
+  // 钉底在 scrollReady + 尾部窗口就绪后即可；中间位才拉满历史再还原。
   useEffect(() => {
     sessionIdRef.current = sessionId
     // 切会话清同轮完成耗时幂等闸，避免上轮残留 true 屏蔽新会话首条终态记录
@@ -973,7 +994,9 @@ export function Chat({
     setHasDraft(false)
     setScrollReady(false)
     setHoldInstantResize(true)
-    setVisibleCount(20) // 虚拟化：切会话重置首批 20
+    const restoreMid = hasSavedMidPosition(peekSessionScrollDistance(sessionId))
+    setAllowFullMount(restoreMid)
+    setVisibleCount(restoreMid ? Number.POSITIVE_INFINITY : CHAT_MOUNT_WINDOW)
     streamStateRef.current = clearSessionStreamState()
     itemIdxRef.current = 0
     setSubagentEagerness('conservative') // 切会话重置，下面异步回显持久化值
@@ -1043,9 +1066,11 @@ export function Chat({
       const rehydrated = rehydrateSubagentTaskCardsFromHistory(irItems, taskCardApply)
       inFlightToolIdsRef.current = collectPendingToolUseIds(rehydrated)
       setItems(rehydrated)
-      setVisibleCount(
-        rehydrated.length <= 100 ? Number.POSITIVE_INFINITY : 48,
-      )
+      // 默认只挂尾部窗口；中间位恢复才拉满。≤100 也曾 Infinity，60 轮流式会被历史树拖死。
+      setVisibleCount((prev) => {
+        if (prev === Number.POSITIVE_INFINITY) return prev
+        return Math.min(CHAT_MOUNT_WINDOW, Math.max(rehydrated.length, 1))
+      })
       // 从历史 assistant.usage 回填底栏（最近一条有 usage 的 assistant）
       for (let i = rehydrated.length - 1; i >= 0; i--) {
         const m = rehydrated[i]?.message
@@ -1451,10 +1476,12 @@ export function Chat({
       </div>
     ) : null
 
-  // 虚拟化分批递增：未全挂时，idle 帧每批 +40 补齐旧消息（保近期，底部对话不受影响）
+  // 虚拟化分批：默认只补到尾部窗口；allowFullMount（上滑/中间位/锚点）才继续往更早补。
   useEffect(() => {
-    if (fullyMounted) return
+    if (allMounted) return
     if (items.length === 0) return
+    const windowCap = Math.min(CHAT_MOUNT_WINDOW, items.length)
+    if (!allowFullMount && effectiveVisible >= windowCap) return
     // requestIdleCallback 兼容（Electron Chromium 原生支持，fallback setTimeout）
     const scheduleIdle: (cb: () => void) => number =
       typeof window !== 'undefined' && 'requestIdleCallback' in window
@@ -1466,13 +1493,76 @@ export function Chat({
         : (h) => window.clearTimeout(h)
     const handle = scheduleIdle(() => {
       setVisibleCount((prev) => {
-        if (prev >= items.length) return prev // 已全挂，不动
-        const next = Math.min(prev + 40, items.length)
-        return next >= items.length ? Number.POSITIVE_INFINITY : next // 全挂完置 Infinity，流式追加走全量分支
+        if (prev >= items.length) return prev
+        const cap = allowFullMount ? items.length : Math.min(CHAT_MOUNT_WINDOW, items.length)
+        const base = prev === Number.POSITIVE_INFINITY ? items.length : prev
+        const next = Math.min(base + CHAT_MOUNT_BATCH, cap)
+        return next >= items.length ? Number.POSITIVE_INFINITY : next
       })
     })
     return () => cancelIdle(handle)
-  }, [visibleCount, items.length, fullyMounted])
+  }, [visibleCount, items.length, allMounted, allowFullMount, effectiveVisible])
+
+  // 开流后若未在查历史，把过度挂载收回尾部窗口（中间位 allowFullMount 时不撤）。
+  useEffect(() => {
+    const live = running || runStartedAt != null
+    if (!live || allowFullMount) return
+    setVisibleCount((prev) => {
+      if (prev === Number.POSITIVE_INFINITY || prev > CHAT_MOUNT_WINDOW) {
+        return CHAT_MOUNT_WINDOW
+      }
+      return prev
+    })
+  }, [running, runStartedAt, allowFullMount])
+
+  // 滚近顶部 → 允许突破窗口，按批加载更早消息（补页时 ScrollPositionManager 会补偿 scrollTop）
+  useEffect(() => {
+    if (!scrollReady) return
+    const scroller = scrollContextRef.current?.scrollRef.current
+    if (!scroller) return
+    let coolUntil = 0
+
+    const onScroll = (): void => {
+      if (scroller.scrollTop > CHAT_MOUNT_TOP_LOAD_PX) return
+      if (items.length === 0) return
+      const now = Date.now()
+      if (now < coolUntil) return
+      coolUntil = now + 120
+      setVisibleCount((prev) => {
+        const mounted = prev >= items.length ? items.length : prev
+        if (mounted >= items.length) return prev
+        const next = Math.min(mounted + CHAT_MOUNT_BATCH, items.length)
+        return next >= items.length ? Number.POSITIVE_INFINITY : next
+      })
+      setAllowFullMount(true)
+    }
+
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    return () => scroller.removeEventListener('scroll', onScroll)
+  }, [scrollReady, sessionId, items.length])
+
+  // 流式中回到底部 → 收回窗口，把更早的 DOM 卸掉（ReadingScrollGuard 会在高度收缩时钉底）
+  useEffect(() => {
+    const live = running || runStartedAt != null
+    if (!live || !scrollReady) return
+    const scroller = scrollContextRef.current?.scrollRef.current
+    if (!scroller) return
+
+    const onScroll = (): void => {
+      const dist = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+      if (dist > 40) return
+      setVisibleCount((prev) => {
+        if (prev === Number.POSITIVE_INFINITY || prev > CHAT_MOUNT_WINDOW) {
+          return CHAT_MOUNT_WINDOW
+        }
+        return prev
+      })
+      setAllowFullMount(false)
+    }
+
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    return () => scroller.removeEventListener('scroll', onScroll)
+  }, [running, runStartedAt, scrollReady, sessionId])
 
   // 监听流式事件
   useEffect(() => {
@@ -2202,6 +2292,9 @@ export function Chat({
       }
       setPendingAttachments([])
     }
+    // 发送前收回挂载窗口：长会话若已拉满历史，避免本轮流式拖着全树重渲
+    setAllowFullMount(false)
+    setVisibleCount(CHAT_MOUNT_WINDOW)
     startRun()
     try {
       const res = await window.electronAPI.sendMessage({
@@ -2757,7 +2850,44 @@ export function Chat({
     [setFilePreviewRequest, setSplitDockMode, splitDockMode],
   )
 
+  /**
+   * 刻度/面板跳转到窗口外消息：只把「目标→末尾」扩进挂载，
+   * 不顺带把更早的历史 Markdown 全挂上。回到底部流式时仍会收回窗口。
+   */
+  const ensureMinimapMessageMounted = useCallback(
+    async (messageId: string): Promise<void> => {
+      let itemIdx = items.findIndex((it) => it.key === messageId)
+      if (itemIdx < 0) {
+        const turns = groupItemsIntoTurns(items)
+        const turn = turns.find((t) => t.key === messageId)
+        if (turn?.kind === 'user') {
+          itemIdx = items.findIndex((it) => it.key === turn.key || it.message === turn.message)
+        } else if (turn?.kind === 'assistant-turn') {
+          const first = turn.items[0]
+          itemIdx = first ? items.findIndex((it) => it.key === first.key) : -1
+        }
+      }
+      if (itemIdx < 0) {
+        setAllowFullMount(true)
+        setVisibleCount(Number.POSITIVE_INFINITY)
+        return
+      }
+      // 多挂几条上下文，避免目标贴在虚拟化切边上
+      const from = Math.max(0, itemIdx - 4)
+      const needCount = items.length - from
+      setAllowFullMount(true)
+      setVisibleCount(
+        needCount >= items.length ? Number.POSITIVE_INFINITY : Math.max(needCount, CHAT_MOUNT_WINDOW),
+      )
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve())
+      })
+    },
+    [items],
+  )
+
   const jumpToCollabAnchor = useCallback((anchorKey: string) => {
+    setAllowFullMount(true)
     setVisibleCount(Number.POSITIVE_INFINITY)
     const tryScroll = (attempt = 0): void => {
       const ctx = scrollContextRef.current
@@ -2929,13 +3059,19 @@ export function Chat({
             <ConversationContent className="session-conversation-pad pt-2 pb-[max(11rem,calc(var(--session-composer-top,11rem)+12px))]">
               <div className="tagent-thread">
               {/* 虚拟化加载提示：未全挂时常驻显示（说清楚在加载、剩多少条），不闪烁 */}
-              {!fullyMounted && items.length > 0 && (
+              {!allMounted && items.length > 0 && (
                 <div
                   className="flex items-center justify-center gap-2 py-2 text-xs text-muted-foreground"
                   aria-live="polite"
                 >
-                  <span className="size-3.5 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground/60" />
-                  <span>正在加载更早的 {items.length - effectiveVisible} 条…</span>
+                  {allowFullMount ? (
+                    <>
+                      <span className="size-3.5 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground/60" />
+                      <span>正在加载更早的 {items.length - effectiveVisible} 条…</span>
+                    </>
+                  ) : (
+                    <span>向上滚动加载更早的 {items.length - effectiveVisible} 条</span>
+                  )}
                 </div>
               )}
               {(() => {
@@ -3052,15 +3188,15 @@ export function Chat({
               })()}
             </div>
         </ConversationContent>
-        {/* 切会话恢复滚动位置：钉底等 scrollReady；中间位等虚拟化全挂 */}
+        {/* 切会话恢复滚动：钉底等窗口就绪；中间位才等全挂 */}
         <ScrollPositionManager
           id={sessionId}
           ready={scrollReady}
-          restoreReady={fullyMounted}
+          restoreReady={allowFullMount ? allMounted : windowReady}
           layoutKey={effectiveVisible}
         />
         <ReadingScrollGuard live={running || runStartedAt != null} />
-        <ScrollMinimap items={minimapItems} />
+        <ScrollMinimap items={minimapItems} onEnsureMessage={ensureMinimapMessageMounted} />
         <ConversationScrollButton />
       </Conversation>
 

@@ -21,6 +21,7 @@ import {
   Plus,
   Archive,
   MagnifyingGlass,
+  Browsers,
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import { getPlatform } from '../../lib/platform'
@@ -921,10 +922,13 @@ function SessionRow({
       animate={{ opacity: 1, height: archived ? undefined : 'auto' }}
       exit={archived ? undefined : { opacity: 0, height: 0 }}
       transition={SPRING}
+      title={isInTabs && !isOpen ? '已打开 · 非当前焦点' : undefined}
+      aria-label={isInTabs && !isOpen ? '已打开 · 非当前焦点' : undefined}
       onClick={() => onSelect(s)}
       className={cn(
         'row',
         isOpen && 'is-open',
+        isInTabs && !isOpen && 'is-background-open',
         archived && 'row-archived',
         dotsOpen && 'is-dots-open',
       )}
@@ -968,7 +972,9 @@ function SessionRow({
           )}
           {/* 末尾时间：第一行右侧，margin-left:auto 由 .meta .m.time 提供 */}
           {!archived && !editing && (
-            <span className="m time">{s.updatedAt ? relTime(s.updatedAt) : ''}</span>
+            <>
+              <span className="m time">{s.updatedAt ? relTime(s.updatedAt) : ''}</span>
+            </>
           )}
           {/* 归档行：内联「已归档」状态贴右，与标题同一基线，单行不落第二行 */}
           {archived && !editing && <span className="arch-status">已归档</span>}
@@ -1006,9 +1012,20 @@ function SessionRow({
           </DropdownMenu>
         </div>
         {/* meta 第二行从标题正文起点对齐，仅非归档行渲染轮数；时间已上提到 title 行 */}
-        {!archived && s.turnCount != null && s.turnCount > 0 && (
+        {!archived && ((s.turnCount != null && s.turnCount > 0) || (isInTabs && !isOpen)) && (
           <div className="meta">
-            <span className="m turns">{s.turnCount} 轮</span>
+            {isInTabs && !isOpen ? (
+              <span
+                className="tab-open-indicator"
+                title="已打开 · 非当前焦点"
+                aria-label="已打开 · 非当前焦点"
+              >
+                <Browsers size={12} weight="regular" aria-hidden="true" />
+              </span>
+            ) : null}
+            {s.turnCount != null && s.turnCount > 0 ? (
+              <span className="m turns">{s.turnCount} 轮</span>
+            ) : null}
           </div>
         )}
       </div>

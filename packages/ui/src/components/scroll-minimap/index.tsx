@@ -39,6 +39,12 @@ interface ScrollMinimapProps {
   onShortcutOpen?: () => void
   /** 获取模型 logo URL（应用层注入） */
   getModelLogo?: (model: string) => string | null
+  /**
+   * 目标消息尚未挂载时（虚拟化窗口外）先扩挂载。
+   * 返回后 ScrollMinimap 会重试查找 DOM 再滚动。
+   * 只应扩消息壳，不应因此常驻挂满历史 Markdown。
+   */
+  onEnsureMessage?: (id: string) => void | Promise<void>
 }
 
 const MIN_ITEMS = 1
@@ -110,6 +116,7 @@ function fisheyeScale(distance: number): number {
 export function ScrollMinimap({
   items,
   onShortcutOpen,
+  onEnsureMessage,
 }: ScrollMinimapProps): React.ReactElement | null {
   const { scrollRef, stopScroll, state: stickyState } = useStickToBottomContext()
   const [panelOpen, setPanelOpen] = React.useState(false)
@@ -297,14 +304,34 @@ export function ScrollMinimap({
     }
   }, [onShortcutOpen, items.length, canScroll, handleShortcutOpen])
 
+  const findMessageNode = React.useCallback(
+    (id: string): HTMLElement | undefined => {
+      const el = scrollRef.current
+      if (!el) return undefined
+      return Array.from(el.querySelectorAll<HTMLElement>('[data-message-id]')).find(
+        (node) => node.getAttribute('data-message-id') === id,
+      )
+    },
+    [scrollRef],
+  )
+
   const scrollToMessage = React.useCallback(
-    (id: string) => {
+    async (id: string) => {
       const el = scrollRef.current
       if (!el) return
-      const target = Array.from(el.querySelectorAll<HTMLElement>('[data-message-id]')).find(
-        (node) => node.getAttribute('data-message-id') === id
-      )
+
+      let target = findMessageNode(id)
+      if (!target && onEnsureMessage) {
+        await onEnsureMessage(id)
+        for (let attempt = 0; attempt < 24 && !target; attempt += 1) {
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => resolve())
+          })
+          target = findMessageNode(id)
+        }
+      }
       if (!target) return
+
       stopScroll()
       stickyState.animation = undefined
       stickyState.velocity = 0
@@ -324,15 +351,15 @@ export function ScrollMinimap({
       setPanelOpen(false)
       setPeekIndex(null)
     },
-    [scrollRef, stopScroll, stickyState]
+    [scrollRef, stopScroll, stickyState, findMessageNode, onEnsureMessage],
   )
 
   const scrollToGroup = React.useCallback(
     (start: number) => {
       const item = items[start]
-      if (item) scrollToMessage(item.id)
+      if (item) void scrollToMessage(item.id)
     },
-    [items, scrollToMessage]
+    [items, scrollToMessage],
   )
 
   const filteredItems = React.useMemo(() => {
@@ -573,7 +600,7 @@ export function ScrollMinimap({
                           <button
                             type="button"
                             className="message-nav-row flex w-full justify-end border-0 bg-transparent p-0"
-                            onClick={() => scrollToMessage(item.id)}
+                            onClick={() => void scrollToMessage(item.id)}
                           >
                             <span
                               className={cn(
@@ -591,7 +618,7 @@ export function ScrollMinimap({
                             <button
                               type="button"
                               className="message-nav-row flex w-full justify-start border-0 bg-transparent p-0"
-                              onClick={() => scrollToMessage(item.id)}
+                              onClick={() => void scrollToMessage(item.id)}
                             >
                               <span
                                 className={cn(
