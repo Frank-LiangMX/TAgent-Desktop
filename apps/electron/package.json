@@ -39,7 +39,7 @@
     "@tagent/pi-core": "workspace:*",
     "@types/d3-force": "^3.0.10",
     "@types/d3-scale": "^4.0.9",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^13.0.0",
     "electron-updater": "^6.3.9",
     "d3-force": "^3.0.0",
     "d3-scale": "^4.0.2",
