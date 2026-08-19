@@ -1014,17 +1014,15 @@ function SessionRow({
         {/* meta 第二行从标题正文起点对齐，仅非归档行渲染轮数；时间已上提到 title 行 */}
         {!archived && ((s.turnCount != null && s.turnCount > 0) || (isInTabs && !isOpen)) && (
           <div className="meta">
-            {isInTabs && !isOpen ? (
-              <span
-                className="tab-open-indicator"
-                title="已打开 · 非当前焦点"
-                aria-label="已打开 · 非当前焦点"
-              >
-                <Browsers size={12} weight="regular" aria-hidden="true" />
-              </span>
-            ) : null}
             {s.turnCount != null && s.turnCount > 0 ? (
               <span className="m turns">{s.turnCount} 轮</span>
+            ) : null}
+            {isInTabs && !isOpen ? (
+              <AppTooltip label="已打开 · 非当前焦点" side="top">
+                <span className="tab-open-indicator" aria-label="已打开 · 非当前焦点">
+                  <Browsers size={12} weight="regular" aria-hidden="true" />
+                </span>
+              </AppTooltip>
             ) : null}
           </div>
         )}
