@@ -18,10 +18,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { motion } from 'motion/react'
+import { Square } from 'lucide-react'
 import {
   Archive,
+  ArrowRight,
   At,
-  CirclesThreePlus,
   Database,
   ListChecks,
   Pause,
@@ -42,8 +43,9 @@ import type {
   CollaborationRun,
   CollaborationUserApprovalRequest,
 } from '@tagent/shared'
-import { AppTooltip } from '@tagent/ui'
+import { AppTooltip, Button } from '@tagent/ui'
 import { ChatInput, type ChatInputHandle } from '../chat/ChatInput'
+import { SendSplitButton } from '../chat/ConsultMenu'
 import BlurText from '../chat/BlurText'
 import { CollaborationTextPrompt } from './CollaborationTextPrompt'
 import { CollaborationMemberSettings } from './CollaborationMemberSettings'
@@ -57,6 +59,14 @@ type TextPromptKind = 'rename' | null
 
 const EASE = [0.16, 1, 0.3, 1] as const
 
+/** 协作室的全员 mention 不是成员 ID，而是结构化路由的特殊目标。 */
+const COLLABORATION_ALL_MENTION_ID = 'all'
+const COLLABORATION_ALL_MENTION = {
+  id: COLLABORATION_ALL_MENTION_ID,
+  displayName: '所有人',
+  description: '唤醒房间内全部成员（含协调者）',
+} as const
+
 /** 欢迎页能力点卡片 */
 const WELCOME_FEATURES = [
   {
@@ -67,7 +77,7 @@ const WELCOME_FEATURES = [
   {
     icon: At,
     title: '@点名路由',
-    desc: '不 @ 由协调者回复；@成员名 精确投递，@all 唤醒全部。',
+    desc: '不 @ 由协调者回复；@成员名 精确投递，@所有人 唤醒全部。',
   },
   {
     icon: Database,
@@ -124,6 +134,8 @@ interface CollaborationRoomsPageProps {
   refreshKey: number
   /** 房间/消息变更时通知 App（rename/pause/archive/send 后） */
   onRoomsChanged: () => void
+  /** 当前房间被归档后清空主区选中态 */
+  onRoomArchived?: (roomId: string) => void
   /** 空态「新建协作室」CTA */
   onNewRoom: () => void
   /** 打开指定设置 tab（如「去渠道设置」CTA 跳转到 channels） */
@@ -134,6 +146,7 @@ export function CollaborationRoomsPage({
   roomId,
   refreshKey,
   onRoomsChanged,
+  onRoomArchived,
   onNewRoom,
   onOpenSettings,
 }: CollaborationRoomsPageProps): JSX.Element {
@@ -143,11 +156,13 @@ export function CollaborationRoomsPage({
   const [runs, setRuns] = useState<CollaborationRun[]>([])
   const [channels, setChannels] = useState<Channel[]>([])
   const [cancellingId, setCancellingId] = useState<string | null>(null)
+  const [stoppingRuns, setStoppingRuns] = useState(false)
   const [addingMember, setAddingMember] = useState(false)
   const [showAddMemberDialog, setShowAddMemberDialog] = useState(false)
   const [textPrompt, setTextPrompt] = useState<TextPromptKind>(null)
   /** composer 中选中的成员 mention 芯片 id（结构化路由用；无芯片时不传 → 文本兜底） */
   const [composerMentionIds, setComposerMentionIds] = useState<string[]>([])
+  const [hasDraft, setHasDraft] = useState(false)
   const [mailbox, setMailbox] = useState<CollaborationMailboxEnvelope[]>([])
   const [streamByRun, setStreamByRun] = useState<Record<string, string>>({})
   /** S5：室级任务/产物（主进程真值，CHANGED 后重新拉取；渲染层不是真值源） */
@@ -278,6 +293,7 @@ export function CollaborationRoomsPage({
   // 房间并发统计（头部 x/y + 排队）
   const runningCount = runs.filter((r) => r.status === 'running').length
   const queuedCount = runs.filter((r) => r.status === 'queued').length
+  const stoppableRuns = runs.filter((r) => r.status === 'running' || r.status === 'queued')
   const pendingMailbox = mailbox.filter((e) => e.state === 'pending' || e.state === 'delivered')
   const maxConcurrent = room?.maxConcurrentRuns ?? 0
   const memberName = (memberId: string): string =>
@@ -310,7 +326,11 @@ export function CollaborationRoomsPage({
         content: text,
         mentions:
           composerMentionIds.length > 0
-            ? composerMentionIds.map((id) => ({ kind: 'agent' as const, memberId: id }))
+            ? composerMentionIds.map((id) =>
+                id === COLLABORATION_ALL_MENTION_ID
+                  ? { kind: 'all' as const, displayNameSnapshot: '所有人' }
+                  : { kind: 'agent' as const, memberId: id },
+              )
             : undefined,
       })
       inputRef.current?.clear()
@@ -336,6 +356,26 @@ export function CollaborationRoomsPage({
     },
     [room, onRoomsChanged],
   )
+
+  /** 会话同款停止键：一次停止当前房间内所有可取消的 run。 */
+  const handleStopRuns = useCallback(async (): Promise<void> => {
+    if (!room || stoppingRuns) return
+    const targets = runs.filter((run) => run.status === 'running' || run.status === 'queued')
+    if (targets.length === 0) return
+    setStoppingRuns(true)
+    try {
+      await Promise.all(
+        targets.map((run) =>
+          window.electronAPI.cancelCollaborationRun({ roomId: room.id, runId: run.id }),
+        ),
+      )
+      onRoomsChanged()
+    } catch (err) {
+      toast.error('停止失败', { description: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setStoppingRuns(false)
+    }
+  }, [room, runs, stoppingRuns, onRoomsChanged])
 
   const handleResolveApproval = useCallback(
     async (requestId: string, decision: 'approved' | 'denied', response?: string): Promise<void> => {
@@ -516,11 +556,12 @@ export function CollaborationRoomsPage({
     if (!room) return
     try {
       await window.electronAPI.updateCollaborationRoom({ roomId: room.id, status: 'archived' })
+      onRoomArchived?.(room.id)
       onRoomsChanged()
     } catch (err) {
       toast.error('归档失败', { description: err instanceof Error ? err.message : String(err) })
     }
-  }, [room, onRoomsChanged])
+  }, [onRoomArchived, onRoomsChanged, room])
 
   // 空态
   if (!roomId || !room) {
@@ -607,14 +648,22 @@ export function CollaborationRoomsPage({
           >
             <button
               type="button"
-              className="group flex items-center gap-2 rounded-full bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground shadow-lg shadow-primary/20 transition-all hover:bg-primary/90 hover:shadow-primary/30 active:scale-[0.97]"
+              className="welcome-start group"
               onClick={onNewRoom}
             >
-              <CirclesThreePlus
-                size={17}
-                className="transition-transform group-hover:rotate-12"
+              <span className="welcome-start__icon" aria-hidden="true">
+                <UsersThree size={20} weight="regular" />
+              </span>
+              <span className="welcome-start__copy">
+                <strong>新建协作室</strong>
+                <small>配置成员并开始协作</small>
+              </span>
+              <ArrowRight
+                size={18}
+                weight="regular"
+                className="welcome-start__arrow"
+                aria-hidden="true"
               />
-              新建协作室
             </button>
             <p className="text-xs text-muted-foreground">或从左侧选择一个已有房间。</p>
           </motion.div>
@@ -856,10 +905,38 @@ export function CollaborationRoomsPage({
                   <ChatInput
                     ref={inputRef}
                     onSubmit={() => void send()}
-                  placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@all 唤醒全部）"
-                  mentionRoles={members.map((m) => ({ id: m.id, displayName: m.displayName }))}
-                  onMentionChange={setComposerMentionIds}
-                />
+                    placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@所有人 唤醒全部）"
+                    onDraftChange={setHasDraft}
+                    mentionRoles={[
+                      ...(members.length > 0 ? [COLLABORATION_ALL_MENTION] : []),
+                      ...members.map((m) => ({ id: m.id, displayName: m.displayName })),
+                    ]}
+                    onMentionChange={setComposerMentionIds}
+                    footer={
+                      <div className="composer-footer-bar flex h-7 items-center justify-end px-2 pb-2 pt-0.5">
+                        {stoppableRuns.length > 0 && !hasDraft ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="size-8 rounded-glass-popover text-destructive hover:bg-destructive/10"
+                            onClick={() => void handleStopRuns()}
+                            disabled={stoppingRuns}
+                            aria-label="停止"
+                          >
+                            <Square className="size-4" fill="currentColor" />
+                          </Button>
+                        ) : (
+                          <SendSplitButton
+                            presets={[]}
+                            hasDraft={hasDraft}
+                            onSend={() => void send()}
+                            onConsultPreset={() => undefined}
+                          />
+                        )}
+                      </div>
+                    }
+                  />
                 </div>
               )}
             </div>

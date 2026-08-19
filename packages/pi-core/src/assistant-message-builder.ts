@@ -235,6 +235,7 @@ function stripAntmlFromText(text: string): string {
     .replace(/<antml:invoke\s+name\s*=\s*["']?[^"'\s>]+["']?[^>]*>/g, "")
     .replace(/<\/antml:invoke>/g, "")
     .replace(/<antml:parameter\s+name\s*=\s*["']?[^"'\s>]+["']?[^>]*>[\s\S]*?<\/antml:parameter>/g, "")
+    .replace(/<antml:parameter\s+name\s*=\s*["']?[^"'\s>]+["']?[^>]*>[\s\S]*$/g, "")
     .trim();
 }
 

@@ -290,12 +290,12 @@ export function AskUserQuestionBanner({
       {request && (
         <motion.div
           key={request.requestId}
-          initial={{ opacity: 0, height: 0 }}
-          animate={{ opacity: 1, height: 'auto' }}
-          exit={{ opacity: 0, height: 0 }}
-          transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 8 }}
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
           onAnimationComplete={remeasureComposerTop}
-          className="session-permission-banner pointer-events-auto overflow-hidden"
+          className="session-permission-banner pointer-events-auto"
         >
           <div className="ask-user-card">
             {/* 顶栏 */}

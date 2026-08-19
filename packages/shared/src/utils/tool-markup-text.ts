@@ -6,6 +6,8 @@
  *
  * MiniMax / Pai 还会把 AskUserQuestion 打成 `< | DSML | invoke >` + `</pai_toolcalls>`，
  * 若不剥掉会整段 JSON 裸露在消息里。
+ *
+ * 部分模型还会把 `<think>…</think>` / 裸 `</parameter>` 打进 text；展示前一并剥离。
  */
 
 /** `< | DSML | tool_calls >` / `<|DSML|invoke ...>` */
@@ -43,13 +45,22 @@ function looksLikeToolPayload(value: unknown): boolean {
   })
 }
 
-/** 剥离 antml / command / function_call / tool_call / DSML 等工具标记，保留自然语言 */
+/** 剥离 antml / command / function_call / tool_call / DSML / think 等工具与思维标记，保留自然语言 */
 export function stripToolInvocationMarkup(text: string): string {
   const stripped = text
+    // 模型偶发把 CoT 打进 text：整段 think 内容不应对用户展示
+    .replace(/<think(?:ing)?\b[^>]*>[\s\S]*?(?:<\/think(?:ing)?>|$)/gi, '')
+    // 开标签落在上一块或丢失时：从文首到 </think> 仍视为思维链
+    .replace(/^[\s\S]*?<\/think(?:ing)?>/i, '')
+    .replace(/<\/?think(?:ing)?\b[^>]*>/gi, '')
     .replace(/<antml:invoke\s+name\s*=\s*["']?[^"'\s>]+["']?[^>]*>[\s\S]*?<\/antml:invoke>/gi, '')
     .replace(/<antml:invoke[^>]*>/gi, '')
     .replace(/<\/antml:invoke>/gi, '')
-    .replace(/<antml:parameter[^>]*>[\s\S]*?<\/antml:parameter>/gi, '')
+    .replace(/<(?:antml:)?parameter[^>]*>[\s\S]*?<\/(?:antml:)?parameter>/gi, '')
+    // 流式尚未收到 parameter 闭合标签时，连同当前参数内容一起隐藏；否则
+    // 协作室的增量气泡会短暂显示 XML 参数值。
+    .replace(/<(?:antml:)?parameter[^>]*>[\s\S]*?(?:<\/(?:antml:)?parameter>|$)/gi, '')
+    .replace(/<\/(?:antml:)?parameter>/gi, '')
     .replace(/<command[^>]*>[\s\S]*?<\/command>/gi, '')
     .replace(/<command[^>]*>/gi, '')
     .replace(/<\/command>/gi, '')
@@ -66,9 +77,11 @@ export function stripToolInvocationMarkup(text: string): string {
     .replace(DSML_TAG_RE, '')
     .replace(/<\/?\s*pai_tool_?calls?\s*>/gi, '')
     // 流式尾段：未闭合的开标签（如 `<antml:invoke name="Read"`）
-    .replace(/<(?:antml:[\w-]+|function_calls?|tool_calls?|pai_tool_?calls?|command)[^>]*$/gi, '')
+    .replace(/<(?:antml:[\w-]+|function_calls?|tool_calls?|pai_tool_?calls?|command|think(?:ing)?|parameter)[^>]*$/gi, '')
     .replace(/<\s*\|\s*DSML\s*\|[^>]*$/gi, '')
     .replace(/<[^>\n]*$/g, '')
+    // 标签剥掉后残留的孤立逗号（如 `</think>，</parameter>`）
+    .replace(/[，,]\s*$/g, '')
     .trim()
   return stripResidualToolJson(stripped)
 }

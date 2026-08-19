@@ -52,12 +52,12 @@ export function MessageQueue({
       {queue.length > 0 && (
         <motion.div
           key="message-queue"
-          initial={{ opacity: 0, y: 12, height: 0 }}
-          animate={{ opacity: 1, y: 0, height: 'auto' }}
-          exit={{ opacity: 0, y: 8, height: 0 }}
-          transition={{ type: 'spring', stiffness: 420, damping: 36 }}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 8 }}
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
           onAnimationComplete={remeasureComposerTop}
-          className="message-queue pointer-events-auto overflow-hidden"
+          className="message-queue pointer-events-auto"
         >
           <div className="message-queue-panel">
             <div className="message-queue-panel__head">

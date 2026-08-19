@@ -976,6 +976,58 @@
   );
 }
 
+@keyframes dialog-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes dialog-overlay-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes dialog-panel-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 12px));
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+@keyframes dialog-panel-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 8px));
+  }
+}
+
+.dialog-overlay-motion[data-state='open'] {
+  animation: dialog-overlay-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.dialog-overlay-motion[data-state='closed'] {
+  animation: dialog-overlay-out 160ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.dialog-panel-motion[data-state='open'] {
+  animation: dialog-panel-in 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.dialog-panel-motion[data-state='closed'] {
+  animation: dialog-panel-out 180ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog-overlay-motion[data-state='open'],
+  .dialog-overlay-motion[data-state='closed'],
+  .dialog-panel-motion[data-state='open'],
+  .dialog-panel-motion[data-state='closed'] {
+    animation-duration: 1ms;
+  }
+}
+
 .session-glass-modal,
 .session-glass-modal-lg {
   --glass-bg: var(--background);

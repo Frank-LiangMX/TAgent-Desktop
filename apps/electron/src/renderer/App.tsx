@@ -20,6 +20,7 @@ import type {
   ChannelUpdateInput,
   ChannelTestResult,
   CollaborationMember,
+  CollaborationMemberPreset,
   CollaborationMessage,
   CollaborationRoom,
   CollaborationRun,
@@ -29,6 +30,7 @@ import type {
   CollaborationUserApprovalRequest,
   CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
+  SaveCollaborationMemberPresetInput,
   AddCollaborationMemberInput,
   ContinueCollaborationDepthStopInput,
   ContinueCollaborationDepthStopResult,
@@ -473,6 +475,9 @@ declare global {
       cancelCollaborationRun: (input: { roomId: string; runId: string }) => Promise<CollaborationRun | null>
       addCollaborationMember: (input: AddCollaborationMemberInput) => Promise<CollaborationMember>
       updateCollaborationMember: (input: UpdateCollaborationMemberInput) => Promise<CollaborationMember>
+      listCollaborationMemberPresets: () => Promise<CollaborationMemberPreset[]>
+      saveCollaborationMemberPreset: (input: SaveCollaborationMemberPresetInput) => Promise<CollaborationMemberPreset>
+      deleteCollaborationMemberPreset: (id: string) => Promise<{ ok: boolean }>
       listCollaborationMailbox: (roomId: string) => Promise<CollaborationMailboxEnvelope[]>
       continueCollaborationDepthStop: (
         input: ContinueCollaborationDepthStopInput,
@@ -553,6 +558,10 @@ export function App(): JSX.Element {
   const selectCollaborationRoom = useCallback((room: CollaborationRoom): void => {
     setActiveCollaborationRoomId(room.id)
     setSidebarOpen(true)
+  }, [])
+
+  const clearArchivedCollaborationRoom = useCallback((roomId: string): void => {
+    setActiveCollaborationRoomId((current) => (current === roomId ? null : current))
   }, [])
 
   /** 新建协作室（默认只有协调者；其余成员创建后用「添加成员」弹窗选内核/渠道 + 模型加入） */
@@ -972,6 +981,7 @@ export function App(): JSX.Element {
               onNewRoom={() => void newCollaborationRoom()}
               refreshKey={collabRefreshKey}
               onRoomsChanged={bumpCollab}
+              onRoomArchived={clearArchivedCollaborationRoom}
             />
           ) : (
             <SessionSidebar
@@ -1005,6 +1015,7 @@ export function App(): JSX.Element {
             roomId={activeCollaborationRoomId}
             refreshKey={collabRefreshKey}
             onRoomsChanged={bumpCollab}
+            onRoomArchived={clearArchivedCollaborationRoom}
             onNewRoom={() => void newCollaborationRoom()}
             onOpenSettings={(tab) => openSettings(tab)}
           />

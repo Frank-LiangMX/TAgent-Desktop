@@ -329,8 +329,17 @@ export function SessionSidebar({
 
   const onArchiveToggle = async (s: SessionMeta, e: React.MouseEvent): Promise<void> => {
     e.stopPropagation()
+    const shouldCloseMain =
+      !s.archived && openTabs.some((tab) => tab.sessionId === s.id && tab.id === activeTabId)
     setArchived({ id: s.id, archived: !s.archived })
     await window.electronAPI.toggleArchive(s.id)
+    // 归档当前会话后，主区不能继续显示已经从侧栏移出的内容；关闭 tab 不会停止后台运行。
+    if (shouldCloseMain) {
+      const result = closeTab(openTabs, activeTabId, s.id)
+      setTabs(result.tabs)
+      setActiveTabId(result.activeTabId)
+      dockApi?.getPanel(s.id)?.api.close()
+    }
     void refresh()
   }
 

@@ -625,8 +625,8 @@
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   transition:
-    max-height 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.2s ease;
+    max-height 0.28s var(--app-shell-expand-ease),
+    opacity 0.2s var(--app-shell-expand-ease);
 }
 .group:not(.open) > .rows {
   max-height: 0;

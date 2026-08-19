@@ -6,6 +6,7 @@
  */
 
 import * as React from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 
 import { useAtomValue } from 'jotai'
 import {
@@ -369,7 +370,8 @@ export function MemoryMonitorPanel(): React.ReactElement {
                     onClick={() => setPendingOpen((o) => !o)}
                     className={cn(
                       rowGrid,
-                      'rounded-glass-popover bg-amber-500/[0.08] py-3 text-left titlebar-no-drag ui-pressable',
+                      'rounded-glass-popover bg-amber-500/[0.08] px-4 py-3 text-left titlebar-no-drag ui-pressable',
+                      pendingOpen && 'rounded-b-none',
                       'hover:bg-amber-500/[0.11]'
                     )}
                   >
@@ -387,33 +389,39 @@ export function MemoryMonitorPanel(): React.ReactElement {
                     <span className="flex justify-end">
                       <ChevronDown
                         className={cn(
-                          'size-4 text-foreground/45 transition-transform duration-200',
+                          'size-4 text-foreground/45 transition-transform duration-200 ease-linear',
                           pendingOpen && 'rotate-180'
                         )}
                         strokeWidth={1.75}
                       />
                     </span>
                   </button>
-                  {pendingOpen ? (
-                    <div className={cn(rowGrid, 'pb-3 pt-1')}>
-                      <span aria-hidden />
-                      <div className="col-span-2 min-w-0">
-                        <StageQueueCard
-                          mode={mode}
-                          onChanged={() => {
-                            void loadStats()
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
+                  <AnimatePresence initial={false}>
+                    {pendingOpen ? (
+                      <motion.div
+                        className="overflow-hidden rounded-b-xl border-x border-b border-amber-500/20 bg-amber-500/[0.035]"
+                        initial={{ height: 0, opacity: 1 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.14, ease: 'linear' }}
+                      >
+                        <div className="px-4 pb-3 pt-1">
+                          <StageQueueCard
+                            mode={mode}
+                            onChanged={() => {
+                              void loadStats()
+                            }}
+                          />
+                        </div>
+                      </motion.div>
+                    ) : null}
+                  </AnimatePresence>
                 </section>
               ) : null}
 
               {/* 场：L0→L5 统一栅格，无递进缩进 */}
               <section aria-label="记忆层级">
-                <div className={cn(rowGrid, 'mb-2')}>
-                  <span aria-hidden />
+                <div className="mb-2 flex items-center justify-between">
                   <h2 className="md-text text-[13px] font-semibold tracking-tight">层级</h2>
                   <p className="md-text-faint text-right text-[10px] tracking-[0.06em]">近→远</p>
                 </div>
@@ -474,20 +482,30 @@ export function MemoryMonitorPanel(): React.ReactElement {
                           </span>
                         </button>
 
-                        {open ? (
-                          <div className={cn(rowGrid, 'pb-4 pt-0')}>
-                            <span aria-hidden />
-                            <div className="col-span-2 min-w-0">
-                              <LayerBody
-                                mode={mode}
-                                layer={layer}
-                                stats={stats}
-                                sessions={sessions}
-                                sessionsLoading={sessionsLoading}
-                              />
-                            </div>
-                          </div>
-                        ) : null}
+                        <AnimatePresence initial={false}>
+                          {open ? (
+                            <motion.div
+                              className="overflow-hidden"
+                              initial={{ height: 0, opacity: 1 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{ duration: 0.14, ease: 'linear' }}
+                            >
+                              <div className={cn(rowGrid, 'pb-4 pt-0')}>
+                                <span aria-hidden />
+                                <div className="col-span-2 min-w-0">
+                                  <LayerBody
+                                    mode={mode}
+                                    layer={layer}
+                                    stats={stats}
+                                    sessions={sessions}
+                                    sessionsLoading={sessionsLoading}
+                                  />
+                                </div>
+                              </div>
+                            </motion.div>
+                          ) : null}
+                        </AnimatePresence>
                       </li>
                     )
                   })}

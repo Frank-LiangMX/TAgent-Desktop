@@ -24,6 +24,7 @@ import { Type } from '@earendil-works/pi-ai'
 import {
   isAgentCompatibleProvider,
   resolveChannelDefaultModelId,
+  sanitizeAssistantTextForDisplay,
   type Channel,
   type ProviderType,
   type CollaborationHostToolCall,
@@ -119,7 +120,7 @@ const ROOM_TOOL_DESCRIPTORS = [
   {
     name: 'workspace_search',
     description:
-      '在绑定工作区内递归搜索文件；path 为相对目录或根内路径，pattern 可选 glob/*?/子串过滤，maxResults 可设返回上限（默认 200）。只读成员也可使用。',
+      '在绑定工作区内递归搜索文件；path 为相对目录或根内路径，传空字符串、`.` 或 `./` 表示工作区根；pattern 可选 glob/*?/子串过滤，maxResults 可设返回上限（默认 200）。只读成员也可使用。',
     parameters: {
       path: { type: 'string', required: true },
       pattern: { type: 'string' },
@@ -666,15 +667,27 @@ async function runExternalRoomToolTurn(args: {
   } as never)
 
   let text = ''
+  let visibleText = ''
+  let timedOut = false
   const unsubscribe = agent.subscribe((event) => {
     if (event.type !== 'message_update') return
     const update = (event as { assistantMessageEvent?: { type?: string; delta?: string } })
       .assistantMessageEvent
     if (update?.type !== 'text_delta' || !update.delta) return
     text += update.delta
-    input.onTextDelta?.(update.delta)
+    // 原生工具桥通常不会把协议标记放进 text，但仍做展示层防御，避免
+    // 某些兼容渠道把 XML/函数调用标记混入正文时泄漏到协作室气泡。
+    const nextVisible = sanitizeAssistantTextForDisplay(text)
+    if (nextVisible.startsWith(visibleText)) {
+      const delta = nextVisible.slice(visibleText.length)
+      if (delta) input.onTextDelta?.(delta)
+    }
+    visibleText = nextVisible
   })
-  const timer = setTimeout(() => agent?.abort(), MEMBER_TURN_TIMEOUT_MS)
+  const timer = setTimeout(() => {
+    timedOut = true
+    agent?.abort()
+  }, MEMBER_TURN_TIMEOUT_MS)
   const abort = () => agent?.abort()
   if (input.signal.aborted) abort()
   else input.signal.addEventListener('abort', abort, { once: true })
@@ -687,7 +700,10 @@ async function runExternalRoomToolTurn(args: {
     unsubscribe()
     agent.abort()
   }
-  return { text: text.trim() }
+  if (timedOut) {
+    throw new Error(`协作室成员回合超过 ${MEMBER_TURN_TIMEOUT_MS / 1000} 秒，已停止本次执行`)
+  }
+  return { text: sanitizeAssistantTextForDisplay(text) }
 }
 
 /**
@@ -738,14 +754,27 @@ async function runKsccRoomToolTurn(args: {
   } as never)
 
   let text = ''
+  let visibleText = ''
+  let timedOut = false
   const unsubscribe = agent.subscribe((event) => {
     if (event.type !== 'message_update') return
     const update = (event as { assistantMessageEvent?: { type?: string; delta?: string } }).assistantMessageEvent
     if (update?.type !== 'text_delta' || !update.delta) return
     text += update.delta
-    input.onTextDelta?.(update.delta)
+    // kscc bare 的 antml 调用在底层 text_delta 中仍是原始协议文本；
+    // 不能提前在 parser 层剥掉（parser 需要它来驱动真实工具循环），
+    // 这里只对流式展示做增量清洗，避免用户看到 XML 工具协议。
+    const nextVisible = sanitizeAssistantTextForDisplay(text)
+    if (nextVisible.startsWith(visibleText)) {
+      const delta = nextVisible.slice(visibleText.length)
+      if (delta) input.onTextDelta?.(delta)
+    }
+    visibleText = nextVisible
   })
-  const timer = setTimeout(() => agent?.abort(), MEMBER_TURN_TIMEOUT_MS)
+  const timer = setTimeout(() => {
+    timedOut = true
+    agent?.abort()
+  }, MEMBER_TURN_TIMEOUT_MS)
   const abort = () => agent?.abort()
   if (input.signal.aborted) abort()
   else input.signal.addEventListener('abort', abort, { once: true })
@@ -758,7 +787,10 @@ async function runKsccRoomToolTurn(args: {
     unsubscribe()
     agent.abort()
   }
-  return { text: text.trim() }
+  if (timedOut) {
+    throw new Error(`协作室成员回合超过 ${MEMBER_TURN_TIMEOUT_MS / 1000} 秒，已停止本次执行`)
+  }
+  return { text: sanitizeAssistantTextForDisplay(text) }
 }
 
 /** 默认工厂（service 在未注入 adapter 时用） */

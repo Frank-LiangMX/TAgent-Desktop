@@ -20,12 +20,14 @@ import type {
   CollaborationArtifact,
   CollaborationRoom,
   CollaborationMember,
+  CollaborationMemberPreset,
   CollaborationMessage,
   CollaborationRoomTask,
   CollaborationRun,
   CollaborationUserApprovalRequest,
   CreateCollaborationRoomInput,
   CreateCollaborationMemberInput,
+  SaveCollaborationMemberPresetInput,
   CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomInput,
   UpdateCollaborationMemberInput,
@@ -36,6 +38,8 @@ import type {
   BoardProjectedTask,
   BoardProjectedSummary,
 } from './collaboration-room'
+
+export type { CollaborationMemberPreset, SaveCollaborationMemberPresetInput }
 
 export const COLLABORATION_ROOM_IPC_CHANNELS = {
   /** 列出全部协作室房间（默认不含 archived） */
@@ -56,6 +60,12 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   ADD_MEMBER: 'collaboration-room:add-member',
   /** 更新已有成员（改显示名 / 渠道 / 模型） */
   UPDATE_MEMBER: 'collaboration-room:update-member',
+  /** 列出用户保存的成员配置模板 */
+  LIST_MEMBER_PRESETS: 'collaboration-room:list-member-presets',
+  /** 保存/更新成员配置模板 */
+  SAVE_MEMBER_PRESET: 'collaboration-room:save-member-preset',
+  /** 删除成员配置模板 */
+  DELETE_MEMBER_PRESET: 'collaboration-room:delete-member-preset',
   /** 列出某房间全部 run（按 createdAt 升序，Stage 2） */
   LIST_RUNS: 'collaboration-room:list-runs',
   /** 取消某 run（abort 后端调用 + 置 cancelled，Stage 2） */

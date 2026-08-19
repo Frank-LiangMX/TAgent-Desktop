@@ -34,6 +34,7 @@ import type {
   ChannelUpdateInput,
   ChannelTestResult,
   CollaborationMember,
+  CollaborationMemberPreset,
   CollaborationMessage,
   CollaborationRoom,
   CollaborationRun,
@@ -43,6 +44,7 @@ import type {
   CollaborationUserApprovalRequest,
   CollaborationTextDeltaPayload,
   CreateCollaborationRoomInput,
+  SaveCollaborationMemberPresetInput,
   AddCollaborationMemberInput,
   ContinueCollaborationDepthStopInput,
   ContinueCollaborationDepthStopResult,
@@ -674,6 +676,13 @@ const electronAPI = {
   /** 更新成员（显示名 / 渠道 / 模型） */
   updateCollaborationMember: (input: UpdateCollaborationMemberInput) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.UPDATE_MEMBER, input) as Promise<CollaborationMember>,
+  /** 用户保存的成员配置模板 */
+  listCollaborationMemberPresets: () =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MEMBER_PRESETS) as Promise<CollaborationMemberPreset[]>,
+  saveCollaborationMemberPreset: (input: SaveCollaborationMemberPresetInput) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.SAVE_MEMBER_PRESET, input) as Promise<CollaborationMemberPreset>,
+  deleteCollaborationMemberPreset: (id: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.DELETE_MEMBER_PRESET, { id }) as Promise<{ ok: boolean }>,
   /** 列出某房间全部 run（按入队顺序，Stage 2） */
   listCollaborationRuns: (roomId: string) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_RUNS, { roomId }) as Promise<CollaborationRun[]>,

@@ -30,14 +30,18 @@ function readSettings() {
   }
 }
 
-/** 获取当前 settings.json 中的 ANTHROPIC_AUTH_TOKEN（可能 null） */
+/** 获取当前 settings.json 中的 KSCC_AUTH_TOKEN（kscc 实际认证源，可能 null） */
 function getCurrentToken() {
   const settings = readSettings()
-  return settings?.env?.ANTHROPIC_AUTH_TOKEN ?? null
+  return settings?.env?.KSCC_AUTH_TOKEN ?? settings?.env?.ANTHROPIC_AUTH_TOKEN ?? null
 }
 
 /**
- * 原子切换 settings.json 的 ANTHROPIC_AUTH_TOKEN。
+ * 原子切换 settings.json 的认证 token。
+ *
+ * kscc 实际读的是 env.KSCC_AUTH_TOKEN（实测：走代理抓包确认 Authorization:
+ * Bearer 就是 KSCC_AUTH_TOKEN 的值）。为兼容其它工具，同时改
+ * ANTHROPIC_AUTH_TOKEN + KSCC_AUTH_TOKEN 两个字段。
  *
  * @param {string} newToken - 新的 sk-... token
  * @param {object} [opts]
@@ -50,23 +54,26 @@ function switchToken(newToken, opts = {}) {
   }
 
   const settings = readSettings()
-  const oldToken = settings?.env?.ANTHROPIC_AUTH_TOKEN ?? null
+  const oldToken = settings?.env?.KSCC_AUTH_TOKEN ?? settings?.env?.ANTHROPIC_AUTH_TOKEN ?? null
 
   if (oldToken === newToken) {
     return { ok: true, oldToken, bakPath: BACKUP_PATH, skipped: true }
   }
 
-  // 构建新 settings（merge，只改 ANTHROPIC_AUTH_TOKEN）
+  // 构建新 settings（merge，同时改 KSCC_AUTH_TOKEN + ANTHROPIC_AUTH_TOKEN）
   const updated = {
     ...settings,
     env: {
       ...(settings.env || {}),
+      // kscc 实际用的字段（必须改）
+      KSCC_AUTH_TOKEN: newToken,
+      // 兼容其它工具的字段
       ANTHROPIC_AUTH_TOKEN: newToken,
     },
   }
 
   if (opts.dryRun) {
-    console.log(`[dry-run] 将切换 ANTHROPIC_AUTH_TOKEN:`)
+    console.log(`[dry-run] 将切换 KSCC_AUTH_TOKEN / ANTHROPIC_AUTH_TOKEN:`)
     console.log(`  old: ${oldToken ? oldToken.slice(0, 20) + '…' : '(无)'}`)
     console.log(`  new: ${newToken.slice(0, 20)}…`)
     console.log(`  file: ${SETTINGS_PATH}`)

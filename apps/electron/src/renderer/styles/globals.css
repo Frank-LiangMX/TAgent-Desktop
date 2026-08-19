@@ -27,6 +27,52 @@
 @tailwind utilities;
 
 /*
+ * 统一折叠动效：所有 Radix Collapsible 内容都用同一条线性时间轴。
+ * Radix 会在内容节点上提供实际高度变量，因此这里能同时覆盖展开与收起，
+ * 不要求每个业务组件重复实现一套 height 动画。
+ */
+[data-radix-collapsible-content] {
+  overflow: hidden;
+}
+
+[data-radix-collapsible-content][data-state='open'] {
+  animation: tagent-collapsible-open 140ms linear both;
+}
+
+[data-radix-collapsible-content][data-state='closed'] {
+  animation: tagent-collapsible-close 220ms linear both;
+}
+
+@keyframes tagent-collapsible-open {
+  from {
+    height: 0;
+    opacity: 1;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+}
+
+@keyframes tagent-collapsible-close {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-radix-collapsible-content][data-state='open'],
+  [data-radix-collapsible-content][data-state='closed'] {
+    animation: none;
+  }
+}
+
+/*
  * 会话页几何 token（对齐 TAgent_General 视觉参数，但不搬它的 --spatial-* 与 --app-shell-* 全套变量）
  * 只留真正用到的少数几个，其余直接用 Tailwind arbitrary value 或已有 --surface-role-* / --scene-* token
  */
@@ -61,6 +107,7 @@
     --spatial-accent-soft: hsl(var(--primary) / 0.1);
     --spatial-accent-line: hsl(var(--primary) / 0.26);
     --app-shell-motion: cubic-bezier(0.16, 1, 0.3, 1);
+    --app-shell-expand-ease: linear;
     /* 浮岛布局几何（对齐 TAgent_General AppShell） */
     --nav-rail-width: 58px;
     --nav-sidebar-width: 254px;

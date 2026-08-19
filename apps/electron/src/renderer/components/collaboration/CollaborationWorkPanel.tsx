@@ -85,7 +85,7 @@ function formatTime(ts: number): string {
 function statusBadgeClass(status: CollaborationRoomTaskStatus): string {
   switch (status) {
     case 'todo':
-      return 'bg-muted text-muted-foreground'
+      return 'border border-border/45 bg-transparent text-muted-foreground/80'
     case 'in_progress':
       return 'bg-emerald-500/15 text-emerald-600'
     case 'blocked':
@@ -368,7 +368,7 @@ export function CollaborationWorkPanel({
           ) : null}
 
           {taskCount === 0 && !creating ? (
-            <div className="rounded-md bg-muted/40 px-2.5 py-2 text-[11px] text-muted-foreground">
+            <div className="collab-work-panel__empty px-2.5 py-2 text-[11px] text-muted-foreground">
               暂无任务。{tasksReadOnly ? '' : '点「新建任务」创建一个。'}
             </div>
           ) : null}
@@ -416,7 +416,7 @@ export function CollaborationWorkPanel({
             产物
           </h3>
           {artifactCount === 0 ? (
-            <div className="rounded-md bg-muted/40 px-2.5 py-2 text-[11px] text-muted-foreground">
+            <div className="collab-work-panel__empty px-2.5 py-2 text-[11px] text-muted-foreground">
               暂无产物。成员通过 room_publish_artifact 发布后在此展示。
             </div>
           ) : (

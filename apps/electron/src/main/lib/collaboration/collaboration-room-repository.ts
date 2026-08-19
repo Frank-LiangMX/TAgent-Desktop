@@ -25,7 +25,9 @@ import type {
   CollaborationRoomTask,
   CollaborationArtifact,
   CollaborationUserApprovalRequest,
+  CollaborationMemberPreset,
 } from '@tagent/shared'
+import { randomBytes } from 'node:crypto'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import {
   getCollaborationRoomsPath,
@@ -37,10 +39,70 @@ import {
   getCollaborationRoomTasksPath,
   getCollaborationArtifactsPath,
   getCollaborationUserApprovalsPath,
+  getCollaborationMemberPresetsPath,
 } from '../config/config-paths'
 
 /** 配置版本号 */
 const CONFIG_VERSION = 1
+
+// ===== member-presets.json =====
+
+interface MemberPresetsConfig {
+  version: number
+  presets: CollaborationMemberPreset[]
+}
+
+function readMemberPresetsConfig(): MemberPresetsConfig {
+  const parsed = readJsonSafe<MemberPresetsConfig | null>(getCollaborationMemberPresetsPath(), null)
+  if (!parsed || !Array.isArray(parsed.presets)) return { version: CONFIG_VERSION, presets: [] }
+  return parsed
+}
+
+function writeMemberPresetsConfig(config: MemberPresetsConfig): void {
+  writeJsonAtomic(getCollaborationMemberPresetsPath(), config)
+}
+
+export function listCollaborationMemberPresets(): CollaborationMemberPreset[] {
+  return readMemberPresetsConfig().presets.sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+export function saveCollaborationMemberPreset(input: {
+  id?: string
+  name: string
+  description?: string
+  members: CollaborationMemberPreset['members']
+}): CollaborationMemberPreset {
+  const name = input.name.trim()
+  if (!name) throw new Error('成员配置名称不能为空')
+  if (!Array.isArray(input.members) || input.members.length === 0) {
+    throw new Error('成员配置至少需要一个成员')
+  }
+  const now = Date.now()
+  const config = readMemberPresetsConfig()
+  const existing = input.id ? config.presets.find((preset) => preset.id === input.id) : undefined
+  const preset: CollaborationMemberPreset = {
+    id: existing?.id ?? `cmp_${now.toString(36)}${randomBytes(4).toString('hex')}`,
+    name,
+    ...(input.description?.trim() ? { description: input.description.trim() } : {}),
+    // 深拷贝配置，避免调用方后续修改引用影响已保存模板。
+    members: JSON.parse(JSON.stringify(input.members)) as CollaborationMemberPreset['members'],
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  }
+  const index = config.presets.findIndex((item) => item.id === preset.id)
+  if (index >= 0) config.presets[index] = preset
+  else config.presets.push(preset)
+  writeMemberPresetsConfig(config)
+  return preset
+}
+
+export function deleteCollaborationMemberPreset(id: string): boolean {
+  const config = readMemberPresetsConfig()
+  const next = config.presets.filter((preset) => preset.id !== id)
+  if (next.length === config.presets.length) return false
+  writeMemberPresetsConfig({ ...config, presets: next })
+  return true
+}
 
 /**
  * 读盘归一化：补齐 S4.5 前历史房间缺失的 a2aHandoffEnabled（默认 true）。

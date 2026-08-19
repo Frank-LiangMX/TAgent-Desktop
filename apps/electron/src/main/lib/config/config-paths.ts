@@ -231,3 +231,8 @@ export function getCollaborationArtifactsPath(): string {
 export function getCollaborationUserApprovalsPath(): string {
   return join(getCollaborationDir(), 'user-approvals.json')
 }
+
+/** 协作室成员配置模板：~/.tagent[-dev]/collaboration/member-presets.json */
+export function getCollaborationMemberPresetsPath(): string {
+  return join(getCollaborationDir(), 'member-presets.json')
+}

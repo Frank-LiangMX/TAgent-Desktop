@@ -29,6 +29,7 @@ import {
   type CollaborationArtifact,
   type CollaborationMailboxEnvelope,
   type CollaborationMember,
+  type CollaborationMemberPreset,
   type CollaborationMessage,
   type CollaborationRoom,
   type CollaborationRoomTask,
@@ -36,6 +37,7 @@ import {
   type ContinueCollaborationDepthStopInput,
   type ContinueCollaborationDepthStopResult,
   type CreateCollaborationRoomInput,
+  type SaveCollaborationMemberPresetInput,
   type CreateCollaborationRoomTaskInput,
   type GetBoardProjectedSummaryInput,
   type ListBoardProjectedTasksInput,
@@ -56,6 +58,11 @@ import {
   type UpdateCollaborationRoomTaskInput,
 } from '@tagent/shared'
 import { CollaborationRoomService } from './collaboration-room-service'
+import {
+  deleteCollaborationMemberPreset,
+  listCollaborationMemberPresets,
+  saveCollaborationMemberPreset,
+} from './collaboration-room-repository'
 import { onKanbanTaskStatusChanged } from '../kanban/kanban-bootstrap'
 
 /**
@@ -261,6 +268,24 @@ export function registerCollaborationRoomIpc(
     async (_e, input: GetBoardProjectedSummaryInput): Promise<BoardProjectedSummary | null> => {
       return service.projectBoardSummary(input.roomId)
     },
+  )
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.LIST_MEMBER_PRESETS,
+    async (): Promise<CollaborationMemberPreset[]> => listCollaborationMemberPresets(),
+  )
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.SAVE_MEMBER_PRESET,
+    async (_e, input: SaveCollaborationMemberPresetInput): Promise<CollaborationMemberPreset> =>
+      saveCollaborationMemberPreset(input),
+  )
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.DELETE_MEMBER_PRESET,
+    async (_e, input: { id: string }): Promise<{ ok: boolean }> => ({
+      ok: deleteCollaborationMemberPreset(input.id),
+    }),
   )
 
   ipcMain.handle(

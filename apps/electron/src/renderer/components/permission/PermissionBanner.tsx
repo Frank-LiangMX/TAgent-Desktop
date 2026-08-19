@@ -76,15 +76,15 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
       {req && (
         <motion.div
           key={req.id}
-          initial={{ opacity: 0, y: 16, height: 0 }}
-          animate={{ opacity: 1, y: 0, height: 'auto' }}
-          exit={{ opacity: 0, y: 16, height: 0 }}
-          transition={{ type: 'spring', stiffness: 380, damping: 32 }}
-          className="session-permission-banner pointer-events-auto overflow-hidden"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 8 }}
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+          className="session-permission-banner pointer-events-auto"
         >
           <div
             className={cn(
-              'mx-3 mb-2 flex items-center gap-3 rounded-2xl border p-3 shadow-lg backdrop-blur-xl',
+              'mx-3 mb-2 flex items-center gap-3 rounded-2xl border p-3 shadow-lg',
               'pl-[calc(var(--app-shell-session-gutter,16px)_-_3px)] pr-[calc(var(--app-shell-session-gutter,16px)_-_3px)]',
               req.dangerous
                 ? 'border-red-500/40 bg-red-500/10'

@@ -518,7 +518,7 @@ export function ScrollMinimap({
           {panelOpen && (
             <div
               className={cn(
-                'message-nav-float message-nav-popover absolute top-0 z-20 w-[300px] origin-top-left flex flex-col overflow-hidden pointer-events-auto',
+                'message-nav-float message-nav-popover session-glass-popover absolute top-0 z-20 w-[300px] flex flex-col overflow-hidden pointer-events-auto',
                 isLeaving ? 'message-nav-popover-exit' : 'message-nav-popover-enter'
               )}
               style={{ left: POPOVER_PANEL_LEFT, maxHeight: 'min(460px, 64vh)' }}

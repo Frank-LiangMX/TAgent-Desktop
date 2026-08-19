@@ -98,10 +98,10 @@ export function MentionPicker({
         bottom: pos.bottom,
       }}
       role="listbox"
-      aria-label="选择 @ 角色"
+      aria-label="选择 @ 提及对象"
     >
       <div className="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-        点名角色（Chat）
+        选择提及对象
       </div>
       {filtered.map((role, i) => (
         <button

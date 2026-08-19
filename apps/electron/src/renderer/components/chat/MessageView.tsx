@@ -14,7 +14,7 @@ import type {
   TAgentTextBlock,
   FileAttachment,
 } from '@tagent/shared'
-import { DEFAULT_USER_NAME } from '@tagent/shared'
+import { DEFAULT_USER_NAME, sanitizeAssistantTextForDisplay } from '@tagent/shared'
 
 import {
   AppTooltip,
@@ -93,7 +93,10 @@ function UserView({
   const toolResultBlocks = message.content.filter(
     (b): b is TAgentToolResultBlock => b.type === 'tool_result',
   )
-  const plainText = textBlocks.map((b) => b.text).join('\n')
+  const plainText = textBlocks
+    .map((b) => sanitizeAssistantTextForDisplay(b.text))
+    .filter(Boolean)
+    .join('\n')
   const hasAttachments = (message.attachments?.length ?? 0) > 0
   const hasText = textBlocks.length > 0
   const showChrome = hasText || hasAttachments
@@ -228,7 +231,7 @@ function AssistantView({
             )}
             <ChevronDown
               className={cn(
-                'size-3 shrink-0 transition-transform',
+                'size-3 shrink-0 transition-transform ease-linear',
                 open ? 'rotate-180' : 'rotate-0',
               )}
             />

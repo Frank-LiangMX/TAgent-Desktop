@@ -53,3 +53,13 @@ export function shouldRepinScrollerToBottom(args: {
   if (!args.restored || args.settled || args.hasMidPosition) return false
   return args.distanceFromBottom > 2
 }
+
+/** 打开旧会话后 Markdown / 补页把内容顶高：原先贴底则跟着钉，用户已上滑则不动 */
+export function shouldFollowContentGrowth(args: {
+  hasMidPosition: boolean
+  grew: boolean
+  wasNearBottom: boolean
+}): boolean {
+  if (args.hasMidPosition || !args.grew) return false
+  return args.wasNearBottom
+}

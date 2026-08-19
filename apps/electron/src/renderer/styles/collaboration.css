@@ -67,6 +67,31 @@
     0 4px 14px -6px rgb(0 0 0 / 0.3);
 }
 
+/* 系统提示改成轻量分隔线，不再使用一颗灰色胶囊压在时间线上。 */
+.collab-system-note {
+  border-top: 1px solid rgb(var(--glass-rgb) / 0.34);
+  border-bottom: 1px solid rgb(var(--glass-rgb) / 0.34);
+  color: hsl(var(--muted-foreground) / 0.78);
+}
+
+/* 已取消只保留状态文字，避免空回复也占一整块灰色玻璃卡。 */
+.collab-run-card[data-status='cancelled'] {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* 协作室成员回复使用聊天区的可用宽度；长路径、XML/工具协议文本也必须在气泡内断行。 */
+.collab-timeline-thread {
+  width: 100%;
+  max-width: none;
+}
+.collab-glass-bubble,
+.collab-run-card {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* 协作室底部模糊带：比输入框略宽（8px 边距），仍避开最右侧细滚动条 */
 .collab-bottom-stack .composer-blur-underlay {
   left: 8px;
@@ -124,13 +149,18 @@
 }
 /* 任务/产物行：玻璃底、圆角、可聚焦（键盘可达） */
 .collab-work-panel__row {
-  border: 1px solid rgb(var(--glass-rgb) / 0.45);
-  background: linear-gradient(145deg, rgb(var(--glass-rgb) / 0.34), rgb(var(--glass-rgb) / 0.18));
+  border: 1px solid rgb(var(--glass-rgb) / 0.34);
+  background: transparent;
   border-radius: 10px;
   padding: 7px 9px;
 }
 .dark .collab-work-panel__row {
   border-color: rgb(255 255 255 / 0.08);
+}
+.collab-work-panel__empty {
+  border: 1px dashed rgb(var(--glass-rgb) / 0.34);
+  border-radius: 8px;
+  background: transparent;
 }
 .collab-work-panel__row[data-status='blocked'] {
   border-color: rgb(234 179 8 / 0.4);

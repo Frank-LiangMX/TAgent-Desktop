@@ -16,6 +16,12 @@ describe('stripToolInvocationMarkup', () => {
     expect(stripToolInvocationMarkup('下一步\n<antml:invoke name="Read">')).toBe('下一步')
   })
 
+  it('strips an antml parameter that is still streaming', () => {
+    expect(
+      stripToolInvocationMarkup('准备读取\n<antml:invoke name="Read">\n<antml:parameter name="path">src/App.tsx'),
+    ).toBe('准备读取')
+  })
+
   it('strips function_call / tool_call wrappers', () => {
     expect(stripToolInvocationMarkup('准备\n<function_call>\n{"name":"Read"}\n</function_call>')).toBe(
       '准备',
@@ -35,6 +41,26 @@ describe('stripToolInvocationMarkup', () => {
   it('strips lone pai_toolcalls closer', () => {
     expect(stripToolInvocationMarkup('</pai_toolcalls>')).toBe('')
     expect(stripToolInvocationMarkup('好的\n</pai_toolcalls>')).toBe('好的')
+  })
+
+  it('strips think blocks and orphan think/parameter closers', () => {
+    expect(
+      stripToolInvocationMarkup(
+        '<think>User closed editor. Let me compile the plugin.</think>\n\n已完成修复。',
+      ),
+    ).toBe('已完成修复。')
+    expect(
+      stripToolInvocationMarkup(
+        'User closed editor. Let me compile the plugin with the fixes, then the user can restart UE and test.</think>，</parameter>',
+      ),
+    ).toBe('')
+    expect(
+      stripToolInvocationMarkup('<think>still reasoning about the compile step'),
+    ).toBe('')
+    expect(stripToolInvocationMarkup('准备\n</parameter>')).toBe('准备')
+    expect(
+      stripToolInvocationMarkup('<parameter name="path">src/App.tsx</parameter>'),
+    ).toBe('')
   })
 })
 

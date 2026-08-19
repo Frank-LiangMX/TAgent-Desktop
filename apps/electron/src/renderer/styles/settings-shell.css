@@ -2237,42 +2237,120 @@
   }
 }
 
-/* ===== 插件商店：整包卡片网格（对齐 General MarketplaceBundleCard） ===== */
+/* ===== 插件商店：整包卡片网格（对齐角色库玻璃 + hover 弹跳） ===== */
+.plugin-store-page > .channel-settings-heading {
+  padding: 1.25rem 1.35rem;
+  border-radius: 16px;
+  border: 1px solid var(--surface-rim, rgb(var(--glass-rgb) / 0.5));
+  background:
+    var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
+    color-mix(in srgb, hsl(var(--background)) 78%, rgb(var(--glass-rgb)) 22%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.38),
+    0 10px 28px -16px rgb(48 59 76 / 0.16);
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  backdrop-filter: blur(22px) saturate(1.08);
+}
+.dark .plugin-store-page > .channel-settings-heading {
+  border-color: rgb(255 255 255 / 0.1);
+  background:
+    var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
+    color-mix(in srgb, hsl(var(--background)) 72%, rgb(var(--glass-rgb)) 28%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 12px 32px -18px rgb(0 0 0 / 0.35);
+}
+.plugin-store-page > .channel-settings-heading > button {
+  border: 1px solid rgb(var(--glass-rgb) / 0.42);
+  background: rgb(var(--glass-rgb) / 0.28);
+  color: hsl(var(--foreground) / 0.86);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.32);
+  -webkit-backdrop-filter: blur(12px) saturate(1.06);
+  backdrop-filter: blur(12px) saturate(1.06);
+}
+.plugin-store-page > .channel-settings-heading > button:hover:not(:disabled) {
+  border-color: rgb(var(--glass-rgb) / 0.58);
+  background: rgb(var(--glass-rgb) / 0.4);
+  color: hsl(var(--foreground));
+}
+.dark .plugin-store-page > .channel-settings-heading > button {
+  border-color: rgb(255 255 255 / 0.1);
+  background: rgb(var(--glass-rgb) / 0.22);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+
 .plugin-bundle-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 .plugin-bundle-card {
   display: flex;
   flex-direction: column;
   min-height: 148px;
   padding: 14px;
-  border: 1px solid var(--spatial-line);
+  border: 1px solid var(--surface-rim, rgb(var(--glass-rgb) / 0.5));
   border-radius: 16px;
-  background: rgb(var(--glass-rgb) / 0.22);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.28);
+  background:
+    var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
+    color-mix(in srgb, hsl(var(--background)) 74%, rgb(var(--glass-rgb)) 26%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.36),
+    0 10px 26px -16px rgb(48 59 76 / 0.18);
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  backdrop-filter: blur(22px) saturate(1.08);
   cursor: pointer;
   text-align: left;
   transition:
-    background-color 160ms ease,
-    border-color 160ms ease,
-    transform 160ms ease,
-    box-shadow 200ms ease;
+    background 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.22s ease,
+    transform 0.32s cubic-bezier(0.34, 1.45, 0.64, 1);
 }
 .dark .plugin-bundle-card {
-  background: rgb(var(--glass-rgb) / 0.3);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+  border-color: rgb(255 255 255 / 0.1);
+  background:
+    var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
+    color-mix(in srgb, hsl(var(--background)) 70%, rgb(var(--glass-rgb)) 30%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 12px 28px -16px rgb(0 0 0 / 0.32);
 }
 .plugin-bundle-card:hover {
-  background: var(--settings-hover-fill);
-  border-color: color-mix(in srgb, var(--spatial-ink) 12%, var(--spatial-line));
+  border-color: rgb(var(--glass-rgb) / 0.72);
+  background:
+    rgb(var(--glass-rgb) / 0.5),
+    color-mix(in srgb, hsl(var(--background)) 62%, rgb(var(--glass-rgb)) 38%);
+  transform: translateY(-3px);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.42),
+    0 14px 32px -14px rgb(48 59 76 / 0.2);
+}
+.dark .plugin-bundle-card:hover {
+  border-color: rgb(255 255 255 / 0.16);
+  background:
+    rgb(var(--glass-rgb) / 0.5),
+    color-mix(in srgb, hsl(var(--background)) 58%, rgb(var(--glass-rgb)) 42%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.1),
+    0 14px 32px -14px rgb(0 0 0 / 0.4);
+}
+.plugin-bundle-card:active {
   transform: translateY(-1px);
-  box-shadow: 0 6px 18px rgb(0 0 0 / 0.06);
+  transition-duration: 0.12s;
 }
 .plugin-bundle-card:focus-visible {
   outline: 2px solid hsl(var(--ring));
   outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .plugin-bundle-card {
+    transition: none;
+  }
+  .plugin-bundle-card:hover,
+  .plugin-bundle-card:active {
+    transform: none;
+  }
 }
 .plugin-bundle-card-head {
   display: flex;
@@ -2287,8 +2365,9 @@
   height: 36px;
   flex-shrink: 0;
   border-radius: 12px;
-  background: hsl(var(--primary) / 0.1);
-  color: hsl(var(--primary));
+  border: 1px solid rgb(var(--glass-rgb) / 0.42);
+  background: rgb(var(--glass-rgb) / 0.28);
+  color: hsl(var(--foreground) / 0.78);
 }
 .plugin-bundle-logo--sm {
   width: 30px;
@@ -2326,9 +2405,11 @@
   flex-shrink: 0;
   padding: 1px 7px;
   border-radius: 999px;
-  background: rgb(var(--glass-rgb) / 0.55);
-  color: var(--spatial-muted);
+  border: 1px solid hsl(var(--primary) / 0.35);
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
   font-size: 9px;
+  font-weight: 600;
   line-height: 1.5;
 }
 .plugin-bundle-card-kind {
@@ -2355,7 +2436,7 @@
   gap: 8px;
   margin-top: 12px;
   padding-top: 10px;
-  border-top: 1px solid color-mix(in srgb, var(--spatial-line) 80%, transparent);
+  border-top: 1px solid rgb(var(--glass-rgb) / 0.28);
 }
 .plugin-bundle-card-category {
   color: var(--spatial-faint);
@@ -2367,17 +2448,18 @@
   gap: 4px;
   height: 28px;
   padding: 0 10px;
-  border: 0;
+  border: 1px solid rgb(var(--glass-rgb) / 0.4);
   border-radius: 999px;
-  background: transparent;
-  color: var(--spatial-muted);
+  background: rgb(var(--glass-rgb) / 0.22);
+  color: hsl(var(--foreground) / 0.78);
   font-size: 11px;
   cursor: pointer;
-  transition: background-color 140ms ease, color 140ms ease;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
 }
 .plugin-bundle-install-btn:hover:not(:disabled) {
-  background: rgb(var(--glass-rgb) / 0.55);
-  color: var(--spatial-ink);
+  border-color: rgb(var(--glass-rgb) / 0.58);
+  background: rgb(var(--glass-rgb) / 0.38);
+  color: hsl(var(--foreground));
 }
 .plugin-bundle-install-btn:disabled {
   opacity: 0.45;

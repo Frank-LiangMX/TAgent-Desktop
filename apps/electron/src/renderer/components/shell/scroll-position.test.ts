@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import {
   compensateScrollForHeightDelta,
   hasSavedMidPosition,
+  shouldFollowContentGrowth,
   shouldRepinScrollerToBottom,
   targetScrollTop,
 } from './scroll-position'
@@ -72,6 +73,37 @@ describe('scroll-position', () => {
         settled: false,
         hasMidPosition: true,
         distanceFromBottom: 80,
+      }),
+    ).toBe(false)
+  })
+
+  test('内容长高：原先贴底才跟着钉，上滑查历史不动', () => {
+    expect(
+      shouldFollowContentGrowth({
+        hasMidPosition: false,
+        grew: true,
+        wasNearBottom: true,
+      }),
+    ).toBe(true)
+    expect(
+      shouldFollowContentGrowth({
+        hasMidPosition: false,
+        grew: true,
+        wasNearBottom: false,
+      }),
+    ).toBe(false)
+    expect(
+      shouldFollowContentGrowth({
+        hasMidPosition: false,
+        grew: false,
+        wasNearBottom: true,
+      }),
+    ).toBe(false)
+    expect(
+      shouldFollowContentGrowth({
+        hasMidPosition: true,
+        grew: true,
+        wasNearBottom: true,
       }),
     ).toBe(false)
   })

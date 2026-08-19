@@ -68,6 +68,7 @@ import {
   latestCollaborationRoomSummaryText,
   projectCollaborationTurnContext,
   resolveCollaborationMentions,
+  sanitizeAssistantTextForDisplay,
   transitionCollaborationMailboxState,
   transitionCollaborationRoomTaskStatus,
   validateCreateCollaborationRoomInput,
@@ -2475,11 +2476,17 @@ export class CollaborationRoomService {
     const g = this.workspaceGuard({ roomId: input.roomId, fromRunId: input.fromRunId, needsWrite: false })
     if (!g.ok) return g
 
-    // 根搜索：path 为空时 base=工作区根；否则经同一条安全路径解析
+    // 根搜索：path 为空、`.` 或 `./` 时都表示工作区根。
+    // 模型探索项目时经常从 shell 习惯传 `.`；不能把它当成待解析的文件路径，
+    // 否则 resolveArtifactTargetPath 会因规范化后没有 segment 而拒绝，导致模型反复试探。
     const trimmed = (input.path ?? '').trim()
     let baseReal = g.rootReal
     let baseRel = ''
-    if (trimmed !== '') {
+    const isRootPath =
+      trimmed === '' ||
+      (!trimmed.startsWith('/') &&
+        trimmed.split('/').every((segment) => segment === '' || segment === '.'))
+    if (!isRootPath) {
       const target = resolveArtifactTargetPath(g.rootReal, trimmed)
       if (!target.ok) return { ok: false, reason: target.reason }
       baseRel = target.relativePath
@@ -2850,7 +2857,9 @@ export class CollaborationRoomService {
     text: string,
     runId: string,
   ): void {
-    const content = text?.trim() || '（成员未返回正文）'
+    // 适配器最终结果与流式结果都经过一次展示层清洗，防止任何渠道把
+    // antml/function/tool XML 协议文本落盘成成员正文。
+    const content = sanitizeAssistantTextForDisplay(text ?? '') || '（成员未返回正文）'
     const message: CollaborationMessage = {
       id: genId(COLLABORATION_MESSAGE_ID_PREFIX),
       roomId: room.id,

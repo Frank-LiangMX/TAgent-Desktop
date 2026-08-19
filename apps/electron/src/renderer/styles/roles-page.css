@@ -22,17 +22,25 @@
   gap: 1rem 1.25rem;
   padding: 1.25rem 1.35rem;
   border-radius: var(--r-radius);
-  border: 1px solid hsl(var(--border) / 0.9);
-  background: hsl(var(--background) / 0.72);
+  border: 1px solid var(--surface-rim, rgb(var(--glass-rgb) / 0.5));
+  background:
+    var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
+    color-mix(in srgb, hsl(var(--background)) 78%, rgb(var(--glass-rgb)) 22%);
   box-shadow:
-    inset 0 1px 0 hsl(0 0% 100% / 0.08),
-    0 10px 28px hsl(var(--foreground) / 0.06);
+    inset 0 1px 0 rgb(255 255 255 / 0.38),
+    0 10px 28px -16px rgb(48 59 76 / 0.16);
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  backdrop-filter: blur(22px) saturate(1.08);
 }
 
 .dark .roles-shell__header-card {
+  border-color: rgb(255 255 255 / 0.1);
+  background:
+    var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
+    color-mix(in srgb, hsl(var(--background)) 72%, rgb(var(--glass-rgb)) 28%);
   box-shadow:
-    inset 0 1px 0 hsl(0 0% 100% / 0.05),
-    0 12px 32px hsl(0 0% 0% / 0.28);
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 12px 32px -18px rgb(0 0 0 / 0.35);
 }
 
 .roles-shell__actions {
@@ -40,6 +48,32 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+}
+
+.roles-shell__actions > button {
+  border: 1px solid rgb(var(--glass-rgb) / 0.42);
+  background: rgb(var(--glass-rgb) / 0.28);
+  color: hsl(var(--foreground) / 0.86);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.32);
+  -webkit-backdrop-filter: blur(12px) saturate(1.06);
+  backdrop-filter: blur(12px) saturate(1.06);
+}
+
+.roles-shell__actions > button:hover:not(:disabled) {
+  border-color: rgb(var(--glass-rgb) / 0.58);
+  background: rgb(var(--glass-rgb) / 0.4);
+  color: hsl(var(--foreground));
+}
+
+.dark .roles-shell__actions > button {
+  border-color: rgb(255 255 255 / 0.1);
+  background: rgb(var(--glass-rgb) / 0.22);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+
+.dark .roles-shell__actions > button:hover:not(:disabled) {
+  border-color: rgb(255 255 255 / 0.16);
+  background: rgb(var(--glass-rgb) / 0.32);
 }
 
 .roles-shell__error {
@@ -60,8 +94,12 @@
   gap: 12px;
   padding: 12px 14px;
   border-radius: var(--r-radius-sm);
-  border: 1px solid hsl(var(--border) / 0.85);
-  background: hsl(var(--muted) / 0.35);
+  border: 1px solid var(--surface-rim, rgb(var(--glass-rgb) / 0.45));
+  background:
+    rgb(var(--glass-rgb) / 0.28),
+    color-mix(in srgb, hsl(var(--background)) 70%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.06);
+  backdrop-filter: blur(18px) saturate(1.06);
 }
 
 .roles-search {
@@ -89,8 +127,8 @@
   height: 38px;
   padding: 0 12px 0 36px;
   border-radius: 10px;
-  border: 1px solid hsl(var(--border));
-  background: hsl(var(--background) / 0.85);
+  border: 1px solid rgb(var(--glass-rgb) / 0.4);
+  background: rgb(var(--glass-rgb) / 0.22);
   color: hsl(var(--foreground));
   font-size: 13px;
   outline: none;
@@ -110,8 +148,8 @@
   gap: 4px;
   padding: 3px;
   border-radius: 10px;
-  border: 1px solid hsl(var(--border) / 0.9);
-  background: hsl(var(--background) / 0.7);
+  border: 1px solid rgb(var(--glass-rgb) / 0.38);
+  background: rgb(var(--glass-rgb) / 0.16);
 }
 
 .roles-filters__btn {
@@ -154,6 +192,19 @@
   gap: 14px;
 }
 
+.roles-card-grid > li {
+  transition: transform 0.32s cubic-bezier(0.34, 1.45, 0.64, 1);
+}
+
+.roles-card-grid > li:hover {
+  transform: translateY(-3px);
+}
+
+.roles-card-grid > li:active {
+  transform: translateY(-1px);
+  transition-duration: 0.12s;
+}
+
 .roles-card {
   position: relative;
   display: flex;
@@ -162,12 +213,16 @@
   height: 100%;
   min-height: 168px;
   padding: 0;
-  border: 1px solid hsl(var(--border) / 0.95);
+  border: 1px solid var(--surface-rim, rgb(var(--glass-rgb) / 0.5));
   border-radius: var(--r-radius);
-  background: hsl(var(--background) / 0.68);
+  background:
+    var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
+    color-mix(in srgb, hsl(var(--background)) 74%, rgb(var(--glass-rgb)) 26%);
   box-shadow:
-    inset 0 1px 0 hsl(0 0% 100% / 0.06),
-    0 8px 22px hsl(var(--foreground) / 0.04);
+    inset 0 1px 0 rgb(255 255 255 / 0.36),
+    0 10px 26px -16px rgb(48 59 76 / 0.18);
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  backdrop-filter: blur(22px) saturate(1.08);
   text-align: left;
   cursor: pointer;
   color: inherit;
@@ -175,17 +230,37 @@
   transition:
     border-color 0.15s ease,
     box-shadow 0.15s ease,
-    transform 0.15s ease,
     background 0.15s ease;
 }
 
-.roles-card:hover {
-  border-color: hsl(var(--foreground) / 0.16);
-  background: hsl(var(--background) / 0.88);
+.dark .roles-card {
+  border-color: rgb(255 255 255 / 0.1);
+  background:
+    var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
+    color-mix(in srgb, hsl(var(--background)) 70%, rgb(var(--glass-rgb)) 30%);
   box-shadow:
-    inset 0 1px 0 hsl(0 0% 100% / 0.08),
-    0 12px 28px hsl(var(--foreground) / 0.07);
-  transform: translateY(-1px);
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 12px 28px -16px rgb(0 0 0 / 0.32);
+}
+
+.roles-card:hover {
+  border-color: rgb(var(--glass-rgb) / 0.72);
+  background:
+    rgb(var(--glass-rgb) / 0.5),
+    color-mix(in srgb, hsl(var(--background)) 62%, rgb(var(--glass-rgb)) 38%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.42),
+    0 14px 32px -14px rgb(48 59 76 / 0.2);
+}
+
+.dark .roles-card:hover {
+  border-color: rgb(255 255 255 / 0.16);
+  background:
+    rgb(var(--glass-rgb) / 0.5),
+    color-mix(in srgb, hsl(var(--background)) 58%, rgb(var(--glass-rgb)) 42%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.1),
+    0 14px 32px -14px rgb(0 0 0 / 0.4);
 }
 
 .roles-card:focus-visible {
@@ -198,8 +273,8 @@
   gap: 12px;
   align-items: flex-start;
   padding: 16px 16px 12px;
-  border-bottom: 1px solid hsl(var(--border) / 0.75);
-  background: hsl(var(--muted) / 0.28);
+  border-bottom: 1px solid rgb(var(--glass-rgb) / 0.28);
+  background: transparent;
 }
 
 .roles-avatar {
@@ -212,9 +287,9 @@
   border-radius: 12px;
   font-size: 15px;
   font-weight: 650;
-  border: 1px solid hsl(var(--border));
-  background: hsl(var(--muted) / 0.55);
-  color: hsl(var(--muted-foreground));
+  border: 1px solid rgb(var(--glass-rgb) / 0.42);
+  background: rgb(var(--glass-rgb) / 0.28);
+  color: hsl(var(--foreground) / 0.78);
 }
 
 .roles-card__title {
@@ -238,8 +313,8 @@
   align-items: center;
   padding: 2px 7px;
   border-radius: 6px;
-  border: 1px solid hsl(var(--border) / 0.9);
-  background: hsl(var(--background) / 0.6);
+  border: 1px solid rgb(var(--glass-rgb) / 0.36);
+  background: rgb(var(--glass-rgb) / 0.2);
   font-size: 11px;
   font-weight: 500;
   color: hsl(var(--muted-foreground));
@@ -263,12 +338,13 @@
   place-items: center;
   width: 28px;
   height: 28px;
-  border: 1px solid hsl(var(--border) / 0.9);
+  border: 1px solid rgb(var(--glass-rgb) / 0.4);
   border-radius: 9px;
-  background: hsl(var(--background) / 0.85);
+  background: rgb(var(--glass-rgb) / 0.28);
   color: hsl(var(--muted-foreground));
   cursor: pointer;
-  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
   transition:
     color 0.15s ease,
     border-color 0.15s ease,
@@ -308,8 +384,8 @@
   justify-content: space-between;
   gap: 8px;
   padding: 11px 16px;
-  border-top: 1px solid hsl(var(--border) / 0.75);
-  background: hsl(var(--background) / 0.45);
+  border-top: 1px solid rgb(var(--glass-rgb) / 0.28);
+  background: transparent;
   font-size: 11.5px;
   color: hsl(var(--muted-foreground));
 }
@@ -357,8 +433,8 @@
   align-items: flex-start;
   padding: 16px;
   border-radius: var(--r-radius-sm);
-  border: 1px solid hsl(var(--border) / 0.9);
-  background: hsl(var(--muted) / 0.3);
+  border: 1px solid rgb(var(--glass-rgb) / 0.42);
+  background: rgb(var(--glass-rgb) / 0.22);
 }
 
 .roles-dialog-identity__avatar {
@@ -408,8 +484,8 @@
 .roles-stat {
   padding: 12px 14px 14px;
   border-radius: 12px;
-  border: 1px solid hsl(var(--border) / 0.9);
-  background: hsl(var(--background) / 0.75);
+  border: 1px solid rgb(var(--glass-rgb) / 0.4);
+  background: rgb(var(--glass-rgb) / 0.2);
 }
 
 .roles-stat__label {
@@ -433,9 +509,9 @@
 
 .roles-prompt-well {
   border-radius: 12px;
-  border: 1px solid hsl(var(--border) / 0.9);
+  border: 1px solid rgb(var(--glass-rgb) / 0.4);
   overflow: hidden;
-  background: hsl(var(--background) / 0.72);
+  background: rgb(var(--glass-rgb) / 0.18);
 }
 
 .roles-prompt-well__head {
@@ -443,8 +519,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  border-bottom: 1px solid hsl(var(--border) / 0.8);
-  background: hsl(var(--muted) / 0.32);
+  border-bottom: 1px solid rgb(var(--glass-rgb) / 0.28);
+  background: transparent;
 }
 
 .roles-prompt-well__title {
@@ -483,10 +559,12 @@
   gap: 10px;
   min-height: 220px;
   border-radius: var(--r-radius-sm);
-  border: 1px dashed hsl(var(--border));
-  background: hsl(var(--muted) / 0.22);
+  border: 1px dashed rgb(var(--glass-rgb) / 0.45);
+  background: rgb(var(--glass-rgb) / 0.16);
   color: hsl(var(--muted-foreground));
   font-size: 13px;
+  -webkit-backdrop-filter: blur(16px) saturate(1.06);
+  backdrop-filter: blur(16px) saturate(1.06);
 }
 
 /* 商店 */
@@ -497,8 +575,12 @@
   gap: 12px;
   padding: 12px 14px;
   border-radius: var(--r-radius-sm);
-  border: 1px solid hsl(var(--border) / 0.85);
-  background: hsl(var(--muted) / 0.35);
+  border: 1px solid var(--surface-rim, rgb(var(--glass-rgb) / 0.45));
+  background:
+    rgb(var(--glass-rgb) / 0.28),
+    color-mix(in srgb, hsl(var(--background)) 70%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.06);
+  backdrop-filter: blur(18px) saturate(1.06);
 }
 
 .roles-store-meta {
@@ -517,11 +599,13 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .roles-card {
+  .roles-card,
+  .roles-card-grid > li {
     transition: none;
   }
 
-  .roles-card:hover {
+  .roles-card-grid > li:hover,
+  .roles-card-grid > li:active {
     transform: none;
   }
 }

@@ -9,6 +9,7 @@
  */
 
 import type { TAgentContentBlock } from '@tagent/shared'
+import { sanitizeAssistantTextForDisplay } from '@tagent/shared'
 
 import {
   Badge,
@@ -62,9 +63,11 @@ function TextBlockView({
 }: {
   block: TAgentContentBlock
   isStreaming?: boolean
-}): React.ReactElement {
+}): React.ReactElement | null {
   const textBlock = block as { type: 'text'; text: string }
-  return <MessageResponse streaming={isStreaming}>{textBlock.text}</MessageResponse>
+  const text = sanitizeAssistantTextForDisplay(textBlock.text)
+  if (!text) return null
+  return <MessageResponse streaming={isStreaming}>{text}</MessageResponse>
 }
 
 // ===== thinking 块 =====
@@ -115,7 +118,7 @@ function ToolUseBlockView({ block }: { block: TAgentContentBlock }): React.React
         </Badge>
         <ChevronDown
           className={cn(
-            'size-3.5 transition-transform duration-200',
+            'size-3.5 transition-transform duration-200 ease-linear',
             isOpen ? 'rotate-180' : 'rotate-0'
           )}
         />

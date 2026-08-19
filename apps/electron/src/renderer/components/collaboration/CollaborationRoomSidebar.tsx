@@ -18,7 +18,7 @@ import {
   Pause,
   PencilSimple,
   Play,
-  Plus,
+  UsersThree,
 } from '@phosphor-icons/react'
 import type { CollaborationRoom, CollaborationRoomStatus } from '@tagent/shared'
 import { cn } from '../../lib/utils'
@@ -69,6 +69,8 @@ interface CollaborationRoomSidebarProps {
   refreshKey: number
   /** 房间列表发生变更时通知 App（rename/pause/archive 后） */
   onRoomsChanged: () => void
+  /** 当前房间被归档后清空主区选中态 */
+  onRoomArchived?: (roomId: string) => void
 }
 
 export function CollaborationRoomSidebar({
@@ -77,6 +79,7 @@ export function CollaborationRoomSidebar({
   onNewRoom,
   refreshKey,
   onRoomsChanged,
+  onRoomArchived,
 }: CollaborationRoomSidebarProps): JSX.Element {
   const [rooms, setRooms] = useState<CollaborationRoom[]>([])
   const [archivedExpanded, setArchivedExpanded] = useState(false)
@@ -157,12 +160,13 @@ export function CollaborationRoomSidebar({
     async (room: CollaborationRoom): Promise<void> => {
       try {
         await window.electronAPI.updateCollaborationRoom({ roomId: room.id, status: 'archived' })
+        onRoomArchived?.(room.id)
         onRoomsChanged()
       } catch (err) {
         toast.error('归档失败', { description: err instanceof Error ? err.message : String(err) })
       }
     },
-    [onRoomsChanged],
+    [onRoomArchived, onRoomsChanged],
   )
 
   /** 恢复归档 → active */
@@ -190,7 +194,7 @@ export function CollaborationRoomSidebar({
           <AppTooltip label="新建协作室" side="bottom">
             <button type="button" className="pill-new" onClick={onNewRoom}>
               <span className="btn-ico">
-                <Plus size={15} weight="regular" />
+                <UsersThree size={15} weight="regular" />
               </span>
               新建
             </button>

@@ -1562,6 +1562,28 @@ export interface CreateCollaborationRoomInput {
   attachedBoardId?: string
 }
 
+/** 用户保存的协作室成员配置模板（不绑定具体房间）。 */
+export interface CollaborationMemberPreset {
+  /** 配置 ID，格式 cmp_xxxx */
+  id: string
+  /** 用户可读名称 */
+  name: string
+  /** 可选说明 */
+  description?: string
+  /** 创建房间时复制的成员配置；不会复用房间成员 ID/状态。 */
+  members: CreateCollaborationMemberInput[]
+  createdAt: number
+  updatedAt: number
+}
+
+/** 保存/更新成员配置模板的输入。 */
+export interface SaveCollaborationMemberPresetInput {
+  id?: string
+  name: string
+  description?: string
+  members: CreateCollaborationMemberInput[]
+}
+
 /** 更新协作室成员的输入（改显示名 / 渠道 / 模型） */
 export interface UpdateCollaborationMemberInput {
   /** 房间 ID（校验归属） */

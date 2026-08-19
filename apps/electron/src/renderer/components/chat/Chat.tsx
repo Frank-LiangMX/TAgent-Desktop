@@ -919,14 +919,46 @@ export function Chat({
   /** 已绑定渠道即显示 token 栏；kscc 仅隐藏占用圆环（占用不可信），累计统计照常 */
   const showTokenBar = lockedKind !== null
 
-  // 全挂完后再保持一小段 instant，避免 Markdown 后长高触发 smooth 扫视口
+  // 旧会话打开后 Markdown / 高亮 / 底栏占位还会微抖一两秒。
+  // 过早切 smooth 会让 StickToBottom 弹簧跟每一次长高，看起来像文字在轻轻晃。
+  // 至少 hold 1s，并要求高度连续稳定 ~520ms；最迟 2.6s 放行。
   useEffect(() => {
     if (!scrollReady || !fullyMounted) {
       setHoldInstantResize(true)
       return
     }
-    const timer = window.setTimeout(() => setHoldInstantResize(false), 220)
-    return () => window.clearTimeout(timer)
+    const el = scrollContextRef.current?.scrollRef.current
+    if (!el) {
+      const timer = window.setTimeout(() => setHoldInstantResize(false), 1000)
+      return () => window.clearTimeout(timer)
+    }
+    const openedAt = Date.now()
+    let lastHeight = el.scrollHeight
+    let stableSince = openedAt
+    const MIN_HOLD_MS = 1000
+    const STABLE_MS = 520
+    const FAIL_OPEN_MS = 2600
+    const poll = window.setInterval(() => {
+      const height = el.scrollHeight
+      if (Math.abs(height - lastHeight) > 1) {
+        lastHeight = height
+        stableSince = Date.now()
+        return
+      }
+      const now = Date.now()
+      if (now - openedAt >= MIN_HOLD_MS && now - stableSince >= STABLE_MS) {
+        window.clearInterval(poll)
+        setHoldInstantResize(false)
+      }
+    }, 50)
+    const failOpen = window.setTimeout(() => {
+      window.clearInterval(poll)
+      setHoldInstantResize(false)
+    }, FAIL_OPEN_MS)
+    return () => {
+      window.clearInterval(poll)
+      window.clearTimeout(failOpen)
+    }
   }, [scrollReady, fullyMounted])
 
   // 切换会话时加载历史。滚动位置恢复交给 ScrollPositionManager（Conversation 内部）：
@@ -1011,6 +1043,9 @@ export function Chat({
       const rehydrated = rehydrateSubagentTaskCardsFromHistory(irItems, taskCardApply)
       inFlightToolIdsRef.current = collectPendingToolUseIds(rehydrated)
       setItems(rehydrated)
+      setVisibleCount(
+        rehydrated.length <= 100 ? Number.POSITIVE_INFINITY : 48,
+      )
       // 从历史 assistant.usage 回填底栏（最近一条有 usage 的 assistant）
       for (let i = rehydrated.length - 1; i >= 0; i--) {
         const m = rehydrated[i]?.message
@@ -1247,7 +1282,7 @@ export function Chat({
     }
   }, [])
 
-  /** 布局变化后多帧校正（附件 DOM 插入、图片解码、功能栏动画、队列 spring） */
+  /** 布局变化后多帧校正（附件 DOM 插入、图片解码、功能栏动画、底栏进出） */
   const scheduleComposerTopUpdate = useCallback((): (() => void) => {
     updateComposerTop()
     const raf1 = requestAnimationFrame(() => {
@@ -1255,14 +1290,12 @@ export function Chat({
       requestAnimationFrame(updateComposerTop)
     })
     const t1 = window.setTimeout(updateComposerTop, 50)
-    const t2 = window.setTimeout(updateComposerTop, 200)
-    // MessageQueue / AskUser motion spring 常 >200ms，再补一帧避免胶囊/箭头压队列
-    const t3 = window.setTimeout(updateComposerTop, 420)
+    // 底栏 fade 约 200ms；不再跟 spring height，420ms 补测可省
+    const t2 = window.setTimeout(updateComposerTop, 220)
     return () => {
       cancelAnimationFrame(raf1)
       clearTimeout(t1)
       clearTimeout(t2)
-      clearTimeout(t3)
     }
   }, [updateComposerTop])
 
@@ -1277,11 +1310,12 @@ export function Chat({
     })
     ro.observe(stack)
     ro.observe(composer)
-    // MutationObserver：附件队列/横幅/预览卡片增删
+    // MutationObserver：附件队列/横幅/预览卡片增删。
+    // 勿开 attributes——motion 每帧改 style 会拖垮 updateComposerTop。
     const mo = new MutationObserver(() => {
       updateComposerTop()
     })
-    mo.observe(stack, { childList: true, subtree: true, attributes: true })
+    mo.observe(stack, { childList: true, subtree: true })
     const cancel = scheduleComposerTopUpdate()
     // 会话页入场动画结束后再校一次
     const t = window.setTimeout(updateComposerTop, 500)
@@ -1317,14 +1351,14 @@ export function Chat({
     return () => window.removeEventListener('tagent:composer-top-remeasure', onRemeasure)
   }, [scheduleComposerTopUpdate])
 
-  // AskUser / 权限弹窗出现或收起：强制重测（motion 高度动画时 RO 偶发滞后）
+  // AskUser / 权限弹窗出现或收起：重测底栏占位；钉底用 instant，避免与弹层入场抢主线程
   useEffect(() => {
     const cancel = scheduleComposerTopUpdate()
     if (!hasBlockingBottomBanner) return cancel
     const t = window.setTimeout(() => {
       const ctx = scrollContextRef.current
-      if (ctx?.isAtBottom) void ctx.scrollToBottom('smooth')
-    }, 160)
+      if (ctx?.isAtBottom) void ctx.scrollToBottom('instant')
+    }, 40)
     return () => {
       cancel()
       clearTimeout(t)

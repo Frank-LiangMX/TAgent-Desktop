@@ -18,6 +18,7 @@ import { useStickToBottomContext } from 'use-stick-to-bottom'
 import {
   compensateScrollForHeightDelta,
   hasSavedMidPosition,
+  shouldFollowContentGrowth,
   shouldRepinScrollerToBottom,
   targetScrollTop,
 } from './scroll-position'
@@ -41,7 +42,7 @@ export function ScrollPositionManager({
   /** 首次钉底/还原并再吃两帧布局后回调。供打开会话时等钉住再淡入，避免先露出顶部再跳底。 */
   onSettled?: () => void
 }): null {
-  const { scrollRef, stopScroll, scrollToBottom } = useStickToBottomContext()
+  const { scrollRef, contentRef, stopScroll, scrollToBottom } = useStickToBottomContext()
   const restoredRef = useRef(false)
   const settledRef = useRef(false)
   const prevIdRef = useRef(id)
@@ -146,7 +147,6 @@ export function ScrollPositionManager({
   }, [ready, restoreReady, id, scrollRef, stopScroll])
 
   // 打开当帧：滚动容器自己从 0 高变成实际高度时内容 ResizeObserver 不响，必须盯 scroller。
-  // 揭开后立刻停手——再调 pin / scrollToBottom 会和 RO 互推，触发 Maximum update depth。
   useEffect(() => {
     const el = scrollRef.current
     if (!el || !ready) return
@@ -169,6 +169,53 @@ export function ScrollPositionManager({
     ro.observe(el)
     return () => ro.disconnect()
   }, [ready, id, scrollRef])
+
+  // 旧会话打开后 Markdown / 高亮 / 补页把内容顶高：只写 scrollTop，不调 scrollToBottom。
+  // 高亮会连发 RO：合并到每帧最多钉一次，避免同帧多次改 scrollTop 造成微抖。
+  useEffect(() => {
+    const content = contentRef.current
+    const scroller = scrollRef.current
+    if (!content || !scroller || !ready) return
+    let lastHeight = content.scrollHeight
+    let wasNearBottom = !hasSavedMidPosition(scrollPositionCache.get(id))
+    let pinRaf = 0
+    const onScroll = (): void => {
+      const dist = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+      wasNearBottom = dist <= 40
+    }
+    const pinToBottom = (): void => {
+      pinRaf = 0
+      const top = targetScrollTop(scroller.scrollHeight, scroller.clientHeight)
+      if (Math.abs(scroller.scrollTop - top) < 2) return
+      scroller.scrollTop = top
+      wasNearBottom = true
+    }
+    const onResize = (): void => {
+      if (!restoredRef.current) return
+      const nextHeight = content.scrollHeight
+      const grew = nextHeight > lastHeight + 1
+      lastHeight = nextHeight
+      if (
+        !shouldFollowContentGrowth({
+          hasMidPosition: hasSavedMidPosition(scrollPositionCache.get(id)),
+          grew,
+          wasNearBottom,
+        })
+      ) {
+        return
+      }
+      if (pinRaf !== 0) return
+      pinRaf = window.requestAnimationFrame(pinToBottom)
+    }
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    const ro = new ResizeObserver(onResize)
+    ro.observe(content)
+    return () => {
+      scroller.removeEventListener('scroll', onScroll)
+      ro.disconnect()
+      if (pinRaf !== 0) window.cancelAnimationFrame(pinRaf)
+    }
+  }, [ready, id, scrollRef, contentRef])
 
   // 虚拟化往前补页：内容从顶部长高，绘制前把 scrollTop 顺延，视口不跳
   useLayoutEffect(() => {

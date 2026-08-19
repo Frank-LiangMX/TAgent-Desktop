@@ -22,6 +22,27 @@ import { isOneShotTextJump } from './narrative-oneshot'
 import { formatThinkingSummary } from './session-turn-model'
 import { isNearBottom } from './thinking-scroll-follow'
 
+/** 与 `.agent-concise-run__panel` / fold 的 grid 过渡时长对齐；收起时晚卸 DOM，否则动画无内容可过渡 */
+const CONCISE_PANEL_MS = 280
+
+/** open 时立即挂载；关闭后等过渡结束再卸，避免「展开有动画、收起瞬切」 */
+function useMountDuringTransition(open: boolean, instant = false): boolean {
+  const [mounted, setMounted] = useState(open)
+  useEffect(() => {
+    if (open) {
+      setMounted(true)
+      return
+    }
+    if (instant) {
+      setMounted(false)
+      return
+    }
+    const id = window.setTimeout(() => setMounted(false), CONCISE_PANEL_MS)
+    return () => window.clearTimeout(id)
+  }, [open, instant])
+  return open || mounted
+}
+
 interface ConciseTimelineViewProps {
   segments: ConciseSegment[]
   isLive?: boolean
@@ -197,6 +218,9 @@ const RunQueueShell = memo(function RunQueueShell({
     return () => cancelAnimationFrame(id)
   }, [collapseInstant])
 
+  // 收起后延迟卸载：grid 0fr 过渡需要内容高度；展开仍即时挂载
+  const panelMounted = useMountDuringTransition(open, collapseInstant)
+
   const dur = formatElapsedDuration(Math.max(0, workedMs))
   const label = isLive ? `运行中 ${dur}` : `运行了 ${dur}`
 
@@ -221,12 +245,12 @@ const RunQueueShell = memo(function RunQueueShell({
         <CaretRight
           size={12}
           className={cn(
-            'agent-concise-caret shrink-0 transition-transform',
+            'agent-concise-caret shrink-0 transition-transform ease-linear',
             open && 'rotate-90',
           )}
         />
       </button>
-      {/* 折叠时卸载 children，避免历史轮 / 切会话挂载整棵过程树 */}
+      {/* 折叠态延迟卸 children，收起可走 grid 动画；历史轮仍会卸掉过程树 */}
       <div
         className={cn(
           'agent-concise-run__panel',
@@ -235,7 +259,7 @@ const RunQueueShell = memo(function RunQueueShell({
         )}
         aria-hidden={!open}
       >
-        {open ? (
+        {panelMounted ? (
           <div className="agent-concise-run__panel-inner">
             <div className="agent-concise-run__body">{children}</div>
           </div>
@@ -346,6 +370,7 @@ export const ThinkingFold = memo(function ThinkingFold({
   }, [isLive])
 
   const panelId = useId()
+  const bodyMounted = useMountDuringTransition(open)
   const handleToggle = (): void => {
     if (settleTimer.current != null) {
       window.clearTimeout(settleTimer.current)
@@ -369,19 +394,19 @@ export const ThinkingFold = memo(function ThinkingFold({
         <CaretRight
           size={11}
           className={cn(
-            'agent-concise-caret shrink-0 transition-transform',
+            'agent-concise-caret shrink-0 transition-transform ease-linear',
             open && 'rotate-90',
           )}
         />
       </button>
-      {/* B：折叠时卸载重型正文（不挂 MessageResponse/Markdown/useSmoothStream）；展开才挂 ThinkingFoldBody */}
+      {/* B：折叠后延迟卸重型正文；收起走 grid 动画，展开才挂 ThinkingFoldBody */}
       <div
         id={panelId}
         className={cn('agent-concise-fold__panel', open && 'is-open')}
         aria-hidden={!open}
       >
         <div className="agent-concise-fold__panel-inner">
-          {open ? <ThinkingFoldBody thinking={thinking} isLive={isLive} /> : null}
+          {bodyMounted ? <ThinkingFoldBody thinking={thinking} isLive={isLive} /> : null}
         </div>
       </div>
     </div>
@@ -551,7 +576,7 @@ const WorkStageFold = memo(function WorkStageFold({
         <CaretRight
           size={11}
           className={cn(
-            'agent-concise-caret shrink-0 transition-transform',
+            'agent-concise-caret shrink-0 transition-transform ease-linear',
             open && 'rotate-90',
           )}
         />
@@ -768,7 +793,7 @@ const StageStepRow = memo(function StageStepRow({
           <CaretRight
             size={10}
             className={cn(
-              'agent-concise-caret shrink-0 transition-transform',
+              'agent-concise-caret shrink-0 transition-transform ease-linear',
               detailOpen && 'rotate-90',
             )}
           />

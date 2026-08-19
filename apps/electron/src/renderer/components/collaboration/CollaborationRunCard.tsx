@@ -10,6 +10,7 @@ import type {
   CollaborationMessage,
   CollaborationRun,
 } from '@tagent/shared'
+import { sanitizeAssistantTextForDisplay } from '@tagent/shared'
 import { cn } from '../../lib/utils'
 import { MemberAvatar } from './CollaborationAvatars'
 
@@ -36,11 +37,12 @@ export function runStatusLabel(status: CollaborationRun['status']): string {
 }
 
 function LiveStreamBody({ text }: { text: string }): JSX.Element {
+  const safeText = sanitizeAssistantTextForDisplay(text)
   const { displayedContent } = useSmoothStream({
-    content: text,
+    content: safeText,
     isStreaming: true,
   })
-  const shown = displayedContent.trim() || text
+  const shown = displayedContent.trim() || safeText
   return (
     <MessageResponse
       className="prose-p:my-1 prose-headings:my-1.5 text-sm text-foreground"
@@ -84,8 +86,8 @@ export function CollaborationRunCard({
   const cancellable = !waitingPeer && (running || queued)
 
   return (
-    <li data-run-id={run.id} className="flex justify-start">
-      <div className="max-w-[28rem]">
+    <li data-run-id={run.id} className="flex w-full min-w-0 justify-start">
+      <div className="min-w-0 flex-1">
         <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
           {member ? <MemberAvatar member={member} channels={channels} size={20} /> : null}
           <span className="font-medium text-foreground/70">{memberName}</span>
@@ -104,7 +106,7 @@ export function CollaborationRunCard({
         </div>
 
         <div
-          className="collab-run-card rounded-2xl px-3.5 py-2.5 text-sm text-foreground/90"
+          className="collab-run-card min-w-0 w-full overflow-hidden rounded-2xl px-3.5 py-2.5 text-sm text-foreground/90"
           data-status={run.status}
         >
           {queued ? (
@@ -123,8 +125,11 @@ export function CollaborationRunCard({
             messages.length > 0 ? (
               <div className="flex flex-col gap-2">
                 {messages.map((m) => (
-                  <MessageResponse key={m.id} className="prose-p:my-1 prose-headings:my-1.5 text-sm">
-                    {m.content}
+                  <MessageResponse
+                    key={m.id}
+                    className="min-w-0 break-words prose-p:my-1 prose-headings:my-1.5 text-sm [overflow-wrap:anywhere]"
+                  >
+                    {sanitizeAssistantTextForDisplay(m.content)}
                   </MessageResponse>
                 ))}
               </div>

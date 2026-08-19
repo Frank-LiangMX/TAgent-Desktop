@@ -87,7 +87,7 @@ export function CollaborationTimeline({
           还没有消息。在下方输入并发送一条消息试试（可 @成员名 点名）。
         </div>
       ) : (
-        <div className="tagent-thread pb-44">
+        <div className="tagent-thread collab-timeline-thread pb-44">
           <ul className="flex flex-col gap-2.5">
             {items.map((item) => {
               if (item.type === 'user') {
@@ -103,7 +103,7 @@ export function CollaborationTimeline({
               if (item.type === 'system') {
                 return (
                   <li key={item.message.id} data-message-id={item.message.id} className="flex justify-center">
-                    <div className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
+                    <div className="collab-system-note px-3 py-1 text-xs text-muted-foreground">
                       {item.message.content}
                     </div>
                   </li>
@@ -131,12 +131,12 @@ export function CollaborationTimeline({
                 return (
                   <li key={item.message.id} data-message-id={item.message.id} className="flex justify-start gap-2">
                     {author ? <MemberAvatar member={author} channels={channels} /> : null}
-                    <div className="max-w-[28rem]">
+                    <div className="min-w-0 flex-1">
                       <div className="mb-0.5 text-[11px] text-muted-foreground">
                         {memberDisplayName(item.message.authorId, members)}
                       </div>
-                      <div className="collab-glass-bubble rounded-2xl px-3.5 py-2 text-sm text-foreground">
-                        <MessageResponse className="prose-p:my-1 prose-headings:my-1.5 text-sm">
+                      <div className="collab-glass-bubble min-w-0 w-full overflow-hidden rounded-2xl px-3.5 py-2 text-sm text-foreground">
+                        <MessageResponse className="min-w-0 break-words prose-p:my-1 prose-headings:my-1.5 text-sm [overflow-wrap:anywhere]">
                           {item.message.content}
                         </MessageResponse>
                       </div>

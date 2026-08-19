@@ -177,7 +177,7 @@ export function PluginStoreSettings(): JSX.Element {
 
   if (workspaces.length === 0) {
     return (
-      <div className="settings-page channel-settings-page">
+      <div className="settings-page channel-settings-page plugin-store-page">
         <div className="channel-settings-heading">
           <div>
             <h2 className="settings-page-intro-title">插件</h2>
@@ -196,7 +196,7 @@ export function PluginStoreSettings(): JSX.Element {
   }
 
   return (
-    <div className="settings-page channel-settings-page">
+    <div className="settings-page channel-settings-page plugin-store-page">
       <div className="channel-settings-heading">
         <div>
           <h2 className="settings-page-intro-title">插件</h2>
