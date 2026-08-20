@@ -50,8 +50,10 @@ export function getConfigDirName(): string {
 /** 配置目录绝对路径：~/.tagent[-dev]/ */
 export function getConfigDir(): string {
   const override = process.env.TAGENT_CONFIG_DIR?.trim()
-  if (override) return resolve(override)
-  return join(homedir(), getConfigDirName())
+  const dir = override ? resolve(override) : join(homedir(), getConfigDirName())
+  // 首次安装时目录可能尚不存在；所有配置文件写入都依赖它先创建。
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
 }
 
 /** Agent 会话索引：~/.tagent[-dev]/agent-sessions.json */

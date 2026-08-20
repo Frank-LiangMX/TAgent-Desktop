@@ -312,9 +312,10 @@ export function FilePathChip({
           onClick={handleClick}
           data-file-status={fileStatus}
           className={cn(
-            // 路径芯片：轻底 + 语言标。行高与徽章同高，避免中文字体基线把拉丁字沉下去。
-            'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[0.9em] font-medium leading-none',
-            'cursor-pointer transition-colors align-middle not-prose',
+            // 与正文按基线对齐；align-middle 会把整个 inline-flex 芯片压到正文基线下方。
+            // 截断文本额外留出下行字母空间，避免 truncate 的 overflow-hidden 裁掉 g/p/q。
+            'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[0.9em] font-medium leading-normal',
+            'cursor-pointer transition-colors align-baseline not-prose',
             fileStatus === 'broken'
               ? 'border-dashed border-muted-foreground/30 bg-muted/10 text-muted-foreground opacity-60 hover:bg-muted/20 hover:opacity-80'
               : 'border-primary/10 bg-primary/[0.07] text-primary/90 hover:border-primary/15 hover:bg-primary/[0.12] hover:text-primary',
@@ -336,8 +337,8 @@ export function FilePathChip({
               {langBadge.label}
             </span>
           )}
-          <span className="inline-flex h-4 max-w-[240px] min-w-0 items-center font-normal leading-none text-foreground/88">
-            <span className="min-w-0 truncate leading-none">
+          <span className="inline-flex min-h-4 max-w-[240px] min-w-0 items-center font-normal leading-normal text-foreground/88">
+            <span className="min-w-0 truncate pb-px leading-normal">
               {filename}
               {lineColSuffix}
             </span>

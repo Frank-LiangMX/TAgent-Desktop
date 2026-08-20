@@ -26,13 +26,24 @@
  */
 .session-conversation-pad {
   --session-minimap-rail-reserve: 30px;
-  --session-minimap-rail-gap: 14px;
+  --session-minimap-rail-gap: 20px;
+  /* Codex/Cursor 式底部预留：内容增长时填充这里，输入框与布局不跳动。 */
+  --session-bottom-reserve: max(
+    11rem,
+    calc(var(--session-composer-top, 11rem) + 12px)
+  );
   padding-left: calc(
-    var(--session-minimap-rail-reserve) + var(--session-minimap-rail-gap) + 0.75rem
-  ); /* ≈30+14+12 = 56px */
-  padding-right: 1.25rem; /* 20px */
-  /* 跟着 bottom-stack 实测高度走：选择弹窗 / 队列 / 权限条撑高时，消息能滚到弹窗上方 */
-  padding-bottom: max(11rem, calc(var(--session-composer-top, 11rem) + 12px));
+    var(--session-minimap-rail-reserve) + var(--session-minimap-rail-gap) + 1rem
+  ); /* ≈30+20+16 = 66px */
+  padding-right: 1.75rem; /* 28px */
+  /* 底部由显式 spacer 占位，确保它进入真实 scrollHeight。 */
+}
+
+.session-conversation-bottom-spacer {
+  flex: 0 0 var(--session-bottom-reserve);
+  width: 100%;
+  min-height: var(--session-bottom-reserve);
+  pointer-events: none;
 }
 
 /*
@@ -43,8 +54,16 @@
  */
 .tagent-thread .agent-user-bubble {
   background:
-    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 66%),
-    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.62), rgb(var(--glass-rgb) / 0.42));
+    radial-gradient(
+      120% 100% at 8% 0%,
+      rgb(var(--scene-a-rgb) / 0.08),
+      transparent 66%
+    ),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / 0.62),
+      rgb(var(--glass-rgb) / 0.42)
+    );
   border: 1px solid rgb(var(--glass-rgb) / 0.5);
   border-radius: var(--bubble-radius, 16px);
   box-shadow:
@@ -98,7 +117,9 @@
 .tagent-thread .agent-user-bubble--combo .agent-user-bubble__attachments {
   padding-bottom: 8px;
 }
-.tagent-thread .agent-user-bubble--combo-has-text .agent-user-bubble__attachments {
+.tagent-thread
+  .agent-user-bubble--combo-has-text
+  .agent-user-bubble__attachments {
   margin-bottom: 8px;
   border-bottom: 1px solid hsl(var(--foreground) / 0.08);
 }
@@ -196,7 +217,11 @@
   white-space: nowrap;
 }
 .dark .agent-turn-title {
-  background: color-mix(in srgb, rgb(var(--glass-rgb, 50 52 56)) 55%, transparent);
+  background: color-mix(
+    in srgb,
+    rgb(var(--glass-rgb, 50 52 56)) 55%,
+    transparent
+  );
   border-color: rgb(255 255 255 / 0.1);
 }
 
@@ -234,22 +259,22 @@
   max-width: 100%;
   min-width: 0;
 }
-.agent-speaker[data-speaker-slot='0'] {
+.agent-speaker[data-speaker-slot="0"] {
   --speaker-accent: hsl(210 42% 48%);
 }
-.agent-speaker[data-speaker-slot='1'] {
+.agent-speaker[data-speaker-slot="1"] {
   --speaker-accent: hsl(162 32% 40%);
 }
-.agent-speaker[data-speaker-slot='2'] {
+.agent-speaker[data-speaker-slot="2"] {
   --speaker-accent: hsl(28 40% 48%);
 }
-.agent-speaker[data-speaker-slot='3'] {
+.agent-speaker[data-speaker-slot="3"] {
   --speaker-accent: hsl(280 28% 52%);
 }
-.agent-speaker[data-speaker-slot='4'] {
+.agent-speaker[data-speaker-slot="4"] {
   --speaker-accent: hsl(340 32% 50%);
 }
-.agent-speaker[data-speaker-slot='5'] {
+.agent-speaker[data-speaker-slot="5"] {
   --speaker-accent: hsl(190 36% 42%);
 }
 
@@ -273,21 +298,33 @@
   user-select: none;
 }
 /* logo 不铺满：玻璃圆底 + 图标约 55% 居中 */
-.agent-speaker[data-has-logo='true'] .agent-speaker__avatar {
+.agent-speaker[data-has-logo="true"] .agent-speaker__avatar {
   border-color: color-mix(in srgb, hsl(var(--foreground)) 7%, transparent);
-  background: color-mix(in srgb, hsl(var(--background)) 78%, hsl(var(--card)) 22%);
+  background: color-mix(
+    in srgb,
+    hsl(var(--background)) 78%,
+    hsl(var(--card)) 22%
+  );
   padding: 8px;
   box-sizing: border-box;
 }
 .dark .agent-speaker__avatar {
-  background: color-mix(in srgb, rgb(var(--glass-rgb, 50 52 56)) 58%, transparent);
+  background: color-mix(
+    in srgb,
+    rgb(var(--glass-rgb, 50 52 56)) 58%,
+    transparent
+  );
   border-color: rgb(255 255 255 / 0.12);
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.08),
     0 1px 3px rgb(0 0 0 / 0.25);
 }
-.dark .agent-speaker[data-has-logo='true'] .agent-speaker__avatar {
-  background: color-mix(in srgb, rgb(var(--glass-rgb, 50 52 56)) 52%, transparent);
+.dark .agent-speaker[data-has-logo="true"] .agent-speaker__avatar {
+  background: color-mix(
+    in srgb,
+    rgb(var(--glass-rgb, 50 52 56)) 52%,
+    transparent
+  );
 }
 .agent-speaker__logo {
   display: block;
@@ -397,7 +434,11 @@
   flex: 0 1 auto;
 }
 .tagent-thread .agent-user-block.has-avatar .agent-user-block__col {
-  max-width: min(75%, calc(100% - var(--user-avatar-size) - var(--user-avatar-gap)), 28rem);
+  max-width: min(
+    75%,
+    calc(100% - var(--user-avatar-size) - var(--user-avatar-gap)),
+    28rem
+  );
 }
 .tagent-thread .agent-user-block__bubble {
   /* 覆盖 MessageContent 的 min-w-0 / overflow-hidden，让短句自然撑开 */
@@ -465,7 +506,9 @@
   pointer-events: none;
 }
 .tagent-thread .is-user:hover .agent-user-block__time,
-.tagent-thread .agent-user-block__meta:has(.msg-icon-btn--done) .agent-user-block__time {
+.tagent-thread
+  .agent-user-block__meta:has(.msg-icon-btn--done)
+  .agent-user-block__time {
   opacity: 1;
   pointer-events: auto;
 }
@@ -489,7 +532,8 @@
     max-width 0.15s ease;
 }
 .tagent-thread .is-user:hover .agent-user-block__tools.agent-user-toolbar,
-.tagent-thread .agent-user-block__tools.agent-user-toolbar:has(.msg-icon-btn--done) {
+.tagent-thread
+  .agent-user-block__tools.agent-user-toolbar:has(.msg-icon-btn--done) {
   max-width: 5.5rem;
   opacity: 1;
   pointer-events: auto;
@@ -557,7 +601,10 @@
   gap: 2px;
   margin-left: auto;
 }
-.tagent-thread .agent-answer-toolbar:has(.agent-turn-outcome) .agent-answer-toolbar__actions .msg-icon-btn {
+.tagent-thread
+  .agent-answer-toolbar:has(.agent-turn-outcome)
+  .agent-answer-toolbar__actions
+  .msg-icon-btn {
   width: 22px;
   height: 22px;
   opacity: 0;
@@ -569,8 +616,15 @@
     color 140ms ease,
     background 140ms ease;
 }
-.tagent-thread .agent-turn:hover .agent-answer-toolbar:has(.agent-turn-outcome) .agent-answer-toolbar__actions .msg-icon-btn,
-.tagent-thread .agent-answer-toolbar:has(.agent-turn-outcome):focus-within .agent-answer-toolbar__actions .msg-icon-btn {
+.tagent-thread
+  .agent-turn:hover
+  .agent-answer-toolbar:has(.agent-turn-outcome)
+  .agent-answer-toolbar__actions
+  .msg-icon-btn,
+.tagent-thread
+  .agent-answer-toolbar:has(.agent-turn-outcome):focus-within
+  .agent-answer-toolbar__actions
+  .msg-icon-btn {
   opacity: 1;
   pointer-events: auto;
   transform: scale(1);
@@ -1010,8 +1064,16 @@
   border-radius: 12px;
   /* 与用户气泡同层玻璃板：避免 muted 半透明叠在会话灰底上发脏 */
   background:
-    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.07), transparent 66%),
-    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.78), rgb(var(--glass-rgb) / 0.56));
+    radial-gradient(
+      120% 100% at 8% 0%,
+      rgb(var(--scene-a-rgb) / 0.07),
+      transparent 66%
+    ),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / 0.78),
+      rgb(var(--glass-rgb) / 0.56)
+    );
   box-shadow:
     0 3px 12px -6px rgb(48 59 76 / 0.14),
     inset 0 1px 0 rgb(255 255 255 / 0.42),
@@ -1021,8 +1083,16 @@
 .dark .agent-files-changed {
   border-color: rgb(255 255 255 / 0.1);
   background:
-    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 66%),
-    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.3), rgb(var(--glass-rgb) / 0.18));
+    radial-gradient(
+      120% 100% at 8% 0%,
+      rgb(var(--scene-a-rgb) / 0.08),
+      transparent 66%
+    ),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / 0.3),
+      rgb(var(--glass-rgb) / 0.18)
+    );
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 0.08),
     0 3px 12px -6px rgb(0 0 0 / 0.28);
@@ -1052,7 +1122,9 @@
   color: var(--md-on-surface-variant);
   cursor: pointer;
   line-height: 1.3;
-  transition: color 0.12s ease, background 0.12s ease;
+  transition:
+    color 0.12s ease,
+    background 0.12s ease;
 }
 .agent-files-changed__review:hover {
   color: var(--md-on-surface);
@@ -1273,7 +1345,9 @@
   color: hsl(var(--muted-foreground) / 0.72);
   cursor: pointer;
   text-align: left;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 .file-diff__collapse:hover {
   background: hsl(var(--muted) / 0.55);
@@ -1316,7 +1390,9 @@
   color: hsl(var(--muted-foreground) / 0.8);
   cursor: pointer;
   line-height: 1.4;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 .file-diff-seg__btn.is-active {
   background: hsl(var(--muted) / 0.6);
@@ -1349,7 +1425,9 @@
   font-size: 12px;
   color: hsl(var(--foreground) / 0.8);
   white-space: nowrap;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
 }
 .file-diff-filebar__item:hover {
   background: hsl(var(--muted) / 0.5);
@@ -1880,7 +1958,8 @@
   min-width: 0;
   margin: 2px 0 6px;
   padding: 4px 8px;
-  border-left: 2px solid color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
+  border-left: 2px solid
+    color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
 }
 
 .agent-process-text.is-live {
@@ -1938,22 +2017,46 @@
 }
 /* hover：primary 7% tint + 边框（对齐旧版 hover） */
 .session-row:hover {
-  background-color: color-mix(in srgb, hsl(var(--primary)) 7%, hsl(var(--background)));
+  background-color: color-mix(
+    in srgb,
+    hsl(var(--primary)) 7%,
+    hsl(var(--background))
+  );
   border-color: color-mix(in srgb, hsl(var(--primary)) 16%, transparent);
 }
 /* 选中：primary 14% tint + 边框 32%（指示条由 motion layoutId 滑动，不在此） */
 .session-list-item-active {
-  background-color: color-mix(in srgb, hsl(var(--primary)) 14%, hsl(var(--background))) !important;
-  border-color: color-mix(in srgb, hsl(var(--primary)) 32%, transparent) !important;
+  background-color: color-mix(
+    in srgb,
+    hsl(var(--primary)) 14%,
+    hsl(var(--background))
+  ) !important;
+  border-color: color-mix(
+    in srgb,
+    hsl(var(--primary)) 32%,
+    transparent
+  ) !important;
   box-shadow: none !important;
 }
 .dark .session-row:hover {
-  background-color: color-mix(in srgb, hsl(var(--primary)) 12%, hsl(var(--background)));
+  background-color: color-mix(
+    in srgb,
+    hsl(var(--primary)) 12%,
+    hsl(var(--background))
+  );
   border-color: color-mix(in srgb, hsl(var(--primary)) 22%, transparent);
 }
 .dark .session-list-item-active {
-  background-color: color-mix(in srgb, hsl(var(--primary)) 22%, hsl(var(--background))) !important;
-  border-color: color-mix(in srgb, hsl(var(--primary)) 40%, transparent) !important;
+  background-color: color-mix(
+    in srgb,
+    hsl(var(--primary)) 22%,
+    hsl(var(--background))
+  ) !important;
+  border-color: color-mix(
+    in srgb,
+    hsl(var(--primary)) 40%,
+    transparent
+  ) !important;
 }
 
 /*
@@ -1999,7 +2102,7 @@
  */
 
 .message-nav-rail {
-  left: 10px;
+  left: 6px;
   right: auto;
 }
 
@@ -2017,6 +2120,44 @@
 .message-nav-bars-viewport--scrollable::-webkit-scrollbar {
   width: 0;
   height: 0;
+}
+
+/* Codex 式边缘提示：只有对应方向仍有刻度时才显现。覆盖层固定在短轨视口，
+ * 不随内部刻度一起滚动，避免用缩短刻度内容来表达“还有更多”。 */
+.message-nav-edge-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  height: 24px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+.message-nav-edge-fade--top {
+  top: 0;
+  background: linear-gradient(
+    to bottom,
+    hsl(var(--background) / 0.96),
+    hsl(var(--background) / 0)
+  );
+}
+.message-nav-edge-fade--bottom {
+  bottom: 0;
+  background: linear-gradient(
+    to top,
+    hsl(var(--background) / 0.96),
+    hsl(var(--background) / 0)
+  );
+}
+.message-nav-edge-fade[data-visible="true"] {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-nav-edge-fade {
+    transition: none;
+  }
 }
 
 .message-nav-bar-slot {
@@ -2109,8 +2250,14 @@
   animation: message-nav-peek-in 140ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 @keyframes message-nav-peek-in {
-  from { opacity: 0; transform: translate3d(-4px, 0, 0) scale(0.98); }
-  to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translate3d(-4px, 0, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
 }
 .message-nav-popover {
   min-height: 168px;
@@ -2122,12 +2269,20 @@
   animation: message-nav-popover-out 90ms ease-in both;
 }
 @keyframes message-nav-popover-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 @keyframes message-nav-popover-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 .message-nav-popover-header {
   border-bottom: 1px solid hsl(var(--border) / 0.55);
@@ -2143,7 +2298,11 @@
 .message-nav-bubble-user {
   border: 0;
   border-radius: 12px 12px 4px 12px;
-  background: color-mix(in srgb, hsl(var(--primary)) 16%, hsl(var(--background)));
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 16%,
+    hsl(var(--background))
+  );
   color: hsl(var(--foreground) / 0.92);
   box-shadow: none;
 }
@@ -2156,38 +2315,66 @@
 }
 .message-nav-bubble-status {
   border: 0;
-  background: color-mix(in srgb, hsl(var(--destructive)) 10%, hsl(var(--background)));
+  background: color-mix(
+    in srgb,
+    hsl(var(--destructive)) 10%,
+    hsl(var(--background))
+  );
   color: hsl(var(--foreground) / 0.78);
   border-radius: 10px;
   max-width: 100%;
 }
 .dark .message-nav-bubble-user {
-  background: color-mix(in srgb, hsl(var(--primary)) 20%, hsl(var(--background)));
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 20%,
+    hsl(var(--background))
+  );
 }
 .dark .message-nav-bubble-assistant {
   background: hsl(var(--foreground) / 0.055);
   color: hsl(var(--foreground) / 0.66);
 }
 .dark .message-nav-bubble-status {
-  background: color-mix(in srgb, hsl(var(--destructive)) 16%, hsl(var(--background)));
+  background: color-mix(
+    in srgb,
+    hsl(var(--destructive)) 16%,
+    hsl(var(--background))
+  );
 }
 .message-nav-bubble-user:hover {
-  background: color-mix(in srgb, hsl(var(--primary)) 22%, hsl(var(--background)));
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 22%,
+    hsl(var(--background))
+  );
 }
 .message-nav-bubble-assistant:hover {
   background: hsl(var(--foreground) / 0.07);
   color: hsl(var(--foreground) / 0.82);
 }
 .dark .message-nav-bubble-user:hover {
-  background: color-mix(in srgb, hsl(var(--primary)) 26%, hsl(var(--background)));
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 26%,
+    hsl(var(--background))
+  );
 }
 .dark .message-nav-bubble-assistant:hover {
   background: hsl(var(--foreground) / 0.08);
 }
-.message-nav-bubble-user.message-nav-bubble-inview:not(.message-nav-bubble-anchor) {
-  background: color-mix(in srgb, hsl(var(--primary)) 20%, hsl(var(--background)));
+.message-nav-bubble-user.message-nav-bubble-inview:not(
+    .message-nav-bubble-anchor
+  ) {
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 20%,
+    hsl(var(--background))
+  );
 }
-.message-nav-bubble-assistant.message-nav-bubble-inview:not(.message-nav-bubble-anchor) {
+.message-nav-bubble-assistant.message-nav-bubble-inview:not(
+    .message-nav-bubble-anchor
+  ) {
   background: hsl(var(--foreground) / 0.06);
 }
 
@@ -2196,14 +2383,22 @@
   box-shadow: none;
 }
 .message-nav-bubble-user.message-nav-bubble-anchor {
-  background: color-mix(in srgb, hsl(var(--primary)) 24%, hsl(var(--background)));
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 24%,
+    hsl(var(--background))
+  );
 }
 .message-nav-bubble-assistant.message-nav-bubble-anchor {
   background: hsl(var(--foreground) / 0.07);
   color: hsl(var(--foreground) / 0.82);
 }
 .dark .message-nav-bubble-user.message-nav-bubble-anchor {
-  background: color-mix(in srgb, hsl(var(--primary)) 28%, hsl(var(--background)));
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 28%,
+    hsl(var(--background))
+  );
 }
 .dark .message-nav-bubble-assistant.message-nav-bubble-anchor {
   background: hsl(var(--foreground) / 0.09);
@@ -2406,7 +2601,9 @@
   background: transparent;
   color: hsl(var(--muted-foreground));
   cursor: pointer;
-  transition: color 0.15s ease, background 0.15s ease;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
 }
 .active-speaker-clear:hover {
   color: hsl(var(--foreground));
@@ -2430,8 +2627,16 @@
   border: 1px solid rgb(var(--glass-rgb) / 0.5);
   border-radius: var(--app-shell-composer-radius, 16px);
   background:
-    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 66%),
-    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.42), rgb(var(--glass-rgb) / 0.28));
+    radial-gradient(
+      120% 100% at 8% 0%,
+      rgb(var(--scene-a-rgb) / 0.06),
+      transparent 66%
+    ),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / 0.42),
+      rgb(var(--glass-rgb) / 0.28)
+    );
   box-shadow:
     0 10px 24px -10px rgb(48 59 76 / 0.18),
     0 3px 10px -4px rgb(48 59 76 / 0.1),
@@ -2668,12 +2873,13 @@
  * 否则胶囊贴 cluster 顶、下箭头若 composer-top 滞后，会叠在弹窗底栏（「Enter 确认」旁）。
  * 仅隐藏显示，不碰计时/滚动状态；关闭后恢复。
  */
-.session-chat-col[data-mention-open='true'] .composer-run-timer,
-.session-chat-col[data-mention-open='true'] .composer-float-row,
-.session-chat-col[data-mention-open='true'] [data-conversation-scroll-btn],
-.session-chat-col[data-bottom-banner-open='true'] .composer-run-timer,
-.session-chat-col[data-bottom-banner-open='true'] .composer-float-row,
-.session-chat-col[data-bottom-banner-open='true'] [data-conversation-scroll-btn] {
+.session-chat-col[data-mention-open="true"] .composer-run-timer,
+.session-chat-col[data-mention-open="true"] .composer-float-row,
+.session-chat-col[data-mention-open="true"] [data-conversation-scroll-btn],
+.session-chat-col[data-bottom-banner-open="true"] .composer-run-timer,
+.session-chat-col[data-bottom-banner-open="true"] .composer-float-row,
+.session-chat-col[data-bottom-banner-open="true"]
+  [data-conversation-scroll-btn] {
   opacity: 0;
   pointer-events: none;
   transition:
@@ -2777,8 +2983,11 @@
   padding: 0 11px;
   border-radius: 999px;
   border: 1px solid rgb(var(--glass-rgb) / 0.55);
-  background:
-    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.82), rgb(var(--glass-rgb) / 0.58));
+  background: linear-gradient(
+    145deg,
+    rgb(var(--glass-rgb) / 0.82),
+    rgb(var(--glass-rgb) / 0.58)
+  );
   color: var(--md-on-surface);
   font-size: 11px;
   font-weight: 600;
@@ -2787,12 +2996,17 @@
   box-shadow:
     0 4px 12px -6px rgb(48 59 76 / 0.14),
     inset 0 1px 0 rgb(255 255 255 / 0.45);
-  transition: background 0.12s ease, color 0.12s ease;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 .composer-activity-island__pill:hover {
   color: var(--md-on-surface);
-  background:
-    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.92), rgb(var(--glass-rgb) / 0.7));
+  background: linear-gradient(
+    145deg,
+    rgb(var(--glass-rgb) / 0.92),
+    rgb(var(--glass-rgb) / 0.7)
+  );
 }
 .dark .composer-activity-island__pill {
   border-color: rgb(255 255 255 / 0.1);
@@ -2810,7 +3024,11 @@
   /* 浮在消息上：backdrop-filter 在部分合成层会失效，只剩 0.18–0.32 玻璃 → 全透。
    * 与顶栏通知 / 多任务 popover 一样垫一层会话底，再叠玻璃。 */
   background:
-    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.07), transparent 66%),
+    radial-gradient(
+      120% 100% at 8% 0%,
+      rgb(var(--scene-a-rgb) / 0.07),
+      transparent 66%
+    ),
     var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
     color-mix(in srgb, hsl(var(--background)) 88%, rgb(var(--glass-rgb)) 12%);
   box-shadow: var(
@@ -2824,7 +3042,11 @@
 .dark .composer-activity-island__panel {
   border-color: rgb(255 255 255 / 0.1);
   background:
-    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 66%),
+    radial-gradient(
+      120% 100% at 8% 0%,
+      rgb(var(--scene-a-rgb) / 0.08),
+      transparent 66%
+    ),
     var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
     color-mix(in srgb, hsl(var(--background)) 82%, rgb(var(--glass-rgb)) 18%);
   box-shadow:
@@ -2954,8 +3176,16 @@ button.composer-activity-island__title:hover {
   border-radius: var(--app-shell-composer-radius, 16px);
   border: 1px solid rgb(var(--glass-rgb) / 0.5);
   background:
-    radial-gradient(120% 100% at 8% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 66%),
-    linear-gradient(145deg, rgb(var(--glass-rgb) / 0.42), rgb(var(--glass-rgb) / 0.28));
+    radial-gradient(
+      120% 100% at 8% 0%,
+      rgb(var(--scene-a-rgb) / 0.06),
+      transparent 66%
+    ),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / 0.42),
+      rgb(var(--glass-rgb) / 0.28)
+    );
   box-shadow:
     0 10px 24px -10px rgb(48 59 76 / 0.18),
     0 3px 10px -4px rgb(48 59 76 / 0.1),
@@ -3221,8 +3451,11 @@ button.composer-activity-island__title:hover {
 }
 .ask-user-opt__radio.is-on {
   border-color: hsl(var(--primary) / 0.75);
-  background:
-    radial-gradient(circle at center, hsl(var(--primary)) 0 3px, transparent 3.5px);
+  background: radial-gradient(
+    circle at center,
+    hsl(var(--primary)) 0 3px,
+    transparent 3.5px
+  );
 }
 .ask-user-opt__idx {
   flex-shrink: 0;
@@ -3375,8 +3608,12 @@ button.composer-activity-island__title:hover {
   color: hsl(var(--foreground) / 0.86);
   word-break: break-word;
 }
-.exit-plan-card__plan p { margin: 0 0 6px; }
-.exit-plan-card__plan p:last-child { margin-bottom: 0; }
+.exit-plan-card__plan p {
+  margin: 0 0 6px;
+}
+.exit-plan-card__plan p:last-child {
+  margin-bottom: 0;
+}
 .exit-plan-card__plan h1,
 .exit-plan-card__plan h2,
 .exit-plan-card__plan h3 {
@@ -3391,7 +3628,9 @@ button.composer-activity-island__title:hover {
   margin: 0 0 6px;
   padding-left: 18px;
 }
-.exit-plan-card__plan li { margin: 0 0 2px; }
+.exit-plan-card__plan li {
+  margin: 0 0 2px;
+}
 .exit-plan-card__plan code {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -3597,7 +3836,7 @@ button.composer-activity-island__title:hover {
 }
 .agent-turn-outcome__detail::before,
 .agent-turn-outcome__clock::before {
-  content: '·';
+  content: "·";
   margin-right: 5px;
   color: hsl(var(--muted-foreground) / 0.34);
 }
@@ -3654,7 +3893,9 @@ button.composer-activity-island__title:hover {
   background: transparent;
   color: hsl(var(--muted-foreground) / 0.8);
   cursor: pointer;
-  transition: color 140ms ease, background 140ms ease;
+  transition:
+    color 140ms ease,
+    background 140ms ease;
 }
 .kanban-crew-panel__icon-btn:hover {
   background: hsl(var(--foreground) / 0.06);
@@ -3695,14 +3936,22 @@ button.composer-activity-island__title:hover {
   color: hsl(var(--primary));
   border-color: rgb(var(--glass-rgb) / 0.45);
   background:
-    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.06), transparent 64%),
+    radial-gradient(
+      120% 140% at 12% 0%,
+      rgb(var(--scene-a-rgb) / 0.06),
+      transparent 64%
+    ),
     rgb(var(--glass-rgb) / 0.42);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.45);
 }
 .dark .kanban-crew-panel__tab.is-active {
   border-color: rgb(255 255 255 / 0.06);
   background:
-    radial-gradient(120% 140% at 12% 0%, rgb(var(--scene-a-rgb) / 0.08), transparent 64%),
+    radial-gradient(
+      120% 140% at 12% 0%,
+      rgb(var(--scene-a-rgb) / 0.08),
+      transparent 64%
+    ),
     rgb(var(--glass-rgb) / 0.36);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
 }
@@ -3763,7 +4012,10 @@ button.composer-activity-island__title:hover {
   font-weight: 520;
   color: hsl(var(--muted-foreground) / 0.9);
   cursor: pointer;
-  transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
+  transition:
+    color 140ms ease,
+    background 140ms ease,
+    border-color 140ms ease;
 }
 .kanban-crew-panel__board-chip.is-active {
   border-color: hsl(var(--primary) / 0.32);
@@ -3820,14 +4072,22 @@ button.composer-activity-island__title:hover {
     border-color 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 .kanban-crew-panel__task:hover {
-  background-color: color-mix(in srgb, hsl(var(--primary)) 7%, hsl(var(--background)));
+  background-color: color-mix(
+    in srgb,
+    hsl(var(--primary)) 7%,
+    hsl(var(--background))
+  );
   border-color: color-mix(in srgb, hsl(var(--primary)) 16%, transparent);
 }
 .kanban-crew-panel__task:active {
   transform: none;
 }
 .dark .kanban-crew-panel__task:hover {
-  background-color: color-mix(in srgb, hsl(var(--primary)) 12%, hsl(var(--background)));
+  background-color: color-mix(
+    in srgb,
+    hsl(var(--primary)) 12%,
+    hsl(var(--background))
+  );
   border-color: color-mix(in srgb, hsl(var(--primary)) 22%, transparent);
 }
 .kanban-crew-panel__task-title {
@@ -4051,7 +4311,7 @@ button.composer-activity-island__title:hover {
 }
 
 .kanban-crew-bg-banner {
-  font-feature-settings: 'tnum' 1;
+  font-feature-settings: "tnum" 1;
 }
 
 /* 会话错误条：session_error 独立 UI（标题/详情/复制/关闭/重试） */
@@ -4159,8 +4419,13 @@ button.composer-activity-island__title:hover {
   margin: 10px 0 14px;
   padding: 12px 14px;
   border-radius: 14px;
-  border: 1px solid color-mix(in srgb, hsl(var(--primary)) 22%, hsl(var(--border)));
-  background: color-mix(in srgb, hsl(var(--primary)) 7%, hsl(var(--card) / 0.55));
+  border: 1px solid
+    color-mix(in srgb, hsl(var(--primary)) 22%, hsl(var(--border)));
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 7%,
+    hsl(var(--card) / 0.55)
+  );
   max-width: 100%;
 }
 .agent-crew-notice__head {
@@ -4204,13 +4469,16 @@ button.composer-activity-island__title:hover {
   width: 100%;
   min-width: 0;
   padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, hsl(var(--muted-foreground)) 14%, transparent);
+  border: 1px solid
+    color-mix(in srgb, hsl(var(--muted-foreground)) 14%, transparent);
   border-radius: 10px;
   background: color-mix(in srgb, hsl(var(--foreground)) 2.5%, transparent);
   cursor: pointer;
   text-align: left;
   color: inherit;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
 }
 .subagent-entry-card:hover {
   border-color: color-mix(in srgb, hsl(var(--primary)) 30%, transparent);
@@ -4311,7 +4579,9 @@ button.composer-activity-island__title:hover {
   color: hsl(var(--primary));
   opacity: 0;
   transform: translateX(-2px);
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
 }
 .subagent-entry-card:hover .subagent-entry-card__open {
   opacity: 1;
@@ -4347,7 +4617,8 @@ button.composer-activity-island__title:hover {
   gap: 12px;
   padding: 10px 16px;
   /* 与主会话顶区一致：不铺白/玻璃实底，直接透 scene 弥散 */
-  border-bottom: 1px solid color-mix(in srgb, hsl(var(--border)) 55%, transparent);
+  border-bottom: 1px solid
+    color-mix(in srgb, hsl(var(--border)) 55%, transparent);
   background: transparent;
 }
 .subagent-detail__back {
@@ -4362,7 +4633,9 @@ button.composer-activity-island__title:hover {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
   cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
 }
 .subagent-detail__back:hover {
   color: hsl(var(--foreground));
@@ -4537,7 +4810,9 @@ button.composer-activity-island__title:hover {
   padding: 10px 14px;
   border: 1px solid hsl(var(--border) / 0.55);
   border-radius: 10px;
-  background: color-mix(in srgb, hsl(var(--background)) 88%, transparent);
+  /* 圆桌发言与主会话消息一样直接落在 scene 上，不再叠一层脏灰卡片。 */
+  background: transparent;
+  border-color: transparent;
 }
 .moa-discussion-entry--user {
   align-self: flex-end;
@@ -4546,8 +4821,8 @@ button.composer-activity-island__title:hover {
   border-color: color-mix(in srgb, hsl(var(--primary)) 30%, transparent);
 }
 .moa-discussion-entry--moderator {
-  background: color-mix(in srgb, hsl(var(--foreground)) 5%, transparent);
-  border-color: color-mix(in srgb, hsl(var(--foreground)) 18%, transparent);
+  background: transparent;
+  border-color: transparent;
 }
 .moa-discussion-active-speaker {
   display: flex;
@@ -4585,8 +4860,12 @@ button.composer-activity-island__title:hover {
   animation: moa-discussion-pulse 1.5s ease-out infinite;
 }
 @keyframes moa-discussion-pulse {
-  70% { box-shadow: 0 0 0 6px transparent; }
-  100% { box-shadow: 0 0 0 0 transparent; }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
 }
 .moa-discussion-avatar {
   flex-shrink: 0;
@@ -4674,10 +4953,10 @@ button.composer-activity-island__title:hover {
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  padding: 10px 16px 14px;
-  border-top: 1px solid hsl(var(--border) / 0.7);
-  background: color-mix(in srgb, hsl(var(--background)) 92%, transparent);
-  backdrop-filter: blur(8px);
+  /* 与主会话 .session-input-dock 共用 band 坐标：输入框底边贴 sidebar 底边。 */
+  margin-bottom: var(--shell-band-inset-bottom, 24px);
+  padding: 10px 16px 0;
+  background: transparent;
 }
 .moa-discussion-composer__input {
   flex: 1;
@@ -4685,14 +4964,17 @@ button.composer-activity-island__title:hover {
   resize: none;
   max-height: 120px;
   padding: 8px 10px;
-  border: 1px solid hsl(var(--border));
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
   border-radius: 10px;
-  background: hsl(var(--background));
+  background: rgb(var(--glass-rgb) / 0.42);
   color: hsl(var(--foreground));
   font-size: 13px;
   line-height: 1.6;
   font-family: inherit;
   outline: none;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.42),
+    0 8px 20px -12px rgb(48 59 76 / 0.22);
   transition: border-color 0.15s ease;
 }
 .moa-discussion-composer__input:focus {
@@ -4708,8 +4990,13 @@ button.composer-activity-island__title:hover {
   margin-top: 12px;
   padding: 14px 16px;
   border-radius: 12px;
-  border: 1px solid color-mix(in srgb, hsl(var(--emerald-500, 142 71% 45%)) 35%, transparent);
-  background: color-mix(in srgb, hsl(var(--emerald-500, 142 71% 45%)) 7%, transparent);
+  border: 1px solid
+    color-mix(in srgb, hsl(var(--emerald-500, 142 71% 45%)) 35%, transparent);
+  background: color-mix(
+    in srgb,
+    hsl(var(--emerald-500, 142 71% 45%)) 7%,
+    transparent
+  );
 }
 .moa-discussion-summary__title {
   margin-bottom: 8px;
@@ -5024,7 +5311,7 @@ button.composer-activity-island__title:hover {
   background: color-mix(in srgb, hsl(var(--foreground)) 6%, transparent);
   color: hsl(var(--foreground));
 }
-.tab-summary-btn[aria-expanded='true'] {
+.tab-summary-btn[aria-expanded="true"] {
   background: transparent;
   color: hsl(var(--primary));
 }

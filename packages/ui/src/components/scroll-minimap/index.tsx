@@ -10,108 +10,121 @@
  * 必须放在 StickToBottom（Conversation）内部使用。
  */
 
-import * as React from 'react'
-import { ListTree } from 'lucide-react'
-import Markdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { useStickToBottomContext } from 'use-stick-to-bottom'
+import * as React from "react";
+import { ListTree } from "lucide-react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { useStickToBottomContext } from "use-stick-to-bottom";
 
-import { SearchInput } from '../search-input'
-import { AppTooltip, Tooltip, TooltipContent, TooltipTrigger } from '../tooltip'
-import { cn } from '../../lib/utils'
+import { SearchInput } from "../search-input";
+import {
+  AppTooltip,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "../tooltip";
+import { cn } from "../../lib/utils";
 
 export interface MinimapItem {
-  id: string
-  role: 'user' | 'assistant' | 'status'
+  id: string;
+  role: "user" | "assistant" | "status";
   /** 用户侧摘要（一轮一刻度时为主标题） */
-  preview: string
+  preview: string;
   /** 助手侧摘要（截断，Codex 式 peep 副文） */
-  replyPreview?: string
+  replyPreview?: string;
   /** 该轮附件文件名（peep chips） */
-  attachments?: Array<{ name: string }>
-  avatar?: string
-  model?: string
+  attachments?: Array<{ name: string }>;
+  avatar?: string;
+  model?: string;
 }
 
 interface ScrollMinimapProps {
-  items: MinimapItem[]
+  items: MinimapItem[];
   /** 快捷键打开面板的回调（应用层注入） */
-  onShortcutOpen?: () => void
+  onShortcutOpen?: () => void;
   /** 获取模型 logo URL（应用层注入） */
-  getModelLogo?: (model: string) => string | null
+  getModelLogo?: (model: string) => string | null;
   /**
    * 目标消息尚未挂载时（虚拟化窗口外）先扩挂载。
    * 返回后 ScrollMinimap 会重试查找 DOM 再滚动。
    * 只应扩消息壳，不应因此常驻挂满历史 Markdown。
    */
-  onEnsureMessage?: (id: string) => void | Promise<void>
+  onEnsureMessage?: (id: string) => void | Promise<void>;
 }
 
-const MIN_ITEMS = 1
+const MIN_ITEMS = 1;
 /** 每条刻度槽位高度（含间距）— 同时作为 hover 命中区；略密以贴近 Codex 全高轨 */
-const BAR_SLOT = 10
+const BAR_SLOT = 10;
 /** resting 刻度视觉尺寸（命中区固定为 BAR_SLOT，视觉用 transform 放大） */
-const BAR_HEIGHT_BASE = 2.5
-const BAR_WIDTH_BASE = 10
+const BAR_HEIGHT_BASE = 2.5;
+const BAR_WIDTH_BASE = 9;
 /** 测量前的短轨视口回退高度（真正高度由 ResizeObserver 吃满对话列） */
-const RAIL_VIEWPORT_FALLBACK = 20 * BAR_SLOT
+const RAIL_VIEWPORT_FALLBACK = 20 * BAR_SLOT;
 /**
  * Codex 式离散鱼眼：每格相对 resting 的 scale，阶梯式明显缩短（非平滑曲线）。
  * distance 0 = 焦点，4+ = resting。
  */
-const FISHEYE_SCALE_X = [3, 2.05, 1.48, 1.14, 1] as const
+const FISHEYE_SCALE_X = [3, 2.05, 1.48, 1.14, 1] as const;
 /** 轨宽 = 焦点 tick 视觉宽度，避免 scale 后裁切 */
-const RAIL_VISUAL_WIDTH = BAR_WIDTH_BASE * FISHEYE_SCALE_X[0]
+const RAIL_VISUAL_WIDTH = BAR_WIDTH_BASE * FISHEYE_SCALE_X[0];
 /** 刻度轨与 hover 预览之间的留白，避免扫刻度时误触预览抢 hover */
-const PEEK_PANEL_GAP = 12
-const PEEK_PANEL_LEFT = RAIL_VISUAL_WIDTH + PEEK_PANEL_GAP
-const PEEK_PANEL_WIDTH = 260
-const POPOVER_PANEL_LEFT = PEEK_PANEL_LEFT + 4
-const OPEN_BTN_SIZE = 16
-const RAIL_HEAD_OFFSET = 20
+const PEEK_PANEL_GAP = 12;
+const PEEK_PANEL_LEFT = RAIL_VISUAL_WIDTH + PEEK_PANEL_GAP;
+const PEEK_PANEL_WIDTH = 260;
+const POPOVER_PANEL_LEFT = PEEK_PANEL_LEFT + 4;
+const OPEN_BTN_SIZE = 16;
+const RAIL_HEAD_OFFSET = 20;
+const RAIL_TOP_INSET = "0.5rem";
+/* 底部只避让实际运行计时胶囊；弹窗/队列不参与刻度轨坐标。 */
+const RAIL_BOTTOM_INSET = "var(--session-minimap-bottom-inset, 0.5rem)";
 
-const PREVIEW_REMARK_PLUGINS = [remarkGfm]
+const PREVIEW_REMARK_PLUGINS = [remarkGfm];
 
 const PREVIEW_MD_COMPONENTS = {
   pre: ({ children }: { children?: React.ReactNode }) => (
     <pre className="text-[11px] opacity-70 truncate">{children}</pre>
   ),
   code: ({ children }: { children?: React.ReactNode }) => (
-    <code className="text-[11px] bg-muted/50 px-0.5 rounded-md">{children}</code>
+    <code className="text-[11px] bg-muted/50 px-0.5 rounded-md">
+      {children}
+    </code>
   ),
   img: () => null as unknown as React.ReactElement,
   a: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
-} as const
+} as const;
 
 interface NavBar {
-  index: number
-  start: number
-  end: number
-  isVisible: boolean
-  hasUser: boolean
-  hasStatus: boolean
+  index: number;
+  start: number;
+  end: number;
+  isVisible: boolean;
+  hasUser: boolean;
+  hasStatus: boolean;
   /** 该刻度代表的一轮（取组内首条） */
-  turn: MinimapItem | null
+  turn: MinimapItem | null;
 }
 
-function getOffsetTopRelativeTo(node: HTMLElement, container: HTMLElement): number {
-  let top = 0
-  let el: HTMLElement | null = node
+function getOffsetTopRelativeTo(
+  node: HTMLElement,
+  container: HTMLElement,
+): number {
+  let top = 0;
+  let el: HTMLElement | null = node;
   while (el && el !== container) {
-    top += el.offsetTop
-    el = el.offsetParent as HTMLElement | null
+    top += el.offsetTop;
+    el = el.offsetParent as HTMLElement | null;
   }
-  return top
+  return top;
 }
 
 function escapeRegExp(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** 鱼眼：仅横向 scaleX，高度不变；distance ≥ 4 为 resting */
 function fisheyeScale(distance: number): number {
-  if (distance >= FISHEYE_SCALE_X.length - 1) return 1
-  return FISHEYE_SCALE_X[distance] ?? 1
+  if (distance >= FISHEYE_SCALE_X.length - 1) return 1;
+  return FISHEYE_SCALE_X[distance] ?? 1;
 }
 
 export function ScrollMinimap({
@@ -119,444 +132,543 @@ export function ScrollMinimap({
   onShortcutOpen,
   onEnsureMessage,
 }: ScrollMinimapProps): React.ReactElement | null {
-  const { scrollRef, stopScroll, state: stickyState } = useStickToBottomContext()
-  const [panelOpen, setPanelOpen] = React.useState(false)
-  const [isLeaving, setIsLeaving] = React.useState(false)
-  const [peekIndex, setPeekIndex] = React.useState<number | null>(null)
-  const [visibleIds, setVisibleIds] = React.useState<Set<string>>(new Set())
-  const [centerVisibleId, setCenterVisibleId] = React.useState<string | undefined>(undefined)
-  const [canScroll, setCanScroll] = React.useState(false)
-  const [searchQuery, setSearchQuery] = React.useState('')
-  const [isDragging, setIsDragging] = React.useState(false)
-  const [isScrollActive, setIsScrollActive] = React.useState(false)
-  const [isThumbColumnHovered, setIsThumbColumnHovered] = React.useState(false)
+  const {
+    scrollRef,
+    stopScroll,
+    state: stickyState,
+  } = useStickToBottomContext();
+  const [panelOpen, setPanelOpen] = React.useState(false);
+  const [isLeaving, setIsLeaving] = React.useState(false);
+  const [peekIndex, setPeekIndex] = React.useState<number | null>(null);
+  const [visibleIds, setVisibleIds] = React.useState<Set<string>>(new Set());
+  const [centerVisibleId, setCenterVisibleId] = React.useState<
+    string | undefined
+  >(undefined);
+  const [canScroll, setCanScroll] = React.useState(false);
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [isDragging, setIsDragging] = React.useState(false);
+  const [isScrollActive, setIsScrollActive] = React.useState(false);
+  const [isThumbColumnHovered, setIsThumbColumnHovered] = React.useState(false);
   const [scrollMetrics, setScrollMetrics] = React.useState({
     scrollTop: 0,
     scrollHeight: 1,
     clientHeight: 1,
-  })
+  });
 
-  const closeTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
-  const fadeTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
-  const scrollActiveTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
-  const peekClearTimerRef = React.useRef<ReturnType<typeof setTimeout>>()
-  const searchInputRef = React.useRef<HTMLInputElement>(null)
-  const focusSearchOnOpenRef = React.useRef(false)
-  const trackRef = React.useRef<HTMLDivElement>(null)
-  const listRef = React.useRef<HTMLDivElement>(null)
-  const barsViewportRef = React.useRef<HTMLDivElement>(null)
-  const [railScrollTop, setRailScrollTop] = React.useState(0)
-  const [railViewportHeight, setRailViewportHeight] = React.useState(RAIL_VIEWPORT_FALLBACK)
+  const closeTimerRef = React.useRef<ReturnType<typeof setTimeout>>();
+  const fadeTimerRef = React.useRef<ReturnType<typeof setTimeout>>();
+  const scrollActiveTimerRef = React.useRef<ReturnType<typeof setTimeout>>();
+  const peekClearTimerRef = React.useRef<ReturnType<typeof setTimeout>>();
+  const searchInputRef = React.useRef<HTMLInputElement>(null);
+  const focusSearchOnOpenRef = React.useRef(false);
+  const trackRef = React.useRef<HTMLDivElement>(null);
+  const listRef = React.useRef<HTMLDivElement>(null);
+  const barsViewportRef = React.useRef<HTMLDivElement>(null);
+  const railScrollTargetRef = React.useRef(0);
+  const railScrollRafRef = React.useRef<number | null>(null);
+  const [railScrollTop, setRailScrollTop] = React.useState(0);
+  const [railViewportHeight, setRailViewportHeight] = React.useState(
+    RAIL_VIEWPORT_FALLBACK,
+  );
 
   React.useEffect(() => {
     return () => {
-      if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
-      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
-      if (scrollActiveTimerRef.current) clearTimeout(scrollActiveTimerRef.current)
-      if (peekClearTimerRef.current) clearTimeout(peekClearTimerRef.current)
-    }
-  }, [])
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
+      if (scrollActiveTimerRef.current)
+        clearTimeout(scrollActiveTimerRef.current);
+      if (peekClearTimerRef.current) clearTimeout(peekClearTimerRef.current);
+      if (railScrollRafRef.current != null)
+        cancelAnimationFrame(railScrollRafRef.current);
+    };
+  }, []);
 
   const cancelClearPeek = React.useCallback(() => {
-    if (peekClearTimerRef.current) clearTimeout(peekClearTimerRef.current)
-  }, [])
+    if (peekClearTimerRef.current) clearTimeout(peekClearTimerRef.current);
+  }, []);
 
   const scheduleClearPeek = React.useCallback(() => {
-    cancelClearPeek()
-    peekClearTimerRef.current = setTimeout(() => setPeekIndex(null), 140)
-  }, [cancelClearPeek])
+    cancelClearPeek();
+    peekClearTimerRef.current = setTimeout(() => setPeekIndex(null), 140);
+  }, [cancelClearPeek]);
 
   React.useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
+    const el = scrollRef.current;
+    if (!el) return;
 
     const showScrollControls = (): void => {
-      setIsScrollActive(true)
-      if (scrollActiveTimerRef.current) clearTimeout(scrollActiveTimerRef.current)
+      setIsScrollActive(true);
+      if (scrollActiveTimerRef.current)
+        clearTimeout(scrollActiveTimerRef.current);
       scrollActiveTimerRef.current = setTimeout(() => {
-        setIsScrollActive(false)
-      }, 900)
-    }
+        setIsScrollActive(false);
+      }, 900);
+    };
 
     const update = (activate = false): void => {
-      const { scrollTop, scrollHeight, clientHeight } = el
-      setCanScroll(scrollHeight > clientHeight + 10)
-      setScrollMetrics({ scrollTop, scrollHeight, clientHeight })
-      if (activate) showScrollControls()
-      if (scrollHeight <= 0) return
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      setCanScroll(scrollHeight > clientHeight + 10);
+      setScrollMetrics({ scrollTop, scrollHeight, clientHeight });
+      if (activate) showScrollControls();
+      if (scrollHeight <= 0) return;
 
-      const viewportCenter = scrollTop + clientHeight / 2
-      const nodes = el.querySelectorAll<HTMLElement>('[data-message-id]')
-      const ids = new Set<string>()
-      let centerId: string | undefined
+      const viewportCenter = scrollTop + clientHeight / 2;
+      const nodes = el.querySelectorAll<HTMLElement>("[data-message-id]");
+      const ids = new Set<string>();
+      let centerId: string | undefined;
       for (const node of nodes) {
-        const top = getOffsetTopRelativeTo(node, el)
-        const bottom = top + node.offsetHeight
-        const id = node.getAttribute('data-message-id')
+        const top = getOffsetTopRelativeTo(node, el);
+        const bottom = top + node.offsetHeight;
+        const id = node.getAttribute("data-message-id");
         if (bottom > scrollTop && top < scrollTop + clientHeight) {
-          if (id) ids.add(id)
+          if (id) ids.add(id);
         }
-        if (centerId === undefined && top <= viewportCenter && bottom > viewportCenter) {
-          centerId = id ?? undefined
+        if (
+          centerId === undefined &&
+          top <= viewportCenter &&
+          bottom > viewportCenter
+        ) {
+          centerId = id ?? undefined;
         }
       }
-      setVisibleIds(ids)
-      setCenterVisibleId(centerId)
-    }
+      setVisibleIds(ids);
+      setCenterVisibleId(centerId);
+    };
 
-    update()
-    setIsScrollActive(false)
-    const handleScroll = (): void => update(true)
-    el.addEventListener('scroll', handleScroll, { passive: true })
-    el.addEventListener('wheel', showScrollControls, { passive: true })
-    const observer = new ResizeObserver(() => update())
-    observer.observe(el)
+    update();
+    setIsScrollActive(false);
+    const handleScroll = (): void => update(true);
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    el.addEventListener("wheel", showScrollControls, { passive: true });
+    const observer = new ResizeObserver(() => update());
+    observer.observe(el);
 
     return () => {
-      el.removeEventListener('scroll', handleScroll)
-      el.removeEventListener('wheel', showScrollControls)
-      observer.disconnect()
-    }
-  }, [scrollRef])
+      el.removeEventListener("scroll", handleScroll);
+      el.removeEventListener("wheel", showScrollControls);
+      observer.disconnect();
+    };
+  }, [scrollRef]);
 
   React.useEffect(() => {
     if (panelOpen && focusSearchOnOpenRef.current && searchInputRef.current) {
-      focusSearchOnOpenRef.current = false
-      const timer = setTimeout(() => searchInputRef.current?.focus(), 80)
-      return () => clearTimeout(timer)
+      focusSearchOnOpenRef.current = false;
+      const timer = setTimeout(() => searchInputRef.current?.focus(), 80);
+      return () => clearTimeout(timer);
     }
-  }, [panelOpen])
+  }, [panelOpen]);
 
   React.useEffect(() => {
-    if (!panelOpen) return
+    if (!panelOpen) return;
     const timer = setTimeout(() => {
-      const list = listRef.current
-      if (!list) return
-      const target = list.querySelector<HTMLElement>('[data-minimap-visible="true"]')
-      if (!target) return
-      const listRect = list.getBoundingClientRect()
-      const targetRect = target.getBoundingClientRect()
-      const offsetInList = targetRect.top - listRect.top + list.scrollTop
-      const offset = offsetInList - (list.clientHeight - target.offsetHeight) / 2
-      list.scrollTo({ top: Math.max(0, offset), behavior: 'auto' })
-    }, 0)
-    return () => clearTimeout(timer)
-  }, [panelOpen])
+      const list = listRef.current;
+      if (!list) return;
+      const target = list.querySelector<HTMLElement>(
+        '[data-minimap-visible="true"]',
+      );
+      if (!target) return;
+      const listRect = list.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const offsetInList = targetRect.top - listRect.top + list.scrollTop;
+      const offset =
+        offsetInList - (list.clientHeight - target.offsetHeight) / 2;
+      list.scrollTo({ top: Math.max(0, offset), behavior: "auto" });
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [panelOpen]);
 
   React.useEffect(() => {
-    if (!panelOpen) setSearchQuery('')
-  }, [panelOpen])
+    if (!panelOpen) setSearchQuery("");
+  }, [panelOpen]);
 
   const openPanel = React.useCallback(
     (focusSearch = false) => {
-      focusSearchOnOpenRef.current = focusSearch
-      if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
-      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
-      setIsLeaving(false)
-      setPeekIndex(null)
-      setPanelOpen(true)
+      focusSearchOnOpenRef.current = focusSearch;
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
+      setIsLeaving(false);
+      setPeekIndex(null);
+      setPanelOpen(true);
       if (focusSearch && panelOpen) {
-        requestAnimationFrame(() => searchInputRef.current?.focus())
+        requestAnimationFrame(() => searchInputRef.current?.focus());
       }
     },
-    [panelOpen]
-  )
+    [panelOpen],
+  );
 
   const closePanelNow = React.useCallback(() => {
-    if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
-    if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
-    setIsLeaving(false)
-    setPanelOpen(false)
-  }, [])
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
+    setIsLeaving(false);
+    setPanelOpen(false);
+  }, []);
 
   const togglePanel = React.useCallback(() => {
-    if (panelOpen) closePanelNow()
-    else openPanel(false)
-  }, [panelOpen, closePanelNow, openPanel])
+    if (panelOpen) closePanelNow();
+    else openPanel(false);
+  }, [panelOpen, closePanelNow, openPanel]);
 
   const handleShortcutOpen = React.useCallback(
     (focusSearch = false) => {
-      openPanel(focusSearch)
+      openPanel(focusSearch);
     },
-    [openPanel]
-  )
+    [openPanel],
+  );
 
   // 点击面板外关闭（轨顶按钮切换打开时不靠 mouseleave）
   React.useEffect(() => {
-    if (!panelOpen) return
+    if (!panelOpen) return;
     const onPointerDown = (event: PointerEvent): void => {
-      const target = event.target
-      if (!(target instanceof Element)) return
-      if (target.closest('.message-nav-popover, .message-nav-open-btn')) return
-      closePanelNow()
-    }
-    document.addEventListener('pointerdown', onPointerDown, true)
-    return () => document.removeEventListener('pointerdown', onPointerDown, true)
-  }, [panelOpen, closePanelNow])
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest(".message-nav-popover, .message-nav-open-btn")) return;
+      closePanelNow();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () =>
+      document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [panelOpen, closePanelNow]);
 
   React.useEffect(() => {
     if (onShortcutOpen && items.length >= MIN_ITEMS && canScroll) {
       const handler = (e: KeyboardEvent) => {
-        if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
-          e.preventDefault()
-          onShortcutOpen()
-          handleShortcutOpen(true)
+        if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+          e.preventDefault();
+          onShortcutOpen();
+          handleShortcutOpen(true);
         }
-      }
-      document.addEventListener('keydown', handler)
-      return () => document.removeEventListener('keydown', handler)
+      };
+      document.addEventListener("keydown", handler);
+      return () => document.removeEventListener("keydown", handler);
     }
-  }, [onShortcutOpen, items.length, canScroll, handleShortcutOpen])
+  }, [onShortcutOpen, items.length, canScroll, handleShortcutOpen]);
 
   const findMessageNode = React.useCallback(
     (id: string): HTMLElement | undefined => {
-      const el = scrollRef.current
-      if (!el) return undefined
-      return Array.from(el.querySelectorAll<HTMLElement>('[data-message-id]')).find(
-        (node) => node.getAttribute('data-message-id') === id,
-      )
+      const el = scrollRef.current;
+      if (!el) return undefined;
+      return Array.from(
+        el.querySelectorAll<HTMLElement>("[data-message-id]"),
+      ).find((node) => node.getAttribute("data-message-id") === id);
     },
     [scrollRef],
-  )
+  );
 
   const scrollToMessage = React.useCallback(
     async (id: string) => {
-      const el = scrollRef.current
-      if (!el) return
+      const el = scrollRef.current;
+      if (!el) return;
 
-      let target = findMessageNode(id)
+      let target = findMessageNode(id);
       if (!target && onEnsureMessage) {
-        await onEnsureMessage(id)
+        await onEnsureMessage(id);
         for (let attempt = 0; attempt < 24 && !target; attempt += 1) {
           await new Promise<void>((resolve) => {
-            requestAnimationFrame(() => resolve())
-          })
-          target = findMessageNode(id)
+            requestAnimationFrame(() => resolve());
+          });
+          target = findMessageNode(id);
         }
       }
-      if (!target) return
+      if (!target) return;
 
-      stopScroll()
-      stickyState.animation = undefined
-      stickyState.velocity = 0
-      stickyState.accumulated = 0
-      const offsetTop = getOffsetTopRelativeTo(target, el)
-      const targetHeight = target.offsetHeight
-      const viewportHeight = el.clientHeight
+      stopScroll();
+      stickyState.animation = undefined;
+      stickyState.velocity = 0;
+      stickyState.accumulated = 0;
+      const offsetTop = getOffsetTopRelativeTo(target, el);
+      const targetHeight = target.offsetHeight;
+      const viewportHeight = el.clientHeight;
       const scrollTarget =
         targetHeight < viewportHeight
           ? offsetTop - (viewportHeight - targetHeight) / 2
-          : offsetTop - 32
-      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+          : offsetTop - 32;
+      const reducedMotion =
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ??
+        false;
       el.scrollTo({
         top: Math.max(0, scrollTarget),
-        behavior: reducedMotion ? 'auto' : 'smooth',
-      })
-      setPanelOpen(false)
-      setPeekIndex(null)
+        behavior: reducedMotion ? "auto" : "smooth",
+      });
+      setPanelOpen(false);
+      setPeekIndex(null);
     },
     [scrollRef, stopScroll, stickyState, findMessageNode, onEnsureMessage],
-  )
+  );
 
   const scrollToGroup = React.useCallback(
     (start: number) => {
-      const item = items[start]
-      if (item) void scrollToMessage(item.id)
+      const item = items[start];
+      if (item) void scrollToMessage(item.id);
     },
     [items, scrollToMessage],
-  )
+  );
 
   const filteredItems = React.useMemo(() => {
-    if (!searchQuery.trim()) return items
-    const q = searchQuery.toLowerCase()
+    if (!searchQuery.trim()) return items;
+    const q = searchQuery.toLowerCase();
     return items.filter(
       (item) =>
         item.preview.toLowerCase().includes(q) ||
         (item.replyPreview?.toLowerCase().includes(q) ?? false) ||
-        (item.attachments?.some((a) => a.name.toLowerCase().includes(q)) ?? false)
-    )
-  }, [items, searchQuery])
+        (item.attachments?.some((a) => a.name.toLowerCase().includes(q)) ??
+          false),
+    );
+  }, [items, searchQuery]);
 
   const anchorId = React.useMemo(() => {
-    if (centerVisibleId && filteredItems.some((item) => item.id === centerVisibleId)) {
-      return centerVisibleId
+    if (
+      centerVisibleId &&
+      filteredItems.some((item) => item.id === centerVisibleId)
+    ) {
+      return centerVisibleId;
     }
-    return filteredItems.find((item) => visibleIds.has(item.id))?.id
-  }, [centerVisibleId, filteredItems, visibleIds])
+    return filteredItems.find((item) => visibleIds.has(item.id))?.id;
+  }, [centerVisibleId, filteredItems, visibleIds]);
 
   const handleThumbMouseDown = React.useCallback(
     (e: React.MouseEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      const el = scrollRef.current
-      const track = trackRef.current
-      if (!el || !track) return
-      stopScroll()
-      stickyState.animation = undefined
-      stickyState.velocity = 0
-      stickyState.accumulated = 0
-      setIsDragging(true)
-      const startY = e.clientY
-      const startScrollTop = el.scrollTop
-      const trackHeight = track.clientHeight
-      const { scrollHeight, clientHeight } = el
-      const scrollRange = scrollHeight - clientHeight
-      const thumbHeight = Math.max(trackHeight * 0.1, (clientHeight / scrollHeight) * trackHeight)
-      const scrollableTrack = trackHeight - thumbHeight
+      e.preventDefault();
+      e.stopPropagation();
+      const el = scrollRef.current;
+      const track = trackRef.current;
+      if (!el || !track) return;
+      stopScroll();
+      stickyState.animation = undefined;
+      stickyState.velocity = 0;
+      stickyState.accumulated = 0;
+      setIsDragging(true);
+      const startY = e.clientY;
+      const startScrollTop = el.scrollTop;
+      const trackHeight = track.clientHeight;
+      const { scrollHeight, clientHeight } = el;
+      const scrollRange = scrollHeight - clientHeight;
+      const thumbHeight = Math.max(
+        trackHeight * 0.1,
+        (clientHeight / scrollHeight) * trackHeight,
+      );
+      const scrollableTrack = trackHeight - thumbHeight;
       const onMouseMove = (ev: MouseEvent): void => {
-        ev.preventDefault()
-        const delta = ev.clientY - startY
-        const scrollDelta = scrollableTrack > 0 ? (delta / scrollableTrack) * scrollRange : 0
-        el.scrollTop = Math.max(0, Math.min(scrollRange, startScrollTop + scrollDelta))
-      }
+        ev.preventDefault();
+        const delta = ev.clientY - startY;
+        const scrollDelta =
+          scrollableTrack > 0 ? (delta / scrollableTrack) * scrollRange : 0;
+        el.scrollTop = Math.max(
+          0,
+          Math.min(scrollRange, startScrollTop + scrollDelta),
+        );
+      };
       const onMouseUp = (): void => {
-        setIsDragging(false)
-        document.removeEventListener('mousemove', onMouseMove)
-        document.removeEventListener('mouseup', onMouseUp)
-        document.body.style.userSelect = ''
-        document.body.style.cursor = ''
-      }
-      document.body.style.userSelect = 'none'
-      document.body.style.cursor = 'grabbing'
-      document.addEventListener('mousemove', onMouseMove)
-      document.addEventListener('mouseup', onMouseUp)
+        setIsDragging(false);
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+      };
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "grabbing";
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
     },
-    [scrollRef, stopScroll, stickyState]
-  )
+    [scrollRef, stopScroll, stickyState],
+  );
 
   const handleTrackMouseDown = React.useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      if (e.target !== e.currentTarget) return
-      const track = trackRef.current
-      const el = scrollRef.current
-      if (!track || !el) return
-      stopScroll()
-      stickyState.animation = undefined
-      stickyState.velocity = 0
-      stickyState.accumulated = 0
-      const rect = track.getBoundingClientRect()
-      const clickRatio = (e.clientY - rect.top) / rect.height
-      const { scrollHeight, clientHeight } = el
-      const targetTop = clickRatio * (scrollHeight - clientHeight)
-      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+      if (e.target !== e.currentTarget) return;
+      const track = trackRef.current;
+      const el = scrollRef.current;
+      if (!track || !el) return;
+      stopScroll();
+      stickyState.animation = undefined;
+      stickyState.velocity = 0;
+      stickyState.accumulated = 0;
+      const rect = track.getBoundingClientRect();
+      const clickRatio = (e.clientY - rect.top) / rect.height;
+      const { scrollHeight, clientHeight } = el;
+      const targetTop = clickRatio * (scrollHeight - clientHeight);
+      const reducedMotion =
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ??
+        false;
       el.scrollTo({
         top: Math.max(0, targetTop),
-        behavior: reducedMotion ? 'auto' : 'smooth',
-      })
+        behavior: reducedMotion ? "auto" : "smooth",
+      });
     },
-    [scrollRef, stopScroll, stickyState]
-  )
+    [scrollRef, stopScroll, stickyState],
+  );
 
   // 一轮一刻度；短轨只是视口，滚轮可翻完整列表（对齐 Codex）
   const bars = React.useMemo((): NavBar[] => {
-    if (items.length < MIN_ITEMS) return []
+    if (items.length < MIN_ITEMS) return [];
     return items.map((item, i) => ({
       index: i,
       start: i,
       end: i + 1,
       isVisible: visibleIds.has(item.id),
-      hasUser: item.role === 'user',
-      hasStatus: item.role === 'status',
+      hasUser: item.role === "user",
+      hasStatus: item.role === "status",
       turn: item,
-    }))
-  }, [items, visibleIds])
+    }));
+  }, [items, visibleIds]);
 
-  const railContentHeight = bars.length * BAR_SLOT
+  const railContentHeight = bars.length * BAR_SLOT;
   // 视口高度由 ResizeObserver 实测；内容更高才启用轨内滚动
-  const railScrollable = railContentHeight > railViewportHeight + 1
+  const railScrollable = railContentHeight > railViewportHeight + 1;
+  const railMaxScroll = Math.max(0, railContentHeight - railViewportHeight);
+  const railHasMoreAbove = railScrollable && railScrollTop > 1;
+  const railHasMoreBelow = railScrollable && railScrollTop < railMaxScroll - 1;
+
+  const animateRailTo = React.useCallback((nextTop: number) => {
+    const viewport = barsViewportRef.current;
+    if (!viewport) return;
+    const maxScroll = Math.max(
+      0,
+      viewport.scrollHeight - viewport.clientHeight,
+    );
+    const target = Math.max(0, Math.min(maxScroll, nextTop));
+    railScrollTargetRef.current = target;
+    const reducedMotion =
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    if (reducedMotion) {
+      if (railScrollRafRef.current != null) {
+        cancelAnimationFrame(railScrollRafRef.current);
+        railScrollRafRef.current = null;
+      }
+      viewport.scrollTop = target;
+      setRailScrollTop(target);
+      return;
+    }
+    if (railScrollRafRef.current != null) return;
+
+    const step = (): void => {
+      const current = viewport.scrollTop;
+      const target = railScrollTargetRef.current;
+      const delta = target - current;
+      if (Math.abs(delta) < 0.35) {
+        viewport.scrollTop = target;
+        setRailScrollTop(target);
+        railScrollRafRef.current = null;
+        return;
+      }
+      viewport.scrollTop = current + delta * 0.22;
+      setRailScrollTop(viewport.scrollTop);
+      railScrollRafRef.current = requestAnimationFrame(step);
+    };
+    railScrollRafRef.current = requestAnimationFrame(step);
+  }, []);
 
   // 短轨吃满对话列剩余高度（对齐 Codex 近全高轨）
   React.useEffect(() => {
-    const viewport = barsViewportRef.current
-    if (!viewport || typeof ResizeObserver === 'undefined') return
+    const viewport = barsViewportRef.current;
+    if (!viewport || typeof ResizeObserver === "undefined") return;
     const measure = (): void => {
-      const next = viewport.clientHeight
-      if (next > 0) setRailViewportHeight(next)
-    }
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(viewport)
-    return () => ro.disconnect()
-  }, [canScroll, items.length])
+      const next = viewport.clientHeight;
+      if (next > 0) setRailViewportHeight(next);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(viewport);
+    return () => ro.disconnect();
+  }, [canScroll, items.length]);
 
   // 会话滚动时，把当前锚点刻度滚进短轨视口中央
   React.useEffect(() => {
-    const viewport = barsViewportRef.current
-    if (!viewport || !railScrollable) return
+    const viewport = barsViewportRef.current;
+    if (!viewport || !railScrollable) return;
     const idx =
-      anchorId != null ? items.findIndex((item) => item.id === anchorId) : -1
-    if (idx < 0) return
-    const maxScroll = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+      anchorId != null ? items.findIndex((item) => item.id === anchorId) : -1;
+    if (idx < 0) return;
+    const maxScroll = Math.max(
+      0,
+      viewport.scrollHeight - viewport.clientHeight,
+    );
     const next = Math.max(
       0,
-      Math.min(maxScroll, idx * BAR_SLOT - (viewport.clientHeight - BAR_SLOT) / 2),
-    )
-    if (Math.abs(viewport.scrollTop - next) < 2) return
-    viewport.scrollTop = next
-    setRailScrollTop(next)
-  }, [anchorId, items, railScrollable, bars.length, railViewportHeight])
+      Math.min(
+        maxScroll,
+        idx * BAR_SLOT - (viewport.clientHeight - BAR_SLOT) / 2,
+      ),
+    );
+    if (Math.abs(viewport.scrollTop - next) < 2) return;
+    animateRailTo(next);
+  }, [
+    anchorId,
+    items,
+    railScrollable,
+    bars.length,
+    railViewportHeight,
+    animateRailTo,
+  ]);
 
   // wheel 需非 passive，才能在悬停短轨时拦下并只滚刻度
   React.useEffect(() => {
-    const viewport = barsViewportRef.current
-    if (!viewport || !railScrollable) return
+    const viewport = barsViewportRef.current;
+    if (!viewport || !railScrollable) return;
     const onWheel = (event: WheelEvent): void => {
-      event.preventDefault()
-      event.stopPropagation()
-      viewport.scrollTop += event.deltaY
-      setRailScrollTop(viewport.scrollTop)
-    }
-    viewport.addEventListener('wheel', onWheel, { passive: false })
-    return () => viewport.removeEventListener('wheel', onWheel)
-  }, [railScrollable, bars.length])
+      event.preventDefault();
+      event.stopPropagation();
+      animateRailTo(railScrollTargetRef.current + event.deltaY);
+    };
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", onWheel);
+  }, [railScrollable, bars.length, animateRailTo]);
 
-  if (items.length < MIN_ITEMS || !canScroll) return null
+  if (items.length < MIN_ITEMS || !canScroll) return null;
 
-  const { scrollTop, scrollHeight, clientHeight } = scrollMetrics
-  const scrollRange = scrollHeight - clientHeight
-  const thumbRatio = scrollHeight > 0 ? Math.min(clientHeight / scrollHeight, 1) : 1
-  const thumbHeightPct = Math.max(10, thumbRatio * 100)
-  const thumbTopPct = scrollRange > 0 ? (scrollTop / scrollRange) * (100 - thumbHeightPct) : 0
-  const thumbVisible = panelOpen || isDragging || isScrollActive || isThumbColumnHovered
+  const { scrollTop, scrollHeight, clientHeight } = scrollMetrics;
+  const scrollRange = scrollHeight - clientHeight;
+  const thumbRatio =
+    scrollHeight > 0 ? Math.min(clientHeight / scrollHeight, 1) : 1;
+  const thumbHeightPct = Math.max(10, thumbRatio * 100);
+  const thumbTopPct =
+    scrollRange > 0 ? (scrollTop / scrollRange) * (100 - thumbHeightPct) : 0;
+  const thumbVisible =
+    panelOpen || isDragging || isScrollActive || isThumbColumnHovered;
 
-  const peekBar = peekIndex !== null ? (bars[peekIndex] ?? null) : null
-  const peekItem = peekBar?.turn ?? null
+  const peekBar = peekIndex !== null ? (bars[peekIndex] ?? null) : null;
+  const peekItem = peekBar?.turn ?? null;
   // peek 相对短轨视口定位（扣掉轨内 scrollTop）
   const peekTop = peekBar
     ? RAIL_HEAD_OFFSET + Math.max(0, peekBar.index * BAR_SLOT - railScrollTop)
-    : 0
+    : 0;
 
-  const handleTrackKeyDown = (event: React.KeyboardEvent<HTMLDivElement>): void => {
-    const el = scrollRef.current
-    if (!el) return
-    const page = Math.max(40, el.clientHeight * 0.82)
-    let next = el.scrollTop
-    if (event.key === 'ArrowUp') next -= 48
-    else if (event.key === 'ArrowDown') next += 48
-    else if (event.key === 'PageUp') next -= page
-    else if (event.key === 'PageDown') next += page
-    else if (event.key === 'Home') next = 0
-    else if (event.key === 'End') next = scrollRange
-    else return
-    event.preventDefault()
-    stopScroll()
-    el.scrollTo({ top: Math.max(0, Math.min(scrollRange, next)), behavior: 'auto' })
-  }
+  const handleTrackKeyDown = (
+    event: React.KeyboardEvent<HTMLDivElement>,
+  ): void => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const page = Math.max(40, el.clientHeight * 0.82);
+    let next = el.scrollTop;
+    if (event.key === "ArrowUp") next -= 48;
+    else if (event.key === "ArrowDown") next += 48;
+    else if (event.key === "PageUp") next -= page;
+    else if (event.key === "PageDown") next += page;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = scrollRange;
+    else return;
+    event.preventDefault();
+    stopScroll();
+    el.scrollTo({
+      top: Math.max(0, Math.min(scrollRange, next)),
+      behavior: "auto",
+    });
+  };
 
   return (
     <div className="message-nav-shell pointer-events-none absolute inset-0 z-30">
       {/* 左侧刻度：近全高短轨 + 轨内可滚完整刻度（对齐 Codex） */}
       <div
-        className="message-nav-rail absolute left-2.5 top-2 flex w-8 flex-col items-center pointer-events-none"
+        className="message-nav-rail absolute left-1.5 flex w-8 flex-col items-center pointer-events-none"
         style={{
-          // 抬过输入/底栏，避免刻度扎进 composer
-          bottom: 'max(6.5rem, calc(var(--session-composer-top, 11rem) + 10px))',
+          // 上下收窄，给运行胶囊和输入区留出稳定呼吸空间
+          top: RAIL_TOP_INSET,
+          bottom: RAIL_BOTTOM_INSET,
         }}
         onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            setPanelOpen(false)
-            setIsLeaving(false)
-            setPeekIndex(null)
+          if (event.key === "Escape") {
+            setPanelOpen(false);
+            setIsLeaving(false);
+            setPeekIndex(null);
           }
         }}
       >
@@ -570,10 +682,11 @@ export function ScrollMinimap({
               <button
                 type="button"
                 className={cn(
-                  'message-nav-open-btn mb-1 flex shrink-0 items-center justify-center rounded-full border-0',
-                  'text-foreground/50 transition-colors duration-150',
-                  'hover:bg-foreground/[0.06] hover:text-foreground/80',
-                  panelOpen && 'message-nav-open-btn--active bg-primary/10 text-primary'
+                  "message-nav-open-btn mb-1 flex shrink-0 items-center justify-center rounded-full border-0",
+                  "text-foreground/50 transition-colors duration-150",
+                  "hover:bg-foreground/[0.06] hover:text-foreground/80",
+                  panelOpen &&
+                    "message-nav-open-btn--active bg-primary/10 text-primary",
                 )}
                 style={{
                   width: OPEN_BTN_SIZE,
@@ -583,8 +696,8 @@ export function ScrollMinimap({
                 aria-label="消息导航"
                 aria-pressed={panelOpen}
                 onClick={(event) => {
-                  event.stopPropagation()
-                  togglePanel()
+                  event.stopPropagation();
+                  togglePanel();
                 }}
               >
                 <ListTree size={10} strokeWidth={1.75} aria-hidden />
@@ -600,19 +713,26 @@ export function ScrollMinimap({
           {panelOpen && (
             <div
               className={cn(
-                'message-nav-float message-nav-popover session-glass-popover absolute top-0 z-20 w-[300px] flex flex-col overflow-hidden pointer-events-auto',
-                isLeaving ? 'message-nav-popover-exit' : 'message-nav-popover-enter'
+                "message-nav-float message-nav-popover session-glass-popover absolute top-0 z-20 w-[300px] flex flex-col overflow-hidden pointer-events-auto",
+                isLeaving
+                  ? "message-nav-popover-exit"
+                  : "message-nav-popover-enter",
               )}
-              style={{ left: POPOVER_PANEL_LEFT, maxHeight: 'min(460px, 64vh)' }}
+              style={{
+                left: POPOVER_PANEL_LEFT,
+                maxHeight: "min(460px, 64vh)",
+              }}
               onMouseEnter={() => {
-                if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
-                if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
-                setIsLeaving(false)
+                if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+                if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
+                setIsLeaving(false);
               }}
             >
               <div className="message-nav-popover-header relative z-10 shrink-0 px-3 pt-2.5 pb-2">
                 <div className="flex items-center justify-between gap-2 mb-2">
-                  <span className="text-[11px] font-medium tracking-wide">消息导航</span>
+                  <span className="text-[11px] font-medium tracking-wide">
+                    消息导航
+                  </span>
                   <span className="text-[11px] text-muted-foreground tabular-nums">
                     {visibleIds.size} / {items.length}
                   </span>
@@ -626,9 +746,11 @@ export function ScrollMinimap({
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onFocus={() => {
-                    if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
-                    if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
-                    setIsLeaving(false)
+                    if (closeTimerRef.current)
+                      clearTimeout(closeTimerRef.current);
+                    if (fadeTimerRef.current)
+                      clearTimeout(fadeTimerRef.current);
+                    setIsLeaving(false);
                   }}
                 />
               </div>
@@ -638,17 +760,19 @@ export function ScrollMinimap({
                 className="message-nav-popover-list overflow-y-auto flex-1 px-2.5 pb-2.5 pt-0.5 scrollbar-thin"
               >
                 {filteredItems.length === 0 ? (
-                  <div className="py-10 text-center text-[11px] md-text-faint">未找到匹配消息</div>
+                  <div className="py-10 text-center text-[11px] md-text-faint">
+                    未找到匹配消息
+                  </div>
                 ) : (
                   <div className="flex flex-col gap-1.5">
                     {filteredItems.map((item) => {
-                      const isAnchor = item.id === anchorId
-                      const isInView = visibleIds.has(item.id)
-                      const isStatus = item.role === 'status'
+                      const isAnchor = item.id === anchorId;
+                      const isInView = visibleIds.has(item.id);
+                      const isStatus = item.role === "status";
                       return (
                         <div
                           key={item.id}
-                          data-minimap-visible={isAnchor ? 'true' : undefined}
+                          data-minimap-visible={isAnchor ? "true" : undefined}
                           className="flex flex-col gap-1"
                         >
                           {/* 用户：右对齐 */}
@@ -659,13 +783,18 @@ export function ScrollMinimap({
                           >
                             <span
                               className={cn(
-                                'message-nav-bubble message-nav-bubble-user max-w-[88%] px-2.5 py-1.5 text-left transition-[background,box-shadow,filter] duration-150',
-                                isStatus && 'message-nav-bubble-status',
-                                isAnchor && 'message-nav-bubble-anchor',
-                                !isAnchor && isInView && 'message-nav-bubble-inview'
+                                "message-nav-bubble message-nav-bubble-user max-w-[88%] px-2.5 py-1.5 text-left transition-[background,box-shadow,filter] duration-150",
+                                isStatus && "message-nav-bubble-status",
+                                isAnchor && "message-nav-bubble-anchor",
+                                !isAnchor &&
+                                  isInView &&
+                                  "message-nav-bubble-inview",
                               )}
                             >
-                              <HighlightedPreview text={item.preview} query={searchQuery} />
+                              <HighlightedPreview
+                                text={item.preview}
+                                query={searchQuery}
+                              />
                             </span>
                           </button>
                           {/* 助手：左对齐（有回复时） */}
@@ -677,17 +806,22 @@ export function ScrollMinimap({
                             >
                               <span
                                 className={cn(
-                                  'message-nav-bubble message-nav-bubble-assistant max-w-[88%] px-2.5 py-1.5 text-left transition-[background,box-shadow,filter] duration-150',
-                                  isAnchor && 'message-nav-bubble-anchor',
-                                  !isAnchor && isInView && 'message-nav-bubble-inview'
+                                  "message-nav-bubble message-nav-bubble-assistant max-w-[88%] px-2.5 py-1.5 text-left transition-[background,box-shadow,filter] duration-150",
+                                  isAnchor && "message-nav-bubble-anchor",
+                                  !isAnchor &&
+                                    isInView &&
+                                    "message-nav-bubble-inview",
                                 )}
                               >
-                                <HighlightedPreview text={item.replyPreview} query={searchQuery} />
+                                <HighlightedPreview
+                                  text={item.replyPreview}
+                                  query={searchQuery}
+                                />
                               </span>
                             </button>
                           ) : null}
                         </div>
-                      )
+                      );
                     })}
                   </div>
                 )}
@@ -738,23 +872,26 @@ export function ScrollMinimap({
           <div
             ref={barsViewportRef}
             className={cn(
-              'message-nav-bars-viewport relative min-h-0 flex-1',
-              railScrollable && 'message-nav-bars-viewport--scrollable',
+              "message-nav-bars-viewport relative min-h-0 flex-1",
+              railScrollable && "message-nav-bars-viewport--scrollable",
             )}
             style={{ width: RAIL_VISUAL_WIDTH }}
             onScroll={(event) => {
-              setRailScrollTop(event.currentTarget.scrollTop)
+              const next = event.currentTarget.scrollTop;
+              railScrollTargetRef.current = next;
+              setRailScrollTop(next);
             }}
             onPointerEnter={cancelClearPeek}
             onPointerMove={(event) => {
-              cancelClearPeek()
-              const rect = event.currentTarget.getBoundingClientRect()
-              const y = event.clientY - rect.top + event.currentTarget.scrollTop
+              cancelClearPeek();
+              const rect = event.currentTarget.getBoundingClientRect();
+              const y =
+                event.clientY - rect.top + event.currentTarget.scrollTop;
               const index = Math.min(
                 bars.length - 1,
                 Math.max(0, Math.floor(y / BAR_SLOT)),
-              )
-              setPeekIndex((prev) => (prev === index ? prev : index))
+              );
+              setPeekIndex((prev) => (prev === index ? prev : index));
             }}
             onPointerLeave={scheduleClearPeek}
           >
@@ -763,17 +900,18 @@ export function ScrollMinimap({
               style={{ width: RAIL_VISUAL_WIDTH, height: railContentHeight }}
             >
               {bars.map((bar) => {
-                const distance = peekIndex === null ? 99 : Math.abs(bar.index - peekIndex)
-                const scaleX = fisheyeScale(distance)
-                const focused = distance === 0
+                const distance =
+                  peekIndex === null ? 99 : Math.abs(bar.index - peekIndex);
+                const scaleX = fisheyeScale(distance);
+                const focused = distance === 0;
                 return (
                   <button
                     key={bar.turn?.id ?? bar.index}
                     type="button"
                     aria-label={`跳转到第 ${bar.index + 1} 轮`}
                     className={cn(
-                      'message-nav-bar-slot absolute left-0 border-0 bg-transparent p-0 cursor-pointer',
-                      focused && 'message-nav-bar-slot--focused',
+                      "message-nav-bar-slot absolute left-0 border-0 bg-transparent p-0 cursor-pointer",
+                      focused && "message-nav-bar-slot--focused",
                     )}
                     style={{
                       top: bar.index * BAR_SLOT,
@@ -784,12 +922,20 @@ export function ScrollMinimap({
                   >
                     <span
                       className={cn(
-                        'message-nav-bar',
-                        bar.isVisible && 'message-nav-bar-visible',
-                        bar.hasStatus && !bar.isVisible && 'message-nav-bar-status',
-                        bar.hasUser && !bar.isVisible && !bar.hasStatus && 'message-nav-bar-user',
-                        !bar.isVisible && !bar.hasUser && !bar.hasStatus && 'message-nav-bar-assistant',
-                        focused && 'message-nav-bar-focused',
+                        "message-nav-bar",
+                        bar.isVisible && "message-nav-bar-visible",
+                        bar.hasStatus &&
+                          !bar.isVisible &&
+                          "message-nav-bar-status",
+                        bar.hasUser &&
+                          !bar.isVisible &&
+                          !bar.hasStatus &&
+                          "message-nav-bar-user",
+                        !bar.isVisible &&
+                          !bar.hasUser &&
+                          !bar.hasStatus &&
+                          "message-nav-bar-assistant",
+                        focused && "message-nav-bar-focused",
                       )}
                       style={{
                         width: BAR_WIDTH_BASE,
@@ -798,9 +944,19 @@ export function ScrollMinimap({
                       }}
                     />
                   </button>
-                )
+                );
               })}
             </div>
+            <div
+              className="message-nav-edge-fade message-nav-edge-fade--top"
+              data-visible={railHasMoreAbove ? "true" : "false"}
+              aria-hidden="true"
+            />
+            <div
+              className="message-nav-edge-fade message-nav-edge-fade--bottom"
+              data-visible={railHasMoreBelow ? "true" : "false"}
+              aria-hidden="true"
+            />
           </div>
         </div>
       </div>
@@ -808,8 +964,8 @@ export function ScrollMinimap({
       {/* 右侧滚动 thumb */}
       <div
         className={cn(
-          'message-nav-scroll absolute right-0 top-0 bottom-0 flex justify-end py-1 pr-px pointer-events-auto transition-opacity duration-200',
-          thumbVisible ? 'opacity-100' : 'opacity-0'
+          "message-nav-scroll absolute right-0 top-0 bottom-0 flex justify-end py-1 pr-px pointer-events-auto transition-opacity duration-200",
+          thumbVisible ? "opacity-100" : "opacity-0",
         )}
         style={{ width: 10 }}
         onMouseEnter={() => setIsThumbColumnHovered(true)}
@@ -830,12 +986,12 @@ export function ScrollMinimap({
         >
           <div
             className={cn(
-              'absolute left-0 right-0 rounded-full transition-colors duration-100 scroll-progress-thumb',
+              "absolute left-0 right-0 rounded-full transition-colors duration-100 scroll-progress-thumb",
               isDragging
-                ? 'scroll-progress-thumb-active cursor-grabbing'
+                ? "scroll-progress-thumb-active cursor-grabbing"
                 : thumbVisible
-                  ? 'scroll-progress-thumb-visible cursor-grab'
-                  : 'cursor-grab'
+                  ? "scroll-progress-thumb-visible cursor-grab"
+                  : "cursor-grab",
             )}
             style={{
               height: `${thumbHeightPct}%`,
@@ -846,7 +1002,7 @@ export function ScrollMinimap({
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 function HighlightedPreview({
@@ -854,42 +1010,54 @@ function HighlightedPreview({
   query,
   className,
 }: {
-  text: string
-  query: string
-  className?: string
+  text: string;
+  query: string;
+  className?: string;
 }): React.ReactElement {
   if (!text) {
-    return <span className={cn('text-[11px] leading-4 md-text-faint', className)}>(空消息)</span>
+    return (
+      <span className={cn("text-[11px] leading-4 md-text-faint", className)}>
+        (空消息)
+      </span>
+    );
   }
 
   if (query.trim()) {
-    const escaped = escapeRegExp(query)
-    const parts = text.split(new RegExp(`(${escaped})`, 'gi'))
+    const escaped = escapeRegExp(query);
+    const parts = text.split(new RegExp(`(${escaped})`, "gi"));
     return (
-      <span className={cn('text-[11px] leading-4 md-text line-clamp-2', className)}>
+      <span
+        className={cn("text-[11px] leading-4 md-text line-clamp-2", className)}
+      >
         {parts.map((part, i) =>
           part.toLowerCase() === query.toLowerCase() ? (
-            <mark key={i} className="bg-primary/15 text-primary rounded-sm px-0.5">
+            <mark
+              key={i}
+              className="bg-primary/15 text-primary rounded-sm px-0.5"
+            >
               {part}
             </mark>
           ) : (
             part
-          )
+          ),
         )}
       </span>
-    )
+    );
   }
 
   return (
     <div
       className={cn(
-        'prose prose-sm dark:prose-invert max-w-none text-[11px] leading-4 md-text-variant prose-p:my-0 prose-headings:my-0.5 prose-headings:text-[11px] prose-li:my-0 prose-pre:my-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 overflow-hidden',
-        className ?? 'line-clamp-2',
+        "prose prose-sm dark:prose-invert max-w-none text-[11px] leading-4 md-text-variant prose-p:my-0 prose-headings:my-0.5 prose-headings:text-[11px] prose-li:my-0 prose-pre:my-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 overflow-hidden",
+        className ?? "line-clamp-2",
       )}
     >
-      <Markdown remarkPlugins={PREVIEW_REMARK_PLUGINS} components={PREVIEW_MD_COMPONENTS}>
+      <Markdown
+        remarkPlugins={PREVIEW_REMARK_PLUGINS}
+        components={PREVIEW_MD_COMPONENTS}
+      >
         {text}
       </Markdown>
     </div>
-  )
+  );
 }

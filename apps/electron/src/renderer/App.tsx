@@ -131,6 +131,7 @@ import { useGlobalPermissionSync } from './hooks/useGlobalPermissionSync'
 import { useAskUserSync } from './hooks/useAskUserSync'
 import { useExitPlanSync } from './hooks/useExitPlanSync'
 import { useInitUpdaterListener } from './atoms/updater'
+import { useSplitSuggestion } from './hooks/useSplitSuggestion'
 import { acknowledgeSessionStatusAtom } from './atoms/session-status-atoms'
 import { sessionRunMapAtom } from './atoms/session-run-atoms'
 
@@ -611,6 +612,8 @@ export function App(): JSX.Element {
   useExitPlanSync()
   // 自动更新状态监听（主进程推送 → atom → 顶栏 UpdateBanner）
   useInitUpdaterListener()
+  // 非分屏模式下频繁切换两个会话 → 建议开启分屏
+  useSplitSuggestion()
 
   // Phase 2：全局 Nudge → 按设置：顶栏 ticker / 面板 toast
   useEffect(() => {

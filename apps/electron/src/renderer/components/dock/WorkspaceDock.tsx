@@ -32,6 +32,7 @@ import {
   collectVisibleSessions,
   crewOpenRequestAtom,
   crewPanelOpenMapAtom,
+  splitSessionsRequestAtom,
 } from '../../atoms/dock-api'
 import { filePreviewRequestAtom } from '../../atoms/file-preview'
 import { richPreviewRequestAtom } from '../../atoms/rich-preview'
@@ -186,6 +187,8 @@ export function WorkspaceDock(): JSX.Element {
   const setRichPreviewRequest = useSetAtom(richPreviewRequestAtom)
   const browserOpenRequest = useAtomValue(browserOpenRequestAtom)
   const setBrowserOpenRequest = useSetAtom(browserOpenRequestAtom)
+  const splitSessionsRequest = useAtomValue(splitSessionsRequestAtom)
+  const setSplitSessionsRequest = useSetAtom(splitSessionsRequestAtom)
 
   const apiRef = useRef<DockviewApi | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -548,6 +551,41 @@ export function WorkspaceDock(): JSX.Element {
     })
     setBrowserOpenRequest(null)
   }, [apiReady, browserOpenRequest, setBrowserOpenRequest])
+
+  // 分屏建议请求：非分屏模式下检测到频繁切换，用户点击「开启分屏」后，
+  // 把两个会话左右并排展示。
+  useEffect(() => {
+    const api = apiRef.current
+    if (!api || !apiReady || !splitSessionsRequest) return
+
+    const frame = requestAnimationFrame(() => {
+      const { leftSessionId, rightSessionId } = splitSessionsRequest
+      const leftPanel = api.getPanel(leftSessionId)
+      const rightPanel = api.getPanel(rightSessionId)
+      if (!leftPanel || !rightPanel) {
+        setSplitSessionsRequest(null)
+        return
+      }
+
+      // 如果两个 panel 已在不同 group，只确保焦点在左
+      if (leftPanel.api.group !== rightPanel.api.group) {
+        leftPanel.api.setActive?.()
+        setSplitSessionsRequest(null)
+        return
+      }
+
+      // 在 leftPanel 的右侧新建 group，把 rightPanel 移过去
+      const newGroup = api.addGroup({
+        referenceGroup: leftPanel.api.group.id,
+        direction: 'right',
+      })
+      rightPanel.api.moveTo({ group: newGroup, position: 'center' })
+      leftPanel.api.setActive?.()
+      setSplitSessionsRequest(null)
+    })
+
+    return () => cancelAnimationFrame(frame)
+  }, [apiReady, splitSessionsRequest, setSplitSessionsRequest])
 
   const handleReady = (e: { api: DockviewApi }): void => {
     apiRef.current = e.api

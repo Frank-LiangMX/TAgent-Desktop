@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import type { CliWorkerEntry, CliWorkersConfig, CliWorkersProbeResult, CliWorkerProbeItem } from '@tagent/shared'
 import { listCliWorkersConfig } from '../cli-workers-service'
+import { resolveKsccPath } from '../../adapters/claude/kscc-path'
 import { resolveBinOnPath } from './resolve-bin-on-path'
 
 /** 非 Windows：which / command -v 解析 bare 名 */
@@ -32,6 +33,13 @@ function resolveBinUnix(bareName: string): string | null {
 export function resolveWorkerBin(bin: string): string | null {
   if (!bin?.trim()) return null
   const b = bin.trim()
+  // macOS GUI apps do not inherit the user's login-shell PATH.  kscc has a
+  // dedicated resolver that checks zsh/bash login environments and common
+  // package-manager locations, so keep worker discovery consistent with the
+  // channel/runtime resolver.
+  if (process.platform === 'darwin' && b === 'kscc') {
+    return resolveKsccPath() ?? null
+  }
   if (process.platform === 'win32') {
     return resolveBinOnPath(b)
   }

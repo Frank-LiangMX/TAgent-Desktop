@@ -5,6 +5,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   resolveBinOnPath: vi.fn(),
+  resolveKsccPath: vi.fn(),
   listCliWorkersConfig: vi.fn(),
   existsSync: vi.fn(),
   execFileSync: vi.fn(),
@@ -16,6 +17,10 @@ vi.mock('./resolve-bin-on-path', () => ({
 
 vi.mock('../cli-workers-service', () => ({
   listCliWorkersConfig: mocks.listCliWorkersConfig,
+}))
+
+vi.mock('../../adapters/claude/kscc-path', () => ({
+  resolveKsccPath: mocks.resolveKsccPath,
 }))
 
 vi.mock('node:fs', async () => {
@@ -44,6 +49,7 @@ const cfg: CliWorkersConfig = {
 
 beforeEach(() => {
   mocks.resolveBinOnPath.mockReset()
+  mocks.resolveKsccPath.mockReset()
   mocks.listCliWorkersConfig.mockReset()
   mocks.existsSync.mockReset()
   mocks.execFileSync.mockReset()
@@ -56,6 +62,15 @@ describe('resolveWorkerBin', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' })
     mocks.resolveBinOnPath.mockReturnValue('C:\\npm\\kscc.cmd')
     expect(resolveWorkerBin('kscc')).toBe('C:\\npm\\kscc.cmd')
+    Object.defineProperty(process, 'platform', { value: prev })
+  })
+
+  it('macOS kscc 使用 GUI 进程可用的专用路径解析器', () => {
+    const prev = process.platform
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    mocks.resolveKsccPath.mockReturnValue('/opt/homebrew/bin/kscc')
+    expect(resolveWorkerBin('kscc')).toBe('/opt/homebrew/bin/kscc')
+    expect(mocks.resolveKsccPath).toHaveBeenCalledTimes(1)
     Object.defineProperty(process, 'platform', { value: prev })
   })
 })

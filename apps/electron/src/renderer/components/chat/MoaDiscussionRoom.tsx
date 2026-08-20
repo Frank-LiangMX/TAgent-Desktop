@@ -290,7 +290,7 @@ export function MoaDiscussionRoom({
         <div className="moa-discussion-composer">
           <textarea
             ref={textareaRef}
-            className="moa-discussion-composer__input scrollbar-thin"
+            className="moa-discussion-composer__input scrollbar-none"
             placeholder="向圆桌发言…（回车发送）"
             value={draft}
             rows={1}

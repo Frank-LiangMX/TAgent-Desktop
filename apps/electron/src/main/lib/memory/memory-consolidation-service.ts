@@ -234,21 +234,28 @@ const RETRY_BACKOFF_MS = 30 * 60 * 1000
 /**
  * 默认的 LLM executor。
  *
- * TODO(2.2)：Desktop 未移植 settings-service / channel-manager / proxy-fetch，
- * General 版依赖这些模块调 streamSSE。此处 stub：抛出 ConsolidationError，
- * 上层按 preflight 错误处理（不计数、退避），保证文件可编译、不阻塞 typecheck。
- * 接线后替换为真实 LLM 调用。
+ * 记忆整理使用独立的轻量 LLM 请求；模型只负责提炼结构化结果，
+ * 真实写盘仍由本服务的 applier 完成。
  */
 export async function defaultExecutor(request: ConsolidationRequest): Promise<BatchOutput> {
   try {
-    const { completeMemoryLlm, MemoryLlmError } = await import('./memory-llm-client')
+    const { completeMemoryLlm } = await import('./memory-llm-client')
     const evidenceText = request.evidence
       .map(
         (e, i) =>
           `[${i}] session=${e.sessionId.slice(0, 8)} source=${e.source} createdAt=${e.createdAt}` +
           (e.sessionTitle ? ` title=${e.sessionTitle}` : '') +
           (e.sessionSummary ? ` summary=${e.sessionSummary}` : '') +
-          (e.nudgeCandidate ? ` pattern=${e.nudgeCandidate.pattern}` : '') +
+          (e.userMessages?.length ? ` userMessages=${JSON.stringify(e.userMessages)}` : '') +
+          (e.nudgeCandidate
+            ? ` nudge=${JSON.stringify({
+                id: e.id,
+                type: e.nudgeCandidate.type,
+                targetLayer: e.nudgeCandidate.targetLayer,
+                pattern: e.nudgeCandidate.pattern,
+                suggestedContent: e.nudgeCandidate.suggestedContent,
+              })}`
+            : '') +
           (e.toolsUsed?.length ? ` tools=${e.toolsUsed.join(',')}` : ''),
       )
       .join('\n')
@@ -259,6 +266,7 @@ export async function defaultExecutor(request: ConsolidationRequest): Promise<Ba
 2. memoryCandidates：L0/L1/L2/L3 候选（高置信度优先）
 3. insights：跨会话洞察（content≤80字、confidence 0-1、evidenceIds）
 4. contradictions：矛盾发现
+5. 如果证据中包含 nudge，必须将有效 nudge 映射为 memoryCandidates，不能只返回 sessionKeyFacts；evidenceIds 必须使用给出的证据 id。
 严格 JSON：
 {"sessionKeyFacts":[{"sessionId":"...","facts":["..."]}],"memoryCandidates":[{"targetLayer":"L2","content":"...","confidence":0.9,"evidenceIds":[]}],"insights":[{"content":"...","confidence":0.8,"evidenceIds":[]}],"contradictions":[{"content":"...","evidenceIds":[]}]}`
 
@@ -267,20 +275,59 @@ export async function defaultExecutor(request: ConsolidationRequest): Promise<Ba
     const start = raw.indexOf('{')
     const end = raw.lastIndexOf('}')
     if (start < 0 || end <= start) {
-      return { sessionKeyFacts: [], memoryCandidates: [], insights: [], contradictions: [] }
+      return addDeterministicNudgeCandidates(
+        { sessionKeyFacts: [], memoryCandidates: [], insights: [], contradictions: [] },
+        request.evidence,
+      )
     }
     let parsed: unknown
     try {
       parsed = JSON.parse(raw.slice(start, end + 1))
     } catch {
-      return { sessionKeyFacts: [], memoryCandidates: [], insights: [], contradictions: [] }
+      return addDeterministicNudgeCandidates(
+        { sessionKeyFacts: [], memoryCandidates: [], insights: [], contradictions: [] },
+        request.evidence,
+      )
     }
-    return sanitizeBatchOutput(parsed)
+    return addDeterministicNudgeCandidates(sanitizeBatchOutput(parsed), request.evidence)
   } catch (e) {
     const code = e instanceof Error && 'code' in e ? String((e as { code: string }).code) : 'LLM_FAILED'
     const msg = e instanceof Error ? e.message : String(e)
     throw new ConsolidationError(code || 'LLM_FAILED', `consolidation LLM 失败: ${msg}`)
   }
+}
+
+/**
+ * LLM 即使请求成功，也可能只返回 sessionKeyFacts，遗漏本地已经判定过的 nudge。
+ * 这些 nudge 已满足重复/纠正门控，不能因此丢失；用本地候选做安全兜底，
+ * 仍然进入 pending_approval，不直接写入 L0-L3。
+ */
+export function addDeterministicNudgeCandidates(
+  output: BatchOutput,
+  evidence: MemoryEvidenceEntry[],
+): BatchOutput {
+  const candidates = [...output.memoryCandidates]
+  const seen = new Set(
+    candidates.map((candidate) => `${candidate.targetLayer}\u0000${candidate.content.trim()}`),
+  )
+
+  for (const entry of evidence) {
+    const nudge = entry.nudgeCandidate
+    if (!nudge) continue
+    const content = String(nudge.suggestedContent ?? nudge.pattern ?? '').trim()
+    if (!content) continue
+    const key = `${nudge.targetLayer}\u0000${content}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    candidates.push({
+      targetLayer: nudge.targetLayer,
+      content,
+      confidence: 0.86,
+      evidenceIds: [entry.id],
+    })
+  }
+
+  return { ...output, memoryCandidates: candidates }
 }
 
 const VALID_TARGET_LAYERS = ['L0', 'L1', 'L2', 'L3'] as const
@@ -549,7 +596,12 @@ export class ConsolidationService {
     // 如果今天已经成功过，常规预算已用完
     const succeededToday =
       state.lastSuccessTime !== null && todayStr(state.lastSuccessTime) === todayStr(now)
-    if (succeededToday && state.requestsUsedToday >= BUDGET_PER_DAY) {
+    // 如果当天唯一一次请求成功但没有产出任何 L0-L3 候选，允许一次修复重试。
+    // 否则模型/解析问题会把当天预算消耗掉，修复发布后也要等到第二天才会再次尝试。
+    const hasMemoryCandidates = (state.outputCounts?.memoryCandidates ?? 0) > 0
+    const repairRetryAvailable =
+      succeededToday && !hasMemoryCandidates && state.requestsUsedToday < MAX_REQUESTS_PER_DAY
+    if (succeededToday && state.requestsUsedToday >= BUDGET_PER_DAY && !repairRetryAvailable) {
       return this.recordAttempt(state, mode, 'skipped_budget', now)
     }
     if (state.requestsUsedToday >= MAX_REQUESTS_PER_DAY) {

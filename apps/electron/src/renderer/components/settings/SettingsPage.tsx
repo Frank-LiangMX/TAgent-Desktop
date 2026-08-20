@@ -447,7 +447,7 @@ export function SettingsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         hideClose
-        className="!fixed !inset-0 !z-[100] !m-auto !grid !h-min !w-min !max-w-[unset] !translate-x-0 !translate-y-0 !transform-none !gap-0 !border-0 !bg-transparent !p-0 !shadow-none !duration-0 !opacity-100"
+        className="settings-dialog-motion !fixed !inset-0 !z-[100] !m-auto !grid !h-min !w-min !max-w-[unset] !translate-x-0 !translate-y-0 !transform-none !gap-0 !border-0 !bg-transparent !p-0 !shadow-none !duration-0 !opacity-100"
       >
         <div className="settings-dialog-shell">
           <div className="settings-shell">

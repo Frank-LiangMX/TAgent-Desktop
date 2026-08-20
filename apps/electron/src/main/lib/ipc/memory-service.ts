@@ -107,7 +107,13 @@ export class MemoryService {
     ipcMain.handle(
       MEMORY_IPC_CHANNELS.ACCEPT_STAGE_ALL,
       async (_e, mode: MemoryMode) => {
-        return acceptAll(mode)
+        // 先写层，成功后再清空队列；避免 accept 只移除待审批条目却没有沉淀。
+        const entries = readStageQueue(mode)
+        for (const entry of entries) {
+          await nudgeService.writeStageEntryToLayer(entry, mode)
+        }
+        acceptAll(mode)
+        return { ok: true, accepted: entries.length }
       },
     )
 
@@ -121,7 +127,9 @@ export class MemoryService {
     ipcMain.handle(
       MEMORY_IPC_CHANNELS.ACCEPT_STAGE_ONE,
       async (_e, args: { mode: MemoryMode; id: string }) => {
-        // 单条 accept：从队列移除；完整写层由 UI 后续对接 nudge writeToLayer
+        const entry = readStageQueue(args.mode).find((candidate) => candidate.id === args.id)
+        if (!entry) return { ok: false, error: '待审批条目不存在' }
+        await nudgeService.writeStageEntryToLayer(entry, args.mode)
         removeFromStage(args.mode, args.id)
         return { ok: true }
       },

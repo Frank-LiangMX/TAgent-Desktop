@@ -18,6 +18,46 @@
   backdrop-filter: blur(3px);
 }
 
+/* 设置页的定位容器保持静态，真正的进出场交给壳层，避免 fixed + auto margin
+ * 与通用 Dialog 的 translate 动画叠加后发生跳位。 */
+.settings-dialog-motion .settings-dialog-shell {
+  will-change: transform, opacity;
+}
+.settings-dialog-motion[data-state='open'] .settings-dialog-shell {
+  animation: settings-shell-in 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.settings-dialog-motion[data-state='closed'] .settings-dialog-shell {
+  animation: settings-shell-out 190ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+@keyframes settings-shell-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.975);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes settings-shell-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-dialog-motion .settings-dialog-shell {
+    animation-duration: 1ms;
+  }
+}
+
 /* ===== 弹窗外壳 ===== */
 .settings-dialog-shell {
   --app-shell-control-radius: 11px;

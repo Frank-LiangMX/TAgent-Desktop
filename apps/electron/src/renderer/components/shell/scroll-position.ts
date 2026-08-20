@@ -12,6 +12,14 @@ export function hasSavedMidPosition(savedDistance: number | null | undefined): b
   return savedDistance != null && savedDistance > MID_SCROLL_THRESHOLD_PX
 }
 
+/** 新一轮发送时，只有原本贴底且用户没有主动上滚，才建立贴底意图。 */
+export function shouldPreserveBottomIntent(args: {
+  isAtBottom: boolean
+  escapedFromLock: boolean
+}): boolean {
+  return args.isAtBottom && !args.escapedFromLock
+}
+
 /** 绘制前应写入的 scrollTop：有中间位则还原，否则钉底 */
 export function targetScrollTop(
   scrollHeight: number,
@@ -59,7 +67,9 @@ export function shouldFollowContentGrowth(args: {
   hasMidPosition: boolean
   grew: boolean
   wasNearBottom: boolean
+  /** 用户已主动上翻时，哪怕本帧还没来得及更新几何距离也不能抢回视口。 */
+  escapedFromLock?: boolean
 }): boolean {
-  if (args.hasMidPosition || !args.grew) return false
+  if (args.hasMidPosition || !args.grew || args.escapedFromLock) return false
   return args.wasNearBottom
 }

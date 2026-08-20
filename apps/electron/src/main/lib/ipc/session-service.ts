@@ -2480,6 +2480,11 @@ export class SessionService {
       const workspaceSlug = meta?.workspaceId ?? ''
       const panel = readPanelMessages(meta?.workspaceId, sessionId)
       const { toolsUsed, lastAssistantText } = this.extractToolsAndAssistant(panel.slice(-20))
+      const userMessages = this.panelMessagesToRoleContent(panel.slice(-20))
+        .filter((message) => message.role === 'user')
+        .map((message) => message.content.slice(0, 800))
+        .filter(Boolean)
+        .slice(-8)
       const title = (userPrompt || meta?.title || '会话').slice(0, 100)
       const summary = lastAssistantText.slice(0, 500)
       void memoryLayerService
@@ -2496,7 +2501,14 @@ export class SessionService {
 
       // 将会话证据写入 sink，供空闲 consolidation 批量处理
       try {
-        memoryEvidenceSink.writeSessionEvidence(mode, sessionId, title, summary, toolsUsed)
+        memoryEvidenceSink.writeSessionEvidence(
+          mode,
+          sessionId,
+          title,
+          summary,
+          toolsUsed,
+          userMessages,
+        )
       } catch (e) {
         console.warn('[session-service] writeSessionEvidence failed:', e)
       }

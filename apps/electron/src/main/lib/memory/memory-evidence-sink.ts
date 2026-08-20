@@ -43,6 +43,8 @@ export interface MemoryEvidenceEntry {
   sessionTitle?: string
   /** 会话摘要（仅 source=session 时有值） */
   sessionSummary?: string
+  /** 最近的用户原话（仅 source=session 时有值；用于后台整理提炼 L0-L3） */
+  userMessages?: string[]
   /** 使用的工具（仅 source=session 时有值） */
   toolsUsed?: string[]
 }
@@ -119,7 +121,8 @@ class MemoryEvidenceSink {
     sessionId: string,
     title: string,
     summary: string,
-    toolsUsed: string[]
+    toolsUsed: string[],
+    userMessages: string[] = []
   ): void {
     const entry: MemoryEvidenceEntry = {
       id: `ev-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -129,6 +132,10 @@ class MemoryEvidenceSink {
       sessionId,
       sessionTitle: title,
       sessionSummary: summary,
+      userMessages: userMessages
+        .map((message) => message.trim().slice(0, 800))
+        .filter(Boolean)
+        .slice(-8),
       toolsUsed,
     }
     this.appendEntry(mode, entry)

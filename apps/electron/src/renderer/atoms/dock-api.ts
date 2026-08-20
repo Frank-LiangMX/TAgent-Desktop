@@ -23,6 +23,18 @@ export const crewOpenRequestAtom = atom<CrewOpenRequest | null>(null)
 /** 各会话班组面板是否展开（右栏或 dock crew pane），标签栏图标按下态用 */
 export const crewPanelOpenMapAtom = atom<Record<string, boolean>>({})
 
+/**
+ * 分屏建议请求：非分屏模式下检测到用户频繁在两个会话间切换时，
+ * 自动开启分屏并左右并排展示这两个会话。
+ * requestId 用于去重，确保每次请求只触发一次分屏。
+ */
+export interface SplitSessionsRequest {
+  leftSessionId: string
+  rightSessionId: string
+  requestId: number
+}
+export const splitSessionsRequestAtom = atom<SplitSessionsRequest | null>(null)
+
 export interface VisibleSession {
   sessionId: string
   title: string
