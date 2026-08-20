@@ -14,7 +14,7 @@
  */
 import { useEffect, useState } from 'react'
 import { useAtomValue } from 'jotai'
-import { ChatsCircle, Eye, File, UsersThree } from '@phosphor-icons/react'
+import { ChatsCircle, Eye, File, Globe, UsersThree } from '@phosphor-icons/react'
 import { X } from 'lucide-react'
 import type { IDockviewPanelHeaderProps } from 'dockview'
 import { AppTooltip } from '@tagent/ui'
@@ -27,7 +27,7 @@ import { sessionRunMapAtom } from '../../atoms/session-run-atoms'
 import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
 import { allPendingAskUserRequestsAtom } from '../../atoms/ask-user-atoms'
 
-type DockPaneType = 'chat' | 'crew' | 'file-preview' | 'rich-preview'
+type DockPaneType = 'chat' | 'crew' | 'file-preview' | 'rich-preview' | 'browser'
 
 interface DockTabParams {
   /** pane 类型（addPanel 时 params 带）；缺省时按 panel id 前缀推断 */
@@ -41,6 +41,7 @@ function resolvePaneType(paneId: string, params?: DockTabParams): DockPaneType {
   if (paneId.startsWith('rich-preview:') || paneId.startsWith('mermaid-preview:')) {
     return 'rich-preview'
   }
+  if (paneId.startsWith('browser:')) return 'browser'
   return 'chat'
 }
 
@@ -49,6 +50,7 @@ const PANE_ICONS = {
   crew: UsersThree,
   'file-preview': File,
   'rich-preview': Eye,
+  browser: Globe,
 } as const
 
 const STATUS_LABEL: Record<SessionUiStatus, string> = {

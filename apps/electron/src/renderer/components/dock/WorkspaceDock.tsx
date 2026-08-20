@@ -21,6 +21,7 @@ import { ChatPane } from './ChatPane'
 import { CrewPane } from './CrewPane'
 import { FilePreviewPane } from './FilePreviewPane'
 import { RichPreviewPane } from './RichPreviewPane'
+import { BrowserPane } from './BrowserPane'
 import { DockTab } from './DockTab'
 import { DockSummaryActions } from './DockSummaryActions'
 import { SessionSummaryTabButton } from '../chat/SessionSummaryTabButton'
@@ -34,6 +35,7 @@ import {
 } from '../../atoms/dock-api'
 import { filePreviewRequestAtom } from '../../atoms/file-preview'
 import { richPreviewRequestAtom } from '../../atoms/rich-preview'
+import { browserApi, browserOpenRequestAtom } from '../../atoms/browser'
 import { sessionRunMapAtom } from '../../atoms/session-run-atoms'
 import { disableVoidGroupDrag, isGroupHeaderDrag, pruneEmptyDockGroups } from './dock-dnd'
 
@@ -44,7 +46,7 @@ const DOCK_LAYOUT_KEY = 'tagent:dockLayout'
  * 这类 pane 激活/关闭都不得同步 tabsAtom/activeTabIdAtom——
  * 否则 App 的 activeTab 查 tabs 找不到 → 误判无活跃 tab → 显示引导页盖住整个 dock。
  */
-const NON_SESSION_PANE_PREFIXES = ['crew:', 'file-preview:', 'mermaid-preview:', 'rich-preview:'] as const
+const NON_SESSION_PANE_PREFIXES = ['crew:', 'file-preview:', 'mermaid-preview:', 'rich-preview:', 'browser:'] as const
 function isNonSessionPane(id: string): boolean {
   return NON_SESSION_PANE_PREFIXES.some((prefix) => id.startsWith(prefix))
 }
@@ -182,6 +184,8 @@ export function WorkspaceDock(): JSX.Element {
   const setFilePreviewRequest = useSetAtom(filePreviewRequestAtom)
   const richPreviewReq = useAtomValue(richPreviewRequestAtom)
   const setRichPreviewRequest = useSetAtom(richPreviewRequestAtom)
+  const browserOpenRequest = useAtomValue(browserOpenRequestAtom)
+  const setBrowserOpenRequest = useSetAtom(browserOpenRequestAtom)
 
   const apiRef = useRef<DockviewApi | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -317,6 +321,11 @@ export function WorkspaceDock(): JSX.Element {
     return () => cancelAnimationFrame(frame)
   }, [crewOpenRequest?.requestId, apiReady, setCrewPanelOpenMap])
 
+  useEffect(() => {
+    const off = browserApi().onBrowserOpenRequest((request) => setBrowserOpenRequest(request))
+    return off
+  }, [setBrowserOpenRequest])
+
   // 事件订阅：api 就绪时挂，卸载时清（onReady 回调返回值会被 Dockview 忽略，故用 effect）
   useEffect(() => {
     const api = apiRef.current
@@ -340,6 +349,10 @@ export function WorkspaceDock(): JSX.Element {
       if (panel.id.startsWith('rich-preview:')) {
         const sid = panel.id.slice('rich-preview:'.length)
         setRichPreviewRequest((prev) => (prev && prev.sessionId === sid ? null : prev))
+      }
+      if (panel.id.startsWith('browser:')) {
+        const sid = panel.id.slice('browser:'.length)
+        setBrowserOpenRequest((prev) => (prev && prev.sessionId === sid ? null : prev))
       }
       if (isReconcilingRef.current) return
       if (isNonSessionPane(panel.id)) return
@@ -511,6 +524,31 @@ export function WorkspaceDock(): JSX.Element {
     })
   }, [apiReady, richPreviewReq])
 
+  // Agent 请求打开网页 → 独立浏览器标签分屏（不写入 tabsAtom）
+  useEffect(() => {
+    const api = apiRef.current
+    if (!api || !apiReady || !browserOpenRequest) return
+    const request = browserOpenRequest
+    const paneId = 'browser:' + request.sessionId
+    const title = request.title?.trim() || '网页'
+    const existing = api.getPanel(paneId)
+    if (existing) {
+      existing.setTitle?.(title)
+      existing.api.setActive?.()
+      setBrowserOpenRequest(null)
+      return
+    }
+    const chatPanel = api.getPanel(request.sessionId)
+    api.addPanel({
+      id: paneId,
+      title,
+      component: 'browser',
+      params: { sessionId: request.sessionId },
+      ...(chatPanel ? { position: { direction: 'right', referencePanel: chatPanel } } : {}),
+    })
+    setBrowserOpenRequest(null)
+  }, [apiReady, browserOpenRequest, setBrowserOpenRequest])
+
   const handleReady = (e: { api: DockviewApi }): void => {
     apiRef.current = e.api
     setDockApi(e.api)
@@ -572,6 +610,7 @@ export function WorkspaceDock(): JSX.Element {
           crew: CrewPane,
           'file-preview': FilePreviewPane,
           'rich-preview': RichPreviewPane,
+          browser: BrowserPane,
           // 兼容旧布局里残留的 mermaid-preview pane id
           'mermaid-preview': RichPreviewPane,
         }}

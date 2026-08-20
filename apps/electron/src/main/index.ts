@@ -10,6 +10,7 @@ import { execSync } from 'node:child_process'
 import { SessionService } from './lib/ipc/session-service'
 import { ChannelService } from './lib/ipc/channel-service'
 import { WorkspaceService } from './lib/ipc/workspace-service'
+import { BrowserService } from './lib/ipc/browser-service'
 import { McpService } from './lib/ipc/mcp-service'
 import { PluginService } from './lib/ipc/plugin-service'
 import { MemoryService } from './lib/ipc/memory-service'
@@ -43,6 +44,7 @@ import {
 /** 主窗口引用（SessionService 推 IPC 用） */
 let mainWindow: BrowserWindow | null = null
 let sessionService: SessionService | null = null
+let browserService: BrowserService | null = null
 let permissionService: PermissionService | null = null
 
 // Windows 的 LCD/ClearType 次像素文字在透明渐变与 backdrop-filter 叠层上滚动时，
@@ -253,12 +255,17 @@ app.whenReady().then(async () => {
   })
 
   createWindow()
-  seedBuiltinChannels()
-  // 无本机 kscc 时强制停用内置渠道，避免用户无脑打开后发送才失败
-  syncKsccChannelAvailability()
-  // 网关新上的默认模型追加进已有 kscc-internal（seed 不覆盖存量渠道）
-  syncKsccDefaultModels()
-  migrateModelWindows()
+  try {
+    seedBuiltinChannels()
+    // 无本机 kscc 时强制停用内置渠道，避免用户无脑打开后发送才失败
+    syncKsccChannelAvailability()
+    // 网关新上的默认模型追加进已有 kscc-internal（seed 不覆盖存量渠道）
+    syncKsccDefaultModels()
+    migrateModelWindows()
+  } catch (err) {
+    // 渠道迁移失败不能阻断后续 IPC 注册；用户仍应能打开设置并修复配置。
+    console.error('[渠道存储] 启动初始化失败，已跳过本轮迁移:', err)
+  }
 
   // Phase 2：全局记忆 L5 服务启动 wiring
   try {
@@ -314,6 +321,7 @@ app.whenReady().then(async () => {
   )
   permissionService = PermissionService.create(() => mainWindow)
   sessionService = SessionService.create(() => mainWindow, permissionService)
+  browserService = BrowserService.create(() => mainWindow)
   setMemoryForegroundActivityProbe(() => sessionService?.hasActiveAgents() ?? false)
   WorkspaceService.create(
     () => mainWindow,
@@ -369,6 +377,7 @@ app.on('before-quit', () => {
     console.error('[memory] shutdown cleanup failed:', err)
   }
   cleanupUpdater()
+  browserService?.dispose()
   sessionService?.disposeAll()
   destroyTray()
 })

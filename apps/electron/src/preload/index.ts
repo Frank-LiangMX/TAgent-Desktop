@@ -18,6 +18,7 @@ import {
   MEMORY_IPC_CHANNELS,
   USER_PROFILE_IPC_CHANNELS,
   SYSTEM_PROMPT_IPC_CHANNELS,
+  BROWSER_IPC_CHANNELS,
 } from '@tagent/shared'
 import type {
   AgentRoleProfile,
@@ -78,6 +79,19 @@ import type {
   CliWorkersProbeResult,
   AgentDiscussPrefs,
   AgentCrewPrefs,
+} from '@tagent/shared'
+
+import type {
+  BrowserElementActionRequest,
+  BrowserNavigateRequest,
+  BrowserObserveResult,
+  BrowserScreenshotResult,
+  BrowserScrollRequest,
+  BrowserSetBoundsRequest,
+  BrowserTabRequest,
+  BrowserTakeoverRequest,
+  BrowserWorkspaceState,
+  BrowserOpenRequest,
 } from '@tagent/shared'
 
 export interface SendMessageInput {
@@ -768,6 +782,53 @@ const electronAPI = {
     return () => ipcRenderer.removeListener(COLLABORATION_ROOM_IPC_CHANNELS.TEXT_DELTA, handler)
   },
 
+  // ===== 受管浏览器（Dockview pane） =====
+  browserEnsure: (sessionId: string) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.ENSURE, { sessionId }) as Promise<BrowserWorkspaceState>,
+  browserSetBounds: (input: BrowserSetBoundsRequest) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.SET_BOUNDS, input) as Promise<BrowserWorkspaceState>,
+  browserHide: (sessionId: string) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.HIDE, sessionId) as Promise<{ ok: boolean }>,
+  browserNavigate: (input: BrowserNavigateRequest) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.NAVIGATE, input) as Promise<BrowserWorkspaceState>,
+  browserBack: (sessionId: string) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.BACK, sessionId) as Promise<BrowserWorkspaceState>,
+  browserForward: (sessionId: string) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.FORWARD, sessionId) as Promise<BrowserWorkspaceState>,
+  browserReload: (sessionId: string) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.RELOAD, sessionId) as Promise<BrowserWorkspaceState>,
+  browserNewTab: (input: BrowserTabRequest) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.NEW_TAB, input) as Promise<BrowserWorkspaceState>,
+  browserCloseTab: (input: BrowserTabRequest) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.CLOSE_TAB, input) as Promise<BrowserWorkspaceState>,
+  browserSelectTab: (input: BrowserTabRequest) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.SELECT_TAB, input) as Promise<BrowserWorkspaceState>,
+  browserObserve: (sessionId: string) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.OBSERVE, sessionId) as Promise<BrowserObserveResult>,
+  browserClick: (input: BrowserElementActionRequest) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.CLICK, input) as Promise<{ ok: boolean; message?: string }>,
+  browserType: (input: BrowserElementActionRequest) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.TYPE, input) as Promise<{ ok: boolean; message?: string }>,
+  browserScroll: (input: BrowserScrollRequest) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.SCROLL, input) as Promise<{ ok: boolean; message?: string }>,
+  browserScreenshot: (sessionId: string) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.SCREENSHOT, sessionId) as Promise<BrowserScreenshotResult>,
+  browserStop: (sessionId: string) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.STOP, sessionId) as Promise<{ ok: boolean; message?: string }>,
+  browserTakeover: (input: BrowserTakeoverRequest) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.TAKEOVER, input) as Promise<BrowserWorkspaceState>,
+  browserResume: (sessionId: string) =>
+    ipcRenderer.invoke(BROWSER_IPC_CHANNELS.RESUME, sessionId) as Promise<BrowserWorkspaceState>,
+  onBrowserStateChanged: (cb: (state: BrowserWorkspaceState) => void) => {
+    const handler = (_e: unknown, state: BrowserWorkspaceState): void => cb(state)
+    ipcRenderer.on(BROWSER_IPC_CHANNELS.STATE_CHANGED, handler)
+    return () => ipcRenderer.removeListener(BROWSER_IPC_CHANNELS.STATE_CHANGED, handler)
+  },
+  onBrowserOpenRequest: (cb: (request: BrowserOpenRequest) => void) => {
+    const handler = (_e: unknown, request: BrowserOpenRequest): void => cb(request)
+    ipcRenderer.on(BROWSER_IPC_CHANNELS.OPEN_REQUEST, handler)
+    return () => ipcRenderer.removeListener(BROWSER_IPC_CHANNELS.OPEN_REQUEST, handler)
+  },
   // ===== 自动更新 =====
   updater: {
     checkForUpdates: () => ipcRenderer.invoke('updater:check') as Promise<void>,

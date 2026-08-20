@@ -106,6 +106,8 @@ export interface KsccQueryOptions extends AgentQueryInput {
    * 用户未选择前不自动继续；同一次暂停只触发一次（per-turn reset 复位标志）。
    */
   onNoProgressPauseAskUser?: (input: Record<string, unknown>) => void
+  /** 网页工具批次完成后的受管浏览器回退上下文生成器 */
+  onPostToolBatch?: (input: PostToolBatchHookInputLike) => string | undefined | Promise<string | undefined>
 }
 
 /** 活跃会话状态（长驻：一个会话一个进程） */
@@ -303,7 +305,7 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       }),
       // 无进展守卫 hooks（§10.2）：PostToolBatch→observe 注入复盘 / PreToolUse→final_response_only 拦截。
       // shadow 模式只发诊断事件（带 shadow=true），不改行为；enforce 才注入 / 拦截 / 暂停。
-      ...buildNoProgressHooks(options.sessionId, np),
+      ...buildNoProgressHooks(options.sessionId, np, options.onPostToolBatch),
       // Phase 2.4：SDK auto-memory 重定向到废目录（主防线是 MEMORY_MANAGEMENT_RULES）
       autoMemoryDirectory: getDiscardedMemoryDir(),
       toolUseConcurrency: 1,
@@ -530,26 +532,30 @@ export function normalizeResultToPausedNoProgress(
 function buildNoProgressHooks(
   sessionId: string,
   np: NoProgressCtx,
+  onPostToolBatch?: (input: PostToolBatchHookInputLike) => string | undefined | Promise<string | undefined>,
 ): Pick<SdkOptions, 'hooks'> {
-  if (np.mode === 'off') return {} // 紧急回滚：完全不注册
+  if (np.mode === 'off' && !onPostToolBatch) return {} // 紧急回滚：无守卫且无网页回退时不注册
   const postToolBatch = async (hookInput: PostToolBatchHookInputLike) => {
-    const observation = ksccPostToolBatchToObservation(hookInput, sessionId, np.turnId, Date.now())
-    const decision = np.guard.observe(observation)
-    emitNoProgressFromDecision(np, decision)
-    if (np.mode === 'enforce') {
+    const webFallbackContext = await onPostToolBatch?.(hookInput)
+    const decision = np.mode === 'off'
+      ? undefined
+      : np.guard.observe(ksccPostToolBatchToObservation(hookInput, sessionId, np.turnId, Date.now()))
+    if (decision) emitNoProgressFromDecision(np, decision)
+    if (np.mode === 'enforce' && decision) {
       if (decision.kind === 'pause') {
         np.pendingPauseNoProgress = true
         firePauseAskUser(np, decision)
         np.interrupt?.()
         return {}
       }
-      if (decision.modelContext) {
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PostToolBatch',
-            additionalContext: decision.modelContext,
-          },
-        }
+    }
+    const additionalContext = [decision?.modelContext, webFallbackContext].filter(Boolean).join('\\n\\n')
+    if (additionalContext) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PostToolBatch',
+          additionalContext,
+        },
       }
     }
     return {}

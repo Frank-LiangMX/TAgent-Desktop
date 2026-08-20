@@ -47,7 +47,7 @@ import {
   stripPartialAssistantBody,
   shouldDeltaTrackAssistant,
 } from '@tagent/shared'
-import type { KsccQueryOptions } from '../adapters/claude/claude-agent-adapter'
+import type { KsccQueryOptions, PostToolBatchHookInputLike } from '../adapters/claude/claude-agent-adapter'
 import {
   getSessionMeta,
   updateSessionMeta,
@@ -110,6 +110,8 @@ import {
   buildPiKanbanTools,
   injectKanbanMcpServer,
 } from '../kanban/kanban-agent-tools'
+import { BROWSER_SYSTEM_PROMPT, buildPiBrowserTools, injectBrowserMcpServer } from '../browser/browser-agent-tools'
+import { assessWebSearchFallback, buildBrowserFallbackContext } from '../browser/web-search-fallback'
 import { listBoards, listTasksByBoard } from '../kanban/kanban-store'
 import type { ExecutionMode, TAgentPermissionMode, NoProgressEvent } from '@tagent/shared'
 import {
@@ -2008,6 +2010,11 @@ export class SessionService {
           ? (enabledMcpServers as Record<string, unknown>)
           : {}),
       }
+      try {
+        await injectBrowserMcpServer(mcpServers, { sessionId: input.sessionId })
+      } catch (err) {
+        console.warn('[会话] 注入浏览器 MCP 失败:', err)
+      }
       if (executionMode === 'work') {
         try {
           await injectKanbanMcpServer(mcpServers, {
@@ -2050,6 +2057,7 @@ export class SessionService {
             buildExecutionModePrompt(executionMode),
             // Chat：注入设置页默认系统提示词（内置或用户自定义）
             executionMode === 'chat' ? buildUserSystemPromptAppend() : '',
+            BROWSER_SYSTEM_PROMPT,
             '## 身份与自我介绍\n你是一个专业的编程助手，帮助用户完成软件开发任务。回复时不要自我介绍，也不要提及你所属的 CLI 工具名或出品方品牌；直接以助手姿态回答用户的问题。',
             // W8：输出风格沟通红线（与 Pi 核 buildOutputStylePrompt 同文）
             buildOutputStylePrompt(),
@@ -2070,6 +2078,10 @@ export class SessionService {
         noProgressGuardMode,
         onNoProgressEvent,
         onNoProgressPauseAskUser,
+        onPostToolBatch: (hookInput: PostToolBatchHookInputLike) => {
+          const decision = assessWebSearchFallback(hookInput.tool_calls)
+          return decision ? buildBrowserFallbackContext(decision) : undefined
+        },
         mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
         // 子代理定义：仅 Work 注册（Chat 硬拦 Task，注册无意义）。
         // claudeAvailable 按渠道判定（isClaudeAvailableForChannel）：非 Anthropic 系（kscc-internal 等）
@@ -2128,6 +2140,7 @@ export class SessionService {
     const piExecutionPrompt = [
       buildExecutionModePrompt(piExecutionMode),
       piExecutionMode === 'chat' ? buildUserSystemPromptAppend() : '',
+      BROWSER_SYSTEM_PROMPT,
       piExecutionMode === 'work'
         ? '## 看板派工工具\n可用 kanban_create_board / kanban_add_task / kanban_list_*。长任务拆任务并指定 roleId。'
         : '',
@@ -2145,6 +2158,8 @@ export class SessionService {
             toolMode: 'full',
           })
         : []
+    const browserExtra = buildPiBrowserTools({ sessionId: input.sessionId })
+    const extraTools = [...browserExtra, ...kanbanExtra]
     const opts = {
       sessionId: input.sessionId,
       prompt: input.prompt,
@@ -2163,7 +2178,7 @@ export class SessionService {
       onNoProgressEvent,
       onNoProgressPauseAskUser,
       // Work：看板 AgentTool
-      ...(kanbanExtra.length > 0 ? { extraTools: kanbanExtra } : {}),
+      ...(extraTools.length > 0 ? { extraTools } : {}),
       // Phase 2.2：记忆模式透传（Frozen 快照 / L-rag）
       sessionMode: (piMeta?.mode === 'ta' ? 'ta' : 'general') as MemoryMode,
       // Pi 核专属：渠道凭证 + provider，pi-ai streamFn 用

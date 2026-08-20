@@ -31,7 +31,7 @@ export interface VisibleSession {
 /** 分屏主区当前可见的 chat 会话（按 group.activePanel；非会话 pane 跳过） */
 export const visibleSessionsAtom = atom<VisibleSession[]>([])
 
-const NON_SESSION_PREFIXES = ['crew:', 'file-preview:', 'mermaid-preview:', 'rich-preview:'] as const
+const NON_SESSION_PREFIXES = ['crew:', 'file-preview:', 'mermaid-preview:', 'rich-preview:', 'browser:'] as const
 
 function isNonSessionPaneId(id: string): boolean {
   return NON_SESSION_PREFIXES.some((prefix) => id.startsWith(prefix))
