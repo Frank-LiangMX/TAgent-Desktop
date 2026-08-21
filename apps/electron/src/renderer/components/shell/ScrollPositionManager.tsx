@@ -16,6 +16,12 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { useStickToBottomContext } from "use-stick-to-bottom";
 import {
+  pickViewportAnchor,
+  pinScrollerToBottom,
+  restoreViewportAnchor,
+  type ViewportAnchor,
+} from "./scroll-anchor";
+import {
   compensateScrollForHeightDelta,
   hasSavedMidPosition,
   shouldFollowContentGrowth,
@@ -26,6 +32,8 @@ import {
 
 /** 模块级缓存：会话 ID → 距底部像素距离 */
 const scrollPositionCache = new Map<string, number>();
+/** 已发送但首个主线 assistant 内容尚未到达：只记录意图，不允许收缩/增长 observer 立刻钉旧底部。 */
+const pendingBottomIntentCache = new Set<string>();
 const bottomIntentCache = new Set<string>();
 
 /** 供 Chat 打开会话时判断是否需要为中间位恢复拉满历史挂载 */
@@ -33,8 +41,15 @@ export function peekSessionScrollDistance(id: string): number | undefined {
   return scrollPositionCache.get(id);
 }
 
-/** 新一轮发送后应从最新消息继续跟随，清除上一轮可能残留的中间位缓存。 */
+/** 新一轮发送后只记录“稍后跟随最新内容”的意图，等待首个主线 assistant 内容到达。 */
 export function markSessionAtBottom(id: string): void {
+  pendingBottomIntentCache.add(id);
+}
+
+/** 首个主线 assistant 内容已到达：此时才把本轮视为贴底并覆盖旧的中间位缓存。 */
+export function activateSessionAtBottom(id: string): void {
+  if (!pendingBottomIntentCache.has(id)) return;
+  pendingBottomIntentCache.delete(id);
   scrollPositionCache.set(id, 0);
   bottomIntentCache.add(id);
 }
@@ -44,6 +59,7 @@ export function ScrollPositionManager({
   ready,
   restoreReady = true,
   layoutKey = 0,
+  live = false,
   onSettled,
 }: {
   id: string;
@@ -52,6 +68,8 @@ export function ScrollPositionManager({
   restoreReady?: boolean;
   /** 虚拟化可见条数变化时触发顶部补页补偿 */
   layoutKey?: number;
+  /** 流式期间由本组件独占主滚动跟随，避免与外层 smooth resize 抢控制。 */
+  live?: boolean;
   /** 首次钉底/还原并再吃两帧布局后回调。供打开会话时等钉住再淡入，避免先露出顶部再跳底。 */
   onSettled?: () => void;
 }): null {
@@ -61,10 +79,49 @@ export function ScrollPositionManager({
   const settledRef = useRef(false);
   const prevIdRef = useRef(id);
   const prevScrollHeightRef = useRef<number | null>(null);
+  const viewportAnchorRef = useRef<ViewportAnchor | null>(null);
+  const wasLiveRef = useRef(live);
+  const escapedRef = useRef(state.escapedFromLock);
+  escapedRef.current = state.escapedFromLock;
   const onSettledRef = useRef(onSettled);
   onSettledRef.current = onSettled;
   const scrollToBottomRef = useRef(scrollToBottom);
   scrollToBottomRef.current = scrollToBottom;
+
+  // 主滚动协调器唯一的钉底出口：清掉 StickToBottom spring 后再写 floor。
+  // 注意：不能调用 stopScroll()，它的语义是用户主动脱离跟随，会把
+  // escapedFromLock 设为 true，导致后续流式增长永远不再贴底。
+  const pinToBottomRef = useRef((): void => {});
+  pinToBottomRef.current = (): void => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (state) {
+      state.animation = undefined;
+      state.velocity = 0;
+      state.accumulated = 0;
+    }
+    // 同步恢复第三方库的 isAtBottom 状态；真正的 scrollTop 仍由协调器直接写入。
+    void scrollToBottomRef.current("instant");
+    pinScrollerToBottom(el);
+    el.setAttribute("data-chat-scroll-owner", "coordinator");
+  };
+
+  // use-stick-to-bottom 自带的 content ResizeObserver 也会在高度变化时调用
+  // scrollToBottom。它与本协调器同时存在会形成第二个自动滚动控制者；挂载后断开，
+  // 用户滚轮/按钮仍可使用第三方 API，但自动布局只由本组件处理。
+  useLayoutEffect(() => {
+    state.resizeObserver?.disconnect();
+  }, [ready, state]);
+
+  const rememberViewportAnchor = (): void => {
+    const el = scrollRef.current;
+    if (!el || !escapedRef.current) {
+      viewportAnchorRef.current = null;
+      return;
+    }
+    const anchor = pickViewportAnchor(el);
+    if (anchor) viewportAnchorRef.current = anchor;
+  };
 
   // 持续保存滚动位置（仅在恢复完成后才注册，防止初始化/恢复前的自动滚动污染缓存）
   useEffect(() => {
@@ -75,6 +132,7 @@ export function ScrollPositionManager({
       // 收回历史窗口会产生临时 scroll 事件；在本轮贴底意图仍有效时，
       // 不把这次中间态写回缓存。用户主动上滚则立即解除意图并保存真实位置。
       if (state.escapedFromLock) {
+        pendingBottomIntentCache.delete(id);
         bottomIntentCache.delete(id);
       } else if (bottomIntentCache.has(id)) {
         scrollPositionCache.set(id, 0);
@@ -96,6 +154,7 @@ export function ScrollPositionManager({
       restoredRef.current = false;
       settledRef.current = false;
       prevScrollHeightRef.current = null;
+      pendingBottomIntentCache.delete(previousId);
       bottomIntentCache.delete(previousId);
     }
   }, [id]);
@@ -181,6 +240,21 @@ export function ScrollPositionManager({
     const failOpen = window.setTimeout(reveal, 120);
     return () => window.clearTimeout(failOpen);
   }, [ready, restoreReady, id, scrollRef, stopScroll]);
+  // 流式结束时只由协调器收口：阅读中恢复锚点，贴底中瞬时钉底。
+  useLayoutEffect(() => {
+    const wasLive = wasLiveRef.current;
+    wasLiveRef.current = live;
+    if (!wasLive || live) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    if (escapedRef.current) {
+      stopScroll();
+      restoreViewportAnchor(el, viewportAnchorRef.current);
+      el.setAttribute("data-chat-scroll-owner", "coordinator");
+      return;
+    }
+    pinToBottomRef.current();
+  }, [live, scrollRef, stopScroll]);
 
   // 打开当帧：滚动容器自己从 0 高变成实际高度时内容 ResizeObserver 不响，必须盯 scroller。
   useEffect(() => {
@@ -219,6 +293,7 @@ export function ScrollPositionManager({
       const dist =
         scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
       wasNearBottom = dist <= 40;
+      rememberViewportAnchor();
     };
     const pinToBottom = (): void => {
       pinRaf = 0;
@@ -229,7 +304,7 @@ export function ScrollPositionManager({
       if (state.escapedFromLock || !wasNearBottom) return;
 
       if (Math.abs(scroller.scrollTop - top) < 2) return;
-      scroller.scrollTop = top;
+      pinToBottomRef.current();
       wasNearBottom = true;
     };
     const onResize = (): void => {
@@ -238,8 +313,23 @@ export function ScrollPositionManager({
       // 视口锚点由下面的 layout effect 负责，不能进入贴底路径。
       if (!restoreReady) return;
       const nextHeight = content.scrollHeight;
+      const shrunk = nextHeight < lastHeight - 1;
       const grew = nextHeight > lastHeight + 1;
       lastHeight = nextHeight;
+
+      // 流式结束、过程折叠和虚拟化收缩统一走同一个协调器。
+      if (shrunk) {
+        // 发送后收回虚拟化窗口只是旧内容收缩；首个 assistant 内容还没到达前，
+        // 不要把这个旧 DOM 的底部当成本轮底部。
+        if (pendingBottomIntentCache.has(id)) {
+          // 保留自然布局结果，等首个主线 assistant 内容到达后再统一钉底。
+        } else if (escapedRef.current) {
+          stopScroll();
+          restoreViewportAnchor(scroller, viewportAnchorRef.current);
+        } else {
+          pinToBottomRef.current();
+        }
+      }
       // 发送时刚建立的贴底意图要覆盖旧的 wasNearBottom 快照；
       // 否则新一轮首个 delta 会被误判为中间位，内容就会被输入框盖住。
       const hasBottomIntent =
@@ -266,7 +356,7 @@ export function ScrollPositionManager({
       ro.disconnect();
       if (pinRaf !== 0) window.cancelAnimationFrame(pinRaf);
     };
-  }, [ready, id, restoreReady, scrollRef, contentRef, state]);
+  }, [ready, id, restoreReady, scrollRef, contentRef, state, stopScroll]);
 
   // 虚拟化往前补页：内容从顶部长高，绘制前把 scrollTop 顺延，视口不跳
   useLayoutEffect(() => {

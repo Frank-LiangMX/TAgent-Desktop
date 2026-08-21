@@ -160,6 +160,79 @@ function isNonEmptyTextBlock(b: TAgentMessage['content'][number]): boolean {
   )
 }
 
+/** 用户可见思考摘要的上限；原始 thinking 仍保留在主进程会话上下文中。 */
+export const MAX_DISPLAY_THINKING_CHARS = 900
+
+const THINKING_SIGNAL_RE = /结论|决定|下一步|完成|发现|问题|错误|失败|修复|实现|验证|测试|文件|路径|命令|方案|因此|已|will|next|done|error|fail|fix|test|file|path|command|implement|because/i
+
+function normalizeThinkingLines(text: string): string[] {
+  const seen = new Set<string>()
+  const lines: string[] = []
+  for (const raw of text.replace(/\r/g, '').split(/\n+/)) {
+    const line = raw.replace(/[ \t]+/g, ' ').trim()
+    if (!line) continue
+    const key = line.toLocaleLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    lines.push(line)
+  }
+  return lines
+}
+
+/** 将原始 thinking 压成用户可读的阶段摘要。 */
+export function compactThinkingForDisplay(text: string): string {
+  const normalized = text.trim()
+  if (!normalized) return ''
+  if (normalized.length <= MAX_DISPLAY_THINKING_CHARS) return normalized
+
+  const lines = normalizeThinkingLines(normalized)
+  const selected: string[] = []
+  const add = (line: string | undefined): void => {
+    if (line && !selected.includes(line)) selected.push(line)
+  }
+  lines.slice(0, 2).forEach(add)
+  lines.filter((line) => THINKING_SIGNAL_RE.test(line)).slice(-4).forEach(add)
+  lines.slice(-2).forEach(add)
+
+  let compact = (selected.length > 0 ? selected : lines).join('\n')
+  if (compact.length <= MAX_DISPLAY_THINKING_CHARS) return compact
+  const head = Math.floor(MAX_DISPLAY_THINKING_CHARS * 0.34)
+  const tail = MAX_DISPLAY_THINKING_CHARS - head - 24
+  return `${compact.slice(0, head).trimEnd()}\n…（中间重复推演已折叠）…\n${compact.slice(-tail).trimStart()}`
+}
+
+/** 合并同一 assistant 的多个阶段，只保留一个 reasoning block。 */
+export function mergeThinkingStageSummary(existing: string, incoming: string): string {
+  const left = compactThinkingForDisplay(existing)
+  const right = compactThinkingForDisplay(incoming)
+  if (!left) return right
+  if (!right || left === right || left.includes(right)) return left
+  if (right.includes(left)) return right
+  if (right.length < 64 && !THINKING_SIGNAL_RE.test(right)) return left
+  return compactThinkingForDisplay(`${left}\n${right}`)
+}
+
+/** 只处理 renderer 的显示副本，不改变主进程保存给模型的原始消息。 */
+export function compactAssistantMessageForDisplay(message: TAgentMessage): TAgentMessage {
+  if (message.type !== 'assistant') return message
+  let summary = ''
+  const firstThinkingIndex = message.content.findIndex((block) => block.type === 'thinking')
+  const content = message.content.flatMap((block) => {
+    if (block.type !== 'thinking') return [block]
+    const text = typeof (block as { thinking?: string }).thinking === 'string'
+      ? (block as { thinking: string }).thinking
+      : ''
+    summary = mergeThinkingStageSummary(summary, text)
+    return []
+  })
+  if (!summary) return { ...message, content }
+  const insertAt = content.findIndex((block) => block.type === 'tool_use')
+  const index = insertAt >= 0
+    ? insertAt
+    : Math.min(firstThinkingIndex >= 0 ? firstThinkingIndex : content.length, content.length)
+  content.splice(index, 0, { type: 'thinking', thinking: summary })
+  return { ...message, content }
+}
 function thinkingBlockText(b: TAgentMessage['content'][number]): string {
   return b.type === 'thinking' && typeof (b as { thinking?: string }).thinking === 'string'
     ? (b as { thinking: string }).thinking
@@ -265,7 +338,7 @@ export function commitStreamThinkingToLastAssistant<T extends StreamItemLike>(
   prev: T[],
   thinking: string,
 ): T[] {
-  const t = thinking.trim()
+  const t = compactThinkingForDisplay(thinking)
   if (!t) return prev
 
   const patchAt = (i: number, content: TAgentMessage['content']): T[] => {
@@ -315,11 +388,16 @@ export function commitStreamThinkingToLastAssistant<T extends StreamItemLike>(
   for (let i = prev.length - 1; i >= 0; i--) {
     const m = prev[i]?.message
     if (m?.type !== 'assistant' || m.parentToolUseId) continue
-    const already = m.content.some(
-      (b) => isNonEmptyThinkingBlock(b) && thinkingBlockText(b).trim() === t,
-    )
-    if (already) return prev
-    return patchAt(i, [...m.content, { type: 'thinking', thinking: t }])
+    const thinkIdx = m.content.findIndex(isNonEmptyThinkingBlock)
+    if (thinkIdx < 0) {
+      return patchAt(i, [{ type: 'thinking', thinking: t }, ...m.content])
+    }
+    const existing = thinkingBlockText(m.content[thinkIdx]!).trim()
+    const merged = mergeThinkingStageSummary(existing, t)
+    if (merged === existing) return prev
+    const content = [...m.content]
+    content[thinkIdx] = { type: 'thinking', thinking: merged }
+    return patchAt(i, content)
   }
   return prev
 }
@@ -392,7 +470,7 @@ export function applySdkMessageToItems<T extends StreamItemLike>(
   message: TAgentMessage,
   allocKey: () => string,
 ): T[] {
-  const msg = message
+  const msg = compactAssistantMessageForDisplay(message)
   const msgUuid = msg.type === 'assistant' || msg.type === 'user' ? msg.uuid : undefined
   const stopReason = msg.type === 'assistant' ? msg.stop_reason : undefined
   const stillStreaming = msg.type === 'assistant' && !stopReason

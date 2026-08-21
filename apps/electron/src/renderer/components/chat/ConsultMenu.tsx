@@ -106,8 +106,8 @@ export function SendSplitButton({
               variant="ghost"
               size="icon"
               className={cn(
-                'h-8 w-6 rounded-glass-popover text-muted-foreground hover:text-foreground',
-                open && 'bg-accent text-foreground',
+                'h-8 w-6 rounded-xl text-muted-foreground hover:bg-foreground/10 hover:text-foreground',
+                open && 'bg-foreground/10 text-foreground',
               )}
               aria-label="更多发送方式"
               aria-expanded={open}

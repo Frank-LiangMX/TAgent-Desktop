@@ -1199,12 +1199,12 @@ export class PiAgentAdapter implements AgentProviderAdapter {
 
     // 工具：传入用传入的，否则 defaultTools + mcpTools；cwd 用闭包注入 bashTool
     const baseTools = tools ?? piCore.defaultTools
-    // 如果传了 cwd 且没自定义 tools，把默认 bashTool 替换成 createBashTool(cwd)（避免 process.cwd 串）
+    // 没有自定义工具时始终替换 Bash，确保后台任务即使没有显式 cwd 也进入当前会话监控。
     const finalBaseTools =
-      cwd && tools == null
+      tools == null
         ? baseTools.map((t) =>
             t.name === 'Bash'
-              ? piCore.createBashTool(cwd, bashHooksForSession(sessionId))
+              ? piCore.createBashTool(cwd ?? process.cwd(), bashHooksForSession(sessionId))
               : t,
           )
         : baseTools

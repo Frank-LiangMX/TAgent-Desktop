@@ -54,8 +54,9 @@ export function resolveFusionRoute(input: FusionRouteInput): FusionRouteResult {
       : { ok: false, reason: 'mentioned-seat-unavailable' }
   }
   if (routable.length === 0) return { ok: false, reason: 'no-routable-bot' }
-  if (routable.length === 1) {
-    return { ok: true, seatId: routable[0].id, reason: 'single-bot-default' }
+  const onlySeat = routable[0]
+  if (onlySeat && routable.length === 1) {
+    return { ok: true, seatId: onlySeat.id, reason: 'single-bot-default' }
   }
   const coordinatorId = resolveFusionCoordinator(routable)
   return coordinatorId

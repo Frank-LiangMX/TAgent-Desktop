@@ -119,10 +119,10 @@ function myersDiff(a: string[], b: string[]): Op[] {
     trace.push(v.slice()) // 该 d 步开始时的 v = d-1 前沿（供 backtrack 找来路）
     for (let k = -d; k <= d; k += 2) {
       let x: number
-      if (k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1])) {
-        x = v[offset + k + 1] // 向下（insert）
+      if (k === -d || (k !== d && v[offset + k - 1]! < v[offset + k + 1]!)) {
+        x = v[offset + k + 1]! // 向下（insert）
       } else {
-        x = v[offset + k - 1] + 1 // 向右（delete）
+        x = v[offset + k - 1]! + 1 // 向右（delete）
       }
       let y = x - k
       while (x < n && y < m && a[x] === b[y]) {
@@ -155,12 +155,12 @@ function backtrack(
     const v = trace[d]!
     const k = x - y
     let prevK: number
-    if (k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1])) {
+    if (k === -d || (k !== d && v[offset + k - 1]! < v[offset + k + 1]!)) {
       prevK = k + 1 // 来自下方（insert）
     } else {
       prevK = k - 1 // 来自左方（delete）
     }
-    const prevX = v[offset + prevK]
+    const prevX = v[offset + prevK]!
     const prevY = prevX - prevK
     // 蛇身：从 (prevX/prevY 或其 +1) 回到 (x,y) 的 equal 段
     while (x > prevX && y > prevY) {

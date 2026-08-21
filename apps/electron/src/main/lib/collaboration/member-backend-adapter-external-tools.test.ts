@@ -179,9 +179,13 @@ const { FakeAgent } = vi.hoisted(() => {
           }
         }
         if (this.aborted) break
-        if (doneEv && doneEv.reason === 'toolUse' && toolCalls.length > 0) {
+        const completed = doneEv as {
+          reason?: string
+          message?: { content?: Array<Record<string, unknown>> }
+        } | null
+        if (completed?.reason === 'toolUse' && toolCalls.length > 0) {
           // 追加 assistant 工具调用消息
-          context.messages.push({ role: 'assistant', content: doneEv.message?.content ?? toolCalls })
+          context.messages.push({ role: 'assistant', content: completed.message?.content ?? toolCalls })
           for (const tc of toolCalls) {
             const tool = tools.find((t) => t.name === tc.name)
             const result = tool

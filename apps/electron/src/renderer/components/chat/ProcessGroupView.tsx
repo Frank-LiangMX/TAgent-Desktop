@@ -43,6 +43,28 @@ const PROCESS_MD_CLASS = cn(
   'prose-a:text-current prose-code:text-current prose-blockquote:text-current',
 )
 
+const PROCESS_GROUP_PANEL_MS = 280
+
+/** 收起过程时保留 DOM 到过渡结束，避免完成态直接卸载造成高度瞬减。 */
+function useProcessBodyPresence(open: boolean, instant = false): boolean {
+  const [mounted, setMounted] = useState(open)
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true)
+      return
+    }
+    if (instant) {
+      setMounted(false)
+      return
+    }
+    const id = window.setTimeout(() => setMounted(false), PROCESS_GROUP_PANEL_MS)
+    return () => window.clearTimeout(id)
+  }, [open])
+
+  return instant ? open : open || mounted
+}
+
 interface ProcessGroupViewProps {
   process: ProcessEntry[]
   /** 本轮 Agent 仍在活动（含流式与工具间隙） */
@@ -146,6 +168,8 @@ export function ProcessGroupView({
   }, [live, liveHint, process, summary, displayMode, thinkingDurationSec])
 
   const showBody = expanded
+  // 收起期间继续保留过程树，让面板有真实高度可过渡；动画结束后再卸载重型节点。
+  const bodyMounted = useProcessBodyPresence(showBody, true)
 
   // 展开态按 thinking / tool / text 原序交错；收起态只留摘要头（避免 final 后堆一排「思考了片刻」）。
   const projectedProcess = useMemo(
@@ -210,55 +234,60 @@ export function ProcessGroupView({
         )}
       </button>
 
-      {/* 仅展开时渲染过程明细；收起 = 整块执行链折叠成一行摘要 */}
-      {showBody && (
-        <div className="agent-process-group__body">
-          {projectedProcess.map((entry) => {
-            if (entry.type === 'thinking') return renderThinking(entry)
-            if (entry.type === 'tool') {
-              return (
-                <ToolActivityRow
-                  key={entry.key}
-                  tool={entry.tool}
-                  result={entry.result}
-                  isStreaming={live && !entry.result}
-                />
-              )
-            }
-            if (entry.type === 'text') {
-              if (!entry.text.trim()) return null
-              return (
-                <ProcessTextRow
-                  key={entry.key}
-                  text={entry.text}
-                  isLive={live && entry.key === lastTextKey}
-                />
-              )
-            }
-            if (entry.type === 'guidance') {
-              return (
-                <div key={entry.key} className="agent-process-guidance">
-                  <span className="agent-process-guidance__label">引导</span>
-                  <span className="agent-process-guidance__bubble">{entry.text}</span>
-                </div>
-              )
-            }
-            return null
-          })}
-          {!live && (
-            <button
-              type="button"
-              className="agent-process-group__collapse"
-              onClick={() => {
-                markUserToggled()
-                setExpanded(false)
-              }}
-            >
-              收起过程
-            </button>
-          )}
-        </div>
-      )}
+      {/* 收起过程也先保留 DOM，交给面板过渡；动画结束后再卸载重型过程树。 */}
+      <div
+        className={cn('agent-process-group__body-panel', showBody && 'is-open')}
+        aria-hidden={!showBody}
+      >
+        {bodyMounted ? (
+          <div className="agent-process-group__body">
+            {projectedProcess.map((entry) => {
+              if (entry.type === 'thinking') return renderThinking(entry)
+              if (entry.type === 'tool') {
+                return (
+                  <ToolActivityRow
+                    key={entry.key}
+                    tool={entry.tool}
+                    result={entry.result}
+                    isStreaming={live && !entry.result}
+                  />
+                )
+              }
+              if (entry.type === 'text') {
+                if (!entry.text.trim()) return null
+                return (
+                  <ProcessTextRow
+                    key={entry.key}
+                    text={entry.text}
+                    isLive={live && entry.key === lastTextKey}
+                  />
+                )
+              }
+              if (entry.type === 'guidance') {
+                return (
+                  <div key={entry.key} className="agent-process-guidance">
+                    <span className="agent-process-guidance__label">引导</span>
+                    <span className="agent-process-guidance__bubble">{entry.text}</span>
+                  </div>
+                )
+              }
+              return null
+            })}
+            {!live && (
+              <button
+                type="button"
+                className="agent-process-group__collapse"
+                onClick={() => {
+                  markUserToggled()
+                  setExpanded(false)
+                }}
+              >
+                收起过程
+              </button>
+            )}
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -341,16 +370,8 @@ export const ThinkingActivityRow = memo(function ThinkingActivityRow({
   })
 
   const panelId = useId()
-  // 收起后延迟卸正文，让 grid 0fr 过渡有内容可动画（与 concise fold 一致）
-  const [bodyMounted, setBodyMounted] = useState(open)
-  useEffect(() => {
-    if (open) {
-      setBodyMounted(true)
-      return
-    }
-    const id = window.setTimeout(() => setBodyMounted(false), 280)
-    return () => window.clearTimeout(id)
-  }, [open])
+  // 折叠时立即卸载重型正文；打开时才挂载 Markdown 渲染器。
+  const bodyMounted = open
 
   return (
     <div className={cn('agent-thinking-row', isLive && 'is-live')}>

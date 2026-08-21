@@ -43,11 +43,9 @@ afterAll(() => {
 
 /** Mock adapter 捷径（与 collaboration-room-task.test.ts 同构） */
 const MOCK_ADAPTER: MemberBackendAdapter = {
-  startTurn(_: MemberTurnInput): Promise<MemberTurnResult> {
+  capabilities: () => ({}) as never,
+  runTurn(_: MemberTurnInput): Promise<MemberTurnResult> {
     return Promise.resolve({ type: 'done', text: '(mock)' })
-  },
-  abort(): void {
-    /* noop */
   },
 }
 

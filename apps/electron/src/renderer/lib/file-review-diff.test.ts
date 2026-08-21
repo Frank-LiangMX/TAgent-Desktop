@@ -15,20 +15,23 @@ import {
   type DiffLine,
 } from './file-review-diff'
 
+function getLineText(l: DiffLine): string {
+  return l.type === 'collapsed' ? l.lines.map(getLineText).join('\n') : l.text
+}
 // ===== 辅助：把 hunk lines 拍平成可读字符串（ctx=空格/del=-/add=+/collapsed=~N） =====
 function dump(hunks: DiffHunk[]): string {
   return hunks
     .flatMap((h) => h.lines)
     .map((l) => {
-      if (l.type === 'ctx') return ` ${l.text}`
-      if (l.type === 'del') return `-${l.text}`
-      if (l.type === 'add') return `+${l.text}`
+      if (l.type === 'ctx') return ` ${getLineText(l)}`
+      if (l.type === 'del') return `-${getLineText(l)}`
+      if (l.type === 'add') return `+${getLineText(l)}`
       return `~${l.count}`
     })
     .join('\n')
 }
 
-function patch(p: Omit<FileEditPatch, 'path'> & { path?: string }): FileEditPatch {
+function patch(p: any): FileEditPatch {
   return { path: p.path ?? 'a.ts', ...p } as FileEditPatch
 }
 
@@ -190,12 +193,12 @@ describe('computeUnifiedHunks', () => {
     const hunks = computeUnifiedHunks(oldText, newText)
     const lines = hunks.flatMap((h) => h.lines)
     // 找到 add l2NEW（新行 2）与 del l2（旧行 2）
-    const add2 = lines.find((l) => l.type === 'add' && l.text === 'l2NEW') as Extract<DiffLine, { type: 'add' }>
-    const del2 = lines.find((l) => l.type === 'del' && l.text === 'l2') as Extract<DiffLine, { type: 'del' }>
+    const add2 = lines.find((l) => l.type === 'add' && getLineText(l) === 'l2NEW') as Extract<DiffLine, { type: 'add' }>
+    const del2 = lines.find((l) => l.type === 'del' && getLineText(l) === 'l2') as Extract<DiffLine, { type: 'del' }>
     expect(add2.newNo).toBe(2)
     expect(del2.oldNo).toBe(2)
     // l6NEW 是新行 5（原 l5 被删，l6NEW 加在末尾，newText 行：l1,l2NEW,l3,l4,l6NEW → 5 行）
-    const add5 = lines.find((l) => l.type === 'add' && l.text === 'l6NEW') as Extract<DiffLine, { type: 'add' }>
+    const add5 = lines.find((l) => l.type === 'add' && getLineText(l) === 'l6NEW') as Extract<DiffLine, { type: 'add' }>
     expect(add5.newNo).toBe(5)
   })
 
@@ -218,8 +221,8 @@ describe('computeTurnReviewHunks', () => {
       after,
     )
     const lines = hunks.flatMap((h) => h.lines)
-    expect(lines.some((l) => l.type === 'del' && l.text === 'removed-only')).toBe(true)
-    expect(lines.some((l) => l.type === 'add' && l.text === 'added-only')).toBe(true)
+    expect(lines.some((l) => l.type === 'del' && getLineText(l) === 'removed-only')).toBe(true)
+    expect(lines.some((l) => l.type === 'add' && getLineText(l) === 'added-only')).toBe(true)
     const del = lines.find((l) => l.type === 'del') as Extract<DiffLine, { type: 'del' }>
     expect(del.oldNo).toBeGreaterThan(1)
   })
@@ -230,7 +233,7 @@ describe('computeTurnReviewHunks', () => {
       'a\nNEW\nb',
     )
     const lines = hunks.flatMap((h) => h.lines)
-    expect(lines.some((l) => l.type === 'add' && l.text === 'NEW')).toBe(true)
+    expect(lines.some((l) => l.type === 'add' && getLineText(l) === 'NEW')).toBe(true)
     expect(lines.some((l) => l.type === 'del')).toBe(false)
   })
 })
@@ -242,7 +245,7 @@ describe('computePatchBlockHunks', () => {
     const patches: FileEditPatch[] = [patch({ kind: 'replace', oldText: 'bar', newText: 'BAR' })]
     const hunks = computePatchBlockHunks(patches, after)
     const lines = hunks[0]!.lines
-    expect(lines.map((l) => `${l.type}:${l.text}`)).toEqual(['del:bar', 'add:BAR'])
+    expect(lines.map((l) => `${l.type}:${getLineText(l)}`)).toEqual(['del:bar', 'add:BAR'])
   })
 
   it('emits all-green add lines for a write patch', () => {
@@ -251,7 +254,7 @@ describe('computePatchBlockHunks', () => {
     const hunks = computePatchBlockHunks(patches, after)
     const lines = hunks[0]!.lines
     expect(lines.every((l) => l.type === 'add')).toBe(true)
-    expect(lines.map((l) => l.text)).toEqual(['line1', 'line2'])
+    expect(lines.map((l) => getLineText(l))).toEqual(['line1', 'line2'])
   })
 })
 
@@ -260,7 +263,7 @@ describe('allNewHunks', () => {
   it('marks every line as add with 1-based new line numbers', () => {
     const hunks = allNewHunks('a\nb\nc')
     const lines = hunks[0]!.lines as Extract<DiffLine, { type: 'add' }>[]
-    expect(lines.map((l) => `${l.newNo}:${l.text}`)).toEqual(['1:a', '2:b', '3:c'])
+    expect(lines.map((l) => `${l.newNo}:${getLineText(l)}`)).toEqual(['1:a', '2:b', '3:c'])
   })
   it('returns [] for empty content', () => {
     expect(allNewHunks('')).toEqual([])

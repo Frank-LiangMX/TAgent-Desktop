@@ -370,7 +370,7 @@ export const ThinkingFold = memo(function ThinkingFold({
   }, [isLive])
 
   const panelId = useId()
-  const bodyMounted = useMountDuringTransition(open)
+  const bodyMounted = useMountDuringTransition(open, true)
   const handleToggle = (): void => {
     if (settleTimer.current != null) {
       window.clearTimeout(settleTimer.current)
@@ -598,34 +598,36 @@ const WorkStageFold = memo(function WorkStageFold({
         className={cn('agent-concise-stage__panel', open && 'is-open')}
         aria-hidden={!open}
       >
-        <div className="agent-concise-stage__panel-inner">
-          <div className="agent-concise-fold__body agent-concise-fold__body--steps">
-            {steps.map((step) => (
-              <StageStepRow
-                key={step.key}
-                step={step}
-                isStreaming={
-                  stageActive &&
-                  (step.kind === 'tool'
-                    ? !step.tool.result
-                    : step.kind === 'thinking' &&
-                      isLastThinkingStep(steps, step.key) &&
-                      !steps.some((s) => s.kind === 'tool' && !s.tool.result))
-                }
-              />
-            ))}
-            {open && liveStatus ? (
-              <div
-                className={cn(
-                  'agent-concise-live-status agent-concise-live-status--in-body',
-                  fading && 'is-fading',
-                )}
-              >
-                <span className="agent-concise-shimmer">{liveStatus}</span>
-              </div>
-            ) : null}
+        {open ? (
+          <div className="agent-concise-stage__panel-inner">
+            <div className="agent-concise-fold__body agent-concise-fold__body--steps">
+              {steps.map((step) => (
+                <StageStepRow
+                  key={step.key}
+                  step={step}
+                  isStreaming={
+                    stageActive &&
+                    (step.kind === 'tool'
+                      ? !step.tool.result
+                      : step.kind === 'thinking' &&
+                        isLastThinkingStep(steps, step.key) &&
+                        !steps.some((s) => s.kind === 'tool' && !s.tool.result))
+                  }
+                />
+              ))}
+              {liveStatus ? (
+                <div
+                  className={cn(
+                    'agent-concise-live-status agent-concise-live-status--in-body',
+                    fading && 'is-fading',
+                  )}
+                >
+                  <span className="agent-concise-shimmer">{liveStatus}</span>
+                </div>
+              ) : null}
+            </div>
           </div>
-        </div>
+        ) : null}
       </div>
     </div>
   )

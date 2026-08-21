@@ -66,7 +66,7 @@ describe('已归档侧栏单行结构', () => {
   })
 
   it('SessionRow 仅非归档行渲染 meta 第二行', () => {
-    expect(sidebarTsx).toContain('{!archived && s.turnCount != null && s.turnCount > 0 && (')
+    expect(sidebarTsx).toContain('{!archived && ((s.turnCount != null && s.turnCount > 0) || (isInTabs && !isOpen)) && (')
     // 旧的「archived ? 已归档 : 时间」第二行写法已移除
     expect(sidebarTsx).not.toMatch(/archived \? '已归档'/)
   })

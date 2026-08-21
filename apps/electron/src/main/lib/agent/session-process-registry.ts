@@ -115,7 +115,7 @@ export function killSessionProcess(sessionId: string, id: string): { ok: boolean
 }
 
 export function bashHooksForSession(sessionId: string): {
-  onSpawn: (info: { pid?: number; command: string }) => void
+  onSpawn: (info: { pid?: number; command: string; child?: ChildProcess }) => void
   onExit: (info: { pid?: number; command: string }) => void
 } {
   const ids = new Map<string, string>()
@@ -128,6 +128,7 @@ export function bashHooksForSession(sessionId: string): {
         command: info.command,
         source: 'bash',
         pid: info.pid,
+        child: info.child,
       })
       ids.set(keyOf(info), id)
     },

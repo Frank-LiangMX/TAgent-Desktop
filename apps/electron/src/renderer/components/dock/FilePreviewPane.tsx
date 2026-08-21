@@ -342,7 +342,7 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
           if (mime.startsWith('image/') || mime === 'application/pdf') {
             setState({
               kind: 'ready',
-              absPath: abs,
+              absPath: abs!,
               dataUrl: `data:${mime};base64,${b64}`,
               mime,
             })
@@ -350,7 +350,7 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
           }
           setState({
             kind: 'ready',
-            absPath: abs,
+            absPath: abs!,
             content: base64ToUtf8(b64),
             mime,
           })
@@ -383,7 +383,7 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
         }
         setState({
           kind: 'ready',
-          absPath: abs,
+          absPath: abs!,
           content: file.content,
           dataUrl: file.dataUrl,
           mime: file.mime ?? 'application/octet-stream',
@@ -469,7 +469,7 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
             banner: hunks.length === 0 ? '本轮补丁无行级差异' : undefined,
             fallbackToCurrent: hunks.length === 0,
             after,
-            absPath: abs,
+            absPath: abs!,
           })
           return
         }
@@ -507,18 +507,18 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
               del: c.del,
               banner,
               after,
-              absPath: abs,
+              absPath: abs!,
             })
             return
           }
         }
 
         // before 已得（还原 / git）→ 算 hunks（大文件回退补丁块）
-        if (isLargeDiff(before, after)) {
+        if (isLargeDiff(before!, after)) {
           hunks = computePatchBlockHunks(patchesForPath, after)
           banner = banner ?? '文件较大，按本轮补丁块显示'
         } else {
-          hunks = computeUnifiedHunks(before, after)
+          hunks = computeUnifiedHunks(before!, after)
           if (hunks.length === 0) {
             // 无差异（含仅尾换行差异被 splitLines 归一）→ 退回当前文件预览
             fallbackToCurrent = true
@@ -534,7 +534,7 @@ export function FilePreviewPane(props: IDockviewPanelProps<FilePreviewPaneParams
           banner,
           fallbackToCurrent,
           after,
-          absPath: abs,
+          absPath: abs!,
         })
       } catch (err) {
         if (!cancelled) {

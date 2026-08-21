@@ -22,6 +22,13 @@
   pointer-events: none;
 }
 
+/*
+ * AskUser / 权限 / 计划弹窗需要盖住消息刻度轨。
+ * 普通状态保持 minimap 高于底部 UI，只有出现可交互弹窗时才提升层级。
+ */
+.session-bottom-stack:has(.session-permission-banner) {
+  z-index: 40;
+}
 .session-bottom-stack > * {
   pointer-events: auto;
 }
@@ -695,7 +702,7 @@
   isolation: isolate;
   overflow: visible; /* 压过 glass.css overflow:hidden，外影不被裁 */
   border: 1px solid rgb(var(--glass-rgb) / 0.5);
-  border-radius: var(--app-shell-composer-radius, 16px);
+  border-radius: var(--app-shell-drawer-radius, 22px);
   /* 玻璃底：极透（消息可从下方滚过透出），靠底部统一模糊带 (.composer-blur-underlay)
      + 顶光 + 阴影维持玻璃质感。自身不再 backdrop-filter（与遮罩共用一块 blur）。 */
   background:
@@ -1899,8 +1906,8 @@
   box-sizing: border-box;
   min-height: 0;
   margin-top: var(--shell-band-inset-top, 16px);
-  /* 6px 顶垫，对齐 sidebar head padding-top，标签芯片顶与「会话」标题带同高 */
-  padding: 6px var(--app-shell-session-gutter, 16px);
+  /* 标签芯片顶边与 sidebar 外框共用同一条上基线 */
+  padding: 0 var(--app-shell-session-gutter, 16px) 6px;
   border-bottom: 1px solid var(--spatial-line);
   background: transparent;
 }

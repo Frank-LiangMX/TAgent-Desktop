@@ -39,6 +39,7 @@ function mkEnvelope(
     causationId: 'msg_parent',
     depth: 1,
     state: 'pending',
+    payload: '',
     createdAt: 0,
     ...overrides,
   }

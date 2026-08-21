@@ -577,6 +577,8 @@ export interface CollaborationRun {
   status: CollaborationRunStatus
   /** 尝试次数 */
   attempt: number
+  /** 创建时间戳（旧数据可能缺失） */
+  createdAt?: number
   /** 开始时间戳 */
   startedAt?: number
   /** 完成时间戳 */

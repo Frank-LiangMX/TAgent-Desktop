@@ -10,7 +10,7 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, resolve as resolvePath } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 
@@ -101,6 +101,7 @@ export const editTool: AgentTool<typeof editSchema, { path: string; replaced: nu
 const bashSchema = Type.Object({
   command: Type.String({ description: "要执行的 shell 命令" }),
   timeout: Type.Optional(Type.Number({ description: "超时毫秒数，默认 30000" })),
+  background: Type.Optional(Type.Boolean({ description: "是否立即返回并持续监控该后台进程；长时间编译/开发服务器应设为 true" })),
 });
 
 export interface BashToolDetails {
@@ -116,7 +117,7 @@ export const bashTool: AgentTool<typeof bashSchema, BashToolDetails> = {
   parameters: bashSchema,
   execute: async (_id, params): Promise<AgentToolResult<BashToolDetails>> => {
     const timeoutMs = params.timeout ?? 30000;
-    const result = await runShell(params.command, timeoutMs, process.cwd());
+    const result = await runShell(params.command, timeoutMs, process.cwd(), undefined, params.background === true);
     // 输出过长截断
     const MAX = 8000;
     let out = result.stdout;
@@ -140,7 +141,7 @@ export const bashTool: AgentTool<typeof bashSchema, BashToolDetails> = {
  * 用于多会话/多工作区场景：每个会话一个 bashTool，cwd 不串。
  */
 export interface BashProcessHooks {
-  onSpawn?: (info: { pid?: number; command: string }) => void
+  onSpawn?: (info: { pid?: number; command: string; child?: ChildProcess }) => void
   onExit?: (info: { pid?: number; command: string }) => void
 }
 
@@ -155,7 +156,7 @@ export function createBashTool(
     parameters: bashSchema,
     execute: async (_id, params): Promise<AgentToolResult<BashToolDetails>> => {
       const timeoutMs = params.timeout ?? 30000;
-      const result = await runShell(params.command, timeoutMs, cwd, hooks);
+      const result = await runShell(params.command, timeoutMs, cwd, hooks, params.background === true);
       const MAX = 8000;
       let out = result.stdout;
       let err = result.stderr;
@@ -229,15 +230,24 @@ function runShell(
   timeoutMs: number,
   cwd: string,
   hooks?: BashProcessHooks,
+  background = false,
 ): Promise<BashToolDetails> {
   return new Promise((resolve) => {
     const child = spawn(normalizeCommandForWindows(command), {
       shell: true,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: background ? "ignore" : ["ignore", "pipe", "pipe"],
       cwd,
     });
-    const spawnInfo = { pid: child.pid, command }
+    const spawnInfo = { pid: child.pid, command, child }
     hooks?.onSpawn?.(spawnInfo)
+    if (background) {
+      resolve({
+        exitCode: 0,
+        stdout: `[后台进程已启动 pid=${child.pid ?? "?"}]`,
+        stderr: "",
+      })
+      return
+    }
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let settled = false;
@@ -313,6 +323,7 @@ export const defaultToolDescriptors: ToolSchemaDescriptor[] = [
     parameters: {
       command: { type: "string", required: true, description: "shell 命令" },
       timeout: { type: "number", description: "超时毫秒，默认 30000" },
+      background: { type: "boolean", description: "长时间编译/开发服务器设为 true；立即返回并由输入框胶囊监控，禁止用 Start-Process/start/& 脱离监控" },
     },
   },
 ];

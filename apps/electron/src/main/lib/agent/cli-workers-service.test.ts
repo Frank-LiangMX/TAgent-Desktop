@@ -250,6 +250,7 @@ describe('discoverAndReconcileCliWorkers', () => {
       cost: 3,
       reasoning: 'high',
       goodFor: '跨层接线 / 编排 / 复杂实现',
+      tags: ['backend', 'reasoning', 'refactor'],
     })
     // 文件已落盘
     const raw = JSON.parse(readFileSync(join(configDir, 'cli-workers.json'), 'utf8'))
@@ -303,7 +304,12 @@ describe('discoverAndReconcileCliWorkers', () => {
     const oc = cfg.workers.find((w) => w.id === 'opencode')!
     expect(oc.enabled).toBe(true)
     expect(oc.bin).toBe('C:\\opencode.exe')
-    expect(oc.capability).toEqual({ cost: 2, reasoning: 'medium', goodFor: '通用编码 / 多 Agent 协作' })
+    expect(oc.capability).toEqual({
+      cost: 2,
+      reasoning: 'medium',
+      goodFor: '通用编码 / 多 Agent 协作',
+      tags: ['backend', 'scaffold'],
+    })
     expect(oc.defaultModel).toBeUndefined()
     // 顶层总开关 / 后端保留（对账不动用户总开关）
     expect(cfg.enabled).toBe(true)

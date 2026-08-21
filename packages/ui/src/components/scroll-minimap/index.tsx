@@ -53,11 +53,12 @@ interface ScrollMinimapProps {
 }
 
 const MIN_ITEMS = 1;
-/** 每条刻度槽位高度（含间距）— 同时作为 hover 命中区；略密以贴近 Codex 全高轨 */
-const BAR_SLOT = 10;
+/** 每条刻度槽位高度（含间距）— 命中区保持不变，普通刻度之间略留呼吸感 */
+const BAR_SLOT = 12;
 /** resting 刻度视觉尺寸（命中区固定为 BAR_SLOT，视觉用 transform 放大） */
 const BAR_HEIGHT_BASE = 2.5;
-const BAR_WIDTH_BASE = 9;
+const BAR_WIDTH_NORMAL = 6;
+
 /** 测量前的短轨视口回退高度（真正高度由 ResizeObserver 吃满对话列） */
 const RAIL_VIEWPORT_FALLBACK = 20 * BAR_SLOT;
 /**
@@ -66,7 +67,7 @@ const RAIL_VIEWPORT_FALLBACK = 20 * BAR_SLOT;
  */
 const FISHEYE_SCALE_X = [3, 2.05, 1.48, 1.14, 1] as const;
 /** 轨宽 = 焦点 tick 视觉宽度，避免 scale 后裁切 */
-const RAIL_VISUAL_WIDTH = BAR_WIDTH_BASE * FISHEYE_SCALE_X[0];
+const RAIL_VISUAL_WIDTH = BAR_WIDTH_NORMAL * FISHEYE_SCALE_X[0];
 /** 刻度轨与 hover 预览之间的留白，避免扫刻度时误触预览抢 hover */
 const PEEK_PANEL_GAP = 12;
 const PEEK_PANEL_LEFT = RAIL_VISUAL_WIDTH + PEEK_PANEL_GAP;
@@ -75,7 +76,7 @@ const POPOVER_PANEL_LEFT = PEEK_PANEL_LEFT + 4;
 const OPEN_BTN_SIZE = 16;
 const RAIL_HEAD_OFFSET = 20;
 const RAIL_TOP_INSET = "0.5rem";
-/* 底部只避让实际运行计时胶囊；弹窗/队列不参与刻度轨坐标。 */
+/* 底部避让输入框和实际运行计时胶囊；弹窗/队列不参与刻度轨坐标。 */
 const RAIL_BOTTOM_INSET = "var(--session-minimap-bottom-inset, 0.5rem)";
 
 const PREVIEW_REMARK_PLUGINS = [remarkGfm];
@@ -935,10 +936,9 @@ export function ScrollMinimap({
                           !bar.hasUser &&
                           !bar.hasStatus &&
                           "message-nav-bar-assistant",
-                        focused && "message-nav-bar-focused",
                       )}
                       style={{
-                        width: BAR_WIDTH_BASE,
+                        width: BAR_WIDTH_NORMAL,
                         height: BAR_HEIGHT_BASE,
                         transform: `scaleX(${scaleX})`,
                       }}

@@ -36,7 +36,7 @@ export function bootstrapKanban(getWindow: () => BrowserWindow | null): void {
       win?.webContents.send(KANBAN_IPC_CHANNELS.CHANGED, { taskId, status, at: Date.now() })
       for (const handler of taskStatusChangedHandlers) {
         try {
-          handler(taskId, status)
+          handler(taskId, status as KanbanTaskStatus)
         } catch (err) {
           console.error('[看板] 状态订阅回调失败:', err)
         }

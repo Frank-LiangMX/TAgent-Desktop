@@ -7,6 +7,9 @@
 import { describe, expect, it } from "vitest";
 import {
   applySdkMessageToItems,
+  compactAssistantMessageForDisplay,
+  compactThinkingForDisplay,
+  MAX_DISPLAY_THINKING_CHARS,
   applySdkMessageToStreamState,
   applyTextDelta,
   applyThinkingDeltaToState,
@@ -557,5 +560,67 @@ describe("applySdkMessageToItems：uuid 原地 upsert（S2.1 单真源）", () =
     if (m?.type === "assistant") {
       expect(m.content.filter((b) => b.type === "text")).toHaveLength(1);
     }
+  });
+});
+describe("thinking 显示摘要：限长、去重、合并阶段", () => {
+  it("长 thinking 只保留计划、进展信号和最近结论", () => {
+    const raw = Array.from({ length: 40 }, (_, i) =>
+      `第${i}步：继续检查无关的内部推演内容。`,
+    ).join("\n");
+    const compact = compactThinkingForDisplay(
+      `${raw}\n发现关键问题：滚动锚点需要修复。\n下一步：运行测试并验证。`,
+    );
+    expect(compact.length).toBeLessThanOrEqual(MAX_DISPLAY_THINKING_CHARS);
+    expect(compact).toContain("第0步");
+    expect(compact).toContain("下一步：运行测试并验证。");
+  });
+
+  it("同一 assistant 的多段思考只保留一个 reasoning block", () => {
+    let items: StreamItemLike[] = [
+      {
+        key: "m0",
+        message: {
+          type: "assistant",
+          uuid: "u1",
+          stop_reason: "tool_use",
+          content: [{ type: "thinking", thinking: "先确定执行计划" }],
+        },
+      },
+    ];
+    items = commitStreamThinkingToLastAssistant(
+      items,
+      "发现问题：需要先检查滚动容器，再修复顶部历史加载。",
+    );
+    const m = items[0]?.message;
+    expect(m?.type).toBe("assistant");
+    if (m?.type === "assistant") {
+      expect(m.content.filter((b) => b.type === "thinking")).toHaveLength(1);
+      expect(m.content.find((b) => b.type === "thinking")).toMatchObject({
+        thinking: expect.stringContaining("发现问题"),
+      });
+    }
+  });
+
+  it("历史消息也只生成紧凑显示副本", () => {
+    const message: TAgentMessage = {
+      type: "assistant",
+      uuid: "u-history",
+      content: [
+        { type: "thinking", thinking: "重复推演。".repeat(500) },
+        { type: "thinking", thinking: "下一步：验证构建。" },
+        { type: "text", text: "已完成。" },
+      ],
+    };
+    const display = compactAssistantMessageForDisplay(message);
+    expect(display.content.filter((b) => b.type === "thinking")).toHaveLength(1);
+    const thinking = display.content.find((b) => b.type === "thinking");
+    expect(
+      thinking && thinking.type === "thinking" && typeof thinking.thinking === "string"
+        ? thinking.thinking.length
+        : 0,
+    ).toBeLessThanOrEqual(
+      MAX_DISPLAY_THINKING_CHARS,
+    );
+    expect(message.content.filter((b) => b.type === "thinking")).toHaveLength(2);
   });
 });

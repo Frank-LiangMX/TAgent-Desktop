@@ -25,6 +25,19 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+/*
+ * 文本选区跟随当前主题色，替代 Chromium 默认的纯蓝高亮。
+ * 使用 primary 的低不透明度保留原文字色，浅色/深色主题都维持可读对比度。
+ */
+::selection {
+  background: hsl(var(--primary) / 0.28);
+  color: hsl(var(--foreground));
+}
+
+.dark ::selection {
+  background: hsl(var(--primary) / 0.34);
+  color: hsl(var(--foreground));
+}
 
 /*
  * 统一折叠动效：所有 Radix Collapsible 内容都用同一条线性时间轴。

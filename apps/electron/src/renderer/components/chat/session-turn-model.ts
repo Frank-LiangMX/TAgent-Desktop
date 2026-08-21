@@ -427,7 +427,7 @@ export function hasRunStartedProcessing(
 }
 
 /** 撤回未开始轮：去掉末尾真实 user 及其后的占位（应无后续内容） */
-export function sliceItemsBeforeLastRealUser(items: TurnSourceItem[]): TurnSourceItem[] | null {
+export function sliceItemsBeforeLastRealUser<T extends TurnSourceItem>(items: T[]): T[] | null {
   for (let i = items.length - 1; i >= 0; i--) {
     const m = items[i]?.message
     if (m?.type === 'user' && isRealUserInput(m)) {

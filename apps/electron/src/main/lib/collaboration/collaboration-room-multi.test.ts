@@ -234,8 +234,8 @@ describe('CollaborationRoomService 多成员并行（Stage 3）', () => {
     const warn = msgs.find(
       (m) => m.authorType === 'system' && m.content.includes('开发') && m.content.includes('boom-A'),
     )
-    expect(warn).toBeDefined()
-    expect(warn!.kind).toBe('warning')
+    // 失败详情由 run 卡统一展示，不再重复写系统警告气泡。
+    expect(warn).toBeUndefined()
     const devMemberMsg = msgs.find((m) => m.authorType === 'member' && m.authorId === devId)
     expect(devMemberMsg).toBeUndefined()
     // 两成员都回 idle

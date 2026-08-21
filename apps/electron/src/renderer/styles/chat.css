@@ -1526,7 +1526,8 @@
   .agent-concise-fold__panel {
     transition: none;
   }
-  .agent-concise-run__panel {
+  .agent-concise-run__panel,
+  .agent-process-group__body-panel {
     transition: none;
   }
 }
@@ -1761,6 +1762,27 @@
 /* 运行中标题：静态高亮（去掉渐变流动动画，避免持续视觉干扰/跳变） */
 .agent-process-group__live {
   color: hsl(var(--foreground) / 0.85);
+}
+
+/* 完成态收起过程：保留 body 到动画结束，避免整块高度瞬间归零。 */
+.agent-process-group__body-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  min-height: 0;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.28s var(--app-shell-expand-ease),
+    opacity 0.2s var(--app-shell-expand-ease);
+}
+
+.agent-process-group__body-panel.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.agent-process-group__body-panel > .agent-process-group__body {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .agent-process-group__body {

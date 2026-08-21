@@ -123,6 +123,7 @@ import {
 } from "./session-turn-model";
 import {
   applySdkMessageToItems,
+  compactAssistantMessageForDisplay,
   applySdkMessageToStreamState,
   applyTextDelta,
   applyTextReplace,
@@ -180,14 +181,15 @@ import { RunModeSelector } from "./RunModeSelector";
 import { KanbanCrewPanel } from "./KanbanCrewPanel";
 import { MessageQueue } from "./MessageQueue";
 import {
+  activateSessionAtBottom,
   markSessionAtBottom,
   peekSessionScrollDistance,
   ScrollPositionManager,
 } from "../shell/ScrollPositionManager";
-import { ReadingScrollGuard } from "../shell/ReadingScrollGuard";
 import { hasSavedMidPosition } from "../shell/scroll-position";
 import {
   CHAT_MOUNT_BATCH,
+  CHAT_MOUNT_ESTIMATED_TURN_HEIGHT,
   CHAT_MOUNT_TOP_LOAD_PX,
   CHAT_MOUNT_WINDOW,
 } from "./chat-mount-window";
@@ -413,6 +415,12 @@ export function Chat({
   const [completedDurations, setCompletedDurations] = useState<
     Record<string, TurnDuration>
   >({});
+  /** result 已到但本轮没有正文时的可见收口状态，避免留下“完成”的空壳。 */
+  const [finalOutputState, setFinalOutputState] = useState<
+    "waiting" | "missing" | null
+  >(null);
+  /** 同步记录本轮是否曾收到主线正文，避免 sdk_message/result 同帧时读到旧 items。 */
+  const finalOutputSeenRef = useRef(false);
   const startSessionRun = useSetAtom(startSessionRunAtom);
   const stopSessionRun = useSetAtom(stopSessionRunAtom);
   const softStopSessionRun = useSetAtom(softStopSessionRunAtom);
@@ -478,6 +486,8 @@ export function Chat({
     clearPendingStop();
     userStoppedRef.current = false;
     completionRecordedRef.current = false;
+    finalOutputSeenRef.current = false;
+    setFinalOutputState(null);
     inFlightToolIdsRef.current = new Set();
     const now = Date.now();
     runStartedAtPersistRef.current = now;
@@ -486,6 +496,7 @@ export function Chat({
   /** 硬停一轮（清 running + 起点记忆；发送失败 / result / error / 用户停止） */
   const stopRun = (): void => {
     inFlightToolIdsRef.current = new Set();
+    setFinalOutputState(null);
     stopSessionRun(sessionId);
   };
   /**
@@ -605,37 +616,8 @@ export function Chat({
       cancelled = true;
     };
   }, [moaPresetsRevision]);
-  /** 历史已写入 items：false 时 Conversation resize=instant；钉底只等这个，不等虚拟化全挂 */
+  /** 历史已写入 items：钉底只等这个，不等虚拟化全挂。 */
   const [scrollReady, setScrollReady] = useState(false);
-  /**
-   * 全挂完后再吃几帧 instant，消化 Markdown/高亮后长高。
-   * 立刻切 smooth 会让 StickToBottom 弹簧扫视口。
-   */
-  const [holdInstantResize, setHoldInstantResize] = useState(true);
-  /**
-   * 流式结束 / 新消息发送过渡：切 resize=instant，短暂后回 smooth——
-   * 防止高度变化（落盘切换、上一轮执行块折叠）触发平滑滚动扫视口。
-   */
-  const [streamTransitioning, setStreamTransitioning] = useState(false);
-  const streamTransitionTimerRef = useRef<number | null>(null);
-  const beginStreamTransition = useCallback((ms = 150) => {
-    setStreamTransitioning(true);
-    if (streamTransitionTimerRef.current != null) {
-      window.clearTimeout(streamTransitionTimerRef.current);
-    }
-    streamTransitionTimerRef.current = window.setTimeout(() => {
-      streamTransitionTimerRef.current = null;
-      setStreamTransitioning(false);
-    }, ms);
-  }, []);
-  useEffect(() => {
-    return () => {
-      if (streamTransitionTimerRef.current != null) {
-        window.clearTimeout(streamTransitionTimerRef.current);
-        streamTransitionTimerRef.current = null;
-      }
-    };
-  }, []);
   /**
    * 虚拟化：尾部挂载窗口。默认只挂最近 CHAT_MOUNT_WINDOW 条；
    * 上滑 / 中间位恢复 / 锚点跳转才允许拉满。开流且在底部时收回窗口，避免 60+ 轮拖死流式。
@@ -866,6 +848,7 @@ export function Chat({
   streamStateRef.current = streamState;
   const chatInputRef = useRef<ChatInputHandle>(null);
   const composerClusterRef = useRef<HTMLDivElement>(null);
+  const composerInputDockRef = useRef<HTMLDivElement>(null);
   const bottomStackRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -886,8 +869,12 @@ export function Chat({
    * 必须用 turn 分组，且只认「真实用户输入」——
    * tool_result 也是 type=user，若不过滤会把每个工具结果都画成刻度（过程块污染 minimap）。
    */
+  /** 先把原始 DisplayItem 归并成真实对话轮次；虚拟化和刻度都以 turn 为单位。 */
+  const allTurns = useMemo(() => groupItemsIntoTurns(items), [items]);
+  const turnCount = allTurns.length;
+
   const minimapItems = useMemo<MinimapItem[]>(() => {
-    const turns = groupItemsIntoTurns(items);
+    const turns = allTurns;
     const result: MinimapItem[] = [];
     for (let i = 0; i < turns.length; i++) {
       const t = turns[i];
@@ -919,34 +906,28 @@ export function Chat({
       });
     }
     return result;
-  }, [items]);
+  }, [allTurns]);
 
-  /** 实际挂载数（Infinity 当 items.length） */
-  const effectiveVisible =
-    visibleCount >= items.length ? items.length : visibleCount;
+  /** 实际挂载的 turn 数（Infinity 当全部 turn） */
+  const effectiveVisible = visibleCount >= turnCount ? turnCount : visibleCount;
   /** 历史是否已全部挂载 */
-  const allMounted = effectiveVisible >= items.length;
+  const allMounted = effectiveVisible >= turnCount;
   /**
    * 首屏窗口已就绪（钉底 / 打开 settle 用）。不再等全历史挂满——
    * 否则会回到「拉满 Infinity → 流式拖全树」的老路径。
    */
   const windowReady =
-    items.length === 0 ||
-    effectiveVisible >= Math.min(CHAT_MOUNT_WINDOW, items.length) ||
+    turnCount === 0 ||
+    effectiveVisible >= Math.min(CHAT_MOUNT_WINDOW, turnCount) ||
     allMounted;
-  /** 挂载窗口起点（旧消息条数，未挂载） */
-  const visibleStartOffset = Math.max(0, items.length - effectiveVisible);
-  /** 虚拟化切片：尾部 effectiveVisible 条（最新在底） */
-  const visibleItems = items.slice(visibleStartOffset);
-  /**
-   * 将扁平消息合成 turn：工具循环 + 中间 tool_result 合并，模型铭牌只出一次。
-   * 在虚拟化切片上分组（底栏近期完整，超长会话旧段渐进加载）。
-   */
-  const visibleTurns = useMemo(
-    () => groupItemsIntoTurns(visibleItems),
-    [visibleItems],
+  /** 未挂载 turn 的顶部占位，保证短尾部内容仍有真实滚动范围。 */
+  const omittedTurnCount = Math.max(0, turnCount - effectiveVisible);
+  const topVirtualSpacerHeight =
+    omittedTurnCount * CHAT_MOUNT_ESTIMATED_TURN_HEIGHT;
+  /** 虚拟化切片：尾部 effectiveVisible 个 turn（最新在底）。 */
+  const visibleTurns = allTurns.slice(
+    Math.max(0, turnCount - effectiveVisible),
   );
-
   /**
    * 单条消息入场动画门控：只给「本轮新出现的末尾 turn」加 message-enter。
    * - 跟踪上一帧的末尾 turn key；末尾 key 变化 + 运行中 → 该 key 挂淡入上滑。
@@ -1055,60 +1036,19 @@ export function Chat({
   /** 已绑定渠道即显示 token 栏；kscc 仅隐藏占用圆环（占用不可信），累计统计照常 */
   const showTokenBar = lockedKind !== null;
 
-  // 旧会话打开后 Markdown / 高亮 / 底栏占位还会微抖一两秒。
-  // 过早切 smooth 会让 StickToBottom 弹簧跟每一次长高，看起来像文字在轻轻晃。
-  // 至少 hold 1s，并要求高度连续稳定 ~520ms；最迟 2.6s 放行。
-  useEffect(() => {
-    if (!scrollReady || !windowReady) {
-      setHoldInstantResize(true);
-      return;
-    }
-    const el = scrollContextRef.current?.scrollRef.current;
-    if (!el) {
-      const timer = window.setTimeout(() => setHoldInstantResize(false), 1000);
-      return () => window.clearTimeout(timer);
-    }
-    const openedAt = Date.now();
-    let lastHeight = el.scrollHeight;
-    let stableSince = openedAt;
-    const MIN_HOLD_MS = 1000;
-    const STABLE_MS = 520;
-    const FAIL_OPEN_MS = 2600;
-    const poll = window.setInterval(() => {
-      const height = el.scrollHeight;
-      if (Math.abs(height - lastHeight) > 1) {
-        lastHeight = height;
-        stableSince = Date.now();
-        return;
-      }
-      const now = Date.now();
-      if (now - openedAt >= MIN_HOLD_MS && now - stableSince >= STABLE_MS) {
-        window.clearInterval(poll);
-        setHoldInstantResize(false);
-      }
-    }, 50);
-    const failOpen = window.setTimeout(() => {
-      window.clearInterval(poll);
-      setHoldInstantResize(false);
-    }, FAIL_OPEN_MS);
-    return () => {
-      window.clearInterval(poll);
-      window.clearTimeout(failOpen);
-    };
-  }, [scrollReady, windowReady]);
-
-  // 切换会话时加载历史。滚动位置恢复交给 ScrollPositionManager（Conversation 内部）：
+  // 滚动位置恢复交给 ScrollPositionManager（Conversation 内部）：
   // 钉底在 scrollReady + 尾部窗口就绪后即可；中间位才拉满历史再还原。
   useEffect(() => {
     sessionIdRef.current = sessionId;
     // 切会话清同轮完成耗时幂等闸，避免上轮残留 true 屏蔽新会话首条终态记录
     completionRecordedRef.current = false;
+    finalOutputSeenRef.current = false;
+    setFinalOutputState(null);
     setItems([]);
     setStreamState(clearSessionStreamState());
     // 运行态：不在此 stopRun（见下方 async reconcile 注释）。
     setHasDraft(false);
     setScrollReady(false);
-    setHoldInstantResize(true);
     const restoreMid = hasSavedMidPosition(
       peekSessionScrollDistance(sessionId),
     );
@@ -1179,7 +1119,10 @@ export function Chat({
             ? (raw as TAgentMessage)
             : sdkMessageToIR(raw as never).message;
         if (message) {
-          irItems.push({ key: `h${itemIdxRef.current++}`, message });
+          irItems.push({
+            key: `h${itemIdxRef.current++}`,
+            message: compactAssistantMessageForDisplay(message),
+          });
         }
       }
       if (cancelled) return;
@@ -1193,7 +1136,8 @@ export function Chat({
       // 默认只挂尾部窗口；中间位恢复才拉满。≤100 也曾 Infinity，60 轮流式会被历史树拖死。
       setVisibleCount((prev) => {
         if (prev === Number.POSITIVE_INFINITY) return prev;
-        return Math.min(CHAT_MOUNT_WINDOW, Math.max(rehydrated.length, 1));
+        const rehydratedTurnCount = groupItemsIntoTurns(rehydrated).length;
+        return Math.min(CHAT_MOUNT_WINDOW, Math.max(rehydratedTurnCount, 1));
       });
       // 从历史 assistant.usage 回填底栏（最近一条有 usage 的 assistant）
       for (let i = rehydrated.length - 1; i >= 0; i--) {
@@ -1351,7 +1295,10 @@ export function Chat({
                   ? (raw as TAgentMessage)
                   : sdkMessageToIR(raw as never).message;
               if (message) {
-                irItems.push({ key: `h${idx++}`, message });
+                irItems.push({
+                  key: `h${idx++}`,
+                  message: compactAssistantMessageForDisplay(message),
+                });
               }
             }
             if (sessionIdRef.current !== sid) return;
@@ -1444,7 +1391,7 @@ export function Chat({
       (root.querySelector('[role="log"]') as HTMLElement | null) ?? root;
     const convBottom = conversationEl.getBoundingClientRect().bottom;
     const stackTop = stack.getBoundingClientRect().top;
-    // 刻度只避让运行时计时胶囊，不把 AskUser/权限/队列等弹窗高度算进来。
+    // 刻度要避让输入框和运行时计时胶囊；不把 AskUser/权限/队列等弹窗高度算进来。
     const timer = root.querySelector<HTMLElement>(".composer-run-timer");
     const timerRect = timer?.getBoundingClientRect();
     const timerStyle = timer ? window.getComputedStyle(timer) : null;
@@ -1456,9 +1403,17 @@ export function Chat({
       timerStyle.visibility !== "hidden" &&
       Number(timerStyle.opacity) > 0.01,
     );
-    const minimapBottomInset = timerVisible
-      // 轨道底部必须停在胶囊顶部之上；用 bottom 会让轨道穿过胶囊本体。
-      ? Math.max(8, Math.round(convBottom - timerRect!.top + 8))
+    const inputDockRect = composerInputDockRef.current?.getBoundingClientRect();
+    const inputDockVisible = Boolean(
+      inputDockRect && inputDockRect.height > 0 && inputDockRect.width > 0,
+    );
+    const obstacleTop = Math.min(
+      timerVisible ? timerRect!.top : Number.POSITIVE_INFINITY,
+      inputDockVisible ? inputDockRect!.top : Number.POSITIVE_INFINITY,
+    );
+    const minimapBottomInset = Number.isFinite(obstacleTop)
+      ? // 轨道底部必须停在障碍物顶部之上；用 bottom 会让刻度穿到输入框/胶囊后面。
+        Math.max(8, Math.round(convBottom - obstacleTop + 8))
       : 8;
     root.style.setProperty(
       "--session-minimap-bottom-inset",
@@ -1547,18 +1502,9 @@ export function Chat({
       window.removeEventListener("tagent:composer-top-remeasure", onRemeasure);
   }, [scheduleComposerTopUpdate]);
 
-  // AskUser / 权限弹窗出现或收起：重测底栏占位；钉底用 instant，避免与弹层入场抢主线程
+  // AskUser / 权限弹窗出现或收起：只重测底栏占位；滚动补偿统一交给 ScrollPositionManager。
   useEffect(() => {
-    const cancel = scheduleComposerTopUpdate();
-    if (!hasBlockingBottomBanner) return cancel;
-    const t = window.setTimeout(() => {
-      const ctx = scrollContextRef.current;
-      if (ctx?.isAtBottom) void ctx.scrollToBottom("instant");
-    }, 40);
-    return () => {
-      cancel();
-      clearTimeout(t);
-    };
+    return scheduleComposerTopUpdate();
   }, [hasBlockingBottomBanner, scheduleComposerTopUpdate]);
 
   // 对话列宽度：右栏打开或窗口变窄 → 紧凑输入栏（图标优先，防文字叠压）
@@ -1654,8 +1600,8 @@ export function Chat({
   // 虚拟化分批：默认只补到尾部窗口；allowFullMount（上滑/中间位/锚点）才继续往更早补。
   useEffect(() => {
     if (allMounted) return;
-    if (items.length === 0) return;
-    const windowCap = Math.min(CHAT_MOUNT_WINDOW, items.length);
+    if (turnCount === 0) return;
+    const windowCap = Math.min(CHAT_MOUNT_WINDOW, turnCount);
     if (!allowFullMount && effectiveVisible >= windowCap) return;
     // requestIdleCallback 兼容（Electron Chromium 原生支持，fallback setTimeout）
     const scheduleIdle: (cb: () => void) => number =
@@ -1668,23 +1614,17 @@ export function Chat({
         : (h) => window.clearTimeout(h);
     const handle = scheduleIdle(() => {
       setVisibleCount((prev) => {
-        if (prev >= items.length) return prev;
+        if (prev >= turnCount) return prev;
         const cap = allowFullMount
-          ? items.length
-          : Math.min(CHAT_MOUNT_WINDOW, items.length);
-        const base = prev === Number.POSITIVE_INFINITY ? items.length : prev;
+          ? turnCount
+          : Math.min(CHAT_MOUNT_WINDOW, turnCount);
+        const base = prev === Number.POSITIVE_INFINITY ? turnCount : prev;
         const next = Math.min(base + CHAT_MOUNT_BATCH, cap);
-        return next >= items.length ? Number.POSITIVE_INFINITY : next;
+        return next >= turnCount ? Number.POSITIVE_INFINITY : next;
       });
     });
     return () => cancelIdle(handle);
-  }, [
-    visibleCount,
-    items.length,
-    allMounted,
-    allowFullMount,
-    effectiveVisible,
-  ]);
+  }, [visibleCount, turnCount, allMounted, allowFullMount, effectiveVisible]);
 
   // 开流后若未在查历史，把过度挂载收回尾部窗口（中间位 allowFullMount 时不撤）。
   useEffect(() => {
@@ -1707,30 +1647,44 @@ export function Chat({
 
     const onScroll = (): void => {
       if (scroller.scrollTop > CHAT_MOUNT_TOP_LOAD_PX) return;
-      if (items.length === 0) return;
+      if (turnCount === 0) return;
       const now = Date.now();
       if (now < coolUntil) return;
       coolUntil = now + 120;
       setVisibleCount((prev) => {
-        const mounted = prev >= items.length ? items.length : prev;
-        if (mounted >= items.length) return prev;
-        const next = Math.min(mounted + CHAT_MOUNT_BATCH, items.length);
-        return next >= items.length ? Number.POSITIVE_INFINITY : next;
+        const mounted = prev >= turnCount ? turnCount : prev;
+        if (mounted >= turnCount) return prev;
+        const next = Math.min(mounted + CHAT_MOUNT_BATCH, turnCount);
+        return next >= turnCount ? Number.POSITIVE_INFINITY : next;
       });
       setAllowFullMount(true);
     };
 
     scroller.addEventListener("scroll", onScroll, { passive: true });
     return () => scroller.removeEventListener("scroll", onScroll);
-  }, [scrollReady, sessionId, items.length]);
+  }, [scrollReady, sessionId, turnCount]);
 
-  // 流式中回到底部 → 收回窗口，把更早的 DOM 卸掉（ReadingScrollGuard 会在高度收缩时钉底）
+  // 兜底：如果当前窗口仍没有形成滚动范围，继续挂载一批历史轮次。
+  // 正常情况下顶部占位块已经能提供滚动范围；这里处理容器尺寸、字体加载等异步布局场景。
+  useEffect(() => {
+    if (!scrollReady || allMounted || turnCount <= 0) return;
+    const scroller = scrollContextRef.current?.scrollRef.current;
+    if (!scroller || scroller.scrollHeight > scroller.clientHeight + 1) return;
+
+    setVisibleCount((prev) => {
+      const mounted = Number.isFinite(prev)
+        ? Math.min(prev, turnCount)
+        : turnCount;
+      const next = Math.min(mounted + CHAT_MOUNT_BATCH, turnCount);
+      return next >= turnCount ? Number.POSITIVE_INFINITY : next;
+    });
+  }, [allMounted, effectiveVisible, scrollReady, turnCount]);
+  // 流式中回到底部 → 收回窗口，把更早的 DOM 卸掉（ScrollPositionManager 负责锚点收口）
   useEffect(() => {
     const live = running || runStartedAt != null;
     if (!live || !scrollReady) return;
     const scroller = scrollContextRef.current?.scrollRef.current;
     if (!scroller) return;
-
     const onScroll = (): void => {
       const dist =
         scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
@@ -1875,6 +1829,38 @@ export function Chat({
       p.kind === "sdk_message" &&
       (p.message.type === "assistant" || p.message.type === "user") &&
       Boolean(p.message.parentToolUseId);
+    const hasMainlineAssistantText =
+      p.kind === "sdk_message" &&
+      !isParentedSdk &&
+      p.message.type === "assistant" &&
+      p.message.content.some(
+        (block) =>
+          block.type === "text" &&
+          typeof block.text === "string" &&
+          block.text.trim().length > 0,
+      );
+    const hasMainlineStreamText =
+      p.kind === "stream_text_delta" &&
+      !p.parentToolUseId &&
+      p.text.trim().length > 0;
+    const hasMainlineStreamThinking =
+      p.kind === "stream_thinking_delta" && p.text.trim().length > 0;
+    const hasMainlineAssistantMessage =
+      p.kind === "sdk_message" &&
+      !isParentedSdk &&
+      p.message.type === "assistant";
+    if (
+      hasMainlineAssistantMessage ||
+      hasMainlineStreamText ||
+      hasMainlineStreamThinking
+    ) {
+      // 发送时只挂起“跟随最新轮”的意图；首个主线 assistant 内容到达后才激活，
+      // 避免发送阶段收回虚拟化窗口时把上一轮 DOM 的底部误当成本轮底部。
+      activateSessionAtBottom(sessionId);
+      // 迟到的主线正文到达：解除“等待后台回调/缺少最终答复”提示。
+      finalOutputSeenRef.current = true;
+      setFinalOutputState(null);
+    }
 
     // run 仍在进行：取消 turn_end 的延迟停止；流式/落盘事件恢复 running
     // （保过程区展开、停止键在位；adopt 沿用原 startedAt，不重置计时）
@@ -2043,6 +2029,7 @@ export function Chat({
       // 回合结束后只剩空壳（重开会话读 JSONL 才恢复）。此处把正文写入末条主线 assistant，与思考提交对称。
       // 累计快照（Claude/Pi）的 final（带 stop_reason）已清 streamState.text → trim()='' no-op，不重复落字。
       const pendingText = streamStateRef.current.text.trim();
+      if (pendingText) finalOutputSeenRef.current = true;
       // commit 思考/正文 + 清 streaming 标记一次原子更新，避免分步 setItems 互相覆盖
       setItems((prev) => {
         let next = prev;
@@ -2065,8 +2052,8 @@ export function Chat({
       resetStreamState();
       // result = 整个 run 真正 idle（turn_end 只是单个 SDK turn 结束，工具循环还会继续）。
       clearPendingStop();
-      // 收尾高度骤降：切 instant，避免 StickToBottom smooth 再从头扫到底。
-      beginStreamTransition(500);
+
+
 
       // error_* 以前几乎对 UI 透明（只吃 usage）；抬到 SessionErrorBanner，避免「气泡里有失败但无错误条」
       const subtype = typeof p.subtype === "string" ? p.subtype : "";
@@ -2119,11 +2106,37 @@ export function Chat({
           recordCompletion("error");
           stopRun();
         }
-      } else if (subtype === "paused_no_progress" || sessionHasOpenWork()) {
-        // 等用户选 / 无进展暂停：本轮没完。软停只收过程区，startedAt 留下，提交后续计时。
-        softStopSessionRun(sessionId);
       } else {
-        completeRun();
+        const hasOpenWork = sessionHasOpenWork();
+        const hasFinalOutput = finalOutputSeenRef.current;
+        if (subtype === "paused_no_progress" || hasOpenWork) {
+          // result 先到、后台任务/工具回调尚未归还时，保留 startedAt 让后续事件可以续跑；
+          // 以前这里只软停，消息区没有任何状态，用户会看到“完成”的空壳。
+          if (!hasFinalOutput) {
+            setFinalOutputState("waiting");
+            pushTicker(
+              makeStatusTickerItem(
+                "当前阶段已结束，正在等待后台回调，暂未收到最终答复",
+                "info",
+                20000,
+              ),
+            );
+          }
+          softStopSessionRun(sessionId);
+        } else {
+          if (!hasFinalOutput) {
+            // 没有在途工作却没有正文：正常收口，但必须把异常的空结果告诉用户。
+            setFinalOutputState("missing");
+            pushTicker(
+              makeStatusTickerItem(
+                "任务已结束，但模型没有返回最终答复",
+                "warn",
+                16000,
+              ),
+            );
+          }
+          completeRun();
+        }
       }
       bumpRefresh();
     } else if (p.kind === "stream_text_delta") {
@@ -2520,9 +2533,8 @@ export function Chat({
       alert("没有可用模型，请先在「设置 → 渠道」中启用渠道和模型");
       return;
     }
-    // 新消息落地时上一轮「运行了」会瞬时折叠：~400ms resize=instant，
-    // 避免 StickToBottom smooth 跟着高度收缩扫视口（对齐 Cursor）。
-    beginStreamTransition(400);
+
+
     // 新发送/重试开始时收起错误条（若再失败会重新推 session_error）
     setSessionError({ sessionId: sessionIdRef.current, error: null });
     resetStreamState();
@@ -2581,14 +2593,11 @@ export function Chat({
     // 发送前收回挂载窗口：长会话若已拉满历史，避免本轮流式拖着全树重渲
     setAllowFullMount(false);
     setVisibleCount(CHAT_MOUNT_WINDOW);
-    // 发送是明确的“看最新一轮”意图：重新打开 StickToBottom 的底部锁，
-    // 先把当前视口推到预留区底部，再由 ResizeObserver 跟随后续 delta。
-    // 用户之后主动上滚时，use-stick-to-bottom 会解除该锁。
-    const sendScrollContext = scrollContextRef.current;
-    if (sendScrollContext) {
-      markSessionAtBottom(sessionIdRef.current);
-      void sendScrollContext.scrollToBottom("instant");
-    }
+    // 发送时只记录“本轮要跟随到底部”的意图，不要立刻钉底。
+    // 此时新用户消息还没有进入 items，DOM 的底部仍然是上一轮；
+    // 立即 scrollToBottom 会把上一轮错误地当成本轮位置。等新消息/流式壳
+    // 挂载后，由 ScrollPositionManager 的 ResizeObserver 统一钉到真正的新尾部。
+    markSessionAtBottom(sessionIdRef.current);
     startRun();
     try {
       const res = await window.electronAPI.sendMessage({
@@ -3200,30 +3209,18 @@ export function Chat({
    */
   const ensureMinimapMessageMounted = useCallback(
     async (messageId: string): Promise<void> => {
-      let itemIdx = items.findIndex((it) => it.key === messageId);
-      if (itemIdx < 0) {
-        const turns = groupItemsIntoTurns(items);
-        const turn = turns.find((t) => t.key === messageId);
-        if (turn?.kind === "user") {
-          itemIdx = items.findIndex(
-            (it) => it.key === turn.key || it.message === turn.message,
-          );
-        } else if (turn?.kind === "assistant-turn") {
-          const first = turn.items[0];
-          itemIdx = first ? items.findIndex((it) => it.key === first.key) : -1;
-        }
-      }
-      if (itemIdx < 0) {
+      const turnIdx = allTurns.findIndex((turn) => turn.key === messageId);
+      if (turnIdx < 0) {
         setAllowFullMount(true);
         setVisibleCount(Number.POSITIVE_INFINITY);
         return;
       }
-      // 多挂几条上下文，避免目标贴在虚拟化切边上
-      const from = Math.max(0, itemIdx - 4);
-      const needCount = items.length - from;
+      // 多挂几轮上下文，避免目标贴在虚拟化切边上。
+      const from = Math.max(0, turnIdx - 4);
+      const needCount = turnCount - from;
       setAllowFullMount(true);
       setVisibleCount(
-        needCount >= items.length
+        needCount >= turnCount
           ? Number.POSITIVE_INFINITY
           : Math.max(needCount, CHAT_MOUNT_WINDOW),
       );
@@ -3231,7 +3228,7 @@ export function Chat({
         requestAnimationFrame(() => resolve());
       });
     },
-    [items],
+    [allTurns, turnCount],
   );
 
   const jumpToCollabAnchor = useCallback((anchorKey: string) => {
@@ -3405,16 +3402,19 @@ export function Chat({
                 <Conversation
                   className="absolute inset-0 min-h-0"
                   contextRef={scrollContextRef}
-                  resize={
-                    !holdInstantResize && !streamTransitioning
-                      ? "smooth"
-                      : "instant"
-                  }
+                  // 自动布局滚动由 ScrollPositionManager 统一协调；第三方内部观察器已断开。
+                  resize="instant"
                 >
                   <ConversationContent className="session-conversation-pad pt-2">
                     <div className="tagent-thread">
+                      {topVirtualSpacerHeight > 0 ? (
+                        <div
+                          aria-hidden="true"
+                          style={{ height: topVirtualSpacerHeight }}
+                        />
+                      ) : null}
                       {/* 虚拟化加载提示：未全挂时常驻显示（说清楚在加载、剩多少条），不闪烁 */}
-                      {!allMounted && items.length > 0 && (
+                      {!allMounted && turnCount > 0 && (
                         <div
                           className="flex items-center justify-center gap-2 py-2 text-xs text-muted-foreground"
                           aria-live="polite"
@@ -3423,14 +3423,14 @@ export function Chat({
                             <>
                               <span className="size-3.5 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground/60" />
                               <span>
-                                正在加载更早的 {items.length - effectiveVisible}{" "}
-                                条…
+                                正在加载更早的 {turnCount - effectiveVisible}{" "}
+                                轮…
                               </span>
                             </>
                           ) : (
                             <span>
-                              向上滚动加载更早的{" "}
-                              {items.length - effectiveVisible} 条
+                              向上滚动加载更早的 {turnCount - effectiveVisible}{" "}
+                              轮
                             </span>
                           )}
                         </div>
@@ -3507,6 +3507,12 @@ export function Chat({
                                 }
                                 mentionRoles={mentionRoles}
                                 completedDuration={completedDurations[turn.key]}
+                                finalOutputState={
+                                  turn.kind === "assistant-turn" &&
+                                  turnIndex === lastAssistantIdx
+                                    ? finalOutputState
+                                    : null
+                                }
                                 subagentCards={subagentCards}
                                 onOpenSubagent={(parentToolUseId) =>
                                   setSubagentDetail(parentToolUseId)
@@ -3568,6 +3574,14 @@ export function Chat({
                             runStartedAt={runStartedAt}
                             isLatestAssistantTurn
                             streamState={streamState}
+                            fallbackModelId={
+                              hasStreamContent(streamState) &&
+                              effectiveSelection?.modelId &&
+                              !isMoaModelId(effectiveSelection.modelId)
+                                ? effectiveSelection.modelId
+                                : undefined
+                            }
+                            finalOutputState={finalOutputState}
                             mentionLabels={
                               liveMentionLabels.length > 0
                                 ? liveMentionLabels
@@ -3595,8 +3609,8 @@ export function Chat({
                     ready={scrollReady}
                     restoreReady={allowFullMount ? allMounted : windowReady}
                     layoutKey={effectiveVisible}
+                    live={running || runStartedAt != null}
                   />
-                  <ReadingScrollGuard live={running || runStartedAt != null} />
                   <ScrollMinimap
                     items={minimapItems}
                     onEnsureMessage={ensureMinimapMessageMounted}
@@ -3719,6 +3733,7 @@ export function Chat({
                       />
                     </div>
                     <div
+                      ref={composerInputDockRef}
                       className="session-input-dock"
                       data-permission-mode={permissionMode}
                       data-execution-mode={executionMode}
@@ -3760,7 +3775,7 @@ export function Chat({
                                 <Button
                                   variant="ghost"
                                   size="icon-sm"
-                                  className="shrink-0 rounded-lg text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                                  className="shrink-0 rounded-xl text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
                                   onClick={handleOpenFileDialog}
                                   aria-label="添加附件"
                                 >
@@ -3981,6 +3996,7 @@ function TurnView({
   mentionLabels,
   mentionRoles,
   completedDuration,
+  finalOutputState,
   subagentCards,
   onOpenSubagent,
   onOpenDiscussion,
@@ -4001,6 +4017,7 @@ function TurnView({
   mentionLabels?: string[];
   mentionRoles?: Array<{ id: string; displayName: string }>;
   completedDuration?: TurnDuration;
+  finalOutputState?: "waiting" | "missing" | null;
   subagentCards?: Map<string, TaskCardState>;
   onOpenSubagent?: (parentToolUseId: string) => void;
   /** 点击圆桌讨论入口卡 → 全屏讨论室（Chat 侧 setOpenDiscussionId） */
@@ -4036,6 +4053,7 @@ function TurnView({
           fallbackModelId={fallbackModelId}
           mentionLabels={mentionLabels}
           completedDuration={completedDuration}
+          finalOutputState={finalOutputState}
           subagentCards={subagentCards}
           onOpenSubagent={onOpenSubagent ?? (() => {})}
         />

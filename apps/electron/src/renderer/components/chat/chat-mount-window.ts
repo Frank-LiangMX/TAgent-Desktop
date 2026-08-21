@@ -8,3 +8,5 @@
 export const CHAT_MOUNT_WINDOW = 48
 export const CHAT_MOUNT_BATCH = 40
 export const CHAT_MOUNT_TOP_LOAD_PX = 140
+/** 未挂载历史轮次的占位高度；真实轮次挂入后由 scrollHeight 差值补偿锚点。 */
+export const CHAT_MOUNT_ESTIMATED_TURN_HEIGHT = 180
