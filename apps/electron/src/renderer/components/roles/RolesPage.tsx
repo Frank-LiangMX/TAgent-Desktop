@@ -481,7 +481,7 @@ export function RolesPage(): JSX.Element {
 
       {/* 详情弹窗 */}
       <Dialog open={detailRole != null} onOpenChange={closeDetail}>
-        <DialogContent className="roles-dialog session-glass-modal max-h-[min(88vh,980px)] w-[clamp(480px,46vw,800px)] gap-0 overflow-hidden p-0 sm:max-w-none">
+        <DialogContent className="roles-dialog roles-dialog--role-detail session-glass-modal w-[clamp(480px,46vw,800px)] gap-0 overflow-hidden p-0 sm:max-w-none">
           {detailRole ? (
             <>
               <div className="roles-dialog__head border-b border-border/50">
@@ -493,7 +493,7 @@ export function RolesPage(): JSX.Element {
                 </DialogDescription>
               </div>
 
-              <div className="roles-dialog-body px-5 pb-2">
+              <div className="roles-dialog-body scrollbar-thin">
                 <div className="roles-dialog-identity">
                   <span className="roles-dialog-identity__avatar" aria-hidden>
                     {monogram(detailRole.displayName)}

@@ -4,6 +4,7 @@ import {
   ArrowsClockwise,
   Brain,
   CircleNotch,
+  MagnifyingGlass,
   Plus,
   Robot,
   Sparkle,
@@ -132,6 +133,7 @@ export function BotLibraryView(): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [roleQuery, setRoleQuery] = useState("");
   const [form, setForm] = useState<BotFormState>(EMPTY_FORM);
   const [createOpen, setCreateOpen] = useState(false);
   const [detailBot, setDetailBot] = useState<BotProfileRecord | null>(null);
@@ -185,6 +187,16 @@ export function BotLibraryView(): JSX.Element {
       );
     });
   }, [bots, query]);
+
+  const filteredRoles = useMemo(() => {
+    const normalized = roleQuery.trim().toLowerCase();
+    if (!normalized) return roles;
+    return roles.filter((role) =>
+      [role.displayName, role.id, role.description ?? ""].some((value) =>
+        value.toLowerCase().includes(normalized),
+      ),
+    );
+  }, [roles, roleQuery]);
 
   const openDetail = async (record: BotProfileRecord) => {
     setDetailBot(record);
@@ -375,7 +387,14 @@ export function BotLibraryView(): JSX.Element {
               weight="bold"
             />
           </Button>
-          <Button size="sm" disabled={busy} onClick={() => setCreateOpen(true)}>
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              setRoleQuery("");
+              setCreateOpen(true);
+            }}
+          >
             <Plus className="mr-1.5 size-3.5" weight="bold" />
             新建 Bot
           </Button>
@@ -418,7 +437,10 @@ export function BotLibraryView(): JSX.Element {
             <Button
               size="sm"
               variant="secondary"
-              onClick={() => setCreateOpen(true)}
+              onClick={() => {
+                setRoleQuery("");
+                setCreateOpen(true);
+              }}
             >
               新建 Bot
             </Button>
@@ -491,8 +513,14 @@ export function BotLibraryView(): JSX.Element {
         </ul>
       )}
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="roles-dialog session-glass-modal max-h-[min(88vh,720px)] w-[clamp(420px,44vw,680px)] gap-0 overflow-hidden p-0 sm:max-w-none">
+      <Dialog
+        open={createOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open);
+          if (!open) setRoleQuery("");
+        }}
+      >
+        <DialogContent className="roles-dialog roles-dialog--create session-glass-modal w-[clamp(420px,44vw,680px)] gap-0 overflow-hidden p-0 sm:max-w-none">
           <div className="roles-dialog__head border-b border-border/50">
             <DialogTitle className="text-base font-semibold tracking-tight">
               新建 Bot
@@ -502,7 +530,7 @@ export function BotLibraryView(): JSX.Element {
               详情的“运行配置”中调整。
             </DialogDescription>
           </div>
-          <div className="bots-form px-5 py-4">
+          <div className="roles-dialog-body bots-form">
             <div className="bots-form__field">
               <Label htmlFor="bot-display-name">名称</Label>
               <Input
@@ -519,25 +547,67 @@ export function BotLibraryView(): JSX.Element {
               />
             </div>
             <div className="bots-form__field">
-              <Label htmlFor="bot-role">角色卡</Label>
-              <select
-                id="bot-role"
-                className="bots-form__select"
-                value={form.roleId}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    roleId: event.target.value,
-                  }))
-                }
-                disabled={roles.length === 0}
-              >
-                {roles.map((role) => (
-                  <option key={role.id} value={role.id}>
-                    {role.displayName}
-                  </option>
-                ))}
-              </select>
+              <Label id="bot-role-label">库中角色卡</Label>
+              <div className="bots-role-picker" role="group" aria-labelledby="bot-role-label">
+                <div className="relative">
+                  <MagnifyingGlass
+                    className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                    weight="bold"
+                    aria-hidden
+                  />
+                  <Input
+                    className="bots-role-picker__search pl-8"
+                    value={roleQuery}
+                    onChange={(event) => setRoleQuery(event.target.value)}
+                    placeholder="搜索角色卡名称…"
+                    disabled={roles.length === 0}
+                    aria-label="搜索库中角色卡"
+                  />
+                </div>
+                {filteredRoles.length === 0 ? (
+                  <p className="bots-role-picker__empty">
+                    {roles.length === 0 ? "还没有可用角色卡" : "没有匹配的角色卡"}
+                  </p>
+                ) : (
+                  <ul className="bots-role-picker__list scrollbar-thin" role="listbox" aria-label="库中角色卡">
+                    {filteredRoles.map((role) => {
+                      const selected = form.roleId === role.id;
+                      return (
+                        <li key={role.id}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={selected}
+                            data-selected={selected || undefined}
+                            className="bots-role-picker__card"
+                            disabled={busy}
+                            onClick={() =>
+                              setForm((current) => ({
+                                ...current,
+                                roleId: role.id,
+                              }))
+                            }
+                          >
+                            <span className="bots-role-picker__avatar" aria-hidden>
+                              {monogram(role.displayName)}
+                            </span>
+                            <span className="bots-role-picker__copy">
+                              <span className="bots-role-picker__name">
+                                {role.displayName}
+                              </span>
+                              {role.description ? (
+                                <span className="bots-role-picker__desc">
+                                  {role.description}
+                                </span>
+                              ) : null}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
               <span className="bots-form__hint">
                 角色卡决定岗位身份；Bot 可以在此基础上拥有自己的长期配置。
               </span>
@@ -585,7 +655,7 @@ export function BotLibraryView(): JSX.Element {
             </Button>
             <Button
               size="sm"
-              disabled={busy || !form.displayName.trim()}
+              disabled={busy || !form.displayName.trim() || !form.roleId}
               onClick={() => void saveNewBot()}
             >
               创建 Bot
@@ -600,7 +670,7 @@ export function BotLibraryView(): JSX.Element {
           if (!open) setDetailBot(null);
         }}
       >
-        <DialogContent className="roles-dialog session-glass-modal max-h-[min(88vh,820px)] w-[clamp(460px,48vw,760px)] gap-0 overflow-hidden p-0 sm:max-w-none">
+        <DialogContent className="roles-dialog session-glass-modal w-[clamp(460px,48vw,760px)] gap-0 overflow-hidden p-0 sm:max-w-none">
           {detailBot ? (
             <>
               <div className="roles-dialog__head border-b border-border/50">
@@ -618,7 +688,7 @@ export function BotLibraryView(): JSX.Element {
                   {formatDate(detailBot.profile.createdAt)}
                 </DialogDescription>
               </div>
-              <div className="roles-dialog-body bots-detail-body px-5 pb-3">
+              <div className="roles-dialog-body bots-detail-body scrollbar-thin">
                 <div className="bots-detail-hero">
                   <span
                     className="roles-dialog-identity__avatar bots-card__avatar"
