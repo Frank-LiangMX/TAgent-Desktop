@@ -155,6 +155,11 @@ export function normalizeMemberTurnUsage(
  * 诚实性约束：capabilities() 必须如实反映 provider 能力；未支持的操作（如 supportsResume=false
  * 时的 resumeSession）必须 fail-closed（抛错），禁止假装成功。
  *
+ * inflight turn 取消：{@link bindTurnAbort} 把调用方 signal 与该 session 的 interrupt
+ * controller 组合成一个 AbortSignal，供 runTurn 透传；{@link interruptSession} abort 该
+ * controller 即取消进行中的 turn。**不杀真实子进程**——仅协作 AbortSignal；进程级 kill 由
+ * runner 自身在收到 abort 时处理（如 kscc seat runner 的 proc.kill）。
+ *
  * 实现见 apps/electron/src/main/lib/collaboration/（Channel / Fake）。
  */
 export interface MemberSessionLifecycleAdapter {
@@ -166,6 +171,24 @@ export interface MemberSessionLifecycleAdapter {
   ): Promise<{ ok: boolean; summary?: string }>;
   interruptSession(input: MemberSessionInterruptInput): Promise<void>;
   heartbeat(handle: MemberSessionHandle): Promise<MemberSessionHeartbeatResult>;
+  /**
+   * 把调用方 signal 与该 session 的 interrupt controller 组合成一个 AbortSignal，
+   * 供 {@link MemberBackendAdapter.runTurn} 透传给底层 runner。
+   *
+   * 语义：
+   * - **turn 开始**：为 sessionId 登记 AbortController（复用若已存在——同 session 并发
+   *   turn 共享一个 interrupt 控制点；否则新建），返回 callerSignal 与该 controller 的
+   *   组合 signal（任一 abort 即 abort）。
+   * - **interruptSession**：abort 该 session 的 controller → 组合 signal 随之 abort →
+   *   取消进行中的 turn；abort 后从登记表移除，使下一次 bindTurnAbort 拿到全新 controller
+   *   （避免被中断过的 session 新 turn 一启动即已 abort）。
+   * - **结束清理**：callerSignal abort 时（bridge dispose / 调用方取消）自动移除登记项；
+   *   正常完成时 controller 留待下一次 bindTurnAbort 覆盖或 interruptSession abort。
+   *
+   * 不杀真实子进程；仅协作 AbortSignal。callerSignal 可缺（仅靠 interrupt 取消）。
+   * sessionId 一般取 {@link MemberSessionHandle.sessionId}（Channel 实现中与 logicalSessionId 同值）。
+   */
+  bindTurnAbort(sessionId: string, callerSignal?: AbortSignal): AbortSignal;
 }
 
 /**

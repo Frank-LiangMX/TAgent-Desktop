@@ -37,6 +37,7 @@ import {
   type CollaborationHostToolHandler,
   type CollaborationMemberCapabilities,
   type MemberBackendAdapter,
+  type MemberSessionLifecycleAdapter,
   type MemberTurnInput,
   type MemberTurnResult,
 } from "@tagent/shared";
@@ -586,7 +587,23 @@ async function runCliRoomTurn(
   };
 }
 
+/**
+ * Channel 后端适配器：一次 turn 真实调用外部渠道 / kscc 模型并返回正文。
+ *
+ * 取消：input.signal 透传给 seat runner；abort 即抛错，调用方据 signal.aborted 置 cancelled。
+ *
+ * P1-2b：可选注入 {@link MemberSessionLifecycleAdapter}。注入后 runTurn 内把 input.signal 与
+ * 该 session 的 interrupt controller 组合成一个 AbortSignal（lifecycle.bindTurnAbort）再透传，
+ * 使 lifecycle.interruptSession 能取消进行中的 turn。未注入时行为不变（直接用 input.signal），
+ * 既有调用方与测试零影响。
+ */
 export class ChannelBackendAdapter implements MemberBackendAdapter {
+  /**
+   * @param lifecycle 可选生命周期适配器；注入后 runTurn 透传组合 signal，
+   * 使 interruptSession 可取消进行中的 turn。未注入时 runTurn 直接用 input.signal。
+   */
+  constructor(private readonly lifecycle?: MemberSessionLifecycleAdapter) {}
+
   capabilities(): CollaborationMemberCapabilities {
     return CHANNEL_BACKEND_CAPABILITIES;
   }
@@ -598,6 +615,16 @@ export class ChannelBackendAdapter implements MemberBackendAdapter {
       modelId: input.modelId,
     });
 
+    // P1-2b：组合 input.signal 与 session interrupt controller（若注入 lifecycle 且有
+    // logicalSessionId）。未注入 / 无 logicalSessionId 时 turnSignal === input.signal、
+    // turnInput === input，行为与既有完全一致（interrupt 需 sessionId 寻址，无则不组合）。
+    const turnSignal =
+      this.lifecycle && input.logicalSessionId
+        ? this.lifecycle.bindTurnAbort(input.logicalSessionId, input.signal)
+        : input.signal;
+    const turnInput =
+      turnSignal === input.signal ? input : { ...input, signal: turnSignal };
+
     // 只有本机 kscc 模型泵具备「Pi Agent 执行受限 host tools，再把结果回灌模型」的
     // 实际闭环。外部 HTTP 渠道仍走纯文本 runner，保持 fail-closed。
     if (
@@ -606,7 +633,7 @@ export class ChannelBackendAdapter implements MemberBackendAdapter {
       input.capabilities?.supportsToolBridge !== false
     ) {
       return runKsccRoomToolTurn({
-        input,
+        input: turnInput,
         modelId: cfg.modelId,
         ksccPath: cfg.ksccPath,
       });
@@ -622,7 +649,7 @@ export class ChannelBackendAdapter implements MemberBackendAdapter {
       input.capabilities?.supportsToolBridge !== false &&
       isAgentCompatibleProvider(cfg.provider)
     ) {
-      return runExternalRoomToolTurn({ input, cfg });
+      return runExternalRoomToolTurn({ input: turnInput, cfg });
     }
 
     const runner: MoASeatRunner =
@@ -638,7 +665,7 @@ export class ChannelBackendAdapter implements MemberBackendAdapter {
       modelId: cfg.modelId,
       prompt: input.prompt,
       systemPrompt: input.systemPrompt,
-      signal: input.signal,
+      signal: turnSignal,
       timeoutMs: MEMBER_TURN_TIMEOUT_MS,
       onTextDelta: input.onTextDelta,
     };
@@ -1184,7 +1211,9 @@ function mapMoASeatUsage(
     ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
   };
 }
-/** 默认工厂（service 在未注入 adapter 时用） */
-export function createChannelBackendAdapter(): MemberBackendAdapter {
-  return new ChannelBackendAdapter();
+/** 默认工厂（service 在未注入 adapter 时用）。可选注入 lifecycle 使 interruptSession 可取消 inflight turn。 */
+export function createChannelBackendAdapter(
+  lifecycle?: MemberSessionLifecycleAdapter,
+): MemberBackendAdapter {
+  return new ChannelBackendAdapter(lifecycle);
 }

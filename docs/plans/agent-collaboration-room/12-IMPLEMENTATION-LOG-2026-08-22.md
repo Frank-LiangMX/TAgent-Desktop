@@ -852,3 +852,61 @@
 - **进程级 kill 未做**：`interruptSession` 仅登记 sessionId 供后续 turn AbortSignal 协作，不杀真实 kscc 子进程 / HTTP 连接。
 - **bridge 全量改用 normalize 未接**：`normalizeMemberTurnUsage` 已导出 + 单测；`fusion-room-execution-bridge.recordUsage` 仍用原样回写，未改用 normalize（避免改动 usage 账本录入门槛影响既有 bridge 测试），接线留给下一切片并在此注明。
 - 未做实机手测（无 Electron GUI）；行为以单测 + 全仓 typecheck 验证。本切片**不代表**真实 provider 已支持 resume/compact/interrupt。
+
+## 79. lifecycle interrupt 接 AbortSignal 取消 inflight turn + bridge recordUsage 接 normalize（P1-2b）（2026-08-23）
+
+本轮交付 P1-2b 两块。**诚实边界不变**：`kscc bare` **不 resume**（`packages/pi-core/src/kscc-spawn.ts:9` 「kscc bare 不 resume、不读 sdk-config JSONL、每次独立」），本轮**不**声称 native resume E2E；只把 lifecycle interrupt 从「只记 Set」升级为**可取消进行中的 turn**，并把 bridge `recordUsage` 接到 `normalizeMemberTurnUsage`。**不**动无关未提交 UI 文件（`chat.css` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 仍保持本轮之前的既存改动，未触碰、未提交）。
+
+### A. lifecycle interrupt → AbortSignal 取消 inflight turn
+
+**契约扩展**（叠加，不改既有语义）：`MemberSessionLifecycleAdapter`（`packages/shared/src/types/member-session-lifecycle.ts`）新增 `bindTurnAbort(sessionId: string, callerSignal?: AbortSignal): AbortSignal`——把调用方 signal 与该 session 的 interrupt controller 组合成一个 AbortSignal 供 runTurn 透传；`interruptSession` abort 该 controller 即取消进行中的 turn。文档注明**不杀真实子进程**——仅协作 AbortSignal，进程级 kill 由 runner 自身在收到 abort 时处理（kscc seat runner 的 `proc.kill`）。
+
+**实现**（`apps/electron/.../member-session-lifecycle.ts`）：`ChannelMemberSessionLifecycleAdapter` 新增 `turnControllers: Map<string, AbortController>` + `bindTurnAbort`（复用若已存在——同 session 并发 turn 共享一个 interrupt 控制点；否则新建；callerSignal abort 时自动移除登记项）；`interruptSession` 改为 `interrupted.add` **+ abort 该 session 的 controller + 从 Map 移除**（abort 后移除使下一次 `bindTurnAbort` 拿到全新 controller，避免被中断过的 session 新 turn 一启动即已 abort）。导出 `composeAbortSignals(signals)` 纯内存助手（空数组 → 永不 abort 的占位；任一已 abort → 直接返回；否则新建 controller 监听全部信号，首个 abort 触发后清理监听）——**不依赖 `AbortSignal.any`**，兼容更广运行时。`member-session-lifecycle-fake.ts` 的 `FakeMemberSessionLifecycleAdapter` 同步实现 `bindTurnAbort` + `interruptSession` abort（共用 `composeAbortSignals`），保持 Fake 与 Channel 行为对齐。
+
+**adapter 最小注入**（`apps/electron/.../member-backend-adapter.ts`）：`ChannelBackendAdapter` 构造函数新增可选 `lifecycle?: MemberSessionLifecycleAdapter`；`createChannelBackendAdapter(lifecycle?)` 透传。`runTurn` 在 `resolveChannelBackendConfig` 后 `const turnSignal = this.lifecycle && input.logicalSessionId ? this.lifecycle.bindTurnAbort(input.logicalSessionId, input.signal) : input.signal`，`turnInput = turnSignal === input.signal ? input : { ...input, signal: turnSignal }`，并把 `turnSignal`/`turnInput` 透传给纯文本 runner（`runArgs.signal`）与工具桥路径（`runKsccRoomToolTurn({ input: turnInput, ... })` / `runExternalRoomToolTurn({ input: turnInput, cfg })`）。**未注入 / 无 logicalSessionId 时 `turnSignal === input.signal`、`turnInput === input`，既有调用方与测试零影响**（既有 `seatState.lastRunArgs?.signal).toBe(controller.signal)` 断言仍通过）。CLI 路径（`backend === 'cli'`）在组合前 return，不接 lifecycle。
+
+### B. bridge `recordUsage` 接 `normalizeMemberTurnUsage`
+
+`fusion-room-execution-bridge.ts` 的 `recordUsage` 改为 `normalizeMemberTurnUsage(result.usage, { wallTimeMs: result.usage?.wallTimeMs })`，再按 authority `RecordFusionUsageInput` 字段回写。**authority 只收 inputTokens/outputTokens/costMicros（不收 wallTimeMs/totalTokens/toolCalls）**，故「可记账字段」= inputTokens/outputTokens/costUsd；normalize 后这三项全无 → **不写用量账本**（如 CLI worker 仅回 `wallTimeMs` 时不写零用量记录，避免污染账本）。保持既有 `idempotencyKey: 'fusion-usage:' + run.id` 与 `costMicros = max(0, round(costUsd * 1e6))` 换算。
+
+### 文件
+
+新增：
+- `apps/electron/src/main/lib/collaboration/member-session-lifecycle-kscc-smoke.test.ts`：门控真机冒烟（`TAGENT_KSCC_LIFECYCLE_SMOKE=1`）。**不 mock** `@tagent/pi-core`（真实 kscc seat runner，spawn 真机 kscc）与 `../adapters/claude/kscc-path`（真实 PATH 解析）；仅 mock channel-store（提供 kscc-internal 渠道配置，避免 safeStorage）与 cli-workers。未设环境变量 → 整 suite `describe.skipIf` skip；开启但本机无 kscc（`resolveKsccPath()` undefined）→ 各 `test.skipIf` skip；二者都不算失败。两 case：①create → 极短 runTurn → 断言非空正文 + heartbeat alive；②create → 长 runTurn + 立即 interrupt → 断言「被取消」（reject 或 resolve 空正文）+ heartbeat false；竞态时如实失败，**不假绿**。
+
+修改：
+- `packages/shared/src/types/member-session-lifecycle.ts`：`MemberSessionLifecycleAdapter` 接口新增 `bindTurnAbort` + 文档（inflight turn 取消契约、不杀进程）。类型导出经 `packages/shared/src/types/index.ts` 既有 `export *` 自动暴露，无新导出名冲突。
+- `apps/electron/.../member-session-lifecycle.ts`：`ChannelMemberSessionLifecycleAdapter` 实现 `bindTurnAbort` + `turnControllers`；`interruptSession` abort + 移除 controller；导出 `composeAbortSignals`；顶部注释更新（interrupt 升级为可取消 inflight turn、未接进程级 kill）。
+- `apps/electron/.../member-session-lifecycle-fake.ts`：`FakeMemberSessionLifecycleAdapter` 同步实现 `bindTurnAbort` + `interruptSession` abort；import `composeAbortSignals`。
+- `apps/electron/.../member-backend-adapter.ts`：`ChannelBackendAdapter` 可选注入 lifecycle + `runTurn` 组合 signal 透传；`createChannelBackendAdapter(lifecycle?)` 透传；import `MemberSessionLifecycleAdapter` 类型。
+- `apps/electron/.../member-backend-adapter.test.ts`：`seatState` 增 `hang` 标志（runSeat 挂起直到 signal abort）；pi-core mock 抽出共享 `runSeat` 支持 hang；新增 describe「lifecycle interrupt 取消 inflight turn」3 用例（未注入透传原 signal、注入 + interrupt → reject('aborted') + heartbeat false、注入但不 interrupt → 正常完成 + heartbeat alive + 收到组合 signal）。
+- `apps/electron/.../member-session-lifecycle.test.ts`：新增 `hangOnSignal` 助手 + Fake/Channel `bindTurnAbort + interrupt` describe（Fake 6 用例：interrupt 取消、无 callerSignal 取消、callerSignal abort 透传不标 interrupted、callerSignal 已 abort 立即返回、interrupt 后新 turn 拿全新 controller、`composeAbortSignals` 边界；Channel 3 用例：interrupt 取消、无 callerSignal 取消、callerSignal abort 透传不标 interrupted）。
+- `apps/electron/.../fusion-room-execution-bridge.ts`：`recordUsage` 改用 `normalizeMemberTurnUsage`；import `{ normalizeMemberTurnUsage } from '@tagent/shared'`。
+- `apps/electron/.../fusion-room-execution-bridge.test.ts`：新增 3 用例（只有 wallTimeMs 不写账本、只有 tokens 写账本 costMicros=0、normalize 过滤 NaN/Infinity 脏字段）。
+
+### 验证（实跑结果）
+
+- `bunx vitest run apps/electron/src/main/lib/collaboration/member-session-lifecycle.test.ts` → 25 pass / 0 fail（16 旧 + 9 新 bindTurnAbort/interrupt）。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/fusion-room-execution-bridge.test.ts` → 11 pass / 0 fail（8 旧 + 3 新 normalize）。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/member-backend-adapter*.test.ts` → 46 pass / 0 fail（21 adapter 含 3 新 lifecycle 集成 + 25 external-tools 回归）。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/member-session-lifecycle-kscc-smoke.test.ts`（未设门控）→ 2 skipped / 0 fail（默认离线 skip，不算失败）。
+- **真机门控实跑**：`TAGENT_KSCC_LIFECYCLE_SMOKE=1` + 本机已装 kscc（`C:\Users\loumi\AppData\Roaming\npm\kscc.cmd`，`resolveKsccPath()` 命中）→ **2 pass / 0 fail**（create→极短 runTurn 2.58s 非空正文 + heartbeat alive；create→长 runTurn + 立即 interrupt → 被取消 + heartbeat false）。真机 create→turn→interrupt→heartbeat 闭环**已验证**。
+- `bun run --filter='@tagent/shared' typecheck` → 退出 0。
+- `bun run --filter='@tagent/core' typecheck` → 退出 0。
+- `bun run --filter='./apps/electron' typecheck` → 退出 0。
+- `git diff --check` → 退出 0（仅 LF→CRLF 提示，含本轮之前既存的 `tokens.css`，未触碰；本轮未动 `chat.css` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css`）。
+
+### interrupt 如何接到 AbortSignal（机制）
+
+1. `ChannelMemberSessionLifecycleAdapter.bindTurnAbort(sessionId, callerSignal)`：为 sessionId 在 `turnControllers` Map 登记 `AbortController`（复用若已存在），返回 `composeAbortSignals([controller.signal, callerSignal])`——任一 abort 即 abort。
+2. `ChannelBackendAdapter.runTurn`（注入 lifecycle 且有 `logicalSessionId` 时）：`turnSignal = lifecycle.bindTurnAbort(input.logicalSessionId, input.signal)`，透传给 runner（`runArgs.signal`）与工具桥（`turnInput.signal`）。runner 监听该 signal（kscc seat runner 注册 `signal.addEventListener('abort', () => proc.kill())`）。
+3. `interruptSession({ handle })`：`interrupted.add(sessionId)` + `controller.abort()` + `turnControllers.delete(sessionId)`。controller.abort → 组合 signal abort → runner 收到 abort → kill 子进程 / 终止流 → runTurn 以取消结束（kscc runner resolve 空正文或 reject）。heartbeat 据 interrupted 返回 false。
+4. 未注入 lifecycle 或无 logicalSessionId 时：`turnSignal = input.signal`，行为与既有完全一致（bridge 自身的 per-run AbortController 仍独立工作）。
+
+### 诚实能力证据 / 未做
+
+- **不声称 native resume**：`kscc bare` 不 resume；本轮只做 create→turn→interrupt→heartbeat，未接 provider 原生 session id 恢复。
+- **进程级 kill 由 runner 自身处理**：lifecycle 仅协作 AbortSignal，不直接杀子进程；kscc seat runner 的 `proc.kill()` 在收到 abort 时执行。本轮未新增进程级 kill 逻辑。
+- **production service 未注入 lifecycle**：`collaboration-room-service.ts` 仍 `createChannelBackendAdapter()`（无 lifecycle），与 P1-2a 一致——lifecycle 为叠加契约，本轮交付 adapter 注入点 + 单测 + 门控真机冒烟，**service 全量接线（让真实房间成员 turn 也受 interruptSession 取消）留给后续**。门控冒烟自行构造 `new ChannelBackendAdapter(lifecycle)` 验证机制。
+- **bridge 不收 wallTimeMs**：authority `RecordFusionUsageInput` 不收 wallTimeMs/totalTokens/toolCalls；normalize 输出里这些字段虽保留但不进账本（仅 inputTokens/outputTokens/costMicros 回写）。
+- 未做实机 Electron GUI 手测；行为以单测 + typecheck + 真机门控冒烟验证。

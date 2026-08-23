@@ -14,6 +14,7 @@ import type {
   CollaborationUserApprovalRequest,
   CollaborationMailboxEnvelope,
 } from '@tagent/shared'
+import { normalizeMemberTurnUsage } from '@tagent/shared'
 
 export interface FusionRoomExecutionBridgeOptions {
   host: FusionRoomHost
@@ -403,16 +404,30 @@ function recordUsage(
   run: FusionRoomRun,
   result: MemberTurnResult,
 ): void {
-  const usage = result.usage
-  if (!usage || (usage.inputTokens === undefined && usage.outputTokens === undefined && usage.costUsd === undefined)) return
+  // P1-2b：经 normalizeMemberTurnUsage 规范化（过滤 undefined/NaN/±Infinity；extras.wallTimeMs
+  // 取 result.usage?.wallTimeMs，使宿主度量在 normalize 输出里可见）。authority 的
+  // RecordFusionUsageInput 只收 inputTokens/outputTokens/costMicros（不收 wallTimeMs/
+  // totalTokens/toolCalls），故「可记账字段」= inputTokens/outputTokens/costUsd；normalize 后
+  // 这三项全无 → 不写用量账本（如 CLI worker 仅回 wallTimeMs 时不写零用量记录，避免污染账本）。
+  // 既有 idempotencyKey / costMicros 换算保持不变。
+  const normalized = normalizeMemberTurnUsage(result.usage, {
+    wallTimeMs: result.usage?.wallTimeMs,
+  })
+  if (
+    normalized.inputTokens === undefined &&
+    normalized.outputTokens === undefined &&
+    normalized.costUsd === undefined
+  ) {
+    return
+  }
   host.dispatch(snapshot.roomId, {
     type: 'usage',
     input: {
       actorUserId: snapshot.ownerUserId,
       seatId: seat.id,
-      inputTokens: usage.inputTokens ?? 0,
-      outputTokens: usage.outputTokens ?? 0,
-      costMicros: Math.max(0, Math.round((usage.costUsd ?? 0) * 1_000_000)),
+      inputTokens: normalized.inputTokens ?? 0,
+      outputTokens: normalized.outputTokens ?? 0,
+      costMicros: Math.max(0, Math.round((normalized.costUsd ?? 0) * 1_000_000)),
       modelId: seat.modelId,
       idempotencyKey: 'fusion-usage:' + run.id,
     },

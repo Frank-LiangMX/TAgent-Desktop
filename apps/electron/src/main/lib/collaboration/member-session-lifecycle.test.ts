@@ -381,3 +381,192 @@ describe("ChannelMemberSessionLifecycleAdapter", () => {
     });
   });
 });
+
+// ===== P1-2b：bindTurnAbort / interruptSession 取消进行中 turn =====
+
+/** 把一个 AbortSignal 变成「挂起直到 abort」的 promise，模拟 runTurn 监听 signal。 */
+function hangOnSignal(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    if (signal.aborted) {
+      reject(new Error("aborted"));
+      return;
+    }
+    signal.addEventListener("abort", () => reject(new Error("aborted")), {
+      once: true,
+    });
+  });
+}
+
+describe("FakeMemberSessionLifecycleAdapter — bindTurnAbort + interrupt", () => {
+  test("interruptSession abort 组合 signal，取消进行中 turn + heartbeat false", async () => {
+    const fake = new FakeMemberSessionLifecycleAdapter();
+    const handle = await fake.createSession({
+      roomId: "cr_1",
+      memberId: "cm_1",
+      logicalSessionId: "ls_1",
+    });
+    const caller = new AbortController();
+    const signal = fake.bindTurnAbort(handle.sessionId, caller.signal);
+    expect(signal.aborted).toBe(false);
+
+    const turn = hangOnSignal(signal);
+    await fake.interruptSession({ handle, reason: "user-cancel" });
+    await expect(turn).rejects.toThrow("aborted");
+
+    const dead = await fake.heartbeat(handle);
+    expect(dead.alive).toBe(false);
+    expect(dead.detail).toBe("interrupted");
+  });
+
+  test("无 callerSignal 时 interruptSession 仍可取消（composeAbortSignals 兼容）", async () => {
+    const fake = new FakeMemberSessionLifecycleAdapter();
+    const handle = await fake.createSession({
+      roomId: "cr_1",
+      memberId: "cm_1",
+      logicalSessionId: "ls_1",
+    });
+    const signal = fake.bindTurnAbort(handle.sessionId);
+    expect(signal.aborted).toBe(false);
+
+    const turn = hangOnSignal(signal);
+    await fake.interruptSession({ handle });
+    await expect(turn).rejects.toThrow("aborted");
+  });
+
+  test("callerSignal abort 透传到组合 signal，且不标记 interrupted（heartbeat 仍 alive）", async () => {
+    const fake = new FakeMemberSessionLifecycleAdapter();
+    const handle = await fake.createSession({
+      roomId: "cr_1",
+      memberId: "cm_1",
+      logicalSessionId: "ls_1",
+    });
+    const caller = new AbortController();
+    const signal = fake.bindTurnAbort(handle.sessionId, caller.signal);
+    caller.abort(); // bridge dispose / 调用方取消（非 interrupt）
+    expect(signal.aborted).toBe(true);
+
+    // 未 interrupt → heartbeat 仍 alive
+    const beat = await fake.heartbeat(handle);
+    expect(beat.alive).toBe(true);
+  });
+
+  test("callerSignal 已 abort 时 bindTurnAbort 立即返回已 abort 的 signal", async () => {
+    const fake = new FakeMemberSessionLifecycleAdapter();
+    const handle = await fake.createSession({
+      roomId: "cr_1",
+      memberId: "cm_1",
+      logicalSessionId: "ls_1",
+    });
+    const caller = new AbortController();
+    caller.abort();
+    const signal = fake.bindTurnAbort(handle.sessionId, caller.signal);
+    expect(signal.aborted).toBe(true);
+  });
+
+  test("interrupt 后新 bindTurnAbort 拿到全新 controller（新 signal 未 abort）", async () => {
+    const fake = new FakeMemberSessionLifecycleAdapter();
+    const handle = await fake.createSession({
+      roomId: "cr_1",
+      memberId: "cm_1",
+      logicalSessionId: "ls_1",
+    });
+    const caller1 = new AbortController();
+    const s1 = fake.bindTurnAbort(handle.sessionId, caller1.signal);
+    await fake.interruptSession({ handle });
+    expect(s1.aborted).toBe(true);
+
+    // 新 turn：interrupt 已移除旧 controller → 全新 controller，signal 未 abort
+    const caller2 = new AbortController();
+    const s2 = fake.bindTurnAbort(handle.sessionId, caller2.signal);
+    expect(s2.aborted).toBe(false);
+  });
+
+  test("composeAbortSignals：空数组返回未 abort signal；已 abort 信号直接返回", async () => {
+    const { composeAbortSignals } = await import("./member-session-lifecycle");
+    expect(composeAbortSignals([]).aborted).toBe(false);
+    expect(composeAbortSignals([undefined, undefined]).aborted).toBe(false);
+    const aborted = new AbortController();
+    aborted.abort();
+    expect(composeAbortSignals([aborted.signal]).aborted).toBe(true);
+    // 已 abort 与未 abort 混合 → 直接返回已 abort 的那个
+    const live = new AbortController();
+    expect(composeAbortSignals([live.signal, aborted.signal]).aborted).toBe(true);
+  });
+});
+
+describe("ChannelMemberSessionLifecycleAdapter — bindTurnAbort + interrupt", () => {
+  test("interruptSession abort 组合 signal，取消进行中 turn + heartbeat false", async () => {
+    channelState.channels = [
+      fakeChannel({
+        id: "kscc-internal",
+        provider: "kscc-internal",
+        models: [fakeModel("glm-5.2")],
+      }),
+    ];
+    ksccState.path = "/fake/kscc";
+    const adapter = new ChannelMemberSessionLifecycleAdapter();
+    const handle = await adapter.createSession({
+      roomId: "cr_1",
+      memberId: "cm_1",
+      logicalSessionId: "ls_1",
+      channelId: "kscc-internal",
+    });
+    const caller = new AbortController();
+    const signal = adapter.bindTurnAbort(handle.sessionId, caller.signal);
+    expect(signal.aborted).toBe(false);
+
+    const turn = hangOnSignal(signal);
+    await adapter.interruptSession({ handle, reason: "user-cancel" });
+    await expect(turn).rejects.toThrow("aborted");
+
+    const dead = await adapter.heartbeat(handle);
+    expect(dead.alive).toBe(false);
+    expect(dead.detail).toBe("interrupted");
+  });
+
+  test("无 callerSignal 时 interruptSession 仍可取消", async () => {
+    channelState.channels = [
+      fakeChannel({
+        id: "kscc-internal",
+        provider: "kscc-internal",
+        models: [fakeModel("glm-5.2")],
+      }),
+    ];
+    ksccState.path = "/fake/kscc";
+    const adapter = new ChannelMemberSessionLifecycleAdapter();
+    const handle = await adapter.createSession({
+      roomId: "cr_1",
+      memberId: "cm_1",
+      logicalSessionId: "ls_1",
+      channelId: "kscc-internal",
+    });
+    const signal = adapter.bindTurnAbort(handle.sessionId);
+    const turn = hangOnSignal(signal);
+    await adapter.interruptSession({ handle });
+    await expect(turn).rejects.toThrow("aborted");
+  });
+
+  test("callerSignal abort 透传到组合 signal，且不标记 interrupted", async () => {
+    channelState.channels = [
+      fakeChannel({
+        id: "kscc-internal",
+        provider: "kscc-internal",
+        models: [fakeModel("glm-5.2")],
+      }),
+    ];
+    ksccState.path = "/fake/kscc";
+    const adapter = new ChannelMemberSessionLifecycleAdapter();
+    const handle = await adapter.createSession({
+      roomId: "cr_1",
+      memberId: "cm_1",
+      logicalSessionId: "ls_1",
+      channelId: "kscc-internal",
+    });
+    const caller = new AbortController();
+    const signal = adapter.bindTurnAbort(handle.sessionId, caller.signal);
+    caller.abort();
+    expect(signal.aborted).toBe(true);
+    const beat = await adapter.heartbeat(handle);
+    expect(beat.alive).toBe(true);
+  });
+});

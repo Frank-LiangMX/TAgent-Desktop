@@ -10,9 +10,15 @@
  *   continuation 路径承担，不由本方法 resumeSession 完成）。
  * - resumeSession：supportsResume=false → **抛错 fail-closed**，绝不假装原生 resume 成功。
  * - compactSession：未接真实压缩 → 返回 { ok:false, summary:'not implemented' }，不假装已压缩。
- * - interruptSession：仅登记 sessionId 到内存 Set，供后续 turn 的 AbortSignal 协作；
- *   **未接进程级 kill**，不杀真实子进程。
+ * - interruptSession：登记 sessionId 到内存 Set，并 **abort 该 session 的 inflight turn
+ *   controller**（P1-2b 升级：从「只记 Set」到「可取消进行中 turn」）；**未接进程级 kill**，
+ *   不杀真实子进程——仅协作 AbortSignal，进程级 kill 由 runner 自身在收到 abort 时处理。
  * - heartbeat：create 后未 interrupt → alive；interrupt 后或未知 session → alive=false。
+ *
+ * inflight turn 取消契约（P1-2b）：runTurn 调用方经 {@link bindTurnAbort} 把 input.signal 与
+ * 本 session 的 interrupt controller 组合成一个 AbortSignal 透传给 runner；interruptSession
+ * abort 该 controller 即取消进行中的 turn。controller 复用若已存在（同 session 并发 turn
+ * 共享一个 interrupt 控制点），abort 后从登记表移除使下一 turn 拿到全新 controller。
  *
  * 除 createSession 调 resolveChannelBackendConfig（读 channel-store）外无 I/O；不落盘。
  *
@@ -63,6 +69,12 @@ export class ChannelMemberSessionLifecycleAdapter
   private readonly sessions = new Set<string>();
   /** 已 interrupt 的 sessionId（heartbeat 据此返回 alive=false）。 */
   private readonly interrupted = new Set<string>();
+  /**
+   * 每个 session 的 inflight turn AbortController（P1-2b）。
+   * bindTurnAbort 登记，interruptSession abort 之即取消进行中的 turn。
+   * 复用若已存在（同 session 并发 turn 共享一个 interrupt 控制点）。
+   */
+  private readonly turnControllers = new Map<string, AbortController>();
 
   capabilities(): CollaborationMemberCapabilities {
     return CHANNEL_LIFECYCLE_CAPABILITIES;
@@ -120,8 +132,43 @@ export class ChannelMemberSessionLifecycleAdapter
   async interruptSession(
     input: MemberSessionInterruptInput,
   ): Promise<void> {
-    // 仅登记 sessionId，供后续 turn 的 AbortSignal 协作；未接进程级 kill，不杀真实子进程。
+    // 登记 interrupt（heartbeat 据此返回 alive=false）。
     this.interrupted.add(input.handle.sessionId);
+    // P1-2b：abort 该 session 的 inflight turn controller → 组合 signal 随之 abort →
+    // 取消进行中的 turn。abort 后从登记表移除，使下一次 bindTurnAbort 拿到全新 controller
+    // （避免被中断过的 session 新 turn 一启动即已 abort）。
+    // 未接进程级 kill——仅协作 AbortSignal；进程级 kill 由 runner 自身处理。
+    const controller = this.turnControllers.get(input.handle.sessionId);
+    if (controller) {
+      controller.abort();
+      this.turnControllers.delete(input.handle.sessionId);
+    }
+  }
+
+  bindTurnAbort(sessionId: string, callerSignal?: AbortSignal): AbortSignal {
+    // turn 开始：复用既有 controller（同 session 并发 turn 共享一个 interrupt 控制点）；
+    // 否则新建并登记。
+    let controller = this.turnControllers.get(sessionId);
+    if (!controller) {
+      controller = new AbortController();
+      this.turnControllers.set(sessionId, controller);
+    }
+    // 组合 callerSignal 与 session interrupt controller：任一 abort 即触发。
+    const composed = composeAbortSignals([controller.signal, callerSignal]);
+    // 结束清理：callerSignal abort 时（bridge dispose / 调用方取消）移除登记项。
+    // 正常完成时 controller 留待下一次 bindTurnAbort 覆盖或 interruptSession abort。
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        this.turnControllers.delete(sessionId);
+      } else {
+        callerSignal.addEventListener(
+          "abort",
+          () => this.turnControllers.delete(sessionId),
+          { once: true },
+        );
+      }
+    }
+    return composed;
   }
 
   async heartbeat(
@@ -140,4 +187,30 @@ export class ChannelMemberSessionLifecycleAdapter
           : "unknown session",
     };
   }
+}
+
+/**
+ * 把多个 AbortSignal 组合成一个：任一 abort 即 abort（P1-2b）。
+ *
+ * - 空数组 → 返回永不 abort 的占位 signal（调用方未传 signal 且 controller 永不 abort 时，
+ *   runTurn 不应被此取消）。
+ * - 任一已 abort → 直接返回该已 abort 的 signal。
+ * - 否则新建 AbortController，监听所有 signal 的 abort；首个 abort 触发后清理全部监听。
+ *
+ * 不依赖 AbortSignal.any（兼容更广运行时）；纯内存，无 I/O。供 Channel / Fake lifecycle 共用。
+ */
+export function composeAbortSignals(
+  signals: Array<AbortSignal | undefined>,
+): AbortSignal {
+  const filtered = signals.filter((s): s is AbortSignal => Boolean(s));
+  if (filtered.length === 0) return new AbortController().signal;
+  const already = filtered.find((s) => s.aborted);
+  if (already) return already;
+  const controller = new AbortController();
+  const onAbort = (): void => {
+    controller.abort();
+    for (const s of filtered) s.removeEventListener("abort", onAbort);
+  };
+  for (const s of filtered) s.addEventListener("abort", onAbort, { once: true });
+  return controller.signal;
 }

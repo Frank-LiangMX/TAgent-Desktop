@@ -32,6 +32,8 @@ const seatState = vi.hoisted(() => ({
   } | null,
   returnText: 'seat-reply',
   throwErr: null as Error | null,
+  /** P1-2b：为 true 时 runSeat 挂起直到 signal abort（模拟进行中 turn），用于 interrupt 取消测试。 */
+  hang: false,
 }))
 
 const cliState = vi.hoisted(() => ({
@@ -72,28 +74,30 @@ vi.mock('../agent/cli-workers/run-cli-worker', () => ({
     return cliState.result
   },
 }))
-vi.mock('@tagent/pi-core', () => ({
-  createPiHttpSeatRunner: (opts: { provider: string; apiKey: string; baseUrl?: string }) => {
-    seatState.lastFactoryOpts = opts
-    return {
-      runSeat: async (args: { modelId: string; prompt: string; systemPrompt?: string; signal?: AbortSignal }) => {
-        seatState.lastRunArgs = args
-        if (seatState.throwErr) throw seatState.throwErr
-        return seatState.returnText
-      },
+vi.mock('@tagent/pi-core', () => {
+  const runSeat = async (args: { modelId: string; prompt: string; systemPrompt?: string; signal?: AbortSignal }) => {
+    seatState.lastRunArgs = args
+    if (seatState.hang) {
+      // 挂起直到 signal abort，模拟进行中 turn 被 interrupt 取消。
+      return new Promise<string>((_, reject) => {
+        if (args.signal?.aborted) { reject(new Error('aborted')); return }
+        args.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })
     }
-  },
-  createKsccSeatRunner: (opts: { ksccPath?: string }) => {
-    seatState.lastKsccOpts = opts
-    return {
-      runSeat: async (args: { modelId: string; prompt: string; systemPrompt?: string; signal?: AbortSignal }) => {
-        seatState.lastRunArgs = args
-        if (seatState.throwErr) throw seatState.throwErr
-        return seatState.returnText
-      },
-    }
-  },
-}))
+    if (seatState.throwErr) throw seatState.throwErr
+    return seatState.returnText
+  }
+  return {
+    createPiHttpSeatRunner: (opts: { provider: string; apiKey: string; baseUrl?: string }) => {
+      seatState.lastFactoryOpts = opts
+      return { runSeat }
+    },
+    createKsccSeatRunner: (opts: { ksccPath?: string }) => {
+      seatState.lastKsccOpts = opts
+      return { runSeat }
+    },
+  }
+})
 
 import {
   resolveChannelBackendConfig,
@@ -101,6 +105,7 @@ import {
   ChannelBackendAdapter,
   MemberBackendResolveError,
 } from './member-backend-adapter'
+import { ChannelMemberSessionLifecycleAdapter } from './member-session-lifecycle'
 
 function fakeModel(id: string, enabled = true): ChannelModel {
   return { id, name: id, enabled, contextWindow: 200_000 }
@@ -128,6 +133,7 @@ beforeEach(() => {
   seatState.lastRunArgs = null
   seatState.returnText = 'seat-reply'
   seatState.throwErr = null
+  seatState.hang = false
   cliState.lastInput = null
   cliState.available = true
   cliState.result = { ok: true, summary: 'cli-reply', durationMs: 17 }
@@ -385,5 +391,113 @@ describe('ChannelBackendAdapter.runTurn', () => {
       supportsToolBridge: false,
       supportsStructuredEvents: false,
     })
+  })
+})
+
+describe('ChannelBackendAdapter.runTurn — lifecycle interrupt 取消 inflight turn（P1-2b）', () => {
+  test('未注入 lifecycle 时透传原 signal（既有行为不变）', async () => {
+    channelState.channels = [
+      fakeChannel({
+        id: 'ch1',
+        provider: 'anthropic',
+        baseUrl: 'https://api.anthropic.com',
+        models: [fakeModel('claude-x')],
+        defaultModelId: 'claude-x',
+      }),
+    ]
+    channelState.decrypted = { ch1: 'sk-1' }
+    const controller = new AbortController()
+
+    const adapter = new ChannelBackendAdapter() // 未注入 lifecycle
+    const result = await adapter.runTurn({
+      roomId: 'cr_1',
+      memberId: 'cm_1',
+      runId: 'run_1',
+      triggerMessageId: 'msg_1',
+      logicalSessionId: 'ls_1',
+      channelId: 'ch1',
+      systemPrompt: '你是协调者',
+      prompt: '你好',
+      signal: controller.signal,
+    })
+    expect(result.text).toBe('seat-reply')
+    // 未注入 lifecycle → 透传原 signal 引用，与既有测试一致
+    expect(seatState.lastRunArgs?.signal).toBe(controller.signal)
+  })
+
+  test('注入 lifecycle + interruptSession → 组合 signal abort，取消进行中 turn + heartbeat false', async () => {
+    channelState.channels = [
+      fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm-5.2')] }),
+    ]
+    ksccState.path = '/fake/kscc'
+    seatState.hang = true // runSeat 挂起直到 signal abort
+
+    const lifecycle = new ChannelMemberSessionLifecycleAdapter()
+    const adapter = new ChannelBackendAdapter(lifecycle)
+    const handle = await lifecycle.createSession({
+      roomId: 'cr_1',
+      memberId: 'cm_1',
+      logicalSessionId: 'ls_1',
+      channelId: 'kscc-internal',
+    })
+
+    const caller = new AbortController()
+    const turnPromise = adapter.runTurn({
+      roomId: 'cr_1',
+      memberId: 'cm_1',
+      runId: 'run_1',
+      triggerMessageId: 'msg_1',
+      logicalSessionId: handle.logicalSessionId,
+      channelId: 'kscc-internal',
+      systemPrompt: '你是成员',
+      prompt: '请写一篇很长的文章',
+      signal: caller.signal,
+    })
+
+    // bindTurnAbort 在 runTurn 首个 await 前同步执行；让出一个微任务确保已登记。
+    await Promise.resolve()
+    await lifecycle.interruptSession({ handle, reason: 'user-cancel' })
+
+    // 组合 signal 随之 abort → 挂起的 runSeat 以 abort 结束 → runTurn reject
+    await expect(turnPromise).rejects.toThrow('aborted')
+    const beat = await lifecycle.heartbeat(handle)
+    expect(beat.alive).toBe(false)
+    expect(beat.detail).toBe('interrupted')
+  })
+
+  test('注入 lifecycle 但不 interrupt 时正常完成，heartbeat alive', async () => {
+    channelState.channels = [
+      fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm-5.2')] }),
+    ]
+    ksccState.path = '/fake/kscc'
+    seatState.hang = false
+
+    const lifecycle = new ChannelMemberSessionLifecycleAdapter()
+    const adapter = new ChannelBackendAdapter(lifecycle)
+    const handle = await lifecycle.createSession({
+      roomId: 'cr_1',
+      memberId: 'cm_1',
+      logicalSessionId: 'ls_1',
+      channelId: 'kscc-internal',
+    })
+
+    const caller = new AbortController()
+    const result = await adapter.runTurn({
+      roomId: 'cr_1',
+      memberId: 'cm_1',
+      runId: 'run_1',
+      triggerMessageId: 'msg_1',
+      logicalSessionId: handle.logicalSessionId,
+      channelId: 'kscc-internal',
+      systemPrompt: '你是成员',
+      prompt: '一句话',
+      signal: caller.signal,
+    })
+    expect(result.text).toBe('seat-reply')
+    // 注入 lifecycle → runTurn 收到的是组合 signal（非 caller.signal 原引用）
+    expect(seatState.lastRunArgs?.signal).not.toBe(caller.signal)
+    expect(seatState.lastRunArgs?.signal?.aborted).toBe(false)
+    const beat = await lifecycle.heartbeat(handle)
+    expect(beat.alive).toBe(true)
   })
 })

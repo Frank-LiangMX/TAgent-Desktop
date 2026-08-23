@@ -94,6 +94,91 @@ describe('FusionRoomExecutionBridge', () => {
     bridge.dispose()
   })
 
+  test('只有 wallTimeMs 的用量不写入 authority 账本（authority 不收 wallTime，normalize 后无可记账字段）', async () => {
+    const host = new FusionRoomHost()
+    host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })
+    host.dispatch('execution-room', { type: 'add-bot', input: { actorUserId: 'owner', seat } })
+    const wallAdapter: MemberBackendAdapter = {
+      capabilities: adapter.capabilities,
+      async runTurn() {
+        return { text: '已完成', usage: { wallTimeMs: 500 } }
+      },
+    }
+    const bridge = new FusionRoomExecutionBridge({ host, adapter: wallAdapter })
+    const userMessage = host.dispatch('execution-room', {
+      type: 'message',
+      input: { actorUserId: 'owner', content: '跑一下' },
+    })
+    bridge.handleAction('execution-room', { type: 'message' }, userMessage)
+    await bridge.waitForIdle()
+
+    const snapshot = host.getSnapshot('execution-room')
+    // 仅 wallTimeMs：authority 只收 inputTokens/outputTokens/costMicros，不收 wallTimeMs；
+    // normalize 后三项全无 → 不写零用量记录，避免污染账本。
+    expect(snapshot.usage).toHaveLength(0)
+    // 成员消息与完成状态仍正常。
+    expect(snapshot.runs[0]?.status).toBe('completed')
+    expect(snapshot.messages.at(-1)?.content).toBe('已完成')
+    bridge.dispose()
+  })
+
+  test('只有 tokens（无 costUsd）的用量写入账本，costMicros=0', async () => {
+    const host = new FusionRoomHost()
+    host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })
+    host.dispatch('execution-room', { type: 'add-bot', input: { actorUserId: 'owner', seat } })
+    const tokensAdapter: MemberBackendAdapter = {
+      capabilities: adapter.capabilities,
+      async runTurn() {
+        return { text: '已完成', usage: { inputTokens: 5, outputTokens: 3 } }
+      },
+    }
+    const bridge = new FusionRoomExecutionBridge({ host, adapter: tokensAdapter })
+    const userMessage = host.dispatch('execution-room', {
+      type: 'message',
+      input: { actorUserId: 'owner', content: '跑一下' },
+    })
+    bridge.handleAction('execution-room', { type: 'message' }, userMessage)
+    await bridge.waitForIdle()
+
+    const snapshot = host.getSnapshot('execution-room')
+    expect(snapshot.usage).toHaveLength(1)
+    expect(snapshot.usage[0]?.inputTokens).toBe(5)
+    expect(snapshot.usage[0]?.outputTokens).toBe(3)
+    expect(snapshot.usage[0]?.costMicros).toBe(0)
+    bridge.dispose()
+  })
+
+  test('normalize 过滤 NaN/非有限数：脏字段不污染账本，合法字段仍写入', async () => {
+    const host = new FusionRoomHost()
+    host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })
+    host.dispatch('execution-room', { type: 'add-bot', input: { actorUserId: 'owner', seat } })
+    const dirtyAdapter: MemberBackendAdapter = {
+      capabilities: adapter.capabilities,
+      async runTurn() {
+        return {
+          text: '已完成',
+          usage: { inputTokens: Number.NaN, outputTokens: 4, costUsd: Number.NaN, wallTimeMs: Number.POSITIVE_INFINITY },
+        }
+      },
+    }
+    const bridge = new FusionRoomExecutionBridge({ host, adapter: dirtyAdapter })
+    const userMessage = host.dispatch('execution-room', {
+      type: 'message',
+      input: { actorUserId: 'owner', content: '跑一下' },
+    })
+    bridge.handleAction('execution-room', { type: 'message' }, userMessage)
+    await bridge.waitForIdle()
+
+    const snapshot = host.getSnapshot('execution-room')
+    // normalize 丢弃 NaN inputTokens / NaN costUsd / Infinity wallTimeMs，仅留 outputTokens=4。
+    // 仍有可记账字段 → 写账本：inputTokens/costMicros 落到 0（undefined ?? 0）。
+    expect(snapshot.usage).toHaveLength(1)
+    expect(snapshot.usage[0]?.inputTokens).toBe(0)
+    expect(snapshot.usage[0]?.outputTokens).toBe(4)
+    expect(snapshot.usage[0]?.costMicros).toBe(0)
+    bridge.dispose()
+  })
+
   test('同一触发消息不会并发启动重复成员 turn', async () => {
     const host = new FusionRoomHost()
     host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })

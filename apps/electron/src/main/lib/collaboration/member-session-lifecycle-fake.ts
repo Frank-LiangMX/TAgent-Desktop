@@ -12,13 +12,17 @@
  *   成功时返回 handle：logicalSessionId 不变；sessionId = providerSessionId ?? 原 sessionId
  *   （即默认复用原 sessionId，调用方也可通过 providerSessionId 指定新 id）。
  * - compactSession：记录调用；options.compactFails=true 时返回 { ok:false }，否则 { ok:true }。
- * - interruptSession：标记 sessionId 已中断；之后 heartbeat.alive=false。
+ * - interruptSession：标记 sessionId 已中断；之后 heartbeat.alive=false；并 **abort 该
+ *   session 的 inflight turn controller**（P1-2b：取消进行中的 turn）。
  * - heartbeat：已知 session 且未 interrupt → alive；interrupt 或未知 → alive=false。
  *
- * 本 Fake 只实现生命周期契约，不实现 runTurn（单测不需要 provider 执行）；如需可取消的并发
- * turn，可另注入 MemberBackendAdapter。
+ * inflight turn 取消（P1-2b）：bindTurnAbort 把调用方 signal 与本 session 的 interrupt
+ * controller 组合成 AbortSignal 透传给 runTurn；interruptSession abort 之即取消。本 Fake
+ * 只实现生命周期契约，不实现 runTurn（单测不需要 provider 执行）；如需可取消的并发 turn，
+ * 可另注入 MemberBackendAdapter，其 runTurn 监听 bindTurnAbort 返回的组合 signal。
  */
 import {
+  composeAbortSignals,
   MemberSessionLifecycleError,
 } from "./member-session-lifecycle";
 import type {
@@ -102,6 +106,8 @@ export class FakeMemberSessionLifecycleAdapter
   private readonly sessions = new Set<string>();
   /** 已 interrupt 的 sessionId（heartbeat 据此返回 alive=false）。 */
   private readonly interrupted = new Set<string>();
+  /** 每个 session 的 inflight turn AbortController（P1-2b）；interruptSession abort 之。 */
+  private readonly turnControllers = new Map<string, AbortController>();
   private sessionCounter = 0;
 
   constructor(opts?: FakeMemberSessionLifecycleOptions) {
@@ -188,6 +194,34 @@ export class FakeMemberSessionLifecycleAdapter
   ): Promise<void> {
     this.interruptCalls.push({ handle: input.handle, reason: input.reason });
     this.interrupted.add(input.handle.sessionId);
+    // P1-2b：abort 该 session 的 inflight turn controller → 组合 signal 随之 abort →
+    // 取消进行中的 turn；abort 后移除登记，使下一 bindTurnAbort 拿到全新 controller。
+    const controller = this.turnControllers.get(input.handle.sessionId);
+    if (controller) {
+      controller.abort();
+      this.turnControllers.delete(input.handle.sessionId);
+    }
+  }
+
+  bindTurnAbort(sessionId: string, callerSignal?: AbortSignal): AbortSignal {
+    let controller = this.turnControllers.get(sessionId);
+    if (!controller) {
+      controller = new AbortController();
+      this.turnControllers.set(sessionId, controller);
+    }
+    const composed = composeAbortSignals([controller.signal, callerSignal]);
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        this.turnControllers.delete(sessionId);
+      } else {
+        callerSignal.addEventListener(
+          "abort",
+          () => this.turnControllers.delete(sessionId),
+          { once: true },
+        );
+      }
+    }
+    return composed;
   }
 
   async heartbeat(
