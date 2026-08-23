@@ -1,9 +1,31 @@
 import { useEffect, useMemo, useState } from 'react'
 import { MessageResponse, Button } from '@tagent/ui'
 import { Download, Send, X } from 'lucide-react'
+import type { FusionContinuationItem, FusionContinuationKind } from '@tagent/core'
 import type { FusionRoomRemoteSession } from './fusion-room-remote-session'
 import { FusionRoomActionAdapter } from './fusion-room-action-adapter'
 import type { FusionRoomViewModel } from './fusion-room-view-model'
+
+const continuationKindLabel: Record<FusionContinuationKind, string> = {
+  blocked_run: '中断的运行',
+  pending_approval: '待审批',
+  approved_awaiting_resume: '已批准待续跑',
+  mailbox_outbox: '未投递消息',
+  awaiting_peer: '等待成员回复',
+  depth_stop: '深度停止',
+}
+
+/** confirm-resume 仅支持 blocked_run / mailbox_outbox；其余 requiresUserConfirm 类型走各自既有入口。 */
+function isConfirmableResumeKind(kind: FusionContinuationKind): boolean {
+  return kind === 'blocked_run' || kind === 'mailbox_outbox'
+}
+
+function continuationReadonlyHint(kind: FusionContinuationKind): string {
+  if (kind === 'pending_approval') return '请用上方审批区处理'
+  if (kind === 'depth_stop') return '深度停止续跑待支持'
+  if (kind === 'approved_awaiting_resume') return '已批准，待执行桥自动续跑'
+  return ''
+}
 
 export interface FusionRoomRemotePageProps {
   session: FusionRoomRemoteSession
@@ -21,6 +43,7 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
   const [error, setError] = useState<string | null>(null)
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
   const [approvalPendingId, setApprovalPendingId] = useState<string | null>(null)
+  const [resumePendingId, setResumePendingId] = useState<string | null>(null)
 
   useEffect(() => {
     let disposed = false
@@ -89,6 +112,26 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setApprovalPendingId(null)
+    }
+  }
+
+  const confirmResume = async (item: FusionContinuationItem): Promise<void> => {
+    if (resumePendingId) return
+    if (!(item.requiresUserConfirm && isConfirmableResumeKind(item.kind))) return
+    setResumePendingId(item.id)
+    setError(null)
+    try {
+      if (!view) return
+      // 确认后依赖 snapshot 刷新：outbox 信封 delivery 推进后从列表消失；
+      // blocked run 仍 listed（旧 run 不复活），新 turn 由服务端 execution bridge 以新 fence 拉起。
+      await actions.confirmResumeContinuation({
+        continuationId: item.id,
+        kind: item.kind,
+      })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setResumePendingId(null)
     }
   }
 
@@ -212,6 +255,46 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
                 <div className="text-[11px] text-muted-foreground">暂无成员间交接</div>
               )}
             </div>
+          </div>
+          <div className="rounded-xl bg-muted/20 p-2">
+            <div className="mb-1 text-[11px] font-medium text-foreground/80">
+              待确认续跑 · {view.continuations.length}
+            </div>
+            {view.continuations.length ? (
+              <ul className="space-y-1.5">
+                {view.continuations.map((item) => {
+                  const confirmable = item.requiresUserConfirm && isConfirmableResumeKind(item.kind)
+                  const tail = (item.refs?.runId ?? item.refs?.envelopeId ?? item.id).slice(-8)
+                  return (
+                    <li key={item.id} className="rounded-lg border border-border/25 px-2 py-1.5 text-[11px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="shrink-0 rounded bg-muted/40 px-1.5 py-0.5 text-[10px] text-foreground/70">
+                          {continuationKindLabel[item.kind]}
+                        </span>
+                        <span className="truncate font-mono text-[10px] text-muted-foreground">#{tail}</span>
+                      </div>
+                      <div className="mt-1 truncate text-foreground/85">{item.summary}</div>
+                      {confirmable ? (
+                        <div className="mt-1 flex justify-end">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={resumePendingId !== null}
+                            onClick={() => void confirmResume(item)}
+                          >
+                            {resumePendingId === item.id ? '确认中…' : '确认继续'}
+                          </Button>
+                        </div>
+                      ) : item.requiresUserConfirm ? (
+                        <div className="mt-1 text-[10px] text-muted-foreground">{continuationReadonlyHint(item.kind)}</div>
+                      ) : null}
+                    </li>
+                  )
+                })}
+              </ul>
+            ) : (
+              <div className="text-[11px] text-muted-foreground">暂无可观察续跑</div>
+            )}
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="min-w-0 space-y-1">

@@ -3,6 +3,7 @@ import type { RoomWorkspace } from '@tagent/shared'
 import { FusionRoomAuthorityError } from './fusion-room-authority'
 import { FusionRoomGateway } from './fusion-room-gateway'
 import { FusionRoomHost } from './fusion-room-host'
+import type { FusionResumeContinuationResult } from './fusion-room-continuation'
 
 const workspace: RoomWorkspace = {
   id: 'rws_gateway',
@@ -278,5 +279,48 @@ describe('FusionRoomGateway', () => {
       input: { roomId: 'gateway-room', requestId: gateway.getSnapshot(owner, 'gateway-room').mailbox.find((item) => item.id === sent.id)?.requestId, runId: secondRun.id, answer: 'ok', actorUserId: 'spoofed' } as never,
     })
     expect(gateway.getSnapshot(owner, 'gateway-room').mailbox.filter((item) => item.state === 'answered')).toHaveLength(2)
+  })
+
+  test('confirm-resume-continuation 注入 principal actor，忽略 wire 的 actorUserId，旧 run 不复活', () => {
+    const { host, gateway } = setup()
+    const owner = gateway.connect({ userId: 'owner' })
+    const bot = (id: string) => ({
+      id, roomId: 'gateway-room', botProfileId: id, ownerUserId: 'owner',
+      configRevisionId: 'rev-' + id, displayNameSnapshot: id, roleSnapshot: { displayName: id },
+      backend: 'pi', modelId: 'test-model', permissionProfile: 'workspace-write',
+      capabilities: {}, status: 'idle', logicalSessionId: 'session-' + id,
+      isCoordinator: false, createdAt: 1, updatedAt: 1,
+    })
+    gateway.dispatch(owner, 'gateway-room', { type: 'add-bot', input: { seat: bot('a'), actorUserId: 'spoofed' } as never })
+    gateway.dispatch(owner, 'gateway-room', { type: 'start-run', input: { seatId: 'a', backend: 'pi', actorUserId: 'spoofed' } as never })
+    // 模拟进程退出：recover 把 running run 标 blocked
+    host.recoverInterruptedRuns()
+    const runId = host.getSnapshot('gateway-room').runs[0]!.id
+    expect(host.getSnapshot('gateway-room').runs[0]?.status).toBe('blocked')
+
+    // wire payload 试图冒充 actorUserId:'spoofed'；gateway 应注入 principal 'owner'
+    const result = gateway.dispatch(owner, 'gateway-room', {
+      type: 'confirm-resume-continuation',
+      input: { roomId: 'gateway-room', continuationId: runId, kind: 'blocked_run', actorUserId: 'spoofed' } as never,
+    }) as FusionResumeContinuationResult
+    expect(result.status).toBe('confirmed')
+    expect(result.kind).toBe('blocked_run')
+    expect(result.event.type).toBe('run.resume_confirmed')
+    expect(result.event.actorUserId).toBe('owner')
+    // 旧 run 仍是 blocked，confirm 不复活旧 fence
+    expect(host.getSnapshot('gateway-room').runs[0]?.status).toBe('blocked')
+
+    // 同 idempotencyKey 经 gateway 幂等作用域隔离后重复确认 → already_confirmed
+    const again = gateway.dispatch(owner, 'gateway-room', {
+      type: 'confirm-resume-continuation',
+      input: { roomId: 'gateway-room', continuationId: runId, kind: 'blocked_run', idempotencyKey: 'gw-confirm-1', actorUserId: 'spoofed' } as never,
+    }) as FusionResumeContinuationResult
+    expect(again.status).toBe('confirmed')
+    const onceMore = gateway.dispatch(owner, 'gateway-room', {
+      type: 'confirm-resume-continuation',
+      input: { roomId: 'gateway-room', continuationId: runId, kind: 'blocked_run', idempotencyKey: 'gw-confirm-1', actorUserId: 'spoofed' } as never,
+    }) as FusionResumeContinuationResult
+    expect(onceMore.status).toBe('already_confirmed')
+    expect(onceMore.event.id).toBe(again.event.id)
   })
 })

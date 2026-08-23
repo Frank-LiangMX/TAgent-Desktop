@@ -89,6 +89,36 @@ describe('fusion room view model', () => {
     expect(snapshot.messages).toHaveLength(1)
   })
 
+  test('projects observable continuations (blocked run / outbox) without leaking authority state', () => {
+    const snapshot = makeSnapshot({
+      runs: [
+        { id: 'run-blk', roomId: 'room-view', seatId: 'seat-b', initiatedByUserId: 'owner', backend: 'pi', fence: 3, status: 'blocked', summary: '中断', createdAt: 9, updatedAt: 9 } as FusionRoomAuthoritySnapshot['runs'][number],
+      ],
+      mailbox: [
+        { id: 'env-out', roomId: 'room-view', fromMemberId: 'seat-b', toMemberId: 'seat-c', type: 'question', requestId: 'req-1', rootMessageId: 'msg-1', causationId: 'run-blk', depth: 1, state: 'pending', delivery: 'outbox', payload: '未投递', createdAt: 12 } as FusionRoomAuthoritySnapshot['mailbox'][number],
+      ],
+    })
+    const view = createFusionRoomViewModel(snapshot)
+    expect(view.continuations).toHaveLength(2)
+    const blocked = view.continuations.find((item) => item.kind === 'blocked_run')
+    const outbox = view.continuations.find((item) => item.kind === 'mailbox_outbox')
+    expect(blocked?.id).toBe('run-blk')
+    expect(blocked?.requiresUserConfirm).toBe(true)
+    expect(blocked?.refs?.runId).toBe('run-blk')
+    expect(outbox?.id).toBe('env-out')
+    expect(outbox?.requiresUserConfirm).toBe(true)
+    expect(outbox?.refs?.envelopeId).toBe('env-out')
+
+    // 投影是只读副本：改 view 不回漏 authority snapshot
+    view.continuations[0]!.requiresUserConfirm = false
+    view.continuations[1]!.refs!.envelopeId = 'tampered'
+    expect(view.continuations).toHaveLength(2)
+    // 重新投影仍得到原始 requiresUserConfirm / refs
+    const reprojected = createFusionRoomViewModel(snapshot)
+    expect(reprojected.continuations.find((item) => item.kind === 'blocked_run')?.requiresUserConfirm).toBe(true)
+    expect(reprojected.continuations.find((item) => item.kind === 'mailbox_outbox')?.refs?.envelopeId).toBe('env-out')
+  })
+
   test('projects workspace files, locks, and runs without leaking back into the authority snapshot', () => {
     const snapshot = makeSnapshot({
       files: [

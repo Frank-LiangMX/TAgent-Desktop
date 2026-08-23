@@ -1,9 +1,11 @@
 import type {
+  FusionContinuationItem,
   FusionRoomActionResponse,
   FusionRoomAuthoritySnapshot,
   FusionRoomGatewayAction,
   FusionRoomSnapshotListener,
 } from '@tagent/core'
+import { listFusionContinuations } from '@tagent/core'
 import type {
   CollaborationHumanMember,
   CollaborationRoomTask,
@@ -43,6 +45,7 @@ export interface FusionRoomViewModel {
   artifacts: CollaborationArtifact[]
   approvals: CollaborationUserApprovalRequest[]
   mailbox: CollaborationMailboxEnvelope[]
+  continuations: FusionContinuationItem[]
   lastSequence: number
 }
 
@@ -80,6 +83,10 @@ export function createFusionRoomViewModel(
     artifacts: snapshot.artifacts.map((artifact) => ({ ...artifact })),
     approvals: snapshot.approvals.map((approval) => ({ ...approval, ...(approval.options ? { options: [...approval.options] } : {}) })),
     mailbox: snapshot.mailbox.map((envelope) => ({ ...envelope })),
+    continuations: listFusionContinuations(snapshot).map((item) => ({
+      ...item,
+      ...(item.refs ? { refs: { ...item.refs } } : {}),
+    })),
     lastSequence: snapshot.events.reduce(
       (max, event) => Math.max(max, event.sequence),
       0,

@@ -24,6 +24,7 @@ import {
   type PublishFusionArtifactInput,
   type RequestFusionUserApprovalInput, type ResolveFusionUserApprovalInput, type SendFusionMailboxInput, type ReplyFusionMailboxInput, type AwaitFusionRunInput,
 } from './fusion-room-authority'
+import type { ConfirmFusionResumeContinuationInput } from './fusion-room-continuation'
 import {
   FusionRoomHost,
   type FusionRoomAction,
@@ -92,6 +93,7 @@ export type FusionRoomGatewayAction =
   | { type: 'resolve-approval'; input: Omit<ResolveFusionUserApprovalInput, 'actorUserId'> }
   | { type: 'send-mailbox'; input: Omit<SendFusionMailboxInput, 'actorUserId'> }
   | { type: 'reply-mailbox'; input: Omit<ReplyFusionMailboxInput, 'actorUserId'> }
+  | { type: 'confirm-resume-continuation'; input: Omit<ConfirmFusionResumeContinuationInput, 'actorUserId'> }
 
 export interface FusionRoomGatewayNotification {
   connectionId: string
@@ -389,6 +391,8 @@ export class FusionRoomGateway {
         return { type: 'send-mailbox', input: withScopedIdempotency(action.type, actorUserId, { ...action.input, actorUserId }) }
       case 'reply-mailbox':
         return { type: 'reply-mailbox', input: withScopedIdempotency(action.type, actorUserId, { ...action.input, actorUserId }) }
+      case 'confirm-resume-continuation':
+        return { type: 'confirm-resume-continuation', input: withScopedIdempotency(action.type, actorUserId, { ...action.input, actorUserId }) }
       case 'await-run':
         return { type: 'await-run', input: withScopedIdempotency(action.type, actorUserId, { ...action.input, actorUserId }) }
       case 'update-metadata':

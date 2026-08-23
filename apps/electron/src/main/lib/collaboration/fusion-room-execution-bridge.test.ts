@@ -267,4 +267,127 @@ const adapter: MemberBackendAdapter = {
     expect(snapshot.messages.at(-1)?.content).toBe('用户已批准，继续执行。')
     bridge.dispose()
   })
+
+  test('confirm-resume blocked run：以新 fence 拉起新 turn，旧 run 仍 blocked', async () => {
+    const host = new FusionRoomHost()
+    host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })
+    host.dispatch('execution-room', { type: 'add-bot', input: { actorUserId: 'owner', seat } })
+    const userMessage = host.dispatch('execution-room', {
+      type: 'message',
+      input: { actorUserId: 'owner', content: '请分析这个任务' },
+    })
+    const messageId = userMessage && 'id' in userMessage ? userMessage.id : ''
+    // 拉起一个 running run（带 triggerMessageId）并模拟进程退出 → recover 标 blocked
+    host.dispatch('execution-room', {
+      type: 'start-run',
+      input: { actorUserId: 'owner', seatId: seat.id, backend: 'pi', triggerMessageId: messageId, idempotencyKey: 'blk-start' },
+    })
+    host.recoverInterruptedRuns()
+    const blockedRun = host.getSnapshot('execution-room').runs[0]!
+    expect(blockedRun.status).toBe('blocked')
+    const oldFence = blockedRun.fence
+
+    const bridge = new FusionRoomExecutionBridge({ host, adapter })
+    const result = host.confirmResumeContinuation({
+      roomId: 'execution-room', actorUserId: 'owner',
+      continuationId: blockedRun.id, kind: 'blocked_run', idempotencyKey: 'confirm-1',
+    })
+    expect(result.status).toBe('confirmed')
+    bridge.handleAction('execution-room', { type: 'confirm-resume-continuation' }, result)
+    await bridge.waitForIdle()
+
+    const snapshot = host.getSnapshot('execution-room')
+    // 旧 run 仍 blocked、同 fence（不复活旧 fence）
+    const stillBlocked = snapshot.runs.find((run) => run.id === blockedRun.id)
+    expect(stillBlocked?.status).toBe('blocked')
+    expect(stillBlocked?.fence).toBe(oldFence)
+    // 新 run 完成，fence 不同
+    const resumeRun = snapshot.runs.find((run) => run.id !== blockedRun.id && run.seatId === seat.id)
+    expect(resumeRun?.status).toBe('completed')
+    expect(resumeRun?.fence).not.toBe(oldFence)
+    // 新 turn 写入了成员消息
+    const memberMessages = snapshot.messages.filter((message) => message.authorType === 'member')
+    expect(memberMessages).toHaveLength(1)
+    expect(memberMessages[0]?.content).toContain('已完成')
+    bridge.dispose()
+  })
+
+  test('confirm-resume outbox：唤醒 toMember 以新 turn 处理重投', async () => {
+    const host = new FusionRoomHost()
+    host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })
+    host.dispatch('execution-room', { type: 'add-bot', input: { actorUserId: 'owner', seat } })
+    host.dispatch('execution-room', { type: 'add-bot', input: { actorUserId: 'owner', seat: secondSeat } })
+    const root = host.dispatch('execution-room', { type: 'message', input: { actorUserId: 'owner', content: 'root' } })
+    const rootId = root && 'id' in root ? root.id : ''
+    const run = host.dispatch('execution-room', {
+      type: 'start-run',
+      input: { actorUserId: 'owner', seatId: seat.id, backend: 'pi', idempotencyKey: 'outbox-start' },
+    })
+    const runId = run && 'id' in run ? run.id : ''
+    const envelope = host.dispatch('execution-room', {
+      type: 'send-mailbox',
+      input: {
+        actorUserId: 'owner', roomId: 'execution-room', fromMemberId: seat.id, toMemberId: secondSeat.id,
+        runId, type: 'question', payload: '请审阅', rootMessageId: rootId, idempotencyKey: 'outbox-send',
+      },
+    })
+    const envelopeId = envelope && 'id' in envelope ? envelope.id : ''
+    expect(host.getSnapshot('execution-room').mailbox[0]?.delivery).toBe('outbox')
+
+    const bridge = new FusionRoomExecutionBridge({ host, adapter })
+    const result = host.confirmResumeContinuation({
+      roomId: 'execution-room', actorUserId: 'owner',
+      continuationId: envelopeId, kind: 'mailbox_outbox', idempotencyKey: 'outbox-confirm-1',
+    })
+    expect(result.status).toBe('confirmed')
+    expect(result.delivery).toBe('dispatched')
+    bridge.handleAction('execution-room', { type: 'confirm-resume-continuation' }, result)
+    await bridge.waitForIdle()
+
+    const snapshot = host.getSnapshot('execution-room')
+    // toMember (secondSeat) 被唤醒，新 run 完成
+    const reviewerRun = snapshot.runs.find((item) => item.seatId === secondSeat.id && item.status === 'completed')
+    expect(reviewerRun).toBeTruthy()
+    const memberMessages = snapshot.messages.filter((message) => message.authorType === 'member')
+    expect(memberMessages).toHaveLength(1)
+    bridge.dispose()
+  })
+
+  test('confirm-resume already_confirmed 不双开新 turn（幂等）', async () => {
+    const host = new FusionRoomHost()
+    host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })
+    host.dispatch('execution-room', { type: 'add-bot', input: { actorUserId: 'owner', seat } })
+    const userMessage = host.dispatch('execution-room', { type: 'message', input: { actorUserId: 'owner', content: '请分析' } })
+    const messageId = userMessage && 'id' in userMessage ? userMessage.id : ''
+    host.dispatch('execution-room', {
+      type: 'start-run',
+      input: { actorUserId: 'owner', seatId: seat.id, backend: 'pi', triggerMessageId: messageId, idempotencyKey: 'blk-start-2' },
+    })
+    host.recoverInterruptedRuns()
+    const blockedRun = host.getSnapshot('execution-room').runs[0]!
+
+    const bridge = new FusionRoomExecutionBridge({ host, adapter })
+    const first = host.confirmResumeContinuation({
+      roomId: 'execution-room', actorUserId: 'owner',
+      continuationId: blockedRun.id, kind: 'blocked_run', idempotencyKey: 'confirm-idem-1',
+    })
+    bridge.handleAction('execution-room', { type: 'confirm-resume-continuation' }, first)
+    await bridge.waitForIdle()
+    const runsAfterFirst = host.getSnapshot('execution-room').runs.length
+    const memberAfterFirst = host.getSnapshot('execution-room').messages.filter((m) => m.authorType === 'member').length
+
+    // 同 idempotencyKey 重复确认 → already_confirmed；bridge 不应再开新 turn
+    const again = host.confirmResumeContinuation({
+      roomId: 'execution-room', actorUserId: 'owner',
+      continuationId: blockedRun.id, kind: 'blocked_run', idempotencyKey: 'confirm-idem-1',
+    })
+    expect(again.status).toBe('already_confirmed')
+    bridge.handleAction('execution-room', { type: 'confirm-resume-continuation' }, again)
+    await bridge.waitForIdle()
+
+    const snapshot = host.getSnapshot('execution-room')
+    expect(snapshot.runs.length).toBe(runsAfterFirst)
+    expect(snapshot.messages.filter((m) => m.authorType === 'member').length).toBe(memberAfterFirst)
+    bridge.dispose()
+  })
 })

@@ -11,6 +11,7 @@ import type {
   RequestFusionUserApprovalInput, ResolveFusionUserApprovalInput, SendFusionMailboxInput, ReplyFusionMailboxInput,
   FinishFusionRunInput, AwaitFusionRunInput,
   FusionAuthorityRoomStatus,
+  FusionContinuationKind,
   UpdateFusionRoomMetadataInput,
   FusionRoomGatewayAction,
   RecordFusionUsageInput,
@@ -151,6 +152,15 @@ export class FusionRoomActionAdapter {
 
   async replyMailbox(input: Omit<ReplyFusionMailboxInput, "actorUserId">): Promise<FusionRoomViewModel> {
     return this.dispatch({ type: "reply-mailbox", input })
+  }
+
+  async confirmResumeContinuation(
+    input: { continuationId: string; kind: FusionContinuationKind; idempotencyKey?: string },
+  ): Promise<FusionRoomViewModel> {
+    const roomId = this.controller.currentView?.roomId
+    if (!roomId) throw new Error('远程 RoomSession 尚未加载权威快照')
+    // roomId 由已加载快照注入；wire payload 不含 actorUserId（gateway 由 principal 注入）。
+    return this.dispatch({ type: 'confirm-resume-continuation', input: { ...input, roomId } })
   }
 
   async updateMetadata(input: Omit<UpdateFusionRoomMetadataInput, 'actorUserId'>): Promise<FusionRoomViewModel> {

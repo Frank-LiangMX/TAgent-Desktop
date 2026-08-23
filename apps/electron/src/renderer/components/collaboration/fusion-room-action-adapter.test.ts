@@ -130,4 +130,30 @@ describe('FusionRoomActionAdapter', () => {
     const actions = new FusionRoomActionAdapter(new FusionRoomViewModelController(noInitial))
     await expect(actions.sendMessage({ content: 'hello' })).rejects.toThrow(/尚未加载/)
   })
+
+  test('confirmResumeContinuation injects roomId from view and never accepts actorUserId', async () => {
+    const fake = fakeAdapter()
+    const controller = new FusionRoomViewModelController(fake.adapter)
+    const actions = new FusionRoomActionAdapter(controller)
+    // currentView 已在构造时由 subscribeSnapshot 立即投影像快照建立，roomId='room-action'
+
+    await actions.confirmResumeContinuation({ continuationId: 'run-blk', kind: 'blocked_run', idempotencyKey: 'r1' })
+    await actions.confirmResumeContinuation({ continuationId: 'env-out', kind: 'mailbox_outbox' })
+
+    expect(fake.actions.at(-2)).toEqual({
+      type: 'confirm-resume-continuation',
+      input: { continuationId: 'run-blk', kind: 'blocked_run', idempotencyKey: 'r1', roomId: 'room-action' },
+    })
+    expect(fake.actions.at(-1)).toEqual({
+      type: 'confirm-resume-continuation',
+      input: { continuationId: 'env-out', kind: 'mailbox_outbox', roomId: 'room-action' },
+    })
+    // wire payload 绝不含 actorUserId（顶层 action 与 input 都不带）
+    const resumeActions = fake.actions.filter((action) => action.type === 'confirm-resume-continuation')
+    expect(resumeActions).toHaveLength(2)
+    expect(resumeActions.every((action) => {
+      const input = (action as { input: Record<string, unknown> }).input
+      return !('actorUserId' in action) && !('actorUserId' in input)
+    })).toBe(true)
+  })
 })

@@ -773,3 +773,45 @@
 - **Execution bridge 新 turn 接线未做**：本切片只到 Host 事件 + 列表 + 用户确认；`confirmResumeBlockedRun` 之后由 bridge 以**新** runId / fence 显式 `execute` 新 turn（prompt 注明「用户确认继续此前被中断的工作」）未接，留 TODO。bridge 默认仍不自动跑有副作用的旧 run。
 - 持久 outbox worker 进程、远程 UI（`listContinuations` / `confirmResumeContinuation` 的 IPC + renderer 消费）、gateway 远程 wire（`FusionRoomGatewayAction` 尚未加 `confirm-resume-continuation`）、真实 Pi/KSCC provider 的 resume / compact / interrupt、跨节点单写者 / 事件总线 / 预算原子预留仍未做。
 - 未做实机手测（无 Electron GUI）；行为以核心单测 + 全仓 typecheck 验证。本切片**不代表** outbox 已有后台 worker、远程页面已可确认 resume 或真实 provider 已支持 resume。
+
+## 77. confirm-resume 接入执行桥 + Gateway/Adapter + 远程页最小 UI（P1-1b）（2026-08-23）
+
+本轮交付 P1-1b：把 P1-1 的「用户确认 resume」接到真正可执行的链路，并在远程融合页给出最小可观察 / 可点确认 UI。**不**启动自动 confirm、**不**自动重放 blocked、**不**复活旧 fence、**不**打开公网 / 改 P0 闸门默认。
+
+**Bridge 如何保证新 fence**：`FusionRoomExecutionBridge.handleAction` 新增 `confirm-resume-continuation` 分支。`result` 为 `FusionResumeContinuationResult`，仅当 `status === 'confirmed' | 'already_confirmed'` 时调度（`already_confirmed` 用稳定 executionKey 幂等不双开）。`blocked_run`：从 snapshot 取旧 run → seat + triggerMessage（优先 `triggerMessageId`，缺失回退到房间最近一条用户消息，都没有则跳过），以 `resume:<runId>` 作 executionKey 调 `schedule`——inflight key `roomId:resume:<runId>:<seatId>` 与 start-run 的 idempotencyKey `fusion-run:resume:<runId>:<seatId>` 都与原 `fusion-run:<messageId>:<seatId>` 不同；旧 run 仍 `blocked`、旧 fence 不复位，bridge 只能新起 turn。`mailbox_outbox`：取 envelope 的 rootMessage + toMember seat，以 `resume-mailbox:<id>` 唤醒。绝不复用旧 fence、不把 blocked 改回 running。`already_confirmed` 的二次调度：若首 run 仍 inflight，inflight 去重直接 return；若首 run 已完成，start-run 的 idempotency 命中既有 `run.changed` 事件返回 completed run，`execute` 见 `run.status !== 'running'` 即 return，不重复执行。`runtime` 既有 `onAction → executionBridge.handleAction`，gateway dispatch `confirm-resume-continuation` 后 http server 的 `onAction` 自然触发 bridge，无需额外接线。
+
+修改 / 新增：
+- `packages/core/src/index.ts`：新增 `export * from './collaboration/fusion-room-continuation.ts'`，使 `listFusionContinuations` / `FusionContinuationItem` / `FusionContinuationKind` / `ConfirmFusionResumeContinuationInput` / `FusionResumeContinuationResult` 可从 `@tagent/core` 导入（view-model / bridge / adapter / page 消费）。无导出名冲突（全仓 grep 确认）。
+- `apps/electron/src/main/lib/collaboration/fusion-room-execution-bridge.ts`：`handleAction` 新增 `confirm-resume-continuation` 分支 + `scheduleResumeContinuation` 私有方法 + `isResumeContinuationResult` 守卫；import type `FusionResumeContinuationResult`。不改既有 message / member-message / send-mailbox / resolve-approval / reply-mailbox 路径。
+- `packages/core/src/collaboration/fusion-room-gateway.ts`：`FusionRoomGatewayAction` 新增 `{ type: 'confirm-resume-continuation'; input: Omit<ConfirmFusionResumeContinuationInput, 'actorUserId'> }`（payload 不含 actorUserId）；`toAuthorityAction` 新增 case 走 `withScopedIdempotency` 注入 principal。import type `ConfirmFusionResumeContinuationInput`。
+- `apps/electron/src/renderer/components/collaboration/fusion-room-view-model.ts`：`FusionRoomViewModel` 新增 `continuations: FusionContinuationItem[]`，`createFusionRoomViewModel` 调 `listFusionContinuations(snapshot)` 并对 `refs` 浅拷贝投影（不回漏 authority）。
+- `apps/electron/src/renderer/components/collaboration/fusion-room-action-adapter.ts`：新增 `confirmResumeContinuation({ continuationId, kind, idempotencyKey? })`，roomId 由 `currentView` 注入，wire payload 不含 actorUserId。
+- `apps/electron/src/renderer/components/collaboration/FusionRoomRemotePage.tsx`：在审批 / mailbox 区块下新增「待确认续跑」列表（`view.continuations`）：种类中文短标签 + summary 截断 + runId/envelopeId 短尾（不展示私钥 / fence）；`requiresUserConfirm && (blocked_run | mailbox_outbox)` 出「确认继续」按钮，busy（`resumePendingId`）/ error 态；`pending_approval` / `depth_stop` 等只读 + 提示走各自入口；`awaiting_peer` / `approved_awaiting_resume` 只读。确认后依赖 snapshot 刷新（outbox 推进 dispatched 后从列表消失；blocked run 仍 listed，新 turn 由服务端 bridge 以新 fence 拉起）。
+
+测试：
+- `fusion-room-execution-bridge.test.ts` 新增 3 用例：blocked confirm → 新 run completed、旧 run 仍 blocked 同 fence、新 fence 不同；outbox confirm → 唤醒 toMember 新 turn completed；already_confirmed 不双开新 turn（runs / 成员消息数不增）。
+- `fusion-room-gateway.test.ts` 新增 1 用例：confirm-resume-continuation 注入 principal actor（`event.actorUserId === 'owner'`，忽略 wire `spoofed`）、旧 run 不复活、同 idempotencyKey 重复 → already_confirmed。
+- `fusion-room-view-model.test.ts` 新增 1 用例：continuations 投影 blocked_run / mailbox_outbox（refs / requiresUserConfirm），且改 view 不回漏 authority。
+- `fusion-room-action-adapter.test.ts` 新增 1 用例：confirmResumeContinuation 注入 roomId、wire payload 绝不含 actorUserId。
+
+验证（实跑结果）：
+- `bun test apps/electron/src/main/lib/collaboration/fusion-room-execution-bridge.test.ts` → 8 pass / 0 fail / 42 expect。
+- `bun test packages/core/src/collaboration/fusion-room-gateway.test.ts` → 11 pass / 0 fail / 41 expect。
+- `bun test packages/core/src/collaboration/fusion-room-continuation.test.ts` → 12 pass / 0 fail / 22 expect（P1-1 既有，回归通过）。
+- `bun test packages/core/src/collaboration/fusion-room-host.test.ts` → 13 pass / 0 fail / 66 expect（P1-1 既有，回归通过）。
+- `bun test apps/electron/src/renderer/components/collaboration/fusion-room-view-model.test.ts` → 20 pass / 0 fail / 76 expect。
+- `bun test apps/electron/src/renderer/components/collaboration/fusion-room-action-adapter.test.ts` → 5 pass / 0 fail / 13 expect。
+- `bun run --filter='@tagent/core' typecheck` → 退出 0。
+- `bun run --filter='./apps/electron' typecheck` → 退出 0。
+
+不自动重放 / 新 fence 的证据：
+- bridge `scheduleResumeContinuation` 只 `schedule` 新 turn（新 executionKey `resume:<runId>` / `resume-mailbox:<id>`），从不 dispatch `finish-run` 把 blocked 改回 running，从不复用旧 `fusion-run:<messageId>` key。
+- `confirmResumeBlockedRun`（P1-1）只写 `run.resume_confirmed` 事件，不改 run.status / fence；bridge 依赖该事件后新起 turn，旧 run 永远 blocked。
+- `confirmResumeMailboxOutbox`（P1-1）仅 `outbox→dispatched` 合法前进；bridge 以 `resume-mailbox:<id>` 唤醒 toMember 新 turn，不重放 `outcome_unknown`。
+
+明确未做（与 handoff §7/§8 一致）：
+- 持久 outbox worker 进程（服务离线期间自动观察 / 恢复）仍未做；本切片的 resume 仍需用户在远程页显式点「确认继续」。
+- 本地 legacy CollaborationRoomService 的同等「待确认续跑」UI 未做（本切片聚焦 Fusion RoomSession 链路）。
+- 真实 Pi/KSCC provider 的 resume / compact / interrupt 未做；bridge 用测试 adapter 证明新 turn 链路，未接真实 provider。
+- 未做实机点远程页手测（无 Electron GUI）；远程页 UI 以 view-model continuations 投影单测 + 全仓 typecheck 验证，bridge 新 turn + gateway 注入以单测证明。
+- 跨节点单写者 / 事件总线 / 预算原子预留仍未做。

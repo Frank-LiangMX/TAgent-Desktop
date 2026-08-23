@@ -2,6 +2,7 @@ import type {
   FusionRoomAuthoritySnapshot,
   FusionRoomHost,
   FusionRoomRun,
+  FusionResumeContinuationResult,
 } from '@tagent/core'
 import type {
   CollaborationHostToolHandler,
@@ -96,6 +97,14 @@ export class FusionRoomExecutionBridge {
     }
     if (action.type === 'reply-mailbox' && isReplyEnvelope(result)) {
       this.scheduleMailboxContinuation(roomId, result)
+      return
+    }
+    if (action.type === 'confirm-resume-continuation' && isResumeContinuationResult(result)) {
+      // 仅在用户显式确认（confirmed）或重复确认（already_confirmed）时调度；
+      // 用稳定 executionKey 保证 already_confirmed 不双开新 turn。
+      if (result.status === 'confirmed' || result.status === 'already_confirmed') {
+        this.scheduleResumeContinuation(roomId, result)
+      }
     }
   }
 
@@ -152,6 +161,56 @@ export class FusionRoomExecutionBridge {
       'mailbox:' + reply.id,
       '成员已回复 A2A 提问：' + reply.payload,
     )
+  }
+
+  /**
+   * 用户确认 resume 后，以**新** runId / fence 拉起新 turn。
+   *
+   * - `blocked_run`：旧 run 仍是 blocked、旧 fence 不复活；用 `resume:<runId>` 作 executionKey，
+   *   使 inflight 去重与 start-run 的 idempotencyKey 都与原 `fusion-run:<messageId>` 不同。
+   * - `mailbox_outbox`：authority 已把 delivery 推进为 dispatched；以 `resume-mailbox:<id>` 唤醒 toMember。
+   * - 绝不复用旧 fence、不把 blocked 改回 running。
+   */
+  private scheduleResumeContinuation(roomId: string, result: FusionResumeContinuationResult): void {
+    let snapshot: FusionRoomAuthoritySnapshot
+    try { snapshot = this.options.host.getSnapshot(roomId) } catch { return }
+    if (result.kind === 'blocked_run') {
+      const runId = result.refs.runId ?? result.continuationId
+      const oldRun = snapshot.runs.find((run) => run.id === runId)
+      if (!oldRun) return
+      const seat = snapshot.botSeats.find((item) => item.id === oldRun.seatId && item.status !== 'removed')
+      if (!seat) return
+      // 优先用旧 run 的 triggerMessageId；缺失则回退到房间最近一条用户消息；都没有则跳过。
+      const triggerMessage = oldRun.triggerMessageId
+        ? snapshot.messages.find((item) => item.id === oldRun.triggerMessageId)
+        : undefined
+      const message = triggerMessage ??
+        snapshot.messages.slice().reverse().find((item) => item.authorType === 'user')
+      if (!message) return
+      this.schedule(
+        snapshot,
+        message,
+        seat,
+        'resume:' + runId,
+        '用户已确认继续此前被中断的工作。' + (oldRun.summary ? '原始中断原因：' + oldRun.summary : ''),
+      )
+      return
+    }
+    if (result.kind === 'mailbox_outbox') {
+      const envelopeId = result.refs.envelopeId ?? result.continuationId
+      const envelope = snapshot.mailbox.find((item) => item.id === envelopeId)
+      if (!envelope) return
+      const source = snapshot.messages.find((item) => item.id === envelope.rootMessageId)
+      const seat = snapshot.botSeats.find((item) => item.id === envelope.toMemberId && item.status !== 'removed')
+      if (!source || !seat) return
+      this.schedule(
+        snapshot,
+        source,
+        seat,
+        'resume-mailbox:' + envelopeId,
+        '用户已确认重投未送达的协作消息：' + envelope.payload,
+      )
+    }
   }
   dispose(): void {
     if (this.disposed) return
@@ -259,6 +318,15 @@ function isReplyEnvelope(value: unknown): value is CollaborationMailboxEnvelope 
     typeof envelope.id === 'string' &&
     typeof envelope.requestId === 'string' &&
     typeof envelope.payload === 'string'
+}
+
+function isResumeContinuationResult(value: unknown): value is FusionResumeContinuationResult {
+  if (!value || typeof value !== 'object') return false
+  const result = value as Partial<FusionResumeContinuationResult>
+  return typeof result.continuationId === 'string' &&
+    typeof result.roomId === 'string' &&
+    typeof result.kind === 'string' &&
+    (result.status === 'confirmed' || result.status === 'already_confirmed')
 }
 
 function isMemberMessage(value: unknown): value is CollaborationMessage {
