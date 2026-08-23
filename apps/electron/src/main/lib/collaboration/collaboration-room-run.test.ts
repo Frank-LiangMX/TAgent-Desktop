@@ -27,6 +27,8 @@ import {
   upsertMember,
   upsertRun,
 } from "./collaboration-room-repository";
+import { ChannelMemberSessionLifecycleAdapter } from "./member-session-lifecycle";
+import { FakeMemberSessionLifecycleAdapter } from "./member-session-lifecycle-fake";
 
 let tmpDir: string;
 
@@ -409,4 +411,85 @@ describe("CollaborationRoomService run 行为（Stage 2）", () => {
     expect(maxActive).toBe(1)
     expect(svc.listRuns(room.id).filter((run) => run.status === "done")).toHaveLength(2)
   })
+});
+
+describe("CollaborationRoomService lifecycle 装配 + cancel → interruptSession（P1-2c）", () => {
+  test("默认构造：adapter 为带 lifecycle 的 Channel 栈（memberLifecycle 是 ChannelMemberSessionLifecycleAdapter）", () => {
+    const svc = CollaborationRoomService.create();
+    // 默认装配共享同一 lifecycle：adapter 已 bindTurnAbort 到该 lifecycle，使 interruptSession 可取消进行中的 turn。
+    expect(svc.memberLifecycle).toBeInstanceOf(ChannelMemberSessionLifecycleAdapter);
+  });
+
+  test("只注入 adapter 不注入 lifecycle → 旧行为（memberLifecycle 为 undefined，兼容既有测试）", () => {
+    const { adapter } = createMockAdapter();
+    const svc = createService(adapter);
+    expect(svc.memberLifecycle).toBeUndefined();
+  });
+
+  test("注入 hang adapter + Fake lifecycle：cancelRun 走 interruptSession，heartbeat alive=false（interrupted）", async () => {
+    const fake = new FakeMemberSessionLifecycleAdapter();
+    const { adapter: hangAdapter } = createMockAdapter({
+      delayMs: 5000,
+      respectSignal: true,
+    });
+    const svc = CollaborationRoomService.create({
+      adapter: hangAdapter,
+      lifecycle: fake,
+    });
+    const { roomId } = createRoomWithCoordinator(svc);
+    const member = svc.listMembers(roomId)[0]!;
+    expect(member.logicalSessionId).toBeTruthy();
+
+    svc.appendUserMessage({ roomId, content: "取消我" });
+    const run = svc.listRuns(roomId)[0]!;
+    expect(run.status).toBe("running");
+
+    svc.cancelRun(run.id);
+
+    // cancelRun 在 running 分支调用 lifecycle.interruptSession（handle.sessionId = member.logicalSessionId）。
+    expect(fake.interruptCalls).toHaveLength(1);
+    expect(fake.interruptCalls[0]!.handle.sessionId).toBe(member.logicalSessionId);
+    expect(fake.interruptCalls[0]!.reason).toBe("cancel-run");
+
+    // 用同一 sessionId 探测 heartbeat：被 interruptSession 标记 interrupted → alive=false 且 detail='interrupted'
+    //（而非 'unknown session'，证明 cancelRun 确实调了 interruptSession）。
+    const probe = {
+      sessionId: member.logicalSessionId,
+      logicalSessionId: member.logicalSessionId,
+      backend: "pi" as const,
+      resumeMode: "native" as const,
+      createdAt: 0,
+    };
+    const dead = await fake.heartbeat(probe);
+    expect(dead.alive).toBe(false);
+    expect(dead.detail).toBe("interrupted");
+
+    await svc.awaitAllRuns();
+    expect(svc.listRuns(roomId)[0]!.status).toBe("cancelled");
+    expect(svc.listMembers(roomId)[0]!.status).toBe("idle");
+  });
+
+  test("只注入 mock adapter（无 lifecycle）：cancel 仍只 abort 本地 signal，run cancelled（回归）", async () => {
+    const { adapter, calls } = createMockAdapter({ delayMs: 5000, respectSignal: true });
+    const svc = createService(adapter);
+    expect(svc.memberLifecycle).toBeUndefined();
+    const { roomId } = createRoomWithCoordinator(svc);
+
+    svc.appendUserMessage({ roomId, content: "取消我" });
+    const run = svc.listRuns(roomId)[0]!;
+    expect(run.status).toBe("running");
+
+    const cancelled = svc.cancelRun(run.id);
+    expect(cancelled?.status).toBe("cancelled");
+
+    await svc.awaitAllRuns();
+    expect(svc.listRuns(roomId)[0]!.status).toBe("cancelled");
+    expect(calls).toHaveLength(1);
+    expect(
+      svc
+        .listMessages(roomId)
+        .filter((m) => m.authorType === "member"),
+    ).toHaveLength(0);
+    expect(svc.listMembers(roomId)[0]!.status).toBe("idle");
+  });
 });

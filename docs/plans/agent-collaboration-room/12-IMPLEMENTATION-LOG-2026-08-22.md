@@ -910,3 +910,54 @@
 - **production service 未注入 lifecycle**：`collaboration-room-service.ts` 仍 `createChannelBackendAdapter()`（无 lifecycle），与 P1-2a 一致——lifecycle 为叠加契约，本轮交付 adapter 注入点 + 单测 + 门控真机冒烟，**service 全量接线（让真实房间成员 turn 也受 interruptSession 取消）留给后续**。门控冒烟自行构造 `new ChannelBackendAdapter(lifecycle)` 验证机制。
 - **bridge 不收 wallTimeMs**：authority `RecordFusionUsageInput` 不收 wallTimeMs/totalTokens/toolCalls；normalize 输出里这些字段虽保留但不进账本（仅 inputTokens/outputTokens/costMicros 回写）。
 - 未做实机 Electron GUI 手测；行为以单测 + typecheck + 真机门控冒烟验证。
+
+## 80. 生产路径注入 MemberSessionLifecycle（CollaborationRoomService 默认栈 + Fusion runtime opt-in + cancelRun→interruptSession）（P1-2c）（2026-08-23）
+
+本轮交付 P1-2c：把 P1-2a/b 的 lifecycle 契约**接进生产装配路径**——`CollaborationRoomService` 默认栈与 Fusion runtime 的显式 opt-in 都用同一份「带 lifecycle 的 ChannelBackendAdapter」工厂，`cancelRun` 在 running 分支调 `interruptSession` 取消进行中的 turn。**诚实边界不变**：不声称 native resume（`kscc bare` 不 resume），不自动打开 fusion 非 loopback 网络监听，不谎报 resume，**不**动无关未提交 UI 文件（`chat.css` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 仍保持本轮之前既存改动，未触碰、未提交）。
+
+### A. 共享工厂
+
+新增 `apps/electron/src/main/lib/collaboration/member-backend-factory.ts`：`createDefaultChannelMemberStack(): { lifecycle: ChannelMemberSessionLifecycleAdapter; adapter: MemberBackendAdapter }`——`new ChannelMemberSessionLifecycleAdapter()` + `createChannelBackendAdapter(lifecycle)` 配对返回，adapter 已 `bindTurnAbort` 到该 lifecycle。**放在独立文件**而非 `member-backend-adapter.ts`：`member-session-lifecycle.ts` 已 import `member-backend-adapter.ts`（`resolveChannelBackendConfig` / `MemberBackendResolveError`），反向再 import 会形成循环；本工厂只被 service / runtime 在运行期调用，单向依赖更稳。导出 `ChannelMemberStack` / `DefaultMemberLifecycle` 便利类型别名。
+
+### B. CollaborationRoomService 默认栈 + cancelRun→interruptSession
+
+`apps/electron/.../collaboration-room-service.ts`：
+
+- `CollaborationRoomServiceOptions` 新增可选 `lifecycle?: MemberSessionLifecycleAdapter`（测试可注入 Fake）。
+- 构造器：`const defaultStack = createDefaultChannelMemberStack(); this.adapter = opts.adapter ?? defaultStack.adapter; this.lifecycle = opts.lifecycle ?? (opts.adapter ? undefined : defaultStack.lifecycle)`。**三态**：① 啥都不传 → 默认栈（adapter+ lifecycle 同一实例，adapter 已绑定 lifecycle）；② 只传 `adapter` 不传 `lifecycle` → 旧行为（`lifecycle=undefined`，兼容既有只注入 mock adapter 的测试）；③ 传 `lifecycle`（一般与 mock adapter 成对注入）→ 用该 lifecycle。新增 `get memberLifecycle()` 暴露 lifecycle（默认装配为 `ChannelMemberSessionLifecycleAdapter`，legacy 配置为 undefined），供测试断言与未来 interrupt/heartbeat 监控接线。
+- `cancelRun` running 分支：本地 `controller.abort()` 之后调 `interruptMemberSession(run)`；新增 `private interruptMemberSession(run)`：无 lifecycle / 无 `member.logicalSessionId` → no-op；否则用 `member.logicalSessionId` 构造 `MemberSessionHandle`（`sessionId=logicalSessionId`，`backend=member.backend`——`CollaborationMemberBackend("pi"|"channel"|"cli") ⊂ MemberSessionBackend`，`resumeMode='none'`——与 Channel `supportsResume=false` 一致，`createdAt=0` 占位），fire-and-forget 调 `lifecycle.interruptSession({ handle, reason: 'cancel-run' })` 并 `.catch` 忽略错误（含未来可能的 NOT_FOUND / 未知 session）。**仅 running 分支**调用——排队中的 run（`scheduler.dequeue` 命中）无 inflight turn，不应污染 session；`awaiting_peer`/`awaiting_user` 是暂停不是取消，不调 interruptSession（session 保持 alive 供 continuation）。
+- 取消机制：本地 `controller.abort()` 已使 adapter 组合 signal（`composeAbortSignals([lifecycleController.signal, input.signal])`）abort → runner 取消进行中的 turn；`interruptSession` 是 lifecycle 原生取消契约并标记 session interrupted（heartbeat alive=false），双保险。fire-and-forget 安全：Channel/Fake 的 `interruptSession` 体同步执行（无 await），副作用（`interruptCalls.push` / `interrupted.add` / `controller.abort`）在 `cancelRun` 返回前生效。
+- 生产接线自动生效：`collaboration-ipc.ts` 的 `registerCollaborationRoomIpc` 调 `CollaborationRoomService.create({ broadcast, onTextDelta })`（不传 adapter / lifecycle）→ 命中默认栈 → 真实房间成员 turn 受 `interruptSession` 取消。**未改 IPC / main/index.ts**（默认栈自带的 lifecycle 经 getter 可观察，但本轮不新增 IPC 暴露 interrupt）。
+
+### C. Fusion runtime opt-in 默认成员执行
+
+`apps/electron/.../fusion-room-runtime.ts`：`FusionRoomTransportRuntimeOptions` 新增 `enableDefaultMemberExecution?: boolean`（**默认 false**）。`createFusionRoomTransportRuntime` 内 `const defaultMemberStack = options.enableDefaultMemberExecution && !options.memberAdapter ? createDefaultChannelMemberStack() : undefined; const memberAdapter = options.memberAdapter ?? defaultMemberStack?.adapter`，`executionBridge` 在 `memberAdapter` 存在时构造。**三态**：① 默认 false / 未传 memberAdapter → 无 executionBridge（authority-only transport，不静默开执行/网络，行为不变）；② `enableDefaultMemberExecution=true` 且未传 memberAdapter → 自动装配默认栈（adapter 已绑定 lifecycle，满足「启用执行时必须带 lifecycle」）+ executionBridge；③ 显式传 memberAdapter → 用显式 adapter（忽略 flag）。文档注明：可信环境（本地协作室入口）显式置 true；远程 / 打包入口在未完成账户认证与 ACL 前不应打开。**不**默认打开非 loopback 网络监听（`start` 仍受 `isFusionRoomLoopbackHost` 闸门，与本字段无关）。
+
+### D. 测试
+
+`apps/electron/.../collaboration-room-run.test.ts` 新增 describe「CollaborationRoomService lifecycle 装配 + cancel → interruptSession（P1-2c）」4 用例：① 默认构造 `memberLifecycle` 为 `ChannelMemberSessionLifecycleAdapter`；② 只注入 adapter 不注入 lifecycle → `memberLifecycle` undefined（旧行为）；③ 注入 hang adapter（`delayMs:5000, respectSignal:true`）+ Fake lifecycle：`cancelRun` 后 `fake.interruptCalls` 长度 1、`handle.sessionId === member.logicalSessionId`、`reason==='cancel-run'`，用同 sessionId 探测 `heartbeat` → `alive=false && detail==='interrupted'`（证明 interrupt 被调，而非 unknown session），run 终态 cancelled；④ 只注入 mock adapter（无 lifecycle）：cancel 仍只 abort 本地 signal，run cancelled（回归）。
+
+`apps/electron/.../fusion-room-runtime.test.ts` 新增 describe「FusionRoom transport enableDefaultMemberExecution（P1-2c）」3 用例：① 默认 false → `executionBridge` undefined；② `enableDefaultMemberExecution=true` 且未传 memberAdapter → `executionBridge` defined；③ 显式 memberAdapter + flag=true 共存 → bridge 用显式 adapter（不自动装配栈覆盖）。`createRuntime` helper 增第三参 `enableDefaultMemberExecution`。
+
+### 验证（实跑结果）
+
+- `bunx vitest run apps/electron/src/main/lib/collaboration/collaboration-room-run.test.ts apps/electron/src/main/lib/collaboration/member-backend-adapter.test.ts apps/electron/src/main/lib/collaboration/member-session-lifecycle.test.ts apps/electron/src/main/lib/collaboration/fusion-room-runtime.test.ts` → **85 pass / 0 fail**（16 run 含 4 新 P1-2c + 21 adapter + 25 lifecycle + 23 runtime 含 3 新）。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/`（全目录）→ **361 pass / 4 skipped / 0 fail**（28 文件 + 1 skipped 门控冒烟；skip 为 `TAGENT_KSCC_LIFECYCLE_SMOKE` 未设，不算失败）。
+- `bun run --filter='./apps/electron' typecheck` → 退出 0。
+- `bun run --filter='@tagent/shared' typecheck` → 退出 0。
+- `bun run --filter='@tagent/core' typecheck` → 退出 0。
+- `git diff --check` → 退出 0（仅 `packages/ui/.../tokens.css` 既存 LF→CRLF 提示，为本切片之前已存在的无关改动，未触碰；本切片未动 `chat.css` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css`）。
+
+### 默认谁注入、谁仍 opt-in
+
+- **默认注入**：`CollaborationRoomService`（生产 `registerCollaborationRoomIpc` 路径）——本地协作室本就在跑模型，默认栈带 lifecycle，`cancelRun` 走 `interruptSession`。
+- **仍 opt-in**：Fusion runtime `enableDefaultMemberExecution` 默认 false——远程 / 打包 transport 默认 authority-only，不自动开执行 / 网络；可信本地入口显式置 true 才装配默认成员栈 + executionBridge。显式传 `memberAdapter` 始终优先。
+
+### 诚实能力证据 / 未做
+
+- **不声称 native resume**：`kscc bare` 不 resume；本轮只把 lifecycle 接进生产装配 + cancelRun→interruptSession，未接 provider 原生 session id 恢复。
+- **未做 createSession-before-every-turn**：`executeRun` turn 开始前不调 `lifecycle.createSession`（brief 标为可选增强；过重会双调 `resolveChannelBackendConfig` 且 createSession 失败会提前 fail）。cancel 经 `bindTurnAbort`（adapter 内）+ `interruptSession`（cancelRun）仍可取消进行中的 turn——`bindTurnAbort` 在 `turnControllers` Map 登记 controller 不依赖 createSession；`interruptSession` 按 `sessionId=logicalSessionId` 寻址。代价：未 createSession 时 `heartbeat` 对该 session 返回 unknown（alive=false），故 heartbeat 不作生产 alive 探针；后续若需 honest alive 探针再接 createSession。
+- **进程级 kill 由 runner 自身处理**：lifecycle 仅协作 AbortSignal，本轮未新增进程级 kill。
+- **持久 outbox worker 未做**：与 handoff §7 P1 / §8 第 5 步一致，本切片不涉及。
+- **未做实机 Electron GUI 手测**：行为以单测 + 全仓 typecheck 验证；真机 create→turn→interrupt→heartbeat 闭环由 P1-2b 门控冒烟已证（§79）。
+- **Fusion runtime 不暴露 lifecycle**：`enableDefaultMemberExecution` 装配的 `stack.lifecycle` 仅被 `stack.adapter` 持有（GC 根），未在 `FusionRoomTransportRuntime` 上暴露；runtime 的 cancel 仍走 bridge 自身 per-run AbortController（`input.signal` 已在组合 signal 内）。未来若需 runtime 级 interruptSession 接线再暴露。

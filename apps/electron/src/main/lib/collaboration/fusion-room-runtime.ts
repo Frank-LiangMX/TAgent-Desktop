@@ -29,6 +29,7 @@ import {
 } from './fusion-room-http-server'
 import { FusionRoomExecutionBridge, type FusionRoomExecutionBridgeOptions } from './fusion-room-execution-bridge'
 import { createFusionRoomHostToolHandlerFactory } from './fusion-room-host-tools'
+import { createDefaultChannelMemberStack } from './member-backend-factory'
 
 export interface FusionRoomTransportRuntimeOptions
   extends Pick<
@@ -41,6 +42,18 @@ export interface FusionRoomTransportRuntimeOptions
   authorize?: FusionRoomGatewayOptions['authorize']
   /** Optional real member runner; omitted means authority-only transport. */
   memberAdapter?: MemberBackendAdapter
+  /**
+   * 显式开关：为 true 且未传 {@link memberAdapter} 时，自动装配默认成员执行栈
+   *（`createDefaultChannelMemberStack`：带 lifecycle 的 ChannelBackendAdapter）+ ExecutionBridge，
+   * 使该 runtime 具备本地成员 turn 执行能力（且 adapter 已 bindTurnAbort 到 lifecycle，
+   * 满足「启用执行时必须带 lifecycle」）。
+   *
+   * **默认 false**：保持「不自动开执行 / 不自动开网络」——runtime 默认只做 authority-only
+   * transport，不静默拉起模型调用。可信环境（如本地协作室入口）显式置 true 打开；远程 /
+   * 打包入口在未完成账户认证与 ACL 前不应打开。提供 {@link memberAdapter} 时本字段被忽略
+   * （以显式注入为准）。
+   */
+  enableDefaultMemberExecution?: boolean
   /** Optional host-authorized room/workspace tool bridge. */
   memberToolHandlerFactory?: FusionRoomExecutionBridgeOptions['hostToolHandlerFactory']
   /**
@@ -149,10 +162,18 @@ export function createFusionRoomTransportRuntime(
   host.recoverInterruptedRuns()
   const hostToolHandlerFactory = options.memberToolHandlerFactory ??
     createFusionRoomHostToolHandlerFactory({ host, workspaceStore })
-  const executionBridge = options.memberAdapter
+  // P1-2c：未显式注入 memberAdapter 但打开 enableDefaultMemberExecution 时，自动装配默认
+  // 成员执行栈（带 lifecycle 的 ChannelBackendAdapter）。默认 false → memberAdapter 为
+  // undefined → 无 executionBridge（authority-only transport，不静默开执行/网络）。
+  const defaultMemberStack =
+    options.enableDefaultMemberExecution && !options.memberAdapter
+      ? createDefaultChannelMemberStack()
+      : undefined
+  const memberAdapter = options.memberAdapter ?? defaultMemberStack?.adapter
+  const executionBridge = memberAdapter
     ? new FusionRoomExecutionBridge({
         host,
-        adapter: options.memberAdapter,
+        adapter: memberAdapter,
         hostToolHandlerFactory,
       })
     : undefined

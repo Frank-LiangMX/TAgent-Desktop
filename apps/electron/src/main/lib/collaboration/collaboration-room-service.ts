@@ -114,6 +114,8 @@ import {
   type CreateCollaborationRoomTaskInput,
   type UpdateCollaborationRoomTaskInput,
   type MemberBackendAdapter,
+  type MemberSessionLifecycleAdapter,
+  type MemberSessionHandle,
   type MemberTurnInput,
   type ReadCollaborationArtifactResult,
   type BoardProjectedSummary,
@@ -169,11 +171,11 @@ import {
   findRunByIdempotencyKey,
 } from "./collaboration-room-repository";
 import {
-  createChannelBackendAdapter,
   channelSupportsRoomToolBridge,
   MemberBackendResolveError,
   pickDefaultMemberChannelBinding,
 } from "./member-backend-adapter";
+import { createDefaultChannelMemberStack } from "./member-backend-factory";
 import {
   CollaborationSummaryRunner,
   type CollaborationSummaryModelCaller,
@@ -206,8 +208,20 @@ export type CollaborationTextDeltaHandler = (
 
 /** 服务构造选项（adapter / broadcast 可注入） */
 export interface CollaborationRoomServiceOptions {
-  /** 成员后端适配器（默认 ChannelBackendAdapter；测试可注入 mock） */
+  /**
+   * 成员后端适配器（默认带 lifecycle 的 ChannelBackendAdapter；测试可注入 mock）。
+   *
+   * 注入 adapter 但**不**注入 {@link lifecycle} → 保持旧行为（无 lifecycle），兼容既有测试：
+   * cancelRun 只 abort 本地 controller，不调 interruptSession。
+   */
   adapter?: MemberBackendAdapter;
+  /**
+   * 成员会话生命周期适配器（测试可注入 Fake）。默认与默认 adapter 共享同一
+   * {@link ChannelMemberSessionLifecycleAdapter}（生产装配）；注入后 cancelRun 走
+   * `interruptSession` 取消进行中的 turn。仅注入本字段而不注入 adapter 时，默认 adapter
+   * 仍绑定到默认栈自身的 lifecycle，故一般与 mock adapter 成对注入以观察中断行为。
+   */
+  lifecycle?: MemberSessionLifecycleAdapter;
   /** CHANGED 广播（默认 noop；IPC 层注入真实广播） */
   broadcast?: CollaborationRoomBroadcast;
   /** 流式正文增量（默认 noop） */
@@ -293,6 +307,12 @@ function defaultHumanMemberForRoom(
 }
 export class CollaborationRoomService {
   private readonly adapter: MemberBackendAdapter;
+  /**
+   * 成员会话生命周期适配器（P1-2c）。默认装配（与默认 adapter 共享同一 lifecycle）；
+   * 调用方只注入 adapter 不注入 lifecycle 时为 undefined（旧行为，兼容既有测试）。
+   * cancelRun 据此走 interruptSession 取消进行中的 turn。
+   */
+  private readonly lifecycle: MemberSessionLifecycleAdapter | undefined;
   private readonly broadcast: CollaborationRoomBroadcast;
   private readonly onTextDelta: CollaborationTextDeltaHandler;
   private readonly localOnly: boolean;
@@ -310,7 +330,13 @@ export class CollaborationRoomService {
   private readonly rootBudgetTails = new Map<string, Promise<void>>();
 
   private constructor(opts: CollaborationRoomServiceOptions) {
-    this.adapter = opts.adapter ?? createChannelBackendAdapter();
+    // P1-2c：默认装配带 lifecycle 的 Channel 栈（adapter 已 bindTurnAbort 到该 lifecycle，
+    // 使 interruptSession 可取消进行中的 turn）。调用方只传 adapter 不传 lifecycle → 旧行为
+    // （无 lifecycle），兼容既有只注入 mock adapter 的测试。
+    const defaultStack = createDefaultChannelMemberStack();
+    this.adapter = opts.adapter ?? defaultStack.adapter;
+    this.lifecycle =
+      opts.lifecycle ?? (opts.adapter ? undefined : defaultStack.lifecycle);
     this.broadcast = opts.broadcast ?? noopBroadcast;
     this.onTextDelta = opts.onTextDelta ?? (() => undefined);
     this.localOnly = opts.localOnly === true;
@@ -325,6 +351,15 @@ export class CollaborationRoomService {
     opts?: CollaborationRoomServiceOptions,
   ): CollaborationRoomService {
     return new CollaborationRoomService(opts ?? {});
+  }
+
+  /**
+   * 成员会话生命周期适配器（P1-2c）。默认装配时为 {@link ChannelMemberSessionLifecycleAdapter}
+   *（与默认 adapter 共享同一实例）；只注入 adapter 不注入 lifecycle 的 legacy 配置为 undefined。
+   * 暴露供测试断言默认装配，以及未来 interrupt/heartbeat 监控接线消费。
+   */
+  get memberLifecycle(): MemberSessionLifecycleAdapter | undefined {
+    return this.lifecycle;
   }
 
   /** 构造默认调度器：读 room.maxConcurrentRuns；start 回调 fire-and-forget executeRun + 记 inflight */
@@ -1025,10 +1060,44 @@ export class CollaborationRoomService {
       // 已 running：abort 后端调用；executeRun finally 会 release + syncMemberStatus
       const ctrl = this.abortControllers.get(runId);
       if (ctrl) ctrl.abort();
+      // P1-2c：本地 controller.abort 已使 adapter 组合 signal abort（取消进行中的 turn）；
+      // 再 interruptSession 是 lifecycle 原生取消契约，并标记 session interrupted 使 heartbeat
+      // alive=false。仅 running 分支调用——排队中的 run 无 inflight turn，不应污染 session。
+      this.interruptMemberSession(run);
     }
 
     this.broadcast(run.roomId, "run-cancelled");
     return updated;
+  }
+
+  /**
+   * 取消时通知 lifecycle 中断该成员的进行中 session（P1-2c）。
+   *
+   * - 无 lifecycle / 无 member.logicalSessionId → no-op（旧行为：只靠本地 controller.abort）。
+   * - 用 member.logicalSessionId 构造 handle（interruptSession 只按 sessionId 寻址；其余字段
+   *   仅满足类型，未参与寻址）。backend 取 member.backend（CollaborationMemberBackend ⊂
+   *   MemberSessionBackend），resumeMode='none'（与 Channel supportsResume=false 一致）。
+   * - fire-and-forget：Channel/Fake 的 interruptSession 体同步执行（无 await），副作用立即生效；
+   *   捕获任何错误（含未来可能的 NOT_FOUND / 未知 session）避免影响 cancel 本身。
+   */
+  private interruptMemberSession(run: CollaborationRun): void {
+    if (!this.lifecycle) return;
+    const member = getMember(run.memberId);
+    const logicalSessionId = member?.logicalSessionId?.trim();
+    if (!logicalSessionId) return;
+    const handle: MemberSessionHandle = {
+      sessionId: logicalSessionId,
+      logicalSessionId,
+      backend: member!.backend,
+      resumeMode: "none",
+      createdAt: 0,
+    };
+    void this.lifecycle
+      .interruptSession({ handle, reason: "cancel-run" })
+      .catch((error) => {
+        // 忽略 NOT_FOUND / 未知 session 等：cancel 已生效，不因 lifecycle 报错而失败。
+        console.error("[协作室] interruptSession 失败（已忽略）:", error);
+      });
   }
 
   /**

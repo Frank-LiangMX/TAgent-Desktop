@@ -49,7 +49,7 @@ afterEach(async () => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-function createRuntime(memberAdapter?: MemberBackendAdapter, tls?: FusionRoomTlsOptions) {
+function createRuntime(memberAdapter?: MemberBackendAdapter, tls?: FusionRoomTlsOptions, enableDefaultMemberExecution?: boolean) {
   const dir = mkdtempSync(join(tmpdir(), 'tagent-fusion-runtime-'))
   tempDirs.push(dir)
   const runtime = createFusionRoomTransportRuntime({
@@ -57,6 +57,7 @@ function createRuntime(memberAdapter?: MemberBackendAdapter, tls?: FusionRoomTls
     inviteTokenPath: join(dir, 'invite-tokens.json'),
     ...(memberAdapter ? { memberAdapter } : {}),
     ...(tls ? { tls } : {}),
+    ...(enableDefaultMemberExecution ? { enableDefaultMemberExecution } : {}),
     authenticate: (request) => {
       const raw = request.headers['x-user-id']
       const userId = Array.isArray(raw) ? raw[0] : raw
@@ -445,5 +446,37 @@ describe('FusionRoom transport runtime lifecycle', () => {
     expect(snapshot.messages[1]?.content).toContain('已完成')
     expect(snapshot.runs[0]?.status).toBe('completed')
     expect(snapshot.usage[0]?.outputTokens).toBe(5)
+  })
+})
+
+describe('FusionRoom transport enableDefaultMemberExecution（P1-2c）', () => {
+  test('默认 false：未传 memberAdapter 时无 executionBridge（authority-only transport，不自动开执行）', () => {
+    const runtime = createRuntime()
+    expect(runtime.executionBridge).toBeUndefined()
+  })
+
+  test('enableDefaultMemberExecution=true 且未传 memberAdapter：自动装配默认成员栈 + executionBridge', () => {
+    const runtime = createRuntime(undefined, undefined, true)
+    expect(runtime.executionBridge).toBeDefined()
+  })
+
+  test('显式 memberAdapter 仍优先：与 enableDefaultMemberExecution=true 共存时 bridge 用显式 adapter', () => {
+    let calls = 0
+    const adapter: MemberBackendAdapter = {
+      capabilities: () => ({
+        supportsResume: false,
+        supportsLiveInput: false,
+        supportsToolBridge: false,
+        supportsStructuredEvents: false,
+      }),
+      async runTurn() {
+        calls += 1
+        return { text: 'explicit adapter reply' }
+      },
+    }
+    // 传显式 adapter + 打开 enableDefaultMemberExecution：不应自动装配默认栈覆盖显式 adapter。
+    const runtime = createRuntime(adapter, undefined, true)
+    expect(runtime.executionBridge).toBeDefined()
+    expect(calls).toBe(0) // 未 dispatch 时不调用
   })
 })
