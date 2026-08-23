@@ -1316,3 +1316,40 @@ brief 指定审计函数名为 `estimateTokenCount`，但 `@tagent/shared/utils`
 - **不改主路径行为**：未改 `removeMember` 静默回退、未改 `upgradeFusionSession` 建房逻辑（仅加 public thin wrapper `appendRoomSystemMessage`）、未把单会话运行时改成 room 投影、未整包原 JSONL 塞进每轮 prompt（transcript 12k 字符硬顶）。
 - **未触碰无关未提交文件**：`BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 保持本轮之前既存改动，未触碰、未提交。
 - **可 commit；主控 push**：本轮已 commit；未自行 push。
+
+## 87. 单会话↔协作室桥接 UI 层（开启/结束协作确认 + 关静默升级）（P2-UX-BRIDGE-UI）（2026-08-24）
+
+本轮交付 [P2-UX-BRIDGE-UI-brief](./P2-UX-BRIDGE-UI-brief.md) 的**UI 层**切片：把服务层（§86）已暴露的 `enterCollaborationWithBridge` / `exitCollaborationWithBridge`（须 `userConfirmed:true`）接到用户可见路径，关掉旧静默升级。**不改** bridge 服务预算/精炼逻辑、**不接** host 工具、**不触碰** `BotSidecarPanel*` / `image-lightbox` / `message/index` / `tokens.css`。产品规格见 [14-SESSION-COLLAB-BRIDGE-SPEC](./14-SESSION-COLLAB-BRIDGE-SPEC.md) §5。
+
+### A. 落点
+
+- `apps/electron/src/renderer/components/chat/SessionBotBar.tsx`：删 `upgradeToRoom`（旧静默 `upgradeFusionSessionToRoom` 路径）+ `toggleBot` 选满 ≥2 Bot 的自动升级块；底部按钮改为「开启协作」（仅 `selectedRecords.length >= 2 && !fusionRoomId` 显示，已有 `fusionRoomId` 时隐藏避免双入口）→ `DestructiveConfirmDialog`（复用 `@tagent/ui`，pendingLabel「正在开启协作…」）→ 确认调 `enterCollaborationWithBridge({ sessionId, userConfirmed: true })` → 派发 `tagent:session-meta-changed` + `toast.success`；失败抛错由确认框内联提示。hint 改为「1 个 Bot 直接作为当前对话对象；加入 2 个及以上 Bot 后，可点「开启协作」进入协作模式。」。
+- `apps/electron/src/renderer/components/collaboration/CollaborationRoomsPage.tsx`：Props 增 `sourceSessionId?: string` / `onCollaborationExited?: () => void`（经外层 wrapper `{...props}` 透传到 `LocalCollaborationRoomsPage`）；`canExitCollaboration = room.sourceSessionId && (!sourceSessionId || === sourceSessionId)` 时头部状态徽章后加「结束协作」文字按钮（`SignOut` 图标 + destructive 描边，与「归档」图标区分）→ `DestructiveConfirmDialog`（pendingLabel「正在结束协作…」、confirmLabel「结束并写回」）→ 确认调 `exitCollaborationWithBridge({ sessionId: room.sourceSessionId, userConfirmed: true })` → 派发 `tagent:session-meta-changed` + `onCollaborationExited?.()` + `toast.success`；失败抛错由确认框内联提示。
+- `apps/electron/src/renderer/components/chat/Chat.tsx`：`CollaborationRoomsPage` 传 `sourceSessionId={sessionId}` + `onCollaborationExited={() => setFusionRoomRefreshKey((v) => v + 1)}`（meta 变更后 `usePersistedSessionMeta` 重读 `fusionRoomId` → 自动切回普通会话壳；refreshKey bump 兜底）。
+
+### B. 确认框复用
+
+进房 / 退房均复用 `@tagent/ui` 的 `DestructiveConfirmDialog`（已有 pending + 内联错误），换 title / confirmLabel / pendingLabel / description；非删除语义也用同一组件（brief C 明示）。`onConfirm` 成功后 `toast.success`，失败抛错 → 确认框内联显示错误并保持打开（对齐 `SessionSidebar.deleteSession` 既有约定，避免与 toast 双显同一条错误）。
+
+### C. 测试（3 pass / 0 fail）
+
+新增 `apps/electron/src/renderer/components/chat/SessionBotBar.test.tsx`（jsdom，根级 react-dom/client + act，mock `sonner`）：
+1. 选满 2 Bot（`botProfileIds=["b1","b2"]`）不自动调 `enterCollaborationWithBridge` / 旧 `upgradeFusionSessionToRoom`，且「开启协作」按钮可见。
+2. 点「开启协作」只开确认框（`[role="alertdialog"]` 挂到 body），不直接 IPC（confirm-gated）。
+3. 确认后才调 `enterCollaborationWithBridge` 一次且带 `{ sessionId: "s1", userConfirmed: true }`（Radix AlertDialog Action 点击 + `event.preventDefault()` 保持打开 / 异步 onConfirm 链在 jsdom 可驱动）。
+
+### 验证（实跑结果）
+
+- `bunx vitest run apps/electron/src/renderer/components/chat/SessionBotBar.test.tsx` → **3 pass / 0 fail**（v2.1.9，141ms）。
+- `bun run --filter='./apps/electron' typecheck` → 退出 0。
+- `git diff --check` → 退出 0（`BotSidecarPanel.tsx` / `tokens.css` 等本切片之前既存无关改动仅 LF→CRLF 提示，无实际空白错误）。
+
+### 诚实能力证据 / 未做
+
+- **host 工具未接**：`readCollaborationSourceExcerpt` IPC 已暴露但协调者按需读原史的工具回路仍待后续切片（brief 非目标）。
+- **成员减到 1 不自动 exit / 也不 toast 提示**：brief 列为可选；本轮**未做**「可点结束协作」自动提示（brief 明确「不要自动调 exit」），留后。
+- **失败反馈走确认框内联**：进/退房失败时 `onConfirm` 抛错 → `DestructiveConfirmDialog` 内联显示错误并保持打开（对齐 `SessionSidebar.deleteSession` 约定 + brief C 复用同一组件），**未**额外 `toast.error` 以避免同一条错误双显；成功 `toast.success`。
+- **不改服务层**：未改 bridge 预算/精炼、未改 `upgradeFusionSession` / `removeMember`、未改 IPC、未接 `session_meta_changed` 主进程推送（renderer 派发已够：exit 后 meta 落盘 + renderer 派发 `tagent:session-meta-changed` → `usePersistedSessionMeta` 重读 `fusionRoomId` 生效）。
+- **未触碰无关未提交文件**：`BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` / `docs/dev/knowledge-base/` 保持本轮之前既存改动，未触碰、未提交。
+- **无 Electron GUI 手测**：无 GUI，以组件测 + typecheck 为准（brief 验收口径）。
+- **可 commit；主控 push**：本轮已 commit；未自行 push。

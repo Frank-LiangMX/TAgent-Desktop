@@ -3494,9 +3494,11 @@ export function Chat({
           {session.fusionRoomId ? (
             <CollaborationRoomsPage
               roomId={session.fusionRoomId}
+              sourceSessionId={sessionId}
               refreshKey={fusionRoomRefreshKey}
               onRoomsChanged={() => setFusionRoomRefreshKey((value) => value + 1)}
               onNewRoom={() => undefined}
+              onCollaborationExited={() => setFusionRoomRefreshKey((value) => value + 1)}
             />
           ) : (
             <>

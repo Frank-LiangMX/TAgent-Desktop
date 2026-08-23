@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bot as BotIcon, Check, Plus } from "lucide-react";
+import { toast } from "sonner";
 import type { BotProfileRecord } from "@tagent/shared";
-import { Button, Popover, PopoverContent, PopoverTrigger } from "@tagent/ui";
+import {
+  Button,
+  DestructiveConfirmDialog,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@tagent/ui";
 
 export interface SessionBotBarProps {
   sessionId: string;
@@ -23,6 +30,8 @@ export function SessionBotBar({
   const [records, setRecords] = useState<BotProfileRecord[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>(botProfileIds ?? []);
   const [open, setOpen] = useState(false);
+  /** 「开启协作」确认框：明示进房前必须用户确认，禁止静默自动升级（14 §1）。 */
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   useEffect(() => {
     setSelectedIds(botProfileIds ?? []);
@@ -65,35 +74,31 @@ export function SessionBotBar({
       });
       setSelectedIds(nextIds);
       setOpen(false);
-      if (nextIds.length >= 2) {
-        await upgradeToRoom(nextIds.length);
-      }
+      // 选满 ≥2 Bot 不再静默升级为协作室；用户须明示点「开启协作」并确认（14 §1）。
     } catch {
       window.alert("Bot 参与者保存失败，请稍后重试");
     }
   };
 
-  const upgradeToRoom = async (selectedCount = selectedRecords.length): Promise<void> => {
-    if (selectedCount < 2) return;
-    try {
-      const room = await window.electronAPI.upgradeFusionSessionToRoom({
-        sessionId,
-      });
-      window.dispatchEvent(
-        new CustomEvent("tagent:open-collaboration-room", {
-          detail: { roomId: room.id, sessionId },
-        }),
-      );
-      window.dispatchEvent(
-        new CustomEvent("tagent:session-meta-changed", {
-          detail: { sessionId },
-        }),
-      );
-      setOpen(false);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      window.alert(message || "升级为协作室失败，请稍后重试");
-    }
+  /**
+   * 明示进房（14 §1）：用户确认后调 enter-with-bridge，主进程精炼前情提要写房间
+   * goal + 系统消息。成功后派发 session-meta-changed（meta 落盘后 usePersistedSessionMeta
+   * 重读 fusionRoomId → Chat 自动切到协作壳）。失败抛错由 DestructiveConfirmDialog 内联提示。
+   * 禁止再走旧 upgradeFusionSessionToRoom 静默路径（无精炼桥）。
+   */
+  const handleEnterCollaboration = async (): Promise<void> => {
+    await window.electronAPI.enterCollaborationWithBridge({
+      sessionId,
+      userConfirmed: true,
+    });
+    window.dispatchEvent(
+      new CustomEvent("tagent:session-meta-changed", {
+        detail: { sessionId },
+      }),
+    );
+    toast.success("已开启协作", {
+      description: "已切换到协作室，单会话历史保留。",
+    });
   };
 
   const availableRecords = records.filter((item) => !item.profile.archivedAt);
@@ -139,7 +144,7 @@ export function SessionBotBar({
         >
           <div className="session-bot-picker__title">本会话 Bot</div>
           <div className="session-bot-picker__hint">
-            1 个 Bot 直接作为当前对话对象；多个 Bot 将进入融合会话路由。
+            1 个 Bot 直接作为当前对话对象；加入 2 个及以上 Bot 后，可点「开启协作」进入协作模式。
           </div>
           {availableRecords.length === 0 &&
           selectedRecords.every((item) => !item.profile.archivedAt) ? (
@@ -185,21 +190,33 @@ export function SessionBotBar({
           )}
         </PopoverContent>
       </Popover>
-      {selectedRecords.length >= 2 ? (
+      {selectedRecords.length >= 2 && !fusionRoomId ? (
         <Button
           variant="ghost"
           size="sm"
           className="session-bot-bar__trigger"
-          onClick={() => void upgradeToRoom()}
-          title={
-            fusionRoomId
-              ? "打开已关联协作室"
-              : "复用现有协作室能力，升级当前融合会话"
-          }
+          onClick={() => setConfirmOpen(true)}
+          title="开启协作，把当前会话升级为协作室"
         >
-          {fusionRoomId ? "打开协作" : "升级为协作"}
+          开启协作
         </Button>
       ) : null}
+      <DestructiveConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="开启协作？"
+        description={
+          <>
+            <p className="mb-1">将为当前会话创建协作室，单会话历史保留。</p>
+            <p>
+              会把近期对话精炼为前情提要交给协作成员；协作期间在本标签内使用协作界面。
+            </p>
+          </>
+        }
+        confirmLabel="开启协作"
+        pendingLabel="正在开启协作…"
+        onConfirm={handleEnterCollaboration}
+      />
     </div>
   );
 }

@@ -30,6 +30,7 @@ import {
   Pause,
   PencilSimple,
   Play,
+  SignOut,
   Target,
   UsersThree,
 } from "@phosphor-icons/react";
@@ -49,7 +50,7 @@ import type {
   CollaborationUserApprovalRequest,
   LocalCollaborationContinuationItem,
 } from "@tagent/shared";
-import { AppTooltip, Button, Input } from "@tagent/ui";
+import { AppTooltip, Button, DestructiveConfirmDialog, Input } from "@tagent/ui";
 import { ChatInput, type ChatInputHandle } from "../chat/ChatInput";
 import { SendSplitButton } from "../chat/ConsultMenu";
 import BlurText from "../chat/BlurText";
@@ -162,6 +163,14 @@ interface CollaborationRoomsPageProps {
   onOpenSettings?: (tab: "channels") => void;
   /** 空态「连接远程融合会话」CTA（由 wrapper 接管打开连接对话框） */
   onOpenRemoteSession?: () => void;
+  /**
+   * 绑定的来源单会话 ID（14 §1 桥接）：由 Chat 传入 session.id。
+   * 当 room.sourceSessionId 与之相等（或未传时只要 room.sourceSessionId 存在）时
+   * 头部显示「结束协作」按钮，调 exitCollaborationWithBridge 写回原会话并切回普通会话壳。
+   */
+  sourceSessionId?: string;
+  /** 结束协作成功后通知 Chat（如 bump fusionRoomRefreshKey；meta 变更后 Chat 会自动切回普通会话壳） */
+  onCollaborationExited?: () => void;
   /** 远程 Fusion 房间会话；存在时改渲染 FusionRoomRemotePage，本地页面逻辑不复用 */
   remoteSession?: FusionRoomRemoteSession;
   /** 远程会话关闭回调（FusionRoomRemotePage 顶栏返回 / 断开时调用） */
@@ -241,6 +250,8 @@ function LocalCollaborationRoomsPage({
   onNewRoom,
   onOpenSettings,
   onOpenRemoteSession,
+  sourceSessionId,
+  onCollaborationExited,
 }: CollaborationRoomsPageProps): JSX.Element {
   const [room, setRoom] = useState<CollaborationRoom | null>(null);
   const [messages, setMessages] = useState<CollaborationMessage[]>([]);
@@ -258,6 +269,8 @@ function LocalCollaborationRoomsPage({
   const [invitingUser, setInvitingUser] = useState(false);
   const [showAddMemberDialog, setShowAddMemberDialog] = useState(false);
   const [textPrompt, setTextPrompt] = useState<TextPromptKind>(null);
+  /** 「结束协作」确认框：明示退出须用户确认，勿静默（14 §1）。 */
+  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   /** composer 中选中的成员 mention 芯片 id（结构化路由用；无芯片时不传 → 文本兜底） */
   const [composerMentionIds, setComposerMentionIds] = useState<string[]>([]);
   const [hasDraft, setHasDraft] = useState(false);
@@ -906,6 +919,31 @@ function LocalCollaborationRoomsPage({
     }
   }, [onRoomArchived, onRoomsChanged, room]);
 
+  /**
+   * 明示退出协作（14 §1）：用户确认后调 exit-with-bridge，主进程精炼协作结论写回原
+   * session 面板（系统通知卡）+ 清 fusionRoomId + 房间 paused（保留历史）。成功后派发
+   * session-meta-changed（usePersistedSessionMeta 重读 → fusionRoomId 清空 → Chat 切回普通
+   * 会话壳，面板可见回写 system 卡）+ onCollaborationExited 兜底 bump。失败抛错由
+   * DestructiveConfirmDialog 内联提示。
+   */
+  const handleExitCollaboration = useCallback(async (): Promise<void> => {
+    const sourceId = room?.sourceSessionId;
+    if (!sourceId) return;
+    await window.electronAPI.exitCollaborationWithBridge({
+      sessionId: sourceId,
+      userConfirmed: true,
+    });
+    window.dispatchEvent(
+      new CustomEvent("tagent:session-meta-changed", {
+        detail: { sessionId: sourceId },
+      }),
+    );
+    onCollaborationExited?.();
+    toast.success("已结束协作", {
+      description: "已把协作结论写回原会话，回到普通会话。",
+    });
+  }, [onCollaborationExited, room?.sourceSessionId]);
+
   // 空态
   if (!roomId || !room) {
     return (
@@ -1033,6 +1071,15 @@ function LocalCollaborationRoomsPage({
 
   const archived = room.status === "archived";
   const paused = room.status === "paused";
+  /**
+   * 是否显示「结束协作」：房间由当前单会话桥接而来（room.sourceSessionId 存在且与传入的
+   * sourceSessionId 相等；未传 sourceSessionId 时只要存在即显示）。与「归档」语义区分：
+   * 结束协作会精炼结论写回原会话并切回普通会话壳，归档只改房间状态。
+   */
+  const canExitCollaboration = Boolean(
+    room.sourceSessionId &&
+      (!sourceSessionId || room.sourceSessionId === sourceSessionId),
+  );
 
   return (
     <div className="session-body flex h-full min-h-0 flex-col">
@@ -1056,6 +1103,19 @@ function LocalCollaborationRoomsPage({
           >
             {roomStatusLabel(room.status)}
           </span>
+          {canExitCollaboration ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 border-destructive/30 px-2 text-[11px] text-destructive hover:bg-destructive/10"
+              onClick={() => setExitConfirmOpen(true)}
+              title="结束协作，把结论写回原会话并回到普通会话"
+            >
+              <SignOut size={13} weight="regular" />
+              结束协作
+            </Button>
+          ) : null}
           <AppTooltip label="重命名" side="bottom">
             <button
               type="button"
@@ -1523,6 +1583,20 @@ function LocalCollaborationRoomsPage({
         confirmLabel="保存"
         onCancel={() => setTextPrompt(null)}
         onConfirm={(goal) => void confirmEditGoal(goal)}
+      />
+      <DestructiveConfirmDialog
+        open={exitConfirmOpen}
+        onOpenChange={setExitConfirmOpen}
+        title="结束协作？"
+        description={
+          <>
+            <p className="mb-1">将把协作结论精炼写回原会话；协作室记录保留（暂停）。</p>
+            <p>本标签回到普通会话，可继续单会话对话。</p>
+          </>
+        }
+        confirmLabel="结束并写回"
+        pendingLabel="正在结束协作…"
+        onConfirm={handleExitCollaboration}
       />
     </div>
   );
