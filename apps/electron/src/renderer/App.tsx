@@ -30,12 +30,14 @@ import type {
   CollaborationArtifact,
   CollaborationUserApprovalRequest,
   CollaborationTextDeltaPayload,
+  LocalCollaborationContinuationItem,
   CreateCollaborationRoomInput,
   UpgradeFusionSessionInput,
   SaveCollaborationMemberPresetInput,
   AddCollaborationMemberInput,
   ContinueCollaborationDepthStopInput,
   ContinueCollaborationDepthStopResult,
+  ConfirmResumeBlockedRunResult,
   CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomInput,
   UpdateCollaborationMemberInput,
@@ -841,6 +843,15 @@ declare global {
           }
         | { ok: false; reason: string }
       >;
+      // 协作室（P2-1：本地「待确认续跑」—— 列出可观察项 + 确认继续 blocked run）
+      listCollaborationContinuations: (
+        roomId: string,
+      ) => Promise<LocalCollaborationContinuationItem[]>;
+      confirmResumeCollaborationBlockedRun: (input: {
+        roomId: string;
+        runId: string;
+        idempotencyKey?: string;
+      }) => Promise<ConfirmResumeBlockedRunResult>;
       onCollaborationRoomChanged: (
         cb: (payload: { roomId: string; kind: string; at: number }) => void,
       ) => () => void;

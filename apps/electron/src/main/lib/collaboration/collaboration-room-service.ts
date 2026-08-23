@@ -65,6 +65,7 @@ import {
   collaborationContinuationIdempotencyKey,
   collaborationEnvelopeIdempotencyKey,
   canContinueCollaborationDepthStop,
+  listLocalCollaborationContinuations,
   collaborationLoopFingerprint,
   isCollaborationDuplicateReply,
   isCollaborationSelfSend,
@@ -100,6 +101,9 @@ import {
   type CollaborationRun,
   type CollaborationRunStatus,
   type CollaborationSerializedRunError,
+  type LocalCollaborationContinuationItem,
+  type ConfirmResumeBlockedRunInput,
+  type ConfirmResumeBlockedRunResult,
   type CreateCollaborationMemberInput,
   type RemoveCollaborationMemberInput,
   type CreateCollaborationRoomInput,
@@ -1633,6 +1637,26 @@ export class CollaborationRoomService {
   }
 
   /**
+   * P2-1：列出某房间的可观察「待确认续跑」项（纯函数派生，不触发副作用）。
+   *
+   * 从已落盘的 runs / mailbox / approvals 派生 blocked_run / pending_approval /
+   * awaiting_peer / awaiting_user / depth_stop / mailbox_outbox 等可观察项，规则对齐
+   * 远程 Fusion 的 listFusionContinuations。房间不存在或未激活时返回空列表（不抛错）。
+   */
+  listContinuations(roomId: string): LocalCollaborationContinuationItem[] {
+    const room = getRoom(roomId);
+    if (!room) return [];
+    return listLocalCollaborationContinuations({
+      roomId,
+      runs: listRunsByRoom(roomId),
+      mailbox: listMailboxByRoom(roomId),
+      approvals: listUserApprovalRequests(roomId),
+      maxA2ADepth: room.maxA2ADepth,
+      handoffEnabled: room.a2aHandoffEnabled,
+    });
+  }
+
+  /**
    * 成员请求用户决定。请求落盘后当前 run 进入 awaiting_user 并释放执行槽，
    * 等待 renderer 通过 resolveUserApproval 决定；整个过程按 room/run/member 归属校验。
    */
@@ -1954,6 +1978,83 @@ export class CollaborationRoomService {
     this.dispatchEnvelope(room, target, next, source);
     this.broadcast(room.id, "mailbox-updated");
     return { ok: true, envelopeId: next.id };
+  }
+
+  /**
+   * P2-1：确认继续一个 blocked run —— 以**新** turn 续跑，**不复活旧 fence**。
+   *
+   * 设计红线（P2-1 brief / 02-RUNTIME-A2A-SPEC §14）：
+   * - 校验 room active、run 存在且 `status==='blocked'`、member 未 removed、触发消息仍在；
+   * - **禁止**把旧 run 改回 running（旧 run 保持 blocked，其 fence 作废）；
+   * - 新建 run：新 id、新 fence（0）、同一 memberId + triggerMessageId；
+   * - 新 run 幂等键必须不与旧 blocked run 的键（`triggerMessageId:memberId`）冲突：
+   *   调用方提供 idempotencyKey 且不等于旧键 → 用之（同键重复调用返回同一 newRunId）；
+   *   否则生成 `resume-of:<oldRunId>:<uuid>`，前缀保证不与旧键冲突；
+   * - enqueue scheduler；广播 CHANGED（run-continued）。
+   */
+  confirmResumeBlockedRun(
+    input: ConfirmResumeBlockedRunInput,
+  ): ConfirmResumeBlockedRunResult {
+    const room = getRoom(input.roomId);
+    if (!room || room.status !== "active") {
+      return { ok: false, reason: "房间不存在或未激活" };
+    }
+    const oldRun = getRun(input.runId);
+    if (!oldRun || oldRun.roomId !== input.roomId) {
+      return { ok: false, reason: "run 不存在或不属于该房间" };
+    }
+    if (oldRun.status !== "blocked") {
+      return { ok: false, reason: "该 run 不在 blocked 状态" };
+    }
+    const member = getMember(oldRun.memberId);
+    if (!member || member.status === "removed") {
+      return { ok: false, reason: "成员已移除" };
+    }
+    const trigger = listMessagesByRoom(room.id).find(
+      (message) => message.id === oldRun.triggerMessageId,
+    );
+    if (!trigger) {
+      return { ok: false, reason: "触发消息已删除，无法续跑" };
+    }
+
+    // 新 run 幂等键：调用方键（不等于旧 blocked run 键）→ 同键返回同一 newRunId；
+    // 否则生成 resume-of:<oldRunId>:<uuid>，前缀保证不与旧键（triggerMessageId:memberId）冲突。
+    const oldKey = oldRun.idempotencyKey;
+    const callerKey = input.idempotencyKey?.trim();
+    const useCallerKey = Boolean(callerKey) && callerKey !== oldKey;
+    const idempotencyKey = useCallerKey
+      ? callerKey!
+      : `resume-of:${oldRun.id}:${randomUUID()}`;
+    if (useCallerKey) {
+      const existing = findRunByIdempotencyKey(idempotencyKey);
+      if (existing) return { ok: true, newRunId: existing.id };
+    }
+
+    const newRun: CollaborationRun = {
+      id: genId(COLLABORATION_RUN_ID_PREFIX),
+      roomId: room.id,
+      memberId: member.id,
+      triggerMessageId: trigger.id,
+      idempotencyKey,
+      status: "queued",
+      attempt: 0,
+      fence: 0,
+    };
+    upsertRun(newRun);
+    this.scheduler.enqueue({
+      runId: newRun.id,
+      roomId: room.id,
+      memberId: member.id,
+      room,
+      member,
+      run: newRun,
+      triggerMessage: trigger,
+    });
+    if (!this.scheduler.isMemberRunning(member.id)) {
+      this.setMemberStatus(member.id, "queued");
+    }
+    this.broadcast(room.id, "run-continued");
+    return { ok: true, newRunId: newRun.id };
   }
 
   /** 落盘一条 A2A 消息（room transcript 投影；visibility=participants） */

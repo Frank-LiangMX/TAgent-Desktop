@@ -130,6 +130,8 @@ export * from './agent-discuss-crew-prefs'
 export * from './collaboration-room'
 export * from './collaboration-room-channels'
 export * from './collaboration-a2a'
+// P2-1 本地协作室「待确认续跑」纯函数观察模型 + 类型 + label map
+export * from './collaboration-local-continuation'
 // S3.5-b 房间共享摘要（04 §6）：类型 + 有效发言/CAS 谓词 + 六段总结 prompt
 export * from './collaboration-summary'
 export * from './browser'

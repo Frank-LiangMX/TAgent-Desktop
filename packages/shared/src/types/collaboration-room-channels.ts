@@ -44,6 +44,7 @@ import type {
   BoardProjectedTask,
   BoardProjectedSummary,
 } from "./collaboration-room";
+import type { LocalCollaborationContinuationItem } from "./collaboration-local-continuation";
 
 export type { CollaborationMemberPreset, SaveCollaborationMemberPresetInput };
 
@@ -115,6 +116,10 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   LIST_USER_APPROVALS: "collaboration-room:list-user-approvals",
   /** 解决一个用户审批请求 */
   RESOLVE_USER_APPROVAL: "collaboration-room:resolve-user-approval",
+  /** 列出某房间的可观察「待确认续跑」项（P2-1：blocked run / 待审批 / 深度停止 / outbox 等） */
+  LIST_CONTINUATIONS: "collaboration-room:list-continuations",
+  /** 确认继续一个 blocked run：新建 turn（新 runId/fence），不复活旧 fence（P2-1） */
+  CONFIRM_RESUME_BLOCKED: "collaboration-room:confirm-resume-blocked",
   /** 房间数据变更事件（main → renderer，Stage 2 起广播） */
   CHANGED: "collaboration-room:changed",
   /** 成员 turn 流式正文增量（独立通道，避免走 CHANGED 全量刷新） */
@@ -266,6 +271,37 @@ export type ResolveCollaborationUserApprovalResult =
   | { ok: true; request: CollaborationUserApprovalRequest; runId?: string }
   | { ok: false; reason: string };
 
+/** 列出某房间的可观察「待确认续跑」项输入（P2-1）。 */
+export interface ListCollaborationContinuationsInput {
+  /** 房间 ID */
+  roomId: string;
+}
+
+/** 列出某房间的可观察「待确认续跑」项结果（P2-1，纯函数派生）。 */
+export type ListCollaborationContinuationsResult =
+  LocalCollaborationContinuationItem[];
+
+/** 确认继续一个 blocked run 输入（P2-1）。 */
+export interface ConfirmResumeBlockedRunInput {
+  /** 房间 ID（校验 run 归属，防跨房间续跑） */
+  roomId: string;
+  /** 仍处于 blocked 状态的 run ID */
+  runId: string;
+  /** 调用方幂等键；同键重复调用返回同一 newRunId */
+  idempotencyKey?: string;
+}
+
+/**
+ * 确认继续一个 blocked run 结果（与 CollaborationRoomService.confirmResumeBlockedRun 一致）。
+ *
+ * 成功返回新 run 的 id（新 turn、新 fence；旧 run 仍保持 blocked，不复活旧 fence）；
+ * 失败（房间未激活 / run 不存在或非 blocked / 成员已移除 / 触发消息已删 / 幂等冲突）返回
+ * `{ ok: false, reason }`，不抛错。
+ */
+export type ConfirmResumeBlockedRunResult =
+  | { ok: true; newRunId: string }
+  | { ok: false; reason: string };
+
 /**
  * 预览产物文本结果（与 CollaborationRoomService.readArtifact 一致）。
  *
@@ -339,6 +375,10 @@ export interface CollaborationRoomChangedPayload {
 //   - CREATE_ROOM_TASK   → CollaborationRoomTask
 //   - UPDATE_ROOM_TASK   → CollaborationRoomTask
 //   - LIST_ARTIFACTS     → CollaborationArtifact[]
+//   - LIST_USER_APPROVALS → CollaborationUserApprovalRequest[]
+//   - RESOLVE_USER_APPROVAL → ResolveCollaborationUserApprovalResult
+//   - LIST_CONTINUATIONS  → ListCollaborationContinuationsResult (P2-1)
+//   - CONFIRM_RESUME_BLOCKED → ConfirmResumeBlockedRunResult (P2-1)
 //   - READ_ARTIFACT      → ReadCollaborationArtifactResult
 
 /** 重新导出领域输入类型，便于 handler / preload / 渲染层统一引用 */

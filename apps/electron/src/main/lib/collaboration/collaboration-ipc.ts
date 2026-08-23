@@ -65,6 +65,10 @@ import {
   type ImportCollaborationWorkspaceResponse,
   type ResolveCollaborationUserApprovalInput,
   type ResolveCollaborationUserApprovalResult,
+  type ListCollaborationContinuationsInput,
+  type ListCollaborationContinuationsResult,
+  type ConfirmResumeBlockedRunInput,
+  type ConfirmResumeBlockedRunResult,
   type UpdateCollaborationMemberInput,
   type RemoveCollaborationMemberInput,
   type UpdateCollaborationRoomInput,
@@ -596,6 +600,27 @@ export function registerCollaborationRoomIpc(
       service.resolveUserApproval(input),
   );
 
+  // P2-1：列出某房间的可观察「待确认续跑」项（纯函数派生，不触副作用）。
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.LIST_CONTINUATIONS,
+    async (
+      _e,
+      input: ListCollaborationContinuationsInput,
+    ): Promise<ListCollaborationContinuationsResult> =>
+      service.listContinuations(input.roomId),
+  );
+
+  // P2-1：确认继续一个 blocked run —— 新 turn（新 runId/fence），不复活旧 fence。
+  // service 自带 room/run/member/trigger 校验，失败返回 { ok: false, reason }（不抛）。
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.CONFIRM_RESUME_BLOCKED,
+    async (
+      _e,
+      input: ConfirmResumeBlockedRunInput,
+    ): Promise<ConfirmResumeBlockedRunResult> =>
+      service.confirmResumeBlockedRun(input),
+  );
+
   // 看板任务状态变化 → 广播给「挂载了该看板」的协作室房间，让面板能及时刷新投影。
   // 复用既有 kanban CHANGED 事件，不另造真值；对每个挂载该看板的房间发 collaboration-room:changed
   // （kind 沿用 'updated'），渲染层收到后重新拉取投影。
@@ -612,6 +637,6 @@ export function registerCollaborationRoomIpc(
   onKanbanTaskStatusChanged(boardChangedHandler);
 
   console.log(
-    "[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/update-member/list-runs/cancel-run/list-mailbox/continue-depth-stop/list-room-tasks/create-room-task/update-room-task/list-artifacts/read-artifact/list-board-tasks/get-board-summary；S4.5 深度停止继续；S5 任务/产物面板 + 看板桥）",
+    "[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/update-member/list-runs/cancel-run/list-mailbox/continue-depth-stop/list-room-tasks/create-room-task/update-room-task/list-artifacts/read-artifact/list-board-tasks/get-board-summary；S4.5 深度停止继续；S5 任务/产物面板 + 看板桥；P2-1 待确认续跑 list-continuations / confirm-resume-blocked）",
   );
 }

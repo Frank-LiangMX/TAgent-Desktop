@@ -46,6 +46,7 @@ import type {
   CollaborationRoomTask,
   CollaborationRun,
   CollaborationUserApprovalRequest,
+  LocalCollaborationContinuationItem,
 } from "@tagent/shared";
 import { AppTooltip, Button, Input } from "@tagent/ui";
 import { ChatInput, type ChatInputHandle } from "../chat/ChatInput";
@@ -55,6 +56,7 @@ import { CollaborationTextPrompt } from "./CollaborationTextPrompt";
 import { CollaborationMemberSettings } from "./CollaborationMemberSettings";
 import { CollaborationAddMemberDialog } from "./CollaborationAddMemberDialog";
 import { CollaborationTimeline } from "./CollaborationTimeline";
+import { CollaborationContinuationList } from "./CollaborationContinuationList";
 import { CollaborationWorkPanel } from "./CollaborationWorkPanel";
 import { MemberAvatar } from "./CollaborationAvatars";
 import { FusionRoomRemotePage } from "./FusionRoomRemotePage";
@@ -266,6 +268,10 @@ function LocalCollaborationRoomsPage({
   const [approvals, setApprovals] = useState<
     CollaborationUserApprovalRequest[]
   >([]);
+  /** P2-1：可观察「待确认续跑」项（主进程纯函数派生，CHANGED 后重新拉取） */
+  const [continuations, setContinuations] = useState<
+    LocalCollaborationContinuationItem[]
+  >([]);
   const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(
     null,
   );
@@ -283,15 +289,23 @@ function LocalCollaborationRoomsPage({
   const [depthStopErrorByEnvelope, setDepthStopErrorByEnvelope] = useState<
     Record<string, string>
   >({});
+  /** P2-1：正在确认继续的 blocked run id（主操作 loading 态） */
+  const [resumingRunId, setResumingRunId] = useState<string | null>(null);
+  /** P2-1：按 run id 记录的确认继续失败原因（主操作 error 态） */
+  const [resumeErrorByRun, setResumeErrorByRun] = useState<
+    Record<string, string>
+  >({});
   const inputRef = useRef<ChatInputHandle>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // 切房间时清空深度停止的前端态（dismissed / loading / error）。
+  // 切房间时清空深度停止与续跑的前端态（dismissed / loading / error）。
   // 仅依赖 roomId：刷新（refreshKey 变化）时保留 dismissed，避免广播刷新后已关闭的卡片复活。
   useEffect(() => {
     setDismissedDepthStopIds(new Set());
     setContinuingDepthStopId(null);
     setDepthStopErrorByEnvelope({});
+    setResumingRunId(null);
+    setResumeErrorByRun({});
   }, [roomId]);
 
   // 选中房间 / 外部变更 → 重新拉取
@@ -307,11 +321,12 @@ function LocalCollaborationRoomsPage({
         setTasks([]);
         setArtifacts([]);
         setApprovals([]);
+        setContinuations([]);
         setStreamByRun({});
         return;
       }
       try {
-        const [r, msgs, mems, humans, rs, box, tks, arts, aps] =
+        const [r, msgs, mems, humans, rs, box, tks, arts, aps, conts] =
           await Promise.all([
             window.electronAPI.getCollaborationRoom(roomId),
             window.electronAPI.listCollaborationMessages(roomId),
@@ -322,6 +337,7 @@ function LocalCollaborationRoomsPage({
             window.electronAPI.listCollaborationRoomTasks(roomId),
             window.electronAPI.listCollaborationArtifacts(roomId),
             window.electronAPI.listCollaborationUserApprovals(roomId),
+            window.electronAPI.listCollaborationContinuations(roomId),
           ]);
         if (cancelled) return;
         setRoom(r ?? null);
@@ -333,6 +349,7 @@ function LocalCollaborationRoomsPage({
         setTasks(Array.isArray(tks) ? tks : []);
         setArtifacts(Array.isArray(arts) ? arts : []);
         setApprovals(Array.isArray(aps) ? aps : []);
+        setContinuations(Array.isArray(conts) ? conts : []);
         const live = new Set(
           (Array.isArray(rs) ? rs : [])
             .filter((run) => run.status === "running")
@@ -356,6 +373,7 @@ function LocalCollaborationRoomsPage({
         setTasks([]);
         setArtifacts([]);
         setApprovals([]);
+        setContinuations([]);
       }
     })();
     return () => {
@@ -590,6 +608,46 @@ function LocalCollaborationRoomsPage({
       return next;
     });
   }, []);
+
+  // P2-1：确认继续一个 blocked run —— 主进程新建新 turn（新 runId/fence）续跑，不复活旧 fence。
+  // 主操作 → IPC；带 loading（resuming）/ error（行内 + toast）状态；成功后刷新房间（CHANGED 广播
+  // 也会 bump，这里显式确保即时）。传稳定 idempotencyKey（resume-blocked:<runId>）使重复点击幂等：
+  // 同键重复调用主进程返回同一 newRunId，不二次新建。IPC 逻辑失败返回 { ok: false, reason }（不抛），
+  // 仅 unexpected IPC 错误走 catch。旧 blocked run 保持 blocked，故列表项在刷新后仍可见（设计如此，
+  // 与远程 Fusion 一致）；重复点击因幂等键而 no-op。
+  const handleConfirmResumeBlockedRun = useCallback(
+    async (runId: string): Promise<void> => {
+      if (!room) return;
+      setResumingRunId(runId);
+      setResumeErrorByRun((prev) => {
+        if (!(runId in prev)) return prev;
+        const next = { ...prev };
+        delete next[runId];
+        return next;
+      });
+      try {
+        const res =
+          await window.electronAPI.confirmResumeCollaborationBlockedRun({
+            roomId: room.id,
+            runId,
+            idempotencyKey: `resume-blocked:${runId}`,
+          });
+        if (res.ok) {
+          onRoomsChanged();
+        } else {
+          setResumeErrorByRun((prev) => ({ ...prev, [runId]: res.reason }));
+          toast.error("续跑失败", { description: res.reason });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setResumeErrorByRun((prev) => ({ ...prev, [runId]: msg }));
+        toast.error("续跑失败", { description: msg });
+      } finally {
+        setResumingRunId(null);
+      }
+    },
+    [room, onRoomsChanged],
+  );
 
   // S5：从工作面板定位到时间线 run / 消息。通过 scrollRef 在时间线内查询 [data-run-id] /
   // [data-message-id] 元素并滚动入视 + 短时高亮闪示，便于用户在长时间线里找到关联项。
@@ -1268,6 +1326,18 @@ function LocalCollaborationRoomsPage({
            使其只覆盖左列宽度、不遮挡右侧面板；面板收起时左列自动占满。 */}
       <div className="flex min-h-0 flex-1">
         <div className="session-chat-col relative flex min-h-0 min-w-0 flex-1 flex-col">
+          {/* P2-1：待确认续跑（blocked run / 待审批 / 深度停止 / outbox 等可观察项）。
+               blocked_run 出「确认继续」按钮 → confirm-resume-blocked IPC（主进程新建 turn，
+               新 runId/fence，不复活旧 fence）；pending_approval / depth_stop 只读提示下钻到
+               时间线既有审批 / 深度停止卡片；awaiting_peer / awaiting_user / mailbox_outbox 纯观察。 */}
+          <CollaborationContinuationList
+            continuations={continuations}
+            resumingRunId={resumingRunId}
+            resumeErrorByRun={resumeErrorByRun}
+            onConfirmResume={(runId) =>
+              void handleConfirmResumeBlockedRun(runId)
+            }
+          />
           {/* 时间线（S3.5-c：一 run 一卡，对齐会话信息流） */}
           <CollaborationTimeline key={room.id}
             messages={messages}

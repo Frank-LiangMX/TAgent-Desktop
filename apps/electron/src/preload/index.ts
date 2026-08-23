@@ -59,12 +59,14 @@ import type {
   CollaborationArtifact,
   CollaborationUserApprovalRequest,
   CollaborationTextDeltaPayload,
+  LocalCollaborationContinuationItem,
   CreateCollaborationRoomInput,
   UpgradeFusionSessionInput,
   SaveCollaborationMemberPresetInput,
   AddCollaborationMemberInput,
   ContinueCollaborationDepthStopInput,
   ContinueCollaborationDepthStopResult,
+  ConfirmResumeBlockedRunResult,
   CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomInput,
   UpdateCollaborationMemberInput,
@@ -1339,6 +1341,26 @@ const electronAPI = {
       COLLABORATION_ROOM_IPC_CHANNELS.RESOLVE_USER_APPROVAL,
       input,
     ) as Promise<ResolveCollaborationUserApprovalResult>,
+  /** 列出某房间的可观察「待确认续跑」项（P2-1：blocked run / 待审批 / 深度停止 / outbox 等）。 */
+  listCollaborationContinuations: (roomId: string) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.LIST_CONTINUATIONS,
+      { roomId },
+    ) as Promise<LocalCollaborationContinuationItem[]>,
+  /**
+   * 确认继续一个 blocked run（P2-1）：主进程新建一个新 turn（新 runId/fence）续跑，
+   * 不复活旧 fence。成功返回新 run id；失败返回 { ok: false, reason }（不抛）。
+   * 传稳定 idempotencyKey（如 `resume-blocked:<runId>`）可使重复点击幂等。
+   */
+  confirmResumeCollaborationBlockedRun: (input: {
+    roomId: string;
+    runId: string;
+    idempotencyKey?: string;
+  }) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.CONFIRM_RESUME_BLOCKED,
+      input,
+    ) as Promise<ConfirmResumeBlockedRunResult>,
   /** 房间数据变更事件（main → renderer，run/member/message 变更时广播） */
   onCollaborationRoomChanged: (
     cb: (payload: { roomId: string; kind: string; at: number }) => void,

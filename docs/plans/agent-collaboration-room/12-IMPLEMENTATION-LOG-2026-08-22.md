@@ -1015,3 +1015,65 @@
 - **未做实机 Electron GUI 手测**：行为以单测 + 跨 runtime E2E + 全仓 typecheck 验证。
 - **未做实机 Electron GUI 手测**：行为以单测 + 全仓 typecheck 验证；真机 create→turn→interrupt→heartbeat 闭环由 P1-2b 门控冒烟已证（§79）。
 - **Fusion runtime 不暴露 lifecycle**：`enableDefaultMemberExecution` 装配的 `stack.lifecycle` 仅被 `stack.adapter` 持有（GC 根），未在 `FusionRoomTransportRuntime` 上暴露；runtime 的 cancel 仍走 bridge 自身 per-run AbortController（`input.signal` 已在组合 signal 内）。未来若需 runtime 级 interruptSession 接线再暴露。
+
+## 82. 本地协作室「待确认续跑」完整切片（P2-1）（2026-08-23）
+
+本轮交付 P2-1：为 **本地 `CollaborationRoomService` 路径** 补齐与远程 Fusion 页对等的「待确认续跑」能力——列出本地房间可观察 continuation，确认继续 blocked run（**新建** turn，新 runId/fence，**不复活旧 fence**），打通 IPC/preload/App.tsx 类型，并在 `CollaborationRoomsPage` 时间线上方挂载续跑块。**诚实边界不变**：不复活旧 blocked run 的 fence、不自动重放 blocked、不大改远程 Fusion 页、不默认开自动重投；**不**动无关未提交 UI 文件（`chat.css` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 仍保持本轮之前既存改动，未触碰、未提交）；可 commit，主控 push（本轮未 push）。
+
+### A. 纯函数 list + 类型（shared，便于离线测）
+
+新增 `packages/shared/src/types/collaboration-local-continuation.ts`：
+
+- 类型 `LocalCollaborationContinuationKind`（`blocked_run` | `pending_approval` | `awaiting_peer` | `awaiting_user` | `depth_stop` | `mailbox_outbox`；本地集合含 `awaiting_user`、不含远程的 `approved_awaiting_resume`）、`LocalCollaborationContinuationRefs`（`runId?` / `memberId?` / `envelopeId?` / `approvalId?`）、`LocalCollaborationContinuationItem`。
+- 纯函数 `listLocalCollaborationContinuations({ roomId, runs, mailbox, approvals, maxA2ADepth?, handoffEnabled? })`：规则对齐远程 `listFusionContinuations`——`blocked` run → `blocked_run`（`requiresUserConfirm=true`）；`pending` approval → `pending_approval`（`true`）；`awaiting_peer` / `awaiting_user` → 只读（`false`）；`delivery==='outbox'` 且未终态 → `mailbox_outbox`（`false`，仅观察，本切片不新开 outbox confirm）；可继续一次的 `max_depth` 停止信封（`canContinueCollaborationDepthStop`）→ `depth_stop`（`true`），`handoffEnabled===false` 时不列。终态 run / 终态信封不进入列表。稳定排序：createdAt 升序再按 id。
+- label map `localCollaborationContinuationKindLabel`（与远程 Fusion 措辞基线对齐，避免复制粘贴失控）——UI 与远程共用同一份措辞来源。
+- `packages/shared/src/types/index.ts` 增 `export * from './collaboration-local-continuation'`。
+
+### B. Service 方法（本地路径）
+
+`apps/electron/.../collaboration-room-service.ts` 新增两方法：
+
+- `listContinuations(roomId): LocalCollaborationContinuationItem[]`——从 repo 读 runs/mailbox/approvals + 房间 `maxA2ADepth` / `a2aHandoffEnabled`，委托 A 的纯函数；房间不存在返回 `[]`（不抛）。
+- `confirmResumeBlockedRun({ roomId, runId, idempotencyKey? }): { ok:true; newRunId } | { ok:false; reason }`——校验 room active、run 存在且 `status==='blocked'`、member 未 removed、触发消息仍在；**禁止**把旧 run 改回 running（旧 run 保持 blocked、fence 不变）；新建 run（新 id、新 fence=0、同一 memberId + triggerMessageId）；enqueue scheduler；广播 `run-continued`。
+
+**幂等键如何避免与旧 blocked run 冲突**（写进实现与测试）：旧 blocked run 的幂等键是 `collaborationRunIdempotencyKey(trigger, member) = triggerMessageId:memberId`。新 run 的键：调用方提供 `idempotencyKey` 且**不等于旧键** → 用之（同键重复调用 `findRunByIdempotencyKey` 命中即返回同一 `newRunId`，不二次新建）；否则生成 `resume-of:<oldRunId>:<randomUUID>`——`resume-of:` 前缀保证永不等于旧键（`triggerMessageId:memberId`）。调用方传等于旧键的键时降级走生成分支，避免把旧 blocked run 自身当作「已存在的新 run」返回。UI 侧传稳定键 `resume-blocked:<runId>`，使重复点击幂等。
+
+### C. IPC + preload + App.tsx 类型
+
+- `packages/shared/src/types/collaboration-room-channels.ts`：`COLLABORATION_ROOM_IPC_CHANNELS` 增 `LIST_CONTINUATIONS: "collaboration-room:list-continuations"`、`CONFIRM_RESUME_BLOCKED: "collaboration-room:confirm-resume-blocked"`；新增 `ListCollaborationContinuationsInput` / `ListCollaborationContinuationsResult`（= `LocalCollaborationContinuationItem[]`）/ `ConfirmResumeBlockedRunInput` / `ConfirmResumeBlockedRunResult`。
+- `apps/electron/.../collaboration-ipc.ts`：在 `registerCollaborationRoomIpc` 内注册两 handler——`LIST_CONTINUATIONS` 委托 `service.listContinuations(roomId)`；`CONFIRM_RESUME_BLOCKED` 委托 `service.confirmResumeBlockedRun(input)`（service 自带全量校验，失败返回 `{ ok:false, reason }` 不抛）。注册日志补「P2-1 待确认续跑」。
+- `apps/electron/src/preload/index.ts`：新增 `listCollaborationContinuations(roomId)` 与 `confirmResumeCollaborationBlockedRun({ roomId, runId, idempotencyKey? })` 两个 `ipcRenderer.invoke` 包装（命名对齐既有 `listCollaboration*` / `resolveCollaboration*` 模式）。
+- `apps/electron/src/renderer/App.tsx`：`Window.electronAPI` 类型块新增两方法签名（`listCollaborationContinuations` / `confirmResumeCollaborationBlockedRun`），导入 `LocalCollaborationContinuationItem` / `ConfirmResumeBlockedRunResult`。
+
+### D. UI（CollaborationRoomsPage 时间线上方）
+
+- 新增纯展示组件 `apps/electron/.../collaboration/CollaborationContinuationList.tsx`：渲染续跑项——`blocked_run` 出「确认继续」按钮（`data-run-id` + loading「确认中…」+ 行内 error）；`pending_approval` / `depth_stop` 只读提示下钻到时间线既有审批 / 深度停止卡片；`awaiting_peer` / `awaiting_user` / `mailbox_outbox` 纯观察。复用 shared label map，本文件内放 `continuationReadonlyHint`（UI 专属提示文案）。
+- `CollaborationRoomsPage.tsx`：`LocalCollaborationRoomsPage` 增 `continuations` / `resumingRunId` / `resumeErrorByRun` 状态；Promise.all 批量拉取增第 10 个 `listCollaborationContinuations(roomId)`（与 runs/mailbox/approvals 同批，CHANGED 广播 bump refreshKey 后同批重拉，保持一致）；切房间清空 resume 态。`handleConfirmResumeBlockedRun` 镜像 `handleContinueDepthStop` 模式（per-run loading + per-run 行内 error + toast + `onRoomsChanged`），传稳定幂等键 `resume-blocked:<runId>`。续跑块挂载在 `session-chat-col` 内时间线上方（`shrink-0`，不压缩时间线滚动区）。
+- **设计取舍**：旧 blocked run 确认后保持 blocked（与远程 Fusion `confirmResumeContinuation` 不改 run.status 一致），故续跑项刷新后仍可见；重复点击因幂等键 `resume-blocked:<runId>` 而为 no-op（主进程返回同一 newRunId），不会二次新建 run。
+
+### E. 测试
+
+- 新增 `packages/shared/src/types/collaboration-local-continuation.test.ts` 16 用例：各 kind 分类 + `requiresUserConfirm` 语义、终态过滤、`handoffEnabled=false` / `continueUsed` / outbox 优先门控、稳定排序、refs 填充、label map 覆盖、综合混合。
+- 新增 `apps/electron/.../collaboration-room-continuation.test.ts` 10 用例：`listContinuations`（blocked_run 派生 / 未知房间空 / done 不入列）+ `confirmResumeBlockedRun`（新 turn 新 id/fresh fence、旧 run 保持 blocked fence 不变、幂等键不冲突且 `resume-of:` 前缀、同 idempotencyKey 返回同一 newRunId、房间未激活 / run 跨房间或不存在 / 非 blocked / 成员移除 / 触发消息删除五类失败守卫）。
+- 新增 `apps/electron/.../collaboration/CollaborationContinuationList.test.tsx` 7 用例：空列表不渲染、blocked_run 渲染 + 按钮点击回调 + tail、loading「确认中…」+ 禁用、行内 error、pending_approval / depth_stop 只读提示无按钮、awaiting_peer / awaiting_user / mailbox_outbox 纯观察、`continuationReadonlyHint` 文案。
+
+### 验证（实跑结果）
+
+- `bunx vitest run packages/shared/src/types/collaboration-local-continuation.test.ts` → **16 pass / 0 fail**。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/collaboration-room-continuation.test.ts` → **10 pass / 0 fail**。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/collaboration-room-run.test.ts` → **16 pass / 0 fail**（回归）。
+- `bunx vitest run apps/electron/.../collaboration/CollaborationContinuationList.test.tsx` → **7 pass / 0 fail**。
+- `bunx vitest run`（collaboration 相关 7 文件：ipc / run / continuation / approval / a2a + shared 纯函数 + 组件）→ **78 pass / 0 fail**（无回归）。
+- `bun run --filter='@tagent/shared' typecheck` → 退出 0。
+- `bun run --filter='./apps/electron' typecheck` → 退出 0。
+- `git diff --check` → 退出 0（仅 `packages/ui/.../tokens.css` 既存 LF→CRLF 提示，为本切片之前已存在的无关改动，未触碰；本切片未动 `chat.css` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css`）。
+
+### 诚实能力证据 / 未做
+
+- **不复活旧 fence**：`confirmResumeBlockedRun` 从不写旧 run（旧 run 保持 `blocked`、fence 不变）；新 run 新 id + fence=0 起步（调度器启动后递增为新 fence lineage，绝不沿用旧 fence）。测试显式断言旧 run fence 不变、新 run fence ≠ 旧 fence、新 run idempotencyKey 以 `resume-of:` 前缀且 ≠ 旧键。
+- **不自动重放 blocked**：列表只观察 + 需用户点「确认继续」；`mailbox_outbox` 本切片 `requiresUserConfirm=false`（仅观察），未新开 outbox confirm 按钮（legacy `recoverInterruptedRuns` 已可能自动重投未启动副作用的 outbox）。
+- **不大改远程 Fusion 页**：仅复用 shared label map 措辞基线；`FusionRoomRemotePage` / `fusion-room-continuation.ts` / `fusion-room-authority.ts` 等远程文件本切片未改。
+- **未做 Fusion outbox scan IPC**：本切片为本地 `CollaborationRoomService` 路径新增 `list-continuations` / `confirm-resume-blocked`；未为远程 Fusion 路径新增 outbox scan IPC（远程已有 `listFusionContinuations` + `confirmResumeContinuation` 经 execution bridge 推进）。
+- **未做实机 Electron GUI 手测**：UI 以组件最小渲染测（jsdom + react-dom/client + act，不引入 @testing-library）+ 纯函数/服务单测 + 全仓 typecheck 验证；未实机点击「确认继续」。
+- **旧 blocked run 续跑后仍可见**：确认后旧 run 保持 blocked（设计如此，与远程一致），续跑项刷新后仍在列表；重复点击因幂等键 no-op。后续若需确认后从列表移除，可考虑 confirm 成功后将旧 run 标记为 `resumed`/cancelled 终态（本切片未做，避免越界改 run 状态机）。
+- **可 commit；主控 push**：本轮已 commit；未自行 push。
