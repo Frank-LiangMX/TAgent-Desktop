@@ -76,6 +76,19 @@ describe('fusion room view model', () => {
     expect(canActorDispatch(view, 'owner')).toBe(false)
   })
 
+  test('canEditMetadata is true only when actorUserId matches ownerUserId (UI gate only)', () => {
+    // 未提供 actor（远程页尚未接通客户端账户认证）→ 恒 false，编辑按钮不渲染
+    expect(createFusionRoomViewModel(makeSnapshot()).canEditMetadata).toBe(false)
+    // actor === owner → true
+    expect(createFusionRoomViewModel(makeSnapshot(), 'owner').canEditMetadata).toBe(true)
+    // actor 非 owner → false
+    expect(createFusionRoomViewModel(makeSnapshot(), 'user-b').canEditMetadata).toBe(false)
+    // 快照 owner 变更后匹配关系随之变化
+    expect(
+      createFusionRoomViewModel(makeSnapshot({ ownerUserId: 'user-b' }), 'user-b').canEditMetadata,
+    ).toBe(true)
+  })
+
   test('keeps removed bots as historical projection', () => {
     const view = createFusionRoomViewModel(makeSnapshot({ botSeats: [botSeat({ status: 'removed', isCoordinator: false })] }))
     expect(view.bots).toHaveLength(1)
@@ -307,6 +320,27 @@ describe('FusionRoomViewModelController', () => {
 
     await controller.connect()
     expect(adapter.connect).toHaveBeenCalledOnce()
+  })
+
+  test('threads actorUserId into canEditMetadata projection', () => {
+    const adapter = new MockSessionAdapter(adapterSnapshot(1))
+    const ownerController = new FusionRoomViewModelController(
+      adapter as unknown as FusionRoomSessionAdapter,
+      'owner',
+    )
+    expect(ownerController.currentView?.canEditMetadata).toBe(true)
+
+    const nonOwnerController = new FusionRoomViewModelController(
+      adapter as unknown as FusionRoomSessionAdapter,
+      'user-b',
+    )
+    expect(nonOwnerController.currentView?.canEditMetadata).toBe(false)
+
+    // 未提供 actorUserId（默认）→ canEditMetadata false
+    const unknownController = new FusionRoomViewModelController(
+      adapter as unknown as FusionRoomSessionAdapter,
+    )
+    expect(unknownController.currentView?.canEditMetadata).toBe(false)
   })
 
   test('close unsubscribes, clears listeners, and awaits adapter.close', async () => {

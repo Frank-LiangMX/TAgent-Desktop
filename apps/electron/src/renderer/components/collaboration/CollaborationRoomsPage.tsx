@@ -30,6 +30,7 @@ import {
   Pause,
   PencilSimple,
   Play,
+  Target,
   UsersThree,
 } from "@phosphor-icons/react";
 import type {
@@ -64,7 +65,7 @@ import { FusionRoomRemoteConnectDialog } from "./FusionRoomRemoteConnectDialog";
 import type { FusionRoomRemoteSession } from "./fusion-room-remote-session";
 import { cn } from "../../lib/utils";
 
-type TextPromptKind = "rename" | null;
+type TextPromptKind = "rename" | "edit-goal" | null;
 
 const EASE = [0.16, 1, 0.3, 1] as const;
 
@@ -780,6 +781,29 @@ function LocalCollaborationRoomsPage({
     [room, onRoomsChanged],
   );
 
+  // P2-2：编辑房间目标。权限与 rename 一致（沿用现有 rename 可见性，不扩大权限）；
+  // 空字符串允许（清空目标）；与当前值相同则 no-op。归档房间入口 disabled（与 rename 一致）。
+  const confirmEditGoal = useCallback(
+    async (next: string): Promise<void> => {
+      if (!room) return;
+      setTextPrompt(null);
+      if (next === room.goal) return;
+      try {
+        await window.electronAPI.updateCollaborationRoom({
+          roomId: room.id,
+          goal: next,
+        });
+        onRoomsChanged();
+      } catch (err) {
+        console.error("[协作室] 编辑目标失败:", err);
+        toast.error("编辑目标失败", {
+          description: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [room, onRoomsChanged],
+  );
+
   const confirmRemoveMember = useCallback(
     async (memberId: string): Promise<void> => {
       if (!room) return;
@@ -1108,11 +1132,25 @@ function LocalCollaborationRoomsPage({
           </AppTooltip>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-          {room.goal ? (
-            <span className="truncate" title={room.goal}>
-              目标：{room.goal}
+          <span className="inline-flex min-w-0 items-center gap-1">
+            <span
+              className={cn("truncate", !room.goal && "italic text-muted-foreground/60")}
+              title={room.goal || undefined}
+            >
+              {room.goal ? `目标：${room.goal}` : "目标：未设置"}
             </span>
-          ) : null}
+            <AppTooltip label="编辑目标" side="bottom">
+              <button
+                type="button"
+                className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                aria-label="编辑目标"
+                disabled={archived}
+                onClick={() => setTextPrompt("edit-goal")}
+              >
+                <Target size={12} />
+              </button>
+            </AppTooltip>
+          </span>
           <span>成员：{members.length}</span>
           <span title={`当前运行 ${runningCount} / 并发上限 ${maxConcurrent}`}>
             并发 {runningCount}/{maxConcurrent}
@@ -1473,6 +1511,18 @@ function LocalCollaborationRoomsPage({
         confirmLabel="保存"
         onCancel={() => setTextPrompt(null)}
         onConfirm={(title) => void confirmRename(title)}
+      />
+      <CollaborationTextPrompt
+        open={textPrompt === "edit-goal"}
+        title="编辑房间目标"
+        label="留空可清除目标。"
+        defaultValue={room.goal}
+        multiline
+        allowEmpty
+        rows={4}
+        confirmLabel="保存"
+        onCancel={() => setTextPrompt(null)}
+        onConfirm={(goal) => void confirmEditGoal(goal)}
       />
     </div>
   );

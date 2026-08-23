@@ -32,6 +32,14 @@ export interface FusionRoomViewModel {
   title: string
   goal: string
   ownerUserId: string
+  /**
+   * UI 闸（仅渲染层）：当前 actor 是否可编辑房间元数据。
+   *
+   * 由 `createFusionRoomViewModel` 比较 `actorUserId` 与快照 `ownerUserId` 得出；
+   * `actorUserId` 未提供（远程页尚未接通客户端账户认证）时恒为 `false` —— 编辑按钮
+   * 不渲染。**仅 UI 闸**：authority 仍 enforce owner-only，渲染层无法越权。
+   */
+  canEditMetadata: boolean
   status: FusionRoomAuthoritySnapshot['status']
   humanMembers: CollaborationHumanMember[]
   bots: FusionBotViewModel[]
@@ -51,12 +59,15 @@ export interface FusionRoomViewModel {
 
 export function createFusionRoomViewModel(
   snapshot: FusionRoomAuthoritySnapshot,
+  actorUserId?: string,
 ): FusionRoomViewModel {
   return {
     roomId: snapshot.roomId,
     title: snapshot.title?.trim() || snapshot.roomId,
     goal: snapshot.goal?.trim() ?? "",
     ownerUserId: snapshot.ownerUserId,
+    canEditMetadata:
+      actorUserId !== undefined && actorUserId === snapshot.ownerUserId,
     status: snapshot.status,
     humanMembers: snapshot.humanMembers.map((member) => ({ ...member })),
     bots: snapshot.botSeats.map((seat) => ({
@@ -152,7 +163,10 @@ export class FusionRoomViewModelController {
   private unsubscribeAdapter?: () => void
   private closed = false
 
-  constructor(private readonly adapter: FusionRoomSessionAdapterLike) {
+  constructor(
+    private readonly adapter: FusionRoomSessionAdapterLike,
+    private readonly actorUserId?: string,
+  ) {
     this.unsubscribeAdapter = adapter.subscribeSnapshot((snapshot) => {
       this.applySnapshot(snapshot)
     })
@@ -207,7 +221,7 @@ export class FusionRoomViewModelController {
   }
 
   private applySnapshot(snapshot: FusionRoomAuthoritySnapshot): void {
-    this.view = createFusionRoomViewModel(snapshot)
+    this.view = createFusionRoomViewModel(snapshot, this.actorUserId)
     this.notifyListeners()
   }
 

@@ -156,4 +156,34 @@ describe('FusionRoomActionAdapter', () => {
       return !('actorUserId' in action) && !('actorUserId' in input)
     })).toBe(true)
   })
+
+  test('updateMetadata dispatches update-metadata with caller-supplied roomId and never accepts actorUserId', async () => {
+    const fake = fakeAdapter()
+    const controller = new FusionRoomViewModelController(fake.adapter)
+    const actions = new FusionRoomActionAdapter(controller)
+
+    await actions.updateMetadata({ roomId: 'room-action', title: '新标题', goal: '新目标' })
+    await actions.updateMetadata({ roomId: 'room-action', goal: '' })
+    await actions.updateMetadata({ roomId: 'room-action', title: '仅改标题' })
+
+    const metaActions = fake.actions.filter((action) => action.type === 'update-metadata')
+    expect(metaActions).toHaveLength(3)
+    expect(metaActions[0]).toEqual({
+      type: 'update-metadata',
+      input: { roomId: 'room-action', title: '新标题', goal: '新目标' },
+    })
+    expect(metaActions[1]).toEqual({
+      type: 'update-metadata',
+      input: { roomId: 'room-action', goal: '' },
+    })
+    expect(metaActions[2]).toEqual({
+      type: 'update-metadata',
+      input: { roomId: 'room-action', title: '仅改标题' },
+    })
+    // wire payload 绝不含 actorUserId（顶层 action 与 input 都不带，actor 由 gateway 注入）
+    expect(metaActions.every((action) => {
+      const input = (action as { input: Record<string, unknown> }).input
+      return !('actorUserId' in action) && !('actorUserId' in input)
+    })).toBe(true)
+  })
 })

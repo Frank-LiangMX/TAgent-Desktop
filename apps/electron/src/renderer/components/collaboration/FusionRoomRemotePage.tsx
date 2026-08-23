@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { MessageResponse, Button } from '@tagent/ui'
-import { Download, Send, X } from 'lucide-react'
+import { Download, Pencil, Send, X } from 'lucide-react'
 import type { FusionContinuationItem, FusionContinuationKind } from '@tagent/core'
 import type { FusionRoomRemoteSession } from './fusion-room-remote-session'
 import { FusionRoomActionAdapter } from './fusion-room-action-adapter'
 import type { FusionRoomViewModel } from './fusion-room-view-model'
+import { CollaborationTextPrompt } from './CollaborationTextPrompt'
 
 const continuationKindLabel: Record<FusionContinuationKind, string> = {
   blocked_run: '中断的运行',
@@ -44,6 +45,10 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
   const [approvalPendingId, setApprovalPendingId] = useState<string | null>(null)
   const [resumePendingId, setResumePendingId] = useState<string | null>(null)
+  /** P2-2：标题/目标内联编辑弹层（owner-only，由 view.canEditMetadata 闸门）。 */
+  const [editing, setEditing] = useState<'title' | 'goal' | null>(null)
+  const [metadataPending, setMetadataPending] = useState(false)
+  const [metadataError, setMetadataError] = useState<string | null>(null)
 
   useEffect(() => {
     let disposed = false
@@ -140,14 +145,90 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
     view?.bots.find((bot) => bot.id === id)?.displayName ??
     (id === 'system' ? '系统' : id)
 
+  // P2-2：owner-only 编辑标题/目标。仅 UI 闸（view.canEditMetadata）；authority 仍 enforce
+  // owner-only + active room，非 owner / 非活跃房间的请求会被服务端 FORBIDDEN/INVALID_STATE 拒。
+  // 成功后依赖 snapshot 刷新（actions.updateMetadata 返回新 view，且 dispatch 经订阅 setView）。
+  const openMetadataEditor = (kind: 'title' | 'goal'): void => {
+    setMetadataError(null)
+    setEditing(kind)
+  }
+  const submitMetadataTitle = async (next: string): Promise<void> => {
+    if (!view || metadataPending) return
+    if (next === view.title) {
+      setEditing(null)
+      return
+    }
+    setMetadataPending(true)
+    setMetadataError(null)
+    try {
+      await actions.updateMetadata({ roomId: view.roomId, title: next })
+      setEditing(null)
+    } catch (cause) {
+      setMetadataError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setMetadataPending(false)
+    }
+  }
+  const submitMetadataGoal = async (next: string): Promise<void> => {
+    if (!view || metadataPending) return
+    if (next === view.goal) {
+      setEditing(null)
+      return
+    }
+    setMetadataPending(true)
+    setMetadataError(null)
+    try {
+      await actions.updateMetadata({ roomId: view.roomId, goal: next })
+      setEditing(null)
+    } catch (cause) {
+      setMetadataError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setMetadataPending(false)
+    }
+  }
+
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border/40 bg-background/35">
+    <section className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-border/40 bg-background/35">
       <header className="flex shrink-0 items-center justify-between border-b border-border/35 px-4 py-3">
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold text-foreground">{view?.title || '远程融合会话'}</div>
-          <div className="mt-0.5 text-[11px] text-muted-foreground">
-            {view ? view.roomId + ' · ' + view.status + ' · cursor ' + view.lastSequence + (view.goal ? ' · ' + view.goal : '') : '正在连接 RoomSession…'}
+          <div className="flex items-center gap-1.5">
+            <div className="truncate text-sm font-semibold text-foreground" title={view?.title}>
+              {view?.title || '远程融合会话'}
+            </div>
+            {view?.canEditMetadata ? (
+              <button
+                type="button"
+                className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                aria-label="编辑标题"
+                onClick={() => openMetadataEditor('title')}
+              >
+                <Pencil className="size-3.5" />
+              </button>
+            ) : null}
           </div>
+          <div className="mt-0.5 text-[11px] text-muted-foreground">
+            {view ? view.roomId + ' · ' + view.status + ' · cursor ' + view.lastSequence : '正在连接 RoomSession…'}
+          </div>
+          {view ? (
+            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <span
+                className={view.goal ? 'truncate' : 'truncate italic text-muted-foreground/60'}
+                title={view.goal || undefined}
+              >
+                {view.goal ? '目标：' + view.goal : '目标：未设置'}
+              </span>
+              {view.canEditMetadata ? (
+                <button
+                  type="button"
+                  className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  aria-label="编辑目标"
+                  onClick={() => openMetadataEditor('goal')}
+                >
+                  <Pencil className="size-3" />
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         {onClose ? (
           <Button variant="ghost" size="icon" onClick={onClose} aria-label="关闭远程融合会话">
@@ -404,6 +485,33 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
           </Button>
         </div>
       </footer>
+
+      <CollaborationTextPrompt
+        open={editing === 'title'}
+        title="重命名远程融合会话"
+        defaultValue={view?.title ?? ''}
+        confirmLabel="保存"
+        pending={metadataPending}
+        pendingLabel="保存中…"
+        error={editing === 'title' ? metadataError : null}
+        onCancel={() => setEditing(null)}
+        onConfirm={(next) => void submitMetadataTitle(next)}
+      />
+      <CollaborationTextPrompt
+        open={editing === 'goal'}
+        title="编辑远程融合会话目标"
+        label="留空可清除目标。"
+        defaultValue={view?.goal ?? ''}
+        multiline
+        allowEmpty
+        rows={4}
+        confirmLabel="保存"
+        pending={metadataPending}
+        pendingLabel="保存中…"
+        error={editing === 'goal' ? metadataError : null}
+        onCancel={() => setEditing(null)}
+        onConfirm={(next) => void submitMetadataGoal(next)}
+      />
     </section>
   )
 }

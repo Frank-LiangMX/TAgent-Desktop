@@ -12,6 +12,14 @@ export interface FusionRoomRemoteSessionConfig
   extends Pick<FusionRoomHttpClientOptions, 'token' | 'headers' | 'fetch'> {
   roomId: string
   baseUrl: string
+  /**
+   * 当前连接的认证用户 ID（仅 UI 闸用，不参与网络鉴权）。
+   *
+   * 网络侧 actor 由 gateway 从认证 principal 注入，渲染层无法越权；此处仅用于
+   * view-model 投影 `canEditMetadata`（与快照 owner 比较）决定是否渲染编辑按钮。
+   * 客户端尚无账户认证时省略 → `canEditMetadata` 恒 false（编辑按钮不渲染）。
+   */
+  actorUserId?: string
 }
 
 export interface FusionRoomRemoteSession {
@@ -56,6 +64,6 @@ export function createFusionRoomRemoteSession(
     ...(config.fetch === undefined ? {} : { fetch: config.fetch }),
   })
   const adapter = new FusionRoomSessionAdapter({ client, roomId, onError: options.onError })
-  const controller = new FusionRoomViewModelController(adapter)
+  const controller = new FusionRoomViewModelController(adapter, config.actorUserId)
   return { client, adapter, controller, close: () => controller.close() }
 }

@@ -1147,3 +1147,69 @@
 - **未做 transport stop / 重启 IPC**：本切片只启动 + 退出关闭，无运行时 stop / 重启 / 端口查询 IPC（`transport:status` 仅只读投影）。
 - **未触碰无关未提交 UI 文件**：`BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 保持本轮之前既存改动，未触碰、未提交。
 - **可 commit；主控 push**：本轮已 commit；未自行 push。
+## 84. 房间 title/goal 编辑 UI（本地 + 远程 Fusion 页，owner-only）（P2-2）（2026-08-23）
+
+本轮交付 P2-2：补齐交接文档 P2 §2「title/goal 编辑 UI」缺口——**本地** `CollaborationRoomsPage` 补**目标编辑**（与 rename 同等权限/模式，空串允许清空）；**远程** `FusionRoomRemotePage` 补**标题 + 目标** owner-only 内联弹层编辑，经 `actions.updateMetadata`。**不**改 authority / gateway 协议语义（`updateMetadata` owner-only + active room 由 authority enforce）；**不**动无关未提交文件（`BotSidecarPanel.tsx` / `BotSidebarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 保持本轮之前既存改动，未触碰、未提交）；可 commit，**未** push。
+
+### A. 复用弹层 `CollaborationTextPrompt` 扩展（multiline / allowEmpty / pending / error）
+
+`apps/electron/.../collaboration/CollaborationTextPrompt.tsx` 在保持默认单行 + 拒绝空串（重命名用）行为不变的前提下，新增向后兼容可选 props：
+
+- `multiline?: boolean` → 渲染 `@tagent/ui` 的 `Textarea`（`rows` 可配，默认 4）；默认仍 `Input`。
+- `allowEmpty?: boolean` → 允许提交空串（用于清空目标）；确认按钮不再因空串禁用，`submit` 不再拦截空串。默认拒绝空串。
+- `pending?: boolean` + `pendingLabel?: string` → busy 态：禁用确认按钮并改显 `pendingLabel`（远程网络写入用）。
+- `error?: string | null` → 弹层内渲染一行错误提示（`role="alert"`），避免被 overlay 遮挡看不到。
+- 多行用 `Cmd/Ctrl+Enter` 提交（Enter 留给换行），单行 Enter 提交；Escape 取消。ref 用 `HTMLInputElement | HTMLTextAreaElement` 联合，按渲染分支 `as` 收窄传入。
+
+### B. 本地 `CollaborationRoomsPage` 目标编辑
+
+- `TextPromptKind` 扩为 `"rename" | "edit-goal" | null`；新增 `confirmEditGoal`（镜像 `confirmRename`：`setTextPrompt(null)` 先关弹层 → 与 `room.goal` 相同则 no-op → `updateCollaborationRoom({ roomId, goal })` → `onRoomsChanged()`；失败 `toast.error`）。
+- header 目标行改为常驻渲染：`目标：{room.goal}`（空时显「目标：未设置」斜体）+ `Target` 图标编辑按钮（`aria-label="编辑目标"`），`disabled={archived}`（归档房间禁用，与 brief 一致）。
+- 底部新增第二个 `CollaborationTextPrompt`（`open={textPrompt === "edit-goal"}`，`multiline allowEmpty`，`label="留空可清除目标。"`）。
+- **权限**：与 rename 一致——沿用现有 rename 可见性（本地 rename 无 owner 校验、始终可见），**不扩大权限**；归档 `disabled`。`room.goal` 为 `string`（非可选），`next === room.goal` 判同值 no-op，空串清空目标。
+
+### C. 远程 owner-only UI 闸：view-model 投影 `canEditMetadata`
+
+`apps/electron/.../collaboration/fusion-room-view-model.ts`：
+
+- `FusionRoomViewModel` 增 `canEditMetadata: boolean`。
+- `createFusionRoomViewModel(snapshot, actorUserId?)` 增第二参，`canEditMetadata = actorUserId !== undefined && actorUserId === snapshot.ownerUserId`（**仅 UI 闸**，authority 仍 enforce owner-only + active room）。
+- `FusionRoomViewModelController` 构造器增可选 `actorUserId?: string`，存为成员，`applySnapshot` 投影时透传。
+
+`apps/electron/.../collaboration/fusion-room-remote-session.ts`：`FusionRoomRemoteSessionConfig` 增可选 `actorUserId?: string`，构造 controller 时透传 `config.actorUserId`。连接对话框**不**收集 actorUserId（无客户端账户认证，与「不做 OAuth」一致）→ 生产环境 `canEditMetadata` 恒 `false` → 编辑按钮不渲染（安全默认；authority 仍 enforce，非 owner 请求被 FORBIDDEN 拒）。
+
+### D. 远程 `FusionRoomRemotePage` 标题/目标编辑
+
+- header 重构：`view.title` 为主标题 + owner 时挂 `Pencil` 编辑按钮（`aria-label="编辑标题"`）；`view.goal` **独立一行**（移出原 debug 串 `roomId · status · cursor`，空时显「目标：未设置」斜体）+ owner 时挂 `Pencil` 编辑按钮（`aria-label="编辑目标"`）。`<section>` 加 `relative` 以约束弹层 `absolute inset-0` overlay 作用域。
+- 新增 `editing: "title" | "goal" | null` + `metadataPending` + `metadataError` 状态；`openMetadataEditor(kind)` 清错误并开弹层。
+- `submitMetadataTitle` / `submitMetadataGoal`：与当前值相同则关弹层 no-op；否则 `setMetadataPending(true)` → `actions.updateMetadata({ roomId: view.roomId, title?/goal? })`（不带 `idempotencyKey`，按钮 busy 态防重复点击；adapter 不自动重试 mutating 动作）→ 成功关弹层（snapshot 经订阅 `setView` 自动刷新 + `updateMetadata` 返回新 view）；失败 `setMetadataError`（弹层内显）。**非 owner**（`canEditMetadata=false`）不渲染编辑按钮，只读展示。
+- 底部新增两个 `CollaborationTextPrompt`：标题（单行）/ 目标（`multiline allowEmpty`，`label="留空可清除目标。"`），均接 `pending` + `error`。
+
+### E. 测试（不依赖 Electron GUI）
+
+- `fusion-room-action-adapter.test.ts` +1 用例：`updateMetadata` 派发 `{ type: 'update-metadata', input: { roomId, title?, goal? } }`，三次调用分别覆盖 title+goal / 仅 goal(空) / 仅 title；断言顶层 action 与 input 均不含 `actorUserId`（actor 由 gateway 注入）。
+- `fusion-room-view-model.test.ts` +2 用例：投影 `canEditMetadata`（未提供 actor → false；actor===owner → true；非 owner → false；owner 变更后匹配关系随之变化）+ controller 透传 `actorUserId` 进投影（owner / 非 owner / 未提供三种）。
+- 新增 `CollaborationTextPrompt.test.tsx` 9 用例（jsdom + react-dom/client + act，不引 @testing-library）：默认单行渲染 Input 无 Textarea + 空值禁用 + 输入非空 Enter 提交 trim 值 + 空值点击不回调；multiline 渲染 Textarea 无 Input；allowEmpty 空值确认可用且回调空串（清空）；pending 禁用确认并改显 pendingLabel + 取消仍可用；error 渲染错误文案；Escape 触发 onCancel；`open=false` 不渲染。
+- 新增 `FusionRoomRemotePage.test.tsx` 4 用例（mock controller 驱动 `FusionRoomActionAdapter`，不触真实 HTTP）：owner（`canEditMetadata=true`）见标题/目标编辑按钮 + goal 独立一行；非 owner（`canEditMetadata=false`）不见编辑按钮但只读显目标；owner 编辑目标 → 派发 `{ type:'update-metadata', input:{ roomId, goal } }` 且无 actorUserId；owner 编辑标题 → 派发 `{ type:'update-metadata', input:{ roomId, title } }`。弹层内 textarea/input 用 `[role="dialog"]` 限定选择，避免与底部消息 draft textarea 混淆。
+
+### 验证（实跑结果）
+
+- `bunx vitest run apps/electron/.../collaboration/fusion-room-action-adapter.test.ts` → **6 pass / 0 fail**（+1 新增）。
+- `bunx vitest run apps/electron/.../collaboration/fusion-room-view-model.test.ts` → **22 pass / 0 fail**（+2 新增）。
+- `bunx vitest run apps/electron/.../collaboration/fusion-room-remote-session.test.ts` → **5 pass / 0 fail**（回归，config 加可选字段不破契约）。
+- `bunx vitest run apps/electron/.../collaboration/CollaborationTextPrompt.test.tsx` → **9 pass / 0 fail**（新增）。
+- `bunx vitest run apps/electron/.../collaboration/FusionRoomRemotePage.test.tsx` → **4 pass / 0 fail**（新增）。
+- 回归：上述 + `CollaborationContinuationList` / `CollaborationApprovalCard` / `CollaborationWorkPanel` / `collaborationWorkPanelModel` 共 9 文件 → **83 pass / 0 fail**。
+- `bun run --filter='./apps/electron' typecheck` → 退出 0。
+- `git diff --check` → 退出 0（仅 `CollaborationTextPrompt.tsx` / `BotSidecarPanel.tsx` / `tokens.css` 的 LF→CRLF 提示，前者为本切片新写文件、后两者为本切片之前既存无关改动；无实际空白错误）。
+
+### 诚实能力证据 / 未做
+
+- **不改 authority / gateway 协议语义**：远程 `updateMetadata` 走既有 `actions.updateMetadata` → `{ type:'update-metadata', input }`，actor 仍由 gateway 从认证 principal 注入；渲染层不传 `actorUserId`（adapter 与 wire payload 均无，测试显式断言）。
+- **仅 UI 闸**：`canEditMetadata` 仅控制编辑按钮是否渲染；authority 仍 enforce owner-only + active room，非 owner / 非活跃房间请求被服务端 FORBIDDEN/INVALID_STATE 拒（弹层内显 error）。
+- **远程编辑生产环境默认不可达（诚实边界）**：连接对话框不收集 actorUserId（无客户端账户认证，与「不做 OAuth」一致）→ `canEditMetadata` 恒 false → 编辑按钮不渲染。owner/non-owner 闸门逻辑已由单测覆盖（已知 actor）；待真实账户系统接通后向 session 注入 authenticated userId 即可激活远程编辑。**本地编辑完全可用**（与 rename 同等，无 owner 闸门）。
+- **本地权限不扩大**：目标编辑沿用 rename 现有可见性（始终可见、无 owner 校验），仅归档 `disabled`；未改 rename 既有行为。
+- **未做实机 Electron GUI 手测**：UI 以组件最小渲染测（jsdom + react-dom/client + act，不引 @testing-library）+ 纯函数/adapter 单测 + 全仓 typecheck 验证；未实机点击编辑。
+- **未做 idempotencyKey / 跨机器 E2E / OAuth**：编辑调用不带 idempotencyKey（按钮 busy 防重复，adapter 不自动重试）；未做跨机器 E2E、未做真实账户 OAuth（与 brief 禁止一致）。
+- **未触碰无关未提交文件**：`BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 保持本轮之前既存改动，未触碰、未提交。
+- **可 commit；主控 push**：本轮已 commit；未自行 push。
