@@ -140,6 +140,21 @@ export interface SendMessageInput {
   moaDiscussionPresetId?: string;
 }
 
+/**
+ * FusionRoom TLS 证书公开记录（剥离私钥，仅渲染层展示用）。
+ * 与主进程 `FusionRoomCertStore.listPublic()` 返回形状一致。
+ */
+export interface FusionRoomPublicCertRecord {
+  certId: string;
+  cert: string;
+  fingerprint: string;
+  createdAt: number;
+  expiresAt: number;
+  revokedAt?: number;
+  status: "active" | "revoked" | "expired";
+  commonName: string;
+}
+
 const electronAPI = {
   // ===== 会话 =====
   /** 发消息（首次 spawn + 起循环，后续 enqueue 复用；按 channelId 绑核） */
@@ -833,6 +848,45 @@ const electronAPI = {
       systemDesktop: boolean;
       panelToast: boolean;
     }>,
+
+  // ===== 协作室 / 网络显式闸门偏好 + 证书管理（P0-3；始终注册，控制 decidePackagedCollaborationGate）=====
+  /** 读打包版协作 / 网络偏好（默认全关）。 */
+  getFusionRoomNetworkPrefs: () =>
+    ipcRenderer.invoke("fusion-room-network-prefs:get") as Promise<{
+      enableCollaboration: boolean;
+      enableNetworkListen: boolean;
+    }>,
+  /**
+   * 写偏好（整单校验：拒绝明文公网 / 不安全开关；拒绝 enableNetworkListen 缺 enableCollaboration）。
+   * 不据证书硬拒——证书可后续 generate；闸门在无证书时仍返回 allowNonLoopbackListen=false。
+   */
+  setFusionRoomNetworkPrefs: (patch: {
+    enableCollaboration?: boolean;
+    enableNetworkListen?: boolean;
+  }) =>
+    ipcRenderer.invoke("fusion-room-network-prefs:set", patch) as Promise<{
+      enableCollaboration: boolean;
+      enableNetworkListen: boolean;
+    }>,
+  /** 列出全部 TLS 证书（剥离私钥），状态按当前时间派生 active|revoked|expired。 */
+  listFusionRoomCerts: () =>
+    ipcRenderer.invoke("fusion-room-certs:list") as Promise<
+      FusionRoomPublicCertRecord[]
+    >,
+  /** 生成一张新的 active 自签证书（RSA 2048 / SHA256，SAN: localhost + 127.0.0.1）。 */
+  generateFusionRoomCert: (input?: {
+    commonName?: string;
+    validityDays?: number;
+  }) =>
+    ipcRenderer.invoke(
+      "fusion-room-certs:generate",
+      input,
+    ) as Promise<FusionRoomPublicCertRecord>,
+  /** 撤销指定证书（幂等）；不存在返回 undefined。 */
+  revokeFusionRoomCert: (certId: string) =>
+    ipcRenderer.invoke("fusion-room-certs:revoke", { certId }) as Promise<
+      FusionRoomPublicCertRecord | undefined
+    >,
 
   // ===== 看板 / 派工（Phase D）=====
   kanbanListBoards: (input?: { status?: string }) =>

@@ -656,3 +656,41 @@
   - `bun run --filter='@tagent/core' typecheck` 通过；`bun run --filter='./apps/electron' typecheck`（`tsc --noEmit`，`tsconfig.include: src/**/*` 覆盖新测试文件）通过；`git diff --check` 退出 0（仅有 `packages/ui/.../tokens.css` 的既存 LF→CRLF 提示，与本切片无关）。
   - **阻塞记录（如实，未删任何安全检查装通过）**：`bun test apps/electron/src/main/lib/collaboration/fusion-room-runtime.test.ts` → 18 pass / **1 fail** / 107 expect。失败用例为 `FusionRoom transport TLS 选项 > 未提供 tls 构造 HTTP server，提供 tls 构造 HTTPS server`（runtime.test.ts:185 `expect(httpRuntime.server).not.toBeInstanceOf(HttpsServer)`）。**这是 Bun 1.3.14 的 `node:http`/`node:https` 运行期 quirk**：Bun 下 `http.Server` 与 `https.Server` 共用同一 constructor，故未开 TLS 的 HTTP server 也 `instanceof https.Server`，使 `not.toBeInstanceOf(HttpsServer)` 失败。**与 P0-2 无关、非回归**：把新测试文件移走后该失败仍按原样复现（18 pass / 1 fail），属既存 runner 环境问题，业务逻辑与 typecheck/build 均不受影响。复现命令：`bun test apps/electron/src/main/lib/collaboration/fusion-room-runtime.test.ts`。按 handoff §6 既定约定，不把 Bun 直接加载的运行期差异误判为业务失败；不在此切片改 runtime 测试或源码绕过。
 - 明确未做（与 handoff §7/§8 一致）：真实账户登录 / OAuth、证书生成 / 轮换 / 撤销、服务端部署配置、打包版显式网络启动 UI、跨机器 / 跨节点多用户 E2E、单写者 / 乐观并发 / 事件总线 / 预算原子预留、`BILLING_LOCKED` 费用闸门、renderer UI 变更、`recordUsage` 签名改动。本切片只证明「同一台机器、同一进程、loopback HTTP·SSE 之上，邀请 token 身份 + Bot owner consent + 费用主体归属 + 共享工作区下载」的协议与 transport 链路在双用户场景下端到端成立，不代表跨机器 / 真实账户 / 公网入口已可用。
+
+## 74. 证书生命周期 + 打包版协作 / 网络显式闸门（P0-3）（2026-08-23）
+
+本轮交付 P0-3：RoomSession 服务端 TLS 证书的本地生命周期存储（生成 / 加载 / 轮换 / 撤销）+ 打包版协作 / 网络的显式闸门决策函数与持久化偏好。**默认仍关闭打包版协作与公网监听**；不接真实账户 / OAuth / 跨机器 E2E / 生产 CA。
+
+新增文件：
+- `apps/electron/src/main/lib/collaboration/fusion-room-cert-store.ts`：用 Node 内置 `node:crypto` 生成自签 X.509 v3 证书（RSA 2048 / SHA256，SAN: DNS:localhost + IP:127.0.0.1），**不引入任何外部 CA 库**；ASN.1 DER 编码器为本文件内联纯函数，SubjectPublicKeyInfo 直接用 `publicKey.export({type:'spki',format:'der'})` 取得，签名用 `crypto.createSign`，指纹用 `X509Certificate.fingerprint256`。`FusionRoomCertStore({dir, now})` 持久化到 `<dir>/fusion-room-certs.json`（atomic-json 三步原子写 + `.bak` 自愈），提供 `generate` / `list` / `listPublic`（剥离私钥）/ `revoke`（幂等）/ `rotate`（撤销旧 active + 生成新 active）/ `resolveTlsOptions`（返回最新 active 且未过期证书的 `{key, cert}`）/ `hasActiveCert`。状态派生 `revoked > expired > active`（不依赖落盘 `status` 字段，过期按注入 `now` 自动判定）。
+- `apps/electron/src/main/lib/collaboration/fusion-room-network-prefs.ts`：纯函数 `decidePackagedCollaborationGate({isPackaged, prefs, hasActiveCert})` → `{registerIpc, allowNonLoopbackListen, reasons}`，规则与 brief 一一对应（dev 恒开 IPC；打包默认全关；仅 `enableCollaboration` → IPC 开但非 loopback 关；`enableNetworkListen` 还需 active 证书）；`validateFusionRoomNetworkPrefs` 拒绝 `allowInsecureNetwork` 等明文公网开关（在 `normalize` 前对**原始输入**检查，避免被静默洗掉）+ 拒绝 `enableNetworkListen` 缺 `enableCollaboration`；`load/save` 走 atomic-json，默认全关。
+- `apps/electron/src/main/lib/collaboration/fusion-room-network-prefs-ipc.ts`：**始终注册**的小型 IPC（`fusion-room-network-prefs:get/set` + `fusion-room-certs:list/generate/revoke`），让用户能显式控制闸门；本身不注册协作室 IPC、不开网络监听、不回传私钥。
+- 对应单测：`fusion-room-cert-store.test.ts`、`fusion-room-network-prefs.test.ts`。
+
+修改：
+- `main/index.ts`：用 `decidePackagedCollaborationGate` 替代硬编码 `!app.isPackaged`；默认 prefs 全关 → 打包行为不变（`registerIpc=false`，打印 `[collaboration] disabled: ...`），dev 仍 `registerIpc=true`；始终注册 prefs/certs 管理 IPC。
+- `preload/index.ts` + `renderer/App.tsx`：新增 5 个 `electronAPI` 方法（`getFusionRoomNetworkPrefs` / `setFusionRoomNetworkPrefs` / `listFusionRoomCerts` / `generateFusionRoomCert` / `revokeFusionRoomCert`），App.tsx 全局声明同步（与 preload 同口径，遵循「新增 preload IPC 须同步 App.tsx」约定）。
+- `config/config-paths.ts`：新增 `getFusionRoomNetworkPrefsPath()`（`~/.tagent[-dev]/collaboration/fusion-room-network-prefs.json`）。
+- `fusion-room-runtime.test.ts`：修 Bun 1.3.14 下 `instanceof HttpsServer` 误报（Bun 的 `node:http`/`node:https` Server 共用同一 constructor、且 `https.createServer({})` 无证书会降级为明文 HTTP）。改为跨运行时稳定的行为探测：明文 HTTP transport 接受明文请求；HTTPS transport（用 cert store 产出的真实自签材料构造）对明文请求做 TLS 握手并失败。新增 cert store → runtime loopback `start/close` 集成用例。**未删任何安全断言**，只换 Bun/Node 都稳的探测方式。
+- 不改 `fusion-room-runtime.ts` 的 loopback 明文拒绝语义；cert store 只产出可喂给 `FusionRoomTlsOptions` 的材料，非 loopback 放行仍由 runtime + 显式闸门决定。
+
+验证（实跑结果）：
+- `bun test apps/electron/src/main/lib/collaboration/fusion-room-network-prefs.test.ts` → 12 pass / 0 fail / 37 expect。
+- `bun test apps/electron/src/main/lib/collaboration/fusion-room-cert-store.test.ts` → 7 pass / 0 fail / 43 expect。
+- `bun test apps/electron/src/main/lib/collaboration/fusion-room-runtime.test.ts` → **20 pass / 0 fail / 113 expect**（修复了 §73 记录的 Bun `instanceof` 1 fail；新增 2 用例：行为探测 + cert store 集成）。
+- `bun test packages/core/src/collaboration/fusion-room-acl.test.ts` → 21 pass / 0 fail / 58 expect。
+- `bun run --filter='@tagent/core' typecheck` 通过；`bun run --filter='./apps/electron' typecheck` 通过；`git diff --check` 退出 0（仅 `packages/ui/.../tokens.css` 既存 LF→CRLF 提示，与本切片无关、未触碰）。
+- runtime 行为探测在 Bun 1.3.14 与 Node 24 / vitest 2.1.9 下均 20 pass，确认跨运行时稳定。
+
+闸门默认仍关闭的证据：
+- `decidePackagedCollaborationGate({isPackaged:true, prefs:DEFAULT, hasActiveCert:false})` → `{registerIpc:false, allowNonLoopbackListen:false}`（`fusion-room-network-prefs.test.ts` 用例断言）。
+- `main/index.ts` 默认 prefs 全关时走 `else` 分支，不 `import('./lib/collaboration/collaboration-ipc')`，协作室 IPC 不注册。
+- `validateFusionRoomNetworkPrefs` 显式拒绝 `allowInsecureNetwork` 等明文公网开关；`FusionRoomNetworkPrefs` 不含任何不安全监听字段。
+- cert store 撤销 / 过期证书不进 `resolveTlsOptions`，即不可用于 `start({host: 非 loopback})`。
+
+明确未做（与 handoff §7/§8 一致）：
+- 真实账户登录 / OAuth、邀请 token 与账户身份绑定、跨机器多用户 E2E、生产 CA、服务端部署配置。
+- `allowNonLoopbackListen` 当前由决策函数产出并经 `console.log` 记录，但远程 FusionRoom transport 尚未从 Electron 启动接入（runtime 仍只在测试 / 显式装配中使用）；该输出是后续「transport 启动时据闸门 + 证书材料决定是否放行非 loopback」的前置信号，本切片不接通远程 transport 启动。
+- 设置页危险区 UI 开关未做（API 已通过 preload + App.tsx 全量暴露并 typecheck，UI 属后续切片）。
+- 跨节点单写者 / 乐观并发 / 事件总线 / 预算原子预留、持久 continuation worker、`BILLING_LOCKED` 费用闸门仍未做。
+- 本切片只交付证书生命周期 + 显式闸门 + 决策函数与测试，**不代表打包版已默认可被公网访问或跨用户网络已可用**。

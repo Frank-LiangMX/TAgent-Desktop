@@ -276,3 +276,12 @@ export function getCollaborationUserApprovalsPath(): string {
 export function getCollaborationMemberPresetsPath(): string {
   return join(getCollaborationDir(), 'member-presets.json')
 }
+
+/**
+ * 打包版协作 / 网络显式闸门偏好：~/.tagent[-dev]/collaboration/fusion-room-network-prefs.json
+ * 默认全关（enableCollaboration=false、enableNetworkListen=false）；只存两个布尔，
+ * 不存在明文公网 / 不安全监听开关。见 fusion-room-network-prefs.ts。
+ */
+export function getFusionRoomNetworkPrefsPath(): string {
+  return join(getCollaborationDir(), 'fusion-room-network-prefs.json')
+}

@@ -444,6 +444,53 @@ declare global {
         systemDesktop: boolean;
         panelToast: boolean;
       }>;
+      // 协作室 / 网络显式闸门偏好 + 证书管理（P0-3；与 preload electronAPI 同步）
+      getFusionRoomNetworkPrefs: () => Promise<{
+        enableCollaboration: boolean;
+        enableNetworkListen: boolean;
+      }>;
+      setFusionRoomNetworkPrefs: (patch: {
+        enableCollaboration?: boolean;
+        enableNetworkListen?: boolean;
+      }) => Promise<{
+        enableCollaboration: boolean;
+        enableNetworkListen: boolean;
+      }>;
+      listFusionRoomCerts: () => Promise<
+        Array<{
+          certId: string;
+          cert: string;
+          fingerprint: string;
+          createdAt: number;
+          expiresAt: number;
+          revokedAt?: number;
+          status: "active" | "revoked" | "expired";
+          commonName: string;
+        }>
+      >;
+      generateFusionRoomCert: (input?: {
+        commonName?: string;
+        validityDays?: number;
+      }) => Promise<{
+        certId: string;
+        cert: string;
+        fingerprint: string;
+        createdAt: number;
+        expiresAt: number;
+        revokedAt?: number;
+        status: "active" | "revoked" | "expired";
+        commonName: string;
+      }>;
+      revokeFusionRoomCert: (certId: string) => Promise<{
+        certId: string;
+        cert: string;
+        fingerprint: string;
+        createdAt: number;
+        expiresAt: number;
+        revokedAt?: number;
+        status: "active" | "revoked" | "expired";
+        commonName: string;
+      } | undefined>;
       // 看板 / 班组
       kanbanListBoards: (input?: { status?: string }) => Promise<unknown>;
       kanbanGetBoard: (boardId: string) => Promise<unknown>;

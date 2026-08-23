@@ -302,14 +302,39 @@ app.whenReady().then(async () => {
   registerKanbanIpc()
   const { bootstrapKanban } = await import('./lib/kanban/kanban-bootstrap')
   bootstrapKanban(() => mainWindow)
-  // 协作室发布闸门：开发环境继续联调；打包版暂时不注册入口和运行链路。
-  // 协作室代码保留在主线，待稳定后只需重新开放此闸门即可恢复功能。
-  if (!app.isPackaged) {
+  // 协作室 / 网络显式闸门（P0-3）：开发环境恒开 IPC；打包版默认全关，
+  // 仅当用户显式打开 enableCollaboration 才注册协作室 IPC；enableNetworkListen 还需
+  // 存在 active 且未过期的 TLS 证书。默认 prefs 全关 → 打包行为与原先 !app.isPackaged 一致。
+  const {
+    decidePackagedCollaborationGate,
+    loadFusionRoomNetworkPrefs,
+  } = await import('./lib/collaboration/fusion-room-network-prefs')
+  const { FusionRoomCertStore } = await import('./lib/collaboration/fusion-room-cert-store')
+  const {
+    getCollaborationDir,
+    getFusionRoomNetworkPrefsPath,
+  } = await import('./lib/config/config-paths')
+  const { registerFusionRoomNetworkPrefsIpc } = await import(
+    './lib/collaboration/fusion-room-network-prefs-ipc'
+  )
+  const fusionPrefs = loadFusionRoomNetworkPrefs(getFusionRoomNetworkPrefsPath())
+  const fusionCertStore = new FusionRoomCertStore({ dir: getCollaborationDir() })
+  const fusionGate = decidePackagedCollaborationGate({
+    isPackaged: app.isPackaged,
+    prefs: fusionPrefs,
+    hasActiveCert: fusionCertStore.hasActiveCert(),
+  })
+  if (fusionGate.registerIpc) {
     const { registerCollaborationRoomIpc } = await import('./lib/collaboration/collaboration-ipc')
     registerCollaborationRoomIpc(() => mainWindow)
+    if (fusionGate.allowNonLoopbackListen) {
+      console.log('[collaboration] 非 loopback 监听已获显式授权（active 证书 + 双开关）')
+    }
   } else {
-    console.log('[collaboration] disabled in packaged build')
+    console.log('[collaboration] disabled:', fusionGate.reasons.join('; '))
   }
+  // 始终注册偏好 / 证书管理 IPC，让用户能显式控制闸门；它本身不注册协作室 IPC、不开网络监听。
+  registerFusionRoomNetworkPrefsIpc()
   // 通知偏好 IPC（通用设置 ↔ 主进程系统通知）
   const {
     loadNotificationPrefs,

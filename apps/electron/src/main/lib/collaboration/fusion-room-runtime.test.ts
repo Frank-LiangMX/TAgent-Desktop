@@ -1,12 +1,11 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Server as HttpServer } from 'node:http'
-import { Server as HttpsServer } from 'node:https'
 import { afterEach, describe, expect, test } from 'vitest'
 import type { MemberBackendAdapter, RoomBotSeat, RoomWorkspace } from '@tagent/shared'
 import { FusionRoomHttpClient } from '@tagent/core'
 import type { FusionRoomTlsOptions } from './fusion-room-http-server'
+import { FusionRoomCertStore } from './fusion-room-cert-store'
 import { createFusionRoomTransportRuntime, isFusionRoomLoopbackHost } from './fusion-room-runtime'
 
 const workspace: RoomWorkspace = {
@@ -178,14 +177,68 @@ describe('FusionRoom transport loopback 安全闸门', () => {
   })
 })
 
-describe('FusionRoom transport TLS 选项', () => {
-  test('未提供 tls 构造 HTTP server，提供 tls 构造 HTTPS server（无需真实证书）', () => {
-    const httpRuntime = createRuntime()
-    expect(httpRuntime.server).toBeInstanceOf(HttpServer)
-    expect(httpRuntime.server).not.toBeInstanceOf(HttpsServer)
+/**
+ * 行为探测：明文 HTTP 请求能否拿到 HTTP 响应。
+ *
+ * Bun 1.3.14 下 `node:http` 与 `node:https` 的 Server 共用同一 constructor，
+ * `instanceof HttpsServer` / `setSecureContext` 都无法区分 HTTP/HTTPS server（见
+ * 12-IMPLEMENTATION-LOG §73 的 Bun quirk 记录）。改为跨运行时稳定的行为探测：
+ * 明文 HTTP transport 会返回 HTTP 响应；HTTPS transport 会对明文字节做 TLS 握手并失败。
+ */
+async function acceptsPlaintextHttp(
+  runtime: ReturnType<typeof createFusionRoomTransportRuntime>,
+): Promise<boolean> {
+  const address = await runtime.start({ host: '127.0.0.1', port: 0 })
+  try {
+    const raced = await Promise.race([
+      fetch('http://127.0.0.1:' + address.port + '/rooms', {
+        headers: { 'x-user-id': 'owner' },
+      }).then((response) => response as Response | null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2_000)),
+    ])
+    if (raced === null) return false // 超时 → 未在明文 HTTP 上响应（按 HTTPS 处理）
+    return raced.status === 200 || raced.status === 401
+  } catch {
+    return false // TLS server 拒绝明文请求
+  } finally {
+    await runtime.close()
+  }
+}
 
-    const httpsRuntime = createRuntime(undefined, {})
-    expect(httpsRuntime.server).toBeInstanceOf(HttpsServer)
+describe('FusionRoom transport TLS 选项', () => {
+  test('未提供 tls 构造明文 HTTP server；提供真实证书 tls 构造 HTTPS server（行为探测，Bun/Node 通用）', async () => {
+    // 明文 HTTP transport 接受明文请求。
+    const httpRuntime = createRuntime()
+    expect(await acceptsPlaintextHttp(httpRuntime)).toBe(true)
+
+    // Bun 下 `https.createServer({})` 无证书会降级为明文 HTTP，必须提供真实 key/cert
+    // 才会启用 TLS，从而对明文请求做 TLS 握手并失败。用 cert store 产出真实自签材料。
+    const dir = mkdtempSync(join(tmpdir(), 'tagent-fusion-tls-probe-'))
+    tempDirs.push(dir)
+    const certStore = new FusionRoomCertStore({ dir })
+    certStore.generate()
+    const tls = certStore.resolveTlsOptions() as FusionRoomTlsOptions
+    const httpsRuntime = createRuntime(undefined, tls)
+    expect(await acceptsPlaintextHttp(httpsRuntime)).toBe(false)
+  })
+
+  test('cert store 产出的真实自签材料可驱动 runtime 在 loopback start/close', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tagent-fusion-cert-runtime-'))
+    tempDirs.push(dir)
+    const certStore = new FusionRoomCertStore({ dir })
+    // 未生成证书前 resolveTlsOptions 为空，runtime 仍走明文 HTTP。
+    expect(certStore.resolveTlsOptions()).toBeUndefined()
+    certStore.generate()
+    const tls = certStore.resolveTlsOptions()
+    expect(tls).toBeDefined()
+
+    const runtime = createRuntime(undefined, tls as FusionRoomTlsOptions)
+    const address = await runtime.start({ host: '127.0.0.1', port: 0 })
+    expect(runtime.server.listening).toBe(true)
+    expect(address.port).toBeGreaterThan(0)
+    await runtime.close()
+    expect(runtime.server.listening).toBe(false)
+    await expect(runtime.close()).resolves.toBeUndefined()
   })
 
   test('提供 tls 时 loopback 仍可启动并 close（不引入真实证书/网络依赖）', async () => {
