@@ -136,3 +136,7 @@ export * from './browser'
 export * from './fusion-session'
 export * from './fusion-session-legacy'
 export * from './fusion-routing'
+
+// MemberBackend 生命周期契约（P1-2a）：create/resume/compact/interrupt/heartbeat + usage 规范化。
+// 类型优先 shared，运行时实现（Channel / Fake）在 apps/electron collaboration。
+export * from './member-session-lifecycle'

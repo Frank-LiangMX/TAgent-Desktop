@@ -815,3 +815,40 @@
 - 真实 Pi/KSCC provider 的 resume / compact / interrupt 未做；bridge 用测试 adapter 证明新 turn 链路，未接真实 provider。
 - 未做实机点远程页手测（无 Electron GUI）；远程页 UI 以 view-model continuations 投影单测 + 全仓 typecheck 验证，bridge 新 turn + gateway 注入以单测证明。
 - 跨节点单写者 / 事件总线 / 预算原子预留仍未做。
+
+## 78. MemberBackend 生命周期契约 + Fake + Channel fail-closed + usage 规范化（P1-2a）（2026-08-23）
+
+本轮交付 P1-2a：为融合会话 / RoomSession 补齐**与 provider 无关的统一生命周期契约**（不直接绑死 KSCC 进程细节），并用 Fake + 薄封装钉死行为。**不宣称**本机 kscc/Pi 真机 create→resume E2E 完成（那是 P1-2b），**不**谎报 `supportsResume`，**不**大改 `ChannelBackendAdapter.runTurn` 主路径，**不**动无关未提交 UI 文件。
+
+**契约选「叠加」而非「替换」**：新增 `MemberSessionLifecycleAdapter`（create/resume/compact/interrupt/heartbeat）与 `MemberBackendAdapter` 并列；旧代码只依赖 `runTurn` 继续工作，新 Host/bridge 可按需依赖 lifecycle。类型优先放 packages/shared（core/electron/renderer 共享），运行时实现（Channel 真封装 + Fake）放 apps/electron collaboration。组合类型别名 `MemberBackendWithLifecycleAdapter = MemberBackendAdapter & MemberSessionLifecycleAdapter`（`capabilities()` 两接口签名一致，交集合法）。
+
+新增文件：
+- `packages/shared/src/types/member-session-lifecycle.ts`：契约类型 + `normalizeMemberTurnUsage` 纯函数。导出 `MemberSessionBackend`（`'pi'|'kscc'|'cli'|'channel'`，比 `CollaborationMemberBackend` 更细，区分 kscc-internal 与外部 channel）、`MemberSessionResumeMode`（`'native'|'replay'|'none'`）、`MemberSessionHandle` / `MemberSessionCreateInput` / `MemberSessionResumeInput` / `MemberSessionCompactInput` / `MemberSessionInterruptInput` / `MemberSessionHeartbeatResult` / `NormalizedMemberUsage`（字段集合与 `CollaborationUsageRecord` 对齐）、`MemberSessionLifecycleAdapter` 接口、`MemberBackendWithLifecycleAdapter` 别名。`normalizeMemberTurnUsage(usage, extras)`：只保留有限数字段（undefined/NaN/±Infinity 一律省略），provider 自报 input/output/total/costUsd 作基线，`extras.wallTimeMs`/`toolCalls` **覆盖** usage 同名字段（宿主度量更可信；provider 一般不回这两项）。纯函数，不读 DB、不依赖时间。
+- `packages/shared/src/types/member-session-lifecycle.test.ts`：9 用例（undefined / 全字段 / 缺字段 / extras 填充 / extras 覆盖 / NaN 过滤 / 单边 extras / 0 保留 / extras 全 undefined）。
+- `apps/electron/src/main/lib/collaboration/member-session-lifecycle.ts`：`ChannelMemberSessionLifecycleAdapter`（真实薄封装）+ `MemberSessionLifecycleError`。`createSession` 调 `resolveChannelBackendConfig`（复用 member-backend-adapter 的解析），按 `cfg.kind` 标 `backend='kscc'/'channel'`，`handle.resumeMode='none'`（CHANNEL `supportsResume=false`）；`resumeSession` **抛错 fail-closed**（`RESUME_NOT_SUPPORTED`），绝不假装原生 resume；`compactSession` 返回 `{ ok:false, summary:'not implemented: channel compact not wired' }`；`interruptSession` 仅登记 sessionId 到内存 Set（**未接进程级 kill**）；`heartbeat` 据已知/中断状态返回 alive。除 `createSession` 读 channel-store 外无 I/O。**不改** `ChannelBackendAdapter.runTurn` 主路径。
+- `apps/electron/src/main/lib/collaboration/member-session-lifecycle-fake.ts`：`FakeMemberSessionLifecycleAdapter`（单测主力，全程无 I/O）+ options。可配 `resumeMode`（默认 native）/ `supportsResume`（默认 true）/ `backend`（默认 pi）/ `compactFails` / `compactSummary`。`resumeSession` 仅当 `supportsResume` **且** `handle.resumeMode==='native'` 才成功，否则抛 `RESUME_NOT_SUPPORTED` / `RESUME_MODE_NOT_NATIVE`；成功时 `logicalSessionId` 不变、`sessionId = providerSessionId ?? 原 sessionId`（文档化）；记录 create/resume/compact/interrupt 调用；`heartbeat` 据已知/中断返回 alive。只实现 lifecycle，不实现 `runTurn`。
+- `apps/electron/src/main/lib/collaboration/member-session-lifecycle.test.ts`：16 用例（Fake：create→alive→interrupt→dead、supportsResume=false resume 抛错、resumeMode=non-native resume 抛错、native resume 复用原 sessionId、providerSessionId 指定新 sessionId、compact 成功/失败、未知 session heartbeat false、create 前 abort 抛 ABORTED；Channel：capabilities 全 false、kscc→backend='kscc'、外部→backend='channel'、解析失败透传 `MemberBackendResolveError`、resume fail-closed、compact not implemented、interrupt 后 heartbeat false、`MemberSessionLifecycleError` 是 Error 子类）。Channel 分支 mock 与 `member-backend-adapter.test.ts` 同款（channel-store / kscc-path / pi-core / cli-workers），不发真实 HTTP、不读真实 safeStorage。
+
+修改：
+- `packages/shared/src/types/index.ts`：新增 `export * from './member-session-lifecycle'`。无导出名冲突（全仓 grep 确认 `MemberSession*` / `NormalizedMemberUsage` / `normalizeMemberTurnUsage` 仅本文件定义）。
+
+验证（实跑结果）：
+- `bun test packages/shared/src/types/member-session-lifecycle.test.ts` → 9 pass / 0 fail / 10 expect。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/member-session-lifecycle.test.ts` → 16 pass / 0 fail（electron mock 测试用 vitest runner；raw `bun test` 撞 safeStorage ESM 限制，见 handoff §6）。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/{member-backend-adapter,fusion-room-execution-bridge,member-session-lifecycle}.test.ts` → 42 pass / 0 fail（18 adapter + 16 lifecycle + 8 bridge，回归通过）。
+- `bun run --filter='@tagent/shared' typecheck` → 退出 0。
+- `bun run --filter='@tagent/core' typecheck` → 退出 0。
+- `bun run --filter='./apps/electron' typecheck` → 退出 0。
+- `git diff --check` → 退出 0（仅 `packages/ui/.../tokens.css` 既存 LF→CRLF 提示，为本切片之前已存在的无关改动，未触碰；本切片未动 `chat.css` / `image-lightbox` / `message/index.tsx` / `tokens.css`）。
+
+诚实能力证据（resume/compact 现状）：
+- Channel `capabilities` 全 false（与 `ChannelBackendAdapter.capabilities()` 一致）；`handle.resumeMode='none'`；`resumeSession` 直接抛 `RESUME_NOT_SUPPORTED`，**绝不**返回成功 handle。
+- `compactSession` 返回 `{ ok:false, summary:'not implemented' }`，**不**假装已压缩。
+- `interruptSession` 仅内存 Set 登记，**未接进程级 kill**，不杀真实子进程。
+- Fake 的 `supportsResume` 默认 true 仅为**单测**钉死 native resume 成功路径；不代表任何真实 provider 支持 resume。
+
+明确未做（与 handoff §7 P1 / §8 第 5 步一致）：
+- **真机 kscc/Pi create→resume E2E 未做**：本切片只到契约 + Fake + Channel fail-closed 封装 + 单测；Channel 的 `resumeSession` 永远 fail-closed，没有接真实 provider 原生 session id 恢复。那是 P1-2b。
+- **进程级 kill 未做**：`interruptSession` 仅登记 sessionId 供后续 turn AbortSignal 协作，不杀真实 kscc 子进程 / HTTP 连接。
+- **bridge 全量改用 normalize 未接**：`normalizeMemberTurnUsage` 已导出 + 单测；`fusion-room-execution-bridge.recordUsage` 仍用原样回写，未改用 normalize（避免改动 usage 账本录入门槛影响既有 bridge 测试），接线留给下一切片并在此注明。
+- 未做实机手测（无 Electron GUI）；行为以单测 + 全仓 typecheck 验证。本切片**不代表**真实 provider 已支持 resume/compact/interrupt。

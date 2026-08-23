@@ -190,6 +190,8 @@ RoomWorkspace 是服务端实际存在的权威目录：自托管局域网时通
 
 RoomSession 只依赖统一的 MemberBackendAdapter / AgentSessionHost，不直接依赖 KSCC 进程细节。KSCC 和 Pi 都必须提供同一组宿主能力：create/resume/compact/interrupt、流式事件、工具调用、结构化结果、usage、错误和恢复。
 
+（2026-08-23，P1-2a）`MemberSessionLifecycleAdapter` 统一生命周期契约（create/resume/compact/interrupt/heartbeat）+ `normalizeMemberTurnUsage` 已在 packages/shared 落地，`ChannelMemberSessionLifecycleAdapter` 薄封装诚实 fail-closed（`supportsResume=false` → resume 抛错、compact 返回 not implemented、interrupt 仅内存登记未接进程级 kill）；真机 provider create→resume E2E 仍待 P1-2b。
+
 KSCC 的 session loop 不完全由宿主控制，因此要靠宿主事件桥、运行 fencing、取消令牌和提交前权限复核；Pi 核若是宿主可控 loop，则复用同一事件契约，通常实现更直接。两者都不能越过 RoomEventStore 直接写公共时间线。
 
 正式事件流：
@@ -273,7 +275,7 @@ KSCC 的 session loop 不完全由宿主控制，因此要靠宿主事件桥、�
 ### Phase F：记忆精炼、恢复和多核回归
 
 - [x] candidate -> active 的用户确认流。
-- [ ] KSCC/Pi 统一 adapter contract、恢复/fencing、费用审计（RoomSession 权威核心与本地 CollaborationRoomService fencing 已接入；真实双核 create/resume/compact/interrupt、心跳、恢复、远程费用审计和 usage 回写未完成）。
+- [ ] KSCC/Pi 统一 adapter contract、恢复/fencing、费用审计（RoomSession 权威核心与本地 CollaborationRoomService fencing 已接入；**P1-2a 已交付 `MemberSessionLifecycleAdapter` 统一生命周期契约 + `normalizeMemberTurnUsage` + Channel fail-closed 薄封装 + Fake + 单测**，Channel resume/compact 诚实 fail-closed；真实双核 create→resume E2E、进程级 kill、心跳、恢复、远程费用审计和 bridge 全量 usage 回写仍待 P1-2b+）。
 - [ ] 崩溃恢复、长上下文压缩、权限动态收紧。
 
 验收：同一 Bot 在多场景并行不串记忆；重启可恢复；权限收紧立即生效；模型费用归属正确。
