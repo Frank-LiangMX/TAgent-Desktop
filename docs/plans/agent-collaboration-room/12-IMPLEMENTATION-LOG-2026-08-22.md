@@ -734,3 +734,42 @@
 - **未做实机点击设置页手测**：本环境无可用 Electron GUI / 浏览器 MCP；UI 行为以组件模型单测（禁用判定 / 状态标签 / 闸门语气）+ typecheck 验证。主控 agent 会再独立跑测试。
 - 跨节点单写者 / 乐观并发 / 事件总线 / 预算原子预留、持久 continuation worker、`BILLING_LOCKED` 费用闸门仍未做。
 - 本切片只交付设置页危险区 UI + gate-status 接线 + 组件模型单测，**不代表打包版已默认可被公网访问、真实账户已可用或跨用户网络已可用**。
+
+## 76. 可观察 continuation outbox + 用户确认 resume（不自动重放）（P1-1）（2026-08-23）
+
+本轮交付 P1-1 第一刀：**可观察 outbox + 显式确认 resume**。服务离线 / 进程重启后，已批准 approval、已回复 mailbox、仍停在 `delivery:'outbox'` 的信封、以及被标成 `blocked`（未知副作用）的 run 都能被列出观察；涉及文件 / 命令 / 网络等未知副作用的 continuation 必须先进入显式 `resume_confirm`，**禁止**启动时自动重放；用户（房主或 active 人类成员）确认后才允许安全入队下一次 turn / 安全重投 outbox。本切片以 **packages/core 协议 + Host API + 单测** 为主，**不做**完整远程 UI、**不接**真实 provider resume、**不**自动跑有副作用的旧 run。
+
+**确认策略：选「写事件」而非「膨胀 run 状态枚举」。** 不新增 `FusionRunStatus` 的 `resume_confirmed` 终态，而是新增一个 `CollaborationRoomEventType` 成员 `run.resume_confirmed`，并在 `mailbox_outbox` 复用既有 `mailbox.changed`（`mailboxAction:"resume_dispatched"`）。理由：
+- brief 显式倾向「优先用事件而非膨胀状态枚举」；`blocked` 已是 `FusionRunStatus` 终态（`finishRunInternal` 只改 `running` run，blocked 永不再迁移），无需再给 run 加一个确认态。
+- 写事件天然落进既有权威事件账本（`FusionRoomAuthority.event` 的序列号 + `idempotencyKey` 去重），execution bridge 订阅事件即可观察到「用户已确认」，再以**新** runId / fence 拉起新 turn，而不需要 authority 复活旧 fence。
+- **为何不自动重放**：`recoverInterruptedRuns()` 保持原样——running → blocked，不自动 confirm；`confirmResumeBlockedRun` 只写 `run.resume_confirmed` 事件，**不改** `run.status`、**不**把 `run.fence` 复位、**不**把 seat 改回 `running`；旧 run 永远停在 `blocked`，bridge 只能新起 turn。`confirmResumeMailboxOutbox` 仅当 `canTransitionCollaborationDelivery(outbox → dispatched)` 时把 `delivery` 推进为 `dispatched`，`outcome_unknown` / `failed` 等终态因 `delivery !== "outbox"` 被拒绝，**不会**变回可重放。
+
+新增文件：
+- `packages/core/src/collaboration/fusion-room-continuation.ts`：纯函数观察模型。导出 `FusionContinuationKind`（`blocked_run` / `pending_approval` / `approved_awaiting_resume` / `mailbox_outbox` / `awaiting_peer` / `depth_stop`）、`FusionContinuationItem` / `FusionContinuationRefs`、`ConfirmFusionResumeContinuationInput`、`FusionResumeContinuationResult` / `FusionResumeContinuationStatus`，以及 `listFusionContinuations(snapshot)`。规则：blocked run → `blocked_run`（`requiresUserConfirm=true`、`sideEffectRisk='unknown'`）；pending approval → `pending_approval`（`requiresUserConfirm=true`）；approved approval 且对应 run 仍 `running`/`awaiting_peer`/`awaiting_user` → `approved_awaiting_resume`（`requiresUserConfirm=false`，审批本身就是确认，仍列出供 bridge 观察）；`delivery==='outbox'` 且 `state` 非 `cancelled`/`expired` → `mailbox_outbox`（`requiresUserConfirm=true`、`sideEffectRisk='unknown'`）；`awaiting_peer` run → `awaiting_peer`（`requiresUserConfirm=false`，等 peer）；可继续一次的 `max_depth` 停止信封（`canContinueCollaborationDepthStop`）→ `depth_stop`（`requiresUserConfirm=true`）；`completed`/`failed`/`cancelled` 等终态不进入列表。结果按 `createdAt` 升序、再按 `id` 稳定排序。不读 DB、不依赖时间、不触发副作用。
+- `packages/core/src/collaboration/fusion-room-continuation.test.ts`：12 用例覆盖空快照、blocked、pending approval、outbox、awaiting_peer、忽略 completed、outbox 终态信封不列出、approved_awaiting_resume（含 run 已终态则不列出）、depth_stop（含 continueUsed=true 不列出）、多类按 createdAt 升序。
+
+修改：
+- `packages/shared/src/types/fusion-session.ts`：`CollaborationRoomEventType` 新增 `"run.resume_confirmed"`（仅事件类型，不动 run 状态枚举；全仓 typecheck 无 exhaustive switch 受影响）。
+- `packages/core/src/collaboration/fusion-room-authority.ts`：新增 `confirmResumeContinuation(input)` 公共方法 + `confirmResumeBlockedRun` / `confirmResumeMailboxOutbox` 私有助手。守卫：`activeRoom()` + `active(input.actorUserId)`（与既有 active human 守卫对齐，房主恒为 active）+ `roomId` 一致。`blocked_run`：找到 run（缺失 → `NOT_FOUND`），幂等优先（同 `idempotencyKey` + `type==="run.resume_confirmed"` + `entityId===runId` 命中 → 返回 `already_confirmed`），再校验 `run.status==="blocked"`（否则 `INVALID_STATE`），写 `run.resume_confirmed` 事件（payload 含 `runId`/`seatId`/`fence`/`kind`/`runStatus`），**不改 run 状态 / fence**。`mailbox_outbox`：找到信封（缺失 → `NOT_FOUND`），幂等优先（同 key + `type==="mailbox.changed"` + `payload.mailboxAction==="resume_dispatched"` + `entityId===envelopeId` → `already_confirmed`），再校验 `delivery==="outbox"`（否则 `INVALID_STATE`，含 `outcome_unknown`/`dispatched` 等）与 `canTransitionCollaborationDelivery(outbox→dispatched)`，合法则把 `delivery` 推进为 `dispatched` 并写 `mailbox.changed` 事件。其余 kind（`pending_approval`/`depth_stop`/`approved_awaiting_resume`/`awaiting_peer`）→ `INVALID_STATE` 并指向各自既有路径（`resolve-approval` / `continue-depth-stop` / execution bridge）。新增 `import { canTransitionCollaborationDelivery } from "@tagent/shared"` 与 `import type { ConfirmFusionResumeContinuationInput, FusionResumeContinuationResult } from "./fusion-room-continuation"`（type-only，无运行时循环）。
+- `packages/core/src/collaboration/fusion-room-host.ts`：`FusionRoomAction` 新增 `{ type: "confirm-resume-continuation"; input }`，`FusionRoomActionResult` 新增 `FusionResumeContinuationResult`，`dispatch` switch 新增对应 case（走既有 dispatch 路径，享受快照保存 / 事件广播 / 物理事务回滚）。新增 Host 便捷方法 `listContinuations(roomId)`（读快照调纯函数，只读、不经 dispatch、不保存快照）与 `confirmResumeContinuation(input)`（经 dispatch，事件被持久化与广播）。**不**改 `recoverInterruptedRuns()`（仍 running → blocked，不自动 confirm）。**不**改 gateway（`FusionRoomGatewayAction` 是独立 union，本切片不接远程 wire）。
+- `packages/core/src/collaboration/fusion-room-host.test.ts`：新增模块级 `mkSeat` 助手 + 5 个用例：重启恢复后可列出 blocked（`requiresUserConfirm=true`）；`confirmResumeContinuation` 对 blocked 幂等且写 `run.resume_confirmed`、旧 run 仍 `blocked` 同 fence、重复确认 `already_confirmed` 不新增事件；对 outbox delivery 合法前进到 `dispatched` 且幂等；outbox 非法迁移（已 dispatched 再用新 key confirm）→ `INVALID_STATE`，同 key 仍 `already_confirmed`；非成员 `FORBIDDEN` / 错误 continuationId `NOT_FOUND` / 不支持 kind `INVALID_STATE`；重启后新 Host（同快照存储）仍能列出 blocked + outbox。
+
+验证（实跑结果）：
+- `bun test packages/core/src/collaboration/fusion-room-continuation.test.ts` → 12 pass / 0 fail / 22 expect。
+- `bun test packages/core/src/collaboration/fusion-room-host.test.ts` → 13 pass / 0 fail / 66 expect（含原 7 个 + 新 6 个）。
+- `bun test packages/shared/src/types/collaboration-a2a.test.ts` → 28 pass / 0 fail / 49 expect（未改纯函数，回归通过）。
+- `bun test packages/core/src/collaboration/fusion-room-authority.test.ts` → 13 pass / 0 fail / 88 expect（未改既有 authority 行为，回归通过）。
+- `bun test` 核心 collaboration 批次（gateway + authority + host + continuation）→ 48 pass / 0 fail / 208 expect。
+- `bun run typecheck`（全仓 `--filter='*'`：shared / core / pi-core / ui / electron）→ 全部退出 0。
+- `git diff --check` → 退出 0（仅 `packages/ui/.../tokens.css` 既存 LF→CRLF 提示，为本切片之前已存在的无关改动，未触碰）。
+
+不自动重放的证据：
+- `recoverInterruptedRuns()` 仍只把 `running` run 标 `blocked`，不调 `confirmResumeContinuation`，不发 `run.resume_confirmed`。
+- `confirmResumeBlockedRun` 不改 `run.status`（仍 `blocked`）、不复位 `run.fence`、不把 seat 改回 `running`；`listFusionContinuations` 对 `completed`/`failed`/`cancelled` 一律不列出。
+- `confirmResumeMailboxOutbox` 拒绝非 `outbox` 信封（`dispatched`/`accepted`/`failed`/`outcome_unknown` 均 `INVALID_STATE`），`canTransitionCollaborationDelivery` 终态不可回退。
+- Host `listContinuations` 是只读派生；`confirmResumeContinuation` 必须由人类显式调用（active 守卫），无任何启动路径自动调它。
+
+明确未做（与 handoff §7/§8 一致）：
+- **Execution bridge 新 turn 接线未做**：本切片只到 Host 事件 + 列表 + 用户确认；`confirmResumeBlockedRun` 之后由 bridge 以**新** runId / fence 显式 `execute` 新 turn（prompt 注明「用户确认继续此前被中断的工作」）未接，留 TODO。bridge 默认仍不自动跑有副作用的旧 run。
+- 持久 outbox worker 进程、远程 UI（`listContinuations` / `confirmResumeContinuation` 的 IPC + renderer 消费）、gateway 远程 wire（`FusionRoomGatewayAction` 尚未加 `confirm-resume-continuation`）、真实 Pi/KSCC provider 的 resume / compact / interrupt、跨节点单写者 / 事件总线 / 预算原子预留仍未做。
+- 未做实机手测（无 Electron GUI）；行为以核心单测 + 全仓 typecheck 验证。本切片**不代表** outbox 已有后台 worker、远程页面已可确认 resume 或真实 provider 已支持 resume。

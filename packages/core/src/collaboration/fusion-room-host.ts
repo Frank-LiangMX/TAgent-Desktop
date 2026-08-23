@@ -34,6 +34,12 @@ import type {
   RecordFusionUsageInput,
   StartFusionRunInput, FinishFusionRunInput, AwaitFusionRunInput, UpdateFusionRoomMetadataInput, FusionRoomRun,
 } from "./fusion-room-authority"
+import type {
+  ConfirmFusionResumeContinuationInput,
+  FusionContinuationItem,
+  FusionResumeContinuationResult,
+} from "./fusion-room-continuation"
+import { listFusionContinuations } from "./fusion-room-continuation"
 
 export type FusionRoomAction =
   | { type: "invite-human"; actorUserId: string; userId: string; displayName: string }
@@ -64,6 +70,7 @@ export type FusionRoomAction =
   | { type: "resolve-approval"; input: ResolveFusionUserApprovalInput }
   | { type: "send-mailbox"; input: SendFusionMailboxInput }
   | { type: "reply-mailbox"; input: ReplyFusionMailboxInput }
+  | { type: "confirm-resume-continuation"; input: ConfirmFusionResumeContinuationInput }
 
 export type FusionRoomActionResult =
   | FusionHumanMember
@@ -81,6 +88,7 @@ export type FusionRoomActionResult =
   | FusionWorkspaceDeleteResult
   | FusionUsageLedgerEntry
   | FusionRoomRun
+  | FusionResumeContinuationResult
   | void
 
 export interface FusionRoomEventNotification {
@@ -203,6 +211,29 @@ export class FusionRoomHost {
     }
     return recovered
   }
+
+  /**
+   * 列出某房间可观察的 continuation（blocked run / pending approval / outbox 信封等），
+   * 供重启后的 UI / IPC 观察。纯函数派生，不触发副作用、不自动推进。
+   */
+  listContinuations(roomId: string): FusionContinuationItem[] {
+    return listFusionContinuations(this.getSnapshot(roomId))
+  }
+
+  /**
+   * 用户（房主或 active 人类成员）显式确认恢复一条 continuation（P1-1）。
+   *
+   * 仅写可观察「已确认」证据，**不**复活旧 fence 的 blocked run；`mailbox_outbox` 仅当
+   * delivery 可合法前进为 dispatched 时推进。幂等：同 idempotencyKey 重复确认返回同一结果。
+   */
+  confirmResumeContinuation(input: ConfirmFusionResumeContinuationInput): FusionResumeContinuationResult {
+    const result = this.dispatch(input.roomId, { type: "confirm-resume-continuation", input })
+    if (!result || typeof result !== "object" || !("continuationId" in result)) {
+      throw new FusionRoomAuthorityError("INVALID_STATE", "confirm-resume-continuation 未返回预期结果")
+    }
+    return result as FusionResumeContinuationResult
+  }
+
   hasRoom(roomId: string): boolean {
     return this.rooms.has(roomId)
   }
@@ -313,6 +344,9 @@ export class FusionRoomHost {
         break
       case "reply-mailbox":
         result = room.replyMailbox(action.input)
+        break
+      case "confirm-resume-continuation":
+        result = room.confirmResumeContinuation(action.input)
         break
       case "lock":
         result = room.acquireWorkspaceLock(action.input)

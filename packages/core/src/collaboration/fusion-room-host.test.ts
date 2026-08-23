@@ -13,6 +13,17 @@ const workspace: RoomWorkspace = {
   updatedAt: 1,
 }
 
+function mkSeat(id: string, roomId: string, botProfileId: string): RoomBotSeat {
+  return {
+    id, roomId, botProfileId, ownerUserId: "owner",
+    configRevisionId: "rev_" + botProfileId,
+    displayNameSnapshot: botProfileId, roleSnapshot: { displayName: botProfileId },
+    backend: "pi", modelId: "test-model", permissionProfile: "read-only",
+    capabilities: { supportsResume: false, supportsLiveInput: false, supportsToolBridge: false, supportsStructuredEvents: false },
+    status: "idle", logicalSessionId: "session_" + botProfileId, isCoordinator: false, createdAt: 1, updatedAt: 1,
+  }
+}
+
 describe("FusionRoomHost", () => {
   test("按房间隔离分发并广播权威事件", () => {
     const host = new FusionRoomHost()
@@ -223,4 +234,210 @@ describe("FusionRoomHost", () => {
     expect(recovered[0]?.status).toBe("blocked")
     expect(recovered[0]?.summary).toContain("未自动重放")
     expect(host.getSnapshot(roomId).runs[0]?.status).toBe("blocked")
-  })})
+  })
+
+  test("重启恢复后可列出 blocked continuation 且需用户确认", () => {
+    const host = new FusionRoomHost()
+    const roomId = "list-recovery-room"
+    host.createRoom({ roomId, ownerUserId: "owner", workspace: { ...workspace, id: "rws_list", roomId, storageKey: roomId }, now: 1 })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat-list", roomId, "bot-list") } })
+    host.dispatch(roomId, {
+      type: "start-run",
+      input: { actorUserId: "owner", seatId: "seat-list", backend: "pi", idempotencyKey: "list-start" },
+    })
+    host.recoverInterruptedRuns()
+    const items = host.listContinuations(roomId)
+    const blocked = items.find((item) => item.kind === "blocked_run")
+    expect(blocked).toBeTruthy()
+    expect(blocked?.requiresUserConfirm).toBe(true)
+    expect(blocked?.sideEffectRisk).toBe("unknown")
+    expect(blocked?.id).toBe(host.getSnapshot(roomId).runs[0]?.id)
+  })
+
+  test("confirmResumeContinuation 对 blocked run 幂等且写 run.resume_confirmed，旧 run 不复活", () => {
+    const host = new FusionRoomHost()
+    const roomId = "confirm-blocked-room"
+    host.createRoom({ roomId, ownerUserId: "owner", workspace: { ...workspace, id: "rws_cb", roomId, storageKey: roomId }, now: 1 })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat-cb", roomId, "bot-cb") } })
+    host.dispatch(roomId, {
+      type: "start-run",
+      input: { actorUserId: "owner", seatId: "seat-cb", backend: "pi", idempotencyKey: "cb-start" },
+    })
+    host.recoverInterruptedRuns()
+    const run = host.getSnapshot(roomId).runs[0]!
+    expect(run.status).toBe("blocked")
+    const fenceBefore = run.fence
+    const eventsBefore = host.getSnapshot(roomId).events.length
+
+    const result = host.confirmResumeContinuation({
+      roomId, actorUserId: "owner", continuationId: run.id, kind: "blocked_run", idempotencyKey: "cb-confirm-1",
+    })
+    expect(result.status).toBe("confirmed")
+    expect(result.kind).toBe("blocked_run")
+    expect(result.event.type).toBe("run.resume_confirmed")
+    expect(result.runStatus).toBe("blocked")
+    // 旧 run 不得悄悄变回 running 并用同一 fence 继续
+    const runAfter = host.getSnapshot(roomId).runs[0]!
+    expect(runAfter.status).toBe("blocked")
+    expect(runAfter.fence).toBe(fenceBefore)
+    expect(host.getSnapshot(roomId).events.length).toBe(eventsBefore + 1)
+
+    // 幂等：同 idempotencyKey 重复确认返回 already_confirmed，不新增事件
+    const again = host.confirmResumeContinuation({
+      roomId, actorUserId: "owner", continuationId: run.id, kind: "blocked_run", idempotencyKey: "cb-confirm-1",
+    })
+    expect(again.status).toBe("already_confirmed")
+    expect(again.event.id).toBe(result.event.id)
+    expect(host.getSnapshot(roomId).events.length).toBe(eventsBefore + 1)
+    expect(host.getSnapshot(roomId).runs[0]?.status).toBe("blocked")
+  })
+
+  test("confirmResumeContinuation 对 outbox 信封 delivery 合法前进到 dispatched，幂等", () => {
+    const host = new FusionRoomHost()
+    const roomId = "confirm-outbox-room"
+    host.createRoom({ roomId, ownerUserId: "owner", workspace: { ...workspace, id: "rws_co", roomId, storageKey: roomId }, now: 1 })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat_a", roomId, "bot-a") } })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat_b", roomId, "bot-b") } })
+    const message = host.dispatch(roomId, { type: "message", input: { actorUserId: "owner", content: "root" } })
+    const rootId = message && "id" in message ? message.id : ""
+    const run = host.dispatch(roomId, {
+      type: "start-run",
+      input: { actorUserId: "owner", seatId: "seat_a", backend: "pi", idempotencyKey: "co-start" },
+    })
+    const runId = run && "id" in run ? run.id : ""
+    const envelope = host.dispatch(roomId, {
+      type: "send-mailbox",
+      input: {
+        actorUserId: "owner", roomId, fromMemberId: "seat_a", toMemberId: "seat_b",
+        runId, type: "question", payload: "请审阅", rootMessageId: rootId, idempotencyKey: "co-send",
+      },
+    })
+    const envelopeId = envelope && "id" in envelope ? envelope.id : ""
+    expect(host.getSnapshot(roomId).mailbox[0]?.delivery).toBe("outbox")
+
+    const items = host.listContinuations(roomId)
+    const outbox = items.find((item) => item.kind === "mailbox_outbox")
+    expect(outbox?.id).toBe(envelopeId)
+    expect(outbox?.requiresUserConfirm).toBe(true)
+
+    const result = host.confirmResumeContinuation({
+      roomId, actorUserId: "owner", continuationId: envelopeId, kind: "mailbox_outbox", idempotencyKey: "co-confirm-1",
+    })
+    expect(result.status).toBe("confirmed")
+    expect(result.delivery).toBe("dispatched")
+    expect(result.event.type).toBe("mailbox.changed")
+    expect(result.event.payload.mailboxAction).toBe("resume_dispatched")
+    expect(host.getSnapshot(roomId).mailbox[0]?.delivery).toBe("dispatched")
+
+    // 幂等：同 idempotencyKey 重复确认返回 already_confirmed
+    const again = host.confirmResumeContinuation({
+      roomId, actorUserId: "owner", continuationId: envelopeId, kind: "mailbox_outbox", idempotencyKey: "co-confirm-1",
+    })
+    expect(again.status).toBe("already_confirmed")
+    expect(again.event.id).toBe(result.event.id)
+  })
+
+  test("outbox confirm 拒绝非法迁移：已 dispatched 信封不得再 confirm", () => {
+    const host = new FusionRoomHost()
+    const roomId = "confirm-illegal-room"
+    host.createRoom({ roomId, ownerUserId: "owner", workspace: { ...workspace, id: "rws_ci", roomId, storageKey: roomId }, now: 1 })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat_a", roomId, "bot-a") } })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat_b", roomId, "bot-b") } })
+    const message = host.dispatch(roomId, { type: "message", input: { actorUserId: "owner", content: "root" } })
+    const rootId = message && "id" in message ? message.id : ""
+    const run = host.dispatch(roomId, { type: "start-run", input: { actorUserId: "owner", seatId: "seat_a", backend: "pi", idempotencyKey: "ci-start" } })
+    const runId = run && "id" in run ? run.id : ""
+    const envelope = host.dispatch(roomId, {
+      type: "send-mailbox",
+      input: { actorUserId: "owner", roomId, fromMemberId: "seat_a", toMemberId: "seat_b", runId, type: "question", payload: "请审阅", rootMessageId: rootId, idempotencyKey: "ci-send" },
+    })
+    const envelopeId = envelope && "id" in envelope ? envelope.id : ""
+    // 先合法推进到 dispatched
+    host.confirmResumeContinuation({ roomId, actorUserId: "owner", continuationId: envelopeId, kind: "mailbox_outbox", idempotencyKey: "ci-confirm-1" })
+    expect(host.getSnapshot(roomId).mailbox[0]?.delivery).toBe("dispatched")
+
+    // 已 dispatched 再用新 idempotencyKey confirm → 非法迁移拒绝
+    let caught: unknown
+    try {
+      host.confirmResumeContinuation({
+        roomId, actorUserId: "owner", continuationId: envelopeId, kind: "mailbox_outbox", idempotencyKey: "ci-confirm-2",
+      })
+    } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(FusionRoomAuthorityError)
+    expect((caught as FusionRoomAuthorityError).code).toBe("INVALID_STATE")
+
+    // 同幂等键仍返回 already_confirmed，不视作非法
+    const again = host.confirmResumeContinuation({
+      roomId, actorUserId: "owner", continuationId: envelopeId, kind: "mailbox_outbox", idempotencyKey: "ci-confirm-1",
+    })
+    expect(again.status).toBe("already_confirmed")
+  })
+
+  test("confirmResumeContinuation 非成员 FORBIDDEN / 错误 continuationId NOT_FOUND / 不支持 kind INVALID_STATE", () => {
+    const host = new FusionRoomHost()
+    const roomId = "confirm-auth-room"
+    host.createRoom({ roomId, ownerUserId: "owner", workspace: { ...workspace, id: "rws_ca", roomId, storageKey: roomId }, now: 1 })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat_a", roomId, "bot-a") } })
+    host.dispatch(roomId, { type: "start-run", input: { actorUserId: "owner", seatId: "seat_a", backend: "pi", idempotencyKey: "ca-start" } })
+    host.recoverInterruptedRuns()
+    const runId = host.getSnapshot(roomId).runs[0]!.id
+
+    // 非成员（陌生人不在房间）→ FORBIDDEN
+    let caught: unknown
+    try {
+      host.confirmResumeContinuation({ roomId, actorUserId: "stranger", continuationId: runId, kind: "blocked_run" })
+    } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(FusionRoomAuthorityError)
+    expect((caught as FusionRoomAuthorityError).code).toBe("FORBIDDEN")
+
+    // 错误 continuationId → NOT_FOUND
+    caught = undefined
+    try {
+      host.confirmResumeContinuation({ roomId, actorUserId: "owner", continuationId: "run_missing", kind: "blocked_run" })
+    } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(FusionRoomAuthorityError)
+    expect((caught as FusionRoomAuthorityError).code).toBe("NOT_FOUND")
+
+    // 不支持的 kind（pending_approval 应走 resolve-approval）→ INVALID_STATE
+    caught = undefined
+    try {
+      host.confirmResumeContinuation({ roomId, actorUserId: "owner", continuationId: runId, kind: "pending_approval" })
+    } catch (err) { caught = err }
+    expect(caught).toBeInstanceOf(FusionRoomAuthorityError)
+    expect((caught as FusionRoomAuthorityError).code).toBe("INVALID_STATE")
+  })
+
+  test("重启后新 Host 仍能列出 blocked run 与 outbox 信封", () => {
+    const persisted = new Map<string, any>()
+    const store = {
+      load: (id: string) => persisted.get(id),
+      save: (snapshot: any) => persisted.set(snapshot.roomId, snapshot),
+      listRoomIds: () => [...persisted.keys()],
+    }
+    const host = new FusionRoomHost({ snapshotStore: store })
+    const roomId = "restart-observe-room"
+    host.createRoom({ roomId, ownerUserId: "owner", workspace: { ...workspace, id: "rws_ro", roomId, storageKey: roomId }, now: 1 })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat_a", roomId, "bot-a") } })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat_b", roomId, "bot-b") } })
+    const message = host.dispatch(roomId, { type: "message", input: { actorUserId: "owner", content: "root" } })
+    const rootId = message && "id" in message ? message.id : ""
+    // 一条 running run（重启后会被 recover 标 blocked）+ 一条 outbox 信封
+    const run = host.dispatch(roomId, { type: "start-run", input: { actorUserId: "owner", seatId: "seat_a", backend: "pi", idempotencyKey: "ro-start" } })
+    const runId = run && "id" in run ? run.id : ""
+    host.dispatch(roomId, {
+      type: "send-mailbox",
+      input: { actorUserId: "owner", roomId, fromMemberId: "seat_a", toMemberId: "seat_b", runId, type: "question", payload: "未投递", rootMessageId: rootId, idempotencyKey: "ro-send" },
+    })
+
+    // 模拟进程退出 + 重启：新 Host 从同一快照存储恢复
+    const restarted = new FusionRoomHost({ snapshotStore: store })
+    expect(restarted.listRoomIds()).toContain(roomId)
+    restarted.recoverInterruptedRuns()
+    const items = restarted.listContinuations(roomId)
+    expect(items.map((item) => item.kind)).toEqual(expect.arrayContaining(["blocked_run", "mailbox_outbox"]))
+    const blocked = items.find((item) => item.kind === "blocked_run")
+    const outbox = items.find((item) => item.kind === "mailbox_outbox")
+    expect(blocked?.requiresUserConfirm).toBe(true)
+    expect(outbox?.requiresUserConfirm).toBe(true)
+  })
+})

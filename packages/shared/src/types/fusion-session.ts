@@ -269,6 +269,7 @@ export type CollaborationRoomEventType =
   | "bot-member.changed"
   | "message.appended"
   | "run.changed"
+  | "run.resume_confirmed"
   | "mailbox.changed"
   | "task.changed"
   | "artifact.published"

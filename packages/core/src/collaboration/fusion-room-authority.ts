@@ -6,7 +6,8 @@ import type {
   CollaborationUserApprovalRequest, CollaborationUserApprovalStatus, CollaborationMailboxEnvelope,
   FusionHumanMember, RoomBotSeat, RoomWorkspace,
 } from "@tagent/shared"
-import { validateRoomWorkspace, transitionCollaborationRoomTaskStatus } from "@tagent/shared"
+import { validateRoomWorkspace, transitionCollaborationRoomTaskStatus, canTransitionCollaborationDelivery } from "@tagent/shared"
+import type { ConfirmFusionResumeContinuationInput, FusionResumeContinuationResult } from "./fusion-room-continuation"
 
 export type FusionAuthorityRoomStatus = "active" | "paused" | "archived"
 export type FusionAuthorityErrorCode =
@@ -1285,5 +1286,99 @@ export class FusionRoomAuthority {
     this.state.status = status
     if (status !== "active") this.state.locks = []
     this.event("room.updated", actorUserId, this.state.roomId, { status })
+  }
+
+  /**
+   * 用户（房主或 active 人类成员）显式确认恢复一条 continuation（P1-1）。
+   *
+   * 仅写可观察「已确认」证据（`run.resume_confirmed` / `mailbox.changed` 事件），
+   * **不**把旧 `fence` 的 blocked run 改回 `running` 并静默重放；execution bridge 拿到确认
+   * 事件后，应以**新** runId / fence 拉起新 turn。`mailbox_outbox` 仅当
+   * `canTransitionCollaborationDelivery(outbox → dispatched)` 时把 delivery 推进为 `dispatched`，
+   * `outcome_unknown` 等终态不得自动变回可重放。
+   *
+   * 幂等：同 `idempotencyKey` 重复确认返回同一结果（`already_confirmed`）。
+   */
+  confirmResumeContinuation(input: ConfirmFusionResumeContinuationInput): FusionResumeContinuationResult {
+    this.activeRoom()
+    this.active(input.actorUserId)
+    if (input.roomId !== this.state.roomId) {
+      throw new FusionRoomAuthorityError("FORBIDDEN", "RoomSession mismatch")
+    }
+    if (input.kind === "blocked_run") return this.confirmResumeBlockedRun(input)
+    if (input.kind === "mailbox_outbox") return this.confirmResumeMailboxOutbox(input)
+    throw new FusionRoomAuthorityError(
+      "INVALID_STATE",
+      "该 continuation 类型不通过 confirm-resume 推进：pending_approval 用 resolve-approval，depth_stop 用 continue-depth-stop，approved_awaiting_resume / awaiting_peer 由 execution bridge 处理",
+    )
+  }
+
+  private confirmResumeBlockedRun(input: ConfirmFusionResumeContinuationInput): FusionResumeContinuationResult {
+    const run = this.state.runs.find((item) => item.id === input.continuationId)
+    if (!run) throw new FusionRoomAuthorityError("NOT_FOUND", "Continuation 对应的 run 不存在")
+    const refs = { runId: run.id, seatId: run.seatId }
+    // 幂等优先：同 idempotencyKey 重复确认直接返回已确认证据，不重复校验状态。
+    if (input.idempotencyKey) {
+      const oldEvent = this.state.events.find((event) =>
+        event.idempotencyKey === input.idempotencyKey &&
+        event.type === "run.resume_confirmed" &&
+        event.entityId === run.id)
+      if (oldEvent) {
+        return {
+          continuationId: run.id, roomId: this.state.roomId, kind: "blocked_run",
+          status: "already_confirmed", event: copy(oldEvent), refs, runStatus: run.status,
+        }
+      }
+    }
+    if (run.status !== "blocked") {
+      throw new FusionRoomAuthorityError("INVALID_STATE", "仅 blocked run 可被确认恢复；当前 run 状态：" + run.status)
+    }
+    // 写事件，不改 run 状态、不复活旧 fence；bridge 以新 fence 拉起新 turn。
+    const event = this.event("run.resume_confirmed", input.actorUserId, run.id, {
+      continuationId: run.id, runId: run.id, seatId: run.seatId,
+      fence: run.fence, kind: "blocked_run", runStatus: run.status,
+      summary: "用户已确认恢复此前被中断的 run；execution bridge 应以新 fence 拉起新 turn，不自动重放旧 fence。",
+    }, input.idempotencyKey)
+    return {
+      continuationId: run.id, roomId: this.state.roomId, kind: "blocked_run",
+      status: "confirmed", event, refs, runStatus: run.status,
+    }
+  }
+
+  private confirmResumeMailboxOutbox(input: ConfirmFusionResumeContinuationInput): FusionResumeContinuationResult {
+    const envelope = this.state.mailbox.find((item) => item.id === input.continuationId)
+    if (!envelope) throw new FusionRoomAuthorityError("NOT_FOUND", "Continuation 对应的 mailbox 信封不存在")
+    const refs = { envelopeId: envelope.id }
+    // 幂等优先：同 idempotencyKey 重复确认直接返回已确认证据，不再校验 delivery（此时已前进为 dispatched）。
+    if (input.idempotencyKey) {
+      const oldEvent = this.state.events.find((event) =>
+        event.idempotencyKey === input.idempotencyKey &&
+        event.type === "mailbox.changed" &&
+        event.payload.mailboxAction === "resume_dispatched" &&
+        event.entityId === envelope.id)
+      if (oldEvent) {
+        return {
+          continuationId: envelope.id, roomId: this.state.roomId, kind: "mailbox_outbox",
+          status: "already_confirmed", event: copy(oldEvent), refs, delivery: envelope.delivery,
+        }
+      }
+    }
+    if (envelope.delivery !== "outbox") {
+      throw new FusionRoomAuthorityError("INVALID_STATE", "仅 outbox 信封可被确认重投；当前 delivery：" + (envelope.delivery ?? "undefined"))
+    }
+    if (!canTransitionCollaborationDelivery(envelope.delivery, "dispatched")) {
+      throw new FusionRoomAuthorityError("INVALID_STATE", "delivery 迁移 outbox→dispatched 不合法，拒绝重投")
+    }
+    const next = { ...envelope, delivery: "dispatched" as const }
+    this.state.mailbox = this.state.mailbox.map((item) => item.id === envelope.id ? next : item)
+    const event = this.event("mailbox.changed", input.actorUserId, envelope.id, {
+      mailboxAction: "resume_dispatched", envelopeId: envelope.id,
+      delivery: "dispatched", kind: "mailbox_outbox",
+      summary: "用户已确认重投此前未投递的 outbox 信封；execution bridge 以新 turn 处理，不自动重放 outcome_unknown。",
+    }, input.idempotencyKey)
+    return {
+      continuationId: envelope.id, roomId: this.state.roomId, kind: "mailbox_outbox",
+      status: "confirmed", event, refs, delivery: "dispatched",
+    }
   }
 }
