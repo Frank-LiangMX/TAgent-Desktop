@@ -120,6 +120,27 @@ describe('FusionRoomGateway', () => {
     expect(gateway.getSnapshot(scoped, 'gateway-room').roomId).toBe('gateway-room')
     expect(() => gateway.getSnapshot(scoped, 'other-room')).toThrow(FusionRoomAuthorityError)
   })
+  test('worker principal 委托 ACL 协议判定：房主放行、非房主拒绝', () => {
+    const { gateway } = setup()
+    const workerOwner = gateway.connect({ userId: 'owner', kind: 'worker' })
+    // worker = 房主 → defaultAuthorize 委托 decideRoomAccess 放行
+    expect(gateway.getSnapshot(workerOwner, 'gateway-room').ownerUserId).toBe('owner')
+
+    // 房主先邀请一个真实人类成员，worker principal 复用其 userId 但 kind=worker
+    const owner = gateway.connect({ userId: 'owner' })
+    gateway.dispatch(owner, 'gateway-room', {
+      type: 'invite-human',
+      userId: 'user-b',
+      displayName: 'B',
+    })
+    gateway.dispatch(gateway.connect({ userId: 'user-b' }), 'gateway-room', { type: 'accept-invitation' })
+    const workerMember = gateway.connect({ userId: 'user-b', kind: 'worker' })
+    // worker 不是房主，即便 userId 是活跃成员也拒绝（委托 ACL 的 worker 语义）
+    expect(() => gateway.getSnapshot(workerMember, 'gateway-room')).toThrow(
+      FusionRoomAuthorityError,
+    )
+    expect(gateway.listAccessibleRoomIds(workerMember)).toEqual([])
+  })
   test('成员退出和房主移除通过 Gateway 注入真实 actor', () => {
     const { gateway } = setup()
     const owner = gateway.connect({ userId: 'owner' })

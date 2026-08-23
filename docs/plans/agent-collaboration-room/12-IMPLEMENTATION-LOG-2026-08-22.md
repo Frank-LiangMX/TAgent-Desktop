@@ -620,4 +620,16 @@
 - 新增 [13-HANDOFF-2026-08-23](./13-HANDOFF-2026-08-23.md)，集中记录当前产品结论、代码地图、authority/Host/Gateway/runtime/renderer 边界、workspace/Bot 工具、验证命令、安全不变量、未完成项和推荐开发顺序。
 - `03-IMPLEMENTATION-PHASES.md` 新增 §0.2 当前交接基线，明确历史切片与当前真实状态的优先级；`06-MULTIUSER-FUSION-IMPLEMENTATION.md` 新增 §0.1 当前实现校正，避免把设计草案误读为已交付能力。
 - 当前交接强调：打包网络入口仍关闭；真实账户、证书、跨机器多用户、跨节点单写者、真实 provider E2E 和持久 continuation worker 仍未完成；未知副作用 run 不自动重放。
+## 72. 融合会话认证 / ACL 协议层 + 测试（P0-1）（2026-08-23）
+
+本轮交付 P0-1 的纯协议层认证 / ACL 判定，不接真实账户、不读盘、不碰 Electron / 网络传输，为后续真实账户认证与跨机器 E2E 复用。
+
+- 新增 `packages/core/src/collaboration/fusion-room-acl.ts`，纯函数 / 无 I/O，公开：`FusionAclDecision`（`allowed` + 拒绝 `code: FORBIDDEN | SCOPE_MISMATCH | NO_CONSENT | NO_GRANT | BILLING_LOCKED`）、`FusionAclPrincipal`、`FusionResourceGrant`，以及判定函数 `decideRoomAccess` / `decideBotRuntimeAccess` / `decideResourceAccess` / `resolveBillingSubject` 和便利方法 `isAllowed`。
+- `decideRoomAccess` 与 gateway `defaultAuthorize` 行为对齐：`principal.roomId` 跨房间 → `SCOPE_MISMATCH`；`kind==='worker'` 仅当 `userId === ownerUserId` 放行；房主始终可进；人类成员 `invited`/`active`/`offline` 放行，`left`/`removed` 拒绝；其余 `FORBIDDEN`。
+- `decideBotRuntimeAccess`：`seat.status==='removed'` 先 `FORBIDDEN`；**所有能力（含 read-only）均要求 `ownerConsent`**——即便 read-only 也会消耗 Bot owner 模型额度并计费，未授权不应开放任何能力；`workspace-write` / `run` 在协议层只以 consent 为闸门，“房间 policy ∩ seat capabilities”交集留给 authority/runtime（TODO，已在源码注释写明）。
+- `decideResourceAccess`：资源所有者本人可读 / 写 / 挂载无需 grant；他人需匹配 `granteeUserId` + `ownerUserId` + 动作且未过期（`expiresAt <= now`）、未撤销（`revokedAt <= now`）；否则 `NO_GRANT`，reason 区分过期 / 撤销 / 缺失。
+- `resolveBillingSubject`：`billingUserId === seatOwnerUserId` 恒成立，与 authority `recordUsage` 的 `botOwnerUserId: seat.ownerUserId` 语义一致；`initiatedByUserId` 可为房主或他人，`ownerOffline=true` 也不转移费用。`BILLING_LOCKED` 留作后续“Bot owner 离线且无可承扣额度”费用闸门使用，本切片不产出。
+- gateway `defaultAuthorize` 改为委托 `decideRoomAccess`，行为保持兼容；新增 gateway 测试覆盖 worker principal（房主放行 / 非房主即便活跃成员也拒绝）。`packages/core/src/index.ts` 导出新模块公开类型与函数。
+- 验证：`bun test packages/core/src/collaboration/fusion-room-acl.test.ts` 21 pass / 0 fail / 58 expect；`bun test packages/core/src/collaboration/fusion-room-gateway.test.ts` 10 pass / 0 fail / 32 expect；`bun run --filter='@tagent/core' typecheck` 通过；`git diff --check` 通过。可选 `bun test packages/core/src/collaboration` 全目录通过。
+- 明确未做：真实账户登录 / OAuth / 证书生命周期、邀请 token 与账户身份绑定、跨机器多用户 E2E、公网 / HTTPS 入口、loopback 例外扩大、`recordUsage` 签名改动、renderer UI 变更、跨节点单写者 / 持久 continuation worker；`BILLING_LOCKED` 费用闸门未接入。本切片只交付协议与测试，不代表跨用户网络已可用。
 - 交接文档与本日志、阶段文档必须和代码/测试在同一提交链中，另一台设备按 handoff 的 clone/pull/typecheck 流程继续。

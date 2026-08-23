@@ -257,7 +257,7 @@ KSCC 的 session loop 不完全由宿主控制，因此要靠宿主事件桥、�
 ### Phase D：多用户和共享工作区
 
 - [ ] HumanMember、邀请、owner consent、离线策略（本地状态机和授权已完成；真实账户、网络邀请、离线策略未完成）。
-- [ ] RoomWorkspace、ACL、下载、短锁 + SHA 冲突（本地 RoomWorkspace/下载/路径与 SHA 已完成；服务端 ACL/短锁冲突协议未完成）。
+- [ ] RoomWorkspace、ACL、下载、短锁 + SHA 冲突（本地 RoomWorkspace/下载/路径与 SHA 已完成；协议层 ACL 判定已落地 `fusion-room-acl.ts`，服务端 ACL/短锁冲突协议未完成）。
 - [x] 服务端实际工作区与个人原始目录隔离（本地服务目录已完成；远程服务端部署未完成）。
 
 验收：跨用户 Bot 能访问已授权共享资源，不能读取私有文件；并发冲突可见且不覆盖。

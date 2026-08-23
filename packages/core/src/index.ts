@@ -5,6 +5,8 @@ export * from './highlight/index.ts'
 
 export * from './collaboration/fusion-room-authority.ts'
 
+export * from './collaboration/fusion-room-acl.ts'
+
 export * from './collaboration/fusion-room-host.ts'
 export * from './collaboration/fusion-room-gateway.ts'
 export * from './collaboration/fusion-room-http-client.ts'

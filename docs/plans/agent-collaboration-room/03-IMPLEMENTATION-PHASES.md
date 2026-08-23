@@ -31,6 +31,7 @@
 本节是当前实现状态的唯一优先基线；前面的历史进度保留用于追溯，不应覆盖本节判断。
 
 - 已真实落地：统一会话入口、BotProfile/配置副本和 candidate-active 记忆边界；Room authority 的成员、Bot seat、消息、任务、产物、审批、mailbox、run、workspace、title/goal；本地与远程 Host/Gateway/HTTP/SSE/session adapter/view model/action adapter；显式 execution bridge；默认 Bot 工具；workspace read/search/write/apply_patch/run_command/delete/move；安全运行恢复和 tombstone/事务/幂等测试。
+- P0-1 协议层已落地（2026-08-23）：`packages/core/src/collaboration/fusion-room-acl.ts` 提供纯协议层认证/ACL 判定（principal / room scope / Bot owner consent / resource grant / 费用主体）+ 单测；gateway `defaultAuthorize` 委托 `decideRoomAccess`。真实账户认证 / 证书 / 邀请 token 绑定 / 跨机器 E2E 仍未做，见 [12-IMPLEMENTATION-LOG §72](./12-IMPLEMENTATION-LOG-2026-08-22.md)。
 - 当前显式验证：相关 authority/Host/Gateway/FileStore/renderer 定向测试通过；全仓 `bun run typecheck` 和 `bun run build` 通过；build 仅保留既有动态 import、大 chunk warning。
 - 未完成且不能宣传为已完成：真实账户认证、证书生命周期、打包网络入口、跨机器多用户 E2E、跨节点单写者/事件总线/预算原子预留、真实 Pi/KSCC/provider 生命周期验收、持久 continuation worker、Git worktree、完整远程操作 UI、分页虚拟化和 memory consolidation E2E。
 - 安全决策：上次进程仍为 `running` 的 run 重启后标为 `blocked`；未知外部副作用不得自动重放。审批/mailbox continuation 应先进入可观察和用户确认的 resume 状态。

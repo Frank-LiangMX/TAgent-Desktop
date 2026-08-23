@@ -30,6 +30,7 @@ import {
   type FusionRoomActionResult,
   type FusionRoomEventListener,
 } from './fusion-room-host'
+import { decideRoomAccess } from './fusion-room-acl'
 
 export interface FusionRoomPrincipal {
   userId: string
@@ -414,21 +415,26 @@ function withScopedIdempotency<T extends { idempotencyKey?: string }>(actionType
   }
 }
 
+/**
+ * 默认房间入口授权：委托 ACL 协议层 `decideRoomAccess`，行为与历史实现保持兼容。
+ *
+ * - `principal.roomId` 绑定 A 时访问 B → 拒绝（`SCOPE_MISMATCH`）；
+ * - `kind==='worker'` 仅当 `principal.userId === ownerUserId` 才放行；
+ * - 房主始终可进；
+ * - 人类成员 `invited` / `active` / `offline` 可进，`left` / `removed` 拒绝。
+ *
+ * 真实账户认证、邀请 token 与账户身份绑定仍待 P0 后续切片；此处只复用协议判定。
+ */
 function defaultAuthorize(
   principal: FusionRoomPrincipal,
   snapshot: FusionRoomAuthoritySnapshot,
 ): boolean {
-  if (principal.roomId && principal.roomId !== snapshot.roomId) return false
-  if (principal.kind === 'worker') {
-    return snapshot.ownerUserId === principal.userId
-  }
-  if (snapshot.ownerUserId === principal.userId) return true
-  return snapshot.humanMembers.some(
-    (member) =>
-      member.userId === principal.userId &&
-      member.status !== 'removed' &&
-      member.status !== 'left',
-  )
+  return decideRoomAccess({
+    principal,
+    roomId: snapshot.roomId,
+    ownerUserId: snapshot.ownerUserId,
+    humanMembers: snapshot.humanMembers,
+  }).allowed
 }
 
 function assertNever(value: never): never {
