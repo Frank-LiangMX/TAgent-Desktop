@@ -868,6 +868,25 @@ const electronAPI = {
       enableCollaboration: boolean;
       enableNetworkListen: boolean;
     }>,
+  /**
+   * 闸门状态（只读）：当前偏好 + 证书下的决策、本次启动实际应用的决策、是否需重启生效、
+   * 当前是否打包版。设置页危险区据此只读展示「IPC / 非 loopback 是否实际放行」+ 待重启徽章。
+   */
+  getFusionRoomGateStatus: () =>
+    ipcRenderer.invoke("fusion-room-network-prefs:gate-status") as Promise<{
+      decision: {
+        registerIpc: boolean;
+        allowNonLoopbackListen: boolean;
+        reasons: string[];
+      };
+      applied: {
+        registerIpc: boolean;
+        allowNonLoopbackListen: boolean;
+        reasons: string[];
+      };
+      needsRestart: boolean;
+      isPackaged: boolean;
+    }>,
   /** 列出全部 TLS 证书（剥离私钥），状态按当前时间派生 active|revoked|expired。 */
   listFusionRoomCerts: () =>
     ipcRenderer.invoke("fusion-room-certs:list") as Promise<

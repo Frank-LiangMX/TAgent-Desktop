@@ -65,6 +65,7 @@ import { NoProgressGuardSettings } from './NoProgressGuardSettings'
 import { AgentCrewSettings } from './AgentCrewSettings'
 import { PromptSettings } from './PromptSettings'
 import { UpdateChecker } from './UpdateChecker'
+import { FusionRoomNetworkSettings } from './FusionRoomNetworkSettings'
 import { ComposerRunTimer } from '../chat/ComposerRunTimer'
 import appiconLight from '../../assets/tagent-appicon-light.png'
 import appiconDark from '../../assets/tagent-appicon-dark.png'
@@ -1277,6 +1278,8 @@ function AboutSettings(): JSX.Element {
           <UpdateChecker />
         </SettingsCard>
       </SettingsSection>
+
+      <FusionRoomNetworkSettings />
 
       <footer className="settings-about-footer">
         <span>AGPL-3.0</span>

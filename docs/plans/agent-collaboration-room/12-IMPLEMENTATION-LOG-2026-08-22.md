@@ -694,3 +694,43 @@
 - 设置页危险区 UI 开关未做（API 已通过 preload + App.tsx 全量暴露并 typecheck，UI 属后续切片）。
 - 跨节点单写者 / 乐观并发 / 事件总线 / 预算原子预留、持久 continuation worker、`BILLING_LOCKED` 费用闸门仍未做。
 - 本切片只交付证书生命周期 + 显式闸门 + 决策函数与测试，**不代表打包版已默认可被公网访问或跨用户网络已可用**。
+
+## 75. 设置页「显式用户操作」危险区 + 闸门状态接线（P0-3b）（2026-08-23）
+
+本轮交付 P0-3b：把 P0-3 已落地的 prefs IPC + 证书 IPC 接到用户可操作的设置页「危险区」，并补齐闸门状态可读性。**默认仍全关**；**不**在本切片自动对公网 / `0.0.0.0` 起监听；**未做实机点击设置页手测**（本环境无可用 Electron GUI / 浏览器 MCP，UI 行为以组件模型单测 + typecheck 验证）。
+
+**偏好变更后的应用策略：选 B（所有闸门变更提示「重启应用后生效」+ 待重启徽章），不选 A。** 原因：
+- A（关→开 `enableCollaboration` 时动态 `registerCollaborationRoomIpc`）收益是部分的——它只让 `registerIpc` 立即生效，而 `allowNonLoopbackListen` 当前**根本没有从 Electron 启动接通远程 transport**（§74 已记：远程 FusionRoom transport 尚未从 Electron 启动接入，runtime 仍只在测试 / 显式装配中使用），故即便动态注册也无法让非 loopback 监听「立即生效」；且 on→off 仍需重启（brief 明确不要暴力乱卸 IPC，易漏）。A 因此是「半即时 + 半重启」的不对称状态，反而更难向用户解释。
+- B 改动更小且正确：闸门只在启动时由 `decidePackagedCollaborationGate` 求值并应用，重启后 `main/index.ts` 重新求值即追上当前偏好；UI 用 `gate-status.needsRestart`（主进程比对「当前决策」与「启动应用决策」）显示待重启徽章，把「重启后生效」说清楚。这恰好匹配当前运行时真实行为（gate 只在启动求值），不制造「看起来已生效但实际没生效」的误导。
+- brief 显式允许 B（「实现更简单，但必须在 UI 说清楚」）；本切片在危险区副文案、开关提示、闸门状态卡与待重启脚注四处均写明「重启应用后生效」。
+
+新增文件：
+- `apps/electron/src/renderer/components/settings/FusionRoomNetworkSettings.tsx`：挂载在 `AboutSettings` 底部（避免新 tab 膨胀），复用 `SettingsSection` / `SettingsCard` / `settings-row` / `Switch` / `Button`，不新增 CSS 文件或第二套样式（证书列表与闸门标签用既有 tailwind 工具类 + 语义 token）。两个 Switch（`enableCollaboration`、`enableNetworkListen`）、证书列表（短显指纹 + 状态 + 过期 UTC + 撤销按钮）、生成自签证书按钮、只读闸门状态卡（IPC / 非 loopback 放行标签 + 语气 + 待重启脚注）、醒目警告文案。`enableNetworkListen` 在 `!enableCollaboration` 或 `!hasActiveCert` 时 Switch disabled 并提示原因；关闭协作时连带关网络监听以避开 `enableNetworkListen 需要 enableCollaboration` 校验拒绝；生成 / 撤销证书后刷新证书列表与 gate-status；不展示私钥（证书记录已由主进程剥离 `key`）。
+- `apps/electron/src/renderer/components/settings/fusion-room-network-settings-model.ts`：纯展示 / 禁用逻辑（不依赖真实 Electron、不读 `Date.now`）。`shortFingerprint`（colon-hex 前 3 段…后 3 段大写）、`formatCertExpiry`（确定性 UTC `YYYY-MM-DD HH:mm UTC`）、`certStatusLabel`、`canEnableNetworkListen`、`networkListenDisabledReason`、`summarizeGateStatus`（IPC / 监听标签 + 语气 off/warn/ok）。渲染层本地视图类型与 preload electronAPI + 主进程 IPC 形状一致。
+- `apps/electron/src/renderer/components/settings/fusion-room-network-settings-model.test.ts`：8 用例覆盖指纹短显、过期格式、状态标签、网络监听禁用判定与原因、闸门状态标签与语气（off/ok/warn）、证书记录无 `key` 字段。
+
+修改：
+- `apps/electron/src/main/lib/collaboration/fusion-room-network-prefs-ipc.ts`：新增 `fusion-room-network-prefs:gate-status` handler，返回 `FusionRoomGateStatus`（`decision` = 当前偏好 + 证书重跑 `decidePackagedCollaborationGate`；`applied` = 启动应用决策；`needsRestart` = 两者在 `registerIpc` / `allowNonLoopbackListen` 上是否不同；`isPackaged`）。`registerFusionRoomNetworkPrefsIpc` 改为接收 `{ isPackaged, appliedGate }` 选项（`appliedGate` 即 `main/index.ts` 启动时求得的 `fusionGate`）；重启后 `main/index.ts` 重新求值，`applied` 自动追上当前偏好，`needsRestart` 归零。
+- `apps/electron/src/main/index.ts`：`registerFusionRoomNetworkPrefsIpc({ isPackaged: app.isPackaged, appliedGate: fusionGate })`。
+- `apps/electron/src/preload/index.ts` + `apps/electron/src/renderer/App.tsx`：新增 `getFusionRoomGateStatus`（preload electronAPI + App.tsx 全局声明同步，遵循「新增 preload IPC 须同步 App.tsx」约定）。
+- `apps/electron/src/renderer/components/settings/SettingsPage.tsx`：`AboutSettings` 底部（软件更新区之后、footer 之前）挂 `<FusionRoomNetworkSettings />`。
+
+验证（实跑结果）：
+- `bun test apps/electron/src/renderer/components/settings/fusion-room-network-settings-model.test.ts` → 8 pass / 0 fail / 21 expect。
+- `bun test apps/electron/src/main/lib/collaboration/fusion-room-network-prefs.test.ts` → 12 pass / 0 fail / 37 expect（未改纯函数，回归通过）。
+- `bun test apps/electron/src/main/lib/collaboration/fusion-room-cert-store.test.ts` → 7 pass / 0 fail / 43 expect（未改 cert store，回归通过）。
+- `bun run --filter='./apps/electron' typecheck`（`tsc --noEmit`，`tsconfig.include: src/**/*` 覆盖 main + preload + renderer）→ 退出 0。
+- `git diff --check` → 退出 0（仅 `packages/ui/.../tokens.css` 与 `fusion-room-network-prefs-ipc.ts` 的既存 LF→CRLF 提示，无空白错误；`tokens.css` 为本切片之前已存在的无关改动，未触碰）。
+
+闸门默认仍关闭的证据：
+- 设置页两个 Switch 默认 `checked=false`（`DEFAULT_PREFS` 全关 + 主进程 `loadFusionRoomNetworkPrefs` 缺失文件返回默认全关）。
+- `decidePackagedCollaborationGate({isPackaged:true, prefs:DEFAULT, hasActiveCert:false})` → `{registerIpc:false, allowNonLoopbackListen:false}`（§74 已有测试断言；gate-status 据此返回关闭）。
+- 本切片不动态注册 / 不自动 `start({host:'0.0.0.0'})` / 不打开公网监听；`enableNetworkListen` 开关在无 active 证书时 disabled。
+- 撤销当前唯一 active 证书后 `hasActiveCert=false` → gate-status `allowNonLoopbackListen=false`（非 loopback 未放行），与 brief UX 约束一致。
+
+明确未做（与 handoff §7/§8 一致）：
+- 真实账户登录 / OAuth、邀请 token 与账户身份绑定、跨机器多用户 E2E、生产 CA、服务端部署配置。
+- 远程 FusionRoom transport 从 Electron 启动接通 `allowNonLoopbackListen` 仍未做（§74 已记）；本切片的 `enableNetworkListen` 开关只持久化偏好 + 经 gate-status 可读，不自动起非 loopback 监听。
+- **未做实机点击设置页手测**：本环境无可用 Electron GUI / 浏览器 MCP；UI 行为以组件模型单测（禁用判定 / 状态标签 / 闸门语气）+ typecheck 验证。主控 agent 会再独立跑测试。
+- 跨节点单写者 / 乐观并发 / 事件总线 / 预算原子预留、持久 continuation worker、`BILLING_LOCKED` 费用闸门仍未做。
+- 本切片只交付设置页危险区 UI + gate-status 接线 + 组件模型单测，**不代表打包版已默认可被公网访问、真实账户已可用或跨用户网络已可用**。

@@ -334,7 +334,8 @@ app.whenReady().then(async () => {
     console.log('[collaboration] disabled:', fusionGate.reasons.join('; '))
   }
   // 始终注册偏好 / 证书管理 IPC，让用户能显式控制闸门；它本身不注册协作室 IPC、不开网络监听。
-  registerFusionRoomNetworkPrefsIpc()
+  // gate-status 用启动时应用的决策（fusionGate）作为 applied，渲染层据此显示「需重启生效」徽章。
+  registerFusionRoomNetworkPrefsIpc({ isPackaged: app.isPackaged, appliedGate: fusionGate })
   // 通知偏好 IPC（通用设置 ↔ 主进程系统通知）
   const {
     loadNotificationPrefs,

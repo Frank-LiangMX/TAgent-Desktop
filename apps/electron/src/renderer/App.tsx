@@ -456,6 +456,20 @@ declare global {
         enableCollaboration: boolean;
         enableNetworkListen: boolean;
       }>;
+      getFusionRoomGateStatus: () => Promise<{
+        decision: {
+          registerIpc: boolean;
+          allowNonLoopbackListen: boolean;
+          reasons: string[];
+        };
+        applied: {
+          registerIpc: boolean;
+          allowNonLoopbackListen: boolean;
+          reasons: string[];
+        };
+        needsRestart: boolean;
+        isPackaged: boolean;
+      }>;
       listFusionRoomCerts: () => Promise<
         Array<{
           certId: string;
