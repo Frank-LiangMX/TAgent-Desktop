@@ -633,3 +633,26 @@
 - 验证：`bun test packages/core/src/collaboration/fusion-room-acl.test.ts` 21 pass / 0 fail / 58 expect；`bun test packages/core/src/collaboration/fusion-room-gateway.test.ts` 10 pass / 0 fail / 32 expect；`bun run --filter='@tagent/core' typecheck` 通过；`git diff --check` 通过。可选 `bun test packages/core/src/collaboration` 全目录通过。
 - 明确未做：真实账户登录 / OAuth / 证书生命周期、邀请 token 与账户身份绑定、跨机器多用户 E2E、公网 / HTTPS 入口、loopback 例外扩大、`recordUsage` 签名改动、renderer UI 变更、跨节点单写者 / 持久 continuation worker；`BILLING_LOCKED` 费用闸门未接入。本切片只交付协议与测试，不代表跨用户网络已可用。
 - 交接文档与本日志、阶段文档必须和代码/测试在同一提交链中，另一台设备按 handoff 的 clone/pull/typecheck 流程继续。
+
+## 73. 双用户 / 双 Bot owner / 共享工作区 HTTP·SSE fixture E2E（P0-2）（2026-08-23）
+
+本轮交付 P0-2 的本地 loopback fixture E2E，跑通一条跨用户垂直切片，仍不打开公网入口、不接真实账户 / OAuth / 证书 / 跨机器。复用 P0-1 的 ACL 协议层与现有 runtime / invite token store / workspace store / HTTP·SSE transport，未改任何源码，仅新增测试文件。
+
+- 新增 `apps/electron/src/main/lib/collaboration/fusion-room-multiuser-fixture.test.ts`，`describe('multiuser fixture E2E (HTTP/SSE, loopback only)')`，2 个 test / 48 expect：一个跨用户垂直切片 + 一个 SSE 加分项。全程 `runtime.start({ host: '127.0.0.1', port: 0 })`，物理工作区用 `FileFusionRoomWorkspaceStore({ rootForRoom: (roomId) => join(tempDir, 'ws', roomId) })` 限定在临时目录，避免污染真实 collaboration room 工作区。
+- 认证链与生产一致：`createFusionRoomTransportRuntime` 内部用 `createFusionRoomInviteAuthenticator` 让 Bearer 邀请 token 优先于 `x-user-id` 头，无 token 才回退头。房主 A 走 `x-user-id` 头，受邀用户 B 走 Bearer token。**不需要为 P0-2 最小补齐 `principal.roomId`**：`FileFusionRoomInviteTokenStore.authenticate` 已返回 `{ userId, kind: 'user', roomId: record.roomId }`，`decideRoomAccess` 已据此判 `SCOPE_MISMATCH`，gateway `defaultAuthorize` 已委托。
+- 覆盖的最低断言（与 brief 一一对应）：
+  1. 未邀请 outsider 对 room-a 的 `GET /rooms/room-a` 与 `POST .../actions` 一律 403 `FORBIDDEN`。
+  2. A `POST /rooms/room-a/invites { userId: 'user-b' }` 签发 `frt1.*` token；B 用 Bearer `accept-invitation` 后成为 active 成员；**token 身份优先于随意头**——B 带 Bearer token 同时伪造 `x-user-id: user-a` 发消息，`authorId` 仍是 `user-b`；**绑定 room-a 的 token 不能进 room-b**——HTTP 层 403，且协议层 `decideRoomAccess({ principal: { userId: 'user-b', roomId: 'room-a' }, roomId: 'room-b', ... }).code === 'SCOPE_MISMATCH'` 旁路断言。
+  3. A 加入 `ownerUserId=A` 的 Bot → `botOwnerConsents[seatA]` 自动 `true`；`usage` 成功，`usage[seatA].botOwnerUserId === 'user-a'`；`resolveBillingSubject({ seatOwnerUserId: 'user-a', initiatedByUserId: 'user-a' }).billingUserId === 'user-a'`。
+  4. A 代邀请 `ownerUserId=B` 的 Bot → `botOwnerConsents[seatB]` 为 `false`（仅 pending，不自动 consent）；B consent 前 `start-run` / `usage` 均被 `canRun` 以 `CONSENT_REQUIRED`（HTTP 400）拒绝；A 代签 `bot-consent` 被 `setBotOwnerConsent` 以 `FORBIDDEN`（HTTP 403，"只有 Bot 所有人可以授权或撤回"）拒绝。
+  5. B 亲自 `bot-consent`（Bearer token，actor=B）后 `botOwnerConsents[seatB] === true`；A `start-run` / `usage` 在 seatB 上成功，`usage[seatB].botOwnerUserId === 'user-b'`；`resolveBillingSubject({ seatOwnerUserId: 'user-b', initiatedByUserId: 'user-a' }).billingUserId === 'user-b'`（发起人是房主 A 也不转移费用主体）。
+  6. 共享工作区：A `lock` + `commit-file`（`downloadable: true`）发布 `report.md`，B 用 Bearer token `GET /rooms/room-a/files?path=report.md` 下载到相同内容且 `content-disposition` 含文件名；A 再提交非 downloadable 的 `secret.md`，B 下载得 404（不泄露文件名 / 状态）。
+  7. （加分）SSE：B 用 Bearer token 订阅 `/rooms/room-a/events`，首条为 `snapshot`；A 发消息后 B 读到下一条含 `message.appended` 的事件增量。
+- 验证（实跑结果）：
+  - `bun test apps/electron/src/main/lib/collaboration/fusion-room-multiuser-fixture.test.ts` → **2 pass / 0 fail / 48 expect**。
+  - `bun test packages/core/src/collaboration/fusion-room-acl.test.ts` → 21 pass / 0 fail / 58 expect。
+  - `bun test packages/core/src/collaboration/fusion-room-gateway.test.ts` → 10 pass / 0 fail / 32 expect。
+  - `bun test apps/electron/src/main/lib/collaboration/fusion-room-http-server.test.ts` → 6 pass / 0 fail / 28 expect。
+  - `bun run --filter='@tagent/core' typecheck` 通过；`bun run --filter='./apps/electron' typecheck`（`tsc --noEmit`，`tsconfig.include: src/**/*` 覆盖新测试文件）通过；`git diff --check` 退出 0（仅有 `packages/ui/.../tokens.css` 的既存 LF→CRLF 提示，与本切片无关）。
+  - **阻塞记录（如实，未删任何安全检查装通过）**：`bun test apps/electron/src/main/lib/collaboration/fusion-room-runtime.test.ts` → 18 pass / **1 fail** / 107 expect。失败用例为 `FusionRoom transport TLS 选项 > 未提供 tls 构造 HTTP server，提供 tls 构造 HTTPS server`（runtime.test.ts:185 `expect(httpRuntime.server).not.toBeInstanceOf(HttpsServer)`）。**这是 Bun 1.3.14 的 `node:http`/`node:https` 运行期 quirk**：Bun 下 `http.Server` 与 `https.Server` 共用同一 constructor，故未开 TLS 的 HTTP server 也 `instanceof https.Server`，使 `not.toBeInstanceOf(HttpsServer)` 失败。**与 P0-2 无关、非回归**：把新测试文件移走后该失败仍按原样复现（18 pass / 1 fail），属既存 runner 环境问题，业务逻辑与 typecheck/build 均不受影响。复现命令：`bun test apps/electron/src/main/lib/collaboration/fusion-room-runtime.test.ts`。按 handoff §6 既定约定，不把 Bun 直接加载的运行期差异误判为业务失败；不在此切片改 runtime 测试或源码绕过。
+- 明确未做（与 handoff §7/§8 一致）：真实账户登录 / OAuth、证书生成 / 轮换 / 撤销、服务端部署配置、打包版显式网络启动 UI、跨机器 / 跨节点多用户 E2E、单写者 / 乐观并发 / 事件总线 / 预算原子预留、`BILLING_LOCKED` 费用闸门、renderer UI 变更、`recordUsage` 签名改动。本切片只证明「同一台机器、同一进程、loopback HTTP·SSE 之上，邀请 token 身份 + Bot owner consent + 费用主体归属 + 共享工作区下载」的协议与 transport 链路在双用户场景下端到端成立，不代表跨机器 / 真实账户 / 公网入口已可用。
