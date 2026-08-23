@@ -214,7 +214,8 @@
   min-height: 168px;
   padding: 0;
   border: 1px solid var(--surface-rim, rgb(var(--glass-rgb) / 0.5));
-  border-radius: var(--r-radius);
+  /* button 重置可能吃掉圆角：Bot/角色卡片强制圆角 */
+  border-radius: 16px !important;
   background:
     var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
     color-mix(in srgb, hsl(var(--background)) 74%, rgb(var(--glass-rgb)) 26%);
@@ -227,10 +228,21 @@
   cursor: pointer;
   color: inherit;
   overflow: hidden;
+  appearance: none;
+  -webkit-appearance: none;
   transition:
     border-color 0.15s ease,
     box-shadow 0.15s ease,
     background 0.15s ease;
+}
+
+/* Bot 库卡片：再抬一层，避免和角色卡视觉糊在一起 */
+button.roles-card.bots-card {
+  border-radius: 16px !important;
+  border-color: hsl(var(--border) / 0.85);
+  background:
+    hsl(var(--card) / 0.94),
+    color-mix(in srgb, hsl(var(--background)) 70%, hsl(var(--primary)) 8%);
 }
 
 .dark .roles-card {
