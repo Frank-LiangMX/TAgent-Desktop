@@ -1213,3 +1213,57 @@
 - **未做 idempotencyKey / 跨机器 E2E / OAuth**：编辑调用不带 idempotencyKey（按钮 busy 防重复，adapter 不自动重试）；未做跨机器 E2E、未做真实账户 OAuth（与 brief 禁止一致）。
 - **未触碰无关未提交文件**：`BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 保持本轮之前既存改动，未触碰、未提交。
 - **可 commit；主控 push**：本轮已 commit；未自行 push。
+
+## 85. 单会话↔协作室桥接契约层（类型 / 预算 / 裁剪·校验纯函数 + 单测）（P2-UX-BRIDGE-ENTER-EXIT-CONTRACT）（2026-08-23）
+
+本轮交付 [P2-UX-BRIDGE-ENTER-EXIT-CONTRACT-brief](./P2-UX-BRIDGE-ENTER-EXIT-CONTRACT-brief.md) 的**仅契约层**切片：把「明示进房 / 明示回退 + 双向精炼预算」落成可测契约，供后续服务层接线。**不做** UI、**不做** LLM summarize、**不改** upgrade/exit 主路径行为、**不触碰** `BotSidecarPanel*` / `image-lightbox` / `message/index` / `tokens.css` 等无关未提交文件。产品规格见 [14-SESSION-COLLAB-BRIDGE-SPEC](./14-SESSION-COLLAB-BRIDGE-SPEC.md)。
+
+### A. 落点与导出
+
+- 新增 `packages/shared/src/types/session-collab-bridge.ts`（类型 + 常量 + 纯函数）+ 同级 `session-collab-bridge.test.ts`（单测），与 `collaboration-summary.ts` / `fusion-routing.ts` 同级。
+- `packages/shared/src/types/index.ts` barrel 增 `export * from './session-collab-bridge'`（紧随 `fusion-routing`，无需改 `package.json` exports）。
+
+### B. 预算常量（与 14 规格 §2 表逐项一致）
+
+| 常量 | 值 | 说明 |
+| --- | --- | --- |
+| `BRIDGE_CHARS_PER_TOKEN` | 1.2 | 1 token ≈ 1.2 汉字（审计近似，非精确 tokenizer） |
+| `SESSION_TO_ROOM_BRIEF_DEFAULT_TOKENS` / `..._HARD_MAX_TOKENS` | 3000 / 8000 | 进房前情提要 |
+| `ROOM_TO_SESSION_HANDOFF_DEFAULT_TOKENS` / `..._HARD_MAX_TOKENS` | 2000 / 6000 | 回写单会话（宁短勿长） |
+| `SOURCE_EXCERPT_PER_CALL_DEFAULT_TOKENS` / `..._HARD_MAX_TOKENS` | 1500 / 2000 | 协调者按需读原史·单次 |
+| `SOURCE_EXCERPT_PER_TURN_HARD_MAX_TOKENS` | 4000 | 按需读原史·单轮累计硬顶 |
+
+### C. 类型（最小可用）
+
+`SessionToRoomBrief` / `RoomToSessionHandoff`（含 `tokenEstimate` / `charCount` 审计字段 + 可选 `narrative` 散文兜底）+ 两者 `Input` 类型（带可选 `budgetTokens`）+ 工具契约形状 `SourceSessionExcerptRequest` / `SourceSessionExcerptResult`（**只定义形状，不实现工具本体**）。
+
+### D. 纯函数（已实现 + 测）
+
+1. `tokensToCharBudget(tokens)` / `estimateBridgeTokenCount(text)`：字符↔token 审计换算（floor / ceil 偏保守，满足 `text.length ≤ tokensToCharBudget(t) ⇒ estimate ≤ t` 审计不变式）。
+2. `clampBridgeText(text, maxTokens)`：按字符硬顶裁剪，超则尽量在**段落边界**（`\n\n`）截，找不到才硬切；返回 `{ text, tokenEstimate, charCount, truncated }`。
+3. `buildSessionToRoomBrief(input)`：跨字段按预算裁剪，优先级 goal + sourceSessionId + decisions > todos > openQuestions > artifacts > narrative；`budgetTokens` 缺省 DEFAULT、超 HARD_MAX 钳到 HARD_MAX；列表按**完整条目边界**纳入（放不下整条则丢弃该条及后续，不截半条）。
+4. `formatSessionToRoomBriefForPrompt(brief)`：稳定中文标题模板，输出再过一次 HARD_MAX clamp（防绕过 build 直接构造的巨大 brief 爆预算）。
+5. `buildRoomToSessionHandoff(input)` + `formatRoomToSessionHandoffForPrompt`：对称，默认更紧（2000）；优先级 outcomes + roomId + sourceSessionId > changes > risks > narrative（指针置高位确保预算吃紧时存活）。
+6. `validateSourceExcerptBudget(requestedTokens, alreadyUsedThisTurnTokens)`：单次 ≤ PER_CALL hard（超过即钳）、单轮累计 ≤ PER_TURN hard（按剩余给量）；本轮耗尽 → `ok:false 'per-turn-budget-exhausted'`，请求非正 → `ok:false 'requested-non-positive'`。
+
+**禁止**：调 LLM、读磁盘、改 Electron IPC、改 `upgradeFusionSession` / `removeMember` 行为——本切片均未触碰。
+
+### E. 命名偏差（诚实记录）
+
+brief 指定审计函数名为 `estimateTokenCount`，但 `@tagent/shared/utils` 已导出同名 CJK 启发式 `estimateTokenCount`（CJK≈1.5 / ASCII≈0.25），经顶层 `export *` barrel 已对外。实验确认：在顶层 barrel 再 `export *` 同名会触发 `TS2308`（`Module './a' has already exported a member named 'estimateTokenCount'`）。两函数语义本就不同（本切片用 1.2 字符/token 的桥接审计近似），故**保留** `tokensToCharBudget`（无冲突）、**改名** `estimateBridgeTokenCount`（带 `Bridge` 后缀），并在源码加注释说明。功能与 brief 一致，仅公共名不同。
+
+### 验证（实跑结果）
+
+- `bunx vitest run packages/shared/src/types/session-collab-bridge.test.ts` → **27 pass / 0 fail**（常量一致性 / 换算不变式 / clamp 段落边界与空输入与 maxTokens 非正 / brief 默认档·硬顶钳到·空输入·优先级裁剪·列表条目边界 / 稳定模板·硬顶 clamp / handoff 对称·默认更紧·优先级裁剪 / 按需读原史预算校验·单次/单轮硬顶·非正·耗尽）。
+- `bun run --filter='./packages/shared' typecheck` → 退出 0。
+- `bun run --filter='./apps/electron' typecheck` → 退出 0（shared 被 electron 引用，barrel 新增 export 未破契约）。
+- `git diff --check` → 退出 0（仅 `BotSidecarPanel.tsx` / `tokens.css` 等本切片之前既存无关改动 LF→CRLF 提示，无实际空白错误）。
+
+### 诚实能力证据 / 未做
+
+- **仅契约层，不接服务层**：未做 summarize LLM 调用、未做 upgrade/exit IPC、未做写 room 背景 / 写回 session；本切片只供后续服务层按契约接线。
+- **不改主路径行为**：未改 `upgradeFusionSession` / `removeMember`，未改 Electron IPC，未读磁盘、未调 LLM。
+- **不做 UI**：无渲染层改动，无 Electron GUI。
+- **命名偏差**：`estimateBridgeTokenCount` 替代 brief 的 `estimateTokenCount`（因 utils 同名冲突 + TS2308），详见 §E；功能一致。
+- **未触碰无关未提交文件**：`BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 保持本轮之前既存改动，未触碰、未提交。
+- **可 commit；主控 push**：本轮已 commit；未自行 push。
