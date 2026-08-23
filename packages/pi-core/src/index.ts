@@ -64,6 +64,8 @@ export {
   type AggregatorOutput,
   type MoASeatRunner,
   type MoASeatRunArgs,
+  type MoASeatUsage,
+  type MoASeatRunResult,
 } from "./moa-orchestrator.ts";
 
 // M5：MCP 桥（MCP server 工具 → Pi AgentTool）

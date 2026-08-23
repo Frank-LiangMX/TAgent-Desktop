@@ -1,0 +1,226 @@
+import { describe, expect, test } from "vitest"
+import type { RoomBotSeat, RoomWorkspace } from "@tagent/shared"
+import { FusionRoomHost } from "./fusion-room-host"
+import { FusionRoomAuthorityError } from "./fusion-room-authority"
+
+const workspace: RoomWorkspace = {
+  id: "rws_host",
+  roomId: "host-room",
+  kind: "server",
+  storageKey: "host-room",
+  status: "active",
+  createdAt: 1,
+  updatedAt: 1,
+}
+
+describe("FusionRoomHost", () => {
+  test("按房间隔离分发并广播权威事件", () => {
+    const host = new FusionRoomHost()
+    host.createRoom({ roomId: "host-room", ownerUserId: "owner", workspace, now: 1 })
+    const notifications: string[] = []
+    const stop = host.subscribe("host-room", (notification) => {
+      notifications.push(...notification.events.map((event) => event.type))
+    })
+    host.dispatch("host-room", {
+      type: "invite-human",
+      actorUserId: "owner",
+      userId: "user-b",
+      displayName: "B",
+    })
+    host.dispatch("host-room", { type: "accept-invitation", userId: "user-b" })
+    const message = host.dispatch("host-room", {
+      type: "message",
+      input: { actorUserId: "user-b", content: "hello" },
+    })
+    expect(message && "content" in message ? message.content : "").toBe("hello")
+    expect(notifications).toEqual([
+      "human-member.changed",
+      "human-member.changed",
+      "message.appended",
+    ])
+    stop()
+    host.dispatch("host-room", {
+      type: "status",
+      actorUserId: "owner",
+      status: "paused",
+    })
+    expect(notifications).toHaveLength(3)
+    expect(host.listRoomIds()).toEqual(["host-room"])
+  })
+
+  test("快照存储自动保存，新的 Host 按 roomId 惰性恢复并继续分发", () => {
+    const persisted = new Map<string, any>()
+    const store = {
+      load: (roomId: string) => persisted.get(roomId),
+      save: (snapshot: any) => persisted.set(snapshot.roomId, snapshot),
+      listRoomIds: () => [...persisted.keys()],
+    }
+    const host = new FusionRoomHost({ snapshotStore: store })
+    host.createRoom({
+      roomId: "persisted-room",
+      ownerUserId: "owner",
+      workspace: { ...workspace, id: "rws_persisted", roomId: "persisted-room", storageKey: "persisted-room" },
+    })
+    host.dispatch("persisted-room", {
+      type: "message",
+      input: { actorUserId: "owner", content: "before restart", idempotencyKey: "m1" },
+    })
+    const resumed = new FusionRoomHost({ snapshotStore: store })
+    expect(resumed.listRoomIds()).toEqual(["persisted-room"])
+    expect(resumed.getSnapshot("persisted-room").messages[0]?.content).toBe("before restart")
+    resumed.dispatch("persisted-room", {
+      type: "message",
+      input: { actorUserId: "owner", content: "after restart", idempotencyKey: "m2" },
+    })
+    const events = resumed.getSnapshot("persisted-room").events
+    expect(events.at(-1)?.sequence).toBe(events.length)
+    expect(resumed.getSnapshot("persisted-room").messages.at(-1)?.content).toBe("after restart")
+  })
+  test("错误动作不广播，快照可以恢复到新的 Host", () => {
+    const host = new FusionRoomHost()
+    const snapshot = host.createRoom({
+      roomId: "restore-room",
+      ownerUserId: "owner",
+      workspace: { ...workspace, id: "rws_restore", roomId: "restore-room", storageKey: "restore-room" },
+    })
+    expect(() => host.dispatch("restore-room", {
+      type: "message",
+      input: { actorUserId: "unknown", content: "no" },
+    })).toThrow(FusionRoomAuthorityError)
+    const restored = new FusionRoomHost()
+    restored.restoreRoom(snapshot)
+    expect(restored.getSnapshot("restore-room").events[0]?.type).toBe("room.created")
+    expect(() => restored.getSnapshot("missing")).toThrow(/不存在/)
+  })
+
+  test("工作区物理提交失败时回滚权威快照和文件事务", () => {
+    const transactions: Array<{ committed: boolean; rolledBack: boolean }> = []
+    const store = {
+      prepareCommit: () => {
+        const state = { committed: false, rolledBack: false }
+        transactions.push(state)
+        return {
+          commit: () => {
+            state.committed = true
+            throw new Error("disk failure")
+          },
+          rollback: () => {
+            state.rolledBack = true
+          },
+        }
+      },
+    }
+    const host = new FusionRoomHost({ workspaceStore: store })
+    host.createRoom({
+      roomId: "workspace-room",
+      ownerUserId: "owner",
+      workspace: { ...workspace, id: "rws_workspace", roomId: "workspace-room", storageKey: "workspace-room" },
+    })
+    host.dispatch("workspace-room", {
+      type: "lock",
+      input: { actorUserId: "owner", relativePath: "notes.md" },
+    })
+    const before = host.getSnapshot("workspace-room")
+    expect(() => host.dispatch("workspace-room", {
+      type: "commit-file",
+      input: {
+        actorUserId: "owner",
+        lockId: before.locks[0]!.id,
+        relativePath: "notes.md",
+        content: "should rollback",
+      },
+    })).toThrow("disk failure")
+    const after = host.getSnapshot("workspace-room")
+    expect(after.files).toEqual(before.files)
+    expect(after.locks).toEqual(before.locks)
+    expect(transactions).toEqual([{ committed: true, rolledBack: true }])
+  })
+
+  test("多文件物理提交任一文件失败时全部事务逆序回滚", () => {
+    const transactions: Array<{ path?: string; committed: boolean; rolledBack: boolean }> = []
+    const store = {
+      prepareCommit: (input: { relativePath: string }) => {
+        const state = { path: input.relativePath, committed: false, rolledBack: false }
+        transactions.push(state)
+        return {
+          commit: () => {
+            state.committed = true
+            if (state.path === "b.txt") throw new Error("second disk failure")
+          },
+          rollback: () => { state.rolledBack = true },
+        }
+      },
+    }
+    const host = new FusionRoomHost({ workspaceStore: store })
+    host.createRoom({
+      roomId: "batch-workspace-room",
+      ownerUserId: "owner",
+      workspace: { ...workspace, id: "rws_batch_workspace", roomId: "batch-workspace-room", storageKey: "batch-workspace-room" },
+    })
+    host.dispatch("batch-workspace-room", { type: "lock", input: { actorUserId: "owner", relativePath: "a.txt" } })
+    host.dispatch("batch-workspace-room", { type: "lock", input: { actorUserId: "owner", relativePath: "b.txt" } })
+    const before = host.getSnapshot("batch-workspace-room")
+    expect(() => host.dispatch("batch-workspace-room", {
+      type: "commit-files",
+      input: {
+        actorUserId: "owner",
+        files: [
+          { lockId: before.locks[0]!.id, relativePath: "a.txt", content: "A" },
+          { lockId: before.locks[1]!.id, relativePath: "b.txt", content: "B" },
+        ],
+      },
+    })).toThrow("second disk failure")
+    expect(host.getSnapshot("batch-workspace-room").files).toEqual(before.files)
+    expect(host.getSnapshot("batch-workspace-room").locks).toEqual(before.locks)
+    expect(transactions).toEqual([
+      { path: "a.txt", committed: true, rolledBack: true },
+      { path: "b.txt", committed: true, rolledBack: true },
+    ])
+  })
+  test("Host 通过统一动作账本广播成员输出", () => {
+    const host = new FusionRoomHost()
+    host.createRoom({ roomId: "member-output-room", ownerUserId: "owner", workspace: { ...workspace, id: "rws_member_output", roomId: "member-output-room", storageKey: "member-output-room" }, now: 1 })
+    const seat: RoomBotSeat = {
+      id: "seat-host", roomId: "member-output-room", botProfileId: "bot-host", ownerUserId: "owner",
+      configRevisionId: "rev-host", displayNameSnapshot: "开发者", roleSnapshot: { displayName: "开发者" },
+      backend: "pi", modelId: "test-model", permissionProfile: "read-only",
+      capabilities: { supportsResume: false, supportsLiveInput: false, supportsToolBridge: false, supportsStructuredEvents: false },
+      status: "idle", logicalSessionId: "session-host", isCoordinator: false, createdAt: 1, updatedAt: 1,
+    }
+    host.dispatch("member-output-room", { type: "add-bot", input: { actorUserId: "owner", seat } })
+    const result = host.dispatch("member-output-room", {
+      type: "member-message",
+      input: { actorUserId: "owner", seatId: "seat-host", content: "已完成分析", idempotencyKey: "member-output-1" },
+    })
+    expect(result && "authorType" in result ? result.authorType : "").toBe("member")
+    expect(host.getSnapshot("member-output-room").events.at(-1)?.type).toBe("message.appended")
+  })
+  test("重启恢复不会重放未知副作用的运行", () => {
+    const host = new FusionRoomHost()
+    const roomId = "recovery-room"
+    host.createRoom({
+      roomId,
+      ownerUserId: "owner",
+      workspace: { ...workspace, id: "rws_recovery", roomId, storageKey: roomId },
+      now: 1,
+    })
+    const seat: RoomBotSeat = {
+      id: "seat-recovery", roomId, botProfileId: "bot-recovery", ownerUserId: "owner",
+      configRevisionId: "rev-recovery", displayNameSnapshot: "恢复测试 Bot", roleSnapshot: { displayName: "恢复测试 Bot" },
+      backend: "pi", modelId: "test-model", permissionProfile: "read-only",
+      capabilities: { supportsResume: false, supportsLiveInput: false, supportsToolBridge: false, supportsStructuredEvents: false },
+      status: "idle", logicalSessionId: "session-recovery", isCoordinator: false, createdAt: 1, updatedAt: 1,
+    }
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat } })
+    const started = host.dispatch(roomId, {
+      type: "start-run",
+      input: { actorUserId: "owner", seatId: seat.id, backend: "pi", idempotencyKey: "recovery-start" },
+    })
+    expect(started && "status" in started ? started.status : "").toBe("running")
+
+    const recovered = host.recoverInterruptedRuns()
+    expect(recovered).toHaveLength(1)
+    expect(recovered[0]?.status).toBe("blocked")
+    expect(recovered[0]?.summary).toContain("未自动重放")
+    expect(host.getSnapshot(roomId).runs[0]?.status).toBe("blocked")
+  })})

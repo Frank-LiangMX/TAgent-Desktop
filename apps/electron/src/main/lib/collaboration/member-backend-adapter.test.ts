@@ -13,7 +13,7 @@
  * - runTurn：把 systemPrompt/prompt/modelId/signal 透传给 seat runner 并返回正文
  */
 import { beforeEach, describe, expect, test, vi } from 'vitest'
-import type { Channel, ChannelModel } from '@tagent/shared'
+import type { Channel, ChannelModel, MemberTurnInput } from '@tagent/shared'
 
 // ===== mock 状态（vi.hoisted 保证 vi.mock 工厂能引用） =====
 const channelState = vi.hoisted(() => ({
@@ -34,6 +34,16 @@ const seatState = vi.hoisted(() => ({
   throwErr: null as Error | null,
 }))
 
+const cliState = vi.hoisted(() => ({
+  lastInput: null as {
+    cwd: string
+    sessionId: string
+    prompt: string
+    signal: AbortSignal
+  } | null,
+  available: true,
+  result: { ok: true, summary: 'cli-reply', durationMs: 17 },
+}))
 vi.mock('../channel/channel-store', () => ({
   listChannels: () => channelState.channels,
   getChannel: (id: string) => channelState.channels.find((c) => c.id === id),
@@ -44,6 +54,24 @@ vi.mock('../adapters/claude/kscc-path', () => ({
   resolveKsccPath: () => ksccState.path,
 }))
 
+vi.mock('../agent/cli-workers/resolve-backend', () => ({
+  resolveTaskSubagentBackend: () =>
+    cliState.available
+      ? { kind: 'cli', worker: { id: 'worker-test' } }
+      : { kind: 'unavailable' },
+}))
+
+vi.mock('../agent/cli-workers/run-cli-worker', () => ({
+  runCliWorker: async (input: {
+    cwd: string
+    sessionId: string
+    prompt: string
+    signal: AbortSignal
+  }) => {
+    cliState.lastInput = input
+    return cliState.result
+  },
+}))
 vi.mock('@tagent/pi-core', () => ({
   createPiHttpSeatRunner: (opts: { provider: string; apiKey: string; baseUrl?: string }) => {
     seatState.lastFactoryOpts = opts
@@ -100,6 +128,9 @@ beforeEach(() => {
   seatState.lastRunArgs = null
   seatState.returnText = 'seat-reply'
   seatState.throwErr = null
+  cliState.lastInput = null
+  cliState.available = true
+  cliState.result = { ok: true, summary: 'cli-reply', durationMs: 17 }
 })
 
 describe('resolveChannelBackendConfig', () => {
@@ -266,6 +297,54 @@ describe('channelSupportsRoomToolBridge', () => {
   })
 })
 
+function cliInput(over: Partial<MemberTurnInput> = {}): MemberTurnInput {
+  return {
+    roomId: 'cr_cli',
+    memberId: 'cm_cli',
+    runId: 'run_cli',
+    triggerMessageId: 'msg_cli',
+    logicalSessionId: 'room-member-session',
+    cliWorkerId: 'worker-test',
+    backend: 'cli',
+    permissionProfile: 'workspace-write',
+    workspaceRoot: 'C:\\room-workspace',
+    systemPrompt: '你是代码成员',
+    prompt: '检查项目',
+    signal: new AbortController().signal,
+    ...over,
+  }
+}
+
+describe('ChannelBackendAdapter.runTurn — CLI worker', () => {
+  test('使用房间工作区和稳定 logicalSessionId，返回 CLI 正文与墙钟用量', async () => {
+    const result = await new ChannelBackendAdapter().runTurn(cliInput())
+
+    expect(result).toEqual({
+      text: 'cli-reply',
+      usage: { wallTimeMs: 17 },
+    })
+    expect(cliState.lastInput).toMatchObject({
+      cwd: 'C:\\room-workspace',
+      sessionId: 'room-member-session',
+    })
+    expect(cliState.lastInput?.prompt).toContain('## 当前融合会话任务')
+  })
+
+  test('CLI 成员不是 workspace-write 时 fail-closed，且不调用 worker', async () => {
+    await expect(
+      new ChannelBackendAdapter().runTurn(cliInput({ permissionProfile: 'read-only' })),
+    ).rejects.toMatchObject({ code: 'CLI_PERMISSION_REQUIRED' })
+    expect(cliState.lastInput).toBeNull()
+  })
+
+  test('CLI worker 不可用时 fail-closed，不回退到渠道后端', async () => {
+    cliState.available = false
+    await expect(new ChannelBackendAdapter().runTurn(cliInput())).rejects.toMatchObject({
+      code: 'CLI_UNAVAILABLE',
+    })
+    expect(cliState.lastInput).toBeNull()
+  })
+})
 describe('ChannelBackendAdapter.runTurn', () => {
   test('external 渠道：透传 systemPrompt/prompt/modelId/signal 给 seat runner，返回正文', async () => {
     channelState.channels = [

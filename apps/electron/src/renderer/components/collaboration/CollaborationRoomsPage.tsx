@@ -15,24 +15,28 @@
  * 数据通过 window.electronAPI.collaborationRoom.* IPC（见 preload）。
  * 变更后调 onRoomsChanged 通知 App bump refreshKey；run/member 变更由 CHANGED 广播驱动 bump。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { toast } from 'sonner'
-import { motion } from 'motion/react'
-import { Square } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
+import { motion } from "motion/react";
+import { Square } from "lucide-react";
 import {
   Archive,
   ArrowRight,
   At,
   Database,
+  FolderOpen,
+  Link,
   ListChecks,
   Pause,
   PencilSimple,
   Play,
   UsersThree,
-} from '@phosphor-icons/react'
+} from "@phosphor-icons/react";
 import type {
   Channel,
+  CliWorkersConfig,
   CollaborationArtifact,
+  CollaborationHumanMember,
   CollaborationRoleSnapshot,
   CollaborationMailboxEnvelope,
   CollaborationMember,
@@ -42,61 +46,64 @@ import type {
   CollaborationRoomTask,
   CollaborationRun,
   CollaborationUserApprovalRequest,
-} from '@tagent/shared'
-import { AppTooltip, Button } from '@tagent/ui'
-import { ChatInput, type ChatInputHandle } from '../chat/ChatInput'
-import { SendSplitButton } from '../chat/ConsultMenu'
-import BlurText from '../chat/BlurText'
-import { CollaborationTextPrompt } from './CollaborationTextPrompt'
-import { CollaborationMemberSettings } from './CollaborationMemberSettings'
-import { CollaborationAddMemberDialog } from './CollaborationAddMemberDialog'
-import { CollaborationTimeline } from './CollaborationTimeline'
-import { CollaborationWorkPanel } from './CollaborationWorkPanel'
-import { MemberAvatar } from './CollaborationAvatars'
-import { cn } from '../../lib/utils'
+} from "@tagent/shared";
+import { AppTooltip, Button, Input } from "@tagent/ui";
+import { ChatInput, type ChatInputHandle } from "../chat/ChatInput";
+import { SendSplitButton } from "../chat/ConsultMenu";
+import BlurText from "../chat/BlurText";
+import { CollaborationTextPrompt } from "./CollaborationTextPrompt";
+import { CollaborationMemberSettings } from "./CollaborationMemberSettings";
+import { CollaborationAddMemberDialog } from "./CollaborationAddMemberDialog";
+import { CollaborationTimeline } from "./CollaborationTimeline";
+import { CollaborationWorkPanel } from "./CollaborationWorkPanel";
+import { MemberAvatar } from "./CollaborationAvatars";
+import { FusionRoomRemotePage } from "./FusionRoomRemotePage";
+import { FusionRoomRemoteConnectDialog } from "./FusionRoomRemoteConnectDialog";
+import type { FusionRoomRemoteSession } from "./fusion-room-remote-session";
+import { cn } from "../../lib/utils";
 
-type TextPromptKind = 'rename' | null
+type TextPromptKind = "rename" | null;
 
-const EASE = [0.16, 1, 0.3, 1] as const
+const EASE = [0.16, 1, 0.3, 1] as const;
 
 /** 协作室的全员 mention 不是成员 ID，而是结构化路由的特殊目标。 */
-const COLLABORATION_ALL_MENTION_ID = 'all'
+const COLLABORATION_ALL_MENTION_ID = "all";
 const COLLABORATION_ALL_MENTION = {
   id: COLLABORATION_ALL_MENTION_ID,
-  displayName: '所有人',
-  description: '唤醒房间内全部成员（含协调者）',
-} as const
+  displayName: "所有人",
+  description: "唤醒房间内全部成员（含协调者）",
+} as const;
 
 /** 欢迎页能力点卡片 */
 const WELCOME_FEATURES = [
   {
     icon: UsersThree,
-    title: '多成员并行',
-    desc: '一条消息可同时唤醒多个成员，各自独立执行、互不阻塞。',
+    title: "多成员并行",
+    desc: "一条消息可同时唤醒多个成员，各自独立执行、互不阻塞。",
   },
   {
     icon: At,
-    title: '@点名路由',
-    desc: '不 @ 由协调者回复；@成员名 精确投递，@所有人 唤醒全部。',
+    title: "@点名路由",
+    desc: "不 @ 由协调者回复；@成员名 精确投递，@所有人 唤醒全部。",
   },
   {
     icon: Database,
-    title: '持久房间',
-    desc: '消息与运行状态落盘，重启不丢历史、不会出现假 running。',
+    title: "持久房间",
+    desc: "消息与运行状态落盘，重启不丢历史、不会出现假 running。",
   },
-] as const
+] as const;
 
 /** 房间状态 → 中文标签 */
 function roomStatusLabel(status: CollaborationRoomStatus): string {
   switch (status) {
-    case 'active':
-      return '空闲'
-    case 'paused':
-      return '已暂停'
-    case 'archived':
-      return '已归档'
-    case 'completed':
-      return '已完成'
+    case "active":
+      return "空闲";
+    case "paused":
+      return "已暂停";
+    case "archived":
+      return "已归档";
+    case "completed":
+      return "已完成";
   }
 }
 
@@ -104,222 +111,335 @@ function roomStatusLabel(status: CollaborationRoomStatus): string {
 function memberDisplayStatus(
   member: CollaborationMember,
   runs: CollaborationRun[],
-): 'running' | 'queued' | 'awaiting_peer' | 'idle' | 'offline' {
-  if (runs.some((r) => r.memberId === member.id && r.status === 'running')) return 'running'
-  if (runs.some((r) => r.memberId === member.id && r.status === 'queued')) return 'queued'
-  if (runs.some((r) => r.memberId === member.id && r.status === 'awaiting_peer')) return 'awaiting_peer'
-  return member.status === 'offline' ? 'offline' : 'idle'
+): "running" | "queued" | "awaiting_peer" | "idle" | "offline" | "removed" {
+  if (member.status === "removed") return "removed";
+  if (runs.some((r) => r.memberId === member.id && r.status === "running"))
+    return "running";
+  if (runs.some((r) => r.memberId === member.id && r.status === "queued"))
+    return "queued";
+  if (
+    runs.some((r) => r.memberId === member.id && r.status === "awaiting_peer")
+  )
+    return "awaiting_peer";
+  return member.status === "offline" ? "offline" : "idle";
 }
 
 /** 成员显示状态 → 中文标签 */
-function memberStatusLabel(status: ReturnType<typeof memberDisplayStatus>): string {
+function memberStatusLabel(
+  status: ReturnType<typeof memberDisplayStatus>,
+): string {
   switch (status) {
-    case 'running':
-      return '思考中'
-    case 'queued':
-      return '排队中'
-    case 'awaiting_peer':
-      return '等待成员'
-    case 'idle':
-      return '空闲'
-    case 'offline':
-      return '离线'
+    case "running":
+      return "思考中";
+    case "queued":
+      return "排队中";
+    case "awaiting_peer":
+      return "等待成员";
+    case "idle":
+      return "空闲";
+    case "offline":
+      return "离线";
+    case "removed":
+      return "已移除";
   }
 }
 
 interface CollaborationRoomsPageProps {
   /** 当前选中房间 ID（null = 未选中 → 空态） */
-  roomId: string | null
+  roomId: string | null;
   /** 外部变更 bump，触发重新拉取房间/消息 */
-  refreshKey: number
+  refreshKey: number;
   /** 房间/消息变更时通知 App（rename/pause/archive/send 后） */
-  onRoomsChanged: () => void
+  onRoomsChanged: () => void;
   /** 当前房间被归档后清空主区选中态 */
-  onRoomArchived?: (roomId: string) => void
+  onRoomArchived?: (roomId: string) => void;
   /** 空态「新建协作室」CTA */
-  onNewRoom: () => void
+  onNewRoom: () => void;
   /** 打开指定设置 tab（如「去渠道设置」CTA 跳转到 channels） */
-  onOpenSettings?: (tab: 'channels') => void
+  onOpenSettings?: (tab: "channels") => void;
+  /** 空态「连接远程融合会话」CTA（由 wrapper 接管打开连接对话框） */
+  onOpenRemoteSession?: () => void;
+  /** 远程 Fusion 房间会话；存在时改渲染 FusionRoomRemotePage，本地页面逻辑不复用 */
+  remoteSession?: FusionRoomRemoteSession;
+  /** 远程会话关闭回调（FusionRoomRemotePage 顶栏返回 / 断开时调用） */
+  onRemoteSessionClose?: () => void;
 }
 
-export function CollaborationRoomsPage({
+/**
+ * 协作室主区对外门面：根据是否处于远程会话分发到远程 Fusion 房间视图或本地协作室页面。
+ *
+ * 远程会话来源有二，按优先级取用：
+ *   1. 外部 props.remoteSession（由父组件完全掌控生命周期，关闭时回退 onRemoteSessionClose）；
+ *   2. 本组件自管 ownedRemoteSession（由「连接远程融合会话」对话框创建，关闭时清理本地态）。
+ * 两者互斥：存在任意远程会话 → 渲染 FusionRoomRemotePage（远程房间流式/控制台）；否则渲染本地
+ * LocalCollaborationRoomsPage（原有本地房间逻辑未改动）并挂载连接对话框，避免在本地页面里塞入
+ * 远程分支造成状态/生命周期耦合。
+ */
+export function CollaborationRoomsPage(
+  props: CollaborationRoomsPageProps,
+): JSX.Element {
+  const [ownedRemoteSession, setOwnedRemoteSession] =
+    useState<FusionRoomRemoteSession | null>(null);
+  const [remoteConnectOpen, setRemoteConnectOpen] = useState(false);
+
+  // 外部会话优先；外部未提供时使用本组件通过对话框创建的自管会话。
+  const activeRemoteSession = props.remoteSession ?? ownedRemoteSession;
+
+  // 关闭远程会话：外部会话交还父组件（onRemoteSessionClose）；自管会话清空本地态
+  // （FusionRoomRemotePage 卸载时其 effect 会调用 session.close() 释放连接）。
+  const handleRemoteClose = useCallback(() => {
+    if (props.remoteSession) {
+      props.onRemoteSessionClose?.();
+      return;
+    }
+    setOwnedRemoteSession(null);
+  }, [props.remoteSession, props.onRemoteSessionClose]);
+
+  // 空态「连接远程融合会话」：先通知外部回调，再打开本组件对话框。
+  const handleOpenRemoteSession = useCallback(() => {
+    props.onOpenRemoteSession?.();
+    setRemoteConnectOpen(true);
+  }, [props.onOpenRemoteSession]);
+
+  const handleConnected = useCallback((session: FusionRoomRemoteSession) => {
+    setOwnedRemoteSession(session);
+    setRemoteConnectOpen(false);
+  }, []);
+
+  if (activeRemoteSession) {
+    return (
+      <FusionRoomRemotePage
+        session={activeRemoteSession}
+        onClose={handleRemoteClose}
+      />
+    );
+  }
+
+  return (
+    <>
+      <LocalCollaborationRoomsPage
+        {...props}
+        onOpenRemoteSession={handleOpenRemoteSession}
+      />
+      <FusionRoomRemoteConnectDialog
+        open={remoteConnectOpen}
+        onOpenChange={setRemoteConnectOpen}
+        onConnected={handleConnected}
+      />
+    </>
+  );
+}
+
+function LocalCollaborationRoomsPage({
   roomId,
   refreshKey,
   onRoomsChanged,
   onRoomArchived,
   onNewRoom,
   onOpenSettings,
+  onOpenRemoteSession,
 }: CollaborationRoomsPageProps): JSX.Element {
-  const [room, setRoom] = useState<CollaborationRoom | null>(null)
-  const [messages, setMessages] = useState<CollaborationMessage[]>([])
-  const [members, setMembers] = useState<CollaborationMember[]>([])
-  const [runs, setRuns] = useState<CollaborationRun[]>([])
-  const [channels, setChannels] = useState<Channel[]>([])
-  const [cancellingId, setCancellingId] = useState<string | null>(null)
-  const [stoppingRuns, setStoppingRuns] = useState(false)
-  const [addingMember, setAddingMember] = useState(false)
-  const [showAddMemberDialog, setShowAddMemberDialog] = useState(false)
-  const [textPrompt, setTextPrompt] = useState<TextPromptKind>(null)
+  const [room, setRoom] = useState<CollaborationRoom | null>(null);
+  const [messages, setMessages] = useState<CollaborationMessage[]>([]);
+  const [members, setMembers] = useState<CollaborationMember[]>([]);
+  const [humanMembers, setHumanMembers] = useState<CollaborationHumanMember[]>(
+    [],
+  );
+  const [runs, setRuns] = useState<CollaborationRun[]>([]);
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [cliWorkers, setCliWorkers] = useState<CliWorkersConfig | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [stoppingRuns, setStoppingRuns] = useState(false);
+  const [addingMember, setAddingMember] = useState(false);
+  const [inviteUserId, setInviteUserId] = useState("");
+  const [invitingUser, setInvitingUser] = useState(false);
+  const [showAddMemberDialog, setShowAddMemberDialog] = useState(false);
+  const [textPrompt, setTextPrompt] = useState<TextPromptKind>(null);
   /** composer 中选中的成员 mention 芯片 id（结构化路由用；无芯片时不传 → 文本兜底） */
-  const [composerMentionIds, setComposerMentionIds] = useState<string[]>([])
-  const [hasDraft, setHasDraft] = useState(false)
-  const [mailbox, setMailbox] = useState<CollaborationMailboxEnvelope[]>([])
-  const [streamByRun, setStreamByRun] = useState<Record<string, string>>({})
+  const [composerMentionIds, setComposerMentionIds] = useState<string[]>([]);
+  const [hasDraft, setHasDraft] = useState(false);
+  const [mailbox, setMailbox] = useState<CollaborationMailboxEnvelope[]>([]);
+  const [streamByRun, setStreamByRun] = useState<Record<string, string>>({});
   /** S5：室级任务/产物（主进程真值，CHANGED 后重新拉取；渲染层不是真值源） */
-  const [tasks, setTasks] = useState<CollaborationRoomTask[]>([])
-  const [artifacts, setArtifacts] = useState<CollaborationArtifact[]>([])
-  const [approvals, setApprovals] = useState<CollaborationUserApprovalRequest[]>([])
-  const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(null)
+  const [tasks, setTasks] = useState<CollaborationRoomTask[]>([]);
+  const [artifacts, setArtifacts] = useState<CollaborationArtifact[]>([]);
+  const [approvals, setApprovals] = useState<
+    CollaborationUserApprovalRequest[]
+  >([]);
+  const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(
+    null,
+  );
   /** S5：右侧工作面板展开态（默认展开；窄屏可收起，键盘可达） */
-  const [workPanelOpen, setWorkPanelOpen] = useState(true)
+  const [workPanelOpen, setWorkPanelOpen] = useState(true);
   /** S4.5：本地已「停止」关闭的深度停止信封 id（仅前端态，不持久化、不触后端） */
-  const [dismissedDepthStopIds, setDismissedDepthStopIds] = useState<Set<string>>(new Set())
+  const [dismissedDepthStopIds, setDismissedDepthStopIds] = useState<
+    Set<string>
+  >(new Set());
   /** S4.5：正在继续的深度停止信封 id（主操作 loading 态） */
-  const [continuingDepthStopId, setContinuingDepthStopId] = useState<string | null>(null)
+  const [continuingDepthStopId, setContinuingDepthStopId] = useState<
+    string | null
+  >(null);
   /** S4.5：按信封 id 记录的继续失败原因（主操作 error 态） */
-  const [depthStopErrorByEnvelope, setDepthStopErrorByEnvelope] = useState<Record<string, string>>({})
-  const inputRef = useRef<ChatInputHandle>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const [depthStopErrorByEnvelope, setDepthStopErrorByEnvelope] = useState<
+    Record<string, string>
+  >({});
+  const inputRef = useRef<ChatInputHandle>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   // 切房间时清空深度停止的前端态（dismissed / loading / error）。
   // 仅依赖 roomId：刷新（refreshKey 变化）时保留 dismissed，避免广播刷新后已关闭的卡片复活。
   useEffect(() => {
-    setDismissedDepthStopIds(new Set())
-    setContinuingDepthStopId(null)
-    setDepthStopErrorByEnvelope({})
-  }, [roomId])
+    setDismissedDepthStopIds(new Set());
+    setContinuingDepthStopId(null);
+    setDepthStopErrorByEnvelope({});
+  }, [roomId]);
 
   // 选中房间 / 外部变更 → 重新拉取
   useEffect(() => {
-    let cancelled = false
+    let cancelled = false;
     void (async (): Promise<void> => {
       if (!roomId) {
-        setRoom(null)
-        setMessages([])
-        setMembers([])
-        setRuns([])
-        setMailbox([])
-        setTasks([])
-        setArtifacts([])
-        setApprovals([])
-        setStreamByRun({})
-        return
+        setRoom(null);
+        setMessages([]);
+        setMembers([]);
+        setRuns([]);
+        setMailbox([]);
+        setTasks([]);
+        setArtifacts([]);
+        setApprovals([]);
+        setStreamByRun({});
+        return;
       }
       try {
-        const [r, msgs, mems, rs, box, tks, arts, aps] = await Promise.all([
-          window.electronAPI.getCollaborationRoom(roomId),
-          window.electronAPI.listCollaborationMessages(roomId),
-          window.electronAPI.listCollaborationMembers(roomId),
-          window.electronAPI.listCollaborationRuns(roomId),
-          window.electronAPI.listCollaborationMailbox(roomId),
-          window.electronAPI.listCollaborationRoomTasks(roomId),
-          window.electronAPI.listCollaborationArtifacts(roomId),
-          window.electronAPI.listCollaborationUserApprovals(roomId),
-        ])
-        if (cancelled) return
-        setRoom(r ?? null)
-        setMessages(Array.isArray(msgs) ? msgs : [])
-        setMembers(Array.isArray(mems) ? mems : [])
-        setRuns(Array.isArray(rs) ? rs : [])
-        setMailbox(Array.isArray(box) ? box : [])
-        setTasks(Array.isArray(tks) ? tks : [])
-        setArtifacts(Array.isArray(arts) ? arts : [])
-        setApprovals(Array.isArray(aps) ? aps : [])
+        const [r, msgs, mems, humans, rs, box, tks, arts, aps] =
+          await Promise.all([
+            window.electronAPI.getCollaborationRoom(roomId),
+            window.electronAPI.listCollaborationMessages(roomId),
+            window.electronAPI.listCollaborationMembers(roomId),
+            window.electronAPI.listCollaborationHumanMembers(roomId),
+            window.electronAPI.listCollaborationRuns(roomId),
+            window.electronAPI.listCollaborationMailbox(roomId),
+            window.electronAPI.listCollaborationRoomTasks(roomId),
+            window.electronAPI.listCollaborationArtifacts(roomId),
+            window.electronAPI.listCollaborationUserApprovals(roomId),
+          ]);
+        if (cancelled) return;
+        setRoom(r ?? null);
+        setMessages(Array.isArray(msgs) ? msgs : []);
+        setMembers(Array.isArray(mems) ? mems : []);
+        setHumanMembers(Array.isArray(humans) ? humans : []);
+        setRuns(Array.isArray(rs) ? rs : []);
+        setMailbox(Array.isArray(box) ? box : []);
+        setTasks(Array.isArray(tks) ? tks : []);
+        setArtifacts(Array.isArray(arts) ? arts : []);
+        setApprovals(Array.isArray(aps) ? aps : []);
         const live = new Set(
           (Array.isArray(rs) ? rs : [])
-            .filter((run) => run.status === 'running')
+            .filter((run) => run.status === "running")
             .map((run) => run.id),
-        )
+        );
         setStreamByRun((prev) => {
-          const next: Record<string, string> = {}
+          const next: Record<string, string> = {};
           for (const [id, text] of Object.entries(prev)) {
-            if (live.has(id)) next[id] = text
+            if (live.has(id)) next[id] = text;
           }
-          return next
-        })
+          return next;
+        });
       } catch (err) {
-        if (cancelled) return
-        console.error('[协作室主区] 加载失败:', err)
-        setRoom(null)
-        setMessages([])
-        setMembers([])
-        setRuns([])
-        setMailbox([])
-        setTasks([])
-        setArtifacts([])
-        setApprovals([])
+        if (cancelled) return;
+        console.error("[协作室主区] 加载失败:", err);
+        setRoom(null);
+        setMessages([]);
+        setMembers([]);
+        setRuns([]);
+        setMailbox([]);
+        setTasks([]);
+        setArtifacts([]);
+        setApprovals([]);
       }
-    })()
+    })();
     return () => {
-      cancelled = true
-    }
-  }, [roomId, refreshKey])
+      cancelled = true;
+    };
+  }, [roomId, refreshKey]);
 
   // 挂载时加载渠道列表（用于成员渠道名展示 / 「无渠道」判定）
   useEffect(() => {
-    let cancelled = false
+    let cancelled = false;
     void (async (): Promise<void> => {
       try {
-        const list = await window.electronAPI.listChannels()
-        if (cancelled) return
-        setChannels(Array.isArray(list) ? list : [])
+        const [list, workerConfig] = await Promise.all([
+          window.electronAPI.listChannels(),
+          window.electronAPI.listCliWorkersConfig(),
+        ]);
+        if (cancelled) return;
+        setChannels(Array.isArray(list) ? list : []);
+        setCliWorkers(workerConfig ?? null);
       } catch (err) {
-        if (cancelled) return
-        console.error('[协作室主区] 加载渠道失败:', err)
+        if (cancelled) return;
+        console.error("[协作室主区] 加载渠道失败:", err);
       }
-    })()
+    })();
     return () => {
-      cancelled = true
-    }
-  }, [])
+      cancelled = true;
+    };
+  }, []);
 
   // 流式增量：独立通道，不 bump refreshKey
   useEffect(() => {
     const off = window.electronAPI.onCollaborationTextDelta?.((payload) => {
-      if (!roomId || payload.roomId !== roomId) return
-      setStreamByRun((prev) => ({ ...prev, [payload.runId]: payload.text }))
-    })
+      if (!roomId || payload.roomId !== roomId) return;
+      setStreamByRun((prev) => ({ ...prev, [payload.runId]: payload.text }));
+    });
     return () => {
-      off?.()
-    }
-  }, [roomId])
+      off?.();
+    };
+  }, [roomId]);
 
   // 新消息 / 流式 → 滚到底
   useEffect(() => {
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [messages.length, runs.length, streamByRun])
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.length, runs.length, streamByRun]);
 
   // 房间并发统计（头部 x/y + 排队）
-  const runningCount = runs.filter((r) => r.status === 'running').length
-  const queuedCount = runs.filter((r) => r.status === 'queued').length
-  const stoppableRuns = runs.filter((r) => r.status === 'running' || r.status === 'queued')
-  const pendingMailbox = mailbox.filter((e) => e.state === 'pending' || e.state === 'delivered')
-  const maxConcurrent = room?.maxConcurrentRuns ?? 0
+  const runningCount = runs.filter((r) => r.status === "running").length;
+  const queuedCount = runs.filter((r) => r.status === "queued").length;
+  const stoppableRuns = runs.filter(
+    (r) => r.status === "running" || r.status === "queued",
+  );
+  const pendingMailbox = mailbox.filter(
+    (e) => e.state === "pending" || e.state === "delivered",
+  );
+  const maxConcurrent = room?.maxConcurrentRuns ?? 0;
   const memberName = (memberId: string): string =>
-    members.find((m) => m.id === memberId)?.displayName ?? '成员'
+    members.find((m) => m.id === memberId)?.displayName ?? "成员";
+  const activeMembers = members.filter((member) => member.status !== "removed");
 
   // 成员是否具备可执行后端：channel 后端需绑定渠道；cli 后端需 cliWorkerId
   const memberHasExecutableBackend = (m: CollaborationMember): boolean =>
-    m.backend === 'cli' ? Boolean(m.cliWorkerId) : Boolean(m.channelId)
+    m.backend === "cli" ? Boolean(m.cliWorkerId) : Boolean(m.channelId);
 
   // 渠道显示名（未找到则回退 channelId）
   const channelLabel = (m: CollaborationMember): string => {
-    if (m.backend === 'cli') return m.cliWorkerId ? 'CLI' : '未绑定'
-    if (!m.channelId) return '未绑定'
-    return channels.find((c) => c.id === m.channelId)?.name ?? m.channelId
-  }
+    if (m.backend === "cli") return m.cliWorkerId ? "CLI" : "未绑定";
+    if (!m.channelId) return "未绑定";
+    return channels.find((c) => c.id === m.channelId)?.name ?? m.channelId;
+  };
 
   // 房间是否存在无可用后端的成员（用于提示去渠道设置）
-  const anyMemberMissingBackend = members.some((m) => !memberHasExecutableBackend(m))
+  const anyMemberMissingBackend = activeMembers.some(
+    (m) => !memberHasExecutableBackend(m),
+  );
   // 是否所有成员都无可用后端 → 发消息必然失败，禁发并 CTA
   const allMembersMissingBackend =
-    members.length > 0 && members.every((m) => !memberHasExecutableBackend(m))
+    activeMembers.length > 0 &&
+    activeMembers.every((m) => !memberHasExecutableBackend(m));
 
   const send = useCallback(async (): Promise<void> => {
-    if (!room || room.status === 'archived') return
-    const text = inputRef.current?.getText().trim() ?? ''
-    if (!text) return
+    if (!room || room.status === "archived") return;
+    const text = inputRef.current?.getText().trim() ?? "";
+    if (!text) return;
     try {
       await window.electronAPI.appendCollaborationUserMessage({
         roomId: room.id,
@@ -328,214 +448,328 @@ export function CollaborationRoomsPage({
           composerMentionIds.length > 0
             ? composerMentionIds.map((id) =>
                 id === COLLABORATION_ALL_MENTION_ID
-                  ? { kind: 'all' as const, displayNameSnapshot: '所有人' }
-                  : { kind: 'agent' as const, memberId: id },
+                  ? { kind: "all" as const, displayNameSnapshot: "所有人" }
+                  : { kind: "agent" as const, memberId: id },
               )
             : undefined,
-      })
-      inputRef.current?.clear()
-      setComposerMentionIds([])
-      onRoomsChanged()
+      });
+      inputRef.current?.clear();
+      setComposerMentionIds([]);
+      onRoomsChanged();
     } catch (err) {
-      toast.error('发送失败', { description: err instanceof Error ? err.message : String(err) })
+      toast.error("发送失败", {
+        description: err instanceof Error ? err.message : String(err),
+      });
     }
-  }, [room, composerMentionIds, onRoomsChanged])
+  }, [room, composerMentionIds, onRoomsChanged]);
 
   const handleCancelRun = useCallback(
     async (runId: string): Promise<void> => {
-      if (!room) return
-      setCancellingId(runId)
+      if (!room) return;
+      setCancellingId(runId);
       try {
-        await window.electronAPI.cancelCollaborationRun({ roomId: room.id, runId })
-        onRoomsChanged()
+        await window.electronAPI.cancelCollaborationRun({
+          roomId: room.id,
+          runId,
+        });
+        onRoomsChanged();
       } catch (err) {
-        toast.error('取消失败', { description: err instanceof Error ? err.message : String(err) })
+        toast.error("取消失败", {
+          description: err instanceof Error ? err.message : String(err),
+        });
       } finally {
-        setCancellingId(null)
+        setCancellingId(null);
       }
     },
     [room, onRoomsChanged],
-  )
+  );
 
   /** 会话同款停止键：一次停止当前房间内所有可取消的 run。 */
   const handleStopRuns = useCallback(async (): Promise<void> => {
-    if (!room || stoppingRuns) return
-    const targets = runs.filter((run) => run.status === 'running' || run.status === 'queued')
-    if (targets.length === 0) return
-    setStoppingRuns(true)
+    if (!room || stoppingRuns) return;
+    const targets = runs.filter(
+      (run) => run.status === "running" || run.status === "queued",
+    );
+    if (targets.length === 0) return;
+    setStoppingRuns(true);
     try {
       await Promise.all(
         targets.map((run) =>
-          window.electronAPI.cancelCollaborationRun({ roomId: room.id, runId: run.id }),
+          window.electronAPI.cancelCollaborationRun({
+            roomId: room.id,
+            runId: run.id,
+          }),
         ),
-      )
-      onRoomsChanged()
+      );
+      onRoomsChanged();
     } catch (err) {
-      toast.error('停止失败', { description: err instanceof Error ? err.message : String(err) })
+      toast.error("停止失败", {
+        description: err instanceof Error ? err.message : String(err),
+      });
     } finally {
-      setStoppingRuns(false)
+      setStoppingRuns(false);
     }
-  }, [room, runs, stoppingRuns, onRoomsChanged])
+  }, [room, runs, stoppingRuns, onRoomsChanged]);
 
   const handleResolveApproval = useCallback(
-    async (requestId: string, decision: 'approved' | 'denied', response?: string): Promise<void> => {
-      if (!room) return
-      setResolvingApprovalId(requestId)
+    async (
+      requestId: string,
+      decision: "approved" | "denied",
+      response?: string,
+    ): Promise<void> => {
+      if (!room) return;
+      setResolvingApprovalId(requestId);
       try {
-        const result = await window.electronAPI.resolveCollaborationUserApproval({
-          roomId: room.id,
-          requestId,
-          decision,
-          response,
-        })
+        const result =
+          await window.electronAPI.resolveCollaborationUserApproval({
+            roomId: room.id,
+            requestId,
+            decision,
+            response,
+          });
         if (!result.ok) {
-          toast.error('审批操作失败', { description: result.reason })
-          return
+          toast.error("审批操作失败", { description: result.reason });
+          return;
         }
-        onRoomsChanged()
+        onRoomsChanged();
       } catch (err) {
-        toast.error('审批操作失败', { description: err instanceof Error ? err.message : String(err) })
+        toast.error("审批操作失败", {
+          description: err instanceof Error ? err.message : String(err),
+        });
       } finally {
-        setResolvingApprovalId(null)
+        setResolvingApprovalId(null);
       }
     },
     [room, onRoomsChanged],
-  )
+  );
 
   // S4.5：继续一次已达 A2A 深度上限的交接。主操作 → IPC；带 loading（continuing）/ error（行内）
   // 状态；成功后刷新房间（CHANGED 广播也会 bump，这里显式确保即时）。IPC 逻辑失败返回
   // { ok: false, reason }（不抛），仅 unexpected IPC 错误走 catch。
   const handleContinueDepthStop = useCallback(
     async (envelopeId: string): Promise<void> => {
-      if (!room) return
-      setContinuingDepthStopId(envelopeId)
+      if (!room) return;
+      setContinuingDepthStopId(envelopeId);
       setDepthStopErrorByEnvelope((prev) => {
-        if (!(envelopeId in prev)) return prev
-        const next = { ...prev }
-        delete next[envelopeId]
-        return next
-      })
+        if (!(envelopeId in prev)) return prev;
+        const next = { ...prev };
+        delete next[envelopeId];
+        return next;
+      });
       try {
         const res = await window.electronAPI.continueCollaborationDepthStop({
           roomId: room.id,
           envelopeId,
-        })
+        });
         if (res.ok) {
-          onRoomsChanged()
+          onRoomsChanged();
         } else {
-          setDepthStopErrorByEnvelope((prev) => ({ ...prev, [envelopeId]: res.reason }))
+          setDepthStopErrorByEnvelope((prev) => ({
+            ...prev,
+            [envelopeId]: res.reason,
+          }));
         }
       } catch (err) {
         setDepthStopErrorByEnvelope((prev) => ({
           ...prev,
           [envelopeId]: err instanceof Error ? err.message : String(err),
-        }))
+        }));
       } finally {
-        setContinuingDepthStopId(null)
+        setContinuingDepthStopId(null);
       }
     },
     [room, onRoomsChanged],
-  )
+  );
 
   // S4.5：仅本地关闭该深度停止提示（次操作）。不调 IPC、不改后端状态；刷新保留、切房间清空。
   const handleDismissDepthStop = useCallback((envelopeId: string): void => {
     setDismissedDepthStopIds((prev) => {
-      if (prev.has(envelopeId)) return prev
-      const next = new Set(prev)
-      next.add(envelopeId)
-      return next
-    })
-  }, [])
+      if (prev.has(envelopeId)) return prev;
+      const next = new Set(prev);
+      next.add(envelopeId);
+      return next;
+    });
+  }, []);
 
   // S5：从工作面板定位到时间线 run / 消息。通过 scrollRef 在时间线内查询 [data-run-id] /
   // [data-message-id] 元素并滚动入视 + 短时高亮闪示，便于用户在长时间线里找到关联项。
   // 不传引用给时间线组件，避免侵入其 props；定位完全在页面侧用 scrollRef 完成。
-  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const locateTimeline = useCallback((selector: string): void => {
-    const el = scrollRef.current?.querySelector(selector)
-    if (!el) return
-    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    el.classList.add('collab-locate-flash')
-    if (flashTimer.current) clearTimeout(flashTimer.current)
-    flashTimer.current = setTimeout(() => el.classList.remove('collab-locate-flash'), 1600)
-  }, [])
+    const el = scrollRef.current?.querySelector(selector);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.add("collab-locate-flash");
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(
+      () => el.classList.remove("collab-locate-flash"),
+      1600,
+    );
+  }, []);
   const handleLocateRun = useCallback(
-    (runId: string): void => locateTimeline(`[data-run-id="${CSS.escape(runId)}"]`),
+    (runId: string): void =>
+      locateTimeline(`[data-run-id="${CSS.escape(runId)}"]`),
     [locateTimeline],
-  )
+  );
   const handleLocateMessage = useCallback(
-    (messageId: string): void => locateTimeline(`[data-message-id="${CSS.escape(messageId)}"]`),
+    (messageId: string): void =>
+      locateTimeline(`[data-message-id="${CSS.escape(messageId)}"]`),
     [locateTimeline],
-  )
+  );
 
   const confirmAddMember = useCallback(
     async (patch: {
-      displayName: string
-      channelId: string
-      modelId: string
-      isCoordinator: boolean
-      roleId?: string
-      roleSnapshot?: CollaborationRoleSnapshot
+      displayName: string;
+      channelId: string;
+      modelId: string;
+      backend: "channel" | "pi" | "cli";
+      cliWorkerId?: string;
+      permissionProfile?: "read-only" | "workspace-write";
+      isCoordinator: boolean;
+      roleId?: string;
+      roleSnapshot?: CollaborationRoleSnapshot;
+      botProfileId?: string;
     }): Promise<void> => {
-      if (!room) return
-      setShowAddMemberDialog(false)
-      setAddingMember(true)
+      if (!room) return;
+      setShowAddMemberDialog(false);
+      setAddingMember(true);
       try {
         await window.electronAPI.addCollaborationMember({
           roomId: room.id,
           displayName: patch.displayName,
           channelId: patch.channelId || undefined,
           modelId: patch.modelId || undefined,
+          backend: patch.backend,
+          cliWorkerId: patch.cliWorkerId,
+          permissionProfile: patch.permissionProfile,
           isCoordinator: patch.isCoordinator,
           roleId: patch.roleId,
           roleSnapshot: patch.roleSnapshot,
-        })
-        onRoomsChanged()
+          botProfileId: patch.botProfileId,
+        });
+        onRoomsChanged();
       } catch (err) {
-        console.error('[协作室] 添加成员失败:', err)
-        toast.error('添加成员失败', { description: err instanceof Error ? err.message : String(err) })
+        console.error("[协作室] 添加成员失败:", err);
+        toast.error("添加成员失败", {
+          description: err instanceof Error ? err.message : String(err),
+        });
       } finally {
-        setAddingMember(false)
+        setAddingMember(false);
       }
     },
     [room, onRoomsChanged],
-  )
+  );
 
+  const inviteHuman = useCallback(async (): Promise<void> => {
+    if (!room || !inviteUserId.trim() || invitingUser) return;
+    setInvitingUser(true);
+    try {
+      await window.electronAPI.inviteCollaborationHumanMember({
+        roomId: room.id,
+        userId: inviteUserId.trim(),
+        displayName: inviteUserId.trim(),
+      });
+      setInviteUserId("");
+      onRoomsChanged();
+      toast.success("已发出邀请", {
+        description: "对方接受后才能发送房间消息。",
+      });
+    } catch (err) {
+      toast.error("邀请用户失败", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setInvitingUser(false);
+    }
+  }, [inviteUserId, invitingUser, onRoomsChanged, room]);
+
+  const consentBot = useCallback(
+    async (memberId: string, consent: boolean): Promise<void> => {
+      if (!room) return;
+      try {
+        await window.electronAPI.setCollaborationBotOwnerConsent({
+          roomId: room.id,
+          memberId,
+          consent,
+        });
+        onRoomsChanged();
+      } catch (err) {
+        toast.error("Bot 授权操作失败", {
+          description: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [onRoomsChanged, room],
+  );
   const confirmRename = useCallback(
     async (next: string): Promise<void> => {
-      if (!room) return
-      setTextPrompt(null)
-      if (next === room.title) return
+      if (!room) return;
+      setTextPrompt(null);
+      if (next === room.title) return;
       try {
-        await window.electronAPI.updateCollaborationRoom({ roomId: room.id, title: next })
-        onRoomsChanged()
+        await window.electronAPI.updateCollaborationRoom({
+          roomId: room.id,
+          title: next,
+        });
+        onRoomsChanged();
       } catch (err) {
-        console.error('[协作室] 重命名失败:', err)
-        toast.error('重命名失败', { description: err instanceof Error ? err.message : String(err) })
+        console.error("[协作室] 重命名失败:", err);
+        toast.error("重命名失败", {
+          description: err instanceof Error ? err.message : String(err),
+        });
       }
     },
     [room, onRoomsChanged],
-  )
+  );
 
+  const confirmRemoveMember = useCallback(
+    async (memberId: string): Promise<void> => {
+      if (!room) return;
+      try {
+        await window.electronAPI.removeCollaborationMember({
+          roomId: room.id,
+          memberId,
+        });
+        onRoomsChanged();
+        toast.success("成员已移除", {
+          description: "历史消息和加入时配置副本仍会保留。",
+        });
+      } catch (err) {
+        toast.error("移除成员失败", {
+          description: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [room, onRoomsChanged],
+  );
   const handleTogglePause = useCallback(async (): Promise<void> => {
-    if (!room) return
-    const nextStatus: CollaborationRoomStatus = room.status === 'paused' ? 'active' : 'paused'
+    if (!room) return;
+    const nextStatus: CollaborationRoomStatus =
+      room.status === "paused" ? "active" : "paused";
     try {
-      await window.electronAPI.updateCollaborationRoom({ roomId: room.id, status: nextStatus })
-      onRoomsChanged()
+      await window.electronAPI.updateCollaborationRoom({
+        roomId: room.id,
+        status: nextStatus,
+      });
+      onRoomsChanged();
     } catch (err) {
-      toast.error('操作失败', { description: err instanceof Error ? err.message : String(err) })
+      toast.error("操作失败", {
+        description: err instanceof Error ? err.message : String(err),
+      });
     }
-  }, [room, onRoomsChanged])
+  }, [room, onRoomsChanged]);
 
   const confirmMemberSettings = useCallback(
     async (patch: {
-      memberId: string
-      displayName: string
-      channelId: string
-      modelId: string
+      memberId: string;
+      displayName: string;
+      channelId: string;
+      modelId: string;
+      backend?: "channel" | "pi" | "cli";
+      cliWorkerId?: string;
+      permissionProfile?: "read-only" | "workspace-write";
     }): Promise<void> => {
-      if (!room) return
+      if (!room) return;
       try {
         await window.electronAPI.updateCollaborationMember({
           roomId: room.id,
@@ -543,25 +777,52 @@ export function CollaborationRoomsPage({
           displayName: patch.displayName,
           channelId: patch.channelId,
           modelId: patch.modelId,
-        })
-        onRoomsChanged()
+          backend: patch.backend,
+          cliWorkerId: patch.cliWorkerId,
+          permissionProfile: patch.permissionProfile,
+        });
+        onRoomsChanged();
       } catch (err) {
-        toast.error('更新成员失败', { description: err instanceof Error ? err.message : String(err) })
+        toast.error("更新成员失败", {
+          description: err instanceof Error ? err.message : String(err),
+        });
       }
     },
     [room, onRoomsChanged],
-  )
+  );
 
-  const handleArchive = useCallback(async (): Promise<void> => {
-    if (!room) return
+  const handleImportWorkspace = useCallback(async (): Promise<void> => {
+    const roomId = room?.id;
+    if (!roomId) return;
     try {
-      await window.electronAPI.updateCollaborationRoom({ roomId: room.id, status: 'archived' })
-      onRoomArchived?.(room.id)
-      onRoomsChanged()
-    } catch (err) {
-      toast.error('归档失败', { description: err instanceof Error ? err.message : String(err) })
+      const result = await window.electronAPI.importCollaborationWorkspace({
+        roomId,
+      });
+      if (!result.ok) {
+        if (result.reason !== "已取消导入") toast.error(result.reason);
+        return;
+      }
+      toast.success("已导入 " + result.files + " 个文件到房间工作区");
+      onRoomsChanged();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "导入工作区失败");
     }
-  }, [onRoomArchived, onRoomsChanged, room])
+  }, [onRoomsChanged, room?.id]);
+  const handleArchive = useCallback(async (): Promise<void> => {
+    if (!room) return;
+    try {
+      await window.electronAPI.updateCollaborationRoom({
+        roomId: room.id,
+        status: "archived",
+      });
+      onRoomArchived?.(room.id);
+      onRoomsChanged();
+    } catch (err) {
+      toast.error("归档失败", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [onRoomArchived, onRoomsChanged, room]);
 
   // 空态
   if (!roomId || !room) {
@@ -575,8 +836,8 @@ export function CollaborationRoomsPage({
         <div className="relative w-full max-w-[720px]">
           <motion.p
             className="mb-5 text-center text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70"
-            initial={{ opacity: 0, filter: 'blur(8px)' }}
-            animate={{ opacity: 1, filter: 'blur(0px)' }}
+            initial={{ opacity: 0, filter: "blur(8px)" }}
+            animate={{ opacity: 1, filter: "blur(0px)" }}
             transition={{ duration: 0.5, ease: EASE, delay: 0.04 }}
           >
             Agent collaboration room
@@ -594,8 +855,8 @@ export function CollaborationRoomsPage({
 
           <motion.p
             className="mx-auto max-w-md text-center text-sm leading-relaxed text-muted-foreground"
-            initial={{ opacity: 0, y: 12, filter: 'blur(4px)' }}
-            animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+            initial={{ opacity: 0, y: 12, filter: "blur(4px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
             transition={{ duration: 0.5, ease: EASE, delay: 0.3 }}
           >
             新建一个房间，配置成员与内核模型，然后 @ 点名或交给协调者调度。
@@ -607,7 +868,9 @@ export function CollaborationRoomsPage({
             animate="show"
             variants={{
               hidden: {},
-              show: { transition: { staggerChildren: 0.08, delayChildren: 0.5 } },
+              show: {
+                transition: { staggerChildren: 0.08, delayChildren: 0.5 },
+              },
             }}
           >
             {WELCOME_FEATURES.map((f) => (
@@ -615,11 +878,11 @@ export function CollaborationRoomsPage({
                 key={f.title}
                 className="group flex items-start gap-3 rounded-xl border border-border/55 bg-muted/25 px-3.5 py-3 text-left transition-all hover:border-border hover:bg-accent/70 hover:shadow-sm"
                 variants={{
-                  hidden: { opacity: 0, y: 14, filter: 'blur(4px)' },
+                  hidden: { opacity: 0, y: 14, filter: "blur(4px)" },
                   show: {
                     opacity: 1,
                     y: 0,
-                    filter: 'blur(0px)',
+                    filter: "blur(0px)",
                     transition: { duration: 0.42, ease: EASE },
                   },
                 }}
@@ -631,7 +894,9 @@ export function CollaborationRoomsPage({
                   <f.icon className="size-4" />
                 </span>
                 <span className="min-w-0">
-                  <span className="block text-xs font-medium text-foreground/90">{f.title}</span>
+                  <span className="block text-xs font-medium text-foreground/90">
+                    {f.title}
+                  </span>
                   <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
                     {f.desc}
                   </span>
@@ -665,31 +930,46 @@ export function CollaborationRoomsPage({
                 aria-hidden="true"
               />
             </button>
-            <p className="text-xs text-muted-foreground">或从左侧选择一个已有房间。</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={onOpenRemoteSession}
+            >
+              <Link size={16} weight="regular" />
+              连接远程融合会话
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              或从左侧选择一个已有房间，也可连接其他设备上的远程融合会话。
+            </p>
           </motion.div>
         </div>
       </div>
-    )
+    );
   }
 
-  const archived = room.status === 'archived'
-  const paused = room.status === 'paused'
+  const archived = room.status === "archived";
+  const paused = room.status === "paused";
 
   return (
     <div className="session-body flex h-full min-h-0 flex-col">
       {/* 头部 */}
       <header className="flex flex-col gap-1.5 border-b border-border/40 px-5 py-3">
         <div className="flex items-center gap-2">
-          <h1 className="flex-1 truncate text-base font-semibold text-foreground" title={room.title}>
+          <h1
+            className="flex-1 truncate text-base font-semibold text-foreground"
+            title={room.title}
+          >
             {room.title}
           </h1>
           <span
             className={cn(
-              'rounded-full px-2 py-0.5 text-[11px] transition-colors',
-              room.status === 'paused' && 'bg-amber-500/15 text-amber-600',
-              room.status === 'active' && 'bg-emerald-500/15 text-emerald-600',
-              room.status === 'archived' && 'bg-muted text-muted-foreground',
-              room.status === 'completed' && 'bg-blue-500/15 text-blue-600',
+              "rounded-full px-2 py-0.5 text-[11px] transition-colors",
+              room.status === "paused" && "bg-amber-500/15 text-amber-600",
+              room.status === "active" && "bg-emerald-500/15 text-emerald-600",
+              room.status === "archived" && "bg-muted text-muted-foreground",
+              room.status === "completed" && "bg-blue-500/15 text-blue-600",
             )}
           >
             {roomStatusLabel(room.status)}
@@ -699,19 +979,26 @@ export function CollaborationRoomsPage({
               type="button"
               className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               aria-label="重命名"
-              onClick={() => setTextPrompt('rename')}
+              onClick={() => setTextPrompt("rename")}
             >
               <PencilSimple size={14} />
             </button>
           </AppTooltip>
-          <AppTooltip label={room.status === 'paused' ? '恢复运行' : '暂停新运行'} side="bottom">
+          <AppTooltip
+            label={room.status === "paused" ? "恢复运行" : "暂停新运行"}
+            side="bottom"
+          >
             <button
               type="button"
               className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              aria-label={room.status === 'paused' ? '恢复运行' : '暂停新运行'}
+              aria-label={room.status === "paused" ? "恢复运行" : "暂停新运行"}
               onClick={() => void handleTogglePause()}
             >
-              {room.status === 'paused' ? <Play size={14} /> : <Pause size={14} />}
+              {room.status === "paused" ? (
+                <Play size={14} />
+              ) : (
+                <Pause size={14} />
+              )}
             </button>
           </AppTooltip>
           <CollaborationAddMemberDialog
@@ -719,6 +1006,7 @@ export function CollaborationRoomsPage({
             onOpenChange={setShowAddMemberDialog}
             disabled={addingMember || archived}
             channels={channels}
+            cliWorkers={cliWorkers}
             onSave={(patch) => void confirmAddMember(patch)}
           />
           <AppTooltip label="归档" side="bottom">
@@ -731,14 +1019,29 @@ export function CollaborationRoomsPage({
               <Archive size={14} />
             </button>
           </AppTooltip>
-          <AppTooltip label={workPanelOpen ? '收起工作面板' : '展开工作面板'} side="bottom">
+          {room.roomWorkspace ? (
+            <AppTooltip label="导入个人工作区" side="bottom">
+              <button
+                type="button"
+                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                aria-label="导入个人工作区"
+                onClick={() => void handleImportWorkspace()}
+              >
+                <FolderOpen size={14} />
+              </button>
+            </AppTooltip>
+          ) : null}
+          <AppTooltip
+            label={workPanelOpen ? "收起工作面板" : "展开工作面板"}
+            side="bottom"
+          >
             <button
               type="button"
               className={cn(
-                'flex size-7 items-center justify-center rounded-md transition-colors hover:bg-accent hover:text-foreground',
-                workPanelOpen ? 'text-primary' : 'text-muted-foreground',
+                "flex size-7 items-center justify-center rounded-md transition-colors hover:bg-accent hover:text-foreground",
+                workPanelOpen ? "text-primary" : "text-muted-foreground",
               )}
-              aria-label={workPanelOpen ? '收起工作面板' : '展开工作面板'}
+              aria-label={workPanelOpen ? "收起工作面板" : "展开工作面板"}
               aria-pressed={workPanelOpen}
               onClick={() => setWorkPanelOpen((v) => !v)}
             >
@@ -747,70 +1050,192 @@ export function CollaborationRoomsPage({
           </AppTooltip>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-          {room.goal ? <span className="truncate" title={room.goal}>目标：{room.goal}</span> : null}
+          {room.goal ? (
+            <span className="truncate" title={room.goal}>
+              目标：{room.goal}
+            </span>
+          ) : null}
           <span>成员：{members.length}</span>
           <span title={`当前运行 ${runningCount} / 并发上限 ${maxConcurrent}`}>
             并发 {runningCount}/{maxConcurrent}
           </span>
           {queuedCount > 0 ? (
-            <span className="text-amber-600" title="排队等待启动的 run">排队 {queuedCount}</span>
+            <span className="text-amber-600" title="排队等待启动的 run">
+              排队 {queuedCount}
+            </span>
           ) : null}
           {pendingMailbox.length > 0 ? (
             <span className="text-sky-600" title="尚未回复的 A2A 信封">
               信箱 {pendingMailbox.length}
             </span>
           ) : null}
-          {room.workspaceId ? <span>工作区：{room.workspaceId}</span> : null}
+          {room.roomWorkspace ? (
+            <span>工作区：房间独立服务目录</span>
+          ) : room.workspaceId ? (
+            <span>工作区：旧版个人目录兼容</span>
+          ) : null}
         </div>
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/40 bg-foreground/[0.025] px-2 py-1.5 text-[11px]">
+          <span className="font-medium text-foreground/80">用户成员</span>
+          {humanMembers.map((human) => (
+            <span
+              key={human.id}
+              className={cn(
+                "rounded-full border border-border/50 px-2 py-0.5 text-muted-foreground",
+                human.status === "active" &&
+                  "border-emerald-500/30 text-emerald-700 dark:text-emerald-300",
+                human.status === "invited" &&
+                  "border-amber-500/30 text-amber-700 dark:text-amber-300",
+                human.status === "removed" && "opacity-50 line-through",
+              )}
+              title={`${human.userId} · ${human.status}`}
+            >
+              {human.displayName}
+              {human.userId === room.ownerUserId ? " · 房主" : ""}
+              {" · "}
+              {human.status === "active"
+                ? "在线"
+                : human.status === "invited"
+                  ? "待接受"
+                  : human.status === "left"
+                    ? "已离开"
+                    : "已移除"}
+            </span>
+          ))}
+          {room.ownerUserId === "local-user" ? (
+            <div className="ml-auto flex min-w-[220px] items-center gap-1">
+              <Input
+                value={inviteUserId}
+                onChange={(event) => setInviteUserId(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void inviteHuman();
+                }}
+                placeholder="输入用户 ID 邀请"
+                className="h-6 min-w-0 flex-1 text-[11px]"
+                aria-label="输入用户 ID 邀请"
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 text-[11px]"
+                disabled={!inviteUserId.trim() || invitingUser}
+                onClick={() => void inviteHuman()}
+              >
+                邀请
+              </Button>
+            </div>
+          ) : null}
+        </div>
+        {members.some(
+          (member) =>
+            member.botProfileId &&
+            member.botOwnerUserId !== (room.ownerUserId ?? "local-user"),
+        ) ? (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.04] px-2 py-1.5 text-[11px] text-muted-foreground">
+            <span className="font-medium text-foreground/80">Bot 授权</span>
+            {members
+              .filter(
+                (member) =>
+                  member.botProfileId &&
+                  member.botOwnerUserId !== (room.ownerUserId ?? "local-user"),
+              )
+              .map((member) => (
+                <span
+                  key={member.id}
+                  className="inline-flex items-center gap-1.5"
+                >
+                  <span>{member.displayName}</span>
+                  {member.ownerConsent ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-1.5 text-[11px] text-emerald-700 dark:text-emerald-300"
+                      onClick={() => void consentBot(member.id, false)}
+                    >
+                      已授权 · 撤回
+                    </Button>
+                  ) : member.botOwnerUserId === "local-user" ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-6 px-1.5 text-[11px]"
+                      onClick={() => void consentBot(member.id, true)}
+                    >
+                      授权运行
+                    </Button>
+                  ) : (
+                    <span className="text-amber-700 dark:text-amber-300">
+                      等待所有人授权
+                    </span>
+                  )}
+                </span>
+              ))}
+          </div>
+        ) : null}
         {/* 成员状态条 */}
         {members.length > 0 ? (
           <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
             {members.map((m) => {
-              const st = memberDisplayStatus(m, runs)
-              const hasBackend = memberHasExecutableBackend(m)
+              const st = memberDisplayStatus(m, runs);
+              const hasBackend = memberHasExecutableBackend(m);
               return (
                 <CollaborationMemberSettings
                   key={m.id}
                   member={m}
                   channels={channels}
+                  cliWorkers={cliWorkers}
                   onSave={(patch) => void confirmMemberSettings(patch)}
+                  onRemove={(memberId) => void confirmRemoveMember(memberId)}
                 >
                   <button
                     type="button"
                     className={cn(
-                      'inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-foreground/[0.04] py-0.5 pl-0.5 pr-2 text-[11px] transition-colors hover:border-primary/40 hover:bg-foreground/[0.08]',
-                      st === 'running' && 'border-emerald-500/30 bg-emerald-500/10',
-                      st === 'queued' && 'border-amber-500/30 bg-amber-500/10',
-                      st === 'awaiting_peer' && 'border-sky-500/30 bg-sky-500/10',
-                      !hasBackend && 'ring-1 ring-amber-500/40',
+                      "inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-foreground/[0.04] py-0.5 pl-0.5 pr-2 text-[11px] transition-colors hover:border-primary/40 hover:bg-foreground/[0.08]",
+                      st === "running" &&
+                        "border-emerald-500/30 bg-emerald-500/10",
+                      st === "queued" && "border-amber-500/30 bg-amber-500/10",
+                      st === "awaiting_peer" &&
+                        "border-sky-500/30 bg-sky-500/10",
+                      !hasBackend && "ring-1 ring-amber-500/40",
+                      st === "removed" && "opacity-45 grayscale",
                     )}
                     aria-label={`编辑成员 ${m.displayName}`}
                   >
                     <MemberAvatar member={m} channels={channels} size={18} />
-                    <span className="font-medium text-foreground/85">{m.displayName}</span>
+                    <span className="font-medium text-foreground/85">
+                      {m.displayName}
+                    </span>
                     {m.isCoordinator ? (
                       <span className="rounded bg-primary/10 px-1 text-[9px] font-medium text-primary">
                         协调
                       </span>
                     ) : null}
-                    {!hasBackend ? (
+                    {st === "removed" ? (
+                      <span className="font-medium text-muted-foreground">
+                        已移除
+                      </span>
+                    ) : !hasBackend ? (
                       <span className="font-medium text-amber-600">无渠道</span>
                     ) : (
                       <span className="opacity-60">{channelLabel(m)}</span>
                     )}
                     <span
                       className={cn(
-                        'collab-status-dot inline-block size-1.5 rounded-full',
-                        st === 'running' && 'animate-pulse bg-emerald-500',
-                        st === 'queued' && 'bg-amber-500',
-                        st === 'awaiting_peer' && 'animate-pulse bg-sky-500',
-                        st === 'idle' && 'bg-muted-foreground/40',
-                        st === 'offline' && 'bg-muted-foreground/20',
+                        "collab-status-dot inline-block size-1.5 rounded-full",
+                        st === "running" && "animate-pulse bg-emerald-500",
+                        st === "queued" && "bg-amber-500",
+                        st === "awaiting_peer" && "animate-pulse bg-sky-500",
+                        st === "idle" && "bg-muted-foreground/40",
+                        st === "offline" && "bg-muted-foreground/20",
+                        st === "removed" && "bg-muted-foreground/30",
                       )}
                     />
                   </button>
                 </CollaborationMemberSettings>
-              )
+              );
             })}
           </div>
         ) : null}
@@ -823,11 +1248,15 @@ export function CollaborationRoomsPage({
                 title={env.payload}
               >
                 <span className="font-medium">
-                  {env.type === 'question' ? '待回复' : env.type === 'reply' ? '回复' : '通知'}
+                  {env.type === "question"
+                    ? "待回复"
+                    : env.type === "reply"
+                      ? "回复"
+                      : "通知"}
                 </span>
-                {' · '}
+                {" · "}
                 {memberName(env.fromMemberId)} → {memberName(env.toMemberId)}
-                {' · '}
+                {" · "}
                 {env.payload}
               </li>
             ))}
@@ -840,7 +1269,7 @@ export function CollaborationRoomsPage({
       <div className="flex min-h-0 flex-1">
         <div className="session-chat-col relative flex min-h-0 min-w-0 flex-1 flex-col">
           {/* 时间线（S3.5-c：一 run 一卡，对齐会话信息流） */}
-          <CollaborationTimeline
+          <CollaborationTimeline key={room.id}
             messages={messages}
             runs={runs}
             members={members}
@@ -855,7 +1284,9 @@ export function CollaborationRoomsPage({
             dismissedDepthStopIds={dismissedDepthStopIds}
             continuingDepthStopId={continuingDepthStopId}
             depthStopErrorByEnvelope={depthStopErrorByEnvelope}
-            onContinueDepthStop={(envelopeId) => void handleContinueDepthStop(envelopeId)}
+            onContinueDepthStop={(envelopeId) =>
+              void handleContinueDepthStop(envelopeId)
+            }
             onDismissDepthStop={handleDismissDepthStop}
             approvals={approvals}
             resolvingApprovalId={resolvingApprovalId}
@@ -879,12 +1310,13 @@ export function CollaborationRoomsPage({
               ) : allMembersMissingBackend ? (
                 <div className="flex flex-col items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-3 text-center">
                   <p className="text-xs text-amber-700 dark:text-amber-300">
-                    所有成员都未绑定可用渠道（kscc / 外部渠道），发送后无法跑起任何回复。
+                    所有成员都未绑定可用渠道（kscc /
+                    外部渠道），发送后无法跑起任何回复。
                   </p>
                   <button
                     type="button"
                     className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                    onClick={() => onOpenSettings?.('channels')}
+                    onClick={() => onOpenSettings?.("channels")}
                   >
                     去渠道设置
                   </button>
@@ -895,7 +1327,7 @@ export function CollaborationRoomsPage({
                   <button
                     type="button"
                     className="rounded-full bg-primary px-2.5 py-0.5 font-medium text-primary-foreground hover:bg-primary/90"
-                    onClick={() => onOpenSettings?.('channels')}
+                    onClick={() => onOpenSettings?.("channels")}
                   >
                     去渠道设置
                   </button>
@@ -908,8 +1340,13 @@ export function CollaborationRoomsPage({
                     placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@所有人 唤醒全部）"
                     onDraftChange={setHasDraft}
                     mentionRoles={[
-                      ...(members.length > 0 ? [COLLABORATION_ALL_MENTION] : []),
-                      ...members.map((m) => ({ id: m.id, displayName: m.displayName })),
+                      ...(activeMembers.length > 0
+                        ? [COLLABORATION_ALL_MENTION]
+                        : []),
+                      ...activeMembers.map((m) => ({
+                        id: m.id,
+                        displayName: m.displayName,
+                      })),
                     ]}
                     onMentionChange={setComposerMentionIds}
                     footer={
@@ -960,7 +1397,7 @@ export function CollaborationRoomsPage({
       </div>
 
       <CollaborationTextPrompt
-        open={textPrompt === 'rename'}
+        open={textPrompt === "rename"}
         title="重命名协作室"
         defaultValue={room.title}
         confirmLabel="保存"
@@ -968,6 +1405,5 @@ export function CollaborationRoomsPage({
         onConfirm={(title) => void confirmRename(title)}
       />
     </div>
-  )
+  );
 }
-

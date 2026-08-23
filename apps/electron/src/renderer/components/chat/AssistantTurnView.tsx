@@ -5,8 +5,8 @@
  * - full：过程区逐条 + 底部回答壳
  * - concise：Cursor 式时间线（外层「运行了」容器 + 过程链 + 最终正文）
  */
-import { useMemo, useRef } from "react";
-import { useAtomValue } from "jotai";
+import { useEffect, useMemo, useRef } from "react";
+import { useAtomValue, useSetAtom } from "jotai";
 import { CheckCircle, StopCircle, WarningCircle } from "@phosphor-icons/react";
 import {
   AppTooltip,
@@ -47,9 +47,12 @@ import {
 import { cn } from "../../lib/utils";
 import { SpeakerHeader, resolveSpeakerName } from "./SpeakerHeader";
 import { chatProcessDisplayModeAtom } from "../../atoms/chat-display-prefs";
+import { sessionPlanProgressAtom } from "../../atoms/plan-progress-atoms";
 
 interface AssistantTurnViewProps {
+  sessionId?: string;
   turn: Extract<SessionRenderTurn, { kind: "assistant-turn" }>;
+
   /** 当前会话仍在跑且本 turn 是最新一轮（含工具间隙） */
   isLiveTurn?: boolean;
   /** 本轮从用户发送开始的统一计时起点；与底部运行胶囊保持一致。 */
@@ -79,6 +82,7 @@ interface AssistantTurnViewProps {
 }
 
 export function AssistantTurnView({
+  sessionId,
   turn,
   isLiveTurn = false,
   runStartedAt,
@@ -116,6 +120,8 @@ export function AssistantTurnView({
   });
   // 过程展示模式：concise → 时间线投影；full → 过程区 + 回答壳
   const processDisplayMode = useAtomValue(chatProcessDisplayModeAtom);
+  const setSessionPlanProgress = useSetAtom(sessionPlanProgressAtom);
+
   const isConcise = processDisplayMode === "concise";
   const presentation = buildTurnPresentation(
     { ...turn, items: mainItems },
@@ -263,14 +269,46 @@ export function AssistantTurnView({
 
   // Cursor 式 Files Changed：回合结束后从编辑工具聚合
   const editedFiles = useMemo(
-    () => (!processLive ? collectTurnEditedFiles(presentation.process) : []),
-    [processLive, presentation.process],
+    () => collectTurnEditedFiles(presentation.process),
+    [presentation.process],
   );
   // 本轮编辑补丁（与 editedFiles 同源；分屏审阅还原旧稿 / 算 unified diff 用）
   const editedPatches = useMemo(
     () => (!processLive ? collectTurnFilePatches(presentation.process) : []),
     [processLive, presentation.process],
   );
+  const planFileSummary = useMemo(() => {
+    if (editedFiles.length === 0) return undefined;
+    return {
+      count: editedFiles.length,
+      additions: editedFiles.reduce((sum, file) => sum + file.add, 0),
+      deletions: editedFiles.reduce((sum, file) => sum + file.del, 0),
+    };
+  }, [editedFiles]);
+  useEffect(() => {
+    if (!isLatestAssistantTurn || !planFileSummary || !sessionId) return;
+    setSessionPlanProgress((prev) => {
+      const currentProgress = prev[sessionId];
+      if (!currentProgress) return prev;
+      const previous = currentProgress.filesChanged;
+      if (
+        previous?.count === planFileSummary.count &&
+        previous?.additions === planFileSummary.additions &&
+        previous?.deletions === planFileSummary.deletions
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [sessionId]: { ...currentProgress, filesChanged: planFileSummary },
+      };
+    });
+  }, [
+    isLatestAssistantTurn,
+    planFileSummary,
+    sessionId,
+    setSessionPlanProgress,
+  ]);
   const filesCard =
     editedFiles.length > 0 ? (
       <TurnFilesChangedCard files={editedFiles} patches={editedPatches} />

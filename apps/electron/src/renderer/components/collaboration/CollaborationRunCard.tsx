@@ -141,7 +141,12 @@ export function CollaborationRunCard({
           ) : cancelled ? (
             <span className="text-xs text-muted-foreground">已取消</span>
           ) : blocked ? (
-            <span className="text-xs text-amber-600">阻塞，等待用户处理</span>
+            <div className="flex flex-col gap-1 text-xs text-amber-700 dark:text-amber-300">
+              <span>阻塞，等待用户处理</span>
+              {run.error?.message ? (
+                <span className="text-muted-foreground">{run.error.message}</span>
+              ) : null}
+            </div>
           ) : null}
         </div>
 

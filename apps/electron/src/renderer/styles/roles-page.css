@@ -172,7 +172,7 @@
   background: hsl(var(--foreground) / 0.04);
 }
 
-.roles-filters__btn[aria-selected='true'] {
+.roles-filters__btn[aria-selected="true"] {
   border-color: hsl(var(--primary) / 0.35);
   background: hsl(var(--primary) / 0.12);
   color: hsl(var(--primary));
@@ -608,4 +608,272 @@
   .roles-card-grid > li:active {
     transform: none;
   }
+}
+/* Bot 库：沿用角色库卡片语言，增加长期身份/记忆的轻量层级。 */
+.bots-library {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.bots-library__header {
+  align-items: flex-start;
+}
+
+.bots-card__avatar {
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 18%,
+    rgb(var(--glass-rgb) / 0.72)
+  );
+  color: hsl(var(--primary));
+}
+
+.bots-card__archive {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: hsl(var(--muted-foreground));
+  background: rgb(var(--glass-rgb) / 0.35);
+  cursor: pointer;
+  transition:
+    color 180ms ease,
+    background 180ms ease,
+    border-color 180ms ease;
+}
+
+.bots-card__archive:hover,
+.bots-card__archive:focus-visible {
+  color: hsl(var(--destructive));
+  border-color: hsl(var(--destructive) / 0.35);
+  background: hsl(var(--destructive) / 0.1);
+  outline: none;
+}
+
+.bots-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.bots-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.bots-form__hint {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.bots-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: auto;
+}
+
+.bots-detail-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 0;
+}
+
+.bots-runtime-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--surface-rim, rgb(var(--glass-rgb) / 0.42));
+  border-radius: var(--r-radius-sm);
+  background: rgb(var(--glass-rgb) / 0.2);
+}
+
+.bots-runtime-panel__head,
+.bots-runtime-panel__foot {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bots-runtime-panel__head h3 {
+  margin: 0;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.bots-runtime-panel__head p,
+.bots-runtime-panel__foot,
+.bots-runtime-field label {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.bots-runtime-panel__head p {
+  margin: 5px 0 0;
+}
+
+.bots-runtime-panel__summary {
+  flex: 0 0 auto;
+  max-width: 46%;
+  padding: 3px 7px;
+  border: 1px solid hsl(var(--primary) / 0.22);
+  border-radius: 999px;
+  color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.08);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.bots-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.bots-runtime-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.bots-runtime-field label {
+  color: hsl(var(--foreground) / 0.75);
+  font-size: 11px;
+}
+
+.bots-runtime-field [data-slot="select-trigger"] {
+  min-height: 34px;
+  font-size: 12px;
+}
+
+.bots-runtime-panel__foot {
+  align-items: center;
+  font-size: 10.5px;
+}
+
+.bots-runtime-panel__foot > span {
+  min-width: 0;
+  line-height: 1.45;
+}
+
+@media (max-width: 560px) {
+  .bots-runtime-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bots-runtime-panel__head {
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .bots-runtime-panel__summary {
+    max-width: 100%;
+  }
+}
+.bots-memory-panel {
+  padding: 14px;
+  border: 1px solid var(--surface-rim, rgb(var(--glass-rgb) / 0.42));
+  border-radius: var(--r-radius-sm);
+  background: rgb(var(--glass-rgb) / 0.2);
+}
+
+.bots-memory-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bots-memory-panel__head h3 {
+  margin: 0;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.bots-memory-panel__head p,
+.bots-memory-panel__empty {
+  margin: 5px 0 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.bots-memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bots-memory-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border-radius: 9px;
+  background: rgb(var(--glass-rgb) / 0.24);
+}
+
+.bots-memory-item p {
+  margin: 7px 0 0;
+  color: hsl(var(--foreground) / 0.9);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.bots-memory-item__state--candidate {
+  color: hsl(var(--warning, 38 92% 48%));
+}
+
+@media (max-width: 640px) {
+  .bots-library__header {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .bots-library__header .roles-shell__actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .bots-memory-item {
+    flex-direction: column;
+  }
+}
+.bots-form__select {
+  width: 100%;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid hsl(var(--border) / 0.7);
+  border-radius: 0.55rem;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background) / 0.48);
+  font-size: 0.8rem;
+  outline: none;
+}
+
+.bots-form__select:focus {
+  border-color: hsl(var(--ring));
+  box-shadow: 0 0 0 2px hsl(var(--ring) / 0.18);
 }

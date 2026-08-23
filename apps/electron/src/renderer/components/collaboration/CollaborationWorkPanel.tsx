@@ -21,6 +21,7 @@ import {
   ArrowClockwise,
   CaretDown,
   CaretRight,
+  DownloadSimple,
   Eye,
   FileText,
   PencilSimple,
@@ -219,6 +220,24 @@ export function CollaborationWorkPanel({
     [room.id, onChanged],
   )
 
+  const downloadArtifact = useCallback(
+    async (artifactId: string): Promise<void> => {
+      try {
+        const result = await window.electronAPI.downloadCollaborationArtifact({
+          roomId: room.id,
+          artifactId,
+        })
+        if (!result.ok) {
+          toast.error(result.reason)
+        } else if (!("canceled" in result)) {
+          toast.success("产物已下载：" + result.path)
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "下载产物失败")
+      }
+    },
+    [room.id],
+  )
   const previewArtifact = useCallback(
     async (artifactId: string): Promise<void> => {
       if (previewId === artifactId) {
@@ -431,6 +450,7 @@ export function CollaborationWorkPanel({
                   previewOpen={previewId === art.id}
                   preview={preview}
                   onPreview={() => void previewArtifact(art.id)}
+                  onDownload={() => void downloadArtifact(art.id)}
                   onLocateRun={onLocateRun}
                   onLocateTask={locateTask}
                   memberName={memberName}
@@ -708,6 +728,7 @@ interface ArtifactRowProps {
   previewOpen: boolean
   preview: PreviewState
   onPreview: () => void
+  onDownload: () => void
   onLocateRun: (runId: string) => void
   onLocateTask: (taskId: string) => void
   memberName: (memberId: string | undefined) => string | null
@@ -721,6 +742,7 @@ function ArtifactRow({
   previewOpen,
   preview,
   onPreview,
+  onDownload,
   onLocateRun,
   onLocateTask,
   memberName,
@@ -791,7 +813,15 @@ function ArtifactRow({
               <Eye size={11} />
               {previewOpen ? '收起预览' : '预览文本'}
             </button>
-            <ArrowClockwise size={11} className="text-muted-foreground/50" />
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-full border border-border/50 bg-foreground/[0.03] px-2 py-0.5 text-[10px] transition-colors hover:border-primary/40 hover:bg-primary/10"
+              onClick={onDownload}
+              title="下载到本地"
+            >
+              <DownloadSimple size={11} />
+              下载
+            </button>            <ArrowClockwise size={11} className="text-muted-foreground/50" />
           </div>
         </div>
       </div>

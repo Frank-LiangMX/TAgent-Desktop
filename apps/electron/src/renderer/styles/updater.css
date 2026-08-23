@@ -320,3 +320,73 @@
     animation: none;
   }
 }
+
+/* 关于页：把更新检查器从普通设置行提升为状态面板 */
+.settings-dialog-shell .upd-checker {
+  gap: 8px;
+  padding: 6px 10px 8px;
+}
+
+.settings-dialog-shell .upd-checker-main {
+  min-height: 56px;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.settings-dialog-shell .upd-checker-dot {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border-color: var(--spatial-accent-line);
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 0.22), transparent 72%),
+    var(--spatial-accent-soft);
+  color: var(--spatial-accent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.36);
+}
+
+.dark .settings-dialog-shell .upd-checker-dot {
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 0.08), transparent 72%),
+    var(--spatial-accent-soft);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
+}
+
+.settings-dialog-shell .upd-checker-body {
+  gap: 4px;
+}
+
+.settings-dialog-shell .upd-checker-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-dialog-shell .upd-checker-sub {
+  font-size: 11px;
+  color: var(--spatial-muted);
+}
+
+.settings-dialog-shell .upd-checker-btn {
+  min-height: 32px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.settings-dialog-shell .upd-checker-btn:not(:disabled):not([data-style='accent']) {
+  border-color: var(--spatial-accent-line);
+  background: var(--spatial-accent-soft);
+  color: var(--spatial-accent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.24);
+}
+
+.settings-dialog-shell .upd-checker-btn:not(:disabled):not([data-style='accent']):hover {
+  border-color: var(--spatial-accent-line);
+  background: color-mix(in srgb, var(--spatial-accent) 18%, var(--settings-chip-fill));
+  color: var(--spatial-accent);
+}
+
+.settings-dialog-shell .upd-checker-track {
+  height: 4px;
+  margin: 0;
+}

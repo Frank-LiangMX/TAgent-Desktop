@@ -2,8 +2,8 @@
  * 协作室时间线（S3.5-c）：用户/系统/A2A 独立条目 + 一 run 一卡。
  * 纯函数 groupCollaborationTimelineItems 负责收拢，本组件只渲染。
  */
-import { Fragment, type Ref } from 'react'
-import { MessageResponse } from '@tagent/ui'
+import { Fragment, type Ref, useState } from 'react'
+import { Button, MessageResponse } from '@tagent/ui'
 import {
   groupCollaborationTimelineItems,
   type Channel,
@@ -75,7 +75,12 @@ export function CollaborationTimeline({
   onResolveApproval,
 }: CollaborationTimelineProps): JSX.Element {
   const items = groupCollaborationTimelineItems(messages, runs)
+  const [visibleCount, setVisibleCount] = useState(120)
   const empty = messages.length === 0 && runs.length === 0
+  const hiddenCount = Math.max(0, items.length - visibleCount)
+  const visibleItems = hiddenCount > 0 ? items.slice(hiddenCount) : items
+  const getScrollElement = (): HTMLDivElement | null =>
+    typeof scrollRef === "function" || scrollRef === null ? null : scrollRef.current
 
   return (
     <div
@@ -89,7 +94,29 @@ export function CollaborationTimeline({
       ) : (
         <div className="tagent-thread collab-timeline-thread pb-44">
           <ul className="flex flex-col gap-2.5">
-            {items.map((item) => {
+            {hiddenCount > 0 ? (
+              <li className="flex justify-center py-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs text-muted-foreground"
+                  onClick={() => {
+                    const previousHeight = getScrollElement()?.scrollHeight ?? 0
+                    const previousTop = getScrollElement()?.scrollTop ?? 0
+                    setVisibleCount((count) => count + 120)
+                    requestAnimationFrame(() => {
+                      const element = getScrollElement()
+                      if (!element) return
+                      element.scrollTop = previousTop + element.scrollHeight - previousHeight
+                    })
+                  }}
+                >
+                  加载更早的 {hiddenCount} 条消息
+                </Button>
+              </li>
+            ) : null}
+            {visibleItems.map((item) => {
               if (item.type === 'user') {
                 return (
                   <li key={item.message.id} data-message-id={item.message.id} className="flex justify-end gap-2">

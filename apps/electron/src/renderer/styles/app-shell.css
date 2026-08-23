@@ -2110,3 +2110,26 @@
 .light .app-workspace-tab-status[data-status='done'] {
   background: hsl(152 36% 36% / 0.9);
 }
+
+/* ===== UI chrome 文字选择策略 =====
+ * 壳层控件不可选，内容区域保持可复制；不要扩展到整个 app-shell-main。
+ */
+.app-nav-stack,
+.app-spatial-topbar,
+.app-workspace-tab-strip,
+.workspace-dock .dv-tabs-and-actions-container,
+.workspace-dock__summary,
+.settings-dialog-shell {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 设置面板里的输入和显式标记内容仍可编辑/复制 */
+.settings-dialog-shell input,
+.settings-dialog-shell textarea,
+.settings-dialog-shell [contenteditable='true'],
+.settings-dialog-shell .select-text,
+.settings-dialog-shell [data-allow-text-selection='true'] {
+  user-select: text;
+  -webkit-user-select: text;
+}

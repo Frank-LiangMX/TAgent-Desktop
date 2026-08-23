@@ -11,7 +11,7 @@
  */
 
 import { ArrowDownIcon } from 'lucide-react'
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom'
 
 import type { ComponentProps, ReactNode } from 'react'
@@ -101,13 +101,53 @@ export function ConversationScrollButton({
   className,
   ...props
 }: ConversationScrollButtonProps): React.ReactElement | null {
-  const { isAtBottom, scrollToBottom } = useStickToBottomContext()
+  const { scrollRef, contentRef, scrollToBottom } = useStickToBottomContext()
+  const [isActuallyAtBottom, setIsActuallyAtBottom] = useState(true)
+  const syncRafRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    const scroller = scrollRef.current
+    if (!scroller) return
+
+    const sync = (): void => {
+      if (syncRafRef.current != null) return
+      syncRafRef.current = requestAnimationFrame(() => {
+        syncRafRef.current = null
+        const distance =
+          scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+        setIsActuallyAtBottom(distance <= 8)
+      })
+    }
+
+    sync()
+    scroller.addEventListener('scroll', sync, { passive: true })
+    const resizeObserver = new ResizeObserver(sync)
+    resizeObserver.observe(scroller)
+    if (contentRef.current) resizeObserver.observe(contentRef.current)
+
+    return () => {
+      scroller.removeEventListener('scroll', sync)
+      resizeObserver.disconnect()
+      if (syncRafRef.current != null) {
+        cancelAnimationFrame(syncRafRef.current)
+        syncRafRef.current = null
+      }
+    }
+  }, [contentRef, scrollRef])
 
   const handleScrollToBottom = useCallback(() => {
-    scrollToBottom()
-  }, [scrollToBottom])
+    void Promise.resolve(scrollToBottom('instant')).finally(() => {
+      const scroller = scrollRef.current
+      if (scroller) {
+        scroller.scrollTop = Math.max(
+          0,
+          scroller.scrollHeight - scroller.clientHeight,
+        )
+      }
+    })
+  }, [scrollRef, scrollToBottom])
 
-  if (isAtBottom) return null
+  if (isActuallyAtBottom) return null
 
   return (
     <Button

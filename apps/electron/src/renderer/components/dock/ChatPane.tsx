@@ -12,6 +12,7 @@ import { useAtomValue } from 'jotai'
 import type { IDockviewPanelProps } from 'dockview'
 import { Chat, type SessionMeta } from '../chat/Chat'
 import { tabsAtom, type TabItem } from '../../atoms/tabs'
+import { usePersistedSessionMeta } from '../../hooks/usePersistedSessionMeta'
 
 /** 本面板的 params（addPanel 时传入） */
 interface ChatPaneParams {
@@ -23,6 +24,7 @@ export function ChatPane(props: IDockviewPanelProps<ChatPaneParams>): JSX.Elemen
   const sessionId = params?.sessionId
   const tabs = useAtomValue(tabsAtom)
   const tab = tabs.find((t: TabItem) => t.sessionId === sessionId)
+  const persistedMeta = usePersistedSessionMeta(sessionId)
 
   // 点 chat 内部班组按钮 → 开/聚焦绑定本会话的 crew pane（containerApi 同 WorkspaceDock 的 api）
   const onOpenCrew = useCallback((): void => {
@@ -58,6 +60,7 @@ export function ChatPane(props: IDockviewPanelProps<ChatPaneParams>): JSX.Elemen
     workspaceId: tab.workspaceId,
     modelId: tab.modelId,
     channelId: tab.channelId,
+    botProfileIds: persistedMeta?.botProfileIds,
   }
 
   return <Chat key={sessionId} session={session} crewExternalized onOpenCrew={onOpenCrew} />

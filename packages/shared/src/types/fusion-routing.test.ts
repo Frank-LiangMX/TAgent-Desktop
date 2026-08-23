@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { resolveFusionCoordinator, resolveFusionRoute } from "./fusion-routing";
+import {
+  parseFusionBotMentions,
+  resolveFusionCoordinator,
+  resolveFusionRoute,
+  resolveSessionFusionRoute,
+} from "./fusion-routing";
 
 const seats = [
   {
@@ -29,9 +34,12 @@ describe("fusion routing", () => {
   test("只有一个可用 Bot 时就是普通直聊路径", () => {
     expect(
       resolveFusionRoute({
-        seats: (seats
-          .map((seat) => ({ ...seat, status: "paused" as const })) as typeof seats)
-          .concat([{ ...seats[0]!, status: "idle" as const }]),
+        seats: (
+          seats.map((seat) => ({
+            ...seat,
+            status: "paused" as const,
+          })) as typeof seats
+        ).concat([{ ...seats[0]!, status: "idle" as const }]),
       }),
     ).toEqual({ ok: true, seatId: "seat_a", reason: "single-bot-default" });
   });
@@ -68,6 +76,89 @@ describe("fusion routing", () => {
     ).toEqual({
       ok: false,
       reason: "no-routable-bot",
+    });
+  });
+});
+
+describe("session fusion routing", () => {
+  const bots = [
+    { id: "bot_writer", displayName: "写作 Bot" },
+    { id: "bot_reviewer", displayName: "审阅 Bot" },
+  ];
+
+  test("解析当前会话已加入 Bot 的名称和 id 提及", () => {
+    expect(
+      parseFusionBotMentions("请 @写作 Bot 先写，@bot_reviewer 再审阅", bots),
+    ).toEqual([
+      {
+        botProfileId: "bot_writer",
+        displayName: "写作 Bot",
+        raw: "@写作 Bot",
+        index: 2,
+      },
+      {
+        botProfileId: "bot_reviewer",
+        displayName: "审阅 Bot",
+        raw: "@bot_reviewer",
+        index: 13,
+      },
+    ]);
+  });
+
+  test("0/1/多 Bot 共享稳定路由规则", () => {
+    expect(resolveSessionFusionRoute(undefined)).toEqual({
+      mode: "ordinary",
+      reason: "ordinary-default",
+    });
+    expect(resolveSessionFusionRoute(["bot_writer"])).toMatchObject({
+      mode: "single-bot",
+      targetBotProfileId: "bot_writer",
+      reason: "single-bot-default",
+    });
+    expect(
+      resolveSessionFusionRoute(["bot_writer", "bot_reviewer"]),
+    ).toMatchObject({
+      mode: "multi-bot",
+      targetBotProfileId: "bot_writer",
+      coordinatorBotProfileId: "bot_writer",
+      reason: "coordinator-default",
+    });
+  });
+
+  test("持久化协调者仍在席位中时优先于数组第一项", () => {
+    expect(
+      resolveSessionFusionRoute(
+        ["bot_writer", "bot_reviewer"],
+        [],
+        "bot_reviewer",
+      ),
+    ).toMatchObject({
+      mode: "multi-bot",
+      targetBotProfileId: "bot_reviewer",
+      coordinatorBotProfileId: "bot_reviewer",
+      reason: "coordinator-default",
+    });
+  });
+  test("@ 指定 Bot；未加入的 Bot 不改变默认协调者", () => {
+    expect(
+      resolveSessionFusionRoute(
+        ["bot_writer", "bot_reviewer"],
+        ["bot_reviewer"],
+      ),
+    ).toMatchObject({
+      mode: "multi-bot",
+      targetBotProfileId: "bot_reviewer",
+      reason: "explicit-mention",
+    });
+    expect(
+      resolveSessionFusionRoute(
+        ["bot_writer", "bot_reviewer"],
+        ["bot_missing"],
+      ),
+    ).toMatchObject({
+      mode: "multi-bot",
+      coordinatorBotProfileId: "bot_writer",
+      reason: "mentioned-bot-unavailable",
     });
   });
 });

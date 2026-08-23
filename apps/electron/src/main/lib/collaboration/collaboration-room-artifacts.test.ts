@@ -46,6 +46,7 @@ import {
 } from './collaboration-room-repository'
 import { getRoom, upsertRoom, upsertRun } from './collaboration-room-repository'
 import { getOrCreateWorkspace } from '../workspace/workspace-manager'
+import { getCollaborationRoomWorkspaceDir } from '../config/config-paths'
 
 let tmpDir: string
 /** 测试期间创建的工作区项目目录，结束后统一清理 */
@@ -112,9 +113,10 @@ function mkWriterRoom(
       },
     ],
   })
+  const roomWorkspaceDir = getCollaborationRoomWorkspaceDir(room.id)
   const writerId = svc.listMembers(room.id)[0]!.id
   const runId = mkRunningRun(room.id, writerId)
-  return { room, writerId, runId, wsProjectDir }
+  return { room, writerId, runId, wsProjectDir: roomWorkspaceDir }
 }
 
 /** 计算一段文本 UTF-8 字节的 sha256（hex），用于和落盘 artifact 比对。 */
@@ -488,6 +490,7 @@ describe('CollaborationRoomService.roomPublishArtifact 授权守卫', () => {
       title: 'no-ws',
       members: [{ displayName: '开发', isCoordinator: true, permissionProfile: 'workspace-write' }],
     })
+    upsertRoom({ ...room, roomWorkspace: undefined })
     const writerId = svc.listMembers(room.id)[0]!.id
     const runId = mkRunningRun(room.id, writerId)
     const res = svc.roomPublishArtifact({
@@ -497,7 +500,7 @@ describe('CollaborationRoomService.roomPublishArtifact 授权守卫', () => {
       content: 'x',
     })
     expect(res.ok).toBe(false)
-    if (!res.ok) expect(res.reason).toMatch(/未绑定工作区/)
+    if (!res.ok) expect(res.reason).toMatch(/未绑定工作区|房间服务工作区不存在/)
   })
 
   test('拒绝：绑定的工作区 meta 不存在（workspaceId 指向已删除工作区）', () => {
@@ -507,6 +510,7 @@ describe('CollaborationRoomService.roomPublishArtifact 授权守卫', () => {
       workspaceId: 'F--nonexistent-workspace',
       members: [{ displayName: '开发', isCoordinator: true, permissionProfile: 'workspace-write' }],
     })
+    upsertRoom({ ...room, roomWorkspace: undefined })
     const writerId = svc.listMembers(room.id)[0]!.id
     const runId = mkRunningRun(room.id, writerId)
     const res = svc.roomPublishArtifact({

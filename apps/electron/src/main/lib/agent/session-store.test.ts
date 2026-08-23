@@ -193,6 +193,23 @@ describe('session-store persistence smoke', () => {
     expect(store.readPanelMessages(meta.workspaceId, meta.id)).toHaveLength(1)
   })
 
+  it('persists session Bot references across module reloads', async () => {
+    const store = await loadStore()
+    const created = store.createSession({
+      id: 'session-bot-members',
+      workspaceId: 'workspace-bot-members',
+    })
+
+    store.updateSessionMeta(created.id, {
+      botProfileIds: ['bot-researcher', 'bot-writer'],
+    })
+
+    const reloaded = await loadStore()
+    expect(reloaded.getSessionMeta(created.id)?.botProfileIds).toEqual([
+      'bot-researcher',
+      'bot-writer',
+    ])
+  })
   it('persists soft-reset meta fields (Phase 1.3)', async () => {
     const store = await loadStore()
     const created = store.createSession({

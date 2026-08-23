@@ -8,8 +8,7 @@
  * - release：executeRun 终态（done/failed/cancelled）后在 finally 调用，释放 slot 并 drain。
  * - dequeue：cancelRun 在 run 仍排队（未占 slot）时移除，避免无谓 start。
  *
- * 重启恢复：queued/running 一律由 service.recoverInterruptedRuns 标 interrupted（S2 一致），
- * 不跨重启保留队列（避免假 running / 重复副作用）。本调度器为单实例内存态，重启即空。
+ * 重启恢复：scheduler 本身仍是单实例内存态，重启即空；service 只对尚未启动且满足安全条件的 queued run 重新入队，running/awaiting_peer 不自动重放。
  *
  * 设计参考：03-IMPLEMENTATION-PHASES §5「RoomScheduler：房间总并发、成员内串行、公平队列」、
  * 02-RUNTIME-A2A-SPEC §9（并发上限）。

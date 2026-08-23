@@ -1,0 +1,564 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUpRight, Maximize2, Minus, Send, X } from "lucide-react";
+import type { BotProfileRecord, BotSidecarState } from "@tagent/shared";
+import { Button, MessageResponse, Textarea } from "@tagent/ui";
+
+export interface BotSidecarPanelProps {
+  sessionId: string;
+  bot: BotProfileRecord;
+  contextText: string;
+  fallbackChannelId?: string;
+  fallbackModelId?: string;
+  onClose: () => void;
+}
+
+const DEFAULT_POSITION = { x: 24, y: 96 };
+
+type BotSidecarStreamPacket = {
+  sessionId?: string;
+  payload?: {
+    kind?: string;
+    text?: string;
+    replace?: boolean;
+    message?: {
+      content?: Array<{ type?: string; text?: string }>;
+    };
+    event?: { type?: string; message?: string };
+  };
+};
+
+function assistantTextFromMessage(
+  message:
+    | { type?: string; content?: Array<{ type?: string; text?: string }> }
+    | undefined,
+): string {
+  if (
+    !message ||
+    (message.type && message.type !== "assistant") ||
+    !Array.isArray(message.content)
+  )
+    return "";
+  return message.content
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text ?? "")
+    .join("");
+}
+
+type SidecarChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+};
+
+function updateAssistantMessageList(
+  current: SidecarChatMessage[],
+  text: string,
+  replace: boolean,
+): SidecarChatMessage[] {
+  const lastIndex = current.length - 1;
+  const last = current[lastIndex];
+  if (last?.role === "assistant") {
+    return [
+      ...current.slice(0, lastIndex),
+      { ...last, text: replace ? text : last.text + text },
+    ];
+  }
+  return [
+    ...current,
+    { id: "assistant-" + Date.now(), role: "assistant", text },
+  ];
+}
+
+export function BotSidecarPanel({
+  sessionId,
+  bot,
+  contextText,
+  fallbackChannelId,
+  fallbackModelId,
+  onClose,
+}: BotSidecarPanelProps): JSX.Element {
+  const [state, setState] = useState<BotSidecarState | null>(null);
+  const [minimized, setMinimized] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [analysisText, setAnalysisText] = useState("");
+  const [messages, setMessages] = useState<SidecarChatMessage[]>([]);
+  const messageScrollRef = useRef<HTMLDivElement | null>(null);
+  const messageIdRef = useRef(0);
+  const [analysisRunning, setAnalysisRunning] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [position, setPosition] = useState(DEFAULT_POSITION);
+  const dragRef = useRef<{
+    dx: number;
+    dy: number;
+    originX: number;
+    originY: number;
+    containerLeft: number;
+    containerTop: number;
+    pointerId: number;
+    moved: boolean;
+    target: HTMLElement | null;
+  } | null>(null);
+  const lastDragMovedRef = useRef(false);
+
+  useEffect(() => {
+    let disposed = false;
+    let openedSidecarId: string | null = null;
+    void window.electronAPI
+      .openBotSidecar({ sessionId, botProfileId: bot.profile.id })
+      .then((next) => {
+        openedSidecarId = next.sidecarId;
+        if (!disposed) {
+          setState(next);
+          setMinimized(next.lifecycle === "minimized");
+        } else {
+          void window.electronAPI.closeBotSidecar({
+            sidecarId: next.sidecarId,
+          });
+        }
+      })
+      .catch((error) => {
+        if (!disposed)
+          setNotice(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      disposed = true;
+      if (openedSidecarId) {
+        void window.electronAPI.closeBotSidecar({ sidecarId: openedSidecarId });
+      }
+    };
+  }, [bot.profile.id, sessionId]);
+
+  useEffect(() => {
+    const agentSessionId = state?.agentSessionId;
+    if (!agentSessionId) return;
+    const off = window.electronAPI.onStreamEvent((raw: unknown) => {
+      const packet = raw as BotSidecarStreamPacket;
+      if (packet.sessionId !== agentSessionId) return;
+      const payload = packet.payload;
+      if (!payload) return;
+
+      // KSCC 可能发送增量控制事件；Pi 主要发送累计的 sdk_message 快照。
+      if (payload.kind === "stream_text_delta" && payload.text) {
+        const text = payload.text;
+        setAnalysisText((current) => (payload.replace ? text : current + text));
+        setMessages((current) =>
+          updateAssistantMessageList(current, text, payload.replace === true),
+        );
+      } else if (payload.kind === "sdk_message") {
+        const text = assistantTextFromMessage(payload.message);
+        if (text) {
+          setAnalysisText(text);
+          setMessages((current) =>
+            updateAssistantMessageList(current, text, true),
+          );
+        }
+      } else if (
+        payload.kind === "tagent_event" &&
+        (payload.event?.type === "turn_end" ||
+          payload.event?.type === "complete")
+      ) {
+        setAnalysisRunning(false);
+      } else if (
+        payload.kind === "tagent_event" &&
+        payload.event?.type === "session_error"
+      ) {
+        const message = payload.event.message ?? "Bot 回复失败";
+        setAnalysisRunning(false);
+        setNotice(message);
+        setAnalysisText(message);
+        setMessages((current) =>
+          updateAssistantMessageList(current, message, true),
+        );
+      }
+    });
+    return () => off();
+  }, [state?.agentSessionId]);
+
+  useEffect(() => {
+    const node = messageScrollRef.current;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, [messages, analysisRunning]);
+
+  useEffect(() => {
+    const move = (event: PointerEvent): void => {
+      const drag = dragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      if (
+        Math.abs(event.clientX - drag.originX) > 3 ||
+        Math.abs(event.clientY - drag.originY) > 3
+      ) {
+        drag.moved = true;
+      }
+      setPosition({
+        x: Math.max(8, event.clientX - drag.containerLeft - drag.dx),
+        y: Math.max(48, event.clientY - drag.containerTop - drag.dy),
+      });
+    };
+    const up = (event: PointerEvent): void => {
+      const drag = dragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      lastDragMovedRef.current = drag.moved;
+      drag.target?.releasePointerCapture?.(drag.pointerId);
+      dragRef.current = null;
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+  }, []);
+
+  const startDrag = (event: React.PointerEvent<HTMLElement>): void => {
+    const target = event.currentTarget;
+    const panel = target.closest<HTMLElement>(
+      ".bot-sidecar-panel, .bot-sidecar-orb",
+    );
+    const container = panel?.offsetParent as HTMLElement | null;
+    const panelRect = panel?.getBoundingClientRect();
+    const containerRect = container?.getBoundingClientRect();
+    if (!panelRect || !containerRect) return;
+    lastDragMovedRef.current = false;
+    dragRef.current = {
+      dx: event.clientX - panelRect.left,
+      dy: event.clientY - panelRect.top,
+      originX: event.clientX,
+      originY: event.clientY,
+      containerLeft: containerRect.left,
+      containerTop: containerRect.top,
+      pointerId: event.pointerId,
+      moved: false,
+      target,
+    };
+    target.setPointerCapture?.(event.pointerId);
+  };
+
+  const minimize = async (): Promise<void> => {
+    if (!state) return;
+    const next = await window.electronAPI.minimizeBotSidecar(state.sidecarId);
+    if (next) {
+      setState(next);
+      setMinimized(true);
+    }
+  };
+
+  const restore = async (): Promise<void> => {
+    const next = await window.electronAPI.openBotSidecar({
+      sessionId,
+      botProfileId: bot.profile.id,
+    });
+    setState(next);
+    setMinimized(false);
+  };
+
+  const close = async (): Promise<void> => {
+    if (state)
+      await window.electronAPI.closeBotSidecar({ sidecarId: state.sidecarId });
+    onClose();
+  };
+
+  const analyze = async (): Promise<void> => {
+    const question = draft.trim();
+    if (!question || !state?.agentSessionId || analysisRunning) return;
+
+    const revision = bot.revisions.find(
+      (item) => item.id === bot.profile.currentConfigRevisionId,
+    );
+    const sequence = messageIdRef.current++;
+    const timestamp = Date.now();
+    setMessages((current) => [
+      ...current,
+      {
+        id: "user-" + timestamp + "-" + sequence,
+        role: "user",
+        text: question,
+      },
+      {
+        id: "assistant-" + timestamp + "-" + sequence,
+        role: "assistant",
+        text: "",
+      },
+    ]);
+    setAnalysisText("");
+    setDraft("");
+    setAnalysisRunning(true);
+    setNotice("");
+    try {
+      const result = await window.electronAPI.sendMessage({
+        sessionId: state.agentSessionId,
+        prompt: [
+          "请作为旁路 Bot 与用户对话。你可以参考下面的主会话上下文回答问题；如果用户要求分析主会话，再进行分析。",
+          "主会话最近内容：",
+          contextText || "（暂无）",
+          "用户消息：",
+          question,
+          "直接回答用户当前消息，不要声称已经修改主会话。",
+        ].join("\n\n"),
+        channelId: revision?.channelId ?? fallbackChannelId,
+        model:
+          revision?.modelId ??
+          (revision?.channelId ? undefined : fallbackModelId),
+      });
+      if (!result?.ok) {
+        const message = result?.error ?? "Bot 消息未接受";
+        setAnalysisRunning(false);
+        setNotice(message);
+        setAnalysisText(message);
+        setMessages((current) =>
+          updateAssistantMessageList(current, message, true),
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAnalysisRunning(false);
+      setNotice(message);
+      setAnalysisText(message);
+      setMessages((current) =>
+        updateAssistantMessageList(current, message, true),
+      );
+    }
+  };
+
+  const bridge = async (): Promise<void> => {
+    const content = (analysisText || draft).trim();
+    if (!content || !state || busy) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const result = await window.electronAPI.requestBotSidecarBridge({
+        sidecarId: state.sidecarId,
+        sessionId,
+        botProfileId: bot.profile.id,
+        content,
+      });
+      if (!result.ok || !result.accepted) {
+        setNotice(result.error ?? "主会话没有接受这条桥接");
+        return;
+      }
+      const forwarded = await window.electronAPI.steerAgent(
+        sessionId,
+        "【Bot 旁路建议｜" + bot.profile.displayName + "】\n" + content,
+      );
+      if (!forwarded.ok) {
+        setNotice(forwarded.error ?? "已通过桥接校验，但主会话未接受");
+        return;
+      }
+      setDraft("");
+      setNotice("已交给主会话 Agent");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const currentRevision = useMemo(
+    () =>
+      bot.revisions.find(
+        (revision) => revision.id === bot.profile.currentConfigRevisionId,
+      ),
+    [bot],
+  );
+  const roleDescription = currentRevision?.roleSnapshot.description;
+  const modelLabel = currentRevision?.modelId
+    ? currentRevision.modelId
+    : currentRevision?.channelId
+      ? "渠道默认模型"
+      : fallbackModelId
+        ? "沿用主会话 · " + fallbackModelId
+        : "未配置模型";
+  if (minimized) {
+    return (
+      <button
+        type="button"
+        className="bot-sidecar-orb session-glass-surface"
+        style={{ left: position.x, top: position.y }}
+        onPointerDown={startDrag}
+        onClick={() => {
+          const moved = lastDragMovedRef.current;
+          lastDragMovedRef.current = false;
+          if (!moved) void restore();
+        }}
+        aria-label={"恢复 Bot " + bot.profile.displayName + " 旁路窗口"}
+      >
+        {bot.profile.displayName.slice(0, 1)}
+      </button>
+    );
+  }
+
+  return (
+    <section
+      className="bot-sidecar-panel session-glass-surface session-glass-popover"
+      style={{ left: position.x, top: position.y }}
+      aria-label={"Bot " + bot.profile.displayName + " 旁路窗口"}
+    >
+      <div className="bot-sidecar-panel__header">
+        <div
+          className="bot-sidecar-panel__drag-handle min-w-0"
+          onPointerDown={startDrag}
+        >
+          <div className="bot-sidecar-panel__title">
+            {bot.profile.displayName}
+          </div>
+          <div className="bot-sidecar-panel__subtitle">
+            独立上下文 · 可读取主会话 · 不直接写入主会话
+          </div>
+        </div>
+        <div className="bot-sidecar-panel__controls flex shrink-0 items-center gap-0.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => void minimize()}
+            aria-label="收起为悬浮球"
+          >
+            <Minus className="size-3.5" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => void close()}
+            aria-label="关闭旁路窗口"
+          >
+            <X className="size-3.5" />
+          </Button>
+        </div>
+      </div>
+      <div className="bot-sidecar-panel__body">
+        <div className="bot-sidecar-panel__context-strip">
+          <div className="bot-sidecar-panel__context-summary">
+            <span className="bot-sidecar-panel__section-label">
+              主会话上下文
+            </span>
+            <span>已读取最近内容 · 独立 Bot 对话</span>
+          </div>
+          <details className="bot-sidecar-panel__context-details">
+            <summary>查看上下文</summary>
+            <div className="bot-sidecar-panel__context-preview">
+              <div>
+                职责：
+                {roleDescription || bot.profile.description || "未填写描述"}
+              </div>
+              <pre>{contextText || "主会话暂时没有可供旁路读取的内容。"}</pre>
+            </div>
+          </details>
+        </div>
+
+        <div
+          ref={messageScrollRef}
+          className="bot-sidecar-panel__messages scrollbar-thin"
+          aria-live="polite"
+          aria-label="Bot 对话内容"
+        >
+          {messages.length === 0 ? (
+            <div className="bot-sidecar-panel__empty">
+              <div className="bot-sidecar-panel__empty-title">
+                和 {bot.profile.displayName} 开始对话
+              </div>
+              <div>可以让它分析主会话，也可以直接询问一个问题。</div>
+            </div>
+          ) : (
+            messages.map((message) => (
+              <div
+                key={message.id}
+                className={
+                  "bot-sidecar-panel__message " +
+                  (message.role === "user"
+                    ? "bot-sidecar-panel__message--user"
+                    : "bot-sidecar-panel__message--assistant")
+                }
+              >
+                <div className="bot-sidecar-panel__message-meta">
+                  {message.role === "user" ? "你" : bot.profile.displayName}
+                </div>
+                <div className="bot-sidecar-panel__message-text">
+                  {message.role === "assistant" ? (
+                    message.text ? (
+                      <MessageResponse
+                        className="bot-sidecar-panel__markdown"
+                        streaming={
+                          analysisRunning &&
+                          message.id === messages[messages.length - 1]?.id
+                        }
+                      >
+                        {message.text}
+                      </MessageResponse>
+                    ) : analysisRunning ? (
+                      <span className="bot-sidecar-panel__typing">
+                        正在思考…
+                      </span>
+                    ) : null
+                  ) : (
+                    message.text
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="bot-sidecar-panel__composer chat-input-glass">
+          <Textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void analyze();
+              }
+            }}
+            placeholder="给这个 Bot 发消息…（Enter 发送，Shift+Enter 换行）"
+            className="composer-editor bot-sidecar-panel__input"
+            disabled={busy || analysisRunning}
+            aria-label="发送给 Bot 的消息"
+          />
+          <div className="bot-sidecar-panel__composer-footer composer-footer-bar">
+            <div className="bot-sidecar-panel__composer-meta">
+              <span
+                className="bot-sidecar-panel__model-label"
+                title={modelLabel}
+              >
+                模型 · {modelLabel}
+              </span>
+              <span className="bot-sidecar-panel__notice" aria-live="polite">
+                {notice}
+              </span>
+            </div>
+            <div className="bot-sidecar-panel__composer-actions">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="rounded-xl text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                disabled={
+                  (!draft.trim() && !analysisText.trim()) ||
+                  busy ||
+                  analysisRunning ||
+                  !state
+                }
+                onClick={() => void bridge()}
+              >
+                <ArrowUpRight className="mr-1 size-3" />
+                交给主会话
+              </Button>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                className="shrink-0 rounded-xl text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                disabled={!draft.trim() || busy || analysisRunning || !state}
+                onClick={() => void analyze()}
+                aria-label="发送给 Bot"
+              >
+                <Send className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="bot-sidecar-panel__resize-hint" aria-hidden>
+        <Maximize2 className="size-3" />
+      </div>
+    </section>
+  );
+}

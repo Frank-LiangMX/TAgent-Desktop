@@ -7,20 +7,24 @@
  * 对齐 codex：新会话页不占 tab，发送首条消息后才生成 tab。tab 间切换 key=sessionId
  * 复用同一 Chat 实例，IPC 流式 handler 不卸载。
  */
-import { useAtomValue } from 'jotai'
-import { Chat, type SessionMeta } from '../chat/Chat'
-import { activeTabAtom } from '../../atoms/tabs'
+import { useAtomValue } from "jotai";
+import { Chat, type SessionMeta } from "../chat/Chat";
+import { activeTabAtom } from "../../atoms/tabs";
+import { usePersistedSessionMeta } from "../../hooks/usePersistedSessionMeta";
 
 export function SessionRouter(): JSX.Element | null {
-  const activeTab = useAtomValue(activeTabAtom)
-  if (!activeTab) return null
+  const activeTab = useAtomValue(activeTabAtom);
+  const persistedMeta = usePersistedSessionMeta(activeTab?.sessionId);
+  if (!activeTab) return null;
   const session: SessionMeta = {
     id: activeTab.sessionId,
     title: activeTab.title,
     workspaceId: activeTab.workspaceId,
     channelId: activeTab.channelId,
     modelId: activeTab.modelId,
-  }
+    botProfileIds: persistedMeta?.botProfileIds,
+    fusionRoomId: persistedMeta?.fusionRoomId,
+  };
   // 已成正式 tab：工作区已锁定、不再改；无返回钮
-  return <Chat key={session.id} session={session} />
+  return <Chat key={session.id} session={session} />;
 }

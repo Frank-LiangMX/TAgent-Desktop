@@ -13,6 +13,11 @@
 - 04-HERMES-BORROW-SPEC 和 05-PERSISTENT-BOTS-AND-ROOM-SEATS 记录了 Hermes 借鉴、持久 Bot、席位和记忆的讨论结论。
 - ADR-0007 当前仍是历史决策，里面的“独立 Rail / 独立入口”不能直接覆盖本规格提出的统一会话入口；在代码验证完成前，不修改 ADR-0007，而把本文件视为拟议的扩展和后续修订依据。
 
+## 0.1 当前实现校正（2026-08-23）
+
+本规格的产品边界仍然有效，但实现状态以 [13-HANDOFF-2026-08-23](./13-HANDOFF-2026-08-23.md) 和最新 implementation log 为准。当前已接入 Room authority、远程 Gateway/HTTP/SSE、Bot execution bridge、任务/产物/审批/A2A、房间工作区事务和 Bot workspace 工具；title/goal、运行 blocked 恢复、workspace delete/move 也已进入代码与回归测试。
+
+以下能力仍是后续交付，不应被 UI 已出现或类型已存在误认为完成：真实账户/证书/跨机器部署、跨节点单写者与持久 continuation worker、真实 Pi/KSCC/provider 进程验收、Git worktree、完整 Bot handoff/memory consolidation E2E 和打包版网络入口。RoomWorkspace 的实际内容在服务端房间目录，其他用户通过受控发布和下载获得产出；不默认反向同步到个人磁盘。
 ## 1. 产品结论
 
 用户只需要理解“会话里有哪些参与者”，不需要先理解普通会话、协作室、Bot 会话三套入口：
@@ -227,48 +232,48 @@ KSCC 的 session loop 不完全由宿主控制，因此要靠宿主事件桥、�
 
 ### Phase A：领域模型和兼容迁移
 
-- [ ] 加共享类型和 schema，不接 UI。
-- [ ] 旧 CollaborationRoom 数据可读；新字段有安全默认值。
-- [ ] BotProfile / revision / memory candidate-active 的 CRUD 和审计测试。
+- [x] 加共享类型和 schema，不接 UI（已落地；RoomEvent/RoomWorkspace/Bot seat/memory 契约已存在）。
+- [x] 旧 CollaborationRoom 数据可读；新字段有安全默认值。
+- [x] BotProfile / revision / memory candidate-active 的 CRUD 和审计测试（本地持久化范围）。
 
 验收：类型测试、旧 fixture 读取、权限拒绝测试通过。
 
 ### Phase B：单 Bot 融合路径
 
-- [ ] Conversation participant 选择。
-- [ ] 1 Bot 复用现有普通 Agent 路径。
-- [ ] Bot profile snapshot 和场景 AgentSession 绑定。
+- [x] Conversation participant 选择（统一会话页）。
+- [x] 1 Bot 复用现有普通 Agent 路径。
+- [x] Bot profile snapshot 和场景 AgentSession 绑定（单 Bot/RoomBotSeat 快照）。
 
 验收：用户能从同一会话页添加/替换/删除唯一 Bot，历史不丢，未启动 A2A。
 
 ### Phase C：多 Bot 协调路径
 
-- [ ] 默认协调者、@ 路由、任务和 mailbox。
-- [ ] 公共事件唯一写入者和结构化内部协调摘要。
-- [ ] 席位替换/删除/协调者转交。
+- [x] 默认协调者、@ 路由、任务和 mailbox（复用本地 CollaborationRoomService）。
+- [x] 公共事件唯一写入者和结构化内部协调摘要（本地 RoomEvent 账本；服务端事务 gate 仍未完成）。
+- [x] 席位替换/删除/协调者转交（本地房间范围）。
 
 验收：无 @ 由协调者承接；@ 精确路由；失败、取消、重复投递幂等。
 
 ### Phase D：多用户和共享工作区
 
-- [ ] HumanMember、邀请、owner consent、离线策略。
-- [ ] RoomWorkspace、ACL、下载、短锁 + SHA 冲突。
-- [ ] 服务端实际工作区与个人原始目录隔离。
+- [ ] HumanMember、邀请、owner consent、离线策略（本地状态机和授权已完成；真实账户、网络邀请、离线策略未完成）。
+- [ ] RoomWorkspace、ACL、下载、短锁 + SHA 冲突（本地 RoomWorkspace/下载/路径与 SHA 已完成；服务端 ACL/短锁冲突协议未完成）。
+- [x] 服务端实际工作区与个人原始目录隔离（本地服务目录已完成；远程服务端部署未完成）。
 
 验收：跨用户 Bot 能访问已授权共享资源，不能读取私有文件；并发冲突可见且不覆盖。
 
 ### Phase E：Sidecar 和统一 UI
 
-- [ ] @ 未加入 Bot 打开侧窗，拖拽、缩放、吸边球、隐藏/结束。
-- [ ] bridge IPC 只提交 proposal，主会话决定是否落公共时间线。
-- [ ] 侧窗提升为标签页/正式成员。
+- [x] @ 未加入 Bot 打开侧窗，拖拽、缩放、吸边球、隐藏/结束（桌面本地范围）。
+- [x] bridge IPC 只提交 proposal，主会话决定是否落公共时间线。
+- [x] 侧窗提升为标签页/正式成员（本地统一会话入口）。
 
 验收：关闭窗口不丢逻辑会话；未确认内容不污染主会话；主会话仍稳定。
 
 ### Phase F：记忆精炼、恢复和多核回归
 
-- [ ] candidate -> active 的用户确认流。
-- [ ] KSCC/Pi 统一 adapter contract、恢复/fencing、费用审计。
+- [x] candidate -> active 的用户确认流。
+- [ ] KSCC/Pi 统一 adapter contract、恢复/fencing、费用审计（RoomSession 权威核心与本地 CollaborationRoomService fencing 已接入；真实双核 create/resume/compact/interrupt、心跳、恢复、远程费用审计和 usage 回写未完成）。
 - [ ] 崩溃恢复、长上下文压缩、权限动态收紧。
 
 验收：同一 Bot 在多场景并行不串记忆；重启可恢复；权限收紧立即生效；模型费用归属正确。

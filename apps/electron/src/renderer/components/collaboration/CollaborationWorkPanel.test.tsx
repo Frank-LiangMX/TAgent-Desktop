@@ -19,6 +19,7 @@ vi.mock('@phosphor-icons/react', () => {
     ArrowClockwise: Stub,
     CaretDown: Stub,
     CaretRight: Stub,
+    DownloadSimple: Stub,
     Eye: Stub,
     FileText: Stub,
     PencilSimple: Stub,

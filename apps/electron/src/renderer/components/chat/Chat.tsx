@@ -34,6 +34,7 @@ import type {
   UserFacingError,
   FileAttachment,
   FileReviewContext,
+  BotProfileRecord,
 } from "@tagent/shared";
 import {
   migrateExecutionMode,
@@ -83,6 +84,17 @@ import {
   type SessionCollabItem,
 } from "./session-collab-outline";
 import { cn } from "../../lib/utils";
+import { SessionBotBar } from "./SessionBotBar";
+import { CollaborationRoomsPage } from "../collaboration/CollaborationRoomsPage";
+
+type ChatMentionOption = {
+  id: string;
+  displayName: string;
+  description?: string;
+  pinned?: boolean;
+  kind?: "role" | "bot";
+};
+import { BotSidecarPanel } from "./BotSidecarPanel";
 import {
   applyMessageToInFlightToolIds,
   collectPendingToolUseIds,
@@ -168,6 +180,8 @@ import {
 import { PermissionBanner } from "../permission/PermissionBanner";
 import { AskUserQuestionBanner } from "./AskUserQuestionBanner";
 import { ExitPlanModeBanner } from "./ExitPlanModeBanner";
+import { PlanProgressCard } from "./PlanProgressCard";
+import { sessionPlanProgressAtom } from "../../atoms/plan-progress-atoms";
 import { ExecutionModeSuggestionBanner } from "./ExecutionModeSuggestionBanner";
 import { SessionErrorBanner } from "./SessionErrorBanner";
 import { setSessionErrorAtom } from "../../atoms/session-error-atoms";
@@ -176,6 +190,7 @@ import {
   askUserDismissedAtAtom,
 } from "../../atoms/ask-user-atoms";
 import { pendingPermissionMapAtom } from "../../atoms/permission-atoms";
+import { allPendingExitPlanRequestsAtom } from "../../atoms/exit-plan-atoms";
 import { isSessionAwaitingUser } from "../../lib/session-awaiting-user";
 import { RunModeSelector } from "./RunModeSelector";
 import { KanbanCrewPanel } from "./KanbanCrewPanel";
@@ -235,6 +250,8 @@ export interface SessionMeta {
   workspaceId?: string;
   modelId?: string;
   channelId?: string;
+  botProfileIds?: string[];
+  fusionRoomId?: string;
 }
 
 interface StreamEventEnvelope {
@@ -368,6 +385,17 @@ export function Chat({
   onOpenCrew?: () => void;
 }): JSX.Element {
   const sessionId = session.id;
+  const [fusionRoomRefreshKey, setFusionRoomRefreshKey] = useState(0);
+  useEffect(() => {
+    const roomId = session.fusionRoomId;
+    if (!roomId) return;
+    const off = window.electronAPI.onCollaborationRoomChanged?.((payload) => {
+      if (payload.roomId === roomId) {
+        setFusionRoomRefreshKey((value) => value + 1);
+      }
+    });
+    return () => off?.();
+  }, [session.fusionRoomId]);
   const [items, setItems] = useState<DisplayItem[]>([]);
   /** 会话级流式缓冲（delta 累积；与 items 分离） */
   const [streamState, setStreamState] =
@@ -425,6 +453,7 @@ export function Chat({
   const stopSessionRun = useSetAtom(stopSessionRunAtom);
   const softStopSessionRun = useSetAtom(softStopSessionRunAtom);
   const adoptSessionRun = useSetAtom(adoptSessionRunAtom);
+  const setSessionPlanProgress = useSetAtom(sessionPlanProgressAtom);
   const pushTicker = useSetAtom(pushStatusTickerAtom);
   // turn_end 延迟停止定时器（见 RUN_STOP_GRACE_MS 注释）
   /**
@@ -484,6 +513,14 @@ export function Chat({
   /** 开始一轮运行：写 atom 置 running 并记起始时间戳 */
   const startRun = (): void => {
     clearPendingStop();
+    // 新一轮开始时清掉上一轮计划；本轮若进入 PlanMode，
+    // useExitPlanSync 会把新计划写回全局 atom。
+    setSessionPlanProgress((prev) => {
+      if (!(sessionId in prev)) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
     userStoppedRef.current = false;
     completionRecordedRef.current = false;
     finalOutputSeenRef.current = false;
@@ -706,14 +743,18 @@ export function Chat({
   const [mentionPickerOpen, setMentionPickerOpen] = useState(false);
   /** AskUser / 权限横幅：与 @ 一样让位浮层，避免胶囊+下箭头压在弹窗底栏 */
   const pendingAskUserMap = useAtomValue(allPendingAskUserRequestsAtom);
+  const pendingExitPlanMap = useAtomValue(allPendingExitPlanRequestsAtom);
+  const sessionPlanProgressMap = useAtomValue(sessionPlanProgressAtom);
+  const sessionPlanProgress = sessionPlanProgressMap[sessionId] ?? null;
+  const hasPendingExitPlan =
+    (pendingExitPlanMap.get(sessionId)?.length ?? 0) > 0;
   const pendingPermissionMap = useAtomValue(pendingPermissionMapAtom);
   const hasBlockingBottomBanner =
     (pendingAskUserMap.get(sessionId)?.length ?? 0) > 0 ||
     (pendingPermissionMap[sessionId]?.length ?? 0) > 0;
   /** Chat @ 角色库短列表 */
-  const [mentionRoles, setMentionRoles] = useState<
-    Array<{ id: string; displayName: string; description?: string }>
-  >([]);
+  const [mentionRoles, setMentionRoles] = useState<ChatMentionOption[]>([]);
+  const [mentionBots, setMentionBots] = useState<ChatMentionOption[]>([]);
   /** 最近一轮 @ 的展示名（助手铭牌旁顺序条） */
   const [liveMentionLabels, setLiveMentionLabels] = useState<string[]>([]);
   /**
@@ -744,6 +785,7 @@ export function Chat({
   const [subagentDetail, setSubagentDetail] = useState<string | null>(null);
   /** 当前打开的圆桌讨论（discussionId），非空时全屏切换显示讨论室 */
   const [openDiscussionId, setOpenDiscussionId] = useState<string | null>(null);
+  const [sidecarBot, setSidecarBot] = useState<BotProfileRecord | null>(null);
   /** 思考强度（默认 medium；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 SDK query 生效） */
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
     DEFAULT_REASONING_EFFORT,
@@ -1529,7 +1571,7 @@ export function Chat({
     return () => ro.disconnect();
   }, [crewPanelOpen, sessionId]);
 
-  // Chat @ 角色列表（B1）
+  // Chat @ 角色列表（B1）与当前会话已加入的 Bot
   useEffect(() => {
     void (async () => {
       try {
@@ -1540,13 +1582,42 @@ export function Chat({
             displayName: r.displayName,
             description: r.description,
             pinned: r.pinned === true,
+            kind: "role" as const,
           })),
         );
       } catch {
         setMentionRoles([]);
       }
+      try {
+        const selectedIds = new Set(session.botProfileIds ?? []);
+        const bots = await window.electronAPI.listBots();
+        setMentionBots(
+          (bots ?? [])
+            .filter(
+              (bot) =>
+                selectedIds.has(bot.profile.id) && !bot.profile.archivedAt,
+            )
+            .map((bot) => ({
+              id: bot.profile.id,
+              displayName: bot.profile.displayName,
+              description: bot.profile.description,
+              kind: "bot" as const,
+            })),
+        );
+      } catch {
+        setMentionBots([]);
+      }
     })();
-  }, []);
+  }, [session.botProfileIds?.join("\u0000")]);
+
+  const mentionOptions = useMemo(
+    () => [...mentionRoles, ...mentionBots],
+    [mentionBots, mentionRoles],
+  );
+  const roleMentionOptions = useMemo(
+    () => mentionOptions.filter((item) => item.kind !== "bot"),
+    [mentionOptions],
+  );
 
   // roleId → 展示名（activeSpeaker 指示条 / 跟随铭牌用）
   const roleNameById = useMemo(
@@ -2053,8 +2124,6 @@ export function Chat({
       // result = 整个 run 真正 idle（turn_end 只是单个 SDK turn 结束，工具循环还会继续）。
       clearPendingStop();
 
-
-
       // error_* 以前几乎对 UI 透明（只吃 usage）；抬到 SessionErrorBanner，避免「气泡里有失败但无错误条」
       const subtype = typeof p.subtype === "string" ? p.subtype : "";
       const isErrorResult = subtype.startsWith("error_");
@@ -2182,6 +2251,14 @@ export function Chat({
         lastToolName?: string;
         parentToolUseId?: string;
       };
+      if (evt.type === "session_meta_changed") {
+        window.dispatchEvent(
+          new CustomEvent("tagent:session-meta-changed", {
+            detail: { sessionId },
+          }),
+        );
+        return;
+      }
       // No-Progress Guard 阶段事件（§20.4 / §11）：非错误，不抬 SessionErrorBanner。
       // shadow 事件仅诊断，UI 忽略；enforce 下 paused → 清 running（result 的 paused_no_progress 也会 completeRun，幂等）。
       if (evt.type === "no_progress") {
@@ -2534,7 +2611,6 @@ export function Chat({
       return;
     }
 
-
     // 新发送/重试开始时收起错误条（若再失败会重新推 session_error）
     setSessionError({ sessionId: sessionIdRef.current, error: null });
     resetStreamState();
@@ -2610,8 +2686,8 @@ export function Chat({
         ...(moaOneShotPresetId ? { moaOneShotPresetId } : {}),
         ...(moaDiscussionPresetId ? { moaDiscussionPresetId } : {}),
         mentionRoleIds:
-          executionMode === "chat" && mentionRoles.length > 0
-            ? parseMentions(text, mentionRoles).map((h) => h.roleId)
+          executionMode === "chat" && roleMentionOptions.length > 0
+            ? parseMentions(text, roleMentionOptions).map((h) => h.roleId)
             : undefined,
         executionMode,
       } as any);
@@ -2745,8 +2821,8 @@ export function Chat({
     const text = chatInputRef.current?.getText().trim() ?? "";
     if (!text && pendingAttachments.length === 0) return;
     // Chat @：本轮有 @ → 切换 activeSpeaker；无 @ → 保持上一个（follow）。铭牌按 effective 角色展示。
-    if (executionMode === "chat" && mentionRoles.length > 0) {
-      const hits = parseMentions(text, mentionRoles);
+    if (executionMode === "chat" && roleMentionOptions.length > 0) {
+      const hits = parseMentions(text, roleMentionOptions);
       if (hits.length > 0) {
         setActiveMentionRoleIds(hits.map((h) => h.roleId));
         setLiveMentionLabels(hits.map((h) => h.displayName));
@@ -2805,8 +2881,8 @@ export function Chat({
       return;
     }
     // 复用 send() 的 @ mention / 草稿铭牌同步（避免会诊路径出现 follow 漂移）
-    if (executionMode === "chat" && mentionRoles.length > 0) {
-      const hits = parseMentions(text, mentionRoles);
+    if (executionMode === "chat" && roleMentionOptions.length > 0) {
+      const hits = parseMentions(text, roleMentionOptions);
       if (hits.length > 0) {
         setActiveMentionRoleIds(hits.map((h) => h.roleId));
         setLiveMentionLabels(hits.map((h) => h.displayName));
@@ -2859,8 +2935,8 @@ export function Chat({
       return;
     }
     // 复用 send() 的 @ mention / 草稿铭牌同步（与 sendConsult 一致）
-    if (executionMode === "chat" && mentionRoles.length > 0) {
-      const hits = parseMentions(text, mentionRoles);
+    if (executionMode === "chat" && roleMentionOptions.length > 0) {
+      const hits = parseMentions(text, roleMentionOptions);
       if (hits.length > 0) {
         setActiveMentionRoleIds(hits.map((h) => h.roleId));
         setLiveMentionLabels(hits.map((h) => h.displayName));
@@ -3327,6 +3403,35 @@ export function Chat({
     [setFilePreviewRequest, setSplitDockMode, splitDockMode],
   );
 
+  const sidecarContextText = useMemo(() => {
+    return items
+      .slice(-8)
+      .map((item) => {
+        const raw = item as unknown as {
+          message?: { role?: string; content?: unknown };
+          text?: string;
+        };
+        const content = raw.message?.content;
+        const text = Array.isArray(content)
+          ? content
+              .map((block) =>
+                typeof block === "string"
+                  ? block
+                  : block && typeof block === "object" && "text" in block
+                    ? String((block as { text?: unknown }).text ?? "")
+                    : "",
+              )
+              .filter(Boolean)
+              .join("\n")
+          : typeof content === "string"
+            ? content
+            : (raw.text ?? "");
+        return text.trim();
+      })
+      .filter(Boolean)
+      .join("\n\n");
+  }, [items]);
+
   const landingComposer = (
     <ChatInput
       ref={chatInputRef}
@@ -3337,8 +3442,18 @@ export function Chat({
       onAttachmentsChange={setPendingAttachments}
       onOpenFileDialog={handleOpenFileDialog}
       onPreviewAttachment={openPendingAttachmentPreview}
-      mentionRoles={executionMode === "chat" ? mentionRoles : undefined}
-      topBar={activeMentionBar}
+      mentionRoles={executionMode === "chat" ? mentionOptions : undefined}
+      topBar={
+        <>
+          <SessionBotBar
+            sessionId={sessionId}
+            botProfileIds={session.botProfileIds}
+            fusionRoomId={session.fusionRoomId}
+            onOpenBot={setSidecarBot}
+          />
+          {activeMentionBar}
+        </>
+      }
       footer={landingFooter}
       onMentionOpenChange={setMentionPickerOpen}
     />
@@ -3376,6 +3491,15 @@ export function Chat({
     <MessageRichPreviewProvider value={richPreviewProviderValue}>
       <MessageFilePathProvider value={filePathProviderValue}>
         <div className="session-body flex h-full min-h-0">
+          {session.fusionRoomId ? (
+            <CollaborationRoomsPage
+              roomId={session.fusionRoomId}
+              refreshKey={fusionRoomRefreshKey}
+              onRoomsChanged={() => setFusionRoomRefreshKey((value) => value + 1)}
+              onNewRoom={() => undefined}
+            />
+          ) : (
+            <>
           {/* 左：对话 + 输入（测量锚点 rootRef 只包对话列，避免右栏影响下箭头） */}
           <div
             ref={rootRef}
@@ -3536,6 +3660,7 @@ export function Chat({
                                     completedDurations[stoppedSyntheticKey]
                                   }
                                   mentionRoles={mentionRoles}
+                                  sessionId={sessionId}
                                   subagentCards={subagentCards}
                                   onOpenSubagent={(parentToolUseId) =>
                                     setSubagentDetail(parentToolUseId)
@@ -3564,6 +3689,7 @@ export function Chat({
                         return (
                           <TurnView
                             key={liveKey}
+                            sessionId={sessionId}
                             turn={{
                               kind: "assistant-turn",
                               key: liveKey,
@@ -3714,6 +3840,11 @@ export function Chat({
                   <PermissionBanner sessionId={sessionId} />
                   <AskUserQuestionBanner sessionId={sessionId} />
                   <ExitPlanModeBanner sessionId={sessionId} />
+                  {sessionPlanProgress &&
+                  (running || runStartedAt != null || hasPendingExitPlan) &&
+                  !hasPendingExitPlan ? (
+                    <PlanProgressCard progress={sessionPlanProgress} />
+                  ) : null}
                   <div
                     ref={composerClusterRef}
                     className={`session-composer-cluster ${showTokenBar ? "has-token-bar" : ""}`}
@@ -3745,7 +3876,7 @@ export function Chat({
                           running || runStartedAt != null
                             ? "运行中回车会加入队列，再选排队或引导"
                             : executionMode === "chat"
-                              ? "输入消息… @ 点名角色（Enter 发送）"
+                              ? "输入消息… @ 点名角色或 Bot（Enter 发送）"
                               : "输入消息…（Enter 发送，Shift+Enter 换行）"
                         }
                         onDraftChange={setHasDraft}
@@ -3754,9 +3885,19 @@ export function Chat({
                         onOpenFileDialog={handleOpenFileDialog}
                         onPreviewAttachment={openPendingAttachmentPreview}
                         mentionRoles={
-                          executionMode === "chat" ? mentionRoles : undefined
+                          executionMode === "chat" ? mentionOptions : undefined
                         }
-                        topBar={activeMentionBar}
+                        topBar={
+                          <>
+                            <SessionBotBar
+                              sessionId={sessionId}
+                              botProfileIds={session.botProfileIds}
+                              fusionRoomId={session.fusionRoomId}
+                              onOpenBot={setSidecarBot}
+                            />
+                            {activeMentionBar}
+                          </>
+                        }
                         onMentionOpenChange={setMentionPickerOpen}
                         footer={
                           /* h-7 固定底栏；窄宽时 is-composer-compact 走图标优先方案 */
@@ -3934,7 +4075,8 @@ export function Chat({
               width={crewPanelWidth}
               onWidthChange={handleCrewPanelWidth}
             />
-          ) : null}
+          ) : null}            </>
+          )}
 
           {/* 子代理独立会话页面：从入口卡片全屏切换（覆盖整个 Chat 区域，返回回主会话） */}
           {subagentDetail && (
@@ -3978,6 +4120,18 @@ export function Chat({
               />
             </div>
           )}
+          {sidecarBot ? (
+            <BotSidecarPanel
+              sessionId={sessionId}
+              bot={sidecarBot}
+              contextText={sidecarContextText}
+              fallbackChannelId={
+                effectiveSelection?.channelId ?? session.channelId
+              }
+              fallbackModelId={effectiveSelection?.modelId ?? session.modelId}
+              onClose={() => setSidecarBot(null)}
+            />
+          ) : null}
         </div>
       </MessageFilePathProvider>
     </MessageRichPreviewProvider>
@@ -4023,7 +4177,7 @@ function TurnView({
   /** 点击圆桌讨论入口卡 → 全屏讨论室（Chat 侧 setOpenDiscussionId） */
   onOpenDiscussion?: (discussionId: string) => void;
   /** 当前会话 id（MoA 圆桌卡建看板 CTA 用） */
-  sessionId?: string;
+  sessionId: string;
   onOpenAttachment?: (attachment: FileAttachment) => void;
   /** 本轮新出现的末尾消息：挂 message-enter 淡入上滑，取代「跳一下」。 */
   animateEnter?: boolean;
@@ -4045,6 +4199,7 @@ function TurnView({
     return (
       <div className={enterClass} data-message-id={turn.key}>
         <AssistantTurnView
+          sessionId={sessionId}
           turn={turn}
           isLiveTurn={isLiveTurn}
           runStartedAt={runStartedAt}
@@ -4078,7 +4233,7 @@ function ItemView({
   onOpenAttachment,
 }: {
   item: DisplayItem;
-  sessionId?: string;
+  sessionId: string;
   onOpenDiscussion?: (discussionId: string) => void;
   onOpenAttachment?: (attachment: FileAttachment) => void;
 }): JSX.Element {

@@ -5,8 +5,9 @@
 > Runtime：[02-RUNTIME-A2A-SPEC](./02-RUNTIME-A2A-SPEC.md)
 > Hermes 机制补强：[04-HERMES-BORROW-SPEC](./04-HERMES-BORROW-SPEC.md)
 > 当前进度与交接：[HANDOFF-2026-08-17](../../dev/collaboration-room/HANDOFF-2026-08-17.md)
+> 当前长期实现交接：[13-HANDOFF-2026-08-23](./13-HANDOFF-2026-08-23.md)
 
-## 0. 当前进度（2026-08-18）
+## 0. 历史进度（2026-08-18）
 
 `feature/collab-room` 尚未合 main。按本文件切片，已完成 / 未完成的真实状态：
 
@@ -16,6 +17,24 @@
 
 > 详细对照、边界与下一步见 [HANDOFF-2026-08-17](../../dev/collaboration-room/HANDOFF-2026-08-17.md)。
 
+## 0.1 现实进度校正（2026-08-23）
+
+上一节保留为历史切片，不再作为当前实现状态。当前代码与测试的对照如下：
+
+**已补齐**：S5 看板只读桥与投影、room_request_user 用户审批、CLI worker 成员后端、成员 backend/worker 持久化、workspace-write 权限在 run 侧的 fail-closed 校验、房间独立工作区的单文件原子提交、共享工作区路径/命令租约、多文件工作区提交事务、按 rootMessageId 累计的 turns/toolCalls、usage token 和 wall time 预算、Bot 配置副本不可原地切换、来源标记与基础横向 prompt-injection 隔离、queued run 的安全跨重启恢复、本地共享快照的乐观并发保护、RoomSession HTTP/SSE 客户端与 event cursor 消费协议、RoomSession 成员消息 authority action 与显式 adapter 执行桥、transport-neutral FusionRoomSessionAdapter、FusionRoomViewModelController、显式 remote renderer factory、HTTPS server 与明文 HTTP loopback gate、关闭取消和消息尺寸守卫。
+
+**仍未完成**：真实账户认证/证书生命周期、打包版显式网络启动与 UI 配置、CollaborationRoomsPage 的完整 remote projection/action adapter、跨 backend 的生产 provider/tool 进程与部署装配、跨节点持久化/单写者/预算协调（含非 Git 租约与跨节点预算原子预留）、Git worktree/分支生命周期、running run 的未知副作用收口、分页与动态高度虚拟列表、跨 backend 真实运行时验收。服务端 transport（HTTPS server + 明文 HTTP loopback gate）、transport-neutral FusionRoomSessionAdapter、FusionRoomViewModelController 与显式 remote renderer factory 已具备，但尚未接入打包版网络运行时与 UI 配置、跨 backend 的生产 provider/tool 进程与部署装配；CollaborationRoomsPage 已接入显式远程连接入口、FusionRoomRemotePage 与基础 action adapter，但 artifacts/approvals/mailbox 已接入 authority 最小投影，完整 title/goal 与审批/A2A 运行联动仍未完成。
+
+**测试口径**：shared/core/fusion transport 可用 Bun/Vitest 定向测试；Electron 主进程协作用例不能以直接 Bun 加载作为业务结论，因为当前环境的 Electron safeStorage ESM mock 不兼容，需使用项目 Electron/Vitest 入口。类型检查与生产构建是当前可重复验证项。
+## 0.2 当前交接基线（2026-08-23）
+
+本节是当前实现状态的唯一优先基线；前面的历史进度保留用于追溯，不应覆盖本节判断。
+
+- 已真实落地：统一会话入口、BotProfile/配置副本和 candidate-active 记忆边界；Room authority 的成员、Bot seat、消息、任务、产物、审批、mailbox、run、workspace、title/goal；本地与远程 Host/Gateway/HTTP/SSE/session adapter/view model/action adapter；显式 execution bridge；默认 Bot 工具；workspace read/search/write/apply_patch/run_command/delete/move；安全运行恢复和 tombstone/事务/幂等测试。
+- 当前显式验证：相关 authority/Host/Gateway/FileStore/renderer 定向测试通过；全仓 `bun run typecheck` 和 `bun run build` 通过；build 仅保留既有动态 import、大 chunk warning。
+- 未完成且不能宣传为已完成：真实账户认证、证书生命周期、打包网络入口、跨机器多用户 E2E、跨节点单写者/事件总线/预算原子预留、真实 Pi/KSCC/provider 生命周期验收、持久 continuation worker、Git worktree、完整远程操作 UI、分页虚拟化和 memory consolidation E2E。
+- 安全决策：上次进程仍为 `running` 的 run 重启后标为 `blocked`；未知外部副作用不得自动重放。审批/mailbox continuation 应先进入可观察和用户确认的 resume 状态。
+- 完整交接入口：[13-HANDOFF-2026-08-23](./13-HANDOFF-2026-08-23.md)。
 ## 1. 实施策略
 
 不要先做一个“多个头像都会回复”的 UI demo 再补底层。正确顺序是：

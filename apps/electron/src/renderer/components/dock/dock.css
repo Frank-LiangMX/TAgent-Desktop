@@ -3,7 +3,7 @@
  *
  * Dockview 自带基础样式由 dockview/dist/styles/dockview.css 提供（WorkspaceDock 已 import）。
  * 本文件覆盖 abyss 主题的 tab/sash/drop 指示器，对齐 app-workspace-tab 的玻璃胶囊视觉：
- *   - 标签栏：对齐原 TabBar strip（band-inset-top + 6px 顶垫 / 6px 底垫 / 32 胶囊，
+ *   - 标签栏：对齐原 TabBar strip（band-inset-top / 6px 底垫 / 32 胶囊，
  *     用 padding 代替 margin 避免 groupview overflow 切圆角）+ 底 1px 分隔线
  *   - tab：32px 高、72~128px 宽、11px 圆角、玻璃填充（--glass-rgb）+ 顶光 inset，active 用 primary 色
  *   - 分隔条 sash：细 + primary hover
@@ -29,7 +29,7 @@
 /* 摘要固定在标签条右上，不走 Dockview header actions（其 react-part 百分比尺寸会塌成 0） */
 .workspace-dock__summary {
   position: absolute;
-  top: calc(var(--shell-band-inset-top, 16px) + 6px);
+  top: var(--shell-band-inset-top, 16px);
   right: var(--app-shell-session-gutter, 16px);
   z-index: 20;
   display: flex;
@@ -53,10 +53,10 @@
   --dv-inactivegroup-hiddenpanel-tab-color: hsl(var(--muted-foreground) / 0.55);
   --dv-separator-border: color-mix(in srgb, hsl(var(--foreground)) 8%, transparent);
   --dv-tabs-and-actions-container-font-size: 11px;
-  /* 对齐原 .app-workspace-tab-strip：margin-top 16 + padding 6/6 + tab 32 + border 1
-     = 61；box-sizing:border-box 时 height 须含 border，否则胶囊被挤到 31px */
+  /* 对齐 sidebar：顶部 inset 16 + tab 32 + 底垫 6 + border 1
+     = 55；box-sizing:border-box 时 height 须含 border，否则胶囊被挤到 31px */
   --dv-tabs-and-actions-container-height: calc(
-    var(--shell-band-inset-top, 16px) + 6px + 32px + 6px + 1px
+    var(--shell-band-inset-top, 16px) + 32px + 6px + 1px
   );
   --dv-drag-over-background-color: hsl(var(--primary) / 0.12);
   --dv-drag-over-border-color: hsl(var(--primary) / 0.5);
@@ -100,15 +100,14 @@
 
 /* ===== 标签栏容器：对齐 app-workspace-tab-strip ===== */
 /* Dockview 的 tabs-and-actions-container 等价原 TabBar 的 strip。
-   原 strip：margin-top: band-inset-top(16) + padding: 6px 四向 + tab 32 → 底部分隔线在 60px。
-   dock 用 padding-top 代替 margin-top（.dv-groupview 曾 overflow:hidden 会吃 margin），
-   故 padding-top = 16 + 6，与关闭分屏时分隔线同高。
+   分屏标签栏顶部直接对齐 sidebar 的 band-inset-top(16)，底部保留 6px 垫和 1px 分隔线。
+   dock 用 padding-top 代替 margin-top（.dv-groupview 曾 overflow:hidden 会吃 margin）。
    height 跟 CSS 变量走固定值，让 Dockview 算得到正确布局高度（勿 height:auto 塌缩）。 */
 .workspace-dock .dv-tabs-and-actions-container {
   box-sizing: border-box;
   height: var(--dv-tabs-and-actions-container-height);
-  /* 顶 = band-inset-top + 原 strip 的 6px 顶垫；右给摘要图标留位 */
-  padding: calc(var(--shell-band-inset-top, 16px) + 6px)
+  /* 顶边直接对齐 sidebar 的 band-inset-top；右给摘要图标留位 */
+  padding: var(--shell-band-inset-top, 16px)
     calc(var(--app-shell-session-gutter, 16px) + 36px) 6px
     var(--app-shell-session-gutter, 16px);
   margin-top: 0; /* 覆盖任何继承的 margin，避免被 overflow 切 */

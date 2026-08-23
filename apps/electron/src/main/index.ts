@@ -295,6 +295,8 @@ app.whenReady().then(async () => {
   // 角色库 IPC（seed DEFAULT_ROLES + CRUD + 商店）
   const { registerAgentRoleIpcHandlers } = await import('./lib/role/agent-role-ipc')
   registerAgentRoleIpcHandlers()
+  const { registerBotIpcHandlers } = await import('./lib/bot/bot-profile-ipc')
+  registerBotIpcHandlers()
   // 看板 IPC + 调度器（Work 守卫、resolveForWorker、stub 工人状态机）
   const { registerKanbanIpc } = await import('./lib/kanban/kanban-ipc')
   registerKanbanIpc()

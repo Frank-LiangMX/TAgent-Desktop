@@ -27,186 +27,244 @@ import type {
   CollaborationUserApprovalRequest,
   CreateCollaborationRoomInput,
   CreateCollaborationMemberInput,
+  RemoveCollaborationMemberInput,
   SaveCollaborationMemberPresetInput,
   CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomInput,
   UpdateCollaborationMemberInput,
   UpdateCollaborationRoomTaskInput,
+  InviteCollaborationHumanMemberInput,
+  JoinCollaborationHumanMemberInput,
+  LeaveCollaborationHumanMemberInput,
+  RemoveCollaborationHumanMemberInput,
+  SetCollaborationBotOwnerConsentInput,
   AppendCollaborationUserMessageInput,
   ListBoardProjectedTasksInput,
   GetBoardProjectedSummaryInput,
   BoardProjectedTask,
   BoardProjectedSummary,
-} from './collaboration-room'
+} from "./collaboration-room";
 
-export type { CollaborationMemberPreset, SaveCollaborationMemberPresetInput }
+export type { CollaborationMemberPreset, SaveCollaborationMemberPresetInput };
 
 export const COLLABORATION_ROOM_IPC_CHANNELS = {
   /** 列出全部协作室房间（默认不含 archived） */
-  LIST: 'collaboration-room:list',
+  LIST: "collaboration-room:list",
   /** 创建协作室房间（含可选静态成员） */
-  CREATE: 'collaboration-room:create',
+  CREATE: "collaboration-room:create",
+  /** 将统一会话派生为协作室；原会话保留，房间成为新的协作真值源 */
+  UPGRADE_FROM_SESSION: "collaboration-room:upgrade-from-session",
   /** 获取单个房间（不存在返回 null） */
-  GET: 'collaboration-room:get',
+  GET: "collaboration-room:get",
   /** 更新房间（rename / pause / archive / complete） */
-  UPDATE: 'collaboration-room:update',
+  UPDATE: "collaboration-room:update",
   /** 列出某房间全部消息（按 createdAt 升序） */
-  LIST_MESSAGES: 'collaboration-room:list-messages',
+  LIST_MESSAGES: "collaboration-room:list-messages",
   /** 追加用户消息（Stage 2：落盘后异步触发成员 run） */
-  APPEND_USER_MESSAGE: 'collaboration-room:append-user-message',
+  APPEND_USER_MESSAGE: "collaboration-room:append-user-message",
   /** 列出某房间全部成员（静态身份 + 运行状态） */
-  LIST_MEMBERS: 'collaboration-room:list-members',
+  LIST_MEMBERS: "collaboration-room:list-members",
+  /** 列出房间内真实用户成员 */
+  LIST_HUMAN_MEMBERS: "collaboration-room:list-human-members",
+  /** 邀请/加入/离开/移除用户成员 */
+  INVITE_HUMAN_MEMBER: "collaboration-room:invite-human-member",
+  JOIN_HUMAN_MEMBER: "collaboration-room:join-human-member",
+  LEAVE_HUMAN_MEMBER: "collaboration-room:leave-human-member",
+  REMOVE_HUMAN_MEMBER: "collaboration-room:remove-human-member",
+  /** Bot 所有人授权/撤回 */
+  SET_BOT_OWNER_CONSENT: "collaboration-room:set-bot-owner-consent",
   /** 向已有房间追加一个成员（Stage 3：「添加成员」按钮；displayName + 自动绑默认渠道） */
-  ADD_MEMBER: 'collaboration-room:add-member',
+  ADD_MEMBER: "collaboration-room:add-member",
   /** 更新已有成员（改显示名 / 渠道 / 模型） */
-  UPDATE_MEMBER: 'collaboration-room:update-member',
+  UPDATE_MEMBER: "collaboration-room:update-member",
+  /** 软删除成员（保留历史与加入时快照，不再参与新路由） */
+  REMOVE_MEMBER: "collaboration-room:remove-member",
   /** 列出用户保存的成员配置模板 */
-  LIST_MEMBER_PRESETS: 'collaboration-room:list-member-presets',
+  LIST_MEMBER_PRESETS: "collaboration-room:list-member-presets",
   /** 保存/更新成员配置模板 */
-  SAVE_MEMBER_PRESET: 'collaboration-room:save-member-preset',
+  SAVE_MEMBER_PRESET: "collaboration-room:save-member-preset",
   /** 删除成员配置模板 */
-  DELETE_MEMBER_PRESET: 'collaboration-room:delete-member-preset',
+  DELETE_MEMBER_PRESET: "collaboration-room:delete-member-preset",
   /** 列出某房间全部 run（按 createdAt 升序，Stage 2） */
-  LIST_RUNS: 'collaboration-room:list-runs',
+  LIST_RUNS: "collaboration-room:list-runs",
   /** 取消某 run（abort 后端调用 + 置 cancelled，Stage 2） */
-  CANCEL_RUN: 'collaboration-room:cancel-run',
+  CANCEL_RUN: "collaboration-room:cancel-run",
   /** 列出某房间全部 A2A 信箱信封（S4 审计视图） */
-  LIST_MAILBOX: 'collaboration-room:list-mailbox',
+  LIST_MAILBOX: "collaboration-room:list-mailbox",
   /** 继续一次已达 A2A 深度上限的交接（S4.5：仅 max_depth 停止且未继续过可继续一次） */
-  CONTINUE_DEPTH_STOP: 'collaboration-room:continue-depth-stop',
+  CONTINUE_DEPTH_STOP: "collaboration-room:continue-depth-stop",
   /** 列出某房间全部轻量 room task（S5 面板：右侧任务/产物面板读取任务真值） */
-  LIST_ROOM_TASKS: 'collaboration-room:list-room-tasks',
+  LIST_ROOM_TASKS: "collaboration-room:list-room-tasks",
   /** 创建轻量 room task（S5 面板：复用 service 守卫，挂板时 fail-closed） */
-  CREATE_ROOM_TASK: 'collaboration-room:create-room-task',
+  CREATE_ROOM_TASK: "collaboration-room:create-room-task",
   /** 更新轻量 room task（S5 面板：改派 / 状态 / 标题等；复用 service 守卫 + 严格状态机 + CAS） */
-  UPDATE_ROOM_TASK: 'collaboration-room:update-room-task',
+  UPDATE_ROOM_TASK: "collaboration-room:update-room-task",
   /** 列出某房间全部产物（S5 面板：读取 artifact 审计真值） */
-  LIST_ARTIFACTS: 'collaboration-room:list-artifacts',
+  LIST_ARTIFACTS: "collaboration-room:list-artifacts",
   /** 预览产物文本（S5 面板：宿主按 artifactId 反查 + 复用安全路径解析后读盘，渲染层不传路径） */
-  READ_ARTIFACT: 'collaboration-room:read-artifact',
+  READ_ARTIFACT: "collaboration-room:read-artifact",
+  /** 将产物安全复制到用户选择的本地路径 */
+  DOWNLOAD_ARTIFACT: "collaboration-room:download-artifact",
+  /** 从用户选择的个人目录显式导入到房间服务工作区 */
+  IMPORT_WORKSPACE: "collaboration-room:import-workspace",
   /** 列出房间挂载看板的投影任务（S5 看板桥：从 kanban-store 读取后投影为只读形状） */
-  LIST_BOARD_TASKS: 'collaboration-room:list-board-tasks',
+  LIST_BOARD_TASKS: "collaboration-room:list-board-tasks",
   /** 获取房间挂载看板的投影统计摘要（S5 看板桥） */
-  GET_BOARD_SUMMARY: 'collaboration-room:get-board-summary',
+  GET_BOARD_SUMMARY: "collaboration-room:get-board-summary",
   /** 列出房间内成员发起的用户审批请求 */
-  LIST_USER_APPROVALS: 'collaboration-room:list-user-approvals',
+  LIST_USER_APPROVALS: "collaboration-room:list-user-approvals",
   /** 解决一个用户审批请求 */
-  RESOLVE_USER_APPROVAL: 'collaboration-room:resolve-user-approval',
+  RESOLVE_USER_APPROVAL: "collaboration-room:resolve-user-approval",
   /** 房间数据变更事件（main → renderer，Stage 2 起广播） */
-  CHANGED: 'collaboration-room:changed',
+  CHANGED: "collaboration-room:changed",
   /** 成员 turn 流式正文增量（独立通道，避免走 CHANGED 全量刷新） */
-  TEXT_DELTA: 'collaboration-room:text-delta',
-} as const
+  TEXT_DELTA: "collaboration-room:text-delta",
+} as const;
 
 /** 成员 turn 流式正文增量（累积文本，非单 token） */
 export interface CollaborationTextDeltaPayload {
-  roomId: string
-  runId: string
-  memberId: string
+  roomId: string;
+  runId: string;
+  memberId: string;
   /** 截至当前的累积正文 */
-  text: string
-  at: number
+  text: string;
+  at: number;
 }
 
 /** 列出全部房间输入 */
 export interface ListCollaborationRoomsInput {
   /** 是否包含已归档房间（默认 false，只看 active/paused/completed） */
-  includeArchived?: boolean
+  includeArchived?: boolean;
 }
 
-/** 获取单个房间输入 */
+/** 将已有统一会话派生为协作室输入 */
+export interface UpgradeFusionSessionInput {
+  sessionId: string;
+  title?: string;
+  goal?: string;
+}
 export interface GetCollaborationRoomInput {
   /** 房间 ID */
-  roomId: string
+  roomId: string;
 }
 
 /** 列出某房间消息输入 */
 export interface ListCollaborationMessagesInput {
   /** 房间 ID */
-  roomId: string
+  roomId: string;
 }
 
 /** 列出某房间成员输入 */
 export interface ListCollaborationMembersInput {
   /** 房间 ID */
-  roomId: string
+  roomId: string;
 }
 
 /** 追加成员输入（Stage 3）；复用 CreateCollaborationMemberInput 字段，加 roomId */
 export type AddCollaborationMemberInput = {
   /** 房间 ID */
-  roomId: string
-} & CreateCollaborationMemberInput
+  roomId: string;
+} & CreateCollaborationMemberInput;
+
+/** 软删除成员输入 */
+export type RemoveCollaborationMemberChannelInput =
+  RemoveCollaborationMemberInput;
 
 /** 列出某房间 run 输入（Stage 2） */
 export interface ListCollaborationRunsInput {
   /** 房间 ID */
-  roomId: string
+  roomId: string;
 }
 
 /** 取消某 run 输入（Stage 2） */
 export interface CancelCollaborationRunInput {
   /** 房间 ID */
-  roomId: string
+  roomId: string;
   /** run ID */
-  runId: string
+  runId: string;
 }
 
 /** 列出某房间全部 A2A 信箱信封输入（S4） */
 export interface ListCollaborationMailboxInput {
   /** 房间 ID */
-  roomId: string
+  roomId: string;
 }
 
 /** 继续一次 A2A 深度停止输入（S4.5） */
 export interface ContinueCollaborationDepthStopInput {
   /** 房间 ID（校验信封归属，防跨房间继续） */
-  roomId: string
+  roomId: string;
   /** 已达深度上限的停止信封 ID */
-  envelopeId: string
+  envelopeId: string;
 }
 
 /** 继续一次 A2A 深度停止结果（与 CollaborationRoomService.continueDepthStop 一致） */
 export type ContinueCollaborationDepthStopResult =
-  | { ok: true; envelopeId: string }
-  | { ok: false; reason: string }
+  { ok: true; envelopeId: string } | { ok: false; reason: string };
 
 /** 列出某房间全部轻量 room task 输入（S5 面板） */
 export interface ListCollaborationRoomTasksInput {
   /** 房间 ID */
-  roomId: string
+  roomId: string;
 }
 
 /** 列出某房间全部产物输入（S5 面板） */
 export interface ListCollaborationArtifactsInput {
   /** 房间 ID */
-  roomId: string
+  roomId: string;
 }
 
 /** 预览产物文本输入（S5 面板）：渲染层只传 artifactId，路径由宿主反查记录后安全解析 */
 export interface ReadCollaborationArtifactInput {
   /** 房间 ID（校验产物归属，防跨房间预览） */
-  roomId: string
+  roomId: string;
   /** 产物 ID */
-  artifactId: string
+  artifactId: string;
 }
 
+/** 下载某房间产物输入；绝对目标路径只在主进程保存对话框内产生。 */
+export interface DownloadCollaborationArtifactInput {
+  roomId: string;
+  artifactId: string;
+  actorUserId?: string;
+}
+
+/** 下载结果；取消保存对话框不是错误。 */
+export type DownloadCollaborationArtifactResult =
+  | { ok: true; path: string; relativePath: string }
+  | { ok: true; canceled: true; relativePath: string }
+  | { ok: false; reason: string };
+/** 显式导入个人工作区输入；绝对源路径只在主进程目录选择器内产生。 */
+export interface ImportCollaborationWorkspaceResult {
+  ok: true;
+  files: number;
+  skipped: number;
+  bytes: number;
+}
+/** 导入失败结果。 */
+export interface ImportCollaborationWorkspaceFailure {
+  ok: false;
+  reason: string;
+}
+export type ImportCollaborationWorkspaceResponse =
+  | ImportCollaborationWorkspaceResult
+  | ImportCollaborationWorkspaceFailure;
 /** 列出某房间的用户审批请求。 */
 export interface ListCollaborationUserApprovalsInput {
-  roomId: string
+  roomId: string;
 }
 
 /** 解决某房间的用户审批请求。 */
 export interface ResolveCollaborationUserApprovalInput {
-  roomId: string
-  requestId: string
-  decision: 'approved' | 'denied'
-  response?: string
+  roomId: string;
+  requestId: string;
+  decision: "approved" | "denied";
+  response?: string;
 }
 
 export type ResolveCollaborationUserApprovalResult =
   | { ok: true; request: CollaborationUserApprovalRequest; runId?: string }
-  | { ok: false; reason: string }
+  | { ok: false; reason: string };
 
 /**
  * 预览产物文本结果（与 CollaborationRoomService.readArtifact 一致）。
@@ -217,18 +275,18 @@ export type ResolveCollaborationUserApprovalResult =
  */
 export type ReadCollaborationArtifactResult =
   | {
-      ok: true
-      artifactId: string
-      relativePath: string
-      content: string
+      ok: true;
+      artifactId: string;
+      relativePath: string;
+      content: string;
       /** 盘上文件实际字节数（可能大于返回 content 的字节数，当 truncated=true） */
-      byteSize: number
+      byteSize: number;
       /** 产物审计记录里的 sha256（hex），供面板展示短码 */
-      sha256: string
+      sha256: string;
       /** 盘上文件超过预览上限时被截断 */
-      truncated: boolean
+      truncated: boolean;
     }
-  | { ok: false; reason: string }
+  | { ok: false; reason: string };
 
 /**
  * 房间数据变更事件 payload（main → renderer，Stage 2 起广播）
@@ -238,23 +296,23 @@ export type ReadCollaborationArtifactResult =
  */
 export interface CollaborationRoomChangedPayload {
   /** 发生变更的房间 ID */
-  roomId: string
+  roomId: string;
   /** 变更类型 */
   kind:
-    | 'created'
-    | 'updated'
-    | 'archived'
-    | 'message-appended'
-    | 'member-message-appended'
-    | 'run-started'
-    | 'run-finished'
-    | 'run-cancelled'
-    | 'run-awaiting-peer'
-    | 'run-awaiting-user'
-    | 'mailbox-updated'
-    | 'run-continued'
+    | "created"
+    | "updated"
+    | "archived"
+    | "message-appended"
+    | "member-message-appended"
+    | "run-started"
+    | "run-finished"
+    | "run-cancelled"
+    | "run-awaiting-peer"
+    | "run-awaiting-user"
+    | "mailbox-updated"
+    | "run-continued";
   /** 发生时间戳 */
-  at: number
+  at: number;
 }
 
 // ===== 复用领域输入类型作为 IPC payload =====
@@ -288,9 +346,15 @@ export type {
   CreateCollaborationRoomInput,
   UpdateCollaborationRoomInput,
   UpdateCollaborationMemberInput,
+  RemoveCollaborationMemberInput,
   AppendCollaborationUserMessageInput,
   CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomTaskInput,
+  InviteCollaborationHumanMemberInput,
+  JoinCollaborationHumanMemberInput,
+  LeaveCollaborationHumanMemberInput,
+  RemoveCollaborationHumanMemberInput,
+  SetCollaborationBotOwnerConsentInput,
   CollaborationRoom,
   CollaborationMember,
   CollaborationMessage,
@@ -300,4 +364,4 @@ export type {
   CollaborationUserApprovalRequest,
   BoardProjectedTask,
   BoardProjectedSummary,
-}
+};

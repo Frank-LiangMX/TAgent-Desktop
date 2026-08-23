@@ -255,6 +255,23 @@ describe('createPiHttpSeatRunner (Pi HTTP 直连席，mock HTTP)', () => {
     expect(deltas.join('')).toBe('AB')
   })
 
+  it('exposes final usage through the optional path without changing runSeat', async () => {
+    httpState.events = [
+      {
+        type: 'done',
+        reason: 'stop',
+        message: {
+          content: [{ type: 'text', text: 'metered' }],
+          usage: { input: 12, output: 7, totalTokens: 19 },
+        },
+      },
+    ]
+    const runner = createPiHttpSeatRunner({ provider: 'openai', apiKey: 'k' })
+    expect(runner.runSeatWithUsage).toEqual(expect.any(Function))
+    const result = await runner.runSeatWithUsage!({ modelId: 'gpt-4o', prompt: 'Q' })
+    expect(result).toEqual({ text: 'metered', usage: { inputTokens: 12, outputTokens: 7, totalTokens: 19 } })
+  })
+
   it('throws on error event with errorMessage', async () => {
     httpState.events = [{ type: 'error', reason: 'error', error: { errorMessage: 'bad request' } }]
     const runner = createPiHttpSeatRunner({ provider: 'openai', apiKey: 'k' })

@@ -35,15 +35,14 @@ describe('buildExecutionModePrompt', () => {
     expect(p).toMatch(/多轮/)
   })
 
-  it('work：含「接着干 / Plan / AskUser 边界」调度策略', () => {
+  it('work：含「接着干 / 自动规划 / Task / AskUser 边界」调度策略', () => {
     const p = buildExecutionModePrompt('work')
-    // 默认直接实现：用户说接着开发/开干 → 禁止 EnterPlanMode
     expect(p).toMatch(/接着开发|接着干|开干/)
+    expect(p).toMatch(/多阶段任务自动进入 Plan/)
     expect(p).toMatch(/EnterPlanMode/)
-    expect(p).toMatch(/禁止.*EnterPlanMode/)
-    // EnterPlanMode 门槛：≥3 模块 / 合 main
-    expect(p).toMatch(/≥3|3 个独立模块/)
-    expect(p).toMatch(/合 main/)
+    expect(p).toMatch(/3–8 个短步骤/)
+    expect(p).toMatch(/Task \/ Agent 自动拆分/)
+    expect(p).toMatch(/已批准计划|多阶段任务/)
     // ExitPlanMode 须审批 UI，禁止贴完计划即动手
     expect(p).toMatch(/ExitPlanMode/)
     expect(p).toMatch(/禁止.*贴完计划|贴完计划.*禁止/)

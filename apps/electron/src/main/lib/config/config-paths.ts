@@ -88,6 +88,16 @@ export function getRoleStoreCatalogPath(): string {
   return join(getConfigDir(), 'role-store-catalog-cache.json')
 }
 
+/** Bot 库：~/.tagent[-dev]/bots.json */
+export function getBotProfilesPath(): string {
+  return join(getConfigDir(), 'bots.json')
+}
+
+/** Bot 长期记忆：~/.tagent[-dev]/bot-memories.json */
+export function getBotMemoriesPath(): string {
+  return join(getConfigDir(), 'bot-memories.json')
+}
+
 /** 项目数据根目录：~/.tagent[-dev]/projects/ */
 export function getProjectsDir(): string {
   const dir = join(getConfigDir(), 'projects')
@@ -189,6 +199,15 @@ export function getCollaborationDir(): string {
   return dir
 }
 
+/** RoomSession 权威快照索引：~/.tagent[-dev]/collaboration/fusion-room-snapshots.json */
+export function getFusionRoomSnapshotsPath(): string {
+  return join(getCollaborationDir(), 'fusion-room-snapshots.json')
+}
+
+/** RoomSession 邀请令牌索引：~/.tagent[-dev]/collaboration/fusion-room-invite-tokens.json */
+export function getFusionRoomInviteTokensPath(): string {
+  return join(getCollaborationDir(), 'fusion-room-invite-tokens.json')
+}
 /** 协作室房间索引：~/.tagent[-dev]/collaboration/rooms.json */
 export function getCollaborationRoomsPath(): string {
   return join(getCollaborationDir(), 'rooms.json')
@@ -202,6 +221,10 @@ export function getCollaborationMembersPath(): string {
 /** 协作室消息索引：~/.tagent[-dev]/collaboration/messages.json */
 export function getCollaborationMessagesPath(): string {
   return join(getCollaborationDir(), 'messages.json')
+}
+
+export function getCollaborationEventsPath(): string {
+  return join(getCollaborationDir(), 'events.json')
 }
 
 /** 协作室 run 索引：~/.tagent[-dev]/collaboration/runs.json */
@@ -229,6 +252,21 @@ export function getCollaborationArtifactsPath(): string {
   return join(getCollaborationDir(), 'artifacts.json')
 }
 
+/** 协作室服务工作区根目录：~/.tagent[-dev]/collaboration/room-workspaces/ */
+export function getCollaborationRoomWorkspacesDir(): string {
+  const dir = join(getCollaborationDir(), 'room-workspaces')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** 指定协作室的服务工作区目录；roomId 只允许作为单层目录名使用。 */
+export function getCollaborationRoomWorkspaceDir(roomId: string): string {
+  const safeRoomId = roomId.trim().replace(/[^a-zA-Z0-9_-]/g, '_')
+  if (!safeRoomId) throw new Error('无效的协作室 ID')
+  const dir = join(getCollaborationRoomWorkspacesDir(), safeRoomId)
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
 /** 协作室用户审批请求索引：~/.tagent[-dev]/collaboration/user-approvals.json */
 export function getCollaborationUserApprovalsPath(): string {
   return join(getCollaborationDir(), 'user-approvals.json')

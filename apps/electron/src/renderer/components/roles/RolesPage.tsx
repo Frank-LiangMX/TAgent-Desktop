@@ -29,10 +29,11 @@ import type { AgentRoleProfile, RoleStoreCatalogEntry } from '@tagent/shared'
 import { DEFAULT_ROLES } from '@tagent/shared'
 import { cn } from '../../lib/utils'
 import '../../styles/roles-page.css'
+import { BotLibraryView } from './BotLibraryView'
 
 const BUILTIN_IDS = new Set(DEFAULT_ROLES.map((r) => r.id))
 
-type PageView = 'team' | 'store'
+type PageView = 'team' | 'bots' | 'store'
 type TeamFilter = 'all' | 'builtin' | 'custom'
 
 function monogram(name: string): string {
@@ -274,6 +275,7 @@ export function RolesPage(): JSX.Element {
         className="settings-segmented"
       >
         <SegmentedTabsItem value="team">我的团队（{stats.total}）</SegmentedTabsItem>
+        <SegmentedTabsItem value="bots">Bot 库</SegmentedTabsItem>
         <SegmentedTabsItem value="store">商店</SegmentedTabsItem>
       </SegmentedTabs>
 
@@ -283,7 +285,9 @@ export function RolesPage(): JSX.Element {
         </div>
       ) : null}
 
-      {view === 'team' ? (
+      {view === 'bots' ? (
+        <BotLibraryView />
+      ) : view === 'team' ? (
         <>
           <div className="roles-toolbar">
             <div className="roles-search">

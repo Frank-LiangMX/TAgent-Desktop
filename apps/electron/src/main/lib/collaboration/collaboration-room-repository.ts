@@ -26,6 +26,7 @@ import type {
   CollaborationArtifact,
   CollaborationUserApprovalRequest,
   CollaborationMemberPreset,
+  CollaborationRoomEvent,
 } from '@tagent/shared'
 import { randomBytes } from 'node:crypto'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
@@ -33,6 +34,7 @@ import {
   getCollaborationRoomsPath,
   getCollaborationMembersPath,
   getCollaborationMessagesPath,
+  getCollaborationEventsPath,
   getCollaborationRunsPath,
   getCollaborationMailboxPath,
   getCollaborationSummariesPath,
@@ -297,6 +299,90 @@ export function appendMessage(message: CollaborationMessage): void {
   const config = readMessagesConfig()
   config.messages.push(message)
   writeMessagesConfig(config)
+}
+
+// ===== events.json（RoomEvent 本地事件账本） =====
+
+interface EventsConfig {
+  version: number
+  events: CollaborationRoomEvent[]
+}
+
+function readEventsConfig(): EventsConfig {
+  const parsed = readJsonSafe<EventsConfig | null>(getCollaborationEventsPath(), null)
+  if (!parsed || !Array.isArray(parsed.events)) {
+    return { version: CONFIG_VERSION, events: [] }
+  }
+  return parsed
+}
+
+function writeEventsConfig(config: EventsConfig): void {
+  try {
+    writeJsonAtomic(getCollaborationEventsPath(), config)
+  } catch (err) {
+    console.error("[协作室存储] 写入 events.json 失败:", err)
+    throw new Error("写入协作室事件数据失败")
+  }
+}
+
+export function listRoomEvents(roomId: string): CollaborationRoomEvent[] {
+  return readEventsConfig()
+    .events.filter((event) => event.roomId === roomId)
+    .sort((a, b) => a.sequence - b.sequence)
+}
+
+export function getLatestRoomEventSequence(roomId: string): number {
+  return listRoomEvents(roomId).reduce(
+    (latest, event) => Math.max(latest, event.sequence),
+    0,
+  )
+}
+
+export function appendRoomEvent(
+  input: Omit<CollaborationRoomEvent, "id" | "sequence" | "createdAt"> & {
+    expectedSequence?: number
+  },
+): CollaborationRoomEvent {
+  const roomId = input.roomId.trim()
+  const actorUserId = input.actorUserId.trim()
+  if (!roomId || !actorUserId) throw new Error("RoomEvent 的 roomId、actorUserId 必填")
+  const config = readEventsConfig()
+  const existing = input.idempotencyKey
+    ? config.events.find(
+        (event) =>
+          event.roomId === roomId &&
+          event.idempotencyKey === input.idempotencyKey,
+      )
+    : undefined
+  if (existing) return existing
+  const sequence = config.events
+    .filter((event) => event.roomId === roomId)
+    .reduce((latest, event) => Math.max(latest, event.sequence), 0)
+  if (
+    input.expectedSequence !== undefined &&
+    input.expectedSequence !== sequence
+  ) {
+    throw new Error("RoomEvent sequence 冲突，请重新读取房间状态")
+  }
+  const now = Date.now()
+  const event: CollaborationRoomEvent = {
+    id: "cre_" + now.toString(36) + "_" + randomBytes(6).toString("hex"),
+    roomId,
+    sequence: sequence + 1,
+    type: input.type,
+    actorUserId,
+    ...(input.entityId ? { entityId: input.entityId } : {}),
+    ...(input.causationId ? { causationId: input.causationId } : {}),
+    ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+    payload: JSON.parse(JSON.stringify(input.payload ?? {})) as Record<
+      string,
+      unknown
+    >,
+    createdAt: now,
+  }
+  config.events.push(event)
+  writeEventsConfig(config)
+  return event
 }
 
 // ===== runs.json =====

@@ -25,7 +25,6 @@ import {
   compensateScrollForHeightDelta,
   hasSavedMidPosition,
   shouldFollowContentGrowth,
-  shouldPreserveBottomIntent,
   shouldRepinScrollerToBottom,
   targetScrollTop,
 } from "./scroll-position";
@@ -44,6 +43,7 @@ export function peekSessionScrollDistance(id: string): number | undefined {
 /** 新一轮发送后只记录“稍后跟随最新内容”的意图，等待首个主线 assistant 内容到达。 */
 export function markSessionAtBottom(id: string): void {
   pendingBottomIntentCache.add(id);
+  bottomIntentCache.delete(id);
 }
 
 /** 首个主线 assistant 内容已到达：此时才把本轮视为贴底并覆盖旧的中间位缓存。 */
@@ -100,8 +100,8 @@ export function ScrollPositionManager({
       state.velocity = 0;
       state.accumulated = 0;
     }
-    // 同步恢复第三方库的 isAtBottom 状态；真正的 scrollTop 仍由协调器直接写入。
-    void scrollToBottomRef.current("instant");
+    // 流式期间只直接写入滚动位置，不调用第三方 scrollToBottom：后者会
+    // 每帧 setIsAtBottom，触发 React 重渲染，造成逐字输出时的顿挫。
     pinScrollerToBottom(el);
     el.setAttribute("data-chat-scroll-owner", "coordinator");
   };
@@ -131,9 +131,15 @@ export function ScrollPositionManager({
     const savePosition = (): void => {
       // 收回历史窗口会产生临时 scroll 事件；在本轮贴底意图仍有效时，
       // 不把这次中间态写回缓存。用户主动上滚则立即解除意图并保存真实位置。
-      if (state.escapedFromLock) {
+      const hasPendingIntent = pendingBottomIntentCache.has(id);
+      if (state.escapedFromLock && !hasPendingIntent) {
         pendingBottomIntentCache.delete(id);
         bottomIntentCache.delete(id);
+      } else if (hasPendingIntent) {
+        // 发送后收回虚拟化窗口会让 scrollTop 被浏览器向上夹回，
+        // use-stick-to-bottom 会把这次内部布局滚动误判为用户上滑。
+        // 真实的向上滚轮/键盘操作会在下面的输入监听中取消意图。
+        return;
       } else if (bottomIntentCache.has(id)) {
         scrollPositionCache.set(id, 0);
         return;
@@ -143,7 +149,29 @@ export function ScrollPositionManager({
       scrollPositionCache.set(id, distanceFromBottom);
     };
     el.addEventListener("scroll", savePosition, { passive: true });
-    return () => el.removeEventListener("scroll", savePosition);
+    const cancelOnUserInput = (event: WheelEvent): void => {
+      if (event.deltaY < 0) {
+        pendingBottomIntentCache.delete(id);
+        bottomIntentCache.delete(id);
+      }
+    };
+    const cancelOnKeyboard = (event: KeyboardEvent): void => {
+      if (
+        event.key === "ArrowUp" ||
+        event.key === "PageUp" ||
+        event.key === "Home"
+      ) {
+        pendingBottomIntentCache.delete(id);
+        bottomIntentCache.delete(id);
+      }
+    };
+    el.addEventListener("wheel", cancelOnUserInput, { passive: true });
+    el.addEventListener("keydown", cancelOnKeyboard);
+    return () => {
+      el.removeEventListener("scroll", savePosition);
+      el.removeEventListener("wheel", cancelOnUserInput);
+      el.removeEventListener("keydown", cancelOnKeyboard);
+    };
   }, [scrollRef, id, ready, restoreReady, state]);
 
   // id 变化时重置恢复标记

@@ -87,8 +87,25 @@ export interface MoASeatRunArgs {
  * 唯一可替换点：kscc 渠用 `createKsccSeatRunner`，外部渠用 `createPiHttpSeatRunner`。
  * 同场不混核：一个 runMoaTurn 全程只用一种 runner（由主进程按 channel 选定注入）。
  */
+export interface MoASeatUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  costUsd?: number;
+}
+
+export interface MoASeatRunResult {
+  text: string;
+  usage?: MoASeatUsage;
+}
+
 export interface MoASeatRunner {
+  /** 兼容旧调用方：只返回正文。 */
   runSeat(args: MoASeatRunArgs): Promise<string>;
+  /** 可选 usage 路径；宿主按结构探测，不能失败后再调用 runSeat。 */
+  runSeatWithUsage?(args: MoASeatRunArgs): Promise<MoASeatRunResult>;
 }
 
 /**
@@ -96,80 +113,109 @@ export interface MoASeatRunner {
  * 与历史行为一致：`appendSystemPrompt` 仅在 `systemPrompt` 非空时注入。
  */
 export function createKsccSeatRunner(opts: { ksccPath?: string }): MoASeatRunner {
-  return {
-    async runSeat(args: MoASeatRunArgs): Promise<string> {
-      const context: Context = {
-        messages: [{ role: "user", content: args.prompt, timestamp: Date.now() }],
-      };
-      const proc = spawnKsccBare({
-        ksccPath: opts.ksccPath,
-        modelId: args.modelId,
-        context: context as any,
-        // 参考席 / 汇总席：纯文本无工具
-        tools: [],
-        ...(args.systemPrompt ? { appendSystemPrompt: args.systemPrompt } : {}),
-        ...(args.signal ? { signal: args.signal } : {}),
-      });
+  const runSeatWithUsage = async (args: MoASeatRunArgs): Promise<MoASeatRunResult> => {
+    const context: Context = {
+      messages: [{ role: "user", content: args.prompt, timestamp: Date.now() }],
+    };
+    const proc = spawnKsccBare({
+      ksccPath: opts.ksccPath,
+      modelId: args.modelId,
+      context: context as any,
+      tools: [],
+      ...(args.systemPrompt ? { appendSystemPrompt: args.systemPrompt } : {}),
+      ...(args.signal ? { signal: args.signal } : {}),
+    });
 
-      let fullText = "";
-      let timedOut = false;
-      const timeoutMs = args.timeoutMs ?? 120_000;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        proc.kill();
-      }, timeoutMs);
-      const onAbort = () => proc.kill();
-      if (args.signal) {
-        if (args.signal.aborted) proc.kill();
-        else args.signal.addEventListener("abort", onAbort, { once: true });
-      }
+    let fullText = "";
+    let usage: MoASeatUsage | undefined;
+    let timedOut = false;
+    const timeoutMs = args.timeoutMs ?? 120_000;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, timeoutMs);
+    const onAbort = () => proc.kill();
+    if (args.signal) {
+      if (args.signal.aborted) proc.kill();
+      else args.signal.addEventListener("abort", onAbort, { once: true });
+    }
 
-      try {
-        for await (const line of proc.lines) {
-          if (args.signal?.aborted) break;
-          try {
-            const obj = JSON.parse(line);
-            if (
-              obj.type === "stream_event" &&
-              obj.event?.type === "content_block_delta" &&
-              obj.event.delta?.type === "text_delta"
-            ) {
-              const delta: string = obj.event.delta.text ?? "";
-              if (delta) {
-                fullText += delta;
-                args.onTextDelta?.(delta);
-              }
+    try {
+      for await (const line of proc.lines) {
+        if (args.signal?.aborted) break;
+        try {
+          const obj = JSON.parse(line) as {
+            type?: string;
+            event?: { type?: string; delta?: { type?: string; text?: string } };
+            result?: string;
+            usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_read_input_tokens?: number;
+              cache_creation_input_tokens?: number;
+            };
+            total_cost_usd?: number;
+          };
+          if (
+            obj.type === "stream_event" &&
+            obj.event?.type === "content_block_delta" &&
+            obj.event.delta?.type === "text_delta"
+          ) {
+            const delta = obj.event.delta.text ?? "";
+            if (delta) {
+              fullText += delta;
+              args.onTextDelta?.(delta);
             }
-            if (obj.type === "result" && typeof obj.result === "string") {
-              fullText = obj.result;
-            }
-          } catch {
-            // 非 JSON 行忽略
           }
+          if (obj.type === "result") {
+            if (typeof obj.result === "string") fullText = obj.result;
+            if (obj.usage) {
+              const inputTokens = obj.usage.input_tokens;
+              const outputTokens = obj.usage.output_tokens;
+              usage = {
+                ...(inputTokens !== undefined ? { inputTokens } : {}),
+                ...(outputTokens !== undefined ? { outputTokens } : {}),
+                ...(inputTokens !== undefined && outputTokens !== undefined
+                  ? { totalTokens: inputTokens + outputTokens }
+                  : {}),
+                ...(obj.usage.cache_read_input_tokens !== undefined
+                  ? { cacheReadTokens: obj.usage.cache_read_input_tokens }
+                  : {}),
+                ...(obj.usage.cache_creation_input_tokens !== undefined
+                  ? { cacheWriteTokens: obj.usage.cache_creation_input_tokens }
+                  : {}),
+                ...(obj.total_cost_usd !== undefined ? { costUsd: obj.total_cost_usd } : {}),
+              };
+            }
+          }
+        } catch {
+          // 非 JSON 行忽略
         }
-      } finally {
-        clearTimeout(timer);
-        if (args.signal) args.signal.removeEventListener("abort", onAbort);
-        proc.kill();
       }
+    } finally {
+      clearTimeout(timer);
+      if (args.signal) args.signal.removeEventListener("abort", onAbort);
+      proc.kill();
+    }
 
-      const exitCode = await proc.wait();
-      // 取消不是失败：交给上层按 signal 统一标成“已取消”。
-      if (args.signal?.aborted) return "";
-      if (timedOut) {
-        throw new Error(`单席请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`);
-      }
-      if (exitCode !== 0) {
-        const detail = typeof proc.stderr === "string" ? proc.stderr.trim() : "";
-        throw new Error(detail || `kscc 进程异常退出（退出码 ${exitCode}）`);
-      }
-      const text = fullText.trim();
-      if (!text) throw new Error("模型未返回正文");
-      return text;
-    },
+    const exitCode = await proc.wait();
+    if (args.signal?.aborted) return { text: "", ...(usage ? { usage } : {}) };
+    if (timedOut) {
+      throw new Error(`单席请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`);
+    }
+    if (exitCode !== 0) {
+      const detail = typeof proc.stderr === "string" ? proc.stderr.trim() : "";
+      throw new Error(detail || `kscc 进程异常退出（退出码 ${exitCode}）`);
+    }
+    const text = fullText.trim();
+    if (!text) throw new Error("模型未返回正文");
+    return { text, ...(usage ? { usage } : {}) };
+  };
+  return {
+    runSeat: async (args) => (await runSeatWithUsage(args)).text,
+    runSeatWithUsage,
   };
 }
-
 /** 从 AssistantMessage 抽取纯文本（拼接所有 text 块，跳过 thinking / toolCall） */
 function extractAssistantText(msg: AssistantMessage): string {
   return msg.content
@@ -191,50 +237,62 @@ export function createPiHttpSeatRunner(opts: {
   apiKey: string;
   baseUrl?: string;
 }): MoASeatRunner {
-  return {
-    async runSeat(args: MoASeatRunArgs): Promise<string> {
-      // 每席 modelId 不同 → 现场建 streamFn（createHttpDirectStreamFn 在工厂层固化 modelId）
-      const streamFn = createHttpDirectStreamFn({
-        provider: opts.provider,
-        apiKey: opts.apiKey,
-        baseUrl: opts.baseUrl,
-        modelId: args.modelId,
-      });
-      const context: Context = {
-        ...(args.systemPrompt ? { systemPrompt: args.systemPrompt } : {}),
-        messages: [{ role: "user", content: args.prompt, timestamp: Date.now() }],
-        tools: [],
-      };
-      // http-direct streamFn 同步返回流（StreamFn 类型含 Promise 分支，先 await 规一化）
-      const stream = await Promise.resolve(
-        streamFn(undefined as unknown as Model<Api>, context, {
-          ...(args.signal ? { signal: args.signal } : {}),
-          ...(args.timeoutMs ? { timeoutMs: args.timeoutMs } : {}),
-        }),
-      );
+  const runSeatWithUsage = async (args: MoASeatRunArgs): Promise<MoASeatRunResult> => {
+    const streamFn = createHttpDirectStreamFn({
+      provider: opts.provider,
+      apiKey: opts.apiKey,
+      baseUrl: opts.baseUrl,
+      modelId: args.modelId,
+    });
+    const context: Context = {
+      ...(args.systemPrompt ? { systemPrompt: args.systemPrompt } : {}),
+      messages: [{ role: "user", content: args.prompt, timestamp: Date.now() }],
+      tools: [],
+    };
+    const stream = await Promise.resolve(
+      streamFn(undefined as unknown as Model<Api>, context, {
+        ...(args.signal ? { signal: args.signal } : {}),
+        ...(args.timeoutMs ? { timeoutMs: args.timeoutMs } : {}),
+      }),
+    );
 
-      let fullText = "";
-      let finalMessage: AssistantMessage | undefined;
-      for await (const ev of stream) {
-        if (args.signal?.aborted) break;
-        if (ev.type === "text_delta") {
-          const delta = ev.delta ?? "";
-          if (delta) {
-            fullText += delta;
-            args.onTextDelta?.(delta);
-          }
-        } else if (ev.type === "done") {
-          finalMessage = ev.message;
-        } else if (ev.type === "error") {
-          throw new Error(ev.error.errorMessage || "外部模型请求失败");
+    let fullText = "";
+    let finalMessage: AssistantMessage | undefined;
+    for await (const ev of stream) {
+      if (args.signal?.aborted) break;
+      if (ev.type === "text_delta") {
+        const delta = ev.delta ?? "";
+        if (delta) {
+          fullText += delta;
+          args.onTextDelta?.(delta);
         }
+      } else if (ev.type === "done") {
+        finalMessage = ev.message;
+      } else if (ev.type === "error") {
+        throw new Error(ev.error.errorMessage || "外部模型请求失败");
       }
-      const text = finalMessage ? extractAssistantText(finalMessage) : fullText;
-      return text.trim();
-    },
+    }
+    const text = finalMessage ? extractAssistantText(finalMessage) : fullText;
+    const usageValue = finalMessage?.usage;
+    const usage: MoASeatUsage | undefined = usageValue
+      ? {
+          ...(usageValue.input !== undefined ? { inputTokens: usageValue.input } : {}),
+          ...(usageValue.output !== undefined ? { outputTokens: usageValue.output } : {}),
+          ...(usageValue.totalTokens !== undefined ? { totalTokens: usageValue.totalTokens } : {}),
+          ...(usageValue.cacheRead !== undefined ? { cacheReadTokens: usageValue.cacheRead } : {}),
+          ...(usageValue.cacheWrite !== undefined ? { cacheWriteTokens: usageValue.cacheWrite } : {}),
+          ...(usageValue.cost?.input !== undefined || usageValue.cost?.output !== undefined
+            ? { costUsd: (usageValue.cost?.input ?? 0) + (usageValue.cost?.output ?? 0) }
+            : {}),
+        }
+      : undefined;
+    return { text: text.trim(), ...(usage ? { usage } : {}) };
+  };
+  return {
+    runSeat: async (args) => (await runSeatWithUsage(args)).text,
+    runSeatWithUsage,
   };
 }
-
 /** 并行跑多个参考模型，收集输出 */
 export async function runReferenceModels(
   userQuestion: string,
