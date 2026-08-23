@@ -38,6 +38,8 @@ import {
   startIdleConsolidationScheduler,
   stopIdleConsolidationScheduler,
 } from './lib/memory'
+// type-only：esbuild 去类型不引入运行时模块；仅用于持有 transport bootstrap 句柄类型。
+import type { FusionRoomTransportBootstrapResult } from './lib/collaboration/fusion-room-transport-bootstrap'
 
 // cjs 打包格式下 __dirname 是全局可用，无需 fileURLToPath
 
@@ -46,6 +48,8 @@ let mainWindow: BrowserWindow | null = null
 let sessionService: SessionService | null = null
 let browserService: BrowserService | null = null
 let permissionService: PermissionService | null = null
+/** P0-3c：FusionRoom transport bootstrap 结果句柄；`before-quit` 时 close 其 runtime。 */
+let fusionTransportBootstrap: FusionRoomTransportBootstrapResult | null = null
 
 // Windows 的 LCD/ClearType 次像素文字在透明渐变与 backdrop-filter 叠层上滚动时，
 // 容易出现彩色高光边缘和视觉拖影。与旧版保持一致，改用灰度抗锯齿。
@@ -221,6 +225,40 @@ function createWindow(): void {
   }
 }
 
+/** P0-3c：把 transport bootstrap 结果摘要打到主进程日志（替代旧 console.log 占位）。 */
+function logFusionTransportBootstrap(bootstrap: FusionRoomTransportBootstrapResult): void {
+  switch (bootstrap.status) {
+    case 'listening':
+      console.log(
+        `[collaboration] 非 loopback HTTPS transport 监听中：https://${bootstrap.host}:${bootstrap.address.port}`,
+      )
+      break
+    case 'loopback_only':
+      console.log(
+        `[collaboration] loopback-only HTTP transport 监听中：http://127.0.0.1:${bootstrap.address.port}`,
+      )
+      break
+    case 'failed':
+      console.warn('[collaboration] transport 启动失败：', bootstrap.error)
+      break
+    case 'disabled':
+      console.log('[collaboration] transport 未启动：', bootstrap.reasons.join('; '))
+      break
+  }
+}
+
+/** P0-3c：进程退出前关闭 transport runtime（fire-and-forget；OS 退出回收端口）。 */
+function closeFusionTransportOnQuit(): void {
+  const bootstrap = fusionTransportBootstrap
+  fusionTransportBootstrap = null
+  if (!bootstrap) return
+  if (bootstrap.status === 'listening' || bootstrap.status === 'loopback_only') {
+    void bootstrap.runtime.close().catch((err) => {
+      console.warn('[collaboration] transport close failed:', err)
+    })
+  }
+}
+
 app.whenReady().then(async () => {
   // 禁用默认应用菜单（Windows 全局 Edit 快捷键抢焦点问题）
   Menu.setApplicationMenu(null)
@@ -313,6 +351,8 @@ app.whenReady().then(async () => {
   const {
     getCollaborationDir,
     getFusionRoomNetworkPrefsPath,
+    getFusionRoomSnapshotsPath,
+    getFusionRoomInviteTokensPath,
   } = await import('./lib/config/config-paths')
   const { registerFusionRoomNetworkPrefsIpc } = await import(
     './lib/collaboration/fusion-room-network-prefs-ipc'
@@ -327,15 +367,31 @@ app.whenReady().then(async () => {
   if (fusionGate.registerIpc) {
     const { registerCollaborationRoomIpc } = await import('./lib/collaboration/collaboration-ipc')
     registerCollaborationRoomIpc(() => mainWindow)
-    if (fusionGate.allowNonLoopbackListen) {
-      console.log('[collaboration] 非 loopback 监听已获显式授权（active 证书 + 双开关）')
-    }
   } else {
     console.log('[collaboration] disabled:', fusionGate.reasons.join('; '))
   }
+  // P0-3c：据闸门 + cert store 的 active TLS 材料接通 transport 启动。默认 prefs 全关 / 无证书
+  // → disabled（与今天默认打包行为一致）；仅 allowNonLoopbackListen + active 证书才起 HTTPS 非 loopback。
+  // 本切片不做真实账户 OAuth：fallback 认证 deny-all，仅邀请令牌可访问。enableDefaultMemberExecution
+  // 始终 false（远程 / 打包不自动开执行）；enableDevLoopbackTransport 默认 false（不无显式开关就起 loopback HTTP）。
+  const { bootstrapFusionRoomTransport } = await import(
+    './lib/collaboration/fusion-room-transport-bootstrap'
+  )
+  fusionTransportBootstrap = await bootstrapFusionRoomTransport({
+    gate: fusionGate,
+    certStore: fusionCertStore,
+    snapshotPath: getFusionRoomSnapshotsPath(),
+    inviteTokenPath: getFusionRoomInviteTokensPath(),
+  })
+  logFusionTransportBootstrap(fusionTransportBootstrap)
   // 始终注册偏好 / 证书管理 IPC，让用户能显式控制闸门；它本身不注册协作室 IPC、不开网络监听。
-  // gate-status 用启动时应用的决策（fusionGate）作为 applied，渲染层据此显示「需重启生效」徽章。
-  registerFusionRoomNetworkPrefsIpc({ isPackaged: app.isPackaged, appliedGate: fusionGate })
+  // gate-status 用启动时应用的决策（fusionGate）作为 applied，渲染层据此显示「需重启生效」徽章；
+  // transport:status 用 bootstrap 结果的只读投影（剥离 runtime 句柄）回传渲染层。
+  registerFusionRoomNetworkPrefsIpc({
+    isPackaged: app.isPackaged,
+    appliedGate: fusionGate,
+    getTransportBootstrap: () => fusionTransportBootstrap,
+  })
   // 通知偏好 IPC（通用设置 ↔ 主进程系统通知）
   const {
     loadNotificationPrefs,
@@ -404,6 +460,8 @@ app.on('before-quit', () => {
   } catch (err) {
     console.error('[memory] shutdown cleanup failed:', err)
   }
+  // P0-3c：关闭 FusionRoom transport runtime（若有）
+  closeFusionTransportOnQuit()
   cleanupUpdater()
   browserService?.dispose()
   sessionService?.disposeAll()

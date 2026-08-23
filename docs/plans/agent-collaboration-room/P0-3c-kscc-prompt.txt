@@ -1,0 +1,16 @@
+读并完整执行：docs/plans/agent-collaboration-room/P0-3c-TRANSPORT-STARTUP-WIRE-brief.md
+
+仓库根：当前工作目录（TAgent-Desktop）。
+
+硬约束：
+1. 禁止触碰未提交文件：BotSidecarPanel.tsx、BotSidecarPanel.test.tsx、image-lightbox.tsx、message/index.tsx、tokens.css
+2. 可以 git commit；禁止 git push
+3. 提交时禁止任何 Co-authored-by / Made with Cursor / trailer 归因；只用普通 git commit -m
+4. 按 brief 验收跑测；更新 §83、13-HANDOFF、03 基线
+
+完成后用中文汇报：
+- 文件列表
+- bootstrap 决策表
+- 测试结果
+- 明确未做项
+- commit hash

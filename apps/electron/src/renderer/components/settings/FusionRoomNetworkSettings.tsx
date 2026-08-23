@@ -41,6 +41,16 @@ import {
 
 type Notice = { kind: 'success' | 'error'; message: string } | null
 
+/** transport 只读状态视图（与 preload / 主进程 IPC 形状一致）。 */
+type TransportStatusView = {
+  status: 'disabled' | 'listening' | 'loopback_only' | 'failed' | 'not_started'
+  host?: string
+  port?: number
+  tls?: boolean
+  error?: string
+  reasons?: string[]
+}
+
 const DEFAULT_PREFS: FusionRoomNetworkPrefsView = {
   enableCollaboration: false,
   enableNetworkListen: false,
@@ -54,6 +64,7 @@ export function FusionRoomNetworkSettings(): JSX.Element {
   const [prefs, setPrefs] = useState<FusionRoomNetworkPrefsView | null>(null)
   const [certs, setCerts] = useState<FusionRoomCertRecordView[]>([])
   const [gate, setGate] = useState<FusionRoomGateStatusView | null>(null)
+  const [transport, setTransport] = useState<TransportStatusView | null>(null)
   const [notice, setNotice] = useState<Notice>(null)
   const [toggling, setToggling] = useState<'collab' | 'listen' | null>(null)
   const [certBusy, setCertBusy] = useState(false)
@@ -68,6 +79,13 @@ export function FusionRoomNetworkSettings(): JSX.Element {
       setPrefs(p)
       setCerts(c)
       setGate(g)
+      // P0-3c：transport 状态在启动时固定（策略 B），仅初始读取；读失败不阻塞偏好 / 证书 / 闸门展示。
+      try {
+        const status = await window.electronAPI.getFusionRoomTransportStatus()
+        setTransport(status.transport)
+      } catch {
+        // transport-status 读失败不阻塞其余面板。
+      }
     } catch (e) {
       setNotice({
         kind: 'error',
@@ -354,6 +372,9 @@ export function FusionRoomNetworkSettings(): JSX.Element {
             </p>
           </div>
         ) : null}
+        <div className="settings-card-footnote">
+          <p className="agent-behavior-field-hint">{transportStatusLabel(transport)}</p>
+        </div>
       </SettingsCard>
     </SettingsSection>
   )
@@ -371,4 +392,21 @@ function GateLine({ label, tone }: { label: string; tone: 'off' | 'warn' | 'ok' 
       {label}
     </div>
   )
+}
+
+/** P0-3c：transport 只读状态文案（一行）。transport 在启动时固定，重启后才追上偏好变更。 */
+function transportStatusLabel(transport: TransportStatusView | null): string {
+  if (!transport) return '传输：—'
+  switch (transport.status) {
+    case 'listening':
+      return `传输：监听 https://${transport.host ?? ''}:${transport.port ?? 0}`
+    case 'loopback_only':
+      return `传输：监听 http://127.0.0.1:${transport.port ?? 0}（仅本机）`
+    case 'failed':
+      return `传输：启动失败${transport.error ? `（${transport.error}）` : ''}`
+    case 'disabled':
+      return '传输：未启动'
+    default:
+      return '传输：未启动'
+  }
 }

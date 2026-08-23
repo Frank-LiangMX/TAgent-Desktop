@@ -29,6 +29,11 @@ import {
   type FusionRoomNetworkPrefs,
   type PackagedCollaborationGateDecision,
 } from './fusion-room-network-prefs'
+import {
+  projectFusionRoomTransportStatus,
+  type FusionRoomTransportBootstrapResult,
+  type FusionRoomTransportStatusView,
+} from './fusion-room-transport-bootstrap'
 
 /** 证书生成入参（渲染层只传可选 commonName / validityDays）。 */
 export type FusionRoomCertGenerateIpcInput = FusionRoomCertGenerateInput
@@ -63,12 +68,30 @@ export interface RegisterFusionRoomNetworkPrefsIpcOptions {
    * 设置页只读展示「实际放行」真值。重启后 `main/index.ts` 会重新计算，故 `applied` 自动追上。
    */
   appliedGate: PackagedCollaborationGateDecision
+  /**
+   * P0-3c：transport 启动 bootstrap 结果的只读访问器（`main/index.ts` 在启动时跑
+   * `bootstrapFusionRoomTransport` 后持有）。`fusion-room-transport:status` 据其投影回传
+   * 渲染层（剥离 runtime 句柄）。省略时回传 `not_started`（bootstrap 未跑 / 未注入）。
+   */
+  getTransportBootstrap?: () => FusionRoomTransportBootstrapResult | null
+}
+
+/**
+ * P0-3c：transport 状态查询返回（只读）。设置页危险区据此显示
+ * 「传输：未启动 / 监听 https://host:port / loopback-only / 启动失败」。
+ *
+ * - `appliedGate`：本次启动应用的闸门决策（与 `gate-status` 的 `applied` 同源）。
+ * - `transport`：bootstrap 结果的只读投影（无 runtime 句柄、无私钥）。
+ */
+export interface FusionRoomTransportStatusIpc {
+  appliedGate: PackagedCollaborationGateDecision
+  transport: FusionRoomTransportStatusView
 }
 
 export function registerFusionRoomNetworkPrefsIpc(
   options: RegisterFusionRoomNetworkPrefsIpcOptions,
 ): void {
-  const { isPackaged, appliedGate } = options
+  const { isPackaged, appliedGate, getTransportBootstrap } = options
   const certsDir = getCollaborationDir()
   const prefsPath = getFusionRoomNetworkPrefsPath()
   const certStore = new FusionRoomCertStore({ dir: certsDir })
@@ -101,6 +124,14 @@ export function registerFusionRoomNetworkPrefsIpc(
       decision.allowNonLoopbackListen !== appliedGate.allowNonLoopbackListen
     return { decision, applied: appliedGate, needsRestart, isPackaged }
   })
+
+  // P0-3c：transport 只读状态（bootstrap 结果投影，剥离 runtime 句柄）。设置页危险区据此
+  // 显示「传输：未启动 / 监听 https://host:port / loopback-only / 启动失败」。bootstrap 在
+  // 启动时跑一次（策略 B：闸门变更需重启），故本状态反映「本次启动实际传输」，重启后追上。
+  ipcMain.handle('fusion-room-transport:status', (): FusionRoomTransportStatusIpc => ({
+    appliedGate,
+    transport: projectFusionRoomTransportStatus(getTransportBootstrap?.() ?? null),
+  }))
 
   ipcMain.handle('fusion-room-certs:list', (): FusionRoomPublicCertRecord[] =>
     certStore.listPublic(),

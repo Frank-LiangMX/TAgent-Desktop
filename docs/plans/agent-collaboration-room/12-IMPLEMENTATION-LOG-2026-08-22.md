@@ -1076,4 +1076,74 @@
 - **未做 Fusion outbox scan IPC**：本切片为本地 `CollaborationRoomService` 路径新增 `list-continuations` / `confirm-resume-blocked`；未为远程 Fusion 路径新增 outbox scan IPC（远程已有 `listFusionContinuations` + `confirmResumeContinuation` 经 execution bridge 推进）。
 - **未做实机 Electron GUI 手测**：UI 以组件最小渲染测（jsdom + react-dom/client + act，不引入 @testing-library）+ 纯函数/服务单测 + 全仓 typecheck 验证；未实机点击「确认继续」。
 - **旧 blocked run 续跑后仍可见**：确认后旧 run 保持 blocked（设计如此，与远程一致），续跑项刷新后仍在列表；重复点击因幂等键 no-op。后续若需确认后从列表移除，可考虑 confirm 成功后将旧 run 标记为 `resumed`/cancelled 终态（本切片未做，避免越界改 run 状态机）。
+
+## 83. Electron 启动接通 FusionRoom transport（P0-3c：据闸门 + TLS，默认仍关）（2026-08-23）
+
+本轮交付 P0-3c：把 P0-3 / P0-3b 已产出但**未接通**的 `allowNonLoopbackListen` 接到 Electron 主进程启动路径——据显式闸门 + cert store 的 active TLS 材料决定是否 `createFusionRoomTransportRuntime` 并 `start`，暴露只读 transport 状态 IPC，打通 preload + App.tsx 类型，设置页危险区加一行只读「传输：…」。**默认仍关**（默认 prefs 全关 / 无证书 → `disabled`，与今天打包行为一致）；**绝不**默认打开公网、**绝不**新增 `allowInsecureNetwork`、远程 / 打包路径 **不**默认 `enableDefaultMemberExecution`。本切片是「启动接线 + 可测」，**不是**真实账户 OAuth、**不是**跨机器实机 E2E、**不**做热插拔 listen。**不**动无关未提交 UI 文件（`BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 保持本轮之前既存改动，未触碰、未提交）；可 commit，**未** push。
+
+### A. 启动装配模块（保持 `index.ts` 薄）
+
+新增 `apps/electron/src/main/lib/collaboration/fusion-room-transport-bootstrap.ts`：
+
+- `bootstrapFusionRoomTransport(input)`：纯决策 + 单次 `start`，不重算闸门、不热插拔；失败**不**抛（返回 `failed`），避免拖垮主进程。返回判别联合 `FusionRoomTransportBootstrapResult`（`disabled` / `loopback_only` / `listening` / `failed`；后两者含 `runtime` 句柄，前两者不含）。
+- 决策表（与 brief §A 一一对应）：
+  - `!gate.allowNonLoopbackListen` 且未显式 `enableDevLoopbackTransport` → `disabled`（reasons 含闸门理由），不 start。
+  - `!gate.allowNonLoopbackListen` 且显式 `enableDevLoopbackTransport` → `loopback_only`：明文 HTTP，**强制 127.0.0.1**（忽略调用方 `listenHost`，绝不暴露明文非 loopback），无 tls。
+  - `gate.allowNonLoopbackListen` 且 `certStore.resolveTlsOptions()` 有值 → `listening`：HTTPS + 非 loopback（`listenHost ?? '0.0.0.0'`），`enableDefaultMemberExecution: false`。
+  - `gate.allowNonLoopbackListen` 但无 TLS 材料 → `failed`（不得明文非 loopback；不得绕过）。**注意**：闸门 `allowNonLoopbackListen` 已据 `hasActiveCert` 计算，但 bootstrap 仍以 `resolveTlsOptions()` 取真实材料，避免闸门判定与 start 之间证书被撤销的竞态。
+  - `start` reject / listen 失败 → `failed`，不崩主进程。
+- 输入：`gate` / `certStore` / `listenHost?` / `listenPort?` / `enableDevLoopbackTransport?` / `snapshotPath?` / `inviteTokenPath?` / `outboxWorkerStatePath?` / `authenticate?`。所有路径由调用方传入（生产用 `getCollaborationDir()` 系列，测试用临时目录），模块**不**读 `app.isPackaged`、**不** require electron，便于离线单测。`authenticate` 省略时默认 deny-all（`() => undefined`）：本切片**不**做真实账户 OAuth，仅邀请令牌可访问，房主网络侧认证留待真实账户系统。
+- `projectFusionRoomTransportStatus(bootstrap)`：把 bootstrap 结果投影成可经 IPC 回传的纯数据 `FusionRoomTransportStatusView`（`status` + `host?` / `port?` / `tls?` / `error?` / `reasons?`），**剥离 runtime 句柄**；`null`（bootstrap 未跑）→ `not_started`。
+- 生命周期对齐 P0-3b **策略 B**：闸门变更需重启才重新 bootstrap（不在本切片做热插拔 listen）；调用方持有返回的 runtime 句柄并在 `before-quit` / `will-quit` 调 `runtime.close()`。
+
+### B. `main/index.ts` 接线
+
+- 删除「仅 `console.log('[collaboration] 非 loopback 监听已获显式授权…')` 占位」；改为在 `fusionGate` 计算后调用 `bootstrapFusionRoomTransport({ gate: fusionGate, certStore: fusionCertStore, snapshotPath: getFusionRoomSnapshotsPath(), inviteTokenPath: getFusionRoomInviteTokensPath() })`（`enableDevLoopbackTransport` 默认 false → dev 也不无显式开关就起 loopback HTTP）。
+- 模块级 `fusionTransportBootstrap` 句柄持有结果；`logFusionTransportBootstrap` 据终态打日志（`listening` → `https://host:port`、`loopback_only` → `http://127.0.0.1:port`、`failed` → warn、`disabled` → reasons）。
+- `before-quit` 调 `closeFusionTransportOnQuit()`：fire-and-forget `runtime.close()`（OS 退出回收端口），不阻塞退出。
+- `registerFusionRoomNetworkPrefsIpc` 新增 `getTransportBootstrap: () => fusionTransportBootstrap` 入参，供 transport:status IPC 读取。
+
+### C. 状态 IPC（只读）+ preload / App.tsx / 设置页
+
+- `fusion-room-network-prefs-ipc.ts` 新增 `fusion-room-transport:status` handler（与 gate-status 同函数注册，共享 `appliedGate` / `isPackaged`）：返回 `{ appliedGate, transport: projectFusionRoomTransportStatus(getTransportBootstrap?.() ?? null) }`。新增 `FusionRoomTransportStatusIpc` 类型 + `getTransportBootstrap?` 可选入参（向后兼容）。
+- `preload/index.ts`：新增 `getFusionRoomTransportStatus()`（`ipcRenderer.invoke("fusion-room-transport:status")`，内联 `{ appliedGate, transport }` 形状）。
+- `renderer/App.tsx`：`Window.electronAPI` 类型块同步 `getFusionRoomTransportStatus` 签名（与 preload 一致；遵循「preload IPC 须同步 App.tsx 全局声明」约定）。
+- 设置页危险区（`FusionRoomNetworkSettings.tsx`）「当前闸门状态」卡补一行只读 `transportStatusLabel(transport)`：`listening` → `传输：监听 https://host:port`、`loopback_only` → `传输：监听 http://127.0.0.1:port（仅本机）`、`failed` → `传输：启动失败（…）`、`disabled` / `not_started` → `传输：未启动`。transport 状态在启动时固定（策略 B），仅初始读取、读失败不阻塞其余面板。**不大改 UI**：复用既有 `SettingsCard` / `settings-card-footnote` / `agent-behavior-field-hint`，不新增 CSS、不新增组件；`TransportStatusView` 类型与 `transportStatusLabel` 为本文件内联（不动 settings model 与其单测）。
+
+### D. 单测
+
+新增 `apps/electron/src/main/lib/collaboration/fusion-room-transport-bootstrap.test.ts`（10 用例，临时目录 + port 0，跨运行时行为探测）：
+
+1. `allowNonLoopbackListen=false` 且未开 dev loopback → `disabled`，无 runtime、无 server。
+2. `allowNonLoopbackListen=true` + 临时生成 active 证书 → `listening`：`address.port > 0` + `tls===true` + `runtime.server.listening===true` + `executionBridge===undefined` + 明文 HTTP 探测失败（确认启用 TLS，非明文）+ 投影 `{status:'listening', host:'0.0.0.0', port, tls:true}`。
+3. `allowNonLoopbackListen=true` 但 cert store 无 active → `failed`（error 含 `TLS`），无 runtime（不得明文非 loopback 绕过）。
+4. `enableDevLoopbackTransport=true` + 误传非 loopback `listenHost:'0.0.0.0'` → `loopback_only`（强制 127.0.0.1，`tls===false`）+ 明文 HTTP 探测成功（200/401，确认是 HTTP 非 HTTPS）+ 投影 `{status:'loopback_only', host:'127.0.0.1', port, tls:false}`。
+5. `close()` 后 `server.listening===false`（端口释放），close 幂等。
+6. `enableDefaultMemberExecution` 始终 false：`listening` / `loopback_only` runtime 均无 `executionBridge`。
+7. 未传 `authenticate` 默认 deny-all：明文探测仍失败（TLS），不崩、不绕过认证。
+8-10. `projectFusionRoomTransportStatus`：`null → not_started`、`disabled → disabled+reasons`、`failed → failed+error+reasons`。
+
+禁止项已规避：测试一律临时目录 + port 0，不绑定真实公网、不写用户真实 `getCollaborationDir()`。
+
+### 验证（实跑结果）
+
+- `bunx vitest run apps/electron/src/main/lib/collaboration/fusion-room-transport-bootstrap.test.ts` → **10 pass / 0 fail**。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/fusion-room-network-prefs.test.ts` → **12 pass / 0 fail**（回归）。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/fusion-room-runtime.test.ts` → **26 pass / 0 fail**（回归）。
+- 额外回归：`fusion-room-network-settings-model.test.ts`（8）+ `fusion-room-cert-store.test.ts`（7）→ **15 pass / 0 fail**。
+- `bun run --filter='./apps/electron' typecheck` → 退出 0。
+- `git diff --check` → 退出 0（仅 `tokens.css` 等既存 LF→CRLF 提示，为本切片之前已存在的无关改动，未触碰；本切片未动 `BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css`）。
+
+### 诚实能力证据 / 未做
+
+- **默认仍关**：默认 prefs 全关 / 无证书 → bootstrap 返回 `disabled`，不 `createFusionRoomTransportRuntime`、不 listen（与今天打包行为一致）；`enableDevLoopbackTransport` 默认 false → dev 也不无显式开关就起 loopback HTTP。测试 1 显式断言 `disabled` 无 runtime。
+- **不新增 `allowInsecureNetwork` / 明文非 loopback**：bootstrap 对 `!allowNonLoopbackListen` 的 dev loopback 路径**强制 127.0.0.1**（忽略调用方 `listenHost`），非 loopback 一律要求 TLS（runtime 既有闸门 + bootstrap `resolveTlsOptions()` 双重校验）；测试 4 显式断言误传 `0.0.0.0` 仍只起 127.0.0.1。
+- **不默认 `enableDefaultMemberExecution`**：bootstrap 始终 `enableDefaultMemberExecution: false`、不传 `memberAdapter` → `runtime.executionBridge === undefined`（authority-only transport）；测试 2 / 4 / 6 显式断言。
+- **不崩主进程**：bootstrap `start` 失败返回 `failed`（不抛）；`index.ts` `failed` 仅 `console.warn`。
+- **未做真实账户 OAuth**：fallback `authenticate` deny-all，仅邀请令牌可访问；房主网络侧认证 / OAuth / 账户系统 / 生产 CA 未做（与 brief 禁止一致）。
+- **未做跨机器实机 E2E**：仅 loopback 行为探测 + 单测；未在两台设备 / 真实账户 / 真实 TLS 部署下验证跨主机访问。
+- **未做热插拔 listen**：策略 B——闸门 / 证书变更需重启才重新 bootstrap，不动态起 / 停 transport。
+- **未做实机 Electron GUI 手测**：无 Electron GUI；以 bootstrap 单测（含跨运行时 TLS 行为探测）+ 全仓 typecheck 验证；设置页「传输：…」一行未实机点看。
+- **未做 transport stop / 重启 IPC**：本切片只启动 + 退出关闭，无运行时 stop / 重启 / 端口查询 IPC（`transport:status` 仅只读投影）。
+- **未触碰无关未提交 UI 文件**：`BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 保持本轮之前既存改动，未触碰、未提交。
 - **可 commit；主控 push**：本轮已 commit；未自行 push。

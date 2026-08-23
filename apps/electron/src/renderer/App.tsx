@@ -507,6 +507,27 @@ declare global {
         status: "active" | "revoked" | "expired";
         commonName: string;
       } | undefined>;
+      // P0-3c：transport 只读状态（与 preload electronAPI + 主进程 IPC 同步）
+      getFusionRoomTransportStatus: () => Promise<{
+        appliedGate: {
+          registerIpc: boolean;
+          allowNonLoopbackListen: boolean;
+          reasons: string[];
+        };
+        transport: {
+          status:
+            | "disabled"
+            | "listening"
+            | "loopback_only"
+            | "failed"
+            | "not_started";
+          host?: string;
+          port?: number;
+          tls?: boolean;
+          error?: string;
+          reasons?: string[];
+        };
+      }>;
       // 看板 / 班组
       kanbanListBoards: (input?: { status?: string }) => Promise<unknown>;
       kanbanGetBoard: (boardId: string) => Promise<unknown>;

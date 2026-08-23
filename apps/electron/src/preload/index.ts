@@ -908,6 +908,31 @@ const electronAPI = {
     ipcRenderer.invoke("fusion-room-certs:revoke", { certId }) as Promise<
       FusionRoomPublicCertRecord | undefined
     >,
+  /**
+   * P0-3c：transport 只读状态——本次启动实际传输（disabled / listening / loopback_only /
+   * failed / not_started）+ 启动应用闸门决策。设置页危险区据此显示「传输：…」。
+   */
+  getFusionRoomTransportStatus: () =>
+    ipcRenderer.invoke("fusion-room-transport:status") as Promise<{
+      appliedGate: {
+        registerIpc: boolean;
+        allowNonLoopbackListen: boolean;
+        reasons: string[];
+      };
+      transport: {
+        status:
+          | "disabled"
+          | "listening"
+          | "loopback_only"
+          | "failed"
+          | "not_started";
+        host?: string;
+        port?: number;
+        tls?: boolean;
+        error?: string;
+        reasons?: string[];
+      };
+    }>,
 
   // ===== 看板 / 派工（Phase D）=====
   kanbanListBoards: (input?: { status?: string }) =>
