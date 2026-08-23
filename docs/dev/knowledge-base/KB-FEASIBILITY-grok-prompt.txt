@@ -1,0 +1,5 @@
+﻿你在 TAgent-Desktop 仓库做 KB 可行性评审（只读，不改代码）。
+1. 读 brief：docs/dev/knowledge-base/KB-FEASIBILITY-ROUNDTABLE-brief.md
+2. 对照：docs/memory/master-design.md
+3. 按 brief 格式写 FINDINGS 到 docs/dev/knowledge-base/KB-FEASIBILITY-FINDINGS-grok.md
+立场：产品架构完整性、竞品/开源对照、风险挑刺。≥800字。至少1条必须延后事项。写完后回复 FINDINGS_WRITTEN=...

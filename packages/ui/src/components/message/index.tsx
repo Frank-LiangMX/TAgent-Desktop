@@ -667,7 +667,6 @@ export function MessageAttachments({
 }: MessageAttachmentsProps): React.ReactElement {
   const imageAttachments = attachments.filter((att) => att.mediaType.startsWith('image/'))
   const fileAttachments = attachments.filter((att) => !att.mediaType.startsWith('image/'))
-  const isSingleImage = imageAttachments.length === 1 && fileAttachments.length === 0
 
   return (
     <div
@@ -684,7 +683,6 @@ export function MessageAttachments({
             <MessageAttachmentImage
               key={att.id}
               attachment={att}
-              isSingle={isSingleImage}
               onReadAttachment={onReadAttachment}
               onSaveImage={onSaveImage}
             />
@@ -711,14 +709,15 @@ export function MessageAttachments({
 
 interface MessageAttachmentImageProps {
   attachment: FileAttachment
-  isSingle?: boolean
   onReadAttachment?: (localPath: string) => Promise<string>
   onSaveImage?: (localPath: string, filename: string) => void
 }
 
+/** 消息气泡内图片缩略图固定边长（单图/多图统一，不受原图尺寸影响） */
+const MESSAGE_IMAGE_THUMB_SIZE = 200
+
 function MessageAttachmentImage({
   attachment,
-  isSingle = false,
   onReadAttachment,
   onSaveImage,
 }: MessageAttachmentImageProps): React.ReactElement {
@@ -744,43 +743,28 @@ function MessageAttachmentImage({
   if (!imageSrc) {
     return (
       <div
-        className={cn(
-          'rounded-glass-popover bg-muted/30 animate-pulse shrink-0',
-          isSingle ? 'w-[280px] h-[200px]' : 'size-[280px]'
-        )}
+        className="rounded-glass-popover bg-muted/30 animate-pulse shrink-0"
+        style={{
+          width: MESSAGE_IMAGE_THUMB_SIZE,
+          height: MESSAGE_IMAGE_THUMB_SIZE,
+        }}
       />
     )
   }
 
-  const imgElement = isSingle ? (
-    <img
-      src={imageSrc}
-      alt={attachment.filename}
-      className="rounded-glass-popover object-contain cursor-pointer"
-      style={{
-        // inline style 绕开 Tailwind 任意值命中 + inline-block 祖先链对 replaced
-        // element intrinsic sizing 的干扰，确保 max-width/max-height 一定生效。
-        // 上限 360×200：紧凑型单图卡片（对齐 docs/dev/ux/FIX-attachment-bubble-oversize-brief.md
-        // 验收 6 的 ≥60% 高度缩减目标——760px 异常态 → 200px 收敛）。
-        maxWidth: '360px',
-        maxHeight: '200px',
-        width: 'auto',
-        height: 'auto',
-      }}
-      onClick={() => setLightboxOpen(true)}
-    />
-  ) : (
-    <img
-      src={imageSrc}
-      alt={attachment.filename}
-      className="size-[280px] rounded-glass-popover object-cover shrink-0 cursor-pointer"
-      onClick={() => setLightboxOpen(true)}
-    />
-  )
-
   return (
-    <div className="relative group inline-block">
-      {imgElement}
+    <div className="relative group inline-block shrink-0">
+      <img
+        src={imageSrc}
+        alt={attachment.filename}
+        className="rounded-glass-popover object-cover cursor-pointer"
+        style={{
+          // 固定正方形缩略图：任意原图尺寸都裁切填满，气泡内视觉尺寸一致
+          width: MESSAGE_IMAGE_THUMB_SIZE,
+          height: MESSAGE_IMAGE_THUMB_SIZE,
+        }}
+        onClick={() => setLightboxOpen(true)}
+      />
       {onSaveImage && (
         <Tooltip>
           <TooltipTrigger asChild>

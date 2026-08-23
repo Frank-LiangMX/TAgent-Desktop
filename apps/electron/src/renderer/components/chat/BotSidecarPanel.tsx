@@ -44,6 +44,74 @@ function assistantTextFromMessage(
     .join("");
 }
 
+/** 判断历史行是否已是 TAgentMessage IR（pi 落盘），而不是 Claude SDKMessage（有 message 包装）。
+ *  IR：顶层 type='assistant'|'user' + content 数组、无 message 字段；SDKMessage：有 message 包装。 */
+function isIRMessage(raw: unknown): boolean {
+  if (raw == null || typeof raw !== "object") return false;
+  const r = raw as { type?: unknown; message?: unknown; content?: unknown };
+  return (
+    (r.type === "assistant" || r.type === "user") &&
+    r.message === undefined &&
+    Array.isArray(r.content)
+  );
+}
+
+function textBlocksToText(blocks: unknown): string {
+  if (!Array.isArray(blocks)) return "";
+  return blocks
+    .filter(
+      (block): block is { type: string; text: string } =>
+        !!block &&
+        typeof block === "object" &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+    )
+    .map((block) => block.text)
+    .join("");
+}
+
+/**
+ * 从历史行提取 user/assistant 文本（兼容 SDKMessage 与 IR 两种落盘格式）。
+ * 无文本（tool/thinking/result 等）返回 null，不进入弹窗列表。
+ */
+export function extractSidecarMessageText(
+  raw: unknown,
+): { role: "user" | "assistant"; text: string } | null {
+  if (raw == null || typeof raw !== "object") return null;
+  const r = raw as {
+    type?: unknown;
+    message?: { content?: unknown };
+    content?: unknown;
+  };
+  if (r.type !== "user" && r.type !== "assistant") return null;
+  const blocks = isIRMessage(raw) ? r.content : r.message?.content;
+  const text = textBlocksToText(blocks).trim();
+  if (!text) return null;
+  return { role: r.type, text };
+}
+
+/** 历史消息 → 弹窗消息列表（稳定 id，避免重复 key 与重复气泡）。 */
+export function sidecarHistoryToMessages(raw: unknown[]): SidecarChatMessage[] {
+  const out: SidecarChatMessage[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const item = extractSidecarMessageText(raw[i]);
+    if (!item) continue;
+    const row = raw[i] as { uuid?: unknown; createdAt?: unknown };
+    const stamp =
+      typeof row.uuid === "string" && row.uuid
+        ? row.uuid
+        : typeof row.createdAt === "number"
+          ? String(row.createdAt)
+          : String(i);
+    out.push({
+      id: "hist-" + i + "-" + stamp,
+      role: item.role,
+      text: item.text,
+    });
+  }
+  return out;
+}
+
 type SidecarChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -83,6 +151,7 @@ export function BotSidecarPanel({
   const [busy, setBusy] = useState(false);
   const [analysisText, setAnalysisText] = useState("");
   const [messages, setMessages] = useState<SidecarChatMessage[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
   const messageIdRef = useRef(0);
   const [analysisRunning, setAnalysisRunning] = useState(false);
@@ -175,6 +244,38 @@ export function BotSidecarPanel({
     return () => off();
   }, [state?.agentSessionId]);
 
+  // 打开弹窗时把隐藏专属会话的历史读回来；关闭再打开不丢对话。
+  useEffect(() => {
+    const agentSessionId = state?.agentSessionId;
+    if (!agentSessionId) return;
+    let cancelled = false;
+    setHistoryLoading(true);
+    void window.electronAPI
+      .getMessages(agentSessionId)
+      .then((raw) => {
+        if (!cancelled) {
+          setMessages(sidecarHistoryToMessages(raw as unknown[]));
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          setNotice(
+            message
+              ? "读取 Bot 历史对话失败：" + message
+              : "读取 Bot 历史对话失败",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [state?.agentSessionId]);
+
   useEffect(() => {
     const node = messageScrollRef.current;
     if (node) node.scrollTop = node.scrollHeight;
@@ -260,7 +361,8 @@ export function BotSidecarPanel({
 
   const analyze = async (): Promise<void> => {
     const question = draft.trim();
-    if (!question || !state?.agentSessionId || analysisRunning) return;
+    if (!question || !state?.agentSessionId || analysisRunning || historyLoading)
+      return;
 
     const revision = bot.revisions.find(
       (item) => item.id === bot.profile.currentConfigRevisionId,
@@ -546,7 +648,13 @@ export function BotSidecarPanel({
                 size="icon-sm"
                 variant="ghost"
                 className="shrink-0 rounded-xl text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                disabled={!draft.trim() || busy || analysisRunning || !state}
+                disabled={
+                  !draft.trim() ||
+                  busy ||
+                  analysisRunning ||
+                  historyLoading ||
+                  !state
+                }
                 onClick={() => void analyze()}
                 aria-label="发送给 Bot"
               >

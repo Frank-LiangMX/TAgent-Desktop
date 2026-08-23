@@ -3,7 +3,7 @@
  *
  * 类似 macOS Quick Look 的全屏图片预览效果：
  * - 点击图片打开，点击遮罩层或按 Esc 关闭
- * - 深色半透明背景 + 居中大图
+ * - 深色半透明 + 背景模糊，突出居中大图
  * - 支持下载按钮
  */
 
@@ -39,10 +39,10 @@ export function ImageLightbox({
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        {/* 遮罩层 — 点击关闭 */}
+        {/* 遮罩层 — 点击关闭；模糊背后内容，突出居中大图 */}
         <DialogPrimitive.Overlay
           className={cn(
-            'fixed inset-0 z-[200] bg-black/20 titlebar-no-drag',
+            'fixed inset-0 z-[200] bg-black/45 backdrop-blur-xl titlebar-no-drag',
             'data-[state=open]:animate-in data-[state=closed]:animate-out',
             'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0'
           )}

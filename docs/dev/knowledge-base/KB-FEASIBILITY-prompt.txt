@@ -1,0 +1,12 @@
+你在 TAgent-Desktop 仓库做 KB 可行性评审（只读，不改代码）。
+
+1. 读 brief：docs/dev/knowledge-base/KB-FEASIBILITY-ROUNDTABLE-brief.md
+2. 对照：docs/memory/master-design.md（L0-L5 边界）
+3. 按 brief 第 2 节格式，写 FINDINGS 到：
+   - kscc → docs/dev/knowledge-base/KB-FEASIBILITY-FINDINGS-kscc.md
+   - grok → docs/dev/knowledge-base/KB-FEASIBILITY-FINDINGS-grok.md
+   - mimo → docs/dev/knowledge-base/KB-FEASIBILITY-FINDINGS-mimo.md
+
+你是 {AGENT}，按 brief 第 3 节立场评审。必须含：可行性评分、MVP 裁剪、风险、devil's advocate、待用户拍板问题。≥800 字中文。至少 1 条「必须延后」事项。
+
+写完后回复：FINDINGS_WRITTEN=<path>
