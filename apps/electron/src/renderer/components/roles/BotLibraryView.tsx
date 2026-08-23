@@ -546,7 +546,7 @@ export function BotLibraryView(): JSX.Element {
                 autoFocus
               />
             </div>
-            <div className="bots-form__field">
+            <div className="bots-form__field bots-form__field--roles">
               <Label id="bot-role-label">库中角色卡</Label>
               <div className="bots-role-picker" role="group" aria-labelledby="bot-role-label">
                 <div className="relative">
