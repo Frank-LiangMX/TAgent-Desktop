@@ -55,6 +55,7 @@ function createRuntime(memberAdapter?: MemberBackendAdapter, tls?: FusionRoomTls
   const runtime = createFusionRoomTransportRuntime({
     snapshotPath: join(dir, 'snapshots.json'),
     inviteTokenPath: join(dir, 'invite-tokens.json'),
+    outboxWorkerStatePath: join(dir, 'outbox-worker.json'),
     ...(memberAdapter ? { memberAdapter } : {}),
     ...(tls ? { tls } : {}),
     ...(enableDefaultMemberExecution ? { enableDefaultMemberExecution } : {}),
@@ -478,5 +479,93 @@ describe('FusionRoom transport enableDefaultMemberExecution（P1-2c）', () => {
     const runtime = createRuntime(adapter, undefined, true)
     expect(runtime.executionBridge).toBeDefined()
     expect(calls).toBe(0) // 未 dispatch 时不调用
+  })
+})
+
+describe('FusionRoom transport outbox worker 启动 drain（P1-3）', () => {
+  const reviewerSeat: RoomBotSeat = {
+    ...seat,
+    id: 'seat-reviewer',
+    botProfileId: 'bot-reviewer',
+    displayNameSnapshot: '审阅者',
+    roleSnapshot: { displayName: '审阅者', systemPrompt: '负责审阅。' },
+    logicalSessionId: 'runtime-logical-reviewer',
+    isCoordinator: false,
+  }
+
+  test('注入 adapter：构造期 recover 把残留 running run 标 blocked，drain 把 outbox 信封推进并唤醒 toMember', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tagent-fusion-outbox-e2e-'))
+    tempDirs.push(dir)
+    const snapshotPath = join(dir, 'snapshots.json')
+    const outboxStatePath = join(dir, 'outbox-worker.json')
+    const inviteTokenPath = join(dir, 'invites.json')
+
+    // runtime A（authority-only）：设置 outbox 信封 + 仍在 running 的 run，close 持久化
+    const A = createFusionRoomTransportRuntime({
+      snapshotPath, inviteTokenPath, outboxWorkerStatePath: outboxStatePath,
+      authenticate: () => ({ userId: 'owner' }),
+    })
+    runtimes.push(A)
+    A.host.createRoom({ roomId: 'runtime-room', ownerUserId: 'owner', workspace, now: 1 })
+    A.host.dispatch('runtime-room', { type: 'add-bot', input: { actorUserId: 'owner', seat } })
+    A.host.dispatch('runtime-room', { type: 'add-bot', input: { actorUserId: 'owner', seat: reviewerSeat } })
+    const root = A.host.dispatch('runtime-room', { type: 'message', input: { actorUserId: 'owner', content: 'root' } })
+    const rootId = root && 'id' in root ? root.id : ''
+    const run = A.host.dispatch('runtime-room', {
+      type: 'start-run',
+      input: { actorUserId: 'owner', seatId: seat.id, backend: seat.backend, idempotencyKey: 'e2e-run' },
+    })
+    const runId = run && 'id' in run ? run.id : ''
+    const envelope = A.host.dispatch('runtime-room', {
+      type: 'send-mailbox',
+      input: {
+        actorUserId: 'owner', roomId: 'runtime-room', fromMemberId: seat.id, toMemberId: reviewerSeat.id,
+        runId, type: 'question', payload: '请审阅', rootMessageId: rootId, idempotencyKey: 'e2e-send',
+      },
+    })
+    const envelopeId = envelope && 'id' in envelope ? envelope.id : ''
+    expect(A.host.getSnapshot('runtime-room').mailbox[0]?.delivery).toBe('outbox')
+    await A.close()
+
+    // runtime B（计数 adapter，同 snapshotPath + outboxStatePath）：构造期 recover + drain
+    const calls = { value: 0 }
+    const adapter: MemberBackendAdapter = {
+      capabilities: () => ({
+        supportsResume: false, supportsLiveInput: false, supportsToolBridge: false, supportsStructuredEvents: false,
+      }),
+      async runTurn() { calls.value += 1; return { text: '已审阅' } },
+    }
+    const B = createFusionRoomTransportRuntime({
+      snapshotPath, inviteTokenPath, outboxWorkerStatePath: outboxStatePath, memberAdapter: adapter,
+      authenticate: () => ({ userId: 'owner' }),
+    })
+    runtimes.push(B)
+
+    // recover：残留 running run 已标 blocked（未自动重放）
+    expect(B.host.getSnapshot('runtime-room').runs.some((r) => r.id === runId && r.status === 'blocked')).toBe(true)
+    // drain：outbox 信封已推进为 dispatched
+    expect(B.host.getSnapshot('runtime-room').mailbox[0]?.delivery).toBe('dispatched')
+    // outboxWorker 已挂载并持久化 processed 键
+    expect(B.outboxWorker).toBeDefined()
+    expect(B.outboxWorker.listProcessedKeys()).toContain('runtime-room:mailbox_outbox:' + envelopeId)
+    // drain 唤醒 toMember（reviewerSeat）拉新 turn
+    await B.executionBridge?.waitForIdle()
+    expect(calls.value).toBe(1)
+    expect(B.host.getSnapshot('runtime-room').runs.some((r) => r.seatId === reviewerSeat.id && r.status === 'completed')).toBe(true)
+    await B.close()
+  })
+
+  test('enableDefaultMemberExecution：outboxWorker 始终挂载（无房间时不 drain、不触网）', () => {
+    const runtime = createRuntime(undefined, undefined, true)
+    expect(runtime.executionBridge).toBeDefined()
+    expect(runtime.outboxWorker).toBeDefined()
+    expect(runtime.outboxWorker.listProcessedKeys()).toEqual([])
+  })
+
+  test('默认（authority-only）：outboxWorker 仍挂载，可只读 scan / observe，不驱动执行', () => {
+    const runtime = createRuntime()
+    expect(runtime.executionBridge).toBeUndefined()
+    expect(runtime.outboxWorker).toBeDefined()
+    expect(runtime.outboxWorker.listProcessedKeys()).toEqual([])
   })
 })

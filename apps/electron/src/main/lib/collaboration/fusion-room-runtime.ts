@@ -28,6 +28,7 @@ import {
   type FusionRoomTlsOptions,
 } from './fusion-room-http-server'
 import { FusionRoomExecutionBridge, type FusionRoomExecutionBridgeOptions } from './fusion-room-execution-bridge'
+import { FusionRoomOutboxWorker } from './fusion-room-outbox-worker'
 import { createFusionRoomHostToolHandlerFactory } from './fusion-room-host-tools'
 import { createDefaultChannelMemberStack } from './member-backend-factory'
 
@@ -63,6 +64,12 @@ export interface FusionRoomTransportRuntimeOptions
    * `allowInsecureNetwork` 之类的绕过开关：明文 HTTP + 非 loopback 一律拒绝。
    */
   tls?: FusionRoomTlsOptions
+  /**
+   * 可选 outbox worker 状态文件路径（P1-3）。省略时使用默认路径
+   * `getCollaborationDir()/fusion-outbox-worker.json`（记录已自动 drain 的 continuation
+   * 键，避免重启双开）。测试应传入临时路径以隔离真实配置目录。
+   */
+  outboxWorkerStatePath?: string
 }
 
 export interface FusionRoomTransportListenOptions {
@@ -131,6 +138,13 @@ export interface FusionRoomTransportRuntime {
   readonly inviteTokenStore: FileFusionRoomInviteTokenStore
   readonly workspaceStore: FusionRoomWorkspaceStore
   readonly executionBridge?: FusionRoomExecutionBridge
+  /**
+   * 持久 outbox worker（P1-3）：在 {@link host.recoverInterruptedRuns} 之后扫描各房间
+   * 可观察 continuation，对无/未启动副作用的项安全自动 drain（approved_awaiting_resume /
+   * mailbox_outbox），对存在未知副作用的项只观察。构造期已跑一次 `drainAll`；不默认开
+   * 短轮询。始终挂载（即便无 executionBridge，也可用作只读 scan / observe）。
+   */
+  readonly outboxWorker: FusionRoomOutboxWorker
   readonly server: Server
   issueInvite(
     principal: FusionRoomPrincipal,
@@ -177,6 +191,16 @@ export function createFusionRoomTransportRuntime(
         hostToolHandlerFactory,
       })
     : undefined
+  // P1-3：recoverInterruptedRuns 之后跑一次持久 outbox worker drainAll——对无/未启动副作用
+  // 的 continuation（approved_awaiting_resume / mailbox_outbox 且 delivery==='outbox'）安全
+  // 自动 drain，对 blocked_run / pending_approval / depth_stop 等只观察、绝不自动重放。
+  // worker 始终挂载（无 executionBridge 时仅 scan/observe，不驱动执行）；不默认开短轮询。
+  const outboxWorker = new FusionRoomOutboxWorker({
+    host,
+    executionBridge,
+    ...(options.outboxWorkerStatePath ? { statePath: options.outboxWorkerStatePath } : {}),
+  })
+  outboxWorker.drainAll()
   const authenticate = createFusionRoomInviteAuthenticator({
     store: inviteTokenStore,
     fallback: options.authenticate,
@@ -309,6 +333,7 @@ export function createFusionRoomTransportRuntime(
     inviteTokenStore,
     workspaceStore,
     executionBridge,
+    outboxWorker,
     server,
     issueInvite,
     start,

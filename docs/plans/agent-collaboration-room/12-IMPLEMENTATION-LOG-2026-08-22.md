@@ -959,5 +959,59 @@
 - **未做 createSession-before-every-turn**：`executeRun` turn 开始前不调 `lifecycle.createSession`（brief 标为可选增强；过重会双调 `resolveChannelBackendConfig` 且 createSession 失败会提前 fail）。cancel 经 `bindTurnAbort`（adapter 内）+ `interruptSession`（cancelRun）仍可取消进行中的 turn——`bindTurnAbort` 在 `turnControllers` Map 登记 controller 不依赖 createSession；`interruptSession` 按 `sessionId=logicalSessionId` 寻址。代价：未 createSession 时 `heartbeat` 对该 session 返回 unknown（alive=false），故 heartbeat 不作生产 alive 探针；后续若需 honest alive 探针再接 createSession。
 - **进程级 kill 由 runner 自身处理**：lifecycle 仅协作 AbortSignal，本轮未新增进程级 kill。
 - **持久 outbox worker 未做**：与 handoff §7 P1 / §8 第 5 步一致，本切片不涉及。
+
+## 81. 持久 Outbox Worker（可观察 + 安全 drain，副作用项需确认）（P1-3）（2026-08-23）
+
+本轮交付 P1-3：为 Fusion RoomSession 增加持久 outbox worker——在 `FusionRoomHost.recoverInterruptedRuns` 之后扫描各房间可观察 continuation（复用 `listFusionContinuations`），对**无/未启动副作用**的项安全自动 drain，对存在未知副作用的项只观察、绝不自动重放。**诚实边界不变**：不自动重放 `blocked_run` / `outcome_unknown` / 已 dispatched/accepted 的信封；不默认开短轮询打爆模型；不自动打开非 loopback 网络监听；**不**动无关未提交 UI 文件（`chat.css` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 仍保持本轮之前既存改动，未触碰、未提交）。
+
+### A. 策略与持久化
+
+新增 `apps/electron/src/main/lib/collaboration/fusion-room-outbox-worker.ts`：
+
+- 导出纯函数 `classifyOutboxDrain(item): 'auto' | 'observe'`——`approved_awaiting_resume`（用户已批准、`requiresUserConfirm=false`）与 `mailbox_outbox`（调用方再校验 `delivery==='outbox'`）判 `auto`；`blocked_run` / `pending_approval` / `depth_stop` / `awaiting_peer` 判 `observe`。
+- 导出 `FusionRoomOutboxWorker`（`scan` / `scanAll` / `drainRoom` / `drainAll` / `listProcessedKeys`）+ `OutboxDrainAction` / `FusionRoomOutboxWorkerOptions`。处理键 `roomId:kind:continuationId`（approval 用 approvalId、mailbox 用 envelopeId）；`blocked_run` 永不进入 auto 分支，故永不写入 processed-as-auto。状态文件 `{version:1,processedKeys:[]}` 经 `writeJsonAtomic` / `readJsonSafe`（复用 `../atomic-json`）原子读写，默认路径 `getCollaborationDir()/fusion-outbox-worker.json`。
+
+### B. 安全自动 drain（仅两类）
+
+- `approved_awaiting_resume`：从 snapshot 取 approval，调 `executionBridge.handleAction({type:'resolve-approval'}, approval)`——与用户刚 resolve-approval 同路径，bridge 以 `approval:<id>` 为 executionKey 拉新 turn。bridge 未注入 → `auto/skipped`（不写 processed，便于后续注入再 drain）；approval 不再 approved → skipped。
+- `mailbox_outbox`：drain 前再读 snapshot 确认 `delivery==='outbox'`（对齐 legacy「无 deliveryRunId 可安全重投」），以房主 actor 调 `host.confirmResumeContinuation({kind:'mailbox_outbox', idempotencyKey:'fusion-outbox-worker:<id>'})`（幂等，推进 delivery → dispatched），再 `bridge.handleAction({type:'confirm-resume-continuation'}, result)` 让 bridge 以 `resume-mailbox:<id>` 唤醒 toMember 新 turn。bridge 未注入 → skipped；delivery 已非 outbox（re-read）→ `observe`（不推进、不写 processed）；confirm/bridge 抛错 → `auto/failed`（不写 processed，可重试）。两类在 bridge 未注入时都不写 processed，避免「无 bridge 跳过一次后永远跳过」。
+
+### C. runtime 接线
+
+`apps/electron/.../fusion-room-runtime.ts`：`recoverInterruptedRuns` 之后、`executionBridge` 构造之后，`const outboxWorker = new FusionRoomOutboxWorker({ host, executionBridge }); outboxWorker.drainAll()`，并把 `outboxWorker` 挂到 runtime 返回值（`readonly outboxWorker: FusionRoomOutboxWorker`，**始终挂载**——无 executionBridge 时仅 scan/observe，不驱动执行）。`FusionRoomTransportRuntimeOptions` 新增可选 `outboxWorkerStatePath?: string`（省略用默认路径；测试传临时路径隔离真实配置目录）。**不默认开短轮询**（未引入 `outboxPollMs`；若后续需要，默认 `undefined`/0 = 不轮询）。CollaborationRoomService legacy 路径本切片**不改**——已有 `recoverInterruptedRuns` 的 outbox 安全重投（仅 `delivery==='outbox' && !deliveryRunId && attemptId`），Fusion worker 与 legacy recover 语义对齐：都只重投「尚未启动任何模型调用」的 outbox 信封。
+
+### D. 测试
+
+新增 `apps/electron/.../fusion-room-outbox-worker.test.ts` 9 用例：① classify 各 kind → auto/observe；② approved_awaiting_resume → bridge 被驱动一次，重复 drain 因 processed 键不双开；③ approved 无 bridge → skipped 不写 processed；④ mailbox_outbox delivery=outbox → confirmResumeContinuation 推进 dispatched + bridge 唤醒 toMember；⑤ mailbox_outbox re-read delivery 已非 outbox（Proxy 模拟 scan 后 re-read 的竞态）→ observe 不推进；⑥ mailbox 无 bridge → skipped 不推进 delivery；⑦ blocked_run / pending_approval → 仅 observe、不改 snapshot、不调 bridge、blocked 永不进 processed；⑧ 状态文件 drain 后新 Worker 同 path 仍记得 processed + 重复 drain 不双开；⑨ 默认 statePath 落在 getCollaborationDir 之下。`fusion-room-runtime.test.ts` 新增 describe「FusionRoom transport outbox worker 启动 drain（P1-3）」3 用例：① 注入 adapter + 跨 runtime 持久化 outbox → 构造期 recover（running run → blocked）+ drain（信封 → dispatched + 计数 adapter runTurn 被调 + processed 键持久）；② enableDefaultMemberExecution → outboxWorker 挂载（无房间不 drain、不触网）；③ 默认 authority-only → outboxWorker 仍挂载可只读 scan/observe。`createRuntime` helper 增 `outboxWorkerStatePath` 隔离真实配置目录。
+
+### auto vs observe 策略表
+
+| continuation kind | classify | drain 行为 | 写 processed |
+| --- | --- | --- | --- |
+| `approved_awaiting_resume` | auto | bridge `resolve-approval` 拉新 turn；无 bridge / approval 非 approved → skipped | drained 才写 |
+| `mailbox_outbox` | auto | re-read `delivery==='outbox'` → `confirmResumeContinuation` + bridge `confirm-resume-continuation`；无 bridge → skipped；re-read 非 outbox → observe | drained 才写 |
+| `blocked_run` | observe | 仅记 observe，不调 confirm/bridge，不改 snapshot | 永不写 |
+| `pending_approval` | observe | 仅记 observe（需用户 resolve-approval） | 永不写 |
+| `depth_stop` | observe | 仅记 observe（需用户 continue-depth-stop） | 永不写 |
+| `awaiting_peer` | observe | 仅记 observe（等 peer，无副作用） | 永不写 |
+
+### 验证（实跑结果）
+
+- `bunx vitest run apps/electron/src/main/lib/collaboration/fusion-room-outbox-worker.test.ts` → **9 pass / 0 fail**。
+- `bunx vitest run packages/core/src/collaboration/fusion-room-continuation.test.ts` → **12 pass / 0 fail**（回归）。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/fusion-room-runtime.test.ts` → **26 pass / 0 fail**（23 既有 + 3 新 P1-3）。
+- `bunx vitest run apps/electron/src/main/lib/collaboration/`（全目录）→ **373 pass / 4 skipped / 0 fail**（29 文件 + 1 skipped 门控冒烟；skip 为 `TAGENT_KSCC_LIFECYCLE_SMOKE` 未设，不算失败）。
+- `bun run --filter='@tagent/core' typecheck` → 退出 0。
+- `bun run --filter='./apps/electron' typecheck` → 退出 0。
+- `git diff --check` → 退出 0（仅 `packages/ui/.../tokens.css` 既存 LF→CRLF 提示，为本切片之前已存在的无关改动，未触碰；本切片未动 `chat.css` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css`）。
+
+### 诚实能力证据 / 未做
+
+- **不自动重放 blocked_run / outcome_unknown**：`classifyOutboxDrain` 对 `blocked_run` 返回 observe，`drainItem` 永不达其分支；`mailbox_outbox` re-read 校验 `delivery==='outbox'`，已 dispatched/accepted/outcome_unknown 一律 observe 不重投——与 legacy `recoverInterruptedRuns`「无 deliveryRunId 可安全重投」语义对齐。
+- **未默认开短轮询**：runtime 仅在构造期跑一次 `drainAll`；未引入 `outboxPollMs`。若后续加，默认 `undefined`/0 = 不轮询，避免打爆模型。
+- **未做 legacy service 共用 worker**：`CollaborationRoomService.recoverInterruptedRuns` 本切片不改（已有 outbox 安全重投）；Fusion worker 与 legacy recover 语义对齐但不共用同一 worker 实例。
+- **未做 IPC 暴露 scan / 手动 drain**：`outboxWorker` 挂在 runtime 返回值供程序内观察，未新增 IPC / preload 暴露给 renderer；renderer 仍经 P1-1b 的「待确认续跑」UI 手动 confirm。
+- **未做真实 provider resume**：drain 拉起的新 turn 走既有 execution bridge（`kscc bare` 不 resume），不声称 native resume。
+- **未做实机 Electron GUI 手测**：行为以单测 + 跨 runtime E2E + 全仓 typecheck 验证。
 - **未做实机 Electron GUI 手测**：行为以单测 + 全仓 typecheck 验证；真机 create→turn→interrupt→heartbeat 闭环由 P1-2b 门控冒烟已证（§79）。
 - **Fusion runtime 不暴露 lifecycle**：`enableDefaultMemberExecution` 装配的 `stack.lifecycle` 仅被 `stack.adapter` 持有（GC 根），未在 `FusionRoomTransportRuntime` 上暴露；runtime 的 cancel 仍走 bridge 自身 per-run AbortController（`input.signal` 已在组合 signal 内）。未来若需 runtime 级 interruptSession 接线再暴露。
