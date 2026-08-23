@@ -67,6 +67,12 @@ import type {
   ContinueCollaborationDepthStopInput,
   ContinueCollaborationDepthStopResult,
   ConfirmResumeBlockedRunResult,
+  EnterCollaborationWithBridgeInput,
+  EnterCollaborationWithBridgeResult,
+  ExitCollaborationWithBridgeInput,
+  ExitCollaborationWithBridgeResult,
+  ReadSourceSessionExcerptInput,
+  ReadSourceSessionExcerptResult,
   CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomInput,
   UpdateCollaborationMemberInput,
@@ -1386,6 +1392,33 @@ const electronAPI = {
       COLLABORATION_ROOM_IPC_CHANNELS.CONFIRM_RESUME_BLOCKED,
       input,
     ) as Promise<ConfirmResumeBlockedRunResult>,
+  /**
+   * P2-UX 桥接：明示进房（须 userConfirmed:true）。主进程精炼单会话前情提要写入房间
+   * goal + 系统消息；失败 fail-closed 启发式。旧 upgradeFusionSessionToRoom 仍保留（旧路径无精炼桥）。
+   */
+  enterCollaborationWithBridge: (input: EnterCollaborationWithBridgeInput) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.ENTER_WITH_BRIDGE,
+      input,
+    ) as Promise<EnterCollaborationWithBridgeResult>,
+  /**
+   * P2-UX 桥接：明示退出（须 userConfirmed:true）。主进程精炼协作结论写回原 session 面板
+   * （系统通知卡），清 fusionRoomId、按剩余 Bot 重算 fusionMode，房间转 paused（保留历史）。
+   */
+  exitCollaborationWithBridge: (input: ExitCollaborationWithBridgeInput) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.EXIT_WITH_BRIDGE,
+      input,
+    ) as Promise<ExitCollaborationWithBridgeResult>,
+  /**
+   * P2-UX 桥接：按需读原 session 摘录（预算校验 + 读 panel + clamp；本切片不接 host 工具表）。
+   * 超单轮预算时主进程抛稳定错误（Promise reject）；正常返回截断后的 excerpt + token 估算。
+   */
+  readCollaborationSourceExcerpt: (input: ReadSourceSessionExcerptInput) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.READ_SOURCE_EXCERPT,
+      input,
+    ) as Promise<ReadSourceSessionExcerptResult>,
   /** 房间数据变更事件（main → renderer，run/member/message 变更时广播） */
   onCollaborationRoomChanged: (
     cb: (payload: { roomId: string; kind: string; at: number }) => void,

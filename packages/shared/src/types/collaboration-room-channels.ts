@@ -44,6 +44,12 @@ import type {
   BoardProjectedTask,
   BoardProjectedSummary,
 } from "./collaboration-room";
+import type {
+  SessionToRoomBrief,
+  RoomToSessionHandoff,
+  SourceSessionExcerptRequest,
+  SourceSessionExcerptResult,
+} from "./session-collab-bridge";
 import type { LocalCollaborationContinuationItem } from "./collaboration-local-continuation";
 
 export type { CollaborationMemberPreset, SaveCollaborationMemberPresetInput };
@@ -120,6 +126,15 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   LIST_CONTINUATIONS: "collaboration-room:list-continuations",
   /** 确认继续一个 blocked run：新建 turn（新 runId/fence），不复活旧 fence（P2-1） */
   CONFIRM_RESUME_BLOCKED: "collaboration-room:confirm-resume-blocked",
+  /**
+   * P2-UX 桥接：明示进房（userConfirmed 闸）——精炼单会话前情提要写入房间背景。
+   * 旧 UPGRADE_FROM_SESSION 仍保留（UI 未改前旧路径可用，但旧路径无精炼桥）。
+   */
+  ENTER_WITH_BRIDGE: "collaboration-room:enter-with-bridge",
+  /** P2-UX 桥接：明示退出（userConfirmed 闸）——精炼协作结论写回原 session，房间转 paused。 */
+  EXIT_WITH_BRIDGE: "collaboration-room:exit-with-bridge",
+  /** P2-UX 桥接：协调者按需读原 session 摘录（预算校验 + 读 panel + clamp，本切片不接 host 工具表）。 */
+  READ_SOURCE_EXCERPT: "collaboration-room:read-source-excerpt",
   /** 房间数据变更事件（main → renderer，Stage 2 起广播） */
   CHANGED: "collaboration-room:changed",
   /** 成员 turn 流式正文增量（独立通道，避免走 CHANGED 全量刷新） */
@@ -302,6 +317,69 @@ export type ConfirmResumeBlockedRunResult =
   | { ok: true; newRunId: string }
   | { ok: false; reason: string };
 
+// ===== P2-UX 桥接：明示进房 / 明示退出 / 按需读原史（14-SESSION-COLLAB-BRIDGE-SPEC） =====
+// userConfirmed 必须由 renderer 传入、主进程再校验；AbortSignal 不可跨 IPC 序列化，
+// 故 IPC 输入不含 signal（服务层自行接 AbortController／IPC 层不传）。
+
+/** 明示进房 IPC 输入（14 §1：禁止静默自动升，须用户确认）。 */
+export interface EnterCollaborationWithBridgeInput {
+  /** 来源单会话 ID（升级后房间 sourceSessionId = 该值） */
+  sessionId: string;
+  /** 必须为 true；否则主进程抛 USER_CONFIRM_REQUIRED */
+  userConfirmed: true;
+  /** 可选房间标题；缺省走 upgradeFusionSession 既定派生 */
+  title?: string;
+  /** 用户/UI 可选短目标，优先进 brief.goal */
+  goalHint?: string;
+}
+
+/** 明示进房结果。brief 已写入房间 goal + 系统消息（前情提要）。 */
+export interface EnterCollaborationWithBridgeResult {
+  /** 协作室房间 ID */
+  roomId: string;
+  /** 来源单会话 ID */
+  sourceSessionId: string;
+  /** 精炼后的进房前情提要（已过预算裁剪） */
+  brief: SessionToRoomBrief;
+  /** brief 来源：'llm' 调用成功 / 'heuristic' fail-closed 兜底（含幂等复用） */
+  briefSource: "llm" | "heuristic";
+  /** true 表示命中幂等复用（已有 fusionRoomId 且房间存在），未重新精炼 */
+  reusedExistingRoom: boolean;
+}
+
+/** 明示退出 IPC 输入（14 §1：退出须用户确认，勿静默）。 */
+export interface ExitCollaborationWithBridgeInput {
+  /** 来源单会话 ID */
+  sessionId: string;
+  /** 必须为 true；否则主进程抛 USER_CONFIRM_REQUIRED */
+  userConfirmed: true;
+}
+
+/** 明示退出结果。handoff 已写回原 session 面板；房间转 paused、fusionRoomId 清空。 */
+export interface ExitCollaborationWithBridgeResult {
+  /** 协作室房间 ID（已 paused，保留历史） */
+  roomId: string;
+  /** 来源单会话 ID */
+  sourceSessionId: string;
+  /** 精炼后的回写摘要（已过预算裁剪） */
+  handoff: RoomToSessionHandoff;
+  /** handoff 来源：'llm' / 'heuristic' */
+  handoffSource: "llm" | "heuristic";
+}
+
+/**
+ * 按需读原 session 摘录 IPC 输入。复用契约层 {@link SourceSessionExcerptRequest} 形状，
+ * 追加 `alreadyUsedThisTurnTokens`（单轮累计预算，IPC 层透传给服务层预算校验）。
+ */
+export interface ReadSourceSessionExcerptInput extends SourceSessionExcerptRequest {
+  /** 本轮已用 token 预算（缺省 0）；服务层据此校验单轮累计硬顶 */
+  alreadyUsedThisTurnTokens?: number;
+}
+
+/** 按需读原史 IPC 结果 = 契约层 {@link SourceSessionExcerptResult}（预算耗尽时主进程抛稳定错误）。 */
+export type ReadSourceSessionExcerptResult = SourceSessionExcerptResult;
+
+
 /**
  * 预览产物文本结果（与 CollaborationRoomService.readArtifact 一致）。
  *
@@ -380,6 +458,9 @@ export interface CollaborationRoomChangedPayload {
 //   - LIST_CONTINUATIONS  → ListCollaborationContinuationsResult (P2-1)
 //   - CONFIRM_RESUME_BLOCKED → ConfirmResumeBlockedRunResult (P2-1)
 //   - READ_ARTIFACT      → ReadCollaborationArtifactResult
+//   - ENTER_WITH_BRIDGE  → EnterCollaborationWithBridgeResult (P2-UX 桥接)
+//   - EXIT_WITH_BRIDGE   → ExitCollaborationWithBridgeResult (P2-UX 桥接)
+//   - READ_SOURCE_EXCERPT → ReadSourceSessionExcerptResult (P2-UX 桥接；预算耗尽抛稳定错误)
 
 /** 重新导出领域输入类型，便于 handler / preload / 渲染层统一引用 */
 export type {

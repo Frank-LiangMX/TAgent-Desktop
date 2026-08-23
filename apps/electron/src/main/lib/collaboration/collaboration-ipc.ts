@@ -73,8 +73,15 @@ import {
   type RemoveCollaborationMemberInput,
   type UpdateCollaborationRoomInput,
   type UpdateCollaborationRoomTaskInput,
+  type EnterCollaborationWithBridgeInput,
+  type EnterCollaborationWithBridgeResult,
+  type ExitCollaborationWithBridgeInput,
+  type ExitCollaborationWithBridgeResult,
+  type ReadSourceSessionExcerptInput,
+  type ReadSourceSessionExcerptResult,
 } from "@tagent/shared";
 import { CollaborationRoomService } from "./collaboration-room-service";
+import { SessionCollabBridgeService } from "./session-collab-bridge-service";
 import {
   deleteCollaborationMemberPreset,
   listCollaborationMemberPresets,
@@ -197,6 +204,11 @@ export function registerCollaborationRoomIpc(
     },
   });
   setRegisteredCollaborationRoomService(service);
+
+  // P2-UX 桥接服务：明示进房 / 明示退出 / 按需读原史（userConfirmed 闸，复用上面的 service）。
+  // notifySessionMetaChanged 暂不接线（协作室侧无现成 sendPayload 入口），exit 后 meta 仍落盘，
+  // renderer 下次读 meta 生效；session_meta_changed 推送留待 UI 切片（见 12-LOG §86）。
+  const bridgeService = new SessionCollabBridgeService({ roomService: service });
 
   // 启动恢复：安全恢复 queued；running/awaiting run fail-closed 为 interrupted/blocked
   try {
@@ -621,6 +633,37 @@ export function registerCollaborationRoomIpc(
       service.confirmResumeBlockedRun(input),
   );
 
+  // ===== P2-UX 桥接：明示进房 / 明示退出 / 按需读原史（14-SESSION-COLLAB-BRIDGE-SPEC） =====
+  // userConfirmed 由 renderer 传入、主进程再校验（BridgeConfirmRequiredError）。
+  // 旧 UPGRADE_FROM_SESSION 保留不动（旧路径无精炼桥；新路径须走 enter-with-bridge）。
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.ENTER_WITH_BRIDGE,
+    async (
+      _e,
+      input: EnterCollaborationWithBridgeInput,
+    ): Promise<EnterCollaborationWithBridgeResult> =>
+      bridgeService.enterCollaborationWithBridge(input),
+  );
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.EXIT_WITH_BRIDGE,
+    async (
+      _e,
+      input: ExitCollaborationWithBridgeInput,
+    ): Promise<ExitCollaborationWithBridgeResult> =>
+      bridgeService.exitCollaborationWithBridge(input),
+  );
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.READ_SOURCE_EXCERPT,
+    async (
+      _e,
+      input: ReadSourceSessionExcerptInput,
+    ): Promise<ReadSourceSessionExcerptResult> =>
+      bridgeService.readSourceSessionExcerpt(
+        input,
+        input.alreadyUsedThisTurnTokens ?? 0,
+      ),
+  );
+
   // 看板任务状态变化 → 广播给「挂载了该看板」的协作室房间，让面板能及时刷新投影。
   // 复用既有 kanban CHANGED 事件，不另造真值；对每个挂载该看板的房间发 collaboration-room:changed
   // （kind 沿用 'updated'），渲染层收到后重新拉取投影。
@@ -637,6 +680,6 @@ export function registerCollaborationRoomIpc(
   onKanbanTaskStatusChanged(boardChangedHandler);
 
   console.log(
-    "[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/update-member/list-runs/cancel-run/list-mailbox/continue-depth-stop/list-room-tasks/create-room-task/update-room-task/list-artifacts/read-artifact/list-board-tasks/get-board-summary；S4.5 深度停止继续；S5 任务/产物面板 + 看板桥；P2-1 待确认续跑 list-continuations / confirm-resume-blocked）",
+    "[协作室] IPC 已注册（list/create/get/update/list-messages/append-user-message/list-members/add-member/update-member/list-runs/cancel-run/list-mailbox/continue-depth-stop/list-room-tasks/create-room-task/update-room-task/list-artifacts/read-artifact/list-board-tasks/get-board-summary；S4.5 深度停止继续；S5 任务/产物面板 + 看板桥；P2-1 待确认续跑 list-continuations / confirm-resume-blocked；P2-UX 桥接 enter-with-bridge / exit-with-bridge / read-source-excerpt）",
   );
 }

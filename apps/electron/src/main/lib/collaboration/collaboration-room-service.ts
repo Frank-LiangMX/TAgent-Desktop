@@ -4797,6 +4797,14 @@ export class CollaborationRoomService {
   }
 
   /**
+   * P2-UX 桥接服务用 thin wrapper：暴露 appendSystemMessage 供桥接层把单会话前情提要写进房间
+   * 背景消息，**勿复制建房逻辑**（事件账本 + 广播仍走私有 appendSystemMessage）。
+   */
+  appendRoomSystemMessage(roomId: string, content: string): CollaborationMessage {
+    return this.appendSystemMessage(roomId, content);
+  }
+
+  /**
    * 落盘一条 task_event 消息（room_task_update 的可审计事件）。
    *
    * summary 仅作为时间线记录（与成员正文同级，系统提示已声明非指令），绝不写入任务的权威字段。

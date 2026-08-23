@@ -38,6 +38,12 @@ import type {
   ContinueCollaborationDepthStopInput,
   ContinueCollaborationDepthStopResult,
   ConfirmResumeBlockedRunResult,
+  EnterCollaborationWithBridgeInput,
+  EnterCollaborationWithBridgeResult,
+  ExitCollaborationWithBridgeInput,
+  ExitCollaborationWithBridgeResult,
+  ReadSourceSessionExcerptInput,
+  ReadSourceSessionExcerptResult,
   CreateCollaborationRoomTaskInput,
   UpdateCollaborationRoomInput,
   UpdateCollaborationMemberInput,
@@ -873,6 +879,16 @@ declare global {
         runId: string;
         idempotencyKey?: string;
       }) => Promise<ConfirmResumeBlockedRunResult>;
+      // 协作室（P2-UX 桥接：明示进房 / 明示退出 / 按需读原史，userConfirmed 闸）
+      enterCollaborationWithBridge: (
+        input: EnterCollaborationWithBridgeInput,
+      ) => Promise<EnterCollaborationWithBridgeResult>;
+      exitCollaborationWithBridge: (
+        input: ExitCollaborationWithBridgeInput,
+      ) => Promise<ExitCollaborationWithBridgeResult>;
+      readCollaborationSourceExcerpt: (
+        input: ReadSourceSessionExcerptInput,
+      ) => Promise<ReadSourceSessionExcerptResult>;
       onCollaborationRoomChanged: (
         cb: (payload: { roomId: string; kind: string; at: number }) => void,
       ) => () => void;

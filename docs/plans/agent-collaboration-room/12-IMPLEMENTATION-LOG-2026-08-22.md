@@ -1267,3 +1267,52 @@ brief 指定审计函数名为 `estimateTokenCount`，但 `@tagent/shared/utils`
 - **命名偏差**：`estimateBridgeTokenCount` 替代 brief 的 `estimateTokenCount`（因 utils 同名冲突 + TS2308），详见 §E；功能一致。
 - **未触碰无关未提交文件**：`BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 保持本轮之前既存改动，未触碰、未提交。
 - **可 commit；主控 push**：本轮已 commit；未自行 push。
+
+## 86. 单会话↔协作室桥接服务层（enter / exit / excerpt 服务 + IPC + 单测）（P2-UX-BRIDGE-SERVICE）（2026-08-23）
+
+本轮交付 [P2-UX-BRIDGE-SERVICE-brief](./P2-UX-BRIDGE-SERVICE-brief.md) 的**服务层**切片：在契约层（§85）之上落地明示进房 / 明示退出 / 按需读原史，`userConfirmed` 闸 + fail-closed 启发式。**不改** UI、**不静默改** `removeMember` 回退、**不触碰** `BotSidecarPanel*` / `image-lightbox` / `message/index` / `tokens.css`。产品规格见 [14-SESSION-COLLAB-BRIDGE-SPEC](./14-SESSION-COLLAB-BRIDGE-SPEC.md) §5。
+
+### A. 落点
+
+- 新增 `apps/electron/src/main/lib/collaboration/session-collab-bridge-service.ts`（核心服务）+ 同级 `session-collab-bridge-service.test.ts`（假 modelCaller + 临时 `TAGENT_CONFIG_DIR`）。
+- `CollaborationRoomService` 增 public thin wrapper `appendRoomSystemMessage(roomId, content)`（委托私有 `appendSystemMessage`，**勿复制建房逻辑**：事件账本 + 广播仍走原私有方法）。
+- `packages/shared/src/types/collaboration-room-channels.ts` 增 3 通道 `ENTER_WITH_BRIDGE` / `EXIT_WITH_BRIDGE` / `READ_SOURCE_EXCERPT` + 输入/输出类型（`EnterCollaborationWithBridgeInput/Result` / `ExitCollaborationWithBridgeInput/Result` / `ReadSourceSessionExcerptInput/Result`；复用契约层 `SourceSessionExcerptRequest/Result`）。AbortSignal 不可跨 IPC，故 IPC 输入不含 signal（服务层自行接）。
+- `collaboration-ipc.ts` 注册 3 handler + 实例化 `SessionCollabBridgeService({ roomService: service })`；`preload/index.ts` 暴露 3 API（`enterCollaborationWithBridge` / `exitCollaborationWithBridge` / `readCollaborationSourceExcerpt`）；`renderer/App.tsx` 同步 `electronAPI` 类型。旧 `UPGRADE_FROM_SESSION` 保留不动（旧路径无精炼桥）。
+
+### B. 服务函数
+
+1. `enterCollaborationWithBridge(input)`：`userConfirmed` 闸（`BridgeConfirmRequiredError` / `USER_CONFIRM_REQUIRED`）；幂等复用（已有 `fusionRoomId` 且房间存在 → 不重复 summarize，返回 `reusedExistingRoom:true` + 房间 goal 填最小 brief）；否则 `upgradeFusionSession` 建房；读 panel → transcript（12k 字符硬顶，头尾保留）；`modelCaller` 要求返回 JSON（goal/decisions/openQuestions/todos/artifacts），解析失败/抛错 → **fail-closed 启发式**（最近 user 文本作 goal，narrative = 最近若干条拼接再 clamp）；`buildSessionToRoomBrief`（默认 3000）→ `updateRoom(goal)` + `appendRoomSystemMessage('【单会话前情提要】\n'+format…)`。返回 `{ roomId, sourceSessionId, brief, briefSource, reusedExistingRoom }`。
+2. `exitCollaborationWithBridge(input)`：`userConfirmed` 闸；meta 必须有 `fusionRoomId` 且房间存在；收集房间消息/任务/现有摘要 → `modelCaller` JSON（outcomes/changes/risks）或启发式 → `buildRoomToSessionHandoff`（默认 2000）；`appendPanelMessages` 写回原 session 面板一条**系统通知卡**（项目惯例 `type:'assistant' + modelId:'协作室回写'`，禁止写成 user，对齐 `kanban-reflux` 的 `modelId:'班组通知'` 形态）；`updateSessionMeta` 清 `fusionRoomId`、按当前 `botProfileIds.length` 用 `getFusionConversationMode(1, n)` 重算 `fusionMode`（multi-bot 时保留 coordinator，否则清 `fusionCoordinatorBotProfileId`，**对齐 `syncSourceSessionAfterRoomMemberChange` 降档语义但不依赖成员数自动触发**）；`updateRoom({status:'paused'})`（保留历史，勿删）；`notifySessionMetaChanged` 回调（默认 noop）。
+3. `readSourceSessionExcerpt(req, alreadyUsedThisTurnTokens)`：`validateSourceExcerptBudget` 失败 → 抛 `BridgeExcerptBudgetError`（稳定 code `per-turn-budget-exhausted` / `requested-non-positive`，IPC 可映射）；读 `sourceSessionId` panel；query 有则大小写不敏感包含匹配，否则最近 N 条（默认 12）；`clampBridgeText` 到 `allowedTokens`。返回 `SourceSessionExcerptResult`。**本切片不接 host 工具表**（工具接线留后）。
+
+### C. 模型注入
+
+- `BridgeModelCaller = (input:{systemPrompt,userPrompt,signal?}) => Promise<string>`；默认 `defaultBridgeModelCaller` 复用 `completeMemoryLlm`（便宜/快速模型，无渠道时抛 `MemoryLlmError(NO_CHANNEL)`，服务层 catch 后回退启发式）。测试注入假 caller，CI 不打真网。
+
+### D. 测试（8 pass / 0 fail，无真网）
+
+1. enter 缺 `userConfirmed` → 抛 `BridgeConfirmRequiredError`。
+2. enter + 假 LLM JSON → room.goal 更新 + 系统消息含「前情提要」+ `briefSource='llm'` + 调一次模型。
+3. enter + 假 LLM 抛错 → heuristic 仍成功建房/写 brief（`briefSource='heuristic'`，brief.goal 含最近 user 文本）。
+4. enter 已有 `fusionRoomId` → `reusedExistingRoom:true`，不重复调模型。
+5a. exit 缺确认 → 抛。
+5b. exit 成功 → panel 有回写 system 消息（`modelId:'协作室回写'`）+ `meta.fusionRoomId` 清空 + room `paused` + `handoffSource='llm'`。
+6. excerpt 超单轮预算 → 抛 `BridgeExcerptBudgetError`；正常 → 截断到 200 token（≤240 字符）+ tokenEstimate 合理 + query 过滤命中。
+7.（bonus）exit + LLM 抛错 → heuristic handoff 仍成功（`handoffSource='heuristic'`，outcomes 兜底「协作已结束」）。
+
+### 验证（实跑结果）
+
+- `bunx vitest run apps/electron/src/main/lib/collaboration/session-collab-bridge-service.test.ts` → **8 pass / 0 fail**。
+- `bun run --filter='./apps/electron' typecheck` → 退出 0。
+- `bun run --filter='./packages/shared' typecheck` → 退出 0（channels 新增类型 + 契约层复用未破 barrel）。
+- `git diff --check` → 退出 0（14-SPEC §5 旧尾随空白随本轮 §5 更新一并清掉；`BotSidecarPanel.tsx` / `tokens.css` 等本切片之前既存无关改动仅 LF→CRLF 提示，无实际空白错误）。
+
+### 诚实能力证据 / 未做
+
+- **UI 未做**：未改 `SessionBotBar` 自动升级 UI / 未加开启/退出确认弹窗（UI 层下一切片）；未关旧 `upgrade-from-session` 静默路径（§5 标明「旧路径仍无精炼桥；新路径须走 enter-with-bridge」）。
+- **host 工具接线未做**：`readSourceSessionExcerpt` IPC 已暴露但**未接 host 工具表**（协调者按需读原史的工具回路留后）。
+- **session_meta_changed 推送未接**：exit 后 `notifySessionMetaChanged` 默认 noop（协作室侧无现成 `sendPayload` 入口暴露给桥接）；meta 已落盘，renderer 下次读 meta 生效；UI 切片接线时再补推送。
+- **exit 后 multi-bot 仍可被旧静默自动升**：exit 按 brief 用 `getFusionConversationMode(1, n)` 重算 `fusionMode`，若剩余 ≥2 Bot 则 `fusionMode='multi-bot'` + `fusionRoomId=undefined`（即「多 Bot 未进房」态）；旧 `handleFusionSend` 静默自动升路径仍会在下次发送时重新建房——关掉该静默路径属 UI 切片，本轮不动。
+- **不改主路径行为**：未改 `removeMember` 静默回退、未改 `upgradeFusionSession` 建房逻辑（仅加 public thin wrapper `appendRoomSystemMessage`）、未把单会话运行时改成 room 投影、未整包原 JSONL 塞进每轮 prompt（transcript 12k 字符硬顶）。
+- **未触碰无关未提交文件**：`BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` 保持本轮之前既存改动，未触碰、未提交。
+- **可 commit；主控 push**：本轮已 commit；未自行 push。

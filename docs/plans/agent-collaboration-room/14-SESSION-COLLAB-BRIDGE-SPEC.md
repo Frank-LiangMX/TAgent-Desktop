@@ -62,6 +62,8 @@
 
 ## 5. 落地切片
 
-1. **契约层**（本轮）：类型、预算常量、裁剪/校验纯函数、单测。  
-2. **服务层**（后续）：summarize 调用、upgrade/exit IPC、写 room 背景 / 写回 session。  
-3. **UI 层**（后续）：开启协作确认、退出确认、协作期隐藏原入口、系统卡提示。
+1. **契约层** ✅（2026-08-23，`9a8aa3a`）：类型、预算常量、裁剪/校验纯函数、单测。见 §85。
+2. **服务层** ✅（2026-08-23）：summarize 调用、`enter/exit/excerpt` IPC（`userConfirmed` 闸）、写 room 背景 / 写回 session；fail-closed 启发式 + 单测。brief：`P2-UX-BRIDGE-SERVICE-brief.md`。见 §86。
+   - **已做**：明示进房（精炼前情提要写房间 goal + 系统消息）/ 明示退出（精炼结论写回原 session 面板 + 清 `fusionRoomId` + 房间 `paused`）/ 按需读原史（预算校验 + 读 panel + clamp，IPC 已暴露）。
+   - **未做（留后）**：host 工具接线（协调者按需读原史的工具回路）；`session_meta_changed` 推送（exit 后 meta 落盘，renderer 下次读 meta 生效）；旧 `upgrade-from-session` 静默路径仍保留（旧路径无精炼桥，新路径须走 `enter-with-bridge`）。
+3. **UI 层**（后续）：开启协作确认、退出确认、协作期隐藏原入口、系统卡提示；关掉静默 `upgrade-from-session`。
