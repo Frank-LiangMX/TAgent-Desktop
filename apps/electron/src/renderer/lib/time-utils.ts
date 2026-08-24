@@ -58,6 +58,30 @@ export function formatElapsedDuration(ms: number): string {
  * 同步 `setNow` 触发「Maximum update depth exceeded」。本 hook 在 live 期内锁定首个
  * 有效起点；仍建议调用方用 ref 稳住 startedAt（见 SubagentDetailView）。
  */
+export function resolveLiveElapsedAnchor(
+  previousAnchor: number | null,
+  previousStartedAt: number | null,
+  startedAt: number | undefined,
+  isLive: boolean,
+): { anchor: number | null; startedAt: number | null } {
+  if (!isLive) return { anchor: null, startedAt: null }
+  if (startedAt == null || !Number.isFinite(startedAt)) {
+    return { anchor: previousAnchor, startedAt: previousStartedAt }
+  }
+  if (previousAnchor == null) {
+    return { anchor: startedAt, startedAt }
+  }
+  // A reused timer must switch anchors when the next queued task starts.
+  if (previousStartedAt != null && startedAt > previousStartedAt) {
+    return { anchor: startedAt, startedAt }
+  }
+  // Keep the earlier real timestamp when replacing a temporary fallback.
+  if (startedAt < previousAnchor) {
+    return { anchor: startedAt, startedAt }
+  }
+  return { anchor: previousAnchor, startedAt }
+}
+
 export function useLiveElapsedMs(
   startedAt: number | undefined,
   isLive: boolean,
@@ -65,6 +89,15 @@ export function useLiveElapsedMs(
 ): number {
   const [now, setNow] = useState(() => Date.now())
   const anchorRef = useRef<number | null>(null)
+  const previousStartedAtRef = useRef<number | null>(null)
+  const resolved = resolveLiveElapsedAnchor(
+    anchorRef.current,
+    previousStartedAtRef.current,
+    startedAt,
+    isLive,
+  )
+  anchorRef.current = resolved.anchor
+  previousStartedAtRef.current = resolved.startedAt
 
   if (isLive && startedAt != null && Number.isFinite(startedAt)) {
     if (anchorRef.current == null) anchorRef.current = startedAt

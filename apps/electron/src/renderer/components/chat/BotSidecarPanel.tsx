@@ -6,14 +6,69 @@ import { Button, MessageResponse, Textarea } from "@tagent/ui";
 export interface BotSidecarPanelProps {
   sessionId: string;
   bot: BotProfileRecord;
+  /** 同一会话中多个 Bot 窗口的初始错位层级 */
+  stackIndex?: number;
   contextText: string;
   fallbackChannelId?: string;
   fallbackModelId?: string;
   onClose: () => void;
 }
 
-const DEFAULT_POSITION = { x: 24, y: 96 };
+type SidecarPosition = { x: number; y: number };
+type DockedEdge = "left" | "right" | "top" | "bottom";
+type DockedPosition = { edge: DockedEdge; position: SidecarPosition };
 
+const DEFAULT_POSITION: SidecarPosition = { x: 24, y: 96 };
+const SIDECAR_EDGE_INSET = 8;
+const SIDECAR_DOCK_THRESHOLD = 24;
+const SIDECAR_STACK_OFFSET = 28;
+
+function dockPositionToEdge(
+  position: SidecarPosition,
+  panel: HTMLElement,
+): DockedPosition | null {
+  const container = panel.offsetParent as HTMLElement | null;
+  const panelRect = panel.getBoundingClientRect();
+  const containerRect = container?.getBoundingClientRect();
+  if (!containerRect) return null;
+
+  const maxX = Math.max(
+    SIDECAR_EDGE_INSET,
+    containerRect.width - panelRect.width - SIDECAR_EDGE_INSET,
+  );
+  const maxY = Math.max(
+    SIDECAR_EDGE_INSET,
+    containerRect.height - panelRect.height - SIDECAR_EDGE_INSET,
+  );
+  const x = Math.min(maxX, Math.max(SIDECAR_EDGE_INSET, position.x));
+  const y = Math.min(maxY, Math.max(SIDECAR_EDGE_INSET, position.y));
+  const snapLeft = Math.abs(x - SIDECAR_EDGE_INSET);
+  const snapRight = Math.abs(maxX - x);
+  const snapTop = Math.abs(y - SIDECAR_EDGE_INSET);
+  const snapBottom = Math.abs(maxY - y);
+  if (
+    Math.min(snapLeft, snapRight, snapTop, snapBottom) > SIDECAR_DOCK_THRESHOLD
+  ) {
+    return null;
+  }
+
+  if (Math.min(snapLeft, snapRight) <= Math.min(snapTop, snapBottom)) {
+    return {
+      edge: snapLeft <= snapRight ? "left" : "right",
+      position: {
+        x: snapLeft <= snapRight ? SIDECAR_EDGE_INSET : maxX,
+        y,
+      },
+    };
+  }
+  return {
+    edge: snapTop <= snapBottom ? "top" : "bottom",
+    position: {
+      x,
+      y: snapTop <= snapBottom ? SIDECAR_EDGE_INSET : maxY,
+    },
+  };
+}
 type BotSidecarStreamPacket = {
   sessionId?: string;
   payload?: {
@@ -140,6 +195,7 @@ function updateAssistantMessageList(
 export function BotSidecarPanel({
   sessionId,
   bot,
+  stackIndex = 0,
   contextText,
   fallbackChannelId,
   fallbackModelId,
@@ -156,7 +212,18 @@ export function BotSidecarPanel({
   const messageIdRef = useRef(0);
   const [analysisRunning, setAnalysisRunning] = useState(false);
   const [notice, setNotice] = useState("");
-  const [position, setPosition] = useState(DEFAULT_POSITION);
+  const stackOffset =
+    Math.max(0, Math.min(stackIndex, 6)) * SIDECAR_STACK_OFFSET;
+  const [position, setPosition] = useState<SidecarPosition>(() => ({
+    x: DEFAULT_POSITION.x + stackOffset,
+    y: DEFAULT_POSITION.y + stackOffset,
+  }));
+  const sidecarRef = useRef<HTMLElement | null>(null);
+  const positionRef = useRef(position);
+  positionRef.current = position;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const [dockedEdge, setDockedEdge] = useState<DockedEdge | null>(null);
   const dragRef = useRef<{
     dx: number;
     dy: number;
@@ -167,6 +234,7 @@ export function BotSidecarPanel({
     pointerId: number;
     moved: boolean;
     target: HTMLElement | null;
+    panel: HTMLElement | null;
   } | null>(null);
   const lastDragMovedRef = useRef(false);
 
@@ -280,6 +348,26 @@ export function BotSidecarPanel({
     const node = messageScrollRef.current;
     if (node) node.scrollTop = node.scrollHeight;
   }, [messages, analysisRunning]);
+  useEffect(() => {
+    if (!minimized) return;
+    const frame = window.requestAnimationFrame(() => {
+      const panel = sidecarRef.current;
+      if (!panel) return;
+      const docked = dockPositionToEdge(positionRef.current, panel);
+      if (!docked) {
+        setDockedEdge(null);
+        return;
+      }
+      setDockedEdge(docked.edge);
+      if (
+        docked.position.x !== positionRef.current.x ||
+        docked.position.y !== positionRef.current.y
+      ) {
+        setPosition(docked.position);
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [minimized]);
 
   useEffect(() => {
     const move = (event: PointerEvent): void => {
@@ -291,15 +379,43 @@ export function BotSidecarPanel({
       ) {
         drag.moved = true;
       }
+      const panelRect = drag.panel?.getBoundingClientRect();
+      const container = drag.panel?.offsetParent as HTMLElement | null;
+      const containerRect = container?.getBoundingClientRect();
+      if (!panelRect || !containerRect) return;
+      const edge = 8;
+      const maxX = Math.max(edge, containerRect.width - panelRect.width - edge);
+      const maxY = Math.max(
+        edge,
+        containerRect.height - panelRect.height - edge,
+      );
+      const nextX = event.clientX - drag.containerLeft - drag.dx;
+      const nextY = event.clientY - drag.containerTop - drag.dy;
       setPosition({
-        x: Math.max(8, event.clientX - drag.containerLeft - drag.dx),
-        y: Math.max(48, event.clientY - drag.containerTop - drag.dy),
+        x: Math.min(maxX, Math.max(edge, nextX)),
+        y: Math.min(maxY, Math.max(edge, nextY)),
       });
     };
     const up = (event: PointerEvent): void => {
       const drag = dragRef.current;
       if (!drag || event.pointerId !== drag.pointerId) return;
       lastDragMovedRef.current = drag.moved;
+      const panel = drag.panel;
+      if (panel?.classList.contains("bot-sidecar-orb")) {
+        const docked = dockPositionToEdge(
+          { x: panel.offsetLeft, y: panel.offsetTop },
+          panel,
+        );
+        if (docked?.edge === "right") {
+          setDockedEdge(null);
+          onCloseRef.current();
+        } else if (docked) {
+          setPosition(docked.position);
+          setDockedEdge(docked.edge);
+        } else {
+          setDockedEdge(null);
+        }
+      }
       drag.target?.releasePointerCapture?.(drag.pointerId);
       dragRef.current = null;
     };
@@ -320,6 +436,9 @@ export function BotSidecarPanel({
     const panelRect = panel?.getBoundingClientRect();
     const containerRect = container?.getBoundingClientRect();
     if (!panelRect || !containerRect) return;
+    if (panel?.classList.contains("bot-sidecar-orb")) {
+      setDockedEdge(null);
+    }
     lastDragMovedRef.current = false;
     dragRef.current = {
       dx: event.clientX - panelRect.left,
@@ -331,6 +450,7 @@ export function BotSidecarPanel({
       pointerId: event.pointerId,
       moved: false,
       target,
+      panel,
     };
     target.setPointerCapture?.(event.pointerId);
   };
@@ -361,7 +481,12 @@ export function BotSidecarPanel({
 
   const analyze = async (): Promise<void> => {
     const question = draft.trim();
-    if (!question || !state?.agentSessionId || analysisRunning || historyLoading)
+    if (
+      !question ||
+      !state?.agentSessionId ||
+      analysisRunning ||
+      historyLoading
+    )
       return;
 
     const revision = bot.revisions.find(
@@ -389,14 +514,16 @@ export function BotSidecarPanel({
     try {
       const result = await window.electronAPI.sendMessage({
         sessionId: state.agentSessionId,
-        prompt: [
-          "请作为旁路 Bot 与用户对话。你可以参考下面的主会话上下文回答问题；如果用户要求分析主会话，再进行分析。",
+        prompt: question,
+        contextPrompt: [
+          "你是独立 Bot，正在与用户进行旁路对话。",
+          "如果用户要求分析主会话，可以参考下面的主会话最近内容；否则优先处理用户当前消息。",
           "主会话最近内容：",
           contextText || "（暂无）",
-          "用户消息：",
-          question,
-          "直接回答用户当前消息，不要声称已经修改主会话。",
+          "不要声称已经修改主会话。",
         ].join("\n\n"),
+        // 独立旁路 Bot 只使用自己的会话，不得被父会话的多 Bot 配置带入协作室路由。
+        skipFusionRouting: true,
         channelId: revision?.channelId ?? fallbackChannelId,
         model:
           revision?.modelId ??
@@ -474,8 +601,16 @@ export function BotSidecarPanel({
     return (
       <button
         type="button"
+        ref={(node) => {
+          sidecarRef.current = node;
+        }}
         className="bot-sidecar-orb session-glass-surface"
-        style={{ left: position.x, top: position.y }}
+        data-docked-edge={dockedEdge ?? undefined}
+        style={{
+          left: position.x,
+          top: position.y,
+          zIndex: 30 + Math.max(0, stackIndex),
+        }}
         onPointerDown={startDrag}
         onClick={() => {
           const moved = lastDragMovedRef.current;
@@ -484,15 +619,24 @@ export function BotSidecarPanel({
         }}
         aria-label={"恢复 Bot " + bot.profile.displayName + " 旁路窗口"}
       >
-        {bot.profile.displayName.slice(0, 1)}
+        <span className="session-bot-rail__avatar" aria-hidden>
+          {bot.profile.displayName.trim().charAt(0) || "B"}
+        </span>
       </button>
     );
   }
 
   return (
     <section
+      ref={(node) => {
+        sidecarRef.current = node;
+      }}
       className="bot-sidecar-panel session-glass-surface session-glass-popover"
-      style={{ left: position.x, top: position.y }}
+      style={{
+        left: position.x,
+        top: position.y,
+        zIndex: 30 + Math.max(0, stackIndex),
+      }}
       aria-label={"Bot " + bot.profile.displayName + " 旁路窗口"}
     >
       <div className="bot-sidecar-panel__header">
@@ -616,23 +760,28 @@ export function BotSidecarPanel({
             disabled={busy || analysisRunning}
             aria-label="发送给 Bot 的消息"
           />
-          <div className="bot-sidecar-panel__composer-footer composer-footer-bar">
+          <div className="bot-sidecar-panel__composer-footer">
             <div className="bot-sidecar-panel__composer-meta">
               <span
                 className="bot-sidecar-panel__model-label"
                 title={modelLabel}
               >
-                模型 · {modelLabel}
+                <span className="bot-sidecar-panel__model-dot" aria-hidden />
+                <span className="bot-sidecar-panel__model-name">
+                  {modelLabel}
+                </span>
               </span>
-              <span className="bot-sidecar-panel__notice" aria-live="polite">
-                {notice}
-              </span>
+              {notice ? (
+                <span className="bot-sidecar-panel__notice" aria-live="polite">
+                  {notice}
+                </span>
+              ) : null}
             </div>
             <div className="bot-sidecar-panel__composer-actions">
               <Button
-                size="sm"
+                size="icon-sm"
                 variant="ghost"
-                className="rounded-xl text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                className="bot-sidecar-panel__action"
                 disabled={
                   (!draft.trim() && !analysisText.trim()) ||
                   busy ||
@@ -640,14 +789,15 @@ export function BotSidecarPanel({
                   !state
                 }
                 onClick={() => void bridge()}
+                aria-label="交给主会话"
+                title="交给主会话"
               >
-                <ArrowUpRight className="mr-1 size-3" />
-                交给主会话
+                <ArrowUpRight className="size-3.5" />
               </Button>
               <Button
                 size="icon-sm"
                 variant="ghost"
-                className="shrink-0 rounded-xl text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                className="bot-sidecar-panel__action bot-sidecar-panel__send-action"
                 disabled={
                   !draft.trim() ||
                   busy ||
@@ -657,6 +807,7 @@ export function BotSidecarPanel({
                 }
                 onClick={() => void analyze()}
                 aria-label="发送给 Bot"
+                title="发送给 Bot"
               >
                 <Send className="size-3.5" />
               </Button>

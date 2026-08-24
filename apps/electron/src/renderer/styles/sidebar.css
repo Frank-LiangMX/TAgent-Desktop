@@ -782,6 +782,88 @@
   color: hsl(var(--muted-foreground) / 0.72);
 }
 
+/* 协作室会话：第二行右侧用小头像堆叠标识多人参与，避免在标题上再堆状态文字。 */
+.session-collab-participants {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-left: auto;
+  padding-left: 6px;
+}
+.session-collab-avatar {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  margin-left: -4px;
+  padding: 0;
+  border: 1px solid hsl(var(--foreground) / 0.24);
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px hsl(var(--background) / 0.92);
+  background: hsl(var(--primary) / 0.14);
+  color: hsl(var(--primary));
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  text-align: center;
+  user-select: none;
+}
+.session-collab-avatar--first {
+  margin-left: 0;
+}
+.session-collab-avatar__letter {
+  display: block;
+  line-height: 1;
+  transform: translateY(-0.5px);
+}
+.session-collab-avatar--user {
+  background: linear-gradient(145deg, hsl(var(--primary) / 0.86), hsl(var(--primary) / 0.56));
+  color: hsl(var(--primary-foreground));
+}
+.session-collab-avatar--bot-a {
+  background: hsl(199 48% 88%);
+  color: hsl(199 72% 30%);
+}
+.session-collab-avatar--bot-b {
+  background: hsl(268 42% 89%);
+  color: hsl(268 58% 38%);
+}
+.session-collab-avatar--bot-c {
+  background: hsl(36 68% 87%);
+  color: hsl(30 72% 34%);
+}
+.dark .session-collab-avatar--bot-a {
+  background: hsl(199 38% 30%);
+  color: hsl(199 85% 82%);
+}
+.dark .session-collab-avatar--bot-b {
+  background: hsl(268 34% 32%);
+  color: hsl(268 82% 86%);
+}
+.dark .session-collab-avatar--bot-c {
+  background: hsl(36 52% 32%);
+  color: hsl(36 92% 84%);
+}
+.session-collab-avatar--more {
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  font-size: 8px;
+}
+.row.is-open .session-collab-avatar {
+  border-color: hsl(var(--foreground) / 0.3);
+  box-shadow: 0 0 0 1px hsl(var(--background) / 0.96);
+}
+.dark .session-collab-avatar {
+  border-color: hsl(var(--foreground) / 0.34);
+  box-shadow: 0 0 0 1px hsl(var(--background) / 0.92);
+}
+
 /* 行首状态色点：running 脉冲 / idle 空心圈 / error 红 / done 绿 */
 .stat-dot {
   flex: none;

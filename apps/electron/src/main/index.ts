@@ -366,7 +366,10 @@ app.whenReady().then(async () => {
   })
   if (fusionGate.registerIpc) {
     const { registerCollaborationRoomIpc } = await import('./lib/collaboration/collaboration-ipc')
-    registerCollaborationRoomIpc(() => mainWindow)
+    registerCollaborationRoomIpc(
+      () => mainWindow,
+      (sessionId) => sessionService?.notifySessionMetaChanged(sessionId),
+    )
   } else {
     console.log('[collaboration] disabled:', fusionGate.reasons.join('; '))
   }

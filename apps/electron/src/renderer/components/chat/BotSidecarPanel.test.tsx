@@ -114,6 +114,7 @@ function mkBot(): BotProfileRecord {
 interface ElectronApiOverrides {
   getMessages?: ReturnType<typeof vi.fn>;
   openBotSidecar?: ReturnType<typeof vi.fn>;
+  sendMessage?: ReturnType<typeof vi.fn>;
 }
 
 function installElectronApi(over: ElectronApiOverrides = {}): void {
@@ -254,6 +255,46 @@ describe("BotSidecarPanel 历史加载", () => {
     expect(
       m.container.querySelectorAll(".bot-sidecar-panel__message"),
     ).toHaveLength(0);
+    m.unmount();
+  });
+
+  test("发送时只把用户问题作为 user prompt，主会话内容走前情提要", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({ ok: true });
+    installElectronApi({ sendMessage });
+    const m = mountPanel();
+    await flushAsync();
+
+    const textarea = m.container.querySelector(
+      'textarea[aria-label="发送给 Bot 的消息"]',
+    ) as HTMLTextAreaElement;
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(textarea, "请分析刚才的方案");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const sendButton = m.container.querySelector(
+      'button[aria-label="发送给 Bot"]',
+    ) as HTMLButtonElement;
+    act(() => {
+      sendButton.click();
+    });
+    await flushAsync();
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "请分析刚才的方案",
+        contextPrompt: expect.stringContaining("主会话上下文"),
+        skipFusionRouting: true,
+      }),
+    );
+    expect(sendMessage.mock.calls[0]?.[0].prompt).not.toContain(
+      "主会话上下文",
+    );
     m.unmount();
   });
 

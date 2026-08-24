@@ -5,10 +5,11 @@
  * 选中态 tab-item-selected（上圆下直玻璃填充），× hover 显隐。
  * 状态色点：与侧栏会话列表同源（完成绿 / 运行蓝脉冲 / 失败红 / 待选择黄）。
  */
-import { ChatsCircle } from '@phosphor-icons/react'
+import { ChatsCircle, UsersThree } from '@phosphor-icons/react'
 import { X } from 'lucide-react'
 import type { TabItem } from '../../atoms/tabs'
 import type { SessionUiStatus } from '../../atoms/session-status-atoms'
+import { usePersistedSessionMeta } from '../../hooks/usePersistedSessionMeta'
 
 interface TabBarItemProps {
   tab: TabItem
@@ -34,8 +35,14 @@ export function TabBarItem({
   onClose,
 }: TabBarItemProps): JSX.Element {
   const showStatus = status !== 'idle'
+  const sessionMeta = usePersistedSessionMeta(tab.sessionId)
+  const isCollaboration = Boolean(sessionMeta?.fusionRoomId)
+  const TabIcon = isCollaboration ? UsersThree : ChatsCircle
   return (
-    <div className="app-workspace-tab-shell group relative" data-active={active || undefined}>
+    <div
+      className={'app-workspace-tab-shell group relative' + (isCollaboration ? ' app-workspace-tab-shell--collaboration' : '')}
+      data-active={active || undefined}
+    >
       <button
         type="button"
         onClick={onActivate}
@@ -49,7 +56,7 @@ export function TabBarItem({
             aria-label={STATUS_LABEL[status]}
           />
         )}
-        <ChatsCircle size={14} weight="regular" className="app-workspace-tab__icon shrink-0" />
+        <TabIcon size={14} weight="regular" className="app-workspace-tab__icon shrink-0" />
         <span className="app-workspace-tab__title">{tab.title || '新会话'}</span>
       </button>
       <button

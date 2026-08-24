@@ -875,6 +875,8 @@ export function ScrollMinimap({
             className={cn(
               "message-nav-bars-viewport relative min-h-0 flex-1",
               railScrollable && "message-nav-bars-viewport--scrollable",
+              railHasMoreAbove && "message-nav-bars-viewport--has-more-above",
+              railHasMoreBelow && "message-nav-bars-viewport--has-more-below",
             )}
             style={{ width: RAIL_VISUAL_WIDTH }}
             onScroll={(event) => {
@@ -947,16 +949,6 @@ export function ScrollMinimap({
                 );
               })}
             </div>
-            <div
-              className="message-nav-edge-fade message-nav-edge-fade--top"
-              data-visible={railHasMoreAbove ? "true" : "false"}
-              aria-hidden="true"
-            />
-            <div
-              className="message-nav-edge-fade message-nav-edge-fade--bottom"
-              data-visible={railHasMoreBelow ? "true" : "false"}
-              aria-hidden="true"
-            />
           </div>
         </div>
       </div>

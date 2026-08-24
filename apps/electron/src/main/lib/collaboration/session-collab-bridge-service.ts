@@ -6,7 +6,7 @@
  *   把单会话面板历史精炼为 SessionToRoomBrief 写入房间 goal（短）+ 系统消息（完整前情提要）。
  * - 明示退出 exitCollaborationWithBridge（userConfirmed 闸）：精炼协作结论为 RoomToSessionHandoff
  *   写回原 session 面板（系统通知卡），清 fusionRoomId、按剩余 Bot 重算 fusionMode，房间转 paused（保留历史）。
- * - 按需读原史 readSourceSessionExcerpt：预算校验 + 读 panel + clamp；本切片不接 host 工具表（工具接线留后）。
+ * - 按需读原史 readSourceSessionExcerpt：预算校验 + 读 panel + clamp；由 room service host tool 接线。
  *
  * 精炼用便宜/快速模型（modelCaller 注入，默认复用 completeMemoryLlm）；失败 **fail-closed 启发式**
  *（从最近消息抽字段），不抛崩、不阻塞建房/退出。测试必须注入假 caller，CI 不打真网。
@@ -135,8 +135,7 @@ export interface SessionCollabBridgeServiceOptions {
   /** 精炼模型调用（默认 completeMemoryLlm）。 */
   modelCaller?: BridgeModelCaller;
   /**
-   * exit 后通知渲染层 session meta 已变（IPC 层可接线推送 session_meta_changed）。
-   * 默认 noop：meta 仍落盘，renderer 下次读 meta 生效（详见 §86）。
+   * 进退协作后通知渲染层 session meta 已变。默认 noop，便于服务层单测和非 Electron 调用方复用。
    */
   notifySessionMetaChanged?: (sessionId: string) => void;
 }
@@ -161,7 +160,7 @@ export class SessionCollabBridgeService {
    * 1. userConfirmed 闸。2. 幂等复用（已有 fusionRoomId 且房间存在 → 不重复 summarize，返回最小 brief）。
    * 3. upgradeFusionSession 建房。4. 读 panel → transcript（12k 字符硬顶，头尾保留）。
    * 5. modelCaller 返回 JSON；解析失败/抛错 → 启发式。6. buildSessionToRoomBrief（默认预算）。
-   * 7. 写房间 goal（短）+ 系统消息（完整 formatted brief）。
+   * 7. 写房间 goal（短）+ 系统消息（完整 formatted brief）。8. 推送 session_meta_changed。
    */
   async enterCollaborationWithBridge(
     input: EnterCollaborationWithBridgeServiceInput,
@@ -250,6 +249,7 @@ export class SessionCollabBridgeService {
       room.id,
       "【单会话前情提要】\n" + formatSessionToRoomBriefForPrompt(brief),
     );
+    this.notifySessionMetaChanged(sessionId);
 
     return {
       roomId: room.id,
@@ -414,7 +414,7 @@ export class SessionCollabBridgeService {
   }
 
   /**
-   * 按需读原 session 摘录（14 §2，read_source_session_excerpt 服务函数；本切片不接 host 工具表）。
+   * 按需读原 session 摘录（14 §2，read_source_session_excerpt 服务函数；host tool 由 room service 接线）。
    *
    * - validateSourceExcerptBudget 失败 → 抛 BridgeExcerptBudgetError（稳定 code，IPC 可映射）。
    * - 读 sourceSessionId 的 panel；query 有则大小写不敏感包含匹配，否则最近 N 条（默认 12）。

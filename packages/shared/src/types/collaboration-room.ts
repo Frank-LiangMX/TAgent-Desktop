@@ -10,6 +10,7 @@
  * - docs/plans/agent-collaboration-room/02-RUNTIME-A2A-SPEC.md §2（实体字段契约）
  * - docs/decisions/ADR-0007-agent-collaboration-room.md
  */
+import type { FileAttachment } from "./chat";
 import {
   COLLABORATION_SUMMARY_MAX_EVERY_UTTERANCES,
   COLLABORATION_SUMMARY_MIN_EVERY_UTTERANCES,
@@ -338,6 +339,7 @@ export interface CollaborationHostToolCall {
     | "room_task_assign"
     | "room_task_update"
     | "room_publish_artifact"
+    | "read_source_session_excerpt"
     | "workspace_read_file"
     | "workspace_search"
     | "workspace_write_file"
@@ -588,6 +590,8 @@ export interface CollaborationMessage {
   kind: CollaborationMessageKind;
   /** 文本内容 */
   content: string;
+  /** 用户消息携带的持久化附件 */
+  attachments?: FileAttachment[];
   /** 可见范围 */
   visibility: CollaborationMessageVisibility;
   /** 目标成员 ID 列表（@点名；空表示投递协调者/房间公开） */
@@ -652,7 +656,7 @@ export interface CollaborationRun {
   finishedAt?: number;
   /** 用量 */
   usage?: CollaborationUsageRecord;
-  /** 错误（status === 'failed' 时；code='INTERRUPTED' 表示重启时发现的假 running） */
+  /** 错误（status === 'failed' 或 'blocked' 时；code='INTERRUPTED' 表示重启时发现的未决运行） */
   error?: CollaborationSerializedRunError;
 }
 
@@ -724,7 +728,7 @@ export interface CollaborationRoomTask {
   sourceMessageId?: string;
   /** 关联 run ID（可选，执行追溯；可在 update 时回填） */
   runId?: string;
-  /** 依赖任务 ID 列表（可选；仅记录，本切片不据此推进状态） */
+  /** 依赖任务 ID 列表（可选；依赖未完成时任务保持 blocked，全部完成后自动释放） */
   dependsOnTaskIds?: string[];
   /** 验收标准（可选） */
   acceptanceCriteria?: string;
@@ -1831,8 +1835,14 @@ export interface UpdateCollaborationRoomInput {
 export interface AppendCollaborationUserMessageInput {
   /** 房间 ID */
   roomId: string;
-  /** 消息文本 */
+  /** 消息文本；允许为空，但必须至少携带一个附件 */
   content: string;
+  /** 待发送附件（renderer 传 base64，service 负责持久化） */
+  attachments?: Array<{
+    filename: string;
+    mediaType: string;
+    data: string;
+  }>;
   /** 结构化 mention（S3.5-a）：composer 选中项优先于正文扫描 */
   mentions?: CollaborationStructuredMention[];
   /** 目标成员 ID 列表（@点名，空表示房间公开/协调者） */
@@ -1859,7 +1869,7 @@ export interface CreateCollaborationRoomTaskInput {
   sourceMessageId?: string;
   /** 关联 run ID（可选，执行追溯） */
   runId?: string;
-  /** 依赖任务 ID 列表（可选；仅记录，不据此推进状态） */
+  /** 依赖任务 ID 列表（可选；依赖未完成时任务保持 blocked，全部完成后自动释放） */
   dependsOnTaskIds?: string[];
   /** 验收标准（可选） */
   acceptanceCriteria?: string;

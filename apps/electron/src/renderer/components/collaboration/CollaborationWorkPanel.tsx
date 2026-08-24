@@ -140,6 +140,7 @@ export function CollaborationWorkPanel({
   const [newTitle, setNewTitle] = useState('')
   const [newAssignee, setNewAssignee] = useState('')
   const [newDesc, setNewDesc] = useState('')
+  const [newDependencies, setNewDependencies] = useState<string[]>([])
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null)
   /** 产物预览状态（按 artifactId 切换展开；同时只预览一个，省内存） */
@@ -181,10 +182,12 @@ export function CollaborationWorkPanel({
         title,
         description: newDesc.trim() || undefined,
         assigneeMemberId: newAssignee || undefined,
+        dependsOnTaskIds: newDependencies.length > 0 ? newDependencies : undefined,
       })
       setNewTitle('')
       setNewDesc('')
       setNewAssignee('')
+      setNewDependencies([])
       setCreating(false)
       onChanged()
     } catch (err) {
@@ -192,7 +195,7 @@ export function CollaborationWorkPanel({
     } finally {
       setBusyTaskId(null)
     }
-  }, [newTitle, newDesc, newAssignee, room.id, onChanged])
+  }, [newTitle, newDesc, newAssignee, newDependencies, room.id, onChanged])
 
   const updateTask = useCallback(
     async (patch: {
@@ -360,6 +363,29 @@ export function CollaborationWorkPanel({
                   </option>
                 ))}
               </select>
+              {tasks.length > 0 ? (
+                <label className="flex flex-col gap-1 text-[10px] text-muted-foreground">
+                  <span>前置任务（可选，可多选）</span>
+                  <select
+                    multiple
+                    size={Math.min(4, Math.max(2, tasks.length))}
+                    className="w-full rounded-md border border-border/50 bg-background/60 px-2 py-1 text-[11px] outline-none focus:border-primary/50"
+                    value={newDependencies}
+                    onChange={(e) =>
+                      setNewDependencies(
+                        Array.from(e.target.selectedOptions, (option) => option.value),
+                      )
+                    }
+                    aria-label="前置任务"
+                  >
+                    {tasks.map((task) => (
+                      <option key={task.id} value={task.id}>
+                        {task.title} · {roomTaskStatusLabel(task.status)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -378,6 +404,7 @@ export function CollaborationWorkPanel({
                     setNewTitle('')
                     setNewDesc('')
                     setNewAssignee('')
+                    setNewDependencies([])
                   }}
                 >
                   取消

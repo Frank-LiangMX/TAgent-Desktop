@@ -338,7 +338,11 @@ export function StatusTicker({
       extraCount > 0 || visualHistoryPrimary ? (
       <button
         type="button"
-        className="status-ticker__badge"
+        className={cn(
+          'status-ticker__badge',
+          (liveSingle || showLiveStack) && 'status-ticker__badge--live',
+          visualHistoryPrimary && 'status-ticker__badge--history',
+        )}
         aria-label={`查看 ${liveSessions.length} 个运行中会话和 ${queue.length + history.length} 条通知`}
         onClick={(event) => {
           event.stopPropagation()

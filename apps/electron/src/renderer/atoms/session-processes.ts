@@ -35,23 +35,28 @@ export function useSessionProcesses(sessionId: string | null): SessionBackground
   useEffect(() => {
     if (!sessionId) return
     let cancelled = false
+    let eventVersion = 0
     const write = (list: SessionBackgroundProcess[]): void => {
       setMap((prev) => {
         if (sameProcessList(prev[sessionId], list)) return prev
         return { ...prev, [sessionId]: list }
       })
     }
-    void window.electronAPI.listSessionProcesses?.(sessionId).then((list) => {
-      if (cancelled) return
-      write(Array.isArray(list) ? list : [])
-    })
+
+    // 先订阅再请求快照，且丢弃订阅之后才过期的旧快照，避免空列表覆盖刚收到的运行任务。
     const off = window.electronAPI.onSessionProcessesChanged?.((payload) => {
       if (payload.sessionId !== sessionId) return
+      eventVersion += 1
       write(
         Array.isArray(payload.processes)
           ? (payload.processes as SessionBackgroundProcess[])
           : [],
       )
+    })
+    const initialVersion = eventVersion
+    void window.electronAPI.listSessionProcesses?.(sessionId).then((list) => {
+      if (cancelled || eventVersion !== initialVersion) return
+      write(Array.isArray(list) ? list : [])
     })
     return () => {
       cancelled = true

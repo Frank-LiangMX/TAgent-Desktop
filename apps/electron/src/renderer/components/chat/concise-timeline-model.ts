@@ -6,7 +6,7 @@
  *   done：收成折叠块（不消失）
  *   expand：按时间序明细 — 思考 / 探索 / 编辑（含 +N -M），点击再看详情
  *
- * - work_stage.steps：阶段内 chronological 步骤（thinking + tool）
+ * - work_stage.steps：阶段内 chronological 工具步骤；思考作为独立折叠段
  * - narrative.progress / final：方向短总结 / 最终正文
  */
 import {
@@ -699,16 +699,17 @@ export function buildConciseTimeline(
       }
       // REGRESS-K1：idle 不再因 trivial 整段丢弃——短思考也要留「思考了片刻」可点开，
       // 否则 live 可见、结束后执行块无思考行（用户观感=流完即消）。
-      // REGRESS-J(J3)：中段思考（当前阶段已执行过工具）一律并入 stage.steps——展开可见全文，
-      // 不再按 isDeliverableThinking 升独立 fold。升 fold 会 flushStage 拆 stage，导致
-      // 「思考游离在执行块之外、找不到完整思考」，且频繁打断工具合并。live/idle 一致，key=cur.key
-      // 稳定不走 remount，避免「思考→工具」切换时思考从独立 fold 跌回 step 触发整段重排闪。
+      // 中段思考单独成为折叠块：用户必须能看到“思考”这一层入口，
+      // 但正文仍默认收起，避免把完整思考链直接铺在会话里。
       if (stageSteps.some((s) => s.kind === 'tool')) {
-        stageSteps.push({
+        flushStage()
+        const durationSec = resolveThinkingDurationSec(t, cur.durationSec)
+        segments.push({
           kind: 'thinking',
-          key: cur.key,
+          key: `think-${cur.key}`,
           thinking: t,
-          durationSec: resolveThinkingDurationSec(t, cur.durationSec),
+          durationSec,
+          summary: formatThinkingSummary(durationSec),
         })
         continue
       }

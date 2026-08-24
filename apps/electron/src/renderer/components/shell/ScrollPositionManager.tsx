@@ -43,6 +43,9 @@ export function peekSessionScrollDistance(id: string): number | undefined {
 /** 新一轮发送后只记录“稍后跟随最新内容”的意图，等待首个主线 assistant 内容到达。 */
 export function markSessionAtBottom(id: string): void {
   pendingBottomIntentCache.add(id);
+  // An explicit send supersedes a stale mid-scroll snapshot. The pending
+  // intent still waits for the new message DOM before writing scrollTop.
+  scrollPositionCache.set(id, 0);
   bottomIntentCache.delete(id);
 }
 
@@ -190,10 +193,16 @@ export function ScrollPositionManager({
   const pinIfAtBottomIntent = (): void => {
     const el = scrollRef.current;
     if (!el) return;
+    const hasBottomIntent =
+      pendingBottomIntentCache.has(id) || bottomIntentCache.has(id);
     // 顶部补历史期间只做 scrollHeight 差值补偿，禁止任何 observer 抢回底部。
     if (!restoreReady) return;
-    if (state.escapedFromLock) return;
-    if (hasSavedMidPosition(scrollPositionCache.get(id))) return;
+    // An explicit send overrides stale lock and mid-position state until the
+    // user scrolls upward and the input handlers cancel the pending intent.
+    if (state.escapedFromLock && !hasBottomIntent) return;
+    if (!hasBottomIntent && hasSavedMidPosition(scrollPositionCache.get(id))) {
+      return;
+    }
     const top = targetScrollTop(el.scrollHeight, el.clientHeight);
     if (Math.abs(el.scrollTop - top) < 2) return;
     el.scrollTop = top;
@@ -326,12 +335,21 @@ export function ScrollPositionManager({
     const pinToBottom = (): void => {
       pinRaf = 0;
       const top = targetScrollTop(scroller.scrollHeight, scroller.clientHeight);
+      const hasBottomIntent =
+        pendingBottomIntentCache.has(id) || bottomIntentCache.has(id);
       // 流式内容增长和用户上滚可能发生在同一帧：ResizeObserver 已排了钉底 rAF
       // 后，用户才通过滚轮/拖拽离开底部。必须在真正写 scrollTop 前再读一次
       // StickToBottom 的同步逃离标记，否则这条旧 rAF 会把人强行拉回最新输出。
-      if (state.escapedFromLock || !wasNearBottom) return;
+      if (state.escapedFromLock && !hasBottomIntent) return;
+      if (!wasNearBottom && !hasBottomIntent) return;
 
       if (Math.abs(scroller.scrollTop - top) < 2) return;
+      // 直接写 scrollTop 不会清除 use-stick-to-bottom 的 escapedFromLock。
+      // 只在本轮发送意图仍有效且仍被旧 lock 挡住时调用一次 instant，后续流式
+      // 增长继续走低开销的 pinToBottomRef，避免逐字输出触发 React 重渲染。
+      if (hasBottomIntent && state.escapedFromLock) {
+        void scrollToBottomRef.current("instant");
+      }
       pinToBottomRef.current();
       wasNearBottom = true;
     };
@@ -361,14 +379,18 @@ export function ScrollPositionManager({
       // 发送时刚建立的贴底意图要覆盖旧的 wasNearBottom 快照；
       // 否则新一轮首个 delta 会被误判为中间位，内容就会被输入框盖住。
       const hasBottomIntent =
-        bottomIntentCache.has(id) && !state.escapedFromLock;
-      if (hasBottomIntent) wasNearBottom = true;
+        pendingBottomIntentCache.has(id) || bottomIntentCache.has(id);
+      if (hasBottomIntent) {
+        wasNearBottom = true;
+      }
       if (
         !shouldFollowContentGrowth({
           hasMidPosition: hasSavedMidPosition(scrollPositionCache.get(id)),
           grew,
           wasNearBottom,
-          escapedFromLock: state.escapedFromLock,
+          // A pending send is an explicit follow-bottom override. Once the
+          // intent is activated, escapedFromLock protects a user's upward scroll.
+          escapedFromLock: state.escapedFromLock && !hasBottomIntent,
         })
       ) {
         return;

@@ -66,9 +66,11 @@ describe('已归档侧栏单行结构', () => {
   })
 
   it('SessionRow 仅非归档行渲染 meta 第二行', () => {
-    expect(sidebarTsx).toContain('{!archived && ((s.turnCount != null && s.turnCount > 0) || (isInTabs && !isOpen)) && (')
+    expect(sidebarTsx).toContain('{!archived && (s.fusionRoomId || (s.turnCount != null && s.turnCount > 0) || (isInTabs && !isOpen)) && (')
     // 旧的「archived ? 已归档 : 时间」第二行写法已移除
     expect(sidebarTsx).not.toMatch(/archived \? '已归档'/)
+    expect(sidebarTsx).toContain('session-collab-participants')
+    expect(sidebarCss).toContain('.session-collab-avatar')
   })
 
   it('归档分组头仍含「已归档」标题 + 数量徽标 + aria-expanded', () => {

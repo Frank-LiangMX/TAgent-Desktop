@@ -98,8 +98,7 @@ export function MentionPicker({
     <div
       ref={listRef}
       className={cn(
-        "mention-picker fixed z-[200] max-h-52 overflow-auto rounded-xl border border-border/60",
-        "bg-background/95 py-1 shadow-lg backdrop-blur-md",
+        "mention-picker fixed z-[200] max-h-64 overflow-auto rounded-2xl p-1",
         className,
       )}
       style={{
@@ -110,7 +109,7 @@ export function MentionPicker({
       role="listbox"
       aria-label="选择 @ 提及对象"
     >
-      <div className="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="px-2.5 pb-1.5 pt-2 text-[11px] font-medium text-muted-foreground">
         选择提及对象
       </div>
       {filtered.map((role, i) => (
@@ -120,32 +119,35 @@ export function MentionPicker({
           role="option"
           data-mention-idx={i}
           aria-selected={i === activeIndex}
+          aria-label={
+            role.description
+              ? `@${role.displayName}，${role.description}`
+              : `@${role.displayName}`
+          }
+          title={role.description || `@${role.displayName}`}
           className={cn(
-            "flex w-full flex-col items-start gap-0.5 px-2.5 py-1.5 text-left text-[12px] transition-colors",
+            "mx-0 flex h-10 w-full items-center gap-2 rounded-lg px-2.5 text-left transition-colors",
             i === activeIndex
               ? "bg-primary/10 text-foreground"
-              : "hover:bg-foreground/5",
+              : "text-foreground/85 hover:bg-foreground/5",
           )}
           onMouseEnter={() => onActiveIndexChange(i)}
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => onSelect(role)}
         >
-          <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <span className="mention-chip mention-chip--picker">
-              @{role.displayName}
-            </span>
-            {role.kind === "bot" ? (
-              <span className="font-mono text-[9px] font-normal text-primary/70">
-                Bot
-              </span>
-            ) : null}
-            <span className="font-mono text-[10px] font-normal text-muted-foreground">
-              {role.id}
-            </span>
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-[12px] font-semibold text-primary">
+            @
           </span>
-          {role.description ? (
-            <span className="line-clamp-1 text-[11px] text-muted-foreground">
-              {role.description}
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+            @{role.displayName}
+          </span>
+          {role.id === "all" ? (
+            <span className="shrink-0 text-[11px] text-muted-foreground">
+              全部成员
+            </span>
+          ) : role.kind === "bot" ? (
+            <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+              Bot
             </span>
           ) : null}
         </button>

@@ -3,7 +3,7 @@
  * 纯函数 groupCollaborationTimelineItems 负责收拢，本组件只渲染。
  */
 import { Fragment, type Ref, useState } from 'react'
-import { Button, MessageResponse } from '@tagent/ui'
+import { Button, MessageAttachments, MessageResponse } from '@tagent/ui'
 import {
   groupCollaborationTimelineItems,
   type Channel,
@@ -12,6 +12,7 @@ import {
   type CollaborationMessage,
   type CollaborationRun,
   type CollaborationUserApprovalRequest,
+  type FileAttachment,
 } from '@tagent/shared'
 import { MemberAvatar, UserMessageAvatar } from './CollaborationAvatars'
 import { CollaborationDepthStopCard } from './CollaborationDepthStopCard'
@@ -51,6 +52,14 @@ export interface CollaborationTimelineProps {
   approvals: CollaborationUserApprovalRequest[]
   resolvingApprovalId: string | null
   onResolveApproval: (requestId: string, decision: 'approved' | 'denied', response?: string) => void
+  /** 复用单会话附件预览 */
+  onOpenAttachment?: (attachment: FileAttachment) => void
+  /** 是否还有更早历史 */
+  hasMoreOlder: boolean
+  /** 正在请求更早历史 */
+  loadingOlder: boolean
+  /** 请求更早历史；页面负责更新 messages/runs */
+  onLoadOlder: () => Promise<void>
 }
 
 export function CollaborationTimeline({
@@ -73,12 +82,13 @@ export function CollaborationTimeline({
   approvals,
   resolvingApprovalId,
   onResolveApproval,
+  onOpenAttachment,
+  hasMoreOlder,
+  loadingOlder,
+  onLoadOlder,
 }: CollaborationTimelineProps): JSX.Element {
   const items = groupCollaborationTimelineItems(messages, runs)
-  const [visibleCount, setVisibleCount] = useState(120)
   const empty = messages.length === 0 && runs.length === 0
-  const hiddenCount = Math.max(0, items.length - visibleCount)
-  const visibleItems = hiddenCount > 0 ? items.slice(hiddenCount) : items
   const getScrollElement = (): HTMLDivElement | null =>
     typeof scrollRef === "function" || scrollRef === null ? null : scrollRef.current
 
@@ -94,17 +104,18 @@ export function CollaborationTimeline({
       ) : (
         <div className="tagent-thread collab-timeline-thread pb-44">
           <ul className="flex flex-col gap-2.5">
-            {hiddenCount > 0 ? (
+            {hasMoreOlder ? (
               <li className="flex justify-center py-1">
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   className="h-7 px-2 text-xs text-muted-foreground"
-                  onClick={() => {
+                  disabled={loadingOlder}
+                  onClick={async () => {
                     const previousHeight = getScrollElement()?.scrollHeight ?? 0
                     const previousTop = getScrollElement()?.scrollTop ?? 0
-                    setVisibleCount((count) => count + 120)
+                    await onLoadOlder()
                     requestAnimationFrame(() => {
                       const element = getScrollElement()
                       if (!element) return
@@ -112,16 +123,28 @@ export function CollaborationTimeline({
                     })
                   }}
                 >
-                  加载更早的 {hiddenCount} 条消息
+                  {loadingOlder ? "正在加载更早记录…" : "加载更早记录"}
                 </Button>
               </li>
             ) : null}
-            {visibleItems.map((item) => {
+            {items.map((item) => {
               if (item.type === 'user') {
                 return (
                   <li key={item.message.id} data-message-id={item.message.id} className="flex justify-end gap-2">
                     <div className="collab-glass-bubble max-w-[28rem] whitespace-pre-wrap rounded-2xl px-3.5 py-2 text-sm text-foreground">
                       {item.message.content}
+                      {item.message.attachments?.length ? (
+                        <MessageAttachments
+                          attachments={item.message.attachments}
+                          variant="inBubble"
+                          className="agent-user-bubble__attachments"
+                          onReadAttachment={async (localPath) => {
+                            const base64 = await window.electronAPI.readAttachment(localPath)
+                            return base64
+                          }}
+                          onOpenAttachment={onOpenAttachment}
+                        />
+                      ) : null}
                     </div>
                     <UserMessageAvatar />
                   </li>

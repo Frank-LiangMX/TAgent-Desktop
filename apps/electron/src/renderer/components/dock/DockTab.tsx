@@ -26,6 +26,7 @@ import {
 import { sessionRunMapAtom } from '../../atoms/session-run-atoms'
 import { pendingPermissionMapAtom } from '../../atoms/permission-atoms'
 import { allPendingAskUserRequestsAtom } from '../../atoms/ask-user-atoms'
+import { usePersistedSessionMeta } from '../../hooks/usePersistedSessionMeta'
 
 type DockPaneType = 'chat' | 'crew' | 'file-preview' | 'rich-preview' | 'browser'
 
@@ -68,6 +69,9 @@ export function DockTab(props: IDockviewPanelHeaderProps<DockTabParams>): JSX.El
 
   // Dockview panel id = sessionId（chat pane）
   const sessionId = api.id
+  const sessionMeta = usePersistedSessionMeta(paneType === 'chat' ? sessionId : undefined)
+  const isCollaboration = paneType === 'chat' && Boolean(sessionMeta?.fusionRoomId)
+  const TabIcon = isCollaboration ? UsersThree : Icon
   const statusMap = useAtomValue(sessionStatusMapAtom)
   const runMap = useAtomValue(sessionRunMapAtom)
   const pendingPermissionMap = useAtomValue(pendingPermissionMapAtom)
@@ -99,7 +103,7 @@ export function DockTab(props: IDockviewPanelHeaderProps<DockTabParams>): JSX.El
 
   return (
     <div
-      className="app-workspace-tab-shell group relative"
+      className={'app-workspace-tab-shell group relative' + (isCollaboration ? ' app-workspace-tab-shell--collaboration' : '')}
       data-active={active || undefined}
     >
       {showStatus && (
@@ -116,7 +120,7 @@ export function DockTab(props: IDockviewPanelHeaderProps<DockTabParams>): JSX.El
           onClick={() => api.setActive?.()}
           className="app-workspace-tab titlebar-no-drag"
         >
-          <Icon size={14} weight="regular" className="app-workspace-tab__icon shrink-0" />
+          <TabIcon size={14} weight="regular" className="app-workspace-tab__icon shrink-0" />
           <span className="app-workspace-tab__title">{title}</span>
         </button>
       </AppTooltip>

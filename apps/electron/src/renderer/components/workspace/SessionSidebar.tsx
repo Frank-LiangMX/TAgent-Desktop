@@ -8,7 +8,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { motion } from 'motion/react'
-import type { AgentWorkspace } from '@tagent/shared'
+import type { AgentWorkspace, BotProfileRecord } from '@tagent/shared'
 import {
   Folder,
   FolderOpen,
@@ -54,6 +54,7 @@ import { tabsAtom, activeTabIdAtom, closeTab } from '../../atoms/tabs'
 import { dockApiAtom, visibleSessionsAtom } from '../../atoms/dock-api'
 import { resolveVisibleSessionChips } from './resolve-visible-session-chips'
 import { splitDockModeAtom } from '../../atoms/feature-flags'
+import { userProfileAtom } from '../../atoms/user-profile'
 
 interface SessionMeta {
   id: string
@@ -67,6 +68,8 @@ interface SessionMeta {
   pinned?: boolean
   archived?: boolean
   status?: SessionStatus
+  botProfileIds?: string[]
+  fusionRoomId?: string
 }
 
 interface WorkspaceGroup {
@@ -131,6 +134,7 @@ export function SessionSidebar({
   onWorkspaceDeleted?: (workspaceId: string) => void
 }): JSX.Element {
   const [sessions, setSessions] = useState<SessionMeta[]>([])
+  const [botRecords, setBotRecords] = useState<BotProfileRecord[]>([])
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
     () => readStoredSet(EXPANDED_GROUPS_KEY) ?? new Set(),
   )
@@ -162,6 +166,7 @@ export function SessionSidebar({
   const [hoveredGroupId, setHoveredGroupId] = useState<string | null>(null)
   const refreshCounter = useAtomValue(sessionsRefreshAtom)
   const workspaces = useAtomValue(workspacesAtom)
+  const userProfile = useAtomValue(userProfileAtom)
   const setWorkspaces = useSetAtom(workspacesAtom)
   const statusMap = useAtomValue(sessionStatusMapAtom)
   const initStatus = useSetAtom(initSessionStatusAtom)
@@ -216,6 +221,22 @@ export function SessionSidebar({
   useEffect(() => {
     void refresh()
   }, [activeSessionId, refreshCounter, refresh])
+
+  // 参与者头像只需要 BotProfile 展示名；协作室 session meta 已持久化 botProfileIds。
+  useEffect(() => {
+    let disposed = false
+    void window.electronAPI
+      .listBots()
+      .then((items) => {
+        if (!disposed) setBotRecords(items)
+      })
+      .catch(() => {
+        if (!disposed) setBotRecords([])
+      })
+    return () => {
+      disposed = true
+    }
+  }, [refreshCounter])
 
   // 侧栏默认展开最近有活动的工作区；时间段仅用于视觉分隔，不保存展开状态。
   useEffect(() => {
@@ -747,7 +768,7 @@ export function SessionSidebar({
               </div>
 
               <div className="rows">
-                {renderBuckets(group.sessions, statusOf, openSessionIds, tabSessionIds, editingId, editingTitle, onSelect, requestDeleteSession, startRename, commitRename, onArchiveToggle, setEditingTitle, () => setEditingId(null))}
+                {renderBuckets(group.sessions, statusOf, openSessionIds, tabSessionIds, editingId, editingTitle, onSelect, requestDeleteSession, startRename, commitRename, onArchiveToggle, setEditingTitle, () => setEditingId(null), botRecords, userProfile.userName)}
               </div>
             </div>
           )
@@ -838,6 +859,78 @@ export function SessionSidebar({
   )
 }
 
+
+function SessionCollaborationParticipants({
+  session,
+  botRecords,
+  userName,
+}: {
+  session: SessionMeta
+  botRecords: BotProfileRecord[]
+  userName: string
+}): JSX.Element | null {
+  if (!session.fusionRoomId) return null
+  const botParticipants = [...new Set(session.botProfileIds ?? [])].map((id) => {
+    const record = botRecords.find((item) => item.profile.id === id)
+    const displayName = record?.profile.displayName?.trim() || 'Bot'
+    return { id, displayName, letter: displayName.charAt(0).toUpperCase() || 'B' }
+  })
+  const currentUser = userName.trim() || '你'
+  const participants = [
+    {
+      id: 'user',
+      displayName: currentUser,
+      letter: currentUser.charAt(0).toUpperCase() || 'U',
+      user: true,
+      variant: -1,
+    },
+    ...botParticipants.map((item, index) => ({
+      ...item,
+      user: false,
+      variant: index % 3,
+    })),
+  ]
+  if (participants.length === 0) return null
+
+  const visible = participants.slice(0, 3)
+  const overflow = participants.length - visible.length
+  const label = `协作参与者：${participants.map((item) => item.displayName).join('、')}`
+
+  return (
+    <div className="session-collab-participants" role="img" aria-label={label}>
+      {visible.map((participant, index) => (
+        <AppTooltip key={participant.id} label={participant.displayName} side="top">
+          <span
+            className={cn(
+              'session-collab-avatar',
+              index === 0 && 'session-collab-avatar--first',
+              participant.user
+                ? 'session-collab-avatar--user'
+                : participant.variant === 0
+                  ? 'session-collab-avatar--bot-a'
+                  : participant.variant === 1
+                    ? 'session-collab-avatar--bot-b'
+                    : 'session-collab-avatar--bot-c',
+            )}
+            aria-hidden="true"
+          >
+            <span className="session-collab-avatar__letter">
+              {participant.letter}
+            </span>
+          </span>
+        </AppTooltip>
+      ))}
+      {overflow > 0 ? (
+        <AppTooltip label={label} side="top">
+          <span className="session-collab-avatar session-collab-avatar--more">
+            <span className="session-collab-avatar__letter">+{overflow}</span>
+          </span>
+        </AppTooltip>
+      ) : null}
+    </div>
+  )
+}
+
 /** 会话列表渲染（扁平，无时间分段） */
 function renderBuckets(
   sessions: SessionMeta[],
@@ -853,6 +946,8 @@ function renderBuckets(
   onArchiveToggle: (s: SessionMeta, e: React.MouseEvent) => Promise<void>,
   onEditingTitleChange: (v: string) => void,
   onCancelRename: () => void,
+  botRecords: BotProfileRecord[],
+  userName: string,
 ): JSX.Element {
   return (
     <>
@@ -872,6 +967,8 @@ function renderBuckets(
           onArchiveToggle={onArchiveToggle}
           onEditingTitleChange={onEditingTitleChange}
           onCancelRename={onCancelRename}
+          botRecords={botRecords}
+          userName={userName}
         />
       ))}
     </>
@@ -894,6 +991,8 @@ function SessionRow({
   onArchiveToggle,
   onEditingTitleChange,
   onCancelRename,
+  botRecords,
+  userName,
 }: {
   session: SessionMeta
   status: SessionUiStatus
@@ -911,6 +1010,8 @@ function SessionRow({
   onArchiveToggle: (s: SessionMeta, e: React.MouseEvent) => Promise<void>
   onEditingTitleChange: (v: string) => void
   onCancelRename: () => void
+  botRecords?: BotProfileRecord[]
+  userName?: string
 }): JSX.Element {
   // 三点菜单打开时保持按钮可见（指针移开行后 .row:hover 失配，需要显式状态）
   const [dotsOpen, setDotsOpen] = useState(false)
@@ -1010,7 +1111,7 @@ function SessionRow({
           </DropdownMenu>
         </div>
         {/* meta 第二行从标题正文起点对齐，仅非归档行渲染轮数；时间已上提到 title 行 */}
-        {!archived && ((s.turnCount != null && s.turnCount > 0) || (isInTabs && !isOpen)) && (
+        {!archived && (s.fusionRoomId || (s.turnCount != null && s.turnCount > 0) || (isInTabs && !isOpen)) && (
           <div className="meta">
             {s.turnCount != null && s.turnCount > 0 ? (
               <span className="m turns">{s.turnCount} 轮</span>
@@ -1021,6 +1122,13 @@ function SessionRow({
                   <Browsers size={12} weight="regular" aria-hidden="true" />
                 </span>
               </AppTooltip>
+            ) : null}
+            {s.fusionRoomId ? (
+              <SessionCollaborationParticipants
+                session={s}
+                botRecords={botRecords ?? []}
+                userName={userName ?? "你"}
+              />
             ) : null}
           </div>
         )}

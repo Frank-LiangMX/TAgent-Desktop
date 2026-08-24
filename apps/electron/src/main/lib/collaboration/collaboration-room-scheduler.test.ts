@@ -204,6 +204,25 @@ describe('RoomScheduler 边界', () => {
     expect(() => scheduler.release('nope', 'cr_a', 'cm_a')).not.toThrow()
   })
 
+  test('暂停房间时不启动排队 run，恢复后 wake 启动', () => {
+    let runnable = false
+    const started: string[] = []
+    const scheduler = new RoomScheduler({
+      getMaxConcurrentRuns: () => 1,
+      isRoomRunnable: () => runnable,
+      start: (e) => started.push(e.runId),
+    })
+
+    scheduler.enqueue(mkEntry('paused_run', 'cr_a', 'cm_a'))
+    expect(started).toEqual([])
+    expect(scheduler.queuedCount).toBe(1)
+
+    runnable = true
+    scheduler.wake()
+    expect(started).toEqual(['paused_run'])
+    expect(scheduler.queuedCount).toBe(0)
+  })
+
   test('isIdle 初始为 true', () => {
     const { scheduler } = createScheduler(2)
     expect(scheduler.isIdle()).toBe(true)

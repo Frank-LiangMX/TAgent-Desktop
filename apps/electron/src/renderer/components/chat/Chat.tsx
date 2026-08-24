@@ -117,6 +117,7 @@ import { ComposerActivityIsland } from "./ComposerActivityIsland";
 import {
   collectComposerActivity,
   summarizeComposerActivity,
+  type ComposerActivityItem,
 } from "./composer-activity-model";
 import { useSessionProcesses } from "../../atoms/session-processes";
 import {
@@ -785,7 +786,10 @@ export function Chat({
   const [subagentDetail, setSubagentDetail] = useState<string | null>(null);
   /** 当前打开的圆桌讨论（discussionId），非空时全屏切换显示讨论室 */
   const [openDiscussionId, setOpenDiscussionId] = useState<string | null>(null);
-  const [sidecarBot, setSidecarBot] = useState<BotProfileRecord | null>(null);
+  const [sidecarBots, setSidecarBots] = useState<
+    Array<{ bot: BotProfileRecord; stackIndex: number }>
+  >([]);
+  const sidecarStackIndexRef = useRef(0);
   /** 思考强度（默认 medium；切会话 key 重建后重置，挂载时回显持久化值。下次发送注入 SDK query 生效） */
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
     DEFAULT_REASONING_EFFORT,
@@ -806,6 +810,24 @@ export function Chat({
       ),
     [backgroundProcesses],
   );
+  // 进程列表可能在 IPC 刷新时短暂为空；主任务仍在运行时保留最近一次活动，
+  // 避免运行进度栏因空窗突然卸载。主任务结束后才清掉这份显示状态。
+  const [stickyComposerActivityItems, setStickyComposerActivityItems] =
+    useState<ComposerActivityItem[]>([]);
+  const composerActivityRunActive = running || runStartedAt != null;
+  useEffect(() => {
+    if (composerActivity.items.length > 0) {
+      setStickyComposerActivityItems(composerActivity.items);
+    } else if (!composerActivityRunActive) {
+      setStickyComposerActivityItems([]);
+    }
+  }, [composerActivity.items, composerActivityRunActive]);
+  const visibleComposerActivityItems =
+    composerActivity.items.length > 0
+      ? composerActivity.items
+      : composerActivityRunActive
+        ? stickyComposerActivityItems
+        : [];
 
   /** 当前打开的圆桌讨论 panel（按 discussionId 从 items 查；panel 不在 items 时回退关闭） */
   const openDiscussionPanel = useMemo(
@@ -3440,20 +3462,9 @@ export function Chat({
       onDraftChange={setHasDraft}
       attachments={pendingAttachments}
       onAttachmentsChange={setPendingAttachments}
-      onOpenFileDialog={handleOpenFileDialog}
       onPreviewAttachment={openPendingAttachmentPreview}
       mentionRoles={executionMode === "chat" ? mentionOptions : undefined}
-      topBar={
-        <>
-          <SessionBotBar
-            sessionId={sessionId}
-            botProfileIds={session.botProfileIds}
-            fusionRoomId={session.fusionRoomId}
-            onOpenBot={setSidecarBot}
-          />
-          {activeMentionBar}
-        </>
-      }
+      topBar={activeMentionBar}
       footer={landingFooter}
       onMentionOpenChange={setMentionPickerOpen}
     />
@@ -3499,585 +3510,593 @@ export function Chat({
               onRoomsChanged={() => setFusionRoomRefreshKey((value) => value + 1)}
               onNewRoom={() => undefined}
               onCollaborationExited={() => setFusionRoomRefreshKey((value) => value + 1)}
+              onOpenAttachment={openAttachmentPreview}
+              onPreviewAttachment={openPendingAttachmentPreview}
             />
           ) : (
             <>
-          {/* 左：对话 + 输入（测量锚点 rootRef 只包对话列，避免右栏影响下箭头） */}
-          <div
-            ref={rootRef}
-            className={cn(
-              "session-chat-col relative min-h-0 min-w-0 flex-1",
-              composerCompact && "is-composer-compact",
-            )}
-            data-composer-density={composerCompact ? "compact" : "comfortable"}
-            data-mention-open={mentionPickerOpen ? "true" : "false"}
-            data-bottom-banner-open={hasBlockingBottomBanner ? "true" : "false"}
-          >
-            {items.length === 0 && !running && scrollReady ? (
-              <NewConversationLanding
-                composer={landingComposer}
-                workspaceSlot={workspaceSlot}
-                onPickSuggestion={pickSuggestion}
-                onBack={onBack}
-              />
-            ) : (
+              {/* 左：对话 + 输入（测量锚点 rootRef 只包对话列，避免右栏影响下箭头） */}
               <div
-                className={`relative h-full min-h-0 chat-page-enter ${pageMounted && scrollReady ? "is-mounted" : ""}`}
+                ref={rootRef}
+                className={cn(
+                  "session-chat-col relative min-h-0 min-w-0 flex-1",
+                  composerCompact && "is-composer-compact",
+                )}
+                data-composer-density={composerCompact ? "compact" : "comfortable"}
+                data-mention-open={mentionPickerOpen ? "true" : "false"}
+                data-bottom-banner-open={hasBlockingBottomBanner ? "true" : "false"}
               >
-                {/* 消息区：全高；线程有 max-width 居中；底栏输入/token 铺满对话列 */}
-                <Conversation
-                  className="absolute inset-0 min-h-0"
-                  contextRef={scrollContextRef}
-                  // 自动布局滚动由 ScrollPositionManager 统一协调；第三方内部观察器已断开。
-                  resize="instant"
-                >
-                  <ConversationContent className="session-conversation-pad pt-2">
-                    <div className="tagent-thread">
-                      {topVirtualSpacerHeight > 0 ? (
-                        <div
-                          aria-hidden="true"
-                          style={{ height: topVirtualSpacerHeight }}
-                        />
-                      ) : null}
-                      {/* 虚拟化加载提示：未全挂时常驻显示（说清楚在加载、剩多少条），不闪烁 */}
-                      {!allMounted && turnCount > 0 && (
-                        <div
-                          className="flex items-center justify-center gap-2 py-2 text-xs text-muted-foreground"
-                          aria-live="polite"
-                        >
-                          {allowFullMount ? (
-                            <>
-                              <span className="size-3.5 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground/60" />
-                              <span>
+                <SessionBotBar
+                  sessionId={sessionId}
+                  botProfileIds={session.botProfileIds}
+                  fusionRoomId={session.fusionRoomId}
+                  onOpenBot={(bot) => {
+                    setSidecarBots((current) => {
+                      if (
+                        current.some(
+                          (item) => item.bot.profile.id === bot.profile.id,
+                        )
+                      ) {
+                        return current;
+                      }
+                      const stackIndex = sidecarStackIndexRef.current++;
+                      return [...current, { bot, stackIndex }];
+                    });
+                  }}
+                  variant="rail"
+                />
+                {items.length === 0 && !running && scrollReady ? (
+                  <NewConversationLanding
+                    composer={landingComposer}
+                    workspaceSlot={workspaceSlot}
+                    onPickSuggestion={pickSuggestion}
+                    onBack={onBack}
+                  />
+                ) : (
+                  <div
+                    className={`relative h-full min-h-0 chat-page-enter ${pageMounted && scrollReady ? "is-mounted" : ""}`}
+                  >
+                    {/* 消息区：全高；线程有 max-width 居中；底栏输入/token 铺满对话列 */}
+                    <Conversation
+                      className="absolute inset-0 min-h-0"
+                      contextRef={scrollContextRef}
+                      // 自动布局滚动由 ScrollPositionManager 统一协调；第三方内部观察器已断开。
+                      resize="instant"
+                    >
+                      <ConversationContent className="session-conversation-pad pt-2">
+                        <div className="tagent-thread">
+                          {topVirtualSpacerHeight > 0 ? (
+                            <div
+                              aria-hidden="true"
+                              style={{ height: topVirtualSpacerHeight }}
+                            />
+                          ) : null}
+                          {/* 虚拟化加载提示：未全挂时常驻显示（说清楚在加载、剩多少条），不闪烁 */}
+                          {!allMounted && turnCount > 0 && (
+                            <div
+                              className="flex items-center justify-center gap-2 py-2 text-xs text-muted-foreground"
+                              aria-live="polite"
+                            >
+                              {allowFullMount ? (
+                                <>
+                                  <span className="size-3.5 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground/60" />
+                                  <span>
                                 正在加载更早的 {turnCount - effectiveVisible}{" "}
                                 轮…
                               </span>
-                            </>
-                          ) : (
-                            <span>
+                                </>
+                              ) : (
+                                <span>
                               向上滚动加载更早的 {turnCount - effectiveVisible}{" "}
                               轮
                             </span>
+                              )}
+                            </div>
                           )}
-                        </div>
-                      )}
-                      {(() => {
-                        const runActive = running || runStartedAt != null;
-                        const runTurnKey = resolveRunTurnKey(
-                          visibleTurns,
-                          sessionId,
-                          runActive,
-                        );
-                        if (runTurnKey)
-                          lastAssistantTurnKeyRef.current = runTurnKey;
-
-                        let lastAssistantIdx = -1;
-                        for (let i = visibleTurns.length - 1; i >= 0; i--) {
-                          if (visibleTurns[i]!.kind === "assistant-turn") {
-                            lastAssistantIdx = i;
-                            break;
-                          }
-                        }
-                        return visibleTurns.map((turn, turnIndex) => {
-                          // 最新 assistant-turn 且本轮未硬停：过程区「一条路」展开。
-                          // 用 startedAt 而非仅 running——turn_end 软停会短暂 running=false，
-                          // 若据此收过程/拆回答会整段跳变；硬停才清 startedAt。
-                          //
-                          // 已记完成耗时的一轮禁止再标 live：send() 先 startRun、用户气泡
-                          // 要等 IPC/流式回声才进 items。中间那一帧 last turn 仍是上一轮
-                          // 助手，若仅看 runActive 会把已完成轮重新展开过程区，视口被顶到
-                          // 上一轮用户气泡，再闪回底部。
-                          const isLiveTurn =
-                            runActive &&
-                            turnIndex === visibleTurns.length - 1 &&
-                            turn.kind === "assistant-turn" &&
-                            completedDurations[turn.key] == null;
-                          // 简洁：末尾 assistant 跑完可保持展开；发新一轮后 isLatest=false → 折叠
-                          const isLatestAssistantTurn =
-                            turn.kind === "assistant-turn" &&
-                            turnIndex === lastAssistantIdx &&
-                            turnIndex === visibleTurns.length - 1;
-                          const stoppedSyntheticKey =
-                            turn.kind === "user" &&
-                            shouldRenderStoppedSyntheticShell(
+                          {(() => {
+                            const runActive = running || runStartedAt != null;
+                            const runTurnKey = resolveRunTurnKey(
                               visibleTurns,
-                              turnIndex,
-                              completedDurations,
-                            )
-                              ? syntheticLiveTurnKeyForUser(turn.key)
-                              : null;
-                          return (
-                            <Fragment key={turn.key}>
+                              sessionId,
+                              runActive,
+                            );
+                            if (runTurnKey)
+                              lastAssistantTurnKeyRef.current = runTurnKey;
+
+                            let lastAssistantIdx = -1;
+                            for (let i = visibleTurns.length - 1; i >= 0; i--) {
+                              if (visibleTurns[i]!.kind === "assistant-turn") {
+                                lastAssistantIdx = i;
+                                break;
+                              }
+                            }
+                            return visibleTurns.map((turn, turnIndex) => {
+                              // 最新 assistant-turn 且本轮未硬停：过程区「一条路」展开。
+                              // 用 startedAt 而非仅 running——turn_end 软停会短暂 running=false，
+                              // 若据此收过程/拆回答会整段跳变；硬停才清 startedAt。
+                              //
+                              // 已记完成耗时的一轮禁止再标 live：send() 先 startRun、用户气泡
+                              // 要等 IPC/流式回声才进 items。中间那一帧 last turn 仍是上一轮
+                              // 助手，若仅看 runActive 会把已完成轮重新展开过程区，视口被顶到
+                              // 上一轮用户气泡，再闪回底部。
+                              const isLiveTurn =
+                                runActive &&
+                                turnIndex === visibleTurns.length - 1 &&
+                                turn.kind === "assistant-turn" &&
+                                completedDurations[turn.key] == null;
+                              // 简洁：末尾 assistant 跑完可保持展开；发新一轮后 isLatest=false → 折叠
+                              const isLatestAssistantTurn =
+                                turn.kind === "assistant-turn" &&
+                                turnIndex === lastAssistantIdx &&
+                                turnIndex === visibleTurns.length - 1;
+                              const stoppedSyntheticKey =
+                                turn.kind === "user" &&
+                                shouldRenderStoppedSyntheticShell(
+                                  visibleTurns,
+                                  turnIndex,
+                                  completedDurations,
+                                )
+                                  ? syntheticLiveTurnKeyForUser(turn.key)
+                                  : null;
+                              return (
+                                <Fragment key={turn.key}>
+                                  <TurnView
+                                    turn={turn}
+                                    isLiveTurn={isLiveTurn}
+                                    runStartedAt={
+                                      isLiveTurn ? runStartedAt : undefined
+                                    }
+                                    isLatestAssistantTurn={isLatestAssistantTurn}
+                                    streamState={
+                                      isLiveTurn ? streamState : undefined
+                                    }
+                                    fallbackModelId={
+                                      isLiveTurn &&
+                                      effectiveSelection?.modelId &&
+                                      !isMoaModelId(effectiveSelection.modelId)
+                                        ? effectiveSelection.modelId
+                                        : undefined
+                                    }
+                                    onRefillToInput={pickSuggestion}
+                                    mentionLabels={
+                                      isLiveTurn && liveMentionLabels.length > 0
+                                        ? liveMentionLabels
+                                        : undefined
+                                    }
+                                    mentionRoles={mentionRoles}
+                                    completedDuration={completedDurations[turn.key]}
+                                    finalOutputState={
+                                      turn.kind === "assistant-turn" &&
+                                      turnIndex === lastAssistantIdx
+                                        ? finalOutputState
+                                        : null
+                                    }
+                                    subagentCards={subagentCards}
+                                    onOpenSubagent={(parentToolUseId) =>
+                                      setSubagentDetail(parentToolUseId)
+                                    }
+                                    onOpenDiscussion={(discussionId) =>
+                                      setOpenDiscussionId(discussionId)
+                                    }
+                                    sessionId={sessionId}
+                                    onOpenAttachment={openAttachmentPreview}
+                                    animateEnter={turn.key === enterKey}
+                                  />
+                                  {stoppedSyntheticKey ? (
+                                    <TurnView
+                                      turn={{
+                                        kind: "assistant-turn",
+                                        key: stoppedSyntheticKey,
+                                        items: [],
+                                        isStreaming: false,
+                                      }}
+                                      completedDuration={
+                                        completedDurations[stoppedSyntheticKey]
+                                      }
+                                      mentionRoles={mentionRoles}
+                                      sessionId={sessionId}
+                                      subagentCards={subagentCards}
+                                      onOpenSubagent={(parentToolUseId) =>
+                                        setSubagentDetail(parentToolUseId)
+                                      }
+                                      animateEnter={
+                                        stoppedSyntheticKey === enterKey
+                                      }
+                                    />
+                                  ) : null}
+                                </Fragment>
+                              );
+                            });
+                          })()}
+                          {(() => {
+                            const runActive = running || runStartedAt != null;
+                            const lastTurn = visibleTurns[visibleTurns.length - 1];
+                            const needsSyntheticLiveTurn =
+                              runActive && lastTurn?.kind !== "assistant-turn";
+                            if (!needsSyntheticLiveTurn) return null;
+                            const liveKey = resolveRunTurnKey(
+                              visibleTurns,
+                              sessionId,
+                              true,
+                            );
+                            if (!liveKey) return null;
+                            return (
                               <TurnView
-                                turn={turn}
-                                isLiveTurn={isLiveTurn}
-                                runStartedAt={
-                                  isLiveTurn ? runStartedAt : undefined
-                                }
-                                isLatestAssistantTurn={isLatestAssistantTurn}
-                                streamState={
-                                  isLiveTurn ? streamState : undefined
-                                }
+                                key={liveKey}
+                                sessionId={sessionId}
+                                turn={{
+                                  kind: "assistant-turn",
+                                  key: liveKey,
+                                  items: [],
+                                  isStreaming: true,
+                                }}
+                                isLiveTurn
+                                runStartedAt={runStartedAt}
+                                isLatestAssistantTurn
+                                streamState={streamState}
                                 fallbackModelId={
-                                  isLiveTurn &&
+                                  hasStreamContent(streamState) &&
                                   effectiveSelection?.modelId &&
                                   !isMoaModelId(effectiveSelection.modelId)
                                     ? effectiveSelection.modelId
                                     : undefined
                                 }
-                                onRefillToInput={pickSuggestion}
+                                finalOutputState={finalOutputState}
                                 mentionLabels={
-                                  isLiveTurn && liveMentionLabels.length > 0
+                                  liveMentionLabels.length > 0
                                     ? liveMentionLabels
                                     : undefined
                                 }
                                 mentionRoles={mentionRoles}
-                                completedDuration={completedDurations[turn.key]}
-                                finalOutputState={
-                                  turn.kind === "assistant-turn" &&
-                                  turnIndex === lastAssistantIdx
-                                    ? finalOutputState
-                                    : null
-                                }
                                 subagentCards={subagentCards}
                                 onOpenSubagent={(parentToolUseId) =>
                                   setSubagentDetail(parentToolUseId)
                                 }
-                                onOpenDiscussion={(discussionId) =>
-                                  setOpenDiscussionId(discussionId)
-                                }
-                                sessionId={sessionId}
-                                onOpenAttachment={openAttachmentPreview}
-                                animateEnter={turn.key === enterKey}
+                                animateEnter={liveKey === enterKey}
                               />
-                              {stoppedSyntheticKey ? (
-                                <TurnView
-                                  turn={{
-                                    kind: "assistant-turn",
-                                    key: stoppedSyntheticKey,
-                                    items: [],
-                                    isStreaming: false,
-                                  }}
-                                  completedDuration={
-                                    completedDurations[stoppedSyntheticKey]
-                                  }
-                                  mentionRoles={mentionRoles}
-                                  sessionId={sessionId}
-                                  subagentCards={subagentCards}
-                                  onOpenSubagent={(parentToolUseId) =>
-                                    setSubagentDetail(parentToolUseId)
-                                  }
-                                  animateEnter={
-                                    stoppedSyntheticKey === enterKey
-                                  }
-                                />
-                              ) : null}
-                            </Fragment>
-                          );
-                        });
-                      })()}
-                      {(() => {
-                        const runActive = running || runStartedAt != null;
-                        const lastTurn = visibleTurns[visibleTurns.length - 1];
-                        const needsSyntheticLiveTurn =
-                          runActive && lastTurn?.kind !== "assistant-turn";
-                        if (!needsSyntheticLiveTurn) return null;
-                        const liveKey = resolveRunTurnKey(
-                          visibleTurns,
-                          sessionId,
-                          true,
-                        );
-                        if (!liveKey) return null;
-                        return (
-                          <TurnView
-                            key={liveKey}
-                            sessionId={sessionId}
-                            turn={{
-                              kind: "assistant-turn",
-                              key: liveKey,
-                              items: [],
-                              isStreaming: true,
-                            }}
-                            isLiveTurn
-                            runStartedAt={runStartedAt}
-                            isLatestAssistantTurn
-                            streamState={streamState}
-                            fallbackModelId={
-                              hasStreamContent(streamState) &&
-                              effectiveSelection?.modelId &&
-                              !isMoaModelId(effectiveSelection.modelId)
-                                ? effectiveSelection.modelId
-                                : undefined
-                            }
-                            finalOutputState={finalOutputState}
-                            mentionLabels={
-                              liveMentionLabels.length > 0
-                                ? liveMentionLabels
-                                : undefined
-                            }
-                            mentionRoles={mentionRoles}
-                            subagentCards={subagentCards}
-                            onOpenSubagent={(parentToolUseId) =>
-                              setSubagentDetail(parentToolUseId)
-                            }
-                            animateEnter={liveKey === enterKey}
-                          />
-                        );
-                      })()}
-                    </div>
-                    {/* 真实滚动底部：让最新消息停在 fixed composer 上方，而不是停在输入框下面。 */}
-                    <div
-                      className="session-conversation-bottom-spacer"
-                      aria-hidden="true"
-                    />
-                  </ConversationContent>
-                  {/* 切会话恢复滚动：钉底等窗口就绪；中间位才等全挂 */}
-                  <ScrollPositionManager
-                    id={sessionId}
-                    ready={scrollReady}
-                    restoreReady={allowFullMount ? allMounted : windowReady}
-                    layoutKey={effectiveVisible}
-                    live={running || runStartedAt != null}
-                  />
-                  <ScrollMinimap
-                    items={minimapItems}
-                    onEnsureMessage={ensureMinimapMessageMounted}
-                  />
-                  <ConversationScrollButton />
-                </Conversation>
+                            );
+                          })()}
+                        </div>
+                        {/* 真实滚动底部：让最新消息停在 fixed composer 上方，而不是停在输入框下面。 */}
+                        <div
+                          className="session-conversation-bottom-spacer"
+                          aria-hidden="true"
+                        />
+                      </ConversationContent>
+                      {/* 切会话恢复滚动：钉底等窗口就绪；中间位才等全挂 */}
+                      <ScrollPositionManager
+                        id={sessionId}
+                        ready={scrollReady}
+                        restoreReady={allowFullMount ? allMounted : windowReady}
+                        layoutKey={effectiveVisible}
+                        live={running || runStartedAt != null}
+                      />
+                      <ScrollMinimap
+                        items={minimapItems}
+                        onEnsureMessage={ensureMinimapMessageMounted}
+                      />
+                      <ConversationScrollButton />
+                    </Conversation>
 
-                {/*
+                    {/*
         底栏坐标系（对齐 General）：
         窗底 ── status(7) ── token 栏 ── 间隙 ── 输入框底（= band = rail/sidebar 底）
         stack 锚在 status；输入用 margin-bottom 抬到 band，token 不把输入顶上去。
         权限确认面板放在 composer 上方（stack 内、cluster 之前），从输入框上方伸出，靠文档流撑高。
       */}
-                <div
-                  ref={bottomStackRef}
-                  className="session-bottom-stack absolute inset-x-0"
-                >
-                  {/* 底部统一模糊带：一块 backdrop-filter + 向下渐浓底色，覆盖「输入框顶→窗口底」
+                    <div
+                      ref={bottomStackRef}
+                      className="session-bottom-stack absolute inset-x-0"
+                    >
+                      {/* 底部统一模糊带：一块 backdrop-filter + 向下渐浓底色，覆盖「输入框顶→窗口底」
             整条底层，宽 = 输入框宽（gutter）。定位用 --session-composer-top，功能栏展开时
             该变量被抬高，背板顶自动上移、高度自动变大。输入框 / token 栏 / 功能栏都不再
             各自 backdrop-filter，共用这一块，避免两层模糊叠成糊块。z-index:-1 沉到 stack
             内最底（在 token(z1)/输入框(z2) 与 MessageQueue/PermissionBanner 之下）。 */}
-                  <div className="composer-blur-underlay" aria-hidden="true" />
-                  <MessageQueue
-                    queue={messageQueue}
-                    onRemove={removeQueueItem}
-                    onClear={clearQueue}
-                    onSteer={steerQueueItem}
-                    onEdit={editQueueItem}
-                    busy={queueActionBusy}
-                    running={running || runStartedAt != null}
-                  />
-                  {backgroundCrewBanner && executionMode === "chat" ? (
-                    <div
-                      className="kanban-crew-bg-banner pointer-events-auto mx-3 mb-2 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] leading-snug text-foreground/90 shadow-sm backdrop-blur-md"
-                      role="status"
-                      aria-live="polite"
-                    >
-                      <span className="min-w-0 flex-1">
-                        班组仍在后台执行（{backgroundCrewBanner.running}{" "}
-                        个进行中 /{" "}
-                        {backgroundCrewBanner.ready +
-                          backgroundCrewBanner.pending}{" "}
-                        排队），Chat 模式不会杀工人
-                      </span>
-                      <button
-                        type="button"
-                        className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-                        onClick={() => {
-                          setBackgroundCrewBanner(null);
-                          setCrewPanelOpen(true);
-                        }}
-                        aria-label="打开班组面板"
-                      >
-                        查看班组
-                      </button>
-                      <button
-                        type="button"
-                        className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-                        onClick={() => setBackgroundCrewBanner(null)}
-                        aria-label="关闭后台班组提示"
-                      >
-                        关闭
-                      </button>
-                    </div>
-                  ) : null}
-                  <ExecutionModeSuggestionBanner
-                    sessionId={sessionId}
-                    executionMode={executionMode}
-                    initialSuggestion={pendingModeSuggestion}
-                    onExecutionModeChange={async (m, source) => {
-                      const prev = executionMode;
-                      setExecutionMode(m);
-                      setPendingModeSuggestion(null);
-                      const res =
-                        await window.electronAPI.setSessionExecutionMode(
-                          sessionId,
-                          m,
-                          source,
-                        );
-                      if (!res.ok) {
-                        setExecutionMode(prev);
-                        console.error(
-                          "[Chat] setSessionExecutionMode (suggestion) failed:",
-                          res.error,
-                        );
-                      } else {
-                        await applyBackgroundCrewFromModeSwitch(m, res);
-                      }
-                    }}
-                  />
-                  <SessionErrorBanner
-                    sessionId={sessionId}
-                    canRetry={
-                      !running &&
-                      Boolean(getLastRealUserPrompt()) &&
-                      Boolean(effectiveSelection)
-                    }
-                    onRetry={retryLastUserPrompt}
-                  />
-                  <PermissionBanner sessionId={sessionId} />
-                  <AskUserQuestionBanner sessionId={sessionId} />
-                  <ExitPlanModeBanner sessionId={sessionId} />
-                  {sessionPlanProgress &&
-                  (running || runStartedAt != null || hasPendingExitPlan) &&
-                  !hasPendingExitPlan ? (
-                    <PlanProgressCard progress={sessionPlanProgress} />
-                  ) : null}
-                  <div
-                    ref={composerClusterRef}
-                    className={`session-composer-cluster ${showTokenBar ? "has-token-bar" : ""}`}
-                  >
-                    <div className="composer-float-row">
-                      <ComposerRunTimer startedAt={runStartedAt} />
-                      <ComposerActivityIsland
-                        items={composerActivity.items}
-                        pillLabel={composerActivity.pillLabel}
-                        headerLabel={composerActivity.headerLabel}
-                        onStopProcess={(processId) => {
-                          void window.electronAPI.killSessionProcess?.(
-                            sessionId,
-                            processId,
-                          );
+                      <div className="composer-blur-underlay" aria-hidden="true" />
+                      <MessageQueue
+                        queue={messageQueue}
+                        onRemove={removeQueueItem}
+                        onClear={clearQueue}
+                        onSteer={steerQueueItem}
+                        onEdit={editQueueItem}
+                        busy={queueActionBusy}
+                        running={running || runStartedAt != null}
+                      />
+                      {backgroundCrewBanner && executionMode === "chat" ? (
+                        <div
+                          className="kanban-crew-bg-banner pointer-events-auto mx-3 mb-2 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] leading-snug text-foreground/90 shadow-sm backdrop-blur-md"
+                          role="status"
+                          aria-live="polite"
+                        >
+                          <span className="min-w-0 flex-1">
+                            班组仍在后台执行（{backgroundCrewBanner.running}{" "}
+                            个进行中 /{" "}
+                            {backgroundCrewBanner.ready +
+                              backgroundCrewBanner.pending}{" "}
+                            排队），Chat 模式不会杀工人
+                          </span>
+                          <button
+                            type="button"
+                            className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                            onClick={() => {
+                              setBackgroundCrewBanner(null);
+                              setCrewPanelOpen(true);
+                            }}
+                            aria-label="打开班组面板"
+                          >
+                            查看班组
+                          </button>
+                          <button
+                            type="button"
+                            className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                            onClick={() => setBackgroundCrewBanner(null)}
+                            aria-label="关闭后台班组提示"
+                          >
+                            关闭
+                          </button>
+                        </div>
+                      ) : null}
+                      <ExecutionModeSuggestionBanner
+                        sessionId={sessionId}
+                        executionMode={executionMode}
+                        initialSuggestion={pendingModeSuggestion}
+                        onExecutionModeChange={async (m, source) => {
+                          const prev = executionMode;
+                          setExecutionMode(m);
+                          setPendingModeSuggestion(null);
+                          const res =
+                            await window.electronAPI.setSessionExecutionMode(
+                              sessionId,
+                              m,
+                              source,
+                            );
+                          if (!res.ok) {
+                            setExecutionMode(prev);
+                            console.error(
+                              "[Chat] setSessionExecutionMode (suggestion) failed:",
+                              res.error,
+                            );
+                          } else {
+                            await applyBackgroundCrewFromModeSwitch(m, res);
+                          }
                         }}
                       />
-                    </div>
-                    <div
-                      ref={composerInputDockRef}
-                      className="session-input-dock"
-                      data-permission-mode={permissionMode}
-                      data-execution-mode={executionMode}
-                    >
-                      <ChatInput
-                        ref={chatInputRef}
-                        onSubmit={() => void send()}
-                        placeholder={
-                          running || runStartedAt != null
-                            ? "运行中回车会加入队列，再选排队或引导"
-                            : executionMode === "chat"
-                              ? "输入消息… @ 点名角色或 Bot（Enter 发送）"
-                              : "输入消息…（Enter 发送，Shift+Enter 换行）"
+                      <SessionErrorBanner
+                        sessionId={sessionId}
+                        canRetry={
+                          !running &&
+                          Boolean(getLastRealUserPrompt()) &&
+                          Boolean(effectiveSelection)
                         }
-                        onDraftChange={setHasDraft}
-                        attachments={pendingAttachments}
-                        onAttachmentsChange={setPendingAttachments}
-                        onOpenFileDialog={handleOpenFileDialog}
-                        onPreviewAttachment={openPendingAttachmentPreview}
-                        mentionRoles={
-                          executionMode === "chat" ? mentionOptions : undefined
-                        }
-                        topBar={
-                          <>
-                            <SessionBotBar
-                              sessionId={sessionId}
-                              botProfileIds={session.botProfileIds}
-                              fusionRoomId={session.fusionRoomId}
-                              onOpenBot={setSidecarBot}
-                            />
-                            {activeMentionBar}
-                          </>
-                        }
-                        onMentionOpenChange={setMentionPickerOpen}
-                        footer={
-                          /* h-7 固定底栏；窄宽时 is-composer-compact 走图标优先方案 */
-                          <div
-                            className={cn(
-                              "composer-footer-bar flex h-7 items-center justify-between gap-1 px-2 pb-2 pt-0.5",
-                              composerCompact && "composer-footer-bar--compact",
-                            )}
-                          >
-                            <div className="composer-footer-bar__left flex h-7 min-w-0 items-center gap-0.5">
-                              {/* 加号最左 */}
-                              <AppTooltip label="添加附件">
-                                {/* size-7 与 size="icon" 冲突：Tailwind v3.4 里 h/w 排在 size 之后，
+                        onRetry={retryLastUserPrompt}
+                      />
+                      <PermissionBanner sessionId={sessionId} />
+                      <AskUserQuestionBanner sessionId={sessionId} />
+                      <ExitPlanModeBanner sessionId={sessionId} />
+                      {sessionPlanProgress &&
+                      (running || runStartedAt != null || hasPendingExitPlan) &&
+                      !hasPendingExitPlan ? (
+                        <PlanProgressCard progress={sessionPlanProgress} />
+                      ) : null}
+                      <div
+                        ref={composerClusterRef}
+                        className={`session-composer-cluster ${showTokenBar ? "has-token-bar" : ""}`}
+                      >
+                        <div className="composer-float-row">
+                          <ComposerRunTimer startedAt={runStartedAt} />
+                          <ComposerActivityIsland
+                            items={visibleComposerActivityItems}
+                            pillLabel={composerActivity.pillLabel}
+                            headerLabel={composerActivity.headerLabel}
+                            onStopProcess={(processId) => {
+                              void window.electronAPI.killSessionProcess?.(
+                                sessionId,
+                                processId,
+                              );
+                            }}
+                          />
+                        </div>
+                        <div
+                          ref={composerInputDockRef}
+                          className="session-input-dock"
+                          data-permission-mode={permissionMode}
+                          data-execution-mode={executionMode}
+                        >
+                          <ChatInput
+                            ref={chatInputRef}
+                            onSubmit={() => void send()}
+                            placeholder={
+                              running || runStartedAt != null
+                                ? "运行中回车会加入队列，再选排队或引导"
+                                : executionMode === "chat"
+                                  ? "输入消息… @ 点名角色或 Bot（Enter 发送）"
+                                  : "输入消息…（Enter 发送，Shift+Enter 换行）"
+                            }
+                            onDraftChange={setHasDraft}
+                            attachments={pendingAttachments}
+                            onAttachmentsChange={setPendingAttachments}
+                                                  onPreviewAttachment={openPendingAttachmentPreview}
+                            mentionRoles={executionMode === "chat" ? mentionOptions : undefined}
+                        topBar={activeMentionBar}
+                            onMentionOpenChange={setMentionPickerOpen}
+                            footer={
+                              /* h-7 固定底栏；窄宽时 is-composer-compact 走图标优先方案 */
+                              <div
+                                className={cn(
+                                  "composer-footer-bar flex h-7 items-center justify-between gap-1 px-2 pb-2 pt-0.5",
+                                  composerCompact && "composer-footer-bar--compact",
+                                )}
+                              >
+                                <div className="composer-footer-bar__left flex h-7 min-w-0 items-center gap-0.5">
+                                  {/* 加号最左 */}
+                                  <AppTooltip label="添加附件">
+                                    {/* size-7 与 size="icon" 冲突：Tailwind v3.4 里 h/w 排在 size 之后，
                           size="icon" 的 h-9 w-9 会盖掉 size-7，+ 按钮变成 36px 高出 h-7 底栏，
                           使同行运行模式 pill 显得偏低。改用 icon-sm（h-7 w-7）与底栏等高。 */}
-                                <Button
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  className="shrink-0 rounded-xl text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                                  onClick={handleOpenFileDialog}
-                                  aria-label="添加附件"
-                                >
-                                  <Plus className="size-4" />
-                                </Button>
-                              </AppTooltip>
-                              {/* 运行模式：Chat|Work + 权限档 + 子代理，一个入口 */}
-                              <RunModeSelector
-                                compact={composerCompact}
-                                executionMode={executionMode}
-                                onExecutionModeChange={(m) => {
-                                  void (async () => {
-                                    const prev = executionMode;
-                                    setExecutionMode(m);
-                                    setPendingModeSuggestion(null);
-                                    const res =
-                                      await window.electronAPI.setSessionExecutionMode(
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-sm"
+                                      className="shrink-0 rounded-xl text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                                      onClick={handleOpenFileDialog}
+                                      aria-label="添加附件"
+                                    >
+                                      <Plus className="size-4" />
+                                    </Button>
+                                  </AppTooltip>
+                                  {/* 运行模式：Chat|Work + 权限档 + 子代理，一个入口 */}
+                                  <RunModeSelector
+                                    compact={composerCompact}
+                                    executionMode={executionMode}
+                                    onExecutionModeChange={(m) => {
+                                      void (async () => {
+                                        const prev = executionMode;
+                                        setExecutionMode(m);
+                                        setPendingModeSuggestion(null);
+                                        const res =
+                                          await window.electronAPI.setSessionExecutionMode(
+                                            sessionId,
+                                            m,
+                                            "user",
+                                          );
+                                        if (!res.ok) {
+                                          setExecutionMode(prev);
+                                          console.error(
+                                            "[Chat] setSessionExecutionMode failed:",
+                                            res.error,
+                                          );
+                                        } else {
+                                          void window.electronAPI.dismissExecutionModeSuggestion?.(
+                                            sessionId,
+                                          );
+                                          await applyBackgroundCrewFromModeSwitch(
+                                            m,
+                                            res,
+                                          );
+                                          if (m === "work" && !crewExternalized)
+                                            setCrewPanelOpen(true);
+                                        }
+                                      })();
+                                    }}
+                                    permissionMode={permissionMode}
+                                    onPermissionModeChange={(m) => {
+                                      setPermissionMode(m);
+                                      void window.electronAPI.setSessionPermissionMode(
                                         sessionId,
                                         m,
-                                        "user",
                                       );
-                                    if (!res.ok) {
-                                      setExecutionMode(prev);
-                                      console.error(
-                                        "[Chat] setSessionExecutionMode failed:",
-                                        res.error,
-                                      );
-                                    } else {
-                                      void window.electronAPI.dismissExecutionModeSuggestion?.(
+                                    }}
+                                    subagentEagerness={subagentEagerness}
+                                    onSubagentEagernessChange={(level) => {
+                                      setSubagentEagerness(level);
+                                      void window.electronAPI.updateSessionMeta(
                                         sessionId,
+                                        {
+                                          subagentEagerness: level,
+                                        },
                                       );
-                                      await applyBackgroundCrewFromModeSwitch(
-                                        m,
-                                        res,
+                                    }}
+                                  />
+                                </div>
+                                <div className="composer-footer-bar__right flex h-7 min-w-0 shrink items-center gap-0.5">
+                                  <ModelSelector
+                                    selection={effectiveSelection}
+                                    lockedKind={lockedKind}
+                                    onSelect={(nextSelection) => {
+                                      setSelectionOverride(nextSelection);
+                                      setSelectedModelSelection(nextSelection);
+                                    }}
+                                    reasoningEffort={reasoningEffort}
+                                    onReasoningEffortChange={(effort) => {
+                                      setReasoningEffort(effort);
+                                      void window.electronAPI.updateSessionMeta(
+                                        sessionId,
+                                        {
+                                          reasoningEffort: effort,
+                                        },
                                       );
-                                      if (m === "work" && !crewExternalized)
-                                        setCrewPanelOpen(true);
-                                    }
-                                  })();
-                                }}
-                                permissionMode={permissionMode}
-                                onPermissionModeChange={(m) => {
-                                  setPermissionMode(m);
-                                  void window.electronAPI.setSessionPermissionMode(
-                                    sessionId,
-                                    m,
-                                  );
-                                }}
-                                subagentEagerness={subagentEagerness}
-                                onSubagentEagernessChange={(level) => {
-                                  setSubagentEagerness(level);
-                                  void window.electronAPI.updateSessionMeta(
-                                    sessionId,
-                                    {
-                                      subagentEagerness: level,
-                                    },
-                                  );
-                                }}
-                              />
-                            </div>
-                            <div className="composer-footer-bar__right flex h-7 min-w-0 shrink items-center gap-0.5">
-                              <ModelSelector
-                                selection={effectiveSelection}
-                                lockedKind={lockedKind}
-                                onSelect={(nextSelection) => {
-                                  setSelectionOverride(nextSelection);
-                                  setSelectedModelSelection(nextSelection);
-                                }}
-                                reasoningEffort={reasoningEffort}
-                                onReasoningEffortChange={(effort) => {
-                                  setReasoningEffort(effort);
-                                  void window.electronAPI.updateSessionMeta(
-                                    sessionId,
-                                    {
-                                      reasoningEffort: effort,
-                                    },
-                                  );
-                                }}
-                              />
-                              {/*
+                                    }}
+                                  />
+                                  {/*
                       发送/停止同槽复用：
                       · 运行中 + 无草稿 → 停止键
                       · 运行中 + 有草稿 → Enter/发送=入队（队列里再选排队或引导）
                       · 空闲 + 有草稿 → 发送键
                       · 空闲 + 无草稿 → 发送键（disabled）
                     */}
-                              {running && !hasSendable ? (
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="size-8 rounded-glass-popover text-destructive hover:bg-destructive/10"
-                                  onClick={() => {
-                                    void handleUserStop();
-                                  }}
-                                  aria-label="停止"
-                                >
-                                  <Square className="size-4 fill-current" />
-                                </Button>
-                              ) : (
-                                <SendSplitButton
-                                  presets={consultPresetsForMenu}
-                                  channel={selectionChannel}
-                                  hasDraft={hasSendable}
-                                  onSend={() => void send()}
-                                  onConsultPreset={(id) => void sendConsult(id)}
-                                  onDiscussionPreset={(id) =>
-                                    void sendDiscussion(id)
-                                  }
-                                />
-                              )}
-                            </div>
-                          </div>
-                        }
-                      />
+                                  {running && !hasSendable ? (
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="size-8 rounded-glass-popover text-destructive hover:bg-destructive/10"
+                                      onClick={() => {
+                                        void handleUserStop();
+                                      }}
+                                      aria-label="停止"
+                                    >
+                                      <Square className="size-4 fill-current" />
+                                    </Button>
+                                  ) : (
+                                    <SendSplitButton
+                                      presets={consultPresetsForMenu}
+                                      channel={selectionChannel}
+                                      hasDraft={hasSendable}
+                                      onSend={() => void send()}
+                                      onConsultPreset={(id) => void sendConsult(id)}
+                                      onDiscussionPreset={(id) =>
+                                        void sendDiscussion(id)
+                                      }
+                                    />
+                                  )}
+                                </div>
+                              </div>
+                            }
+                          />
+                        </div>
+                      </div>
+                      {/* token 栏：cluster 外部，stack 最底，落在 band 与窗边之间；kscc 隐藏占用圆环 */}
+                      {showTokenBar && (
+                        <TokenStatsBar
+                          usage={contextUsage}
+                          totals={tokenTotals}
+                          channelId={effectiveSelection?.channelId}
+                          isCompacting={isCompactingUi}
+                          onCompact={() => void compactContext()}
+                          compact={composerCompact}
+                          hideContext={lockedKind === "kscc"}
+                        />
+                      )}
                     </div>
                   </div>
-                  {/* token 栏：cluster 外部，stack 最底，落在 band 与窗边之间；kscc 隐藏占用圆环 */}
-                  {showTokenBar && (
-                    <TokenStatsBar
-                      usage={contextUsage}
-                      totals={tokenTotals}
-                      channelId={effectiveSelection?.channelId}
-                      isCompacting={isCompactingUi}
-                      onCompact={() => void compactContext()}
-                      compact={composerCompact}
-                      hideContext={lockedKind === "kscc"}
-                    />
-                  )}
-                </div>
-              </div>
-            )}
+                )}
 
-            {/* 右缘：班组面板关闭时的轻入口（分屏模式隐藏，班组走 dock） */}
-            {!crewExternalized &&
-            !crewPanelOpen &&
-            (hasCrewBoards || sessionBoardId) ? (
-              <button
-                type="button"
-                className="kanban-crew-edge-tab"
-                onClick={() => setCrewPanelOpen(true)}
-                aria-label="打开班组面板"
-              >
-                <UsersThree className="size-3.5" weight="bold" />
-                <span>班组</span>
-              </button>
-            ) : null}
-          </div>
-          {/* 右栏：全高班组面板（分屏模式不渲染，班组走 dock 的 crew pane） */}
-          {!crewExternalized ? (
-            <KanbanCrewPanel
-              sessionId={sessionId}
-              boardId={sessionBoardId}
-              open={crewPanelOpen}
-              onOpenChange={setCrewPanelOpen}
-              onPresenceChange={setHasCrewBoards}
-              width={crewPanelWidth}
-              onWidthChange={handleCrewPanelWidth}
-            />
-          ) : null}            </>
+                {/* 右缘：班组面板关闭时的轻入口（分屏模式隐藏，班组走 dock） */}
+                {!crewExternalized &&
+                !crewPanelOpen &&
+                (hasCrewBoards || sessionBoardId) ? (
+                  <button
+                    type="button"
+                    className="kanban-crew-edge-tab"
+                    onClick={() => setCrewPanelOpen(true)}
+                    aria-label="打开班组面板"
+                  >
+                    <UsersThree className="size-3.5" weight="bold" />
+                    <span>班组</span>
+                  </button>
+                ) : null}
+              </div>
+              {/* 右栏：全高班组面板（分屏模式不渲染，班组走 dock 的 crew pane） */}
+              {!crewExternalized ? (
+                <KanbanCrewPanel
+                  sessionId={sessionId}
+                  boardId={sessionBoardId}
+                  open={crewPanelOpen}
+                  onOpenChange={setCrewPanelOpen}
+                  onPresenceChange={setHasCrewBoards}
+                  width={crewPanelWidth}
+                  onWidthChange={handleCrewPanelWidth}
+                />
+              ) : null}            </>
           )}
 
           {/* 子代理独立会话页面：从入口卡片全屏切换（覆盖整个 Chat 区域，返回回主会话） */}
@@ -4122,18 +4141,24 @@ export function Chat({
               />
             </div>
           )}
-          {sidecarBot ? (
+          {sidecarBots.map(({ bot, stackIndex }) => (
             <BotSidecarPanel
+              key={bot.profile.id}
               sessionId={sessionId}
-              bot={sidecarBot}
+              bot={bot}
+              stackIndex={stackIndex}
               contextText={sidecarContextText}
               fallbackChannelId={
                 effectiveSelection?.channelId ?? session.channelId
               }
               fallbackModelId={effectiveSelection?.modelId ?? session.modelId}
-              onClose={() => setSidecarBot(null)}
+              onClose={() =>
+                setSidecarBots((current) =>
+                  current.filter((item) => item.bot.profile.id !== bot.profile.id),
+                )
+              }
             />
-          ) : null}
+          ))}
         </div>
       </MessageFilePathProvider>
     </MessageRichPreviewProvider>

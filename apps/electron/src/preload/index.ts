@@ -52,8 +52,11 @@ import type {
   CollaborationHumanMember,
   CollaborationMemberPreset,
   CollaborationMessage,
+  CollaborationMessagesPage,
   CollaborationRoom,
   CollaborationRun,
+  CollaborationRunsPage,
+  CollaborationRunSummary,
   CollaborationMailboxEnvelope,
   CollaborationRoomTask,
   CollaborationArtifact,
@@ -61,6 +64,8 @@ import type {
   CollaborationTextDeltaPayload,
   LocalCollaborationContinuationItem,
   CreateCollaborationRoomInput,
+  ListCollaborationMessagesInput,
+  ListCollaborationRunsInput,
   UpgradeFusionSessionInput,
   SaveCollaborationMemberPresetInput,
   AddCollaborationMemberInput,
@@ -129,6 +134,10 @@ import type {
 export interface SendMessageInput {
   sessionId: string;
   prompt: string;
+  /** 仅供旁路 Bot 使用：本轮前情提要注入 system prompt，不落盘为 user 消息。 */
+  contextPrompt?: string;
+  /** 独立旁路 Bot 不参与父会话的协作室路由。 */
+  skipFusionRouting?: boolean;
   /** 渠道 ID（决定选哪个 adapter + 绑核，kscc↔external 互斥） */
   channelId?: string;
   /** 模型 ID */
@@ -1187,11 +1196,12 @@ const electronAPI = {
       COLLABORATION_ROOM_IPC_CHANNELS.UPDATE,
       input,
     ) as Promise<CollaborationRoom>,
-  /** 列出某房间全部消息（按时间升序，只显示已存消息） */
-  listCollaborationMessages: (roomId: string) =>
-    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MESSAGES, {
-      roomId,
-    }) as Promise<CollaborationMessage[]>,
+  /** 分页列出某房间消息（items 按时间升序，首屏为最新一页） */
+  listCollaborationMessages: (input: ListCollaborationMessagesInput) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.LIST_MESSAGES,
+      input,
+    ) as Promise<CollaborationMessagesPage>,
   /** 追加静态用户消息（只落盘 + 刷新，不触发 Agent） */
   appendCollaborationUserMessage: (
     input: AppendCollaborationUserMessageInput,
@@ -1268,11 +1278,22 @@ const electronAPI = {
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.DELETE_MEMBER_PRESET, {
       id,
     }) as Promise<{ ok: boolean }>,
-  /** 列出某房间全部 run（按入队顺序，Stage 2） */
-  listCollaborationRuns: (roomId: string) =>
-    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_RUNS, {
+  /** 分页列出某房间 run（items 按入队时间升序，首屏为最新一页） */
+  listCollaborationRuns: (input: ListCollaborationRunsInput) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.LIST_RUNS,
+      input,
+    ) as Promise<CollaborationRunsPage>,
+  /** 获取房间全部 run 的状态摘要，不受历史分页影响 */
+  getCollaborationRunSummary: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.GET_RUN_SUMMARY, {
       roomId,
-    }) as Promise<CollaborationRun[]>,
+    }) as Promise<CollaborationRunSummary>,
+  /** 取消房间内全部 queued/running run，不受历史分页影响 */
+  cancelAllCollaborationRuns: (roomId: string) =>
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.CANCEL_ALL_RUNS, {
+      roomId,
+    }) as Promise<{ cancelled: number }>,
   /** 取消某 run（abort 后端 + 置 cancelled；终态 run 返回其当前状态） */
   cancelCollaborationRun: (input: { roomId: string; runId: string }) =>
     ipcRenderer.invoke(

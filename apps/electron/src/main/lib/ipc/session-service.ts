@@ -84,7 +84,6 @@ import {
   isClaudeAvailableForChannel,
 } from "../channel/default-models";
 import { buildBotSessionPromptAppend } from "../bot/bot-session-prompt";
-import { getBotProfileRecord } from "../bot/bot-profile-service";
 import { getRegisteredCollaborationRoomService } from "../collaboration/collaboration-runtime";
 import { resolveModelContextWindow } from "../channel/model-window";
 import {
@@ -151,7 +150,10 @@ import {
   buildSubagentDelegationPrompt,
 } from "../agent/subagent-definitions";
 import { buildExecutionModePrompt } from "../agent/execution-mode-prompt";
-import { buildAutoPlanPrompt } from "../agent/auto-plan-router";
+import {
+  buildAutoKanbanPrompt,
+  buildAutoPlanPrompt,
+} from "../agent/auto-plan-router";
 import { extractPlanStepSignals } from "../agent/plan-step-signal";
 import { buildUserSystemPromptAppend } from "../system-prompt-manager";
 import {
@@ -220,6 +222,8 @@ import {
 interface SendMessageInput {
   sessionId: string;
   prompt: string;
+  /** 仅供旁路 Bot 使用：本轮前情提要注入 system prompt，不落盘为 user 消息。 */
+  contextPrompt?: string;
   /** 运行中引导的后续自动发送：在消息列表内并入前一执行回合。 */
   isSteer?: boolean;
   /** 引导已先落盘广播过，flush 时不要再写一条用户气泡。 */
@@ -262,7 +266,7 @@ interface SendMessageInput {
   moaDiscussionPresetId?: string;
   /** 内部融合执行：顾问报告只进入模型 prompt，不进入用户消息落盘。 */
   fusionAdvisorContext?: string;
-  /** 内部融合执行：避免协调者二次触发顾问编排。 */
+  /** 融合执行或独立旁路执行：跳过已升级协作室的父会话路由。 */
   skipFusionRouting?: boolean;
 }
 
@@ -527,7 +531,7 @@ export class SessionService {
       );
       return;
     }
-    const prompt = wrapSteerPromptForModel(pending.join("\n\n"));
+    const prompt = wrapSteerPromptForModel(pending.join("nn"));
     console.log(
       `[会话 ${sessionId}] pending steer → 自动下一轮（${pending.length} 条合并）`,
     );
@@ -1097,7 +1101,7 @@ export class SessionService {
         } else {
           // 带项目名前缀的相对路径（如 `j3_statics/preview.js`）：首段匹配 base 名时
           // 用 base 的父目录拼接（与渲染层 displayPath、1.0 resolveTargetPath 同款）
-          const firstSegment = target.split(/[\\/]/)[0];
+          const firstSegment = target.split(/[/]/)[0];
           if (firstSegment) {
             for (const base of bases) {
               if (basename(base) === firstSegment) {
@@ -1703,47 +1707,6 @@ export class SessionService {
     return { status: "idle", archived: !!meta?.archived };
   }
 
-  private fusionBotSessionId(
-    parentSessionId: string,
-    botProfileId: string,
-  ): string {
-    const parent = parentSessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const bot = botProfileId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    return "fusion_bot_" + parent + "_" + bot;
-  }
-
-  /**
-   * 双 Bot 会话首次发送时自动迁移为 RoomSession。
-   *
-   * 旧版本这里启动 advisor chain；现在多 Bot 的唯一运行真值是协作室服务，
-   * 因此历史会话也在第一次发送时幂等补建房间，再进入同一条消息路由。
-   */
-  private async handleFusionSend(
-    input: SendMessageInput,
-    parentMeta: AgentSessionMeta,
-  ): Promise<void> {
-    const service = getRegisteredCollaborationRoomService();
-    if (!service) throw new Error("协作室运行链路当前不可用，无法启动融合会话");
-
-    const room = service.upgradeFusionSession({
-      sessionId: input.sessionId,
-    });
-    this.sendPayload(input.sessionId, {
-      kind: "tagent_event",
-      event: { type: "session_meta_changed" },
-    });
-    const routedMeta: AgentSessionMeta = {
-      ...parentMeta,
-      fusionMode: "multi-bot",
-      fusionRoomId: room.id,
-    };
-    const routed = this.handleLinkedCollaborationRoomSend(
-      input,
-      routedMeta,
-      { mainMessageAlreadyPersisted: true },
-    );
-    if (!routed) throw new Error("融合会话未能切换到协作室运行链路");
-  }
   /**
    * 已升级为协作室的会话走既有 RoomService 调度器。
    * 这里不再启动普通会话 runtime；RoomService 负责 mention 路由、协调者默认承接、
@@ -1757,9 +1720,15 @@ export class SessionService {
     if (input.skipFusionRouting || !meta.fusionRoomId) return false;
 
     const service = getRegisteredCollaborationRoomService();
-    if (!service) throw new Error("协作室运行链路当前不可用");
+    if (!service) {
+      this.recoverStaleCollaborationLink(meta, "协作室服务未启用");
+      return false;
+    }
     const room = service.getRoomById(meta.fusionRoomId);
-    if (!room) throw new Error("关联的协作室不存在，请重新升级会话");
+    if (!room) {
+      this.recoverStaleCollaborationLink(meta, "关联房间不存在");
+      return false;
+    }
 
     const content = input.attachments?.length
       ? appendAttachmentPathsToPrompt(input.prompt, input.attachments)
@@ -1793,6 +1762,40 @@ export class SessionService {
     });
     return true;
   }
+
+  /**
+   * 旧会话可能在协作室服务关闭、房间被清理或跨版本迁移后仍残留 fusionRoomId。
+   * 这种标记不能继续阻塞普通主会话；仅在确认「服务不可用 / 房间不存在」时清理，
+   * 有效房间仍由 handleLinkedCollaborationRoomSend 正常接管。
+   */
+  private recoverStaleCollaborationLink(
+    meta: AgentSessionMeta,
+    reason: string,
+  ): void {
+    const botIds = [...new Set(meta.botProfileIds ?? [])].filter(
+      (id): id is string => Boolean(id),
+    );
+    const fusionMode = getFusionConversationMode(1, botIds.length);
+    const coordinator =
+      fusionMode === "multi-bot" &&
+      meta.fusionCoordinatorBotProfileId &&
+      botIds.includes(meta.fusionCoordinatorBotProfileId)
+        ? meta.fusionCoordinatorBotProfileId
+        : fusionMode === "multi-bot"
+          ? botIds[0]
+          : undefined;
+
+    updateSessionMeta(meta.id, {
+      fusionRoomId: undefined,
+      fusionMode,
+      fusionCoordinatorBotProfileId: coordinator,
+    });
+    this.notifySessionMetaChanged(meta.id);
+    console.warn(
+      `[session-service] 已清理失效协作链接，恢复主会话：${meta.id}（${reason}）`,
+    );
+  }
+
   /** 处理发消息：解析渠道→锁定运行内核→首次 spawn / 后续同内核切换模型 */
   private async handleSend(input: SendMessageInput): Promise<void> {
     // 用户手动新开一轮 → abort 旧的无进展 AskUser（若仍 pending），防止回答旧问题时再触发一次续跑
@@ -1806,13 +1809,8 @@ export class SessionService {
       return;
 
     const requestedChannelId = input.channelId ?? getKsccChannelId();
-    const singleBotBinding = this.resolveSingleBotRuntimeBinding(
-      requestedMeta,
-      input.prompt,
-      requestedChannelId,
-      input.model,
-    );
-    const channelId = singleBotBinding?.channelId ?? requestedChannelId;
+    // 会话参与的 Bot 只用于独立旁路窗口；主会话沿用自身渠道/模型。
+    const channelId = requestedChannelId;
     if (!channelId) {
       throw new Error(
         "未选择渠道，且未找到 kscc 内置渠道（请在渠道管理中添加）",
@@ -1855,9 +1853,7 @@ export class SessionService {
     // resolveModel 会因 moa:* 不属于渠道模型而抛错；且严禁 setModel('moa:…') / 把 moa:* 传给 kscc。
     // 走 runMoaTurn 独立编排（参考席 + 汇总 + 圆桌卡），完成后 return，不走 adapter.query。
     const rawModel =
-      singleBotBinding?.modelId ??
-      input.model ??
-      (meta?.channelId === channelId ? meta.modelId : undefined);
+      input.model ?? (meta?.channelId === channelId ? meta.modelId : undefined);
     if (isMoaModelId(rawModel)) {
       await this.runMoATurn(
         input,
@@ -1910,7 +1906,7 @@ export class SessionService {
     };
     if (input.fusionAdvisorContext) {
       normalizedInput.prompt =
-        input.fusionAdvisorContext + "\n\n" + normalizedInput.prompt;
+        input.fusionAdvisorContext + "nn" + normalizedInput.prompt;
     }
 
     // Chat @：解析提及并写入 pendingMentionRoleIds（Work 默认不启用多角色乱 @）
@@ -1947,7 +1943,17 @@ export class SessionService {
 
     const adapter = getAdapter(adapterKind);
     let rt = this.runtimes.get(input.sessionId);
-    const isFirst = !rt || !rt.hasLiveProcess();
+    let isFirst = !rt || !rt.hasLiveProcess();
+    // KSCC 的长驻进程只在 spawn 时读取 system prompt；旁路 Bot 的主会话前情提要
+    // 可能随父会话变化，因此带 contextPrompt 的后续回合需要按新前情提要重建。
+    if (
+      !isFirst &&
+      adapterKind === "kscc" &&
+      normalizedInput.contextPrompt?.trim()
+    ) {
+      rt!.dropLiveProcessForConfigChange("sidecar-context-refresh");
+      isFirst = true;
+    }
 
     console.log(
       `[会话 ${input.sessionId}] ${isFirst ? "首次：spawn + 起循环" : "后续：复用长驻进程 enqueue"}（渠道=${channel.name} 核=${adapterKind} workspaceId=${workspaceId ?? "(无)"}）`,
@@ -2032,17 +2038,6 @@ export class SessionService {
       }
     }
 
-    if (!input.skipFusionRouting) {
-      const selectedBotIds = meta?.botProfileIds ?? [];
-      const activeBotCount = selectedBotIds.filter((id) => {
-        const record = getBotProfileRecord(id);
-        return record !== undefined && !record.profile.archivedAt;
-      }).length;
-      if (activeBotCount >= 2 && meta) {
-        await this.handleFusionSend(normalizedInput, meta);
-        return;
-      }
-    }
     // T7 续聊注入 + P0 #1（AUDIT-fresh-session-consult）：夹中场景「普通轮 → 圆桌（快速/研讨）→ 续聊」
     // 长驻进程（kscc live loop / Pi SessionEntry）的内存上下文**不含** MoA bare 轮共识——MoA 单发不经
     // 主会话 entry、不写 kscc resume 文件，共识只落 TAgent 面板 JSONL。续聊时按「进程/Agent 是否已有
@@ -2065,7 +2060,7 @@ export class SessionService {
     if (moaCtx.hasMoAConclusion) {
       if (hasActiveChannel) {
         // LIVE：仅前置 MoA 结论片段（不注入全量历史，避免与内存普通轮重复）
-        normalizedInput.prompt = `${moaCtx.conclusionText}\n\n${normalizedInput.prompt}`;
+        normalizedInput.prompt = `${moaCtx.conclusionText}nn${normalizedInput.prompt}`;
         console.log(
           `[会话 ${input.sessionId}] T7 LIVE 注入：活跃进程前置 ${moaCtx.conclusionText.length} 字 MoA 结论进本轮 prompt`,
         );
@@ -2202,13 +2197,19 @@ export class SessionService {
       // 长驻会话的后续轮次只 enqueue userMessage，不会重新构建 system prompt。
       // 因此自动分阶段指令需要临时放进本轮模型消息；它不改 normalizedInput，
       // 不落盘、不出现在用户气泡里，也不影响首轮 spawn（首轮由 queryOptions 注入）。
-      const liveAutoPlanPrompt = buildAutoPlanPrompt(
-        normalizedInput.prompt,
-        this.getExecutionMode(input.sessionId),
-        input.isSteer,
-      );
+      const liveAutoPlanPrompt =
+        buildAutoKanbanPrompt(
+          normalizedInput.prompt,
+          this.getExecutionMode(input.sessionId),
+          input.isSteer,
+        ) ||
+        buildAutoPlanPrompt(
+          normalizedInput.prompt,
+          this.getExecutionMode(input.sessionId),
+          input.isSteer,
+        );
       const liveModelPrompt = liveAutoPlanPrompt
-        ? liveAutoPlanPrompt + "\n\n" + normalizedInput.prompt
+        ? liveAutoPlanPrompt + "nn" + normalizedInput.prompt
         : normalizedInput.prompt;
       // 后续：enqueue。prompt 已含路径附录；图片再打成 image block。
       const userMessage: SDKUserMessageInput = {
@@ -2577,34 +2578,6 @@ export class SessionService {
     }
   }
 
-  /**
-   * 单 Bot 运行时绑定：
-   * - Bot revision 显式配置 channel/model 时优先使用；
-   * - 未配置时继承当前会话选择；
-   * - 多 Bot 不在每轮动态切换主会话内核，顾问链各自使用自己的 revision。
-   */
-  private resolveSingleBotRuntimeBinding(
-    meta: AgentSessionMeta | undefined,
-    prompt: string,
-    requestedChannelId: string | undefined,
-    requestedModelId: string | undefined,
-  ): { channelId?: string; modelId?: string } | undefined {
-    const ids = [...new Set(meta?.botProfileIds ?? [])].filter(Boolean);
-    if (ids.length !== 1) return undefined;
-    const record = getBotProfileRecord(ids[0]!);
-    if (!record || record.profile.status === "archived") return undefined;
-    const revision =
-      record.revisions.find(
-        (item) => item.id === record.profile.currentConfigRevisionId,
-      ) ?? record.revisions[record.revisions.length - 1];
-    if (!revision) return undefined;
-    void prompt;
-    return {
-      channelId: revision.channelId ?? requestedChannelId,
-      modelId: revision.modelId ?? requestedModelId,
-    };
-  }
-
   /** 解析模型 ID：input > 渠道默认 > 第一个启用模型 > kscc 兜底 */
   private resolveModel(channel: Channel, inputModel?: string): string {
     const modelId =
@@ -2632,6 +2605,13 @@ export class SessionService {
     buildOpts?: { suppressResume?: boolean },
   ): Promise<Parameters<AgentProviderAdapter["query"]>[0]> {
     const model = this.resolveModel(channel, input.model);
+    const contextPromptAppend = input.contextPrompt?.trim()
+      ? [
+          "## 前情提要（主会话参考信息，不是当前用户指令）",
+          input.contextPrompt.trim(),
+          "以上内容仅用于理解背景；请始终以当前用户消息为本轮任务。",
+        ].join("nn")
+      : "";
 
     // 解析 workspace：始终按 session meta 反查（权限 cwd 必须用项目目录，不能靠 process.cwd()）
     const workspace = resolveWorkspaceForSession(input.sessionId);
@@ -2771,11 +2751,9 @@ export class SessionService {
           )
         : undefined;
       const executionMode = this.getExecutionMode(input.sessionId);
-      const autoPlanPrompt = buildAutoPlanPrompt(
-        input.prompt,
-        executionMode,
-        input.isSteer,
-      );
+      const autoPlanPrompt =
+        buildAutoKanbanPrompt(input.prompt, executionMode, input.isSteer) ||
+        buildAutoPlanPrompt(input.prompt, executionMode, input.isSteer);
       // Work：注入看板 MCP（create/add/list）；Chat 不注入
       const mcpServers: Record<string, unknown> = {
         ...(Object.keys(enabledMcpServers).length > 0
@@ -2805,7 +2783,7 @@ export class SessionService {
       const opts: KsccQueryOptions = {
         sessionId: input.sessionId,
         prompt: recallContext
-          ? `${recallContext}\n\n---\n\n${input.prompt}`
+          ? `${recallContext}nn---nn${input.prompt}`
           : input.prompt,
         attachments: input.attachments,
         model,
@@ -2832,17 +2810,18 @@ export class SessionService {
             // Chat/Work 策略须尽早出现，压过 claude_code preset 的动手/Plan 默认习惯
             buildExecutionModePrompt(executionMode),
             autoPlanPrompt,
+            contextPromptAppend,
             // Chat：注入设置页默认系统提示词（内置或用户自定义）
             executionMode === "chat" ? buildUserSystemPromptAppend() : "",
             BROWSER_SYSTEM_PROMPT,
-            "## 身份与自我介绍\n你是一个专业的编程助手，帮助用户完成软件开发任务。回复时不要自我介绍，也不要提及你所属的 CLI 工具名或出品方品牌；直接以助手姿态回答用户的问题。",
+            "## 身份与自我介绍n你是一个专业的编程助手，帮助用户完成软件开发任务。回复时不要自我介绍，也不要提及你所属的 CLI 工具名或出品方品牌；直接以助手姿态回答用户的问题。",
             // W8：输出风格沟通红线（与 Pi 核 buildOutputStylePrompt 同文）
             buildOutputStylePrompt(),
             executionMode === "work"
               ? buildSubagentDelegationPrompt(eagerness)
               : "",
             executionMode === "work"
-              ? "## 看板派工工具\nWork 模式可用：kanban_create_board、kanban_add_task、kanban_list_boards、kanban_list_tasks。长任务拆成看板任务并指定 roleId；调度器会派 headless 工人。"
+              ? "## 看板派工工具nWork 模式可用：kanban_create_board、kanban_add_task、kanban_list_boards、kanban_list_tasks。长任务拆成看板任务并指定 roleId；调度器会派 headless 工人。"
               : "",
             this.buildMentionPromptAppend(input.sessionId, executionMode),
             botSessionPrompt,
@@ -2851,7 +2830,7 @@ export class SessionService {
             mem.memorySnapshotSection,
           ]
             .filter(Boolean)
-            .join("\n\n"),
+            .join("nn"),
         },
         persistSession: true,
         // 无进展守卫（KSCC：PostToolBatch 注入 / PreToolUse 拦截 / interrupt 暂停）
@@ -2934,10 +2913,11 @@ export class SessionService {
     const piExecutionPrompt = [
       buildExecutionModePrompt(piExecutionMode),
       autoPlanPrompt,
+      contextPromptAppend,
       piExecutionMode === "chat" ? buildUserSystemPromptAppend() : "",
       BROWSER_SYSTEM_PROMPT,
       piExecutionMode === "work"
-        ? "## 看板派工工具\n可用 kanban_create_board / kanban_add_task / kanban_list_*。长任务拆任务并指定 roleId。"
+        ? "## 看板派工工具n可用 kanban_create_board / kanban_add_task / kanban_list_*。长任务拆任务并指定 roleId。"
         : "",
       this.buildMentionPromptAppend(input.sessionId, piExecutionMode),
       buildBotSessionPromptAppend(
@@ -2947,7 +2927,7 @@ export class SessionService {
       ),
     ]
       .filter(Boolean)
-      .join("\n\n");
+      .join("nn");
     const kanbanExtra =
       piExecutionMode === "work"
         ? buildPiKanbanTools({
@@ -3086,7 +3066,7 @@ export class SessionService {
         );
         blocks.push("");
       }
-      return blocks.join("\n");
+      return blocks.join("n");
     } catch (err) {
       console.warn("[会话] buildMentionPromptAppend 失败:", err);
       return "";
@@ -3274,6 +3254,16 @@ export class SessionService {
     win?.webContents.send(AGENT_IPC_CHANNELS.STREAM_EVENT, {
       sessionId,
       payload,
+    });
+  }
+
+  /** 通知 renderer 重新读取会话 meta（协作室进退房等非聊天 IPC 使用）。 */
+  notifySessionMetaChanged(sessionId: string): void {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) return;
+    this.sendPayload(normalizedSessionId, {
+      kind: "tagent_event",
+      event: { type: "session_meta_changed" },
     });
   }
 

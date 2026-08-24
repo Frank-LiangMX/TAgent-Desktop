@@ -1353,3 +1353,66 @@ brief 指定审计函数名为 `estimateTokenCount`，但 `@tagent/shared/utils`
 - **未触碰无关未提交文件**：`BotSidecarPanel.tsx` / `BotSidecarPanel.test.tsx` / `image-lightbox.tsx` / `message/index.tsx` / `tokens.css` / `docs/dev/knowledge-base/` 保持本轮之前既存改动，未触碰、未提交。
 - **无 Electron GUI 手测**：无 GUI，以组件测 + typecheck 为准（brief 验收口径）。
 - **可 commit；主控 push**：本轮已 commit；未自行 push。
+
+## 88. Source-session excerpt host-tool loop (2026-08-24)
+
+The local collaboration room now wires the existing source-session excerpt service into the real member host-tool path.
+
+- The shared tool allowlist adds read_source_session_excerpt.
+- The model may provide only query, recentMessageLimit, and maxTokens. roomId and sourceSessionId come from the current room.
+- Only the coordinator may call the tool.
+- Each member run accumulates returned tokenEstimate and passes the total into the existing bridge budget validator.
+- The IPC registration injects SessionCollabBridgeService.readSourceSessionExcerpt into CollaborationRoomService.
+- Remote FusionRoom authority was intentionally not changed because its snapshot has no source-session truth field.
+
+Verification:
+- member-backend-adapter-external-tools.test.ts: 26 passed.
+- collaboration-room-a2a.test.ts: 22 passed, including room-bound source identity and per-run budget accumulation.
+- shared typecheck: passed.
+- Electron typecheck: passed.
+
+
+## 89. Session-meta push wiring for bridge enter/exit (2026-08-24)
+
+The bridge enter/exit path now notifies the renderer through the existing main-process stream event chain. `SessionService.notifySessionMetaChanged` emits `tagent_event(session_meta_changed)` via `STREAM_EVENT`; `registerCollaborationRoomIpc` injects that callback into `SessionCollabBridgeService`; both successful enter and exit invoke it. The renderer-side manual dispatches were removed from `SessionBotBar` and `CollaborationRoomsPage`, leaving `Chat` as the single event-to-persisted-meta adapter.
+
+Verification:
+
+- session-collab-bridge-service.test.ts: 8 passed.
+- SessionBotBar.test.tsx: 3 passed.
+- Electron typecheck: passed.
+- git diff --check: passed (only pre-existing LF/CRLF warnings remain).
+
+
+## 90. 融合会话运行态收口与来源会话防误绑（2026-08-24）
+
+本轮在桥接、协作室调度、历史分页和 UI 收口的基础上，继续处理生产路径中的状态一致性问题。
+
+### A. 暂停 / 重启后的运行语义
+
+- RoomScheduler 支持暂停房间冻结新 run，恢复 active 时通过 wake() 重新 drain。
+- recoverInterruptedRuns() 对 queued run 做安全恢复；paused 房间只重新入队、不启动，恢复 active 后才执行。
+- 应用重启时未知副作用的 running run 进入 blocked，而不是伪装成普通 failed；用户可从待确认续跑入口创建新 turn。
+- awaitAllRuns() 只等待实际 inflight run。若房间暂停后只剩 queued run，会立即返回，避免后台等待永久卡住。
+
+### B. 普通多 Bot 会话不再被历史房间反向接管
+
+sourceSessionId 只表示历史归属，不代表当前仍处于协作室。来源会话投影现在要求 session meta 的 fusionRoomId 与 room id 明确一致，才会在成员变化或启动恢复时同步。用户退出协作室后清掉的链接不会被历史 room 静默恢复。
+
+### C. 历史分页后的全量运行状态
+
+新增 CollaborationRunSummary 与 GET_RUN_SUMMARY IPC。协作室顶部的运行中 / 排队统计由主进程按房间全量 run 统计，不再只统计 renderer 当前加载的 120 条历史记录。
+
+同时新增房间级 CANCEL_ALL_RUNS IPC，底部停止按钮由主进程全量取消 queued/running run，避免旧分页中的运行遗漏。
+
+### D. 本轮代码位置
+
+- collaboration-room-service.ts：暂停等待语义、run summary、批量取消。
+- collaboration-room-scheduler.ts：暂停队列 wake / 并发调度。
+- collaboration-ipc.ts：来源会话投影守卫、运行摘要和批量停止 IPC。
+- CollaborationRoomsPage.tsx：全量运行摘要展示、房间级停止。
+- session-collab-bridge-service.test.ts / collaboration-room-run.test.ts：新增来源会话防误绑与暂停等待回归覆盖。
+
+### E. 当前验证口径
+
+本轮按开发安排没有进行实机 GUI 测试，也没有在本轮执行测试套件；bun run typecheck 全 workspace 通过。Electron 集成测试环境仍存在 Bun 对 Electron safeStorage named export 的兼容阻塞，待专门修复测试运行环境后再补跑。

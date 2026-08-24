@@ -10,7 +10,7 @@ import { X } from 'lucide-react'
 import { Stop, TerminalWindow } from '@phosphor-icons/react'
 import { AppTooltip } from '@tagent/ui'
 import { formatElapsedDuration, useLiveElapsedMs } from '../../lib/time-utils'
-import type { ComposerActivityItem } from './composer-activity-model'
+import { summarizeComposerActivity, type ComposerActivityItem } from './composer-activity-model'
 
 function ItemElapsed({ startedAt }: { startedAt: number }): JSX.Element {
   const live = startedAt > 0
@@ -32,6 +32,9 @@ export function ComposerActivityIsland({
 }): JSX.Element | null {
   const [open, setOpen] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [dismissedProcessIds, setDismissedProcessIds] = useState<Set<string>>(
+    () => new Set(),
+  )
   const rootRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -55,13 +58,25 @@ export function ComposerActivityIsland({
     }
   }, [open])
 
-  if (items.length === 0) return null
+  const visibleItems = items.filter((item) => !dismissedProcessIds.has(item.id))
+  useEffect(() => {
+    if (visibleItems.length === 0) setOpen(false)
+  }, [visibleItems.length])
 
-  const stop = async (processId: string): Promise<void> => {
+  if (visibleItems.length === 0) return null
+
+  const visibleSummary = summarizeComposerActivity(visibleItems)
+
+  const stop = async (processId: string, itemId: string): Promise<void> => {
     if (!onStopProcess || busyId) return
     setBusyId(processId)
     try {
       await onStopProcess(processId)
+      setDismissedProcessIds((current) => {
+        const next = new Set(current)
+        next.add(itemId)
+        return next
+      })
     } finally {
       setBusyId(null)
     }
@@ -73,9 +88,9 @@ export function ComposerActivityIsland({
       className={`composer-activity-island${open ? ' is-open' : ''}`}
     >
       {open ? (
-        <div className="composer-activity-island__panel" role="dialog" aria-label={headerLabel}>
+        <div className="composer-activity-island__panel" role="dialog" aria-label={visibleSummary.headerLabel || headerLabel}>
           <div className="composer-activity-island__head">
-            <span className="composer-activity-island__head-title">{headerLabel}</span>
+            <span className="composer-activity-island__head-title">{visibleSummary.headerLabel || headerLabel}</span>
             <button
               type="button"
               className="composer-activity-island__close"
@@ -86,7 +101,7 @@ export function ComposerActivityIsland({
             </button>
           </div>
           <ul className="composer-activity-island__list">
-            {items.map((it) => (
+            {visibleItems.map((it) => (
               <li key={it.id} className="composer-activity-island__row">
                 <span className="composer-activity-island__prompt" aria-hidden>
                   <TerminalWindow className="size-3.5" weight="bold" />
@@ -103,7 +118,7 @@ export function ComposerActivityIsland({
                       className="composer-activity-island__stop"
                       disabled={busyId === it.processId}
                       aria-label={`停止 ${it.title}`}
-                      onClick={() => void stop(it.processId)}
+                      onClick={() => void stop(it.processId, it.id)}
                     >
                       <Stop className="size-3" weight="fill" />
                     </button>
@@ -118,10 +133,10 @@ export function ComposerActivityIsland({
           type="button"
           className="composer-activity-island__pill"
           aria-expanded={false}
-          aria-label={`${pillLabel}，展开查看`}
+          aria-label={`${visibleSummary.pillLabel || pillLabel}，展开查看`}
           onClick={() => setOpen(true)}
         >
-          {pillLabel}
+          {visibleSummary.pillLabel || pillLabel}
         </button>
       )}
     </div>

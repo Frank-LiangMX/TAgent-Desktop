@@ -121,9 +121,13 @@ IPC（preload / App 已同步）：
 
 ### P0 续作（桥接收口）
 
-1. **host 工具接线**：协调者 turn 可调 `read_source_session_excerpt`（走已有 IPC/服务 + `validateSourceExcerptBudget`）；禁止绕过预算。  
-2. **exit 后 `session_meta_changed` 主进程推送**（服务层曾默认 noop；UI 已靠 renderer 事件，主进程推送更稳）。  
+1. **host 工具接线** ✅：协调者 turn 可调 `read_source_session_excerpt`（走已有 IPC/服务 + `validateSourceExcerptBudget`）；禁止绕过预算。
+2. **exit 后 `session_meta_changed` 主进程推送** ✅（服务层曾默认 noop；现已接入统一 `STREAM_EVENT`，enter/exit 均推送）。
 3. **实机手测**上面 §6 清单；修文案/切壳闪一下等问题。
+
+### 2026-08-24 follow-up
+
+2. **exit 后 `session_meta_changed` 主进程推送** ✅：`SessionService.notifySessionMetaChanged` now feeds the bridge callback through the existing `STREAM_EVENT` path; enter and exit both notify, and renderer manual dispatches were removed to avoid duplicate refreshes.
 
 ### 可选小项
 
@@ -166,3 +170,31 @@ PowerShell 用**单引号**包 prompt，避免 `<` 被解析。
 
 **家里**：`git push -u origin main`（或当前分支），确认远端可见 `7ab6d74`。  
 **公司**：`git pull --ff-only`，从本文件 §1 / §7 开干。
+
+
+---
+
+## 10. 当前开发检查点（2026-08-24）
+
+本轮继续推进了桥接后的生产化收口，未进行实机测试。
+
+### 已完成
+
+- 暂停房间的 queued run 不再阻塞 awaitAllRuns()；恢复 active 后 scheduler 会重新唤醒并执行。
+- 重启恢复时 running run fail-closed 为 blocked，保留用户确认续跑语义；paused 房间的 queued run 保持排队。
+- 历史协作室不会仅凭 sourceSessionId 把已退出或普通多 Bot 主会话重新绑定；必须由 session meta 明确持有同一 fusionRoomId。
+- 历史分页后的运行中 / 排队统计改由主进程 CollaborationRunSummary 全量计算。
+- “停止全部”改为房间级批量取消，不再只处理当前已加载历史页。
+
+### 代码与接口
+
+- shared：CollaborationRunSummary、GET_RUN_SUMMARY、CANCEL_ALL_RUNS。
+- main：getRunSummary()、cancelAllRuns()、来源会话投影守卫。
+- preload / renderer：运行摘要展示与房间级停止接线。
+- UI 与主会话切换仍以 fusionRoomId 为唯一协作壳入口，普通多 Bot 仍保持普通主会话。
+
+### 当前验证状态
+
+- bun run typecheck：通过。
+- 本轮未跑测试、未做实机 GUI 验证。
+- Electron 集成测试目前受本机 Bun/Electron safeStorage named export 兼容问题影响，属于测试环境阻塞，不是本轮代码检查结果。

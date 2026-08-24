@@ -35,6 +35,8 @@ export interface RoomSchedulerEntry {
 export interface RoomSchedulerOptions {
   /** 读取房间并发上限（service 传入，读 room.maxConcurrentRuns；至少 1） */
   getMaxConcurrentRuns: (roomId: string) => number
+  /** 房间是否允许启动新的 run；暂停只阻止排队任务，不影响已占用 slot 的 run */
+  isRoomRunnable?: (roomId: string) => boolean
   /** 容量允许时启动一个 run（service.executeRun + inflight.set；abort 由 executeRun 自管） */
   start: (entry: RoomSchedulerEntry) => void
 }
@@ -55,6 +57,11 @@ export class RoomScheduler {
   /** 入队一个 run（service 已落盘 queued）。立即 drain 尝试启动；否则排队等容量。 */
   enqueue(entry: RoomSchedulerEntry): void {
     this.queue.push(entry)
+    this.drain()
+  }
+
+  /** 房间恢复或并发上限变化后唤醒队列。 */
+  wake(): void {
     this.drain()
   }
 
@@ -132,6 +139,9 @@ export class RoomScheduler {
   }
 
   private canStart(entry: RoomSchedulerEntry): boolean {
+    if (this.opts.isRoomRunnable && !this.opts.isRoomRunnable(entry.roomId)) {
+      return false
+    }
     const max = Math.max(1, this.opts.getMaxConcurrentRuns(entry.roomId))
     const roomRunning = this.runningByRoom.get(entry.roomId)?.size ?? 0
     if (roomRunning >= max) return false

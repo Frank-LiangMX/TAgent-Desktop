@@ -1,7 +1,7 @@
 /**
  * 协作室主区页面 — Stage 3
  *
- * 选中房间 → 头部（标题/状态/目标/成员数/并发 x/y/排队/重命名/暂停/归档/添加成员）+
+ * 选中房间 → 头部（标题/状态/目标/成员数/并发 x/y/排队/添加成员）+
  * 成员状态条（空闲/思考中/排队中）+ 时间线（用户/成员/系统消息 + 多条「思考中」）+ 输入框。
  * 添加成员弹窗可选内核（渠道）+ 模型 + 是否协调者；成员气泡可再编辑渠道/模型。
  *
@@ -18,18 +18,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { motion } from "motion/react";
-import { Square } from "lucide-react";
+import { Plus, Square } from "lucide-react";
 import {
-  Archive,
   ArrowRight,
+  CaretDown,
   At,
   Database,
   FolderOpen,
   Link,
   ListChecks,
-  Pause,
-  PencilSimple,
-  Play,
   SignOut,
   Target,
   UsersThree,
@@ -42,16 +39,30 @@ import type {
   CollaborationRoleSnapshot,
   CollaborationMailboxEnvelope,
   CollaborationMember,
+  CollaborationHistoryCursor,
   CollaborationMessage,
+  CollaborationMessagesPage,
   CollaborationRoom,
   CollaborationRoomStatus,
   CollaborationRoomTask,
   CollaborationRun,
+  CollaborationRunsPage,
+  CollaborationRunSummary,
   CollaborationUserApprovalRequest,
+  FileAttachment,
   LocalCollaborationContinuationItem,
 } from "@tagent/shared";
-import { AppTooltip, Button, DestructiveConfirmDialog, Input } from "@tagent/ui";
-import { ChatInput, type ChatInputHandle } from "../chat/ChatInput";
+import {
+  AppTooltip,
+  Button,
+  DestructiveConfirmDialog,
+  Input,
+} from "@tagent/ui";
+import {
+  ChatInput,
+  type ChatInputHandle,
+  type PendingAttachment,
+} from "../chat/ChatInput";
 import { SendSplitButton } from "../chat/ConsultMenu";
 import BlurText from "../chat/BlurText";
 import { CollaborationTextPrompt } from "./CollaborationTextPrompt";
@@ -66,9 +77,10 @@ import { FusionRoomRemoteConnectDialog } from "./FusionRoomRemoteConnectDialog";
 import type { FusionRoomRemoteSession } from "./fusion-room-remote-session";
 import { cn } from "../../lib/utils";
 
-type TextPromptKind = "rename" | "edit-goal" | null;
+type TextPromptKind = "edit-goal" | null;
 
 const EASE = [0.16, 1, 0.3, 1] as const;
+const COLLABORATION_HISTORY_PAGE_SIZE = 120;
 
 /** 协作室的全员 mention 不是成员 ID，而是结构化路由的特殊目标。 */
 const COLLABORATION_ALL_MENTION_ID = "all";
@@ -155,8 +167,6 @@ interface CollaborationRoomsPageProps {
   refreshKey: number;
   /** 房间/消息变更时通知 App（rename/pause/archive/send 后） */
   onRoomsChanged: () => void;
-  /** 当前房间被归档后清空主区选中态 */
-  onRoomArchived?: (roomId: string) => void;
   /** 空态「新建协作室」CTA */
   onNewRoom: () => void;
   /** 打开指定设置 tab（如「去渠道设置」CTA 跳转到 channels） */
@@ -175,6 +185,10 @@ interface CollaborationRoomsPageProps {
   remoteSession?: FusionRoomRemoteSession;
   /** 远程会话关闭回调（FusionRoomRemotePage 顶栏返回 / 断开时调用） */
   onRemoteSessionClose?: () => void;
+  /** 复用单会话附件预览 */
+  onOpenAttachment?: (attachment: FileAttachment) => void;
+  /** 复用单会话待发送附件分屏预览 */
+  onPreviewAttachment?: (attachment: PendingAttachment) => void;
 }
 
 /**
@@ -246,12 +260,13 @@ function LocalCollaborationRoomsPage({
   roomId,
   refreshKey,
   onRoomsChanged,
-  onRoomArchived,
   onNewRoom,
   onOpenSettings,
   onOpenRemoteSession,
   sourceSessionId,
   onCollaborationExited,
+  onOpenAttachment,
+  onPreviewAttachment,
 }: CollaborationRoomsPageProps): JSX.Element {
   const [room, setRoom] = useState<CollaborationRoom | null>(null);
   const [messages, setMessages] = useState<CollaborationMessage[]>([]);
@@ -260,6 +275,14 @@ function LocalCollaborationRoomsPage({
     [],
   );
   const [runs, setRuns] = useState<CollaborationRun[]>([]);
+  const [runSummary, setRunSummary] =
+    useState<CollaborationRunSummary | null>(null);
+  /** 历史分页：undefined 表示尚未初始化，null 表示该方向已经没有更早记录。 */
+  const [messageCursor, setMessageCursor] =
+    useState<CollaborationHistoryCursor | null>(null);
+  const [runCursor, setRunCursor] =
+    useState<CollaborationHistoryCursor | null>(null);
+  const [loadingOlderHistory, setLoadingOlderHistory] = useState(false);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [cliWorkers, setCliWorkers] = useState<CliWorkersConfig | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
@@ -274,6 +297,9 @@ function LocalCollaborationRoomsPage({
   /** composer 中选中的成员 mention 芯片 id（结构化路由用；无芯片时不传 → 文本兜底） */
   const [composerMentionIds, setComposerMentionIds] = useState<string[]>([]);
   const [hasDraft, setHasDraft] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<
+    PendingAttachment[]
+  >([]);
   const [mailbox, setMailbox] = useState<CollaborationMailboxEnvelope[]>([]);
   const [streamByRun, setStreamByRun] = useState<Record<string, string>>({});
   /** S5：室级任务/产物（主进程真值，CHANGED 后重新拉取；渲染层不是真值源） */
@@ -289,8 +315,8 @@ function LocalCollaborationRoomsPage({
   const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(
     null,
   );
-  /** S5：右侧工作面板展开态（默认展开；窄屏可收起，键盘可达） */
-  const [workPanelOpen, setWorkPanelOpen] = useState(true);
+  /** S5：右侧工作面板展开态（默认收起；需要时从头部打开） */
+  const [workPanelOpen, setWorkPanelOpen] = useState(false);
   /** S4.5：本地已「停止」关闭的深度停止信封 id（仅前端态，不持久化、不触后端） */
   const [dismissedDepthStopIds, setDismissedDepthStopIds] = useState<
     Set<string>
@@ -320,6 +346,12 @@ function LocalCollaborationRoomsPage({
     setDepthStopErrorByEnvelope({});
     setResumingRunId(null);
     setResumeErrorByRun({});
+    setPendingAttachments([]);
+    setHasDraft(false);
+    setComposerMentionIds([]);
+    setMessageCursor(null);
+    setRunCursor(null);
+    setLoadingOlderHistory(false);
   }, [roomId]);
 
   // 选中房间 / 外部变更 → 重新拉取
@@ -331,6 +363,9 @@ function LocalCollaborationRoomsPage({
         setMessages([]);
         setMembers([]);
         setRuns([]);
+        setRunSummary(null);
+        setMessageCursor(null);
+        setRunCursor(null);
         setMailbox([]);
         setTasks([]);
         setArtifacts([]);
@@ -340,13 +375,31 @@ function LocalCollaborationRoomsPage({
         return;
       }
       try {
-        const [r, msgs, mems, humans, rs, box, tks, arts, aps, conts] =
-          await Promise.all([
+        const [
+          r,
+          msgsPage,
+          mems,
+          humans,
+          runsPage,
+          runSummaryResult,
+          box,
+          tks,
+          arts,
+          aps,
+          conts,
+        ] = await Promise.all([
             window.electronAPI.getCollaborationRoom(roomId),
-            window.electronAPI.listCollaborationMessages(roomId),
+            window.electronAPI.listCollaborationMessages({
+              roomId,
+              limit: COLLABORATION_HISTORY_PAGE_SIZE,
+            }),
             window.electronAPI.listCollaborationMembers(roomId),
             window.electronAPI.listCollaborationHumanMembers(roomId),
-            window.electronAPI.listCollaborationRuns(roomId),
+            window.electronAPI.listCollaborationRuns({
+              roomId,
+              limit: COLLABORATION_HISTORY_PAGE_SIZE,
+            }),
+            window.electronAPI.getCollaborationRunSummary(roomId),
             window.electronAPI.listCollaborationMailbox(roomId),
             window.electronAPI.listCollaborationRoomTasks(roomId),
             window.electronAPI.listCollaborationArtifacts(roomId),
@@ -354,18 +407,31 @@ function LocalCollaborationRoomsPage({
             window.electronAPI.listCollaborationContinuations(roomId),
           ]);
         if (cancelled) return;
+        const messagesPage = msgsPage as CollaborationMessagesPage;
+        const loadedRunsPage = runsPage as CollaborationRunsPage;
         setRoom(r ?? null);
-        setMessages(Array.isArray(msgs) ? msgs : []);
+        setMessages(Array.isArray(messagesPage?.items) ? messagesPage.items : []);
+        setMessageCursor(messagesPage?.nextCursor ?? null);
         setMembers(Array.isArray(mems) ? mems : []);
         setHumanMembers(Array.isArray(humans) ? humans : []);
-        setRuns(Array.isArray(rs) ? rs : []);
+        setRuns(
+          Array.isArray(loadedRunsPage?.items) ? loadedRunsPage.items : [],
+        );
+        setRunCursor(loadedRunsPage?.nextCursor ?? null);
+        setRunSummary(
+          runSummaryResult && typeof runSummaryResult === "object"
+            ? (runSummaryResult as CollaborationRunSummary)
+            : null,
+        );
         setMailbox(Array.isArray(box) ? box : []);
         setTasks(Array.isArray(tks) ? tks : []);
         setArtifacts(Array.isArray(arts) ? arts : []);
         setApprovals(Array.isArray(aps) ? aps : []);
         setContinuations(Array.isArray(conts) ? conts : []);
         const live = new Set(
-          (Array.isArray(rs) ? rs : [])
+          (Array.isArray(loadedRunsPage?.items)
+            ? loadedRunsPage.items
+            : [])
             .filter((run) => run.status === "running")
             .map((run) => run.id),
         );
@@ -383,6 +449,9 @@ function LocalCollaborationRoomsPage({
         setMessages([]);
         setMembers([]);
         setRuns([]);
+        setRunSummary(null);
+        setMessageCursor(null);
+        setRunCursor(null);
         setMailbox([]);
         setTasks([]);
         setArtifacts([]);
@@ -394,6 +463,45 @@ function LocalCollaborationRoomsPage({
       cancelled = true;
     };
   }, [roomId, refreshKey]);
+
+  /** 向上加载更早历史；消息和 run 各自使用游标，某一类读完后不再重复请求。 */
+  const loadOlderHistory = useCallback(async (): Promise<void> => {
+    if (!roomId || loadingOlderHistory || (!messageCursor && !runCursor)) return;
+    setLoadingOlderHistory(true);
+    try {
+      const [messagesPage, runsPage] = await Promise.all([
+        messageCursor
+          ? window.electronAPI.listCollaborationMessages({
+              roomId,
+              limit: COLLABORATION_HISTORY_PAGE_SIZE,
+              before: messageCursor,
+            })
+          : Promise.resolve(null),
+        runCursor
+          ? window.electronAPI.listCollaborationRuns({
+              roomId,
+              limit: COLLABORATION_HISTORY_PAGE_SIZE,
+              before: runCursor,
+            })
+          : Promise.resolve(null),
+      ]);
+      if (messagesPage) {
+        setMessages((previous) => [...messagesPage.items, ...previous]);
+        setMessageCursor(messagesPage.nextCursor ?? null);
+      }
+      if (runsPage) {
+        setRuns((previous) => [...runsPage.items, ...previous]);
+        setRunCursor(runsPage.nextCursor ?? null);
+      }
+    } catch (err) {
+      console.error("[协作室主区] 加载更早历史失败:", err);
+      toast.error("加载更早记录失败", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setLoadingOlderHistory(false);
+    }
+  }, [loadingOlderHistory, messageCursor, roomId, runCursor]);
 
   // 挂载时加载渠道列表（用于成员渠道名展示 / 「无渠道」判定）
   useEffect(() => {
@@ -435,8 +543,11 @@ function LocalCollaborationRoomsPage({
   }, [messages.length, runs.length, streamByRun]);
 
   // 房间并发统计（头部 x/y + 排队）
-  const runningCount = runs.filter((r) => r.status === "running").length;
-  const queuedCount = runs.filter((r) => r.status === "queued").length;
+  const runningCount =
+    runSummary?.running ?? runs.filter((r) => r.status === "running").length;
+  const queuedCount =
+    runSummary?.queued ?? runs.filter((r) => r.status === "queued").length;
+  const hasSendable = hasDraft || pendingAttachments.length > 0;
   const stoppableRuns = runs.filter(
     (r) => r.status === "running" || r.status === "queued",
   );
@@ -468,14 +579,53 @@ function LocalCollaborationRoomsPage({
     activeMembers.length > 0 &&
     activeMembers.every((m) => !memberHasExecutableBackend(m));
 
+  const handleOpenFileDialog = useCallback(async (): Promise<void> => {
+    const result = await (window.electronAPI as any).openFileDialog();
+    const files = Array.isArray(result?.files)
+      ? result.files.filter(
+          (file: any) => typeof file.data === "string" && file.data,
+        )
+      : [];
+    if (files.length === 0) {
+      if (result?.files?.some((file: any) => !file.data)) {
+        toast.error("大文件暂不支持作为协作室附件发送");
+      }
+      return;
+    }
+    setPendingAttachments((previous) => [
+      ...previous,
+      ...files.map((file: any) => {
+        const mediaType = file.mediaType || "application/octet-stream";
+        return {
+          id: `collab-pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          filename: file.filename || "未命名附件",
+          mediaType,
+          size: file.size ?? 0,
+          previewUrl: mediaType.startsWith("image/")
+            ? `data:${mediaType};base64,${file.data}`
+            : undefined,
+          data: file.data,
+        } satisfies PendingAttachment;
+      }),
+    ]);
+  }, []);
+
   const send = useCallback(async (): Promise<void> => {
     if (!room || room.status === "archived") return;
     const text = inputRef.current?.getText().trim() ?? "";
-    if (!text) return;
+    if (!text && pendingAttachments.length === 0) return;
     try {
       await window.electronAPI.appendCollaborationUserMessage({
         roomId: room.id,
         content: text,
+        attachments:
+          pendingAttachments.length > 0
+            ? pendingAttachments.map(({ filename, mediaType, data }) => ({
+                filename,
+                mediaType,
+                data,
+              }))
+            : undefined,
         mentions:
           composerMentionIds.length > 0
             ? composerMentionIds.map((id) =>
@@ -487,13 +637,14 @@ function LocalCollaborationRoomsPage({
       });
       inputRef.current?.clear();
       setComposerMentionIds([]);
+      setPendingAttachments([]);
       onRoomsChanged();
     } catch (err) {
       toast.error("发送失败", {
         description: err instanceof Error ? err.message : String(err),
       });
     }
-  }, [room, composerMentionIds, onRoomsChanged]);
+  }, [room, composerMentionIds, onRoomsChanged, pendingAttachments]);
 
   const handleCancelRun = useCallback(
     async (runId: string): Promise<void> => {
@@ -519,20 +670,12 @@ function LocalCollaborationRoomsPage({
   /** 会话同款停止键：一次停止当前房间内所有可取消的 run。 */
   const handleStopRuns = useCallback(async (): Promise<void> => {
     if (!room || stoppingRuns) return;
-    const targets = runs.filter(
-      (run) => run.status === "running" || run.status === "queued",
-    );
-    if (targets.length === 0) return;
+    const cancellableCount =
+      (runSummary?.running ?? 0) + (runSummary?.queued ?? 0);
+    if (cancellableCount === 0 && stoppableRuns.length === 0) return;
     setStoppingRuns(true);
     try {
-      await Promise.all(
-        targets.map((run) =>
-          window.electronAPI.cancelCollaborationRun({
-            roomId: room.id,
-            runId: run.id,
-          }),
-        ),
-      );
+      await window.electronAPI.cancelAllCollaborationRuns(room.id);
       onRoomsChanged();
     } catch (err) {
       toast.error("停止失败", {
@@ -541,7 +684,7 @@ function LocalCollaborationRoomsPage({
     } finally {
       setStoppingRuns(false);
     }
-  }, [room, runs, stoppingRuns, onRoomsChanged]);
+  }, [room, runSummary, stoppableRuns.length, stoppingRuns, onRoomsChanged]);
 
   const handleResolveApproval = useCallback(
     async (
@@ -773,27 +916,6 @@ function LocalCollaborationRoomsPage({
     },
     [onRoomsChanged, room],
   );
-  const confirmRename = useCallback(
-    async (next: string): Promise<void> => {
-      if (!room) return;
-      setTextPrompt(null);
-      if (next === room.title) return;
-      try {
-        await window.electronAPI.updateCollaborationRoom({
-          roomId: room.id,
-          title: next,
-        });
-        onRoomsChanged();
-      } catch (err) {
-        console.error("[协作室] 重命名失败:", err);
-        toast.error("重命名失败", {
-          description: err instanceof Error ? err.message : String(err),
-        });
-      }
-    },
-    [room, onRoomsChanged],
-  );
-
   // P2-2：编辑房间目标。权限与 rename 一致（沿用现有 rename 可见性，不扩大权限）；
   // 空字符串允许（清空目标）；与当前值相同则 no-op。归档房间入口 disabled（与 rename 一致）。
   const confirmEditGoal = useCallback(
@@ -826,8 +948,14 @@ function LocalCollaborationRoomsPage({
           memberId,
         });
         onRoomsChanged();
+        const remainingBotCount = members.filter(
+          (member) => member.status !== "removed" && member.id !== memberId,
+        ).length;
         toast.success("成员已移除", {
-          description: "历史消息和加入时配置副本仍会保留。",
+          description:
+            remainingBotCount <= 1
+              ? "当前仅剩一个 Bot；协作室不会自动退出，需要时请点击「结束协作」。"
+              : "历史消息和加入时配置副本仍会保留。",
         });
       } catch (err) {
         toast.error("移除成员失败", {
@@ -835,25 +963,8 @@ function LocalCollaborationRoomsPage({
         });
       }
     },
-    [room, onRoomsChanged],
+    [members, room, onRoomsChanged],
   );
-  const handleTogglePause = useCallback(async (): Promise<void> => {
-    if (!room) return;
-    const nextStatus: CollaborationRoomStatus =
-      room.status === "paused" ? "active" : "paused";
-    try {
-      await window.electronAPI.updateCollaborationRoom({
-        roomId: room.id,
-        status: nextStatus,
-      });
-      onRoomsChanged();
-    } catch (err) {
-      toast.error("操作失败", {
-        description: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }, [room, onRoomsChanged]);
-
   const confirmMemberSettings = useCallback(
     async (patch: {
       memberId: string;
@@ -903,27 +1014,11 @@ function LocalCollaborationRoomsPage({
       toast.error(error instanceof Error ? error.message : "导入工作区失败");
     }
   }, [onRoomsChanged, room?.id]);
-  const handleArchive = useCallback(async (): Promise<void> => {
-    if (!room) return;
-    try {
-      await window.electronAPI.updateCollaborationRoom({
-        roomId: room.id,
-        status: "archived",
-      });
-      onRoomArchived?.(room.id);
-      onRoomsChanged();
-    } catch (err) {
-      toast.error("归档失败", {
-        description: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }, [onRoomArchived, onRoomsChanged, room]);
-
   /**
    * 明示退出协作（14 §1）：用户确认后调 exit-with-bridge，主进程精炼协作结论写回原
-   * session 面板（系统通知卡）+ 清 fusionRoomId + 房间 paused（保留历史）。成功后派发
-   * session-meta-changed（usePersistedSessionMeta 重读 → fusionRoomId 清空 → Chat 切回普通
-   * 会话壳，面板可见回写 system 卡）+ onCollaborationExited 兜底 bump。失败抛错由
+   * session 面板（系统通知卡）+ 清 fusionRoomId + 房间 paused（保留历史）。成功后由主进程
+   * 推送 session_meta_changed（usePersistedSessionMeta 重读 → fusionRoomId 清空 → Chat
+   * 切回普通会话壳，面板可见回写 system 卡）+ onCollaborationExited 兜底 bump。失败抛错由
    * DestructiveConfirmDialog 内联提示。
    */
   const handleExitCollaboration = useCallback(async (): Promise<void> => {
@@ -933,11 +1028,6 @@ function LocalCollaborationRoomsPage({
       sessionId: sourceId,
       userConfirmed: true,
     });
-    window.dispatchEvent(
-      new CustomEvent("tagent:session-meta-changed", {
-        detail: { sessionId: sourceId },
-      }),
-    );
     onCollaborationExited?.();
     toast.success("已结束协作", {
       description: "已把协作结论写回原会话，回到普通会话。",
@@ -1078,13 +1168,13 @@ function LocalCollaborationRoomsPage({
    */
   const canExitCollaboration = Boolean(
     room.sourceSessionId &&
-      (!sourceSessionId || room.sourceSessionId === sourceSessionId),
+    (!sourceSessionId || room.sourceSessionId === sourceSessionId),
   );
 
   return (
     <div className="session-body flex h-full min-h-0 flex-col">
       {/* 头部 */}
-      <header className="flex flex-col gap-1.5 border-b border-border/40 px-5 py-3">
+      <header className="collab-room-header flex flex-col gap-1 border-b border-border/40 px-4 py-2.5">
         <div className="flex items-center gap-2">
           <h1
             className="flex-1 truncate text-base font-semibold text-foreground"
@@ -1103,321 +1193,327 @@ function LocalCollaborationRoomsPage({
           >
             {roomStatusLabel(room.status)}
           </span>
-          {canExitCollaboration ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 gap-1 border-destructive/30 px-2 text-[11px] text-destructive hover:bg-destructive/10"
-              onClick={() => setExitConfirmOpen(true)}
-              title="结束协作，把结论写回原会话并回到普通会话"
-            >
-              <SignOut size={13} weight="regular" />
-              结束协作
-            </Button>
-          ) : null}
-          <AppTooltip label="重命名" side="bottom">
-            <button
-              type="button"
-              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              aria-label="重命名"
-              onClick={() => setTextPrompt("rename")}
-            >
-              <PencilSimple size={14} />
-            </button>
-          </AppTooltip>
-          <AppTooltip
-            label={room.status === "paused" ? "恢复运行" : "暂停新运行"}
-            side="bottom"
-          >
-            <button
-              type="button"
-              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              aria-label={room.status === "paused" ? "恢复运行" : "暂停新运行"}
-              onClick={() => void handleTogglePause()}
-            >
-              {room.status === "paused" ? (
-                <Play size={14} />
-              ) : (
-                <Pause size={14} />
-              )}
-            </button>
-          </AppTooltip>
-          <CollaborationAddMemberDialog
-            open={showAddMemberDialog}
-            onOpenChange={setShowAddMemberDialog}
-            disabled={addingMember || archived}
-            channels={channels}
-            cliWorkers={cliWorkers}
-            onSave={(patch) => void confirmAddMember(patch)}
-          />
-          <AppTooltip label="归档" side="bottom">
-            <button
-              type="button"
-              className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              aria-label="归档"
-              onClick={() => void handleArchive()}
-            >
-              <Archive size={14} />
-            </button>
-          </AppTooltip>
-          {room.roomWorkspace ? (
-            <AppTooltip label="导入个人工作区" side="bottom">
-              <button
-                type="button"
-                className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                aria-label="导入个人工作区"
-                onClick={() => void handleImportWorkspace()}
-              >
-                <FolderOpen size={14} />
-              </button>
-            </AppTooltip>
-          ) : null}
-          <AppTooltip
-            label={workPanelOpen ? "收起工作面板" : "展开工作面板"}
-            side="bottom"
-          >
-            <button
-              type="button"
-              className={cn(
-                "flex size-7 items-center justify-center rounded-md transition-colors hover:bg-accent hover:text-foreground",
-                workPanelOpen ? "text-primary" : "text-muted-foreground",
-              )}
-              aria-label={workPanelOpen ? "收起工作面板" : "展开工作面板"}
-              aria-pressed={workPanelOpen}
-              onClick={() => setWorkPanelOpen((v) => !v)}
-            >
-              <ListChecks size={14} />
-            </button>
-          </AppTooltip>
-        </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-          <span className="inline-flex min-w-0 items-center gap-1">
-            <span
-              className={cn("truncate", !room.goal && "italic text-muted-foreground/60")}
-              title={room.goal || undefined}
-            >
-              {room.goal ? `目标：${room.goal}` : "目标：未设置"}
-            </span>
-            <AppTooltip label="编辑目标" side="bottom">
-              <button
-                type="button"
-                className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-                aria-label="编辑目标"
-                disabled={archived}
-                onClick={() => setTextPrompt("edit-goal")}
-              >
-                <Target size={12} />
-              </button>
-            </AppTooltip>
-          </span>
-          <span>成员：{members.length}</span>
-          <span title={`当前运行 ${runningCount} / 并发上限 ${maxConcurrent}`}>
-            并发 {runningCount}/{maxConcurrent}
-          </span>
-          {queuedCount > 0 ? (
-            <span className="text-amber-600" title="排队等待启动的 run">
-              排队 {queuedCount}
-            </span>
-          ) : null}
-          {pendingMailbox.length > 0 ? (
-            <span className="text-sky-600" title="尚未回复的 A2A 信封">
-              信箱 {pendingMailbox.length}
-            </span>
-          ) : null}
-          {room.roomWorkspace ? (
-            <span>工作区：房间独立服务目录</span>
-          ) : room.workspaceId ? (
-            <span>工作区：旧版个人目录兼容</span>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/40 bg-foreground/[0.025] px-2 py-1.5 text-[11px]">
-          <span className="font-medium text-foreground/80">用户成员</span>
-          {humanMembers.map((human) => (
-            <span
-              key={human.id}
-              className={cn(
-                "rounded-full border border-border/50 px-2 py-0.5 text-muted-foreground",
-                human.status === "active" &&
-                  "border-emerald-500/30 text-emerald-700 dark:text-emerald-300",
-                human.status === "invited" &&
-                  "border-amber-500/30 text-amber-700 dark:text-amber-300",
-                human.status === "removed" && "opacity-50 line-through",
-              )}
-              title={`${human.userId} · ${human.status}`}
-            >
-              {human.displayName}
-              {human.userId === room.ownerUserId ? " · 房主" : ""}
-              {" · "}
-              {human.status === "active"
-                ? "在线"
-                : human.status === "invited"
-                  ? "待接受"
-                  : human.status === "left"
-                    ? "已离开"
-                    : "已移除"}
-            </span>
-          ))}
-          {room.ownerUserId === "local-user" ? (
-            <div className="ml-auto flex min-w-[220px] items-center gap-1">
-              <Input
-                value={inviteUserId}
-                onChange={(event) => setInviteUserId(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void inviteHuman();
-                }}
-                placeholder="输入用户 ID 邀请"
-                className="h-6 min-w-0 flex-1 text-[11px]"
-                aria-label="输入用户 ID 邀请"
-              />
+          <div className="collab-room-actions ml-auto flex items-center gap-0.5 border-l border-border/35 pl-1">
+            {canExitCollaboration ? (
               <Button
                 type="button"
-                size="sm"
                 variant="outline"
-                className="h-6 px-2 text-[11px]"
-                disabled={!inviteUserId.trim() || invitingUser}
-                onClick={() => void inviteHuman()}
+                size="sm"
+                className="h-7 gap-1 border-destructive/30 px-2 text-[11px] text-destructive hover:bg-destructive/10"
+                onClick={() => setExitConfirmOpen(true)}
+                title="结束协作，把结论写回原会话并回到普通会话"
               >
-                邀请
+                <SignOut size={13} weight="regular" />
+                结束协作
               </Button>
-            </div>
-          ) : null}
-        </div>
-        {members.some(
-          (member) =>
-            member.botProfileId &&
-            member.botOwnerUserId !== (room.ownerUserId ?? "local-user"),
-        ) ? (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/[0.04] px-2 py-1.5 text-[11px] text-muted-foreground">
-            <span className="font-medium text-foreground/80">Bot 授权</span>
-            {members
-              .filter(
-                (member) =>
-                  member.botProfileId &&
-                  member.botOwnerUserId !== (room.ownerUserId ?? "local-user"),
-              )
-              .map((member) => (
-                <span
-                  key={member.id}
-                  className="inline-flex items-center gap-1.5"
+            ) : null}
+            <CollaborationAddMemberDialog
+              open={showAddMemberDialog}
+              onOpenChange={setShowAddMemberDialog}
+              disabled={addingMember || archived}
+              channels={channels}
+              cliWorkers={cliWorkers}
+              onSave={(patch) => void confirmAddMember(patch)}
+            />
+            {room.roomWorkspace ? (
+              <AppTooltip label="导入个人工作区" side="bottom">
+                <button
+                  type="button"
+                  className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  aria-label="导入个人工作区"
+                  onClick={() => void handleImportWorkspace()}
                 >
-                  <span>{member.displayName}</span>
-                  {member.ownerConsent ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 px-1.5 text-[11px] text-emerald-700 dark:text-emerald-300"
-                      onClick={() => void consentBot(member.id, false)}
+                  <FolderOpen size={14} />
+                </button>
+              </AppTooltip>
+            ) : null}
+            <AppTooltip
+              label={workPanelOpen ? "收起工作面板" : "展开工作面板"}
+              side="bottom"
+            >
+              <button
+                type="button"
+                className={cn(
+                  "flex size-7 items-center justify-center rounded-md transition-colors hover:bg-accent hover:text-foreground",
+                  workPanelOpen ? "text-primary" : "text-muted-foreground",
+                )}
+                aria-label={workPanelOpen ? "收起工作面板" : "展开工作面板"}
+                aria-pressed={workPanelOpen}
+                onClick={() => setWorkPanelOpen((v) => !v)}
+              >
+                <ListChecks size={14} />
+              </button>
+            </AppTooltip>
+          </div>
+        </div>
+        <details className="collab-room-info">
+          <summary className="collab-room-info__summary">
+            <span className="font-medium text-foreground/80">房间信息</span>
+            <span className="collab-room-info__summary-meta">
+              {members.length} 个成员 · 运行 {runningCount}/{maxConcurrent}
+            </span>
+            <CaretDown
+              size={13}
+              aria-hidden="true"
+              className="collab-room-info__chevron"
+            />
+          </summary>
+          <div className="collab-room-info__body">
+            <div className="collab-room-info__overview">
+              <div className="collab-room-info__goal">
+                <span className="collab-room-info__eyebrow">房间目标</span>
+                <span
+                  className={cn(
+                    "collab-room-info__goal-text",
+                    !room.goal && "is-empty",
+                  )}
+                  title={room.goal || undefined}
+                >
+                  {room.goal || "未设置目标"}
+                </span>
+                <AppTooltip label="编辑目标" side="bottom">
+                  <button
+                    type="button"
+                    className="collab-room-info__edit"
+                    aria-label="编辑目标"
+                    disabled={archived}
+                    onClick={() => setTextPrompt("edit-goal")}
+                  >
+                    <Target size={13} />
+                  </button>
+                </AppTooltip>
+              </div>
+              <div
+                className="collab-room-info__stats"
+                aria-label="房间运行概览"
+              >
+                <span className="collab-room-info__stat">
+                  <strong>{members.length}</strong>
+                  <small>成员</small>
+                </span>
+                <span className="collab-room-info__stat">
+                  <strong>
+                    {runningCount}/{maxConcurrent}
+                  </strong>
+                  <small>运行</small>
+                </span>
+                {queuedCount > 0 ? (
+                  <span className="collab-room-info__stat is-warning">
+                    <strong>{queuedCount}</strong>
+                    <small>排队</small>
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            <section
+              className="collab-room-info__people"
+              aria-labelledby="collab-people-label"
+            >
+              <div className="collab-room-info__section-head">
+                <span id="collab-people-label">参与者</span>
+                <span>
+                  {
+                    humanMembers.filter((human) => human.status === "active")
+                      .length
+                  }{" "}
+                  人在线
+                </span>
+              </div>
+              <div className="collab-room-info__people-list">
+                {humanMembers.map((human) => (
+                  <span
+                    key={human.id}
+                    className={cn(
+                      "collab-room-person-chip",
+                      human.status === "active" && "is-online",
+                      human.status === "invited" && "is-invited",
+                      human.status === "removed" && "is-removed",
+                    )}
+                    title={`${human.userId} · ${human.status}`}
+                  >
+                    <span
+                      className="collab-room-person-chip__dot"
+                      aria-hidden="true"
+                    />
+                    <span>{human.displayName}</span>
+                    {human.userId === room.ownerUserId ? (
+                      <span className="collab-room-person-chip__role">
+                        房主
+                      </span>
+                    ) : null}
+                  </span>
+                ))}
+                {members.map((m) => {
+                  const st = memberDisplayStatus(m, runs);
+                  const hasBackend = memberHasExecutableBackend(m);
+                  return (
+                    <CollaborationMemberSettings
+                      key={m.id}
+                      member={m}
+                      channels={channels}
+                      cliWorkers={cliWorkers}
+                      onSave={(patch) => void confirmMemberSettings(patch)}
+                      onRemove={(memberId) =>
+                        void confirmRemoveMember(memberId)
+                      }
                     >
-                      已授权 · 撤回
-                    </Button>
-                  ) : member.botOwnerUserId === "local-user" ? (
+                      <button
+                        type="button"
+                        className={cn(
+                          "collab-room-person-chip collab-room-bot-chip",
+                          st === "running" && "is-running",
+                          st === "queued" && "is-queued",
+                          st === "awaiting_peer" && "is-waiting",
+                          !hasBackend && "is-missing-backend",
+                          st === "removed" && "is-removed",
+                        )}
+                        aria-label={`编辑成员 ${m.displayName}`}
+                        title={`${m.displayName} · ${memberStatusLabel(st)} · ${channelLabel(m)}`}
+                      >
+                        <MemberAvatar
+                          member={m}
+                          channels={channels}
+                          size={18}
+                        />
+                        <span>{m.displayName}</span>
+                        {m.isCoordinator ? (
+                          <span className="collab-room-person-chip__role">
+                            协调
+                          </span>
+                        ) : null}
+                        {!hasBackend && st !== "removed" ? (
+                          <span className="collab-room-person-chip__warning">
+                            无渠道
+                          </span>
+                        ) : null}
+                        <span
+                          className={cn(
+                            "collab-status-dot inline-block size-1.5 rounded-full",
+                            st === "running" && "animate-pulse bg-emerald-500",
+                            st === "queued" && "bg-amber-500",
+                            st === "awaiting_peer" &&
+                              "animate-pulse bg-sky-500",
+                            st === "idle" && "bg-muted-foreground/40",
+                            st === "offline" && "bg-muted-foreground/20",
+                            st === "removed" && "bg-muted-foreground/30",
+                          )}
+                        />
+                      </button>
+                    </CollaborationMemberSettings>
+                  );
+                })}
+                {room.ownerUserId === "local-user" ? (
+                  <div className="collab-room-invite">
+                    <Input
+                      value={inviteUserId}
+                      onChange={(event) => setInviteUserId(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void inviteHuman();
+                      }}
+                      placeholder="邀请用户 ID"
+                      className="collab-room-invite__input"
+                      aria-label="输入用户 ID 邀请"
+                    />
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="h-6 px-1.5 text-[11px]"
-                      onClick={() => void consentBot(member.id, true)}
+                      className="collab-room-invite__button"
+                      disabled={!inviteUserId.trim() || invitingUser}
+                      onClick={() => void inviteHuman()}
                     >
-                      授权运行
+                      邀请
                     </Button>
-                  ) : (
-                    <span className="text-amber-700 dark:text-amber-300">
-                      等待所有人授权
-                    </span>
-                  )}
-                </span>
-              ))}
-          </div>
-        ) : null}
-        {/* 成员状态条 */}
-        {members.length > 0 ? (
-          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-            {members.map((m) => {
-              const st = memberDisplayStatus(m, runs);
-              const hasBackend = memberHasExecutableBackend(m);
-              return (
-                <CollaborationMemberSettings
-                  key={m.id}
-                  member={m}
-                  channels={channels}
-                  cliWorkers={cliWorkers}
-                  onSave={(patch) => void confirmMemberSettings(patch)}
-                  onRemove={(memberId) => void confirmRemoveMember(memberId)}
-                >
-                  <button
-                    type="button"
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-foreground/[0.04] py-0.5 pl-0.5 pr-2 text-[11px] transition-colors hover:border-primary/40 hover:bg-foreground/[0.08]",
-                      st === "running" &&
-                        "border-emerald-500/30 bg-emerald-500/10",
-                      st === "queued" && "border-amber-500/30 bg-amber-500/10",
-                      st === "awaiting_peer" &&
-                        "border-sky-500/30 bg-sky-500/10",
-                      !hasBackend && "ring-1 ring-amber-500/40",
-                      st === "removed" && "opacity-45 grayscale",
-                    )}
-                    aria-label={`编辑成员 ${m.displayName}`}
-                  >
-                    <MemberAvatar member={m} channels={channels} size={18} />
-                    <span className="font-medium text-foreground/85">
-                      {m.displayName}
-                    </span>
-                    {m.isCoordinator ? (
-                      <span className="rounded bg-primary/10 px-1 text-[9px] font-medium text-primary">
-                        协调
-                      </span>
-                    ) : null}
-                    {st === "removed" ? (
-                      <span className="font-medium text-muted-foreground">
-                        已移除
-                      </span>
-                    ) : !hasBackend ? (
-                      <span className="font-medium text-amber-600">无渠道</span>
-                    ) : (
-                      <span className="opacity-60">{channelLabel(m)}</span>
-                    )}
-                    <span
-                      className={cn(
-                        "collab-status-dot inline-block size-1.5 rounded-full",
-                        st === "running" && "animate-pulse bg-emerald-500",
-                        st === "queued" && "bg-amber-500",
-                        st === "awaiting_peer" && "animate-pulse bg-sky-500",
-                        st === "idle" && "bg-muted-foreground/40",
-                        st === "offline" && "bg-muted-foreground/20",
-                        st === "removed" && "bg-muted-foreground/30",
-                      )}
-                    />
-                  </button>
-                </CollaborationMemberSettings>
-              );
-            })}
-          </div>
-        ) : null}
-        {pendingMailbox.length > 0 ? (
-          <ul className="flex flex-col gap-1 pt-1.5">
-            {pendingMailbox.slice(0, 4).map((env) => (
-              <li
-                key={env.id}
-                className="truncate rounded-md bg-sky-500/10 px-2 py-1 text-[11px] text-sky-700 dark:text-sky-300"
-                title={env.payload}
+                  </div>
+                ) : null}
+              </div>
+            </section>
+
+            {members.some(
+              (member) =>
+                member.botProfileId &&
+                member.botOwnerUserId !== (room.ownerUserId ?? "local-user"),
+            ) ? (
+              <section
+                className="collab-room-info__notice"
+                aria-label="Bot 授权"
               >
-                <span className="font-medium">
-                  {env.type === "question"
-                    ? "待回复"
-                    : env.type === "reply"
-                      ? "回复"
-                      : "通知"}
-                </span>
-                {" · "}
-                {memberName(env.fromMemberId)} → {memberName(env.toMemberId)}
-                {" · "}
-                {env.payload}
-              </li>
-            ))}
-          </ul>
-        ) : null}
+                <div className="collab-room-info__section-head">
+                  <span>Bot 授权</span>
+                  <span>需要处理</span>
+                </div>
+                <div className="collab-room-info__notice-list">
+                  {members
+                    .filter(
+                      (member) =>
+                        member.botProfileId &&
+                        member.botOwnerUserId !==
+                          (room.ownerUserId ?? "local-user"),
+                    )
+                    .map((member) => (
+                      <span
+                        key={member.id}
+                        className="inline-flex items-center gap-1.5"
+                      >
+                        <span>{member.displayName}</span>
+                        {member.ownerConsent ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-1.5 text-[11px] text-emerald-700 dark:text-emerald-300"
+                            onClick={() => void consentBot(member.id, false)}
+                          >
+                            已授权 · 撤回
+                          </Button>
+                        ) : member.botOwnerUserId === "local-user" ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-1.5 text-[11px]"
+                            onClick={() => void consentBot(member.id, true)}
+                          >
+                            授权运行
+                          </Button>
+                        ) : (
+                          <span className="text-amber-700 dark:text-amber-300">
+                            等待所有人授权
+                          </span>
+                        )}
+                      </span>
+                    ))}
+                </div>
+              </section>
+            ) : null}
+
+            {pendingMailbox.length > 0 ? (
+              <ul className="collab-room-info__mailbox" aria-label="待处理信箱">
+                {pendingMailbox.slice(0, 4).map((env) => (
+                  <li
+                    key={env.id}
+                    className="truncate rounded-md bg-sky-500/10 px-2 py-1 text-[11px] text-sky-700 dark:text-sky-300"
+                    title={env.payload}
+                  >
+                    <span className="font-medium">
+                      {env.type === "question"
+                        ? "待回复"
+                        : env.type === "reply"
+                          ? "回复"
+                          : "通知"}
+                    </span>
+                    {" · "}
+                    {memberName(env.fromMemberId)} →{" "}
+                    {memberName(env.toMemberId)}
+                    {" · "}
+                    {env.payload}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        </details>
       </header>
 
       {/* S5：主区改为「左：时间线+输入 | 右：工作面板」行布局。输入栈移入左列（session-chat-col），
@@ -1437,7 +1533,8 @@ function LocalCollaborationRoomsPage({
             }
           />
           {/* 时间线（S3.5-c：一 run 一卡，对齐会话信息流） */}
-          <CollaborationTimeline key={room.id}
+          <CollaborationTimeline
+            key={room.id}
             messages={messages}
             runs={runs}
             members={members}
@@ -1461,6 +1558,10 @@ function LocalCollaborationRoomsPage({
             onResolveApproval={(requestId, decision, response) =>
               void handleResolveApproval(requestId, decision, response)
             }
+            onOpenAttachment={onOpenAttachment}
+            hasMoreOlder={Boolean(messageCursor || runCursor)}
+            loadingOlder={loadingOlderHistory}
+            onLoadOlder={loadOlderHistory}
           />
 
           {/* 底部输入栈（绝对定位，锚在左列 session-chat-col，输入框底与侧栏底对齐） */}
@@ -1507,6 +1608,9 @@ function LocalCollaborationRoomsPage({
                     onSubmit={() => void send()}
                     placeholder="输入消息…（Enter 发送。不 @ 时协调者回复；@成员名 点名指定，可多个并行；@所有人 唤醒全部）"
                     onDraftChange={setHasDraft}
+                    attachments={pendingAttachments}
+                    onAttachmentsChange={setPendingAttachments}
+                    onPreviewAttachment={onPreviewAttachment}
                     mentionRoles={[
                       ...(activeMembers.length > 0
                         ? [COLLABORATION_ALL_MENTION]
@@ -1518,8 +1622,26 @@ function LocalCollaborationRoomsPage({
                     ]}
                     onMentionChange={setComposerMentionIds}
                     footer={
-                      <div className="composer-footer-bar flex h-7 items-center justify-end px-2 pb-2 pt-0.5">
-                        {stoppableRuns.length > 0 && !hasDraft ? (
+                      <div className="composer-footer-bar flex h-7 items-center justify-between gap-1 px-2 pb-2 pt-0.5">
+                        <div className="composer-footer-bar__left flex h-7 min-w-0 items-center gap-0.5">
+                          <AppTooltip label="添加附件">
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              className="shrink-0 rounded-xl text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+                              onClick={() => void handleOpenFileDialog()}
+                              aria-label="添加附件"
+                            >
+                              <Plus className="size-4" />
+                            </Button>
+                          </AppTooltip>
+                        </div>
+                        <div className="composer-footer-bar__right flex h-7 min-w-0 shrink items-center gap-0.5">
+                        {(stoppableRuns.length > 0 ||
+                          (runSummary?.running ?? 0) +
+                            (runSummary?.queued ?? 0) >
+                            0) &&
+                          !hasSendable ? (
                           <Button
                             type="button"
                             variant="ghost"
@@ -1534,11 +1656,12 @@ function LocalCollaborationRoomsPage({
                         ) : (
                           <SendSplitButton
                             presets={[]}
-                            hasDraft={hasDraft}
+                            hasDraft={hasSendable}
                             onSend={() => void send()}
                             onConsultPreset={() => undefined}
                           />
                         )}
+                        </div>
                       </div>
                     }
                   />
@@ -1565,14 +1688,6 @@ function LocalCollaborationRoomsPage({
       </div>
 
       <CollaborationTextPrompt
-        open={textPrompt === "rename"}
-        title="重命名协作室"
-        defaultValue={room.title}
-        confirmLabel="保存"
-        onCancel={() => setTextPrompt(null)}
-        onConfirm={(title) => void confirmRename(title)}
-      />
-      <CollaborationTextPrompt
         open={textPrompt === "edit-goal"}
         title="编辑房间目标"
         label="留空可清除目标。"
@@ -1590,7 +1705,9 @@ function LocalCollaborationRoomsPage({
         title="结束协作？"
         description={
           <>
-            <p className="mb-1">将把协作结论精炼写回原会话；协作室记录保留（暂停）。</p>
+            <p className="mb-1">
+              将把协作结论精炼写回原会话；协作室记录保留（暂停）。
+            </p>
             <p>本标签回到普通会话，可继续单会话对话。</p>
           </>
         }

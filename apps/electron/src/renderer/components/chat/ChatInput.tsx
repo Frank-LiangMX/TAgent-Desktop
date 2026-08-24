@@ -12,7 +12,6 @@ import {
   useState,
   useEffect,
 } from 'react'
-import { Paperclip } from 'lucide-react'
 import { filterMentionRoles, parseMentions } from '@tagent/shared'
 import { AttachmentPreviewItem } from '@tagent/ui'
 import { shouldConvertTextToAttachment, createTextAttachment } from '../../lib/clipboard-text-attachment'
@@ -42,7 +41,6 @@ interface ChatInputProps {
   onDraftChange?: (hasText: boolean) => void
   attachments?: PendingAttachment[]
   onAttachmentsChange?: (attachments: PendingAttachment[]) => void
-  onOpenFileDialog?: () => void
   /** 点击非图片待发附件 → 分屏预览 */
   onPreviewAttachment?: (attachment: PendingAttachment) => void
   mentionRoles?: MentionRoleOption[]
@@ -197,7 +195,6 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     onDraftChange,
     attachments = [],
     onAttachmentsChange,
-    onOpenFileDialog,
     onPreviewAttachment,
     mentionRoles,
     topBar,

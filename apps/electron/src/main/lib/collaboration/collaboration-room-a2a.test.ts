@@ -483,6 +483,70 @@ describe('CollaborationRoomService A2A 信箱 host 侧（Stage 4-2）', () => {
   })
 })
 
+describe('CollaborationRoomService 来源会话摘录 host tool', () => {
+  test('仅协调者可调用，sourceSessionId 由房间绑定，预算累计值按 run 传递', async () => {
+    const requests: Array<{ sourceSessionId: string; roomId: string; query?: string; maxTokens?: number; used: number }> = []
+    const adapter: MemberBackendAdapter = {
+      capabilities: () => ({ ...MOCK_CAPS, supportsToolBridge: true }),
+      runTurn: async (input: MemberTurnInput): Promise<MemberTurnResult> => {
+        const first = await input.hostToolHandler!({
+          name: 'read_source_session_excerpt',
+          arguments: { query: '旧决定', maxTokens: '1500' },
+        })
+        const second = await input.hostToolHandler!({
+          name: 'read_source_session_excerpt',
+          arguments: { recentMessageLimit: '4', maxTokens: '1500' },
+        })
+        expect(first.isError).not.toBe(true)
+        expect(second.isError).not.toBe(true)
+        return { text: first.output + second.output }
+      },
+    }
+    const svc = CollaborationRoomService.create({
+      adapter,
+      sourceSessionExcerptReader: async (request, used) => {
+        requests.push({
+          sourceSessionId: request.sourceSessionId,
+          roomId: request.roomId,
+          ...(request.query ? { query: request.query } : {}),
+          ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
+          used,
+        })
+        return {
+          sourceSessionId: request.sourceSessionId,
+          excerpt: '来源摘录',
+          tokenEstimate: 1200,
+          charCount: 5,
+          truncated: false,
+        }
+      },
+    })
+    const room = svc.createRoom({
+      title: '来源摘录测试',
+      sourceSessionId: 'source-session-1',
+      members: [{ displayName: '协调者', isCoordinator: true }],
+    })
+    svc.appendUserMessage({ roomId: room.id, content: '请回看旧决定' })
+    await svc.awaitAllRuns()
+
+    expect(requests).toEqual([
+      {
+        roomId: room.id,
+        sourceSessionId: 'source-session-1',
+        query: '旧决定',
+        maxTokens: 1500,
+        used: 0,
+      },
+      {
+        roomId: room.id,
+        sourceSessionId: 'source-session-1',
+        maxTokens: 1500,
+        used: 1200,
+      },
+    ])
+  })
+})
+
 describe('CollaborationRoomService A2A continuation（S4-3 host 唤醒）', () => {
   test('host tool handler：A room_ask → B room_reply → A continuation', async () => {
     const calls: MemberTurnInput[] = []

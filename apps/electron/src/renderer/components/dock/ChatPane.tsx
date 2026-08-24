@@ -61,6 +61,7 @@ export function ChatPane(props: IDockviewPanelProps<ChatPaneParams>): JSX.Elemen
     modelId: tab.modelId,
     channelId: tab.channelId,
     botProfileIds: persistedMeta?.botProfileIds,
+    fusionRoomId: persistedMeta?.fusionRoomId,
   }
 
   return <Chat key={sessionId} session={session} crewExternalized onOpenCrew={onOpenCrew} />

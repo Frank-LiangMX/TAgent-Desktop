@@ -199,12 +199,13 @@ describe('buildConciseTimeline', () => {
     ]
     const segs = buildConciseTimeline(process)
     expect(segs[0]).toMatchObject({ kind: 'thinking', summary: '思考了 6s', durationSec: 6 })
+    expect(segs.map((s) => s.kind)).toEqual(['thinking', 'work_stage', 'thinking', 'work_stage'])
     const stage = segs[1]!
     expect(stage.kind).toBe('work_stage')
     if (stage.kind === 'work_stage') {
-      // REGRESS-J(J3)：中段思考留在阶段 steps（展开可见全文），不再升独立 fold 拆阶段
-      expect(stage.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
-      expect(stage.steps[1]).toMatchObject({ kind: 'thinking', thinking: expect.stringContaining('**pi') })
+      expect(stage.steps.map((s) => s.kind)).toEqual(['tool'])
+      const mid = segs[2]!
+      expect(mid).toMatchObject({ kind: 'thinking', thinking: expect.stringContaining('**pi'), durationSec: 3 })
     }
   })
 
@@ -222,16 +223,18 @@ describe('buildConciseTimeline', () => {
       tool('Edit', 'e1', { file_path: 'a.ts' }, true, 'ok +10 -2'),
     ]
     const segs = buildConciseTimeline(process)
-    // leading 思考独立 fold；中段 deliverable 思考留在 stage steps，不再拆出独立 fold
-    expect(segs.map((s) => s.kind)).toEqual(['thinking', 'work_stage'])
+    expect(segs.map((s) => s.kind)).toEqual(['thinking', 'work_stage', 'thinking', 'work_stage'])
     const stage = segs[1]!
     if (stage.kind === 'work_stage') {
-      expect(stage.steps.map((s) => s.kind)).toEqual(['tool', 'tool', 'thinking', 'tool'])
-      const mid = stage.steps[2]!
-      if (mid.kind === 'thinking') expect(mid.thinking).toContain('**pi')
-      expect(stage.diffAdd).toBe(10)
-      expect(stage.diffDel).toBe(2)
-      expect(getWorkStepLabel(stage.steps[3]!)).toBe('编辑了 a.ts')
+      expect(stage.steps.map((s) => s.kind)).toEqual(['tool', 'tool'])
+      const mid = segs[2]!
+      expect(mid).toMatchObject({ kind: 'thinking', thinking: expect.stringContaining('**pi') })
+      const editStage = segs[3]!
+      expect(editStage.kind).toBe('work_stage')
+      if (editStage.kind !== 'work_stage') return
+      expect(editStage.diffAdd).toBe(10)
+      expect(editStage.diffDel).toBe(2)
+      expect(getWorkStepLabel(editStage.steps[0]!)).toBe('编辑了 a.ts')
     }
   })
 
@@ -247,16 +250,20 @@ describe('buildConciseTimeline', () => {
       tool('Bash', 'b1', { command: 'ls' }),
     ]
     const segs = buildConciseTimeline(process)
-    // 一个 work_stage：思考收进 steps，summary 聚合三族，不拆阶段、不刷独立 ThinkingFold
-    expect(segs.map((s) => s.kind)).toEqual(['work_stage'])
+    expect(segs.map((s) => s.kind)).toEqual(['work_stage', 'thinking', 'work_stage'])
     const stage = segs[0]!
     if (stage.kind === 'work_stage') {
-      expect(stage.tools).toHaveLength(3)
-      expect(stage.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool', 'tool'])
-      expect(stage.steps[1]).toMatchObject({ kind: 'thinking', thinking: midThink })
+      expect(stage.tools).toHaveLength(1)
+      expect(stage.steps.map((s) => s.kind)).toEqual(['tool'])
       expect(stage.summary).toContain('探索了 1')
-      expect(stage.summary).toContain('1 次搜索')
-      expect(stage.summary).toContain('运行了 1')
+      const mid = segs[1]!
+      expect(mid).toMatchObject({ kind: 'thinking', thinking: midThink })
+      const secondStage = segs[2]!
+      expect(secondStage.kind).toBe('work_stage')
+      if (secondStage.kind !== 'work_stage') return
+      expect(secondStage.tools).toHaveLength(2)
+      expect(secondStage.summary).toContain('1 次搜索')
+      expect(secondStage.summary).toContain('运行了 1')
     }
   })
 
@@ -270,14 +277,16 @@ describe('buildConciseTimeline', () => {
       tool('Edit', 'e1', { file_path: 'b.ts' }),
     ]
     const segs = buildConciseTimeline(process)
-    // 中段思考不再升独立 fold 打断阶段：Read | thinking | Edit 合并为一个 work_stage
-    expect(segs.map((s) => s.kind)).toEqual(['work_stage'])
+    expect(segs.map((s) => s.kind)).toEqual(['work_stage', 'thinking', 'work_stage'])
     const s0 = segs[0]!
     if (s0.kind === 'work_stage') {
-      expect(s0.tools.map((t) => t.tool.name)).toEqual(['Read', 'Edit'])
-      expect(s0.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
-      const mid = s0.steps[1]!
-      if (mid.kind === 'thinking') expect(mid.thinking).toBe(deliverable)
+      expect(s0.tools.map((t) => t.tool.name)).toEqual(['Read'])
+      expect(s0.steps.map((s) => s.kind)).toEqual(['tool'])
+      const mid = segs[1]!
+      expect(mid).toMatchObject({ kind: 'thinking', thinking: deliverable })
+      const s1 = segs[2]!
+      expect(s1.kind).toBe('work_stage')
+      if (s1.kind === 'work_stage') expect(s1.tools.map((t) => t.tool.name)).toEqual(['Edit'])
     }
   })
 
@@ -317,7 +326,13 @@ describe('buildConciseTimeline', () => {
     expect(segs[0]?.kind).toBe('thinking')
     const stage = segs[1]!
     if (stage.kind === 'work_stage') {
-      expect(stage.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
+      expect(stage.steps.map((s) => s.kind)).toEqual(['tool'])
+      expect(segs[2]?.kind).toBe('thinking')
+      const nextStage = segs[3]!
+      expect(nextStage.kind).toBe('work_stage')
+      if (nextStage.kind === 'work_stage') {
+        expect(nextStage.steps.map((s) => s.kind)).toEqual(['tool'])
+      }
     }
   })
 
@@ -376,14 +391,14 @@ describe('buildConciseTimeline', () => {
       tool('Grep', 'g1', { pattern: 'x' }),
     ]
     const live = buildConciseTimeline(process, { isLive: true })
-    expect(live.map((s) => s.kind)).toEqual(['work_stage'])
-    if (live[0]!.kind === 'work_stage') {
-      expect(live[0]!.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
-    }
+    expect(live.map((s) => s.kind)).toEqual(['work_stage', 'thinking', 'work_stage'])
+    if (live[0]!.kind === 'work_stage') expect(live[0]!.steps.map((s) => s.kind)).toEqual(['tool'])
+    expect(live[1]!.kind).toBe('thinking')
+    if (live[2]!.kind === 'work_stage') expect(live[2]!.steps.map((s) => s.kind)).toEqual(['tool'])
     const done = buildConciseTimeline(process, { isLive: false })
-    if (done[0]!.kind === 'work_stage') {
-      expect(done[0]!.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
-    }
+    expect(done.map((s) => s.kind)).toEqual(['work_stage', 'thinking', 'work_stage'])
+    if (done[0]!.kind === 'work_stage') expect(done[0]!.steps.map((s) => s.kind)).toEqual(['tool'])
+    if (done[2]!.kind === 'work_stage') expect(done[2]!.steps.map((s) => s.kind)).toEqual(['tool'])
   })
 
   it('live 与 idle 一致：deliverable 中段思考都留在 stage（不升独立 fold、不打断阶段）——REGRESS-J J3', () => {
@@ -395,18 +410,16 @@ describe('buildConciseTimeline', () => {
       { type: 'thinking', key: 't1', thinking: deliverable },
       tool('Edit', 'e1', { file_path: 'b.ts' }),
     ]
-    // live：思考并入 stage（key=cur.key 稳定，不与 think-${cur.key} 互跳 remount）
     const live = buildConciseTimeline(process, { isLive: true })
-    expect(live.map((s) => s.kind)).toEqual(['work_stage'])
-    if (live[0]!.kind === 'work_stage') {
-      expect(live[0]!.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
-    }
-    // idle：同样留在 stage，不再升独立 fold 拆 stage（展开步骤可见完整思考）
+    expect(live.map((s) => s.kind)).toEqual(['work_stage', 'thinking', 'work_stage'])
+    if (live[0]!.kind === 'work_stage') expect(live[0]!.steps.map((s) => s.kind)).toEqual(['tool'])
+    expect(live[1]).toMatchObject({ kind: 'thinking', thinking: deliverable })
+    if (live[2]!.kind === 'work_stage') expect(live[2]!.steps.map((s) => s.kind)).toEqual(['tool'])
     const done = buildConciseTimeline(process, { isLive: false })
-    expect(done.map((s) => s.kind)).toEqual(['work_stage'])
-    if (done[0]!.kind === 'work_stage') {
-      expect(done[0]!.steps.map((s) => s.kind)).toEqual(['tool', 'thinking', 'tool'])
-    }
+    expect(done.map((s) => s.kind)).toEqual(['work_stage', 'thinking', 'work_stage'])
+    if (done[0]!.kind === 'work_stage') expect(done[0]!.steps.map((s) => s.kind)).toEqual(['tool'])
+    expect(done[1]).toMatchObject({ kind: 'thinking', thinking: deliverable })
+    if (done[2]!.kind === 'work_stage') expect(done[2]!.steps.map((s) => s.kind)).toEqual(['tool'])
   })
 
   it('纯 filler 段间短文不拆 stage：tool → filler「好的」→ tool → tool = 1 个 work_stage（REGRESS-N 取代 J4）', () => {

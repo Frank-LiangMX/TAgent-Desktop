@@ -27,6 +27,9 @@ import type {
   CollaborationUserApprovalRequest,
   CollaborationMemberPreset,
   CollaborationRoomEvent,
+  CollaborationHistoryCursor,
+  CollaborationMessagesPage,
+  CollaborationRunsPage,
 } from '@tagent/shared'
 import { randomBytes } from 'node:crypto'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
@@ -291,7 +294,38 @@ export function listMessagesByRoom(roomId: string): CollaborationMessage[] {
   const all = readMessagesConfig().messages
   return all
     .filter((m) => m.roomId === roomId)
-    .sort((a, b) => a.createdAt - b.createdAt)
+    .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+}
+
+/** 按游标读取某房间较早的消息，避免 renderer 首次加载完整历史。 */
+export function listMessagesByRoomPage(
+  roomId: string,
+  limit = 120,
+  before?: CollaborationHistoryCursor,
+): CollaborationMessagesPage {
+  const safeLimit = Math.min(500, Math.max(1, Math.trunc(limit) || 120))
+  const all = listMessagesByRoom(roomId)
+  const eligible = before
+    ? all.filter(
+        (message) =>
+          message.createdAt < before.createdAt ||
+          (message.createdAt === before.createdAt && message.id < before.id),
+      )
+    : all
+  const start = Math.max(0, eligible.length - safeLimit)
+  const items = eligible.slice(start)
+  return {
+    items,
+    hasMore: start > 0,
+    ...(start > 0 && items[0]
+      ? {
+          nextCursor: {
+            createdAt: items[0].createdAt,
+            id: items[0].id,
+          },
+        }
+      : {}),
+  }
 }
 
 /** 追加单条消息 */
@@ -438,10 +472,45 @@ export function getRun(runId: string): CollaborationRun | undefined {
 export function listRunsByRoom(roomId: string): CollaborationRun[] {
   // run 无 createdAt 字段，用 startedAt 兜底；都无则保持插入顺序（稳定）
   return loadRuns(roomId).slice().sort((a, b) => {
-    const ta = a.startedAt ?? 0
-    const tb = b.startedAt ?? 0
-    return ta - tb
+    const ta = a.createdAt ?? a.startedAt ?? 0
+    const tb = b.createdAt ?? b.startedAt ?? 0
+    return ta - tb || a.id.localeCompare(b.id)
   })
+}
+
+/** 按游标读取某房间较早的 run，避免 renderer 首次加载完整历史。 */
+export function listRunsByRoomPage(
+  roomId: string,
+  limit = 120,
+  before?: CollaborationHistoryCursor,
+): CollaborationRunsPage {
+  const safeLimit = Math.min(500, Math.max(1, Math.trunc(limit) || 120))
+  const all = listRunsByRoom(roomId)
+  const timestamp = (run: CollaborationRun): number =>
+    run.createdAt ?? run.startedAt ?? 0
+  const eligible = before
+    ? all.filter((run) => {
+        const createdAt = timestamp(run)
+        return (
+          createdAt < before.createdAt ||
+          (createdAt === before.createdAt && run.id < before.id)
+        )
+      })
+    : all
+  const start = Math.max(0, eligible.length - safeLimit)
+  const items = eligible.slice(start)
+  return {
+    items,
+    hasMore: start > 0,
+    ...(start > 0 && items[0]
+      ? {
+          nextCursor: {
+            createdAt: timestamp(items[0]),
+            id: items[0].id,
+          },
+        }
+      : {}),
+  }
 }
 
 /** 列出某成员全部 run */

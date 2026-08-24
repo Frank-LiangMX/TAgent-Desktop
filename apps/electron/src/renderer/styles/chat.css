@@ -35,8 +35,22 @@
   padding-left: calc(
     var(--session-minimap-rail-reserve) + var(--session-minimap-rail-gap) + 1rem
   ); /* ≈30+20+16 = 66px */
-  padding-right: 1.75rem; /* 28px */
+  /* 右侧 Bot rail 是消息区的悬浮层：信息流统一为它预留安全区，输入框不受影响。 */
+  padding-right: calc(
+    1.75rem + var(--session-bot-rail-reserve, 0px)
+  ); /* 基础 28px + rail 避让 */
   /* 底部由显式 spacer 占位，确保它进入真实 scrollHeight。 */
+}
+
+/* Bot rail 可见时，整个会话信息流避开 rail；折叠态只预留窄条，展开态预留完整面板宽度。 */
+.session-chat-col:has(.session-bot-rail[data-visible="true"]) .session-conversation-pad {
+  --session-bot-rail-reserve: 3.5rem;
+}
+.session-chat-col:has(
+    .session-bot-rail[data-visible="true"][data-expanded="true"]
+  )
+  .session-conversation-pad {
+  --session-bot-rail-reserve: 12.75rem;
 }
 
 .session-conversation-bottom-spacer {
@@ -1042,13 +1056,13 @@
   color: hsl(0 55% 52%);
 }
 
-/* Cursor 式句尾 Files Changed：全宽、软表面（避免纯白卡片扎眼） */
+/* Cursor 式句尾 Files Changed：与 Message 正文的 px-2.5 可读区域对齐 */
 .agent-files-changed {
   display: block;
   box-sizing: border-box;
-  width: 100%;
+  width: calc(100% - 1.25rem);
   max-width: none;
-  margin: 10px 0 6px;
+  margin: 10px 0.625rem 6px;
   padding: 10px 12px 8px;
   border: 1px solid rgb(var(--glass-rgb) / 0.55);
   border-radius: 12px;
@@ -2134,44 +2148,31 @@
   height: 0;
 }
 
-/* Codex 式边缘提示：只有对应方向仍有刻度时才显现。覆盖层固定在短轨视口，
- * 不随内部刻度一起滚动，避免用缩短刻度内容来表达“还有更多”。 */
-.message-nav-edge-fade {
-  position: absolute;
-  left: 0;
-  right: 0;
-  z-index: 3;
-  height: 24px;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 180ms ease;
-}
-.message-nav-edge-fade--top {
-  top: 0;
-  background: linear-gradient(
+/* 只让刻度内容在可滚动的视口边缘淡出，不覆盖轨道背景。 */
+.message-nav-bars-viewport--scrollable {
+  --message-nav-mask-top: rgb(0 0 0 / 1);
+  --message-nav-mask-bottom: rgb(0 0 0 / 1);
+  -webkit-mask-image: linear-gradient(
     to bottom,
-    hsl(var(--background) / 0.96),
-    hsl(var(--background) / 0)
+    var(--message-nav-mask-top) 0,
+    rgb(0 0 0 / 1) 32px,
+    rgb(0 0 0 / 1) calc(100% - 32px),
+    var(--message-nav-mask-bottom) 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    var(--message-nav-mask-top) 0,
+    rgb(0 0 0 / 1) 32px,
+    rgb(0 0 0 / 1) calc(100% - 32px),
+    var(--message-nav-mask-bottom) 100%
   );
 }
-.message-nav-edge-fade--bottom {
-  bottom: 0;
-  background: linear-gradient(
-    to top,
-    hsl(var(--background) / 0.96),
-    hsl(var(--background) / 0)
-  );
+.message-nav-bars-viewport--has-more-above {
+  --message-nav-mask-top: rgb(0 0 0 / 0);
 }
-.message-nav-edge-fade[data-visible="true"] {
-  opacity: 1;
+.message-nav-bars-viewport--has-more-below {
+  --message-nav-mask-bottom: rgb(0 0 0 / 0);
 }
-
-@media (prefers-reduced-motion: reduce) {
-  .message-nav-edge-fade {
-    transition: none;
-  }
-}
-
 .message-nav-bar-slot {
   display: flex;
   align-items: center;
@@ -2635,42 +2636,37 @@
 .message-queue-panel {
   position: relative;
   isolation: isolate;
-  margin: 0 0 8px;
-  border: 1px solid rgb(var(--glass-rgb) / 0.5);
-  border-radius: var(--app-shell-composer-radius, 16px);
+  margin: 0 0 6px;
+  border: 1px solid rgb(var(--glass-rgb) / 0.42);
+  border-radius: 14px;
   background:
-    radial-gradient(
-      120% 100% at 8% 0%,
-      rgb(var(--scene-a-rgb) / 0.06),
-      transparent 66%
-    ),
+    linear-gradient(90deg, hsl(var(--primary) / 0.06), transparent 26%),
     linear-gradient(
       145deg,
-      rgb(var(--glass-rgb) / 0.42),
-      rgb(var(--glass-rgb) / 0.28)
+      rgb(var(--glass-rgb) / 0.3),
+      rgb(var(--glass-rgb) / 0.18)
     );
   box-shadow:
-    0 10px 24px -10px rgb(48 59 76 / 0.18),
-    0 3px 10px -4px rgb(48 59 76 / 0.1),
-    inset 0 1px 0 rgb(255 255 255 / 0.5),
-    inset 1px 0 0 rgb(255 255 255 / 0.14);
+    0 6px 16px -10px rgb(48 59 76 / 0.18),
+    inset 2px 0 0 hsl(var(--primary) / 0.22),
+    inset 0 1px 0 rgb(255 255 255 / 0.42);
   overflow: hidden;
 }
 .dark .message-queue-panel {
   border-color: rgb(255 255 255 / 0.1);
   box-shadow:
-    0 12px 28px -10px rgb(0 0 0 / 0.42),
-    0 4px 12px -4px rgb(0 0 0 / 0.28),
-    inset 0 1px 0 rgb(255 255 255 / 0.28),
-    inset 1px 0 0 rgb(255 255 255 / 0.08);
+    0 8px 18px -10px rgb(0 0 0 / 0.34),
+    inset 2px 0 0 hsl(var(--primary) / 0.28),
+    inset 0 1px 0 rgb(255 255 255 / 0.2);
 }
 .message-queue-panel__head {
   display: flex;
+  min-height: 28px;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 12px 6px;
-  border-bottom: 1px solid rgb(var(--glass-rgb) / 0.28);
+  padding: 4px 9px 3px 10px;
+  border-bottom: 1px solid rgb(var(--glass-rgb) / 0.2);
 }
 .dark .message-queue-panel__head {
   border-bottom-color: rgb(255 255 255 / 0.06);
@@ -2680,15 +2676,15 @@
   min-width: 0;
   align-items: center;
   gap: 6px;
-  color: hsl(var(--muted-foreground) / 0.88);
-  font-size: 11.5px;
+  color: hsl(var(--muted-foreground) / 0.86);
+  font-size: 11px;
   font-weight: 560;
 }
 .message-queue-panel__title-copy {
   display: flex;
   min-width: 0;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  gap: 7px;
 }
 .message-queue-panel__title-copy > span:first-child {
   overflow: hidden;
@@ -2696,10 +2692,18 @@
   white-space: nowrap;
 }
 .message-queue-panel__hint {
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground) / 0.56);
   font-size: 10px;
   font-weight: 450;
-  color: hsl(var(--muted-foreground) / 0.62);
-  white-space: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-queue-panel__hint::before {
+  margin-right: 7px;
+  color: hsl(var(--primary) / 0.45);
+  content: "·";
 }
 .message-queue-panel__actions {
   display: flex;
@@ -2739,17 +2743,18 @@
   cursor: default;
 }
 .message-queue-panel__list {
-  max-height: 8rem;
+  max-height: 6rem;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 4px 8px 8px;
+  padding: 2px 6px 5px;
 }
 .message-queue-panel__row {
   display: flex;
+  min-height: 28px;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 10px;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 8px;
   transition: background 140ms ease;
 }
 .message-queue-panel__row:hover {
@@ -2767,9 +2772,9 @@
   min-width: 0;
   flex: 1;
   overflow: hidden;
-  color: hsl(var(--foreground) / 0.84);
-  font-size: 12px;
-  line-height: 1.45;
+  color: hsl(var(--foreground) / 0.8);
+  font-size: 11.5px;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2781,16 +2786,16 @@
 }
 .message-queue-panel__icon-btn {
   display: inline-flex;
+  width: 24px;
+  height: 24px;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
   margin: 0;
   padding: 0;
   border: 0;
   border-radius: 7px;
   background: transparent;
-  color: hsl(var(--muted-foreground) / 0.72);
+  color: hsl(var(--muted-foreground) / 0.66);
   cursor: pointer;
   transition:
     background 140ms ease,
@@ -2822,7 +2827,7 @@
 
 /*
  * 输入框上方浮层行：运行计时 + 活动浮岛（后台 Bash / CLI）。
- * 绝对定位、不参与文档流。wrap-reverse：展开后列表向上长，不压输入框。
+ * 绝对定位、不参与文档流。展开面板与运行胶囊保持同一行，不改变底部布局。
  */
 .session-composer-cluster .composer-float-row {
   position: absolute;
@@ -2831,7 +2836,7 @@
   bottom: calc(100% + var(--session-stack-over-cluster, 0px));
   z-index: 30;
   display: flex;
-  flex-wrap: wrap-reverse;
+  flex-wrap: nowrap;
   align-items: flex-end;
   gap: 8px;
   margin: 0 0 calc(var(--session-scroll-btn-gap, 12px) + 4px);
@@ -2986,8 +2991,19 @@
   max-width: 100%;
 }
 .composer-activity-island.is-open {
-  flex: 1 1 100%;
+  /* 展开仍是浮层行内的一块，不再独占整行把运行胶囊换到上方。 */
+  flex: 1 1 0;
+  width: min(680px, 100%);
+  max-width: min(680px, calc(100% - 132px));
 }
+
+/* 任务面板展开后，下箭头移到右侧空位，保持与运行胶囊同一底线，不被面板盖住。 */
+.session-chat-col:has(.composer-activity-island.is-open) [data-conversation-scroll-btn] {
+  left: auto;
+  right: calc(var(--app-shell-session-gutter, 16px) + 4px);
+  margin-inline: 0;
+}
+
 .composer-activity-island__pill {
   display: inline-flex;
   align-items: center;
@@ -4378,6 +4394,30 @@ button.composer-activity-island__title:hover {
   border-radius: 8px;
 }
 
+/* @ 选择器：与通知/摘要等全局浮层共用玻璃表面，不使用默认白色 popover。 */
+.mention-picker {
+  isolation: isolate;
+  border: 1px solid var(--surface-rim, rgb(var(--glass-rgb) / 0.5));
+  background:
+    var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
+    color-mix(in srgb, hsl(var(--background)) 88%, rgb(var(--glass-rgb)) 12%);
+  box-shadow: var(
+    --surface-shadow-elevated,
+    0 12px 28px -10px rgb(48 59 76 / 0.2),
+    inset 0 1px 0 rgb(255 255 255 / 0.42)
+  );
+  color: hsl(var(--foreground));
+  -webkit-backdrop-filter: blur(22px) saturate(1.08);
+  backdrop-filter: blur(22px) saturate(1.08);
+}
+
+.dark .mention-picker {
+  border-color: rgb(255 255 255 / 0.1);
+  background:
+    var(--surface-bg-popover, rgb(var(--glass-rgb) / 0.42)),
+    color-mix(in srgb, hsl(var(--background)) 82%, rgb(var(--glass-rgb)) 18%);
+}
+
 /* 本轮 @ 顺序：多个独立芯片 + 箭头 */
 .agent-turn-mention-list {
   display: inline-flex;
@@ -5405,7 +5445,227 @@ button.composer-activity-island__title:hover {
   }
 }
 
-/* 会话级 Bot 参与者条：与 active-speaker 同属输入框顶部状态层 */
+/* Bot rail 默认隐藏，由顶部标签栏 Bot 图标按需打开。 */
+.session-bot-rail[data-visible="false"] {
+  display: none;
+}
+
+/* 右侧 Bot rail：身份入口固定在消息区边缘，不占用输入框的操作层。 */
+.session-bot-rail {
+  position: absolute;
+  top: 12px;
+  right: 6px;
+  z-index: 24;
+  display: flex;
+  width: 38px;
+  bottom: calc(var(--shell-band-inset-bottom, 24px) + 120px);
+  height: auto;
+  max-height: none;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px;
+  border: 1px solid var(--spatial-line, hsl(var(--border) / 0.55));
+  border-radius: var(--app-shell-composer-radius, 16px);
+  color: hsl(var(--muted-foreground) / 0.9);
+  background: rgb(var(--glass-rgb) / 0.3);
+  box-shadow: -3px 0 10px rgb(0 0 0 / 0.035);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  transition:
+    width 180ms ease,
+    background 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    opacity 180ms ease;
+}
+.session-bot-rail[data-expanded="true"] {
+  width: 184px;
+  align-items: stretch;
+  padding-inline: 8px;
+  border-left-color: hsl(var(--border) / 0.62);
+  background: rgb(var(--glass-rgb) / 0.44);
+}
+.session-bot-rail[data-expanded="false"]:not(:hover):not(:focus-within) {
+  opacity: 0.68;
+  border-color: hsl(var(--border) / 0.28);
+  background: rgb(var(--glass-rgb) / 0.14);
+  box-shadow: none;
+}
+.session-bot-rail[data-expanded="false"]:hover,
+.session-bot-rail[data-expanded="false"]:focus-within {
+  opacity: 1;
+}
+.session-bot-rail__header,
+.session-bot-rail__member,
+.session-bot-rail__manage,
+.session-bot-rail__collaborate {
+  display: flex;
+  align-items: center;
+}
+.session-bot-rail__header {
+  min-height: 28px;
+  justify-content: center;
+  gap: 4px;
+}
+.session-bot-rail[data-expanded="true"] .session-bot-rail__header {
+  justify-content: space-between;
+}
+.session-bot-rail__title {
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--foreground) / 0.86);
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+.session-bot-rail__toggle {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  cursor: pointer;
+}
+.session-bot-rail__toggle,
+.session-bot-rail__manage,
+.session-bot-rail__collaborate {
+  border: 1px solid hsl(var(--border) / 0.42);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px hsl(var(--border) / 0.16);
+}
+.session-bot-rail__toggle:hover,
+.session-bot-rail__toggle:focus-visible {
+  color: hsl(var(--foreground) / 0.82);
+  background: hsl(var(--foreground) / 0.08);
+}
+.session-bot-rail__toggle svg {
+  width: 14px;
+  height: 14px;
+}
+.session-bot-rail__members {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding-top: 4px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.session-bot-rail__members::-webkit-scrollbar {
+  display: none;
+}
+.session-bot-rail__member {
+  position: relative;
+  width: 24px;
+  min-width: 0;
+  height: 24px;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: hsl(var(--foreground) / 0.82);
+  background: hsl(var(--card) / 0.56);
+  box-shadow: inset 0 0 0 1px hsl(var(--border) / 0.72);
+  cursor: pointer;
+  transition:
+    color 120ms ease,
+    background 120ms ease,
+    box-shadow 120ms ease,
+    transform 120ms ease;
+}
+.session-bot-rail__member:hover,
+.session-bot-rail__member:focus-visible {
+  color: hsl(var(--foreground) / 0.82);
+  background: hsl(var(--primary) / 0.14);
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.58);
+  transform: translateY(-1px);
+}
+.session-bot-rail__avatar {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  border-radius: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.session-bot-rail[data-expanded="true"] .session-bot-rail__member {
+  width: 100%;
+  height: 34px;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 2px 8px 2px 2px;
+  border-radius: 10px;
+}
+.session-bot-rail[data-expanded="true"] .session-bot-rail__avatar {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  background: hsl(var(--card) / 0.62);
+}
+.session-bot-rail__member-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: hsl(var(--foreground) / 0.82);
+  font-size: 0.72rem;
+}
+.session-bot-rail__spacer {
+  flex: 1 1 auto;
+  min-height: 8px;
+}
+.session-bot-rail__manage,
+.session-bot-rail__collaborate {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  justify-content: center;
+  gap: 4px;
+  margin-inline: auto;
+  padding: 0;
+  border-radius: 999px;
+  color: hsl(var(--muted-foreground));
+}
+.session-bot-rail[data-expanded="true"] .session-bot-rail__manage,
+.session-bot-rail[data-expanded="true"] .session-bot-rail__collaborate {
+  width: 100%;
+  padding-inline: 8px;
+  border-radius: 9px;
+}
+.session-bot-rail__manage:hover,
+.session-bot-rail__collaborate:hover,
+.session-bot-rail__manage:focus-visible,
+.session-bot-rail__collaborate:focus-visible {
+  color: hsl(var(--foreground) / 0.82);
+  background: hsl(var(--foreground) / 0.08);
+}
+.session-bot-rail__collaborate {
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.session-bot-rail[data-expanded="false"]:not(:hover):not(:focus-within)
+  .session-bot-rail__toggle,
+.session-bot-rail[data-expanded="false"]:not(:hover):not(:focus-within)
+  .session-bot-rail__member,
+.session-bot-rail[data-expanded="false"]:not(:hover):not(:focus-within)
+  .session-bot-rail__manage,
+.session-bot-rail[data-expanded="false"]:not(:hover):not(:focus-within)
+  .session-bot-rail__collaborate {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+/* 会话级 Bot 参与者条：保留给旧调用方与切片测试 */ /* 会话级 Bot 参与者条：与 active-speaker 同属输入框顶部状态层 */
 .session-bot-bar {
   display: flex;
   align-items: center;
@@ -5566,6 +5826,7 @@ button.composer-activity-island__title:hover {
   min-height: 380px;
   flex-direction: column;
   overflow: hidden;
+  border-radius: var(--app-shell-drawer-radius, 22px);
   resize: both;
 }
 .bot-sidecar-panel__header {
@@ -5729,7 +5990,26 @@ button.composer-activity-island__title:hover {
   flex: 0 0 auto;
   min-width: 0;
   overflow: visible;
-  border-radius: var(--radius-glass-popover, 12px);
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  border-radius: var(--app-shell-drawer-radius, 22px);
+  background:
+    radial-gradient(
+      120% 100% at 8% 0%,
+      rgb(var(--scene-a-rgb) / 0.06),
+      transparent 66%
+    ),
+    linear-gradient(
+      145deg,
+      rgb(var(--glass-rgb) / 0.42),
+      rgb(var(--glass-rgb) / 0.28)
+    ) !important;
+  box-shadow:
+    0 12px 28px -10px rgb(48 59 76 / 0.22),
+    0 4px 12px -4px rgb(48 59 76 / 0.12),
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    inset 1px 0 0 rgb(255 255 255 / 0.14) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 .bot-sidecar-panel__input {
   box-sizing: border-box;
@@ -5757,25 +6037,47 @@ button.composer-activity-island__title:hover {
   box-sizing: border-box;
   display: flex;
   min-width: 0;
-  min-height: 28px;
+  min-height: 36px;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 5px;
-  padding: 0 7px 5px;
+  gap: 8px;
+  padding: 3px 8px 7px;
 }
 .bot-sidecar-panel__composer-meta {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   overflow: hidden;
   color: hsl(var(--muted-foreground));
   font-size: 10px;
+  line-height: 1.2;
 }
 .bot-sidecar-panel__model-label {
+  display: inline-flex;
   min-width: 0;
   max-width: 13rem;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  padding: 3px 7px;
+  border: 1px solid hsl(var(--border) / 0.38);
+  border-radius: 999px;
+  background: hsl(var(--background) / 0.16);
+  color: hsl(var(--muted-foreground) / 0.88);
+}
+.bot-sidecar-panel__model-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.62);
+}
+.bot-sidecar-panel__model-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5785,28 +6087,50 @@ button.composer-activity-island__title:hover {
   min-width: 0;
   flex: 0 0 auto;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
 }
-.bot-sidecar-panel__composer-actions button {
-  height: 24px;
-  min-height: 24px;
-  padding: 0 6px;
-  border-radius: 8px;
-  font-size: 10px;
-  line-height: 1.2;
-}
-.bot-sidecar-panel__composer-actions button[aria-label="发送给 Bot"] {
-  width: 24px;
+.bot-sidecar-panel__composer-actions .bot-sidecar-panel__action {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
   padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: hsl(var(--muted-foreground) / 0.78);
+  transition:
+    color 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+.bot-sidecar-panel__composer-actions
+  .bot-sidecar-panel__action:hover:not(:disabled),
+.bot-sidecar-panel__composer-actions .bot-sidecar-panel__action:focus-visible {
+  border-color: hsl(var(--border) / 0.5);
+  background: hsl(var(--foreground) / 0.08);
+  color: hsl(var(--foreground));
+}
+.bot-sidecar-panel__composer-actions
+  .bot-sidecar-panel__send-action:not(:disabled) {
+  border-color: hsl(var(--primary) / 0.24);
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+}
+.bot-sidecar-panel__composer-actions
+  .bot-sidecar-panel__send-action:hover:not(:disabled),
+.bot-sidecar-panel__composer-actions
+  .bot-sidecar-panel__send-action:focus-visible {
+  border-color: hsl(var(--primary) / 0.4);
+  background: hsl(var(--primary) / 0.2);
+  color: hsl(var(--primary));
 }
 .bot-sidecar-panel__composer-actions svg {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 .bot-sidecar-panel__notice {
   min-width: 0;
   overflow: hidden;
-  color: hsl(var(--muted-foreground));
+  color: hsl(var(--muted-foreground) / 0.78);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5826,14 +6150,35 @@ button.composer-activity-island__title:hover {
   height: 42px;
   cursor: move;
   place-items: center;
-  border: var(--surface-rim-width, 1px) solid
-    var(--surface-role-control-rim, var(--surface-rim));
+  border: 0;
   border-radius: 999px;
-  background: hsl(var(--primary));
-  color: hsl(var(--foreground));
-  box-shadow: var(--surface-role-control-shadow, var(--surface-shadow-chip));
+  background: hsl(var(--card) / 0.56);
+  color: hsl(var(--foreground) / 0.82);
+  box-shadow: inset 0 0 0 1px hsl(var(--border) / 0.72);
   font-size: 13px;
   font-weight: 700;
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.bot-sidecar-orb[data-docked-edge="left"] {
+  transform: translateX(calc(-100% + 4px));
+}
+.bot-sidecar-orb[data-docked-edge="right"] {
+  transform: translateX(calc(100% - 4px));
+}
+.bot-sidecar-orb[data-docked-edge="top"] {
+  transform: translateY(calc(-100% + 4px));
+}
+.bot-sidecar-orb[data-docked-edge="bottom"] {
+  transform: translateY(calc(100% - 4px));
+}
+.bot-sidecar-orb[data-docked-edge]:hover,
+.bot-sidecar-orb[data-docked-edge]:focus-visible {
+  transform: translate(0, 0);
+}
+@media (prefers-reduced-motion: reduce) {
+  .bot-sidecar-orb {
+    transition: none;
+  }
 }
 .session-bot-bar__chip {
   cursor: pointer;

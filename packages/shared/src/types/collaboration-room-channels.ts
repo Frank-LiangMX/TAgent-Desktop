@@ -94,6 +94,10 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   DELETE_MEMBER_PRESET: "collaboration-room:delete-member-preset",
   /** 列出某房间全部 run（按 createdAt 升序，Stage 2） */
   LIST_RUNS: "collaboration-room:list-runs",
+  /** 获取房间全部 run 的状态摘要，不受历史分页影响 */
+  GET_RUN_SUMMARY: "collaboration-room:get-run-summary",
+  /** 取消房间内全部 queued/running run */
+  CANCEL_ALL_RUNS: "collaboration-room:cancel-all-runs",
   /** 取消某 run（abort 后端调用 + 置 cancelled，Stage 2） */
   CANCEL_RUN: "collaboration-room:cancel-run",
   /** 列出某房间全部 A2A 信箱信封（S4 审计视图） */
@@ -168,10 +172,27 @@ export interface GetCollaborationRoomInput {
   roomId: string;
 }
 
+/** 历史分页游标：指向当前已加载列表中最早的一条记录。 */
+export interface CollaborationHistoryCursor {
+  createdAt: number;
+  id: string;
+}
+
 /** 列出某房间消息输入 */
 export interface ListCollaborationMessagesInput {
   /** 房间 ID */
   roomId: string;
+  /** 每页数量；默认 120，宿主最多返回 500 条 */
+  limit?: number;
+  /** 只返回早于该游标的消息 */
+  before?: CollaborationHistoryCursor;
+}
+
+/** 某房间消息分页结果（items 仍按时间升序返回） */
+export interface CollaborationMessagesPage {
+  items: CollaborationMessage[];
+  hasMore: boolean;
+  nextCursor?: CollaborationHistoryCursor;
 }
 
 /** 列出某房间成员输入 */
@@ -194,6 +215,30 @@ export type RemoveCollaborationMemberChannelInput =
 export interface ListCollaborationRunsInput {
   /** 房间 ID */
   roomId: string;
+  /** 每页数量；默认 120，宿主最多返回 500 条 */
+  limit?: number;
+  /** 只返回早于该游标的 run */
+  before?: CollaborationHistoryCursor;
+}
+
+/** 某房间 run 分页结果（items 仍按入队时间升序返回） */
+export interface CollaborationRunsPage {
+  items: CollaborationRun[];
+  hasMore: boolean;
+  nextCursor?: CollaborationHistoryCursor;
+}
+
+/** 房间全部 run 的状态摘要；计数不受历史分页限制。 */
+export interface CollaborationRunSummary {
+  total: number;
+  queued: number;
+  running: number;
+  awaitingPeer: number;
+  awaitingUser: number;
+  blocked: number;
+  done: number;
+  failed: number;
+  cancelled: number;
 }
 
 /** 取消某 run 输入（Stage 2） */
@@ -445,8 +490,10 @@ export interface CollaborationRoomChangedPayload {
 //   - APPEND_USER_MESSAGE → CollaborationMessage
 //   - LIST_MEMBERS      → CollaborationMember[]
 //   - ADD_MEMBER        → CollaborationMember
-//   - LIST_RUNS         → CollaborationRun[]
-//   - CANCEL_RUN        → CollaborationRun | null
+//   - LIST_RUNS         → CollaborationRunsPage
+//   - GET_RUN_SUMMARY   → CollaborationRunSummary
+//   - CANCEL_ALL_RUNS   → { cancelled: number }
+ //   - CANCEL_RUN        → CollaborationRun | null
 //   - LIST_MAILBOX      → CollaborationMailboxEnvelope[]
 //   - CONTINUE_DEPTH_STOP → ContinueCollaborationDepthStopResult
 //   - LIST_ROOM_TASKS    → CollaborationRoomTask[]

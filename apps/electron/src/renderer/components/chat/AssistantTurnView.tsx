@@ -278,15 +278,16 @@ export function AssistantTurnView({
     [processLive, presentation.process],
   );
   const planFileSummary = useMemo(() => {
-    if (editedFiles.length === 0) return undefined;
+    if (processLive || editedFiles.length === 0) return undefined;
     return {
       count: editedFiles.length,
       additions: editedFiles.reduce((sum, file) => sum + file.add, 0),
       deletions: editedFiles.reduce((sum, file) => sum + file.del, 0),
     };
-  }, [editedFiles]);
+  }, [editedFiles, processLive]);
   useEffect(() => {
-    if (!isLatestAssistantTurn || !planFileSummary || !sessionId) return;
+    if (processLive || !isLatestAssistantTurn || !planFileSummary || !sessionId)
+      return;
     setSessionPlanProgress((prev) => {
       const currentProgress = prev[sessionId];
       if (!currentProgress) return prev;
@@ -305,12 +306,13 @@ export function AssistantTurnView({
     });
   }, [
     isLatestAssistantTurn,
+    processLive,
     planFileSummary,
     sessionId,
     setSessionPlanProgress,
   ]);
   const filesCard =
-    editedFiles.length > 0 ? (
+    !processLive && editedFiles.length > 0 ? (
       <TurnFilesChangedCard files={editedFiles} patches={editedPatches} />
     ) : null;
 

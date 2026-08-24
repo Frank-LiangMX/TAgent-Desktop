@@ -107,6 +107,29 @@ describe('CollaborationRoomService（Stage 1 持久化）', () => {
     expect(m2.createdAt).toBeGreaterThanOrEqual(m1.createdAt)
   })
 
+  test('历史分页：首屏取最新记录，before 游标向前翻页且不重复', () => {
+    const svc = CollaborationRoomService.create()
+    const room = svc.createRoom({ title: '历史分页' })
+    svc.updateRoom({ roomId: room.id, status: 'paused' })
+    svc.appendUserMessage({ roomId: room.id, content: '第一条' })
+    svc.appendUserMessage({ roomId: room.id, content: '第二条' })
+    svc.appendUserMessage({ roomId: room.id, content: '第三条' })
+
+    const latest = svc.listMessagesPage({ roomId: room.id, limit: 2 })
+    expect(latest.items.map((message) => message.content)).toEqual(['第二条', '第三条'])
+    expect(latest.hasMore).toBe(true)
+    expect(latest.nextCursor).toBeDefined()
+
+    const older = svc.listMessagesPage({
+      roomId: room.id,
+      limit: 2,
+      before: latest.nextCursor,
+    })
+    expect(older.items.map((message) => message.content)).toEqual(['第一条'])
+    expect(older.hasMore).toBe(false)
+    expect(older.nextCursor).toBeUndefined()
+  })
+
   test('appendUserMessage：房间不存在 / 空内容抛错', () => {
     const svc = CollaborationRoomService.create()
     expect(() => svc.appendUserMessage({ roomId: 'cr_no', content: 'x' })).toThrow(/房间不存在/)

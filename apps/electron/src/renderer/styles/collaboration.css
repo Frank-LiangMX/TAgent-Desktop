@@ -203,3 +203,421 @@
     background-color: transparent;
   }
 }
+
+/* 房间信息采用渐进披露：默认只保留一条可识别、可键盘操作的摘要行。 */
+.collab-room-info {
+  margin-top: 2px;
+}
+.collab-room-info__summary {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid hsl(var(--border) / 0.82);
+  border-radius: 8px;
+  color: hsl(var(--muted-foreground) / 0.9);
+  font-size: 11px;
+  line-height: 1.35;
+  cursor: pointer;
+  list-style: none;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease;
+}
+.collab-room-info__summary::-webkit-details-marker {
+  display: none;
+}
+.collab-room-info__summary:hover {
+  border-color: hsl(var(--primary) / 0.28);
+  background: hsl(var(--foreground) / 0.035);
+}
+.collab-room-info__summary:focus-visible {
+  outline: 2px solid hsl(var(--ring) / 0.65);
+  outline-offset: 2px;
+}
+.collab-room-info__summary-meta {
+  margin-left: auto;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground) / 0.72);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.collab-room-info__chevron {
+  flex: 0 0 auto;
+  color: hsl(var(--muted-foreground) / 0.7);
+  transition: transform 180ms ease;
+}
+.collab-room-info[open] .collab-room-info__chevron {
+  transform: rotate(180deg);
+}
+.collab-room-info__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+}
+
+/* 展开态：单一面板 + 轻分隔线，避免嵌套卡片和重复边框。 */
+.collab-room-info[open] .collab-room-info__summary {
+  border-radius: 8px 8px 0 0;
+  border-color: hsl(var(--border) / 0.92);
+  background: hsl(var(--muted) / 0.32);
+}
+.collab-room-info__body {
+  margin-top: 0;
+  padding: 8px 10px 9px;
+  border: 1px solid hsl(var(--border) / 0.72);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: hsl(var(--background) / 0.74);
+}
+.collab-room-info__meta {
+  min-height: 24px;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid hsl(var(--border) / 0.62);
+}
+.collab-room-info__body .collab-header-details {
+  padding-top: 6px;
+}
+.collab-room-info__body .collab-header-details > summary {
+  min-height: 24px;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: hsl(var(--muted-foreground) / 0.82);
+}
+.collab-room-info__body .collab-header-details > summary:hover {
+  background: transparent;
+  color: hsl(var(--foreground) / 0.9);
+}
+.collab-room-info__body .collab-header-details > div {
+  margin-top: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.collab-room-info__member-status {
+  padding-top: 8px;
+  border-top: 1px solid hsl(var(--border) / 0.62);
+}
+.collab-room-info__mailbox {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid hsl(var(--border) / 0.62);
+}
+
+/* 协作室边界使用语义 border 色，避免玻璃层叠加后边界消失。 */
+.collab-room-header {
+  border-bottom-color: hsl(var(--border) / 0.72);
+}
+.collab-room-actions {
+  border-left-color: hsl(var(--border) / 0.62);
+}
+.collab-room-info__body .collab-header-details > div > span {
+  border-color: hsl(var(--border) / 0.68);
+}
+.collab-room-info__member-status > * > button,
+.collab-room-info__member-status > button {
+  border-color: hsl(var(--border) / 0.72);
+}
+
+/* 信息摘要面板：目标与统计并列，参与者沿横向流动，避免后台式逐行堆叠。 */
+.collab-room-info__overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid hsl(var(--border) / 0.62);
+}
+.collab-room-info__goal {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.collab-room-info__eyebrow {
+  flex: 0 0 auto;
+  color: hsl(var(--muted-foreground) / 0.68);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.collab-room-info__goal-text {
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--foreground) / 0.88);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.collab-room-info__goal-text.is-empty {
+  color: hsl(var(--muted-foreground) / 0.62);
+  font-style: italic;
+  font-weight: 400;
+}
+.collab-room-info__edit {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: hsl(var(--muted-foreground) / 0.72);
+  cursor: pointer;
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+.collab-room-info__edit:hover:not(:disabled) {
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+}
+.collab-room-info__edit:focus-visible {
+  outline: 2px solid hsl(var(--ring) / 0.65);
+  outline-offset: 1px;
+}
+.collab-room-info__edit:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+.collab-room-info__stats {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+}
+.collab-room-info__stat {
+  display: inline-flex;
+  min-width: 42px;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 1px;
+}
+.collab-room-info__stat + .collab-room-info__stat {
+  padding-left: 12px;
+  border-left: 1px solid hsl(var(--border) / 0.62);
+}
+.collab-room-info__stat strong {
+  color: hsl(var(--foreground) / 0.86);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.1;
+}
+.collab-room-info__stat small {
+  color: hsl(var(--muted-foreground) / 0.66);
+  font-size: 10px;
+  line-height: 1.1;
+}
+.collab-room-info__stat.is-warning strong,
+.collab-room-info__stat.is-warning small {
+  color: hsl(38 82% 42%);
+}
+.collab-room-info__people {
+  padding-top: 10px;
+}
+.collab-room-info__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+  color: hsl(var(--muted-foreground) / 0.7);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+.collab-room-info__section-head > :first-child {
+  color: hsl(var(--foreground) / 0.78);
+  font-size: 11px;
+  font-weight: 600;
+}
+.collab-room-info__people-list {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.collab-room-person-chip {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 7px;
+  border: 1px solid hsl(var(--border) / 0.72);
+  border-radius: 999px;
+  background: hsl(var(--muted) / 0.46);
+  color: hsl(var(--foreground) / 0.8);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease;
+}
+button.collab-room-person-chip {
+  cursor: pointer;
+}
+button.collab-room-person-chip:hover {
+  border-color: hsl(var(--primary) / 0.48);
+  background: hsl(var(--primary) / 0.08);
+  color: hsl(var(--foreground));
+}
+.collab-room-person-chip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.36);
+}
+.collab-room-person-chip.is-online .collab-room-person-chip__dot {
+  background: hsl(152 62% 42%);
+  box-shadow: 0 0 0 2px hsl(152 62% 42% / 0.12);
+}
+.collab-room-person-chip.is-invited .collab-room-person-chip__dot {
+  background: hsl(38 82% 48%);
+}
+.collab-room-person-chip.is-removed {
+  opacity: 0.48;
+  text-decoration: line-through;
+}
+.collab-room-bot-chip {
+  background: hsl(var(--background) / 0.52);
+}
+.collab-room-bot-chip.is-running {
+  border-color: hsl(152 62% 42% / 0.55);
+  background: hsl(152 62% 42% / 0.09);
+}
+.collab-room-bot-chip.is-queued {
+  border-color: hsl(38 82% 48% / 0.58);
+  background: hsl(38 82% 48% / 0.1);
+}
+.collab-room-bot-chip.is-waiting {
+  border-color: hsl(199 82% 48% / 0.58);
+  background: hsl(199 82% 48% / 0.1);
+}
+.collab-room-bot-chip.is-missing-backend {
+  border-color: hsl(38 82% 48% / 0.58);
+}
+.collab-room-person-chip__role {
+  padding: 3px 5px;
+  border-radius: 4px;
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+  font-size: 9px;
+  font-weight: 600;
+}
+.collab-room-person-chip__warning {
+  color: hsl(38 82% 42%);
+  font-size: 10px;
+}
+.collab-room-invite {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.collab-room-invite__input {
+  width: 138px;
+  height: 28px;
+  border-color: hsl(var(--border) / 0.78) !important;
+  background: hsl(var(--background) / 0.58) !important;
+  font-size: 11px !important;
+}
+.collab-room-invite__button {
+  height: 28px;
+  padding-inline: 9px;
+  border-color: hsl(var(--border) / 0.78);
+  font-size: 11px;
+}
+.collab-room-info__notice {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid hsl(var(--border) / 0.62);
+}
+.collab-room-info__notice-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: hsl(var(--foreground) / 0.8);
+  font-size: 11px;
+}
+@media (max-width: 720px) {
+  .collab-room-info__overview {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .collab-room-info__stats {
+    justify-content: flex-start;
+  }
+  .collab-room-info__stat {
+    align-items: flex-start;
+  }
+  .collab-room-invite {
+    width: 100%;
+    margin-left: 0;
+  }
+  .collab-room-invite__input {
+    flex: 1;
+    width: auto;
+  }
+}
+
+/* 取消玻璃高光线：摘要外框与前情提要使用中性前景线，浅色不发白，深色不刺眼。 */
+.collab-room-info__summary {
+  border-color: hsl(var(--foreground) / 0.16);
+  background: hsl(var(--background) / 0.12);
+}
+.collab-room-info[open] .collab-room-info__summary {
+  border-color: hsl(var(--foreground) / 0.2);
+  background: hsl(var(--background) / 0.2);
+}
+.collab-room-info__body {
+  border-color: hsl(var(--foreground) / 0.14);
+  background: hsl(var(--background) / 0.16);
+}
+.collab-system-note {
+  border-top-color: hsl(var(--foreground) / 0.14);
+  border-bottom-color: hsl(var(--foreground) / 0.14);
+}
+
+/* 房间信息改为无描边柔和表面：用留白和底色表达层级，不再画出硬卡片轮廓。 */
+.collab-room-info {
+  overflow: hidden;
+  border-radius: 10px;
+  transition: background-color 180ms ease, box-shadow 180ms ease;
+}
+.collab-room-info__summary,
+.collab-room-info[open] .collab-room-info__summary {
+  border: 0;
+  background: transparent;
+}
+.collab-room-info__summary {
+  padding: 5px 8px;
+}
+.collab-room-info__summary:hover {
+  border: 0;
+  background: hsl(var(--muted) / 0.3);
+}
+.collab-room-info[open] {
+  background: hsl(var(--muted) / 0.24);
+  box-shadow: 0 5px 16px hsl(var(--foreground) / 0.035);
+}
+.collab-room-info[open] .collab-room-info__summary:hover {
+  background: hsl(var(--muted) / 0.36);
+}
+.collab-room-info__body {
+  padding: 2px 12px 12px;
+  border: 0;
+  background: transparent;
+}

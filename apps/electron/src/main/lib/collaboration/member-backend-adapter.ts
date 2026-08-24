@@ -155,6 +155,16 @@ const ROOM_TOOL_DESCRIPTORS = [
       options: { type: "string" },
     },
   },
+  {
+    name: "read_source_session_excerpt",
+    description:
+      "仅协调者可按需读取当前协作室来源单会话的有限摘录；sourceSessionId 由宿主绑定，query/recentMessageLimit/maxTokens 受预算硬顶约束。",
+    parameters: {
+      query: { type: "string" },
+      recentMessageLimit: { type: "string" },
+      maxTokens: { type: "string" },
+    },
+  },
   // ===== 受控工作区工具桥 =====
   {
     name: "workspace_read_file",
@@ -266,6 +276,14 @@ const roomRequestUserSchema = Type.Object(
     question: Type.String(),
     reason: Type.Optional(Type.String()),
     options: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+const readSourceSessionExcerptSchema = Type.Object(
+  {
+    query: Type.Optional(Type.String()),
+    recentMessageLimit: Type.Optional(Type.String()),
+    maxTokens: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
 );
@@ -698,7 +716,7 @@ export function channelSupportsRoomToolBridge(channelId?: string): boolean {
 }
 
 /**
- * 构造协作室工具桥的 14 把受控 AgentTool：7 把 room_* + 7 把 workspace_*。
+ * 构造协作室工具桥的 15 把受控 AgentTool：8 把 room/bridge 工具 + 7 把 workspace_*。
  *
  * 安全契约（02-RUNTIME-A2A-SPEC §9 / 03-IMPLEMENTATION-PHASES §12）：
  * - 工具 schema 由宿主白名单写死（TypeBox），绝不来自模型或 prompt 文本；这是模型在
@@ -772,18 +790,23 @@ export function buildRoomBridgeTools(args: {
       ROOM_TOOL_DESCRIPTORS[6].description,
       roomRequestUserSchema,
     ),
+    make(
+      "read_source_session_excerpt",
+      ROOM_TOOL_DESCRIPTORS[7].description,
+      readSourceSessionExcerptSchema,
+    ),
   ];
   if (!workspaceId) return roomTools;
   // workspace 工具桥（按宿主绑定工作区/权限过滤）
   roomTools.push(
     make(
       "workspace_read_file",
-      ROOM_TOOL_DESCRIPTORS[7].description,
+      ROOM_TOOL_DESCRIPTORS[8].description,
       workspaceReadFileSchema,
     ),
     make(
       "workspace_search",
-      ROOM_TOOL_DESCRIPTORS[8].description,
+      ROOM_TOOL_DESCRIPTORS[9].description,
       workspaceSearchSchema,
     ),
   );
@@ -791,27 +814,27 @@ export function buildRoomBridgeTools(args: {
     roomTools.push(
       make(
         "workspace_write_file",
-        ROOM_TOOL_DESCRIPTORS[9].description,
+        ROOM_TOOL_DESCRIPTORS[10].description,
         workspaceWriteFileSchema,
       ),
       make(
         "workspace_run_command",
-        ROOM_TOOL_DESCRIPTORS[10].description,
+        ROOM_TOOL_DESCRIPTORS[11].description,
         workspaceRunCommandSchema,
       ),
       make(
         "workspace_apply_patch",
-        ROOM_TOOL_DESCRIPTORS[11].description,
+        ROOM_TOOL_DESCRIPTORS[12].description,
         workspaceApplyPatchSchema,
       ),
       make(
         "workspace_delete_file",
-        ROOM_TOOL_DESCRIPTORS[12].description,
+        ROOM_TOOL_DESCRIPTORS[13].description,
         workspaceDeleteFileSchema,
       ),
       make(
         "workspace_move_file",
-        ROOM_TOOL_DESCRIPTORS[13].description,
+        ROOM_TOOL_DESCRIPTORS[14].description,
         workspaceMoveFileSchema,
       ),
     );
@@ -836,9 +859,10 @@ function roomToolDescriptorsFor(input: MemberTurnInput) {
 }
 
 /**
- * 外部渠道原生工具桥：把协作室 14 把受控工具
+ * 外部渠道原生工具桥：把协作室 15 把受控工具
  *（room_send/room_ask/room_reply/room_task_assign/room_task_update/room_publish_artifact/
- * room_request_user/workspace_read_file/workspace_search/workspace_write_file/workspace_run_command/
+ * room_request_user/read_source_session_excerpt/workspace_read_file/workspace_search/
+ * workspace_write_file/workspace_run_command/
  * workspace_apply_patch/workspace_delete_file/workspace_move_file）
  * 作为真实 AgentTool（TypeBox schema）接入 Pi Agent + createHttpDirectStreamFn。模型经供应商
  * 原生 function/tool calling 协议（Anthropic /v1/messages 的 tool_use）发起调用，Agent 调

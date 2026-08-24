@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot as BotIcon, Check, Plus } from "lucide-react";
+import {
+  Bot as BotIcon,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Plus,
+} from "lucide-react";
 import { toast } from "sonner";
 import type { BotProfileRecord } from "@tagent/shared";
 import {
+  AppTooltip,
   Button,
   DestructiveConfirmDialog,
   Popover,
@@ -10,11 +17,43 @@ import {
   PopoverTrigger,
 } from "@tagent/ui";
 
+export const BOT_RAIL_VISIBILITY_EVENT = "tagent:bot-rail-visibility";
+const BOT_RAIL_VISIBILITY_STORAGE_KEY = "tagent:bot-rail-visible";
+
+export function readBotRailVisibility(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return (
+      window.localStorage.getItem(BOT_RAIL_VISIBILITY_STORAGE_KEY) === "true"
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function setBotRailVisibility(visible: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      BOT_RAIL_VISIBILITY_STORAGE_KEY,
+      String(visible),
+    );
+  } catch {
+    // localStorage may be unavailable in restricted environments; the event still updates this window.
+  }
+  window.dispatchEvent(
+    new CustomEvent(BOT_RAIL_VISIBILITY_EVENT, {
+      detail: { visible },
+    }),
+  );
+}
+
 export interface SessionBotBarProps {
   sessionId: string;
   botProfileIds?: string[];
   fusionRoomId?: string;
   onOpenBot?: (record: BotProfileRecord) => void;
+  variant?: "inline" | "rail";
 }
 
 /**
@@ -26,12 +65,29 @@ export function SessionBotBar({
   botProfileIds,
   fusionRoomId,
   onOpenBot,
+  variant = "inline",
 }: SessionBotBarProps): JSX.Element {
   const [records, setRecords] = useState<BotProfileRecord[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>(botProfileIds ?? []);
   const [open, setOpen] = useState(false);
+  const [railVisible, setRailVisible] = useState(readBotRailVisibility);
+  const [railExpanded, setRailExpanded] = useState(false);
   /** 「开启协作」确认框：明示进房前必须用户确认，禁止静默自动升级（14 §1）。 */
   const [confirmOpen, setConfirmOpen] = useState(false);
+
+  useEffect(() => {
+    const handleVisibilityChange = (event: Event): void => {
+      const visible = (event as CustomEvent<{ visible?: boolean }>).detail
+        ?.visible;
+      if (typeof visible === "boolean") setRailVisible(visible);
+    };
+    window.addEventListener(BOT_RAIL_VISIBILITY_EVENT, handleVisibilityChange);
+    return () =>
+      window.removeEventListener(
+        BOT_RAIL_VISIBILITY_EVENT,
+        handleVisibilityChange,
+      );
+  }, []);
 
   useEffect(() => {
     setSelectedIds(botProfileIds ?? []);
@@ -82,8 +138,8 @@ export function SessionBotBar({
 
   /**
    * 明示进房（14 §1）：用户确认后调 enter-with-bridge，主进程精炼前情提要写房间
-   * goal + 系统消息。成功后派发 session-meta-changed（meta 落盘后 usePersistedSessionMeta
-   * 重读 fusionRoomId → Chat 自动切到协作壳）。失败抛错由 DestructiveConfirmDialog 内联提示。
+   * goal + 系统消息。成功后由主进程推送 session_meta_changed，usePersistedSessionMeta 重读
+   * fusionRoomId → Chat 自动切到协作壳。失败抛错由 DestructiveConfirmDialog 内联提示。
    * 禁止再走旧 upgradeFusionSessionToRoom 静默路径（无精炼桥）。
    */
   const handleEnterCollaboration = async (): Promise<void> => {
@@ -102,12 +158,74 @@ export function SessionBotBar({
   };
 
   const availableRecords = records.filter((item) => !item.profile.archivedAt);
+  const isRail = variant === "rail";
 
   return (
-    <div className="session-bot-bar" role="status" aria-live="polite">
-      <BotIcon className="session-bot-bar__icon" aria-hidden />
-      <span className="session-bot-bar__label">Bot</span>
-      {selectedRecords.length > 0 ? (
+    <div
+      className={
+        isRail ? "session-bot-rail session-glass-rail" : "session-bot-bar"
+      }
+      data-expanded={isRail && railExpanded ? "true" : "false"}
+      data-visible={isRail ? (railVisible ? "true" : "false") : undefined}
+      role={isRail ? "region" : "status"}
+      aria-label={isRail ? "会话 Bot" : undefined}
+      aria-hidden={isRail && !railVisible ? true : undefined}
+      aria-live={isRail ? undefined : "polite"}
+    >
+      {isRail ? (
+        <div className="session-bot-rail__header">
+          {railExpanded ? (
+            <span className="session-bot-rail__title">Bot</span>
+          ) : null}
+          <button
+            type="button"
+            className="session-bot-rail__toggle"
+            aria-label={railExpanded ? "收起 Bot 栏" : "展开 Bot 栏"}
+            aria-expanded={railExpanded}
+            onClick={() => setRailExpanded((current) => !current)}
+          >
+            {railExpanded ? (
+              <ChevronRight aria-hidden />
+            ) : (
+              <ChevronLeft aria-hidden />
+            )}
+          </button>
+        </div>
+      ) : (
+        <>
+          <BotIcon className="session-bot-bar__icon" aria-hidden />
+          <span className="session-bot-bar__label">Bot</span>
+        </>
+      )}
+      {isRail ? (
+        <div className="session-bot-rail__members">
+          {selectedRecords.map((item) => (
+            <AppTooltip
+              key={item.profile.id}
+              label={item.profile.displayName}
+              side="left"
+              sideOffset={8}
+            >
+              <button
+                type="button"
+                className="session-bot-rail__member"
+                onClick={() => onOpenBot?.(item)}
+                aria-label={"打开 " + item.profile.displayName + " 旁路窗口"}
+              >
+                <span className="session-bot-rail__avatar" aria-hidden>
+                  {item.profile.displayName.trim().charAt(0) || "B"}
+                </span>
+                {railExpanded ? (
+                  <span className="session-bot-rail__member-name">
+                    @{item.profile.displayName}
+                    {item.profile.archivedAt ? "（已归档）" : ""}
+                  </span>
+                ) : null}
+              </button>
+            </AppTooltip>
+          ))}
+        </div>
+      ) : selectedRecords.length > 0 ? (
         <div className="session-bot-bar__chips">
           {selectedRecords.map((item) => (
             <button
@@ -125,26 +243,37 @@ export function SessionBotBar({
       ) : (
         <span className="session-bot-bar__empty">未加入</span>
       )}
+      {isRail ? <div className="session-bot-rail__spacer" /> : null}{" "}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button
             variant="ghost"
             size="sm"
-            className="session-bot-bar__trigger"
+            className={
+              isRail ? "session-bot-rail__manage" : "session-bot-bar__trigger"
+            }
+            aria-label={
+              selectedRecords.length > 0 ? "管理本会话 Bot" : "加入 Bot"
+            }
           >
             <Plus className="size-3.5" aria-hidden />
-            {selectedRecords.length > 0 ? "管理" : "加入 Bot"}
+            {!isRail || railExpanded
+              ? selectedRecords.length > 0
+                ? "管理"
+                : "加入 Bot"
+              : null}
           </Button>
         </PopoverTrigger>
         <PopoverContent
           align="end"
-          side="top"
+          side={isRail ? "left" : "top"}
           sideOffset={8}
           className="session-bot-picker w-80 p-2"
         >
           <div className="session-bot-picker__title">本会话 Bot</div>
           <div className="session-bot-picker__hint">
-            1 个 Bot 直接作为当前对话对象；加入 2 个及以上 Bot 后，可点「开启协作」进入协作模式。
+            Bot 仅作为独立旁路窗口参与当前会话；加入 2 个及以上 Bot
+            后，可点「开启协作」进入协作模式。
           </div>
           {availableRecords.length === 0 &&
           selectedRecords.every((item) => !item.profile.archivedAt) ? (
@@ -194,11 +323,16 @@ export function SessionBotBar({
         <Button
           variant="ghost"
           size="sm"
-          className="session-bot-bar__trigger"
+          className={
+            isRail
+              ? "session-bot-rail__collaborate"
+              : "session-bot-bar__trigger"
+          }
           onClick={() => setConfirmOpen(true)}
           title="开启协作，把当前会话升级为协作室"
+          aria-label="开启协作"
         >
-          开启协作
+          {isRail && !railExpanded ? "协" : "开启协作"}
         </Button>
       ) : null}
       <DestructiveConfirmDialog

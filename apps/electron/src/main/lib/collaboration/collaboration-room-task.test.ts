@@ -205,6 +205,77 @@ describe('CollaborationRoomService.createRoomTask', () => {
     ])
   })
 
+  test('依赖完成后自动解除阻塞并唤醒后续负责人', async () => {
+    const { adapter, calls } = mkTaskTriggerAdapter()
+    const svc = CollaborationRoomService.create({ adapter })
+    const room = svc.createRoom({
+      title: '依赖接力',
+      members: [{ displayName: '协调者', isCoordinator: true }, { displayName: '开发' }],
+    })
+    const coordinator = svc.listMembers(room.id).find((member) => member.isCoordinator)!
+    const prerequisite = svc.createRoomTask({
+      roomId: room.id,
+      title: '先做基础模块',
+      assigneeMemberId: coordinator.id,
+    })
+    await svc.awaitAllRuns()
+
+    const dependent = svc.createRoomTask({
+      roomId: room.id,
+      title: '再做上层功能',
+      assigneeMemberId: coordinator.id,
+      dependsOnTaskIds: [prerequisite.id],
+    })
+    expect(dependent.status).toBe('blocked')
+    expect(svc.listRuns(room.id)).toHaveLength(1)
+
+    svc.updateRoomTask({ roomId: room.id, taskId: prerequisite.id, status: 'in_progress' })
+    svc.updateRoomTask({ roomId: room.id, taskId: prerequisite.id, status: 'done' })
+    await svc.awaitAllRuns()
+
+    expect(svc.getRoomTaskById(dependent.id)?.status).toBe('todo')
+    expect(svc.listRuns(room.id)).toHaveLength(2)
+    expect(calls.some((call) => call.memberId === coordinator.id && call.prompt.includes('再做上层功能'))).toBe(true)
+    expect(
+      svc.listMessages(room.id).some(
+        (message) =>
+          message.taskId === dependent.id &&
+          message.content.includes('依赖已全部完成'),
+      ),
+    ).toBe(true)
+  })
+
+  test('失败任务恢复为进行中时自动创建新的 run', async () => {
+    const { adapter, calls } = mkTaskTriggerAdapter()
+    const svc = CollaborationRoomService.create({ adapter })
+    const room = svc.createRoom({
+      title: '失败重试',
+      members: [{ displayName: '协调者', isCoordinator: true }],
+    })
+    const task = svc.createRoomTask({ roomId: room.id, title: '重新执行', assigneeMemberId: svc.listMembers(room.id)[0]!.id })
+    await svc.awaitAllRuns()
+
+    svc.updateRoomTask({ roomId: room.id, taskId: task.id, status: 'failed' })
+    const retried = svc.updateRoomTask({
+      roomId: room.id,
+      taskId: task.id,
+      status: 'in_progress',
+    })
+    await svc.awaitAllRuns()
+
+    expect(retried.status).toBe('in_progress')
+    expect(retried.runId).toBeDefined()
+    expect(svc.listRuns(room.id)).toHaveLength(2)
+    expect(calls.filter((call) => call.prompt.includes('重新执行'))).toHaveLength(2)
+    expect(
+      svc.listMessages(room.id).some(
+        (message) =>
+          message.taskId === task.id &&
+          message.content.includes('开始新的执行尝试'),
+      ),
+    ).toBe(true)
+  })
+
   test('持久化：id 前缀 crt_ / version=1 / status=todo / timestamps', () => {
     const svc = CollaborationRoomService.create()
     const { room, coordinatorId } = mkRoomWithCoordinator(svc, '任务持久化')
@@ -236,19 +307,45 @@ describe('CollaborationRoomService.createRoomTask', () => {
   test('可选字段：description / dependsOnTaskIds / sourceMessageId / runId 存储 + 去重', () => {
     const svc = CollaborationRoomService.create()
     const { room } = mkRoomWithCoordinator(svc, '可选字段')
+    svc.updateRoom({ roomId: room.id, status: 'paused' })
+    const depA = svc.createRoomTask({ roomId: room.id, title: '依赖 A' })
+    const depB = svc.createRoomTask({ roomId: room.id, title: '依赖 B' })
 
     const task = svc.createRoomTask({
       roomId: room.id,
       title: '带依赖',
       description: '   ',
-      dependsOnTaskIds: ['crt_a', 'crt_a', ' crt_b ', ''],
+      dependsOnTaskIds: [depA.id, depA.id, ' ' + depB.id + ' ', ''],
       sourceMessageId: 'msg_x',
       runId: 'run_y',
     })
     expect(task.description).toBeUndefined()
-    expect(task.dependsOnTaskIds).toEqual(['crt_a', 'crt_b'])
+    expect(task.dependsOnTaskIds).toEqual([depA.id, depB.id])
     expect(task.sourceMessageId).toBe('msg_x')
     expect(task.runId).toBe('run_y')
+  })
+
+  test('依赖不存在或跨房间 → 创建拒绝，避免永久 blocked', () => {
+    const svc = CollaborationRoomService.create()
+    const a = mkRoomWithCoordinator(svc, '依赖校验 A')
+    const b = mkRoomWithCoordinator(svc, '依赖校验 B')
+    const foreign = svc.createRoomTask({ roomId: b.room.id, title: '外部任务' })
+
+    expect(() =>
+      svc.createRoomTask({
+        roomId: a.room.id,
+        title: '缺失依赖',
+        dependsOnTaskIds: ['crt_missing'],
+      }),
+    ).toThrow(/前置任务不存在/)
+
+    expect(() =>
+      svc.createRoomTask({
+        roomId: a.room.id,
+        title: '跨房间依赖',
+        dependsOnTaskIds: [foreign.id],
+      }),
+    ).toThrow(/不属于当前房间/)
   })
 
   test('房间不存在 → 抛错', () => {

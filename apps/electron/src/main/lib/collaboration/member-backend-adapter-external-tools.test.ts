@@ -279,14 +279,14 @@ beforeEach(() => {
 // ===== buildRoomBridgeTools：schema 限权 =====
 
 describe('buildRoomBridgeTools — schema 限权', () => {
-  test('暴露协作室七把 room 工具 + 七把 workspace 工具，绝不混入会话工具', () => {
+  test('暴露协作室八把 room/bridge 工具 + 七把 workspace 工具，绝不混入会话工具', () => {
     const tools = buildRoomBridgeTools({
       hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
       abortAgent: vi.fn(),
       workspaceId: 'workspace-test',
       permissionProfile: 'workspace-write',
     })
-    expect(tools).toHaveLength(14)
+    expect(tools).toHaveLength(15)
     expect(tools.map((t) => t.name)).toEqual([
       'room_send',
       'room_ask',
@@ -295,6 +295,7 @@ describe('buildRoomBridgeTools — schema 限权', () => {
       'room_task_update',
       'room_publish_artifact',
       'room_request_user',
+      'read_source_session_excerpt',
       'workspace_read_file',
       'workspace_search',
       'workspace_write_file',
@@ -332,10 +333,27 @@ describe('buildRoomBridgeTools — schema 限权', () => {
     })
     expect(readOnly.map((t) => t.name)).toEqual([
       'room_send', 'room_ask', 'room_reply', 'room_task_assign', 'room_task_update',
-      'room_publish_artifact', 'room_request_user', 'workspace_read_file', 'workspace_search',
+      'room_publish_artifact', 'room_request_user', 'read_source_session_excerpt',
+      'workspace_read_file', 'workspace_search',
     ])
     const unbound = buildRoomBridgeTools({ hostToolHandler: handler, abortAgent: vi.fn() })
-    expect(unbound).toHaveLength(7)
+    expect(unbound).toHaveLength(8)
+  })
+
+  test('read_source_session_excerpt schema：只接受查询与预算参数，禁止模型传 sourceSessionId', () => {
+    const tools = buildRoomBridgeTools({
+      hostToolHandler: vi.fn() as unknown as CollaborationHostToolHandler,
+      abortAgent: vi.fn(),
+    })
+    const source = tools.find((tool) => tool.name === 'read_source_session_excerpt')!
+    const schema = source.parameters as Record<string, unknown>
+    expect(Object.keys(schema.properties as object).sort()).toEqual([
+      'maxTokens',
+      'query',
+      'recentMessageLimit',
+    ])
+    expect(schema.required).toBeUndefined()
+    expect(schema.additionalProperties).toBe(false)
   })
 
   test('room_send schema：toMemberId + message 必填，additionalProperties 锁死', () => {
@@ -678,6 +696,7 @@ describe('ChannelBackendAdapter.runTurn — Anthropic 外部渠道原生工具�
       'room_task_update',
       'room_publish_artifact',
       'room_request_user',
+      'read_source_session_excerpt',
       'workspace_read_file',
       'workspace_search',
       'workspace_write_file',

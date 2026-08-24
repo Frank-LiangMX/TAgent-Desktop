@@ -15,8 +15,8 @@
  * - run 状态机：queued → running → done | failed | cancelled（CAS 转换，race-safe）。
  * - run 完成后落盘成员消息（done）或系统警告（failed），并广播 CHANGED。
  * - cancelRun：排队中→dequeue；running→abort 后端调用；均置 cancelled + 同步成员状态。
- * - recoverInterruptedRuns：启动时安全恢复未启动的 queued run；running/awaiting run 标记为中断或 blocked，
- *   避免重启后「假 running」（02-RUNTIME-A2A-SPEC §14；不自动重放未知副作用）。
+ * - recoverInterruptedRuns：启动时安全恢复未启动的 queued run；running/awaiting run 标记为 blocked，
+ *   进入用户确认续跑流程，避免重启后「假 running」或自动重放未知副作用（02-RUNTIME-A2A-SPEC §14）。
  * - 幂等：同一 (triggerMessageId, memberId) 只产生一个 run（collaborationRunIdempotencyKey）。
  *
  * adapter 可注入（测试用 mock；默认 ChannelBackendAdapter 真实调用外部渠道模型）。
@@ -87,6 +87,7 @@ import {
   summarizeProjectedBoardTasks,
   createRoomBotSeatFromProfile,
   type CollaborationArtifact,
+  type FileAttachment,
   type CollaborationMailboxEnvelope,
   type CollaborationMember,
   type CollaborationMemberCapabilities,
@@ -122,8 +123,14 @@ import {
   type MemberSessionHandle,
   type MemberTurnInput,
   type ReadCollaborationArtifactResult,
+  type SourceSessionExcerptReader,
   type BoardProjectedSummary,
   type BoardProjectedTask,
+  type ListCollaborationMessagesInput,
+  type ListCollaborationRunsInput,
+  type CollaborationMessagesPage,
+  type CollaborationRunsPage,
+  type CollaborationRunSummary,
 } from "@tagent/shared";
 import {
   COLLABORATION_WORKSPACE_COMMAND_TIMEOUT_MS,
@@ -156,9 +163,11 @@ import {
   listMailboxByRoom,
   listMembersByRoom,
   listMessagesByRoom,
+  listMessagesByRoomPage,
   appendRoomEvent,
   listRoomEvents,
   listRunsByRoom,
+  listRunsByRoomPage,
   listRunsByStatus,
   listRoomTasksByRoom,
   loadMembers,
@@ -198,6 +207,10 @@ import * as kanbanStore from "../kanban/kanban-store";
 import { getActiveBotMemories } from "../bot/bot-memory-service";
 import { getBotProfileRecord } from "../bot/bot-profile-service";
 import { getSessionMeta, updateSessionMeta } from "../agent/session-store";
+import {
+  getAttachmentAbsolutePath,
+  saveAttachment,
+} from "../attachment-service";
 
 /** CHANGED 广播类型（主进程 → renderer） */
 export type CollaborationRoomBroadcast = (
@@ -234,6 +247,8 @@ export interface CollaborationRoomServiceOptions {
   summaryModelCaller?: CollaborationSummaryModelCaller;
   /** 发布版本地模式：拒绝远程用户和非本机 Bot 所有权。 */
   localOnly?: boolean;
+  /** 由单会话桥接服务注入的受控原会话摘录读取器。 */
+  sourceSessionExcerptReader?: SourceSessionExcerptReader;
 }
 
 /** Stage 1/2 静态成员的默认能力（全 false，S3+ 由真实 probe 填充） */
@@ -320,6 +335,7 @@ export class CollaborationRoomService {
   private readonly broadcast: CollaborationRoomBroadcast;
   private readonly onTextDelta: CollaborationTextDeltaHandler;
   private readonly localOnly: boolean;
+  private sourceSessionExcerptReader: SourceSessionExcerptReader | undefined;
   /** 房间运行调度器（房间并发 + 成员串行 + FIFO 队列） */
   private readonly scheduler: RoomScheduler;
   /** 持久化工作区租约：文件操作按路径串行，命令按整个工作区串行。 */
@@ -344,6 +360,7 @@ export class CollaborationRoomService {
     this.broadcast = opts.broadcast ?? noopBroadcast;
     this.onTextDelta = opts.onTextDelta ?? (() => undefined);
     this.localOnly = opts.localOnly === true;
+    this.sourceSessionExcerptReader = opts.sourceSessionExcerptReader;
     this.summaryRunner = new CollaborationSummaryRunner({
       modelCaller: opts.summaryModelCaller,
     });
@@ -355,6 +372,13 @@ export class CollaborationRoomService {
     opts?: CollaborationRoomServiceOptions,
   ): CollaborationRoomService {
     return new CollaborationRoomService(opts ?? {});
+  }
+
+  /** 接通 P2 桥接 host tool；reader 只由主进程注入，模型不可替换。 */
+  setSourceSessionExcerptReader(
+    reader: SourceSessionExcerptReader | undefined,
+  ): void {
+    this.sourceSessionExcerptReader = reader;
   }
 
   /**
@@ -369,6 +393,7 @@ export class CollaborationRoomService {
   /** 构造默认调度器：读 room.maxConcurrentRuns；start 回调 fire-and-forget executeRun + 记 inflight */
   private createScheduler(): RoomScheduler {
     return new RoomScheduler({
+      isRoomRunnable: (roomId) => getRoom(roomId)?.status === "active",
       getMaxConcurrentRuns: (roomId) => {
         const room = getRoom(roomId);
         return Math.max(
@@ -465,6 +490,7 @@ export class CollaborationRoomService {
         causationId: message.causationId,
         runId: message.runId,
         taskId: message.taskId,
+        attachments: message.attachments,
         depth: message.depth,
         createdAt: message.createdAt,
       },
@@ -939,14 +965,29 @@ export class CollaborationRoomService {
         goal: updated.goal,
       },
     });
+    // 暂停只冻结新 run；恢复时唤醒原有排队项。并发上限调整也一并生效。
+    if (updated.status === "active") {
+      this.scheduler.wake();
+    }
     return updated;
   }
 
   // ===== Message =====
 
-  /** 列出某房间全部消息（按 createdAt 升序） */
+  /** 列出某房间全部消息（内部上下文投影使用，按 createdAt 升序） */
   listMessages(roomId: string): CollaborationMessage[] {
     return listMessagesByRoom(roomId);
+  }
+
+  /** 分页列出某房间消息；renderer 首屏只读取最新一页。 */
+  listMessagesPage(
+    input: ListCollaborationMessagesInput,
+  ): CollaborationMessagesPage {
+    return listMessagesByRoomPage(
+      input.roomId,
+      input.limit,
+      input.before,
+    );
   }
 
   /**
@@ -969,7 +1010,7 @@ export class CollaborationRoomService {
       throw new Error("房间不存在");
     }
     const text = input.content?.trim() ?? "";
-    if (!text) {
+    if (!text && !(input.attachments?.length ?? 0)) {
       throw new Error("消息内容不能为空");
     }
     const actorUserId = resolveHumanActorUserId(input.actorUserId);
@@ -992,6 +1033,15 @@ export class CollaborationRoomService {
         sender: { type: "user" },
       }).targetMemberIds;
 
+    const savedAttachments: FileAttachment[] = (input.attachments ?? []).map(
+      (attachment) =>
+        saveAttachment({
+          sessionId: room.id,
+          filename: attachment.filename,
+          mediaType: attachment.mediaType,
+          data: attachment.data,
+        }),
+    );
     const now = Date.now();
     const id = genId(COLLABORATION_MESSAGE_ID_PREFIX);
     const message: CollaborationMessage = {
@@ -1001,6 +1051,7 @@ export class CollaborationRoomService {
       authorId: actorUserId,
       kind: "chat",
       content: text,
+      ...(savedAttachments.length > 0 ? { attachments: savedAttachments } : {}),
       visibility: "room",
       targetMemberIds,
       replyToMessageId: input.replyToMessageId,
@@ -1025,9 +1076,46 @@ export class CollaborationRoomService {
 
   // ===== Run（Stage 2） =====
 
-  /** 列出某房间全部 run（按入队顺序） */
+  /** 列出某房间全部 run（内部调度/预算使用，按入队顺序） */
   listRuns(roomId: string): CollaborationRun[] {
     return listRunsByRoom(roomId);
+  }
+
+  /** 分页列出某房间 run；renderer 首屏只读取最新一页。 */
+  listRunsPage(input: ListCollaborationRunsInput): CollaborationRunsPage {
+    return listRunsByRoomPage(input.roomId, input.limit, input.before);
+  }
+
+  /** 获取房间全部 run 的状态摘要；不受 renderer 历史分页影响。 */
+  getRunSummary(roomId: string): CollaborationRunSummary {
+    const summary: CollaborationRunSummary = {
+      total: 0,
+      queued: 0,
+      running: 0,
+      awaitingPeer: 0,
+      awaitingUser: 0,
+      blocked: 0,
+      done: 0,
+      failed: 0,
+      cancelled: 0,
+    };
+    for (const run of listRunsByRoom(roomId)) {
+      summary.total += 1;
+      if (run.status === "awaiting_peer") summary.awaitingPeer += 1;
+      else if (run.status === "awaiting_user") summary.awaitingUser += 1;
+      else summary[run.status] += 1;
+    }
+    return summary;
+  }
+
+  /** 取消房间内全部仍可取消的 run；按全量持久化记录处理，不受历史分页影响。 */
+  cancelAllRuns(roomId: string): number {
+    let cancelled = 0;
+    for (const run of listRunsByRoom(roomId)) {
+      if (run.status !== "queued" && run.status !== "running") continue;
+      if (this.cancelRun(run.id)?.status === "cancelled") cancelled += 1;
+    }
+    return cancelled;
   }
 
   /** 取单个 run（不存在返回 undefined） */
@@ -1108,6 +1196,7 @@ export class CollaborationRoomService {
    * 启动恢复（02-RUNTIME-A2A-SPEC §14）：安全恢复未启动的 queued；running/awaiting run 不自动重放未知副作用。
    *
    * 不自动重放（避免重复副作用）；用户可重新发消息触发新 run（新 messageId → 新 run，幂等不冲突）。
+   * queued 在 active / paused 房间都恢复入内存队列；paused 由调度器继续冻结，恢复 active 后再启动。
    * 成员状态回 idle，避免「假 running」。返回恢复的 run 数。
    */
   recoverInterruptedRuns(): number {
@@ -1150,7 +1239,7 @@ export class CollaborationRoomService {
             )
           : undefined;
         if (
-          room?.status === "active" &&
+          (room?.status === "active" || room?.status === "paused") &&
           member &&
           member.status !== "removed" &&
           triggerMessage
@@ -1181,7 +1270,9 @@ export class CollaborationRoomService {
       }
       upsertRun({
         ...run,
-        status: "failed",
+        // running 的外部副作用未知：进入 blocked，交给用户确认后以新 turn 续跑；
+        // 只有无法安全恢复的 queued 才标记 failed。
+        status: run.status === "running" ? "blocked" : "failed",
         fence: (run.fence ?? 0) + 1,
         finishedAt: now,
         error,
@@ -2169,40 +2260,43 @@ export class CollaborationRoomService {
     key: string,
     signal: AbortSignal,
   ): Promise<() => void> {
-    const previous = this.rootBudgetTails.get(key) ?? Promise.resolve()
-    let unlock!: () => void
-    const current = new Promise<void>((resolve) => { unlock = resolve })
-    const chain = previous.then(() => current)
-    this.rootBudgetTails.set(key, chain)
-    let released = false
+    const previous = this.rootBudgetTails.get(key) ?? Promise.resolve();
+    let unlock!: () => void;
+    const current = new Promise<void>((resolve) => {
+      unlock = resolve;
+    });
+    const chain = previous.then(() => current);
+    this.rootBudgetTails.set(key, chain);
+    let released = false;
     const release = (): void => {
-      if (released) return
-      released = true
-      unlock()
-      if (this.rootBudgetTails.get(key) === chain) this.rootBudgetTails.delete(key)
-    }
+      if (released) return;
+      released = true;
+      unlock();
+      if (this.rootBudgetTails.get(key) === chain)
+        this.rootBudgetTails.delete(key);
+    };
     if (signal.aborted) {
-      release()
-      throw new Error("run 已取消")
+      release();
+      throw new Error("run 已取消");
     }
-    let abortListener: (() => void) | undefined
+    let abortListener: (() => void) | undefined;
     try {
       await new Promise<void>((resolve, reject) => {
-        abortListener = () => reject(new Error("run 已取消"))
-        signal.addEventListener("abort", abortListener, { once: true })
-        previous.then(resolve, reject)
-      })
+        abortListener = () => reject(new Error("run 已取消"));
+        signal.addEventListener("abort", abortListener, { once: true });
+        previous.then(resolve, reject);
+      });
     } catch (error) {
-      release()
-      throw error
+      release();
+      throw error;
     } finally {
-      if (abortListener) signal.removeEventListener("abort", abortListener)
+      if (abortListener) signal.removeEventListener("abort", abortListener);
     }
     if (signal.aborted) {
-      release()
-      throw new Error("run 已取消")
+      release();
+      throw new Error("run 已取消");
     }
-    return release
+    return release;
   }
   private async acquirePersistentRootBudgetLease(
     room: CollaborationRoom,
@@ -2210,25 +2304,25 @@ export class CollaborationRoomService {
     runId: string,
     signal: AbortSignal,
   ): Promise<WorkspaceLease> {
-    const scope = "__root-budget__:" + rootMessageId
+    const scope = "__root-budget__:" + rootMessageId;
     const leaseMs = Math.min(
       24 * 60 * 60 * 1000,
       Math.max(60_000, room.budget.maxWallTimeMs ?? 60 * 60 * 1000),
-    )
-    const deadline = Date.now() + 5_000
+    );
+    const deadline = Date.now() + 5_000;
     while (!signal.aborted) {
       const lease = this.workspaceLeases.acquire(
         room.id,
         [scope],
         "run:" + runId,
         { leaseMs },
-      )
-      if (lease) return lease
-      if (Date.now() >= deadline) break
-      await new Promise<void>((resolve) => setTimeout(resolve, 50))
+      );
+      if (lease) return lease;
+      if (Date.now() >= deadline) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
     }
-    if (signal.aborted) throw new Error("run 已取消")
-    throw new Error("预算协调租约暂不可用，已安全拒绝本次 run")
+    if (signal.aborted) throw new Error("run 已取消");
+    throw new Error("预算协调租约暂不可用，已安全拒绝本次 run");
   }
   private getRootUsageTotals(
     roomId: string,
@@ -2270,6 +2364,7 @@ export class CollaborationRoomService {
     const startedAt = Date.now();
     let budgetExceeded = false;
     let toolCallCount = 0;
+    let sourceExcerptUsedThisTurnTokens = 0;
     let budgetTimer: ReturnType<typeof setTimeout> | undefined;
     let executionFence: number | undefined;
     let releaseRootBudget: (() => void) | undefined;
@@ -2403,7 +2498,16 @@ export class CollaborationRoomService {
             payload: e.payload,
           })),
       });
-      const prompt = flattenProjectedTurn(projected.messages);
+      const projectedPrompt = flattenProjectedTurn(projected.messages);
+      const attachmentPrompt = triggerMessage.attachments?.length
+        ? `\n\n[用户附件]\n${triggerMessage.attachments
+            .map(
+              (attachment) =>
+                `- ${attachment.filename}: ${getAttachmentAbsolutePath(attachment.localPath)}`,
+            )
+            .join("\n")}`
+        : "";
+      const prompt = projectedPrompt + attachmentPrompt;
       let streamed = "";
       const input: MemberTurnInput = {
         roomId: room.id,
@@ -2577,6 +2681,73 @@ export class CollaborationRoomService {
                 output: `已提交用户审批（request=${result.request.id}），等待用户决定。`,
                 awaitPeer: true,
               };
+            }
+            case "read_source_session_excerpt": {
+              try {
+                if (!member.isCoordinator) {
+                  return {
+                    output: "只有协调者 Bot 可以读取来源单会话摘录。",
+                    isError: true,
+                  };
+                }
+                const sourceSessionId = room.sourceSessionId?.trim();
+                if (!sourceSessionId) {
+                  return {
+                    output: "当前协作室没有绑定来源单会话。",
+                    isError: true,
+                  };
+                }
+                if (!this.sourceSessionExcerptReader) {
+                  return {
+                    output: "当前运行时尚未装配来源单会话摘录读取器。",
+                    isError: true,
+                  };
+                }
+                const parsePositiveInt = (
+                  raw: string | undefined,
+                ): number | undefined => {
+                  if (!raw?.trim()) return undefined;
+                  const value = Number(raw);
+                  return Number.isFinite(value) && value > 0
+                    ? Math.trunc(value)
+                    : undefined;
+                };
+                const recentMessageLimit = parsePositiveInt(
+                  call.arguments.recentMessageLimit,
+                );
+                const maxTokens = parsePositiveInt(call.arguments.maxTokens);
+                const query = call.arguments.query?.trim();
+                const excerpt = await this.sourceSessionExcerptReader(
+                  {
+                    roomId: room.id,
+                    sourceSessionId,
+                    ...(query ? { query } : {}),
+                    ...(recentMessageLimit !== undefined
+                      ? { recentMessageLimit }
+                      : {}),
+                    ...(maxTokens !== undefined ? { maxTokens } : {}),
+                  },
+                  sourceExcerptUsedThisTurnTokens,
+                );
+                sourceExcerptUsedThisTurnTokens += Math.max(
+                  0,
+                  excerpt.tokenEstimate,
+                );
+                return {
+                  output:
+                    "来源会话摘录（token≈" +
+                    excerpt.tokenEstimate +
+                    (excerpt.truncated ? "，已截断" : "") +
+                    "）：\\n" +
+                    excerpt.excerpt,
+                };
+              } catch (error) {
+                return {
+                  output:
+                    error instanceof Error ? error.message : String(error),
+                  isError: true,
+                };
+              }
             }
             case "workspace_read_file": {
               const result = this.workspaceReadFile({
@@ -2836,20 +3007,17 @@ export class CollaborationRoomService {
   }
 
   /**
-   * 等待所有 run 终态（含排队中 → 启动 → 完成；测试用）。
+   * 等待当前可运行的 run 进入终态（测试 / 关闭前 drain 用）。
    *
-   * 循环到调度器空闲（无排队、无 running）：每轮 await 当前在飞 run；它们完成时 finally
-   * 会 release → drain 启动排队 run（新增 inflight），下一轮继续 await，直到 isIdle。
+   * paused 房间里的 queued run 是刻意等待唤醒的，不应该把调用方永久卡住；
+   * 因此这里以 inflight 为准。当前一批 run 完成后，scheduler 可能已经 drain 出下一批，
+   * 下一轮会继续等待；如果只剩暂停队列，则立即返回，恢复房间后再由 scheduler.wake 启动。
    */
   async awaitAllRuns(): Promise<void> {
-    while (!this.scheduler.isIdle()) {
+    while (true) {
       const snapshot = [...this.inflight.values()];
-      if (snapshot.length === 0) {
-        // 仅有排队但无 running（容量被占？理论不应发生；让出避免死循环）
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      } else {
-        await Promise.allSettled(snapshot);
-      }
+      if (snapshot.length === 0) return;
+      await Promise.allSettled(snapshot);
     }
   }
 
@@ -3168,16 +3336,22 @@ export class CollaborationRoomService {
     );
 
     const now = Date.now();
-    const task: CollaborationRoomTask = {
-      id: genId(COLLABORATION_ROOM_TASK_ID_PREFIX),
+    const taskId = genId(COLLABORATION_ROOM_TASK_ID_PREFIX);
+    const dependsOnTaskIds = this.validateTaskDependencies(
+      room,
+      taskId,
+      input.dependsOnTaskIds,
+    );
+    let task: CollaborationRoomTask = {
+      id: taskId,
       roomId: room.id,
       title,
       description: input.description?.trim() || undefined,
-      status: "todo",
+      status: this.hasPendingTaskDependencies(dependsOnTaskIds) ? "blocked" : "todo",
       assigneeMemberId,
       sourceMessageId: input.sourceMessageId || undefined,
       runId: input.runId || undefined,
-      dependsOnTaskIds: dedupeDependsOn(input.dependsOnTaskIds),
+      dependsOnTaskIds,
       acceptanceCriteria: input.acceptanceCriteria?.trim() || undefined,
       version: 1,
       createdAt: now,
@@ -3193,11 +3367,129 @@ export class CollaborationRoomService {
     // triggerRunForMessage 会按既有规则投递协调者；指定负责人则视为显式目标。
     if (room.status === "active") {
       const trigger = this.appendTaskCreatedMessage(room, task);
-      this.triggerRunForMessage(room, trigger);
-      this.kickSummary(room);
+      if (task.status !== "blocked") {
+        const createdRuns = this.triggerRunForMessage(room, trigger);
+        if (createdRuns[0]) {
+          task = this.linkTaskToRun(task, createdRuns[0]);
+        }
+        this.kickSummary(room);
+      }
     }
 
     return task;
+  }
+
+  /**
+   * 将任务和实际触发的 run 建立审计关联。任务创建/分派先写入任务真值，
+   * 再用 CAS 回填 runId；并发下失败则保留已存在的最新记录，不覆盖其他更新。
+   */
+  private linkTaskToRun(
+    task: CollaborationRoomTask,
+    run: CollaborationRun,
+  ): CollaborationRoomTask {
+    const current = getRoomTask(task.id);
+    if (!current || current.roomId !== run.roomId || current.runId === run.id) {
+      return current ?? task;
+    }
+    const linked: CollaborationRoomTask = {
+      ...current,
+      // runId 是执行索引，不是任务状态迁移；不推进任务 version，避免一次创建被算成两次编辑。
+      runId: run.id,
+      version: current.version,
+      updatedAt: current.updatedAt,
+    };
+    if (!saveRoomTaskIfCurrent(current.id, current.version, linked)) {
+      return getRoomTask(current.id) ?? current;
+    }
+    this.broadcast(current.roomId, "updated");
+    return linked;
+  }
+
+  /**
+   * 校验任务依赖属于当前房间，并在写入前阻断自环/循环依赖。
+   * 依赖必须引用已经存在的任务，避免把拼写错误永久落成 blocked。
+   */
+  private validateTaskDependencies(
+    room: CollaborationRoom,
+    taskId: string,
+    inputDependencies?: string[],
+  ): string[] | undefined {
+    const dependencies = dedupeDependsOn(inputDependencies);
+    if (!dependencies) return undefined;
+
+    const visiting = new Set<string>();
+    const walk = (dependencyId: string, path: string[]): void => {
+      const dependency = getRoomTask(dependencyId);
+      if (!dependency) {
+        throw new Error("前置任务不存在：" + dependencyId);
+      }
+      if (dependency.roomId !== room.id) {
+        throw new Error("前置任务不属于当前房间：" + dependencyId);
+      }
+      if (dependency.id === taskId) {
+        throw new Error("任务不能依赖自身");
+      }
+      if (visiting.has(dependency.id)) {
+        throw new Error("任务依赖存在循环：" + [...path, dependency.id].join(" -> "));
+      }
+      visiting.add(dependency.id);
+      for (const childId of dependency.dependsOnTaskIds ?? []) {
+        walk(childId, [...path, dependency.id]);
+      }
+      visiting.delete(dependency.id);
+    };
+
+    for (const dependencyId of dependencies) {
+      walk(dependencyId, []);
+    }
+    return dependencies;
+  }
+
+  /**
+   * 判断任务是否仍在等待依赖。依赖都已通过创建时校验；状态不是 done 时保持 blocked。
+   */
+  private hasPendingTaskDependencies(
+    dependsOnTaskIds?: string[],
+  ): boolean {
+    return (dependsOnTaskIds ?? []).some((dependencyId) => {
+      const dependency = getRoomTask(dependencyId);
+      return !dependency || dependency.status !== "done";
+    });
+  }
+
+  /**
+   * 某任务完成后释放直接依赖它的阻塞任务。CAS 保证并发完成事件只会释放一次；
+   * 释放后的任务复用现有消息路由，因此负责人和协调者都不需要额外的调度分支。
+   */
+  private releaseReadyDependentTasks(
+    room: CollaborationRoom,
+    completedTaskId: string,
+  ): void {
+    if (room.status !== "active" || this.roomHasAttachedBoard(room)) return;
+
+    let released = false;
+    for (const task of listRoomTasksByRoom(room.id)) {
+      if (task.status !== "blocked") continue;
+      if (!(task.dependsOnTaskIds ?? []).includes(completedTaskId)) continue;
+      if (this.hasPendingTaskDependencies(task.dependsOnTaskIds)) continue;
+
+      const next: CollaborationRoomTask = {
+        ...task,
+        status: "todo",
+        version: task.version + 1,
+        updatedAt: Date.now(),
+      };
+      if (!saveRoomTaskIfCurrent(task.id, task.version, next)) continue;
+
+      const trigger = this.appendTaskDependencyReadyMessage(room, next);
+      const createdRuns = this.triggerRunForMessage(room, trigger);
+      if (createdRuns[0]) {
+        this.linkTaskToRun(next, createdRuns[0]);
+      }
+      released = true;
+    }
+    if (released) this.kickSummary(room);
+    if (released) this.broadcast(room.id, "updated");
   }
 
   /** 列出某房间全部 room task（按 createdAt 升序，次按 id 稳定） */
@@ -3288,7 +3580,37 @@ export class CollaborationRoomService {
       throw new Error("任务已被其他操作更新，请刷新后重试");
     }
     this.broadcast(room.id, "updated");
+    if (next.status === "done") {
+      this.releaseReadyDependentTasks(room, next.id);
+    }
+    if (
+      next.status === "in_progress" &&
+      (current.status === "failed" ||
+        current.status === "blocked" ||
+        current.status === "done")
+    ) {
+      return this.retryTaskRun(room, next, current.status);
+    }
     return next;
+  }
+
+  /**
+   * 从任务面板显式恢复 failed/blocked/done 任务时启动新的成员 run。
+   * todo → in_progress 不在这里触发：新任务创建和依赖释放已经负责首次启动，
+   * 避免用户仅调整状态时重复开跑。
+   */
+  private retryTaskRun(
+    room: CollaborationRoom,
+    task: CollaborationRoomTask,
+    previousStatus: CollaborationRoomTaskStatus,
+  ): CollaborationRoomTask {
+    if (room.status !== "active" || this.roomHasAttachedBoard(room)) {
+      return task;
+    }
+    const trigger = this.appendTaskRetryMessage(room, task, previousStatus);
+    const createdRuns = this.triggerRunForMessage(room, trigger);
+    this.kickSummary(room);
+    return createdRuns[0] ? this.linkTaskToRun(task, createdRuns[0]) : task;
   }
 
   /**
@@ -3362,6 +3684,9 @@ export class CollaborationRoomService {
     const next: CollaborationRoomTask = {
       ...task,
       assigneeMemberId: assignee.id,
+      status: this.hasPendingTaskDependencies(task.dependsOnTaskIds)
+        ? "blocked"
+        : task.status,
       version: task.version + 1,
       updatedAt: Date.now(),
     };
@@ -3375,13 +3700,17 @@ export class CollaborationRoomService {
       next,
       run,
     );
-    const dispatched = this.triggerRunForMessage(room, assignment);
+    const dispatched =
+      next.status === "blocked"
+        ? []
+        : this.triggerRunForMessage(room, assignment);
+    const linked = dispatched[0] ? this.linkTaskToRun(next, dispatched[0]) : next;
     this.broadcast(room.id, "updated");
     return {
       ok: true,
-      taskId: next.id,
+      taskId: linked.id,
       assigneeMemberId: assignee.id,
-      version: next.version,
+      version: linked.version,
       runId: dispatched[0]?.id,
     };
   }
@@ -3509,6 +3838,9 @@ export class CollaborationRoomService {
     );
 
     this.broadcast(room.id, "updated");
+    if (targetStatus === "done") {
+      this.releaseReadyDependentTasks(room, task.id);
+    }
     return {
       ok: true,
       taskId: task.id,
@@ -4800,7 +5132,10 @@ export class CollaborationRoomService {
    * P2-UX 桥接服务用 thin wrapper：暴露 appendSystemMessage 供桥接层把单会话前情提要写进房间
    * 背景消息，**勿复制建房逻辑**（事件账本 + 广播仍走私有 appendSystemMessage）。
    */
-  appendRoomSystemMessage(roomId: string, content: string): CollaborationMessage {
+  appendRoomSystemMessage(
+    roomId: string,
+    content: string,
+  ): CollaborationMessage {
     return this.appendSystemMessage(roomId, content);
   }
 
@@ -4860,9 +5195,11 @@ export class CollaborationRoomService {
       `任务 ID：${task.id}`,
       task.description ? `任务说明：${task.description}` : "",
       task.acceptanceCriteria ? `验收标准：${task.acceptanceCriteria}` : "",
-      task.assigneeMemberId
-        ? "请直接开始处理该任务，并在完成后更新任务状态。"
-        : "请判断合适的负责人并推进；如需用户指派，请明确提出。",
+      task.status === "blocked"
+        ? "等待依赖任务完成：" + (task.dependsOnTaskIds ?? []).join("、")
+        : task.assigneeMemberId
+          ? "请直接开始处理该任务，并在完成后更新任务状态。"
+          : "请判断合适的负责人并推进；如需用户指派，请明确提出。",
     ]
       .filter(Boolean)
       .join("\n");
@@ -4887,6 +5224,67 @@ export class CollaborationRoomService {
     return message;
   }
 
+  /** 落盘一条任务重试事件；该事件同时作为新的成员 run trigger。 */
+  private appendTaskRetryMessage(
+    room: CollaborationRoom,
+    task: CollaborationRoomTask,
+    previousStatus: CollaborationRoomTaskStatus,
+  ): CollaborationMessage {
+    const message: CollaborationMessage = {
+      id: genId(COLLABORATION_MESSAGE_ID_PREFIX),
+      roomId: room.id,
+      authorType: "system",
+      authorId: "system",
+      kind: "task_event",
+      content:
+        "任务「" +
+        task.title +
+        "」已从" +
+        previousStatus +
+        "恢复为进行中，开始新的执行尝试。" +
+        (task.assigneeMemberId
+          ? "已通知负责人。"
+          : "将交给协调者安排负责人。"),
+      visibility: "room",
+      targetMemberIds: task.assigneeMemberId ? [task.assigneeMemberId] : [],
+      rootMessageId: genId(COLLABORATION_MESSAGE_ID_PREFIX),
+      taskId: task.id,
+      depth: 0,
+      createdAt: Date.now(),
+    };
+    this.appendRoomMessage(message);
+    return message;
+  }
+
+  /** 落盘一条依赖已满足事件；该事件同时作为后续任务的 trigger。 */
+  private appendTaskDependencyReadyMessage(
+    room: CollaborationRoom,
+    task: CollaborationRoomTask,
+  ): CollaborationMessage {
+    const message: CollaborationMessage = {
+      id: genId(COLLABORATION_MESSAGE_ID_PREFIX),
+      roomId: room.id,
+      authorType: "system",
+      authorId: "system",
+      kind: "task_event",
+      content:
+        "任务「" +
+        task.title +
+        "」的依赖已全部完成，已自动解除阻塞并进入待办。" +
+        (task.assigneeMemberId
+          ? "已通知负责人开始处理。"
+          : "将交给协调者安排负责人。"),
+      visibility: "room",
+      targetMemberIds: task.assigneeMemberId ? [task.assigneeMemberId] : [],
+      rootMessageId: genId(COLLABORATION_MESSAGE_ID_PREFIX),
+      taskId: task.id,
+      depth: 0,
+      createdAt: Date.now(),
+    };
+    this.appendRoomMessage(message);
+    return message;
+  }
+
   /** 落盘一条协调者分派任务事件；该事件同时作为目标成员的 trigger。 */
   private appendTaskAssignmentMessage(
     room: CollaborationRoom,
@@ -4901,7 +5299,16 @@ export class CollaborationRoomService {
       authorType: "member",
       authorId: coordinator.id,
       kind: "task_event",
-      content: `协调者已将任务「${task.title}」（任务 ID：${task.id}）分派给成员 ${assignee}，请开始处理。`,
+      content:
+        "协调者已将任务「" +
+        task.title +
+        "」（任务 ID：" +
+        task.id +
+        "）分派给成员 " +
+        assignee +
+        (task.status === "blocked"
+          ? "，当前等待依赖任务完成。"
+          : "，请开始处理。"),
       visibility: "room",
       targetMemberIds: [assignee],
       rootMessageId: run.triggerMessageId,

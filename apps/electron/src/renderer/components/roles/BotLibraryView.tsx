@@ -520,7 +520,7 @@ export function BotLibraryView(): JSX.Element {
           if (!open) setRoleQuery("");
         }}
       >
-        <DialogContent className="roles-dialog roles-dialog--create session-glass-modal w-[clamp(420px,44vw,680px)] gap-0 overflow-hidden p-0 sm:max-w-none">
+        <DialogContent className="roles-dialog roles-dialog--create session-glass-modal w-[clamp(480px,46vw,800px)] gap-0 overflow-hidden p-0 sm:max-w-none">
           <div className="roles-dialog__head border-b border-border/50">
             <DialogTitle className="text-base font-semibold tracking-tight">
               新建 Bot
@@ -531,119 +531,136 @@ export function BotLibraryView(): JSX.Element {
             </DialogDescription>
           </div>
           <div className="roles-dialog-body bots-form">
-            <div className="bots-form__field">
-              <Label htmlFor="bot-display-name">名称</Label>
-              <Input
-                id="bot-display-name"
-                value={form.displayName}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    displayName: event.target.value,
-                  }))
-                }
-                placeholder="例如：研究助手"
-                autoFocus
-              />
-            </div>
-            <div className="bots-form__field bots-form__field--roles">
-              <Label id="bot-role-label">库中角色卡</Label>
-              <div className="bots-role-picker" role="group" aria-labelledby="bot-role-label">
-                <div className="relative">
-                  <MagnifyingGlass
-                    className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
-                    weight="bold"
-                    aria-hidden
-                  />
-                  <Input
-                    className="bots-role-picker__search pl-8"
-                    value={roleQuery}
-                    onChange={(event) => setRoleQuery(event.target.value)}
-                    placeholder="搜索角色卡名称…"
-                    disabled={roles.length === 0}
-                    aria-label="搜索库中角色卡"
-                  />
-                </div>
-                {filteredRoles.length === 0 ? (
-                  <p className="bots-role-picker__empty">
-                    {roles.length === 0 ? "还没有可用角色卡" : "没有匹配的角色卡"}
-                  </p>
-                ) : (
-                  <ul className="bots-role-picker__list scrollbar-thin" role="listbox" aria-label="库中角色卡">
-                    {filteredRoles.map((role) => {
-                      const selected = form.roleId === role.id;
-                      return (
-                        <li key={role.id}>
-                          <button
-                            type="button"
-                            role="option"
-                            aria-selected={selected}
-                            data-selected={selected || undefined}
-                            className="bots-role-picker__card"
-                            disabled={busy}
-                            onClick={() =>
-                              setForm((current) => ({
-                                ...current,
-                                roleId: role.id,
-                              }))
-                            }
-                          >
-                            <span className="bots-role-picker__avatar" aria-hidden>
-                              {monogram(role.displayName)}
-                            </span>
-                            <span className="bots-role-picker__copy">
-                              <span className="bots-role-picker__name">
-                                {role.displayName}
-                              </span>
-                              {role.description ? (
-                                <span className="bots-role-picker__desc">
-                                  {role.description}
-                                </span>
-                              ) : null}
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
+            <section className="bots-create-section bots-create-section--identity">
+              <div className="bots-form__field">
+                <Label htmlFor="bot-display-name">名称</Label>
+                <Input
+                  id="bot-display-name"
+                  value={form.displayName}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      displayName: event.target.value,
+                    }))
+                  }
+                  placeholder="例如：研究助手"
+                  autoFocus
+                />
               </div>
-              <span className="bots-form__hint">
-                角色卡决定岗位身份；Bot 可以在此基础上拥有自己的长期配置。
-              </span>
-            </div>
-            <div className="bots-form__field">
-              <Label htmlFor="bot-description">一句话说明</Label>
-              <Input
-                id="bot-description"
-                value={form.description}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    description: event.target.value,
-                  }))
-                }
-                placeholder="它擅长什么？"
-              />
-            </div>
-            <div className="bots-form__field">
-              <Label htmlFor="bot-system-prompt">个性补充（可选）</Label>
-              <Textarea
-                id="bot-system-prompt"
-                value={form.systemPrompt}
-                onChange={(event) =>
-                  setForm((current) => ({
-                    ...current,
-                    systemPrompt: event.target.value,
-                  }))
-                }
-                placeholder="对这个 Bot 的工作方式、输出习惯做补充"
-                rows={5}
-              />
-              <span className="bots-form__hint">
-                角色卡仍负责岗位能力；这里保存的是这个 Bot 的长期配置。
-              </span>
-            </div>
+              <div className="bots-form__field bots-form__field--roles">
+                <Label id="bot-role-label">库中角色卡</Label>
+                <div
+                  className="bots-role-picker"
+                  role="group"
+                  aria-labelledby="bot-role-label"
+                >
+                  <div className="relative">
+                    <MagnifyingGlass
+                      className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                      weight="bold"
+                      aria-hidden
+                    />
+                    <Input
+                      className="bots-role-picker__search pl-8"
+                      value={roleQuery}
+                      onChange={(event) => setRoleQuery(event.target.value)}
+                      placeholder="搜索角色卡名称…"
+                      disabled={roles.length === 0}
+                      aria-label="搜索库中角色卡"
+                    />
+                  </div>
+                  {filteredRoles.length === 0 ? (
+                    <p className="bots-role-picker__empty">
+                      {roles.length === 0
+                        ? "还没有可用角色卡"
+                        : "没有匹配的角色卡"}
+                    </p>
+                  ) : (
+                    <ul
+                      className="bots-role-picker__list scrollbar-thin"
+                      role="listbox"
+                      aria-label="库中角色卡"
+                    >
+                      {filteredRoles.map((role) => {
+                        const selected = form.roleId === role.id;
+                        return (
+                          <li key={role.id}>
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={selected}
+                              data-selected={selected || undefined}
+                              className="bots-role-picker__card"
+                              disabled={busy}
+                              onClick={() =>
+                                setForm((current) => ({
+                                  ...current,
+                                  roleId: role.id,
+                                }))
+                              }
+                            >
+                              <span
+                                className="bots-role-picker__avatar"
+                                aria-hidden
+                              >
+                                {monogram(role.displayName)}
+                              </span>
+                              <span className="bots-role-picker__copy">
+                                <span className="bots-role-picker__name">
+                                  {role.displayName}
+                                </span>
+                                {role.description ? (
+                                  <span className="bots-role-picker__desc">
+                                    {role.description}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+                <span className="bots-form__hint">
+                  角色卡决定岗位身份；Bot 可以在此基础上拥有自己的长期配置。
+                </span>
+              </div>
+            </section>
+            <section className="bots-create-section bots-create-section--behavior">
+              <div className="bots-form__field">
+                <Label htmlFor="bot-description">一句话说明</Label>
+                <Input
+                  id="bot-description"
+                  value={form.description}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      description: event.target.value,
+                    }))
+                  }
+                  placeholder="它擅长什么？"
+                />
+              </div>
+              <div className="bots-form__field">
+                <Label htmlFor="bot-system-prompt">个性补充（可选）</Label>
+                <Textarea
+                  id="bot-system-prompt"
+                  value={form.systemPrompt}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      systemPrompt: event.target.value,
+                    }))
+                  }
+                  placeholder="对这个 Bot 的工作方式、输出习惯做补充"
+                  rows={5}
+                />
+                <span className="bots-form__hint">
+                  角色卡仍负责岗位能力；这里保存的是这个 Bot 的长期配置。
+                </span>
+              </div>
+            </section>
           </div>
           <div className="roles-dialog__foot flex items-center justify-end gap-2 border-t border-border/50">
             <Button

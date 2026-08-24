@@ -327,6 +327,12 @@ export interface SourceSessionExcerptResult {
   truncated: boolean
 }
 
+/** Host tool 使用的原会话摘录读取器。 */
+export type SourceSessionExcerptReader = (
+  request: SourceSessionExcerptRequest,
+  alreadyUsedThisTurnTokens: number,
+) => SourceSessionExcerptResult | Promise<SourceSessionExcerptResult>
+
 /**
  * 校验「按需读原史」的 token 预算：
  * - 单次 ≤ PER_CALL hard（超过即钳到 PER_CALL hard，不报错）；

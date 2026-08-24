@@ -648,8 +648,24 @@ export function outcomeSignature(o: ParsedOutcome): string {
 
 type ToolClass = 'verify' | 'edit' | 'neutral'
 
+/**
+ * 验证工具名称可能来自不同内核或 MCP 包装层，不能只匹配 Claude 的 `Bash`。
+ * 仅识别明确表示执行、测试或检查的工具；Read/Edit 等工具保持原分类。
+ */
+function isVerificationToolName(toolName: string): boolean {
+  const normalized = toolName
+    .trim()
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[_:./-]+/g, ' ')
+    .toLowerCase()
+
+  return /\b(?:bash|sh|zsh|cmd|powershell|power shell|pwsh|shell|terminal|exec|run command|test|build|lint|typecheck|compile|check|verify|validate|screenshot|read pixels)\b/.test(
+    normalized,
+  )
+}
+
 function classifyTool(toolName: string): ToolClass {
-  if (toolName === 'Bash') return 'verify'
+  if (isVerificationToolName(toolName)) return 'verify'
   if (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') return 'edit'
   // Read/Grep/Glob 调查类权重低（§12.3）；MCP/Task/未知保守不计入主会话循环
   return 'neutral'

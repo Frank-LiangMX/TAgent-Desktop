@@ -834,6 +834,18 @@ describe('NoProgressGuard verify-on-stop 判定（brief 2026-08-19 §4）', () =
     expect(g.checkVerifyOnStop()).toBeNull()
   })
 
+  it('常见 shell / 检查类工具也算验证证据，避免误触发提示', () => {
+    for (const toolName of ['PowerShell', 'pwsh', 'Terminal', 'mcp__host__run_command', 'ReadPixels']) {
+      const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+      g.resetForNewTurn(0)
+      g.observe(editCall('src/a.ts', { at: 100 }))
+      g.observe(
+        batch([{ toolName, input: { command: 'npm test' }, output: 'ok' }], { at: 200 }),
+      )
+      expect(g.checkVerifyOnStop()).toBeNull()
+    }
+  })
+
   it('防重复：同回合第二次调用返回 null（verifyPromptFired）', () => {
     const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
     g.resetForNewTurn(0)

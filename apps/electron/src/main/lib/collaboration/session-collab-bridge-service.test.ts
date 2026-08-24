@@ -33,6 +33,10 @@ import {
   updateSessionMeta,
 } from "../agent/session-store";
 import { CollaborationRoomService } from "./collaboration-room-service";
+import {
+  reconcileLinkedSourceSessions,
+  syncSourceSessionAfterRoomMemberChange,
+} from "./collaboration-ipc";
 import { appendMessage } from "./collaboration-room-repository";
 import {
   BridgeConfirmRequiredError,
@@ -109,6 +113,27 @@ function mkSession(): string {
   return id;
 }
 
+
+test("历史 room 不会反向把已退出的普通多 Bot 会话重新绑定", () => {
+  const sessionId = mkSession();
+  const room = service.createRoom({
+    title: "历史房间不重绑",
+    sourceSessionId: sessionId,
+    members: [
+      { displayName: "桥接 Bot A", botProfileId: BOT_A, isCoordinator: true },
+      { displayName: "桥接 Bot B", botProfileId: BOT_B },
+    ],
+  });
+
+  // 模拟用户已退出协作室：保留普通多 Bot 参与者，但清掉当前 room 链接。
+  updateSessionMeta(sessionId, { fusionRoomId: undefined });
+  syncSourceSessionAfterRoomMemberChange(service, room.id);
+  reconcileLinkedSourceSessions(service);
+
+  expect(getSessionMeta(sessionId)?.fusionRoomId).toBeUndefined();
+  expect(getSessionMeta(sessionId)?.fusionMode).toBe("multi-bot");
+});
+
 function userMsg(text: string): unknown {
   return {
     type: "user",
@@ -154,8 +179,11 @@ describe("SessionCollabBridgeService（P2-UX 桥接服务层）", () => {
       { role: "user", text: "要支持 OAuth 和邮箱注册" },
     ]);
     const calls: string[] = [];
+    const metaChanges: string[] = [];
     const bridge = new SessionCollabBridgeService({
       roomService: service,
+      notifySessionMetaChanged: (changedSessionId) =>
+        metaChanges.push(changedSessionId),
       modelCaller: async (input) => {
         calls.push(input.systemPrompt);
         return JSON.stringify({
@@ -186,6 +214,7 @@ describe("SessionCollabBridgeService（P2-UX 桥接服务层）", () => {
     expect(calls).toHaveLength(1);
     // meta 已绑定房间
     expect(getSessionMeta(sessionId)?.fusionRoomId).toBe(result.roomId);
+    expect(metaChanges).toEqual([sessionId]);
   });
 
   test("3. enter + 假 LLM 抛错 → heuristic 仍成功建房/写 brief", async () => {
@@ -279,8 +308,11 @@ describe("SessionCollabBridgeService（P2-UX 桥接服务层）", () => {
       userConfirmed: true,
     });
     // 退出（用 LLM 回写 caller）
+    const metaChanges: string[] = [];
     const exitBridge = new SessionCollabBridgeService({
       roomService: service,
+      notifySessionMetaChanged: (changedSessionId) =>
+        metaChanges.push(changedSessionId),
       modelCaller: async () =>
         JSON.stringify({
           outcomes: ["已实现登录接口"],
@@ -309,6 +341,7 @@ describe("SessionCollabBridgeService（P2-UX 桥接服务层）", () => {
     const room = service.getRoomById(entered.roomId)!;
     expect(room.status).toBe("paused");
     expect(service.listMessages(entered.roomId).length).toBeGreaterThan(0);
+    expect(metaChanges).toEqual([sessionId]);
   });
 
   test("6. excerpt 超单轮预算 → 拒绝；正常 → truncated/tokenEstimate 合理；query 过滤", () => {

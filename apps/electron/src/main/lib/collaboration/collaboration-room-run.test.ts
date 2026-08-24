@@ -7,7 +7,7 @@
  * - 幂等：同一 (triggerMessageId, memberId) 不双跑
  * - 取消：cancelRun 置 cancelled，不写成员消息
  * - 失败：adapter 抛错 → run failed + 系统警告
- * - 启动恢复：遗留 running run → failed(INTERRUPTED)，成员回 idle（无假 running）
+ * - 启动恢复：遗留 running run → blocked(INTERRUPTED)，成员回 idle 并可确认续跑
  *
  * mock adapter 不发真实 HTTP；runTurn 行为可控（正文 / 延迟 / 抛错）。
  */
@@ -153,6 +153,28 @@ describe("CollaborationRoomService run 行为（Stage 2）", () => {
     expect(svc.listMembers(roomId)[0]!.summary).toContain("这是成员回复");
   });
 
+  test("暂停后 awaitAllRuns 不会被剩余 queued run 永久卡住", async () => {
+    const { adapter } = createMockAdapter({ text: "ok", delayMs: 30 });
+    const svc = createService(adapter);
+    const room = svc.createRoom({
+      title: "暂停等待语义",
+      maxConcurrentRuns: 1,
+      members: [
+        { displayName: "协调者", isCoordinator: true },
+        { displayName: "开发" },
+      ],
+    });
+
+    svc.appendUserMessage({ roomId: room.id, content: "@all 并行任务" });
+    svc.updateRoom({ roomId: room.id, status: "paused" });
+
+    await svc.awaitAllRuns();
+
+    const runs = svc.listRuns(room.id);
+    expect(runs.filter((run) => run.status === "done")).toHaveLength(1);
+    expect(runs.filter((run) => run.status === "queued")).toHaveLength(1);
+  });
+
   test("run 状态转换 queued → running → done（延迟 mock 观察 running 中态）", async () => {
     const { adapter } = createMockAdapter({ text: "ok", delayMs: 50 });
     const svc = createService(adapter);
@@ -261,7 +283,7 @@ describe("CollaborationRoomService run 行为（Stage 2）", () => {
     ]);
   });
 
-  test("启动恢复：遗留 running run → failed(INTERRUPTED)，成员回 idle（无假 running）", () => {
+  test("启动恢复：遗留 running run → blocked(INTERRUPTED)，成员回 idle并可确认续跑", () => {
     const { adapter } = createMockAdapter();
     const svc = createService(adapter);
     const { roomId, coordinatorId } = createRoomWithCoordinator(svc);
@@ -287,7 +309,7 @@ describe("CollaborationRoomService run 行为（Stage 2）", () => {
     expect(count).toBe(1);
 
     const run = svc2.getRunById("run_leftover")!;
-    expect(run.status).toBe("failed");
+    expect(run.status).toBe("blocked");
     expect(run.error?.code).toBe("INTERRUPTED");
     expect(run.fence).toBe(1);
     expect(run.finishedAt).toBeTypeOf("number");
@@ -323,6 +345,36 @@ describe("CollaborationRoomService run 行为（Stage 2）", () => {
     expect(calls).toHaveLength(1);
     expect(svc2.listMembers(roomId)[0]!.status).toBe("idle");
   });
+  test("启动恢复：paused 房间的 queued run 只恢复排队，恢复 active 后才启动", async () => {
+    const { adapter, calls } = createMockAdapter({ text: "暂停后恢复" });
+    const svc = createService(adapter);
+    const { roomId, coordinatorId } = createRoomWithCoordinator(svc);
+
+    svc.updateRoom({ roomId, status: "paused" });
+    const trigger = svc.appendUserMessage({ roomId, content: "暂停期间的任务" });
+    upsertRun({
+      id: "run_paused_leftover",
+      roomId,
+      memberId: coordinatorId,
+      triggerMessageId: trigger.id,
+      idempotencyKey: trigger.id + ":" + coordinatorId,
+      status: "queued",
+      attempt: 0,
+      fence: 0,
+    });
+
+    const svc2 = createService(adapter);
+    expect(svc2.recoverInterruptedRuns()).toBe(1);
+    expect(svc2.getRunById("run_paused_leftover")?.status).toBe("queued");
+    expect(svc2.listMembers(roomId)[0]!.status).toBe("queued");
+    expect(calls).toHaveLength(0);
+
+    svc2.updateRoom({ roomId, status: "active" });
+    await svc2.awaitAllRuns();
+    expect(svc2.getRunById("run_paused_leftover")?.status).toBe("done");
+    expect(calls).toHaveLength(1);
+  });
+
   test("runTurn 流式增量累积转发给 onTextDelta", async () => {
     const deltas: Array<{ runId: string; text: string }> = [];
     const { adapter } = createMockAdapter({ text: "你好世界" });

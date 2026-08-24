@@ -9,8 +9,8 @@
  * 此处包装成 `getWindow()?.webContents.send(CHANGED, { roomId, kind, at })`（对齐
  * kanban-bootstrap 的广播模式）。渲染层收到后重新拉取该房间数据。
  *
- * 注册时调用 service.recoverInterruptedRuns()，把上次未完成的 queued/running run
- * 标为 failed(INTERRUPTED)，避免重启后「假 running」。
+ * 注册时调用 service.recoverInterruptedRuns()：queued 安全恢复，running/awaiting 标为
+ * blocked(INTERRUPTED)，进入用户确认续跑流程，避免重启后「假 running」。
  *
  * handler 直接返回 service 结果；service 在校验/非法状态时 throw，
  * ipcMain.handle 会让 invoke 的 Promise reject，渲染层 try/catch 即可。
@@ -34,9 +34,12 @@ import {
   type CollaborationHumanMember,
   type CollaborationMemberPreset,
   type CollaborationMessage,
+  type CollaborationMessagesPage,
   type CollaborationRoom,
   type CollaborationRoomTask,
   type CollaborationRun,
+  type CollaborationRunsPage,
+  type CollaborationRunSummary,
   type ContinueCollaborationDepthStopInput,
   type ContinueCollaborationDepthStopResult,
   type CreateCollaborationRoomInput,
@@ -128,6 +131,12 @@ export function syncSourceSessionAfterRoomMemberChange(
   const room = service.getRoomById(roomId);
   const sourceSessionId = room?.sourceSessionId;
   if (!sourceSessionId) return;
+
+  // sourceSessionId 只是历史归属，不等于当前仍在协作室。用户退出协作室后，
+  // bridge 会清掉 meta.fusionRoomId；此时成员变更或应用重启都不能把它静默绑回去。
+  const sourceMeta = getSessionMeta(sourceSessionId);
+  if (sourceMeta?.fusionRoomId !== roomId) return;
+
   const activeMembers = service
     .listMembers(roomId)
     .filter((member) => member.status !== "removed");
@@ -178,6 +187,9 @@ export function reconcileLinkedSourceSessions(
   let reconciled = 0;
   for (const room of service.listRooms(true)) {
     if (!room.sourceSessionId) continue;
+    // 只修复“两边都明确指向同一房间”的投影，不从历史 room 反向制造新链接。
+    const sourceMeta = getSessionMeta(room.sourceSessionId);
+    if (sourceMeta?.fusionRoomId !== room.id) continue;
     syncSourceSessionAfterRoomMemberChange(service, room.id);
     reconciled += 1;
   }
@@ -186,6 +198,7 @@ export function reconcileLinkedSourceSessions(
 
 export function registerCollaborationRoomIpc(
   getWindow?: () => BrowserWindow | null,
+  notifySessionMetaChanged?: (sessionId: string) => void,
 ): void {
   const service = CollaborationRoomService.create({
     broadcast: (roomId, kind) => {
@@ -206,9 +219,14 @@ export function registerCollaborationRoomIpc(
   setRegisteredCollaborationRoomService(service);
 
   // P2-UX 桥接服务：明示进房 / 明示退出 / 按需读原史（userConfirmed 闸，复用上面的 service）。
-  // notifySessionMetaChanged 暂不接线（协作室侧无现成 sendPayload 入口），exit 后 meta 仍落盘，
-  // renderer 下次读 meta 生效；session_meta_changed 推送留待 UI 切片（见 12-LOG §86）。
-  const bridgeService = new SessionCollabBridgeService({ roomService: service });
+  // 进退房后的 meta 变更复用 SessionService 的统一 STREAM_EVENT → Chat → persisted-meta 链路。
+  const bridgeService = new SessionCollabBridgeService({
+    roomService: service,
+    notifySessionMetaChanged,
+  });
+  service.setSourceSessionExcerptReader((request, alreadyUsedThisTurnTokens) =>
+    bridgeService.readSourceSessionExcerpt(request, alreadyUsedThisTurnTokens),
+  );
 
   // 启动恢复：安全恢复 queued；running/awaiting run fail-closed 为 interrupted/blocked
   try {
@@ -279,8 +297,8 @@ export function registerCollaborationRoomIpc(
     async (
       _e,
       input: ListCollaborationMessagesInput,
-    ): Promise<CollaborationMessage[]> => {
-      return service.listMessages(input.roomId);
+    ): Promise<CollaborationMessagesPage> => {
+      return service.listMessagesPage(input);
     },
   );
 
@@ -399,9 +417,27 @@ export function registerCollaborationRoomIpc(
     async (
       _e,
       input: ListCollaborationRunsInput,
-    ): Promise<CollaborationRun[]> => {
-      return service.listRuns(input.roomId);
+    ): Promise<CollaborationRunsPage> => {
+      return service.listRunsPage(input);
     },
+  );
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.GET_RUN_SUMMARY,
+    async (
+      _e,
+      input: { roomId: string },
+    ): Promise<CollaborationRunSummary> => service.getRunSummary(input.roomId),
+  );
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.CANCEL_ALL_RUNS,
+    async (
+      _e,
+      input: { roomId: string },
+    ): Promise<{ cancelled: number }> => ({
+      cancelled: service.cancelAllRuns(input.roomId),
+    }),
   );
 
   ipcMain.handle(

@@ -23,8 +23,11 @@ import type {
   CollaborationHumanMember,
   CollaborationMemberPreset,
   CollaborationMessage,
+  CollaborationMessagesPage,
   CollaborationRoom,
   CollaborationRun,
+  CollaborationRunsPage,
+  CollaborationRunSummary,
   CollaborationMailboxEnvelope,
   CollaborationRoomTask,
   CollaborationArtifact,
@@ -32,6 +35,8 @@ import type {
   CollaborationTextDeltaPayload,
   LocalCollaborationContinuationItem,
   CreateCollaborationRoomInput,
+  ListCollaborationMessagesInput,
+  ListCollaborationRunsInput,
   UpgradeFusionSessionInput,
   SaveCollaborationMemberPresetInput,
   AddCollaborationMemberInput,
@@ -149,6 +154,10 @@ declare global {
       sendMessage: (input: {
         sessionId: string;
         prompt: string;
+        /** 旁路 Bot 的前情提要：注入 system prompt，不显示为 user 消息。 */
+        contextPrompt?: string;
+        /** 独立旁路 Bot 不参与父会话的协作室路由。 */
+        skipFusionRouting?: boolean;
         channelId?: string;
         model?: string;
         workspaceId?: string;
@@ -503,16 +512,19 @@ declare global {
         status: "active" | "revoked" | "expired";
         commonName: string;
       }>;
-      revokeFusionRoomCert: (certId: string) => Promise<{
-        certId: string;
-        cert: string;
-        fingerprint: string;
-        createdAt: number;
-        expiresAt: number;
-        revokedAt?: number;
-        status: "active" | "revoked" | "expired";
-        commonName: string;
-      } | undefined>;
+      revokeFusionRoomCert: (certId: string) => Promise<
+        | {
+            certId: string;
+            cert: string;
+            fingerprint: string;
+            createdAt: number;
+            expiresAt: number;
+            revokedAt?: number;
+            status: "active" | "revoked" | "expired";
+            commonName: string;
+          }
+        | undefined
+      >;
       // P0-3c：transport 只读状态（与 preload electronAPI + 主进程 IPC 同步）
       getFusionRoomTransportStatus: () => Promise<{
         appliedGate: {
@@ -763,8 +775,8 @@ declare global {
         input: UpdateCollaborationRoomInput,
       ) => Promise<CollaborationRoom>;
       listCollaborationMessages: (
-        roomId: string,
-      ) => Promise<CollaborationMessage[]>;
+        input: ListCollaborationMessagesInput,
+      ) => Promise<CollaborationMessagesPage>;
       appendCollaborationUserMessage: (
         input: AppendCollaborationUserMessageInput,
       ) => Promise<CollaborationMessage>;
@@ -797,11 +809,20 @@ declare global {
         memberId: string;
         consent: boolean;
         actorUserId?: string;
-      }) => Promise<CollaborationMember>;      listCollaborationMembers: (
+      }) => Promise<CollaborationMember>;
+      listCollaborationMembers: (
         roomId: string,
       ) => Promise<CollaborationMember[]>;
       // 协作室（Stage 2：run 状态机 + 取消 + CHANGED 广播；Stage 3：多成员并行 + 添加成员）
-      listCollaborationRuns: (roomId: string) => Promise<CollaborationRun[]>;
+      listCollaborationRuns: (
+        input: ListCollaborationRunsInput,
+      ) => Promise<CollaborationRunsPage>;
+      getCollaborationRunSummary: (
+        roomId: string,
+      ) => Promise<CollaborationRunSummary>;
+      cancelAllCollaborationRuns: (
+        roomId: string,
+      ) => Promise<{ cancelled: number }>;
       cancelCollaborationRun: (input: {
         roomId: string;
         runId: string;
@@ -1370,10 +1391,10 @@ export function App(): JSX.Element {
   };
 
   /**
-   * 标签栏显隐：多会话始终显示；单会话在已物化为 tab（channelId 非空）后显示。
-   * 草稿态（未发送、无 tab）不显示——对齐「新建会话阶段无标签」。
+   * 标签栏显隐：只要存在正式 active tab 就显示。
+   * 草稿态没有 activeTab，仍不显示；Bot 与摘要入口共享右侧动作区。
    */
-  const showTabBar = tabs.length > 1 || Boolean(activeTab?.channelId);
+  const showTabBar = Boolean(activeTab);
 
   // 富内容预览数据源：主进程鉴权读工作区文件（仅限已注册工作区目录内）
   const richSourceResolver = useCallback(async (src: string) => {
@@ -1416,30 +1437,30 @@ export function App(): JSX.Element {
           }
           sidebar={
             <SessionSidebar
-                activeSessionId={activeTabId}
-                onSelect={(s) => {
-                  setShowSettings(false);
-                  setActiveRail("chat");
-                  setSidebarOpen(true);
-                  // 选中已有会话 → 清掉草稿（避免关掉所有 tab 后复活旧草稿）
-                  setDraftSession(null);
-                  openSession(
-                    s.id,
-                    s.title,
-                    s.workspaceId,
-                    s.channelId,
-                    s.modelId,
-                  );
-                }}
-                onNew={(workspaceId) => {
-                  setShowSettings(false);
-                  setActiveRail("chat");
-                  setSidebarOpen(true);
-                  newSession(workspaceId);
-                }}
-                onOpenProject={() => void handleOpenProject()}
-                onWorkspaceDeleted={handleWorkspaceDeleted}
-              />
+              activeSessionId={activeTabId}
+              onSelect={(s) => {
+                setShowSettings(false);
+                setActiveRail("chat");
+                setSidebarOpen(true);
+                // 选中已有会话 → 清掉草稿（避免关掉所有 tab 后复活旧草稿）
+                setDraftSession(null);
+                openSession(
+                  s.id,
+                  s.title,
+                  s.workspaceId,
+                  s.channelId,
+                  s.modelId,
+                );
+              }}
+              onNew={(workspaceId) => {
+                setShowSettings(false);
+                setActiveRail("chat");
+                setSidebarOpen(true);
+                newSession(workspaceId);
+              }}
+              onOpenProject={() => void handleOpenProject()}
+              onWorkspaceDeleted={handleWorkspaceDeleted}
+            />
           }
         >
           {/* main：插件页 | 会话页/欢迎页（底层）+ 新会话草稿 overlay（覆盖层）。
