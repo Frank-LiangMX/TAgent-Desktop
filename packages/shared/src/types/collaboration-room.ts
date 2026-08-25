@@ -34,6 +34,8 @@ export interface CollaborationHumanMember {
   roomId: string;
   userId: string;
   displayName: string;
+  /** 该用户在本机/远端宿主绑定的个人工作区；不等于房间共享工作区。 */
+  workspaceId?: string;
   status: CollaborationHumanMemberStatus;
   joinedAt: number;
   updatedAt: number;
@@ -387,7 +389,8 @@ export interface MemberTurnInput {
   /** 触发消息 ID */
   triggerMessageId: string;
   /**
-   * 成员绑定工作区 ID（宿主组装，来自 room.workspaceId；模型不可伪造）。
+   * 成员绑定工作区 ID（宿主组装，模型不可伪造）。
+   * 独立协作室使用 roomWorkspace.id；从单会话升级的房间使用来源会话的 workspaceId。
    * workspace_* 工具只允许在绑定工作区根内做受限文件访问；未绑定为空串。
    */
   workspaceId?: string;
@@ -461,6 +464,19 @@ export interface CollaborationRoomWorkspace {
   createdAt: number;
   updatedAt: number;
 }
+
+/** 协作室工作区绑定的只读本地主机视图；directory 只用于当前桌面 UI 展示。 */
+export interface CollaborationWorkspaceBindingView {
+  id: string;
+  userId: string;
+  displayName: string;
+  label: string;
+  workspaceId?: string;
+  directory?: string;
+  kind: "user-project" | "room-shared";
+  status: "active" | "unavailable";
+}
+
 export interface CollaborationRoom {
   /** 房间 ID，格式 cr_xxxx */
   id: string;
@@ -468,9 +484,9 @@ export interface CollaborationRoom {
   title: string;
   /** 房间目标 */
   goal: string;
-  /** 绑定个人项目工作区 ID（旧版兼容字段；新融合房间使用 roomWorkspace）。 */
+  /** 绑定个人项目工作区 ID；来源单会话升级的房间继续使用它作为项目工作区。 */
   workspaceId?: string;
-  /** 房间服务工作区元数据；实际内容隔离在宿主管理目录，不等同于个人工作区。 */
+  /** 房间服务工作区元数据；独立房间内容隔离在宿主管理目录。来源会话房间优先使用 workspaceId。 */
   roomWorkspace?: CollaborationRoomWorkspace;
   /** 来源统一会话 ID；升级采用派生房间，不原地改写原会话。 */
   sourceSessionId?: string;
@@ -1701,6 +1717,8 @@ export interface InviteCollaborationHumanMemberInput {
   roomId: string;
   userId: string;
   displayName: string;
+  /** 被邀请用户在其宿主绑定的工作区 ID（可选）。 */
+  workspaceId?: string;
   actorUserId?: string;
 }
 
@@ -1708,6 +1726,8 @@ export interface InviteCollaborationHumanMemberInput {
 export interface JoinCollaborationHumanMemberInput {
   roomId: string;
   userId: string;
+  /** 接受邀请时声明该用户宿主绑定的工作区 ID（可选）。 */
+  workspaceId?: string;
   actorUserId?: string;
 }
 

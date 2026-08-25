@@ -81,6 +81,7 @@ describe('W8 output style + rich content gate', () => {
     const prompt = buildOutputStylePrompt()
     expect(prompt).toContain('输出风格')
     expect(prompt).toContain('装饰 emoji')
+    expect(prompt).toContain('思考草稿不得进入可见正文')
   })
 
   it('buildRichContentSystemPrompt 含按需门槛', () => {

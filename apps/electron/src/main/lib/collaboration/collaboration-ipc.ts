@@ -37,6 +37,7 @@ import {
   type CollaborationMessagesPage,
   type CollaborationRoom,
   type CollaborationRoomTask,
+  type CollaborationWorkspaceBindingView,
   type CollaborationRun,
   type CollaborationRunsPage,
   type CollaborationRunSummary,
@@ -326,6 +327,16 @@ export function registerCollaborationRoomIpc(
     COLLABORATION_ROOM_IPC_CHANNELS.LIST_HUMAN_MEMBERS,
     async (_e, input: { roomId: string }): Promise<CollaborationHumanMember[]> => {
       return service.listHumanMembers(input.roomId);
+    },
+  );
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.LIST_WORKSPACE_BINDINGS,
+    async (
+      _e,
+      input: { roomId: string },
+    ): Promise<CollaborationWorkspaceBindingView[]> => {
+      return service.listWorkspaceBindings(input.roomId);
     },
   );
 

@@ -19,6 +19,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { isLowQualityInsight } from './memory-candidate-quality'
 import { getMemoryDir, memoryLayerService, type MemoryMode } from './memory-layer-service'
 import type { Insight, Contradiction } from './memory-consolidation-service'
 
@@ -292,8 +293,9 @@ class ReflectService {
         dir
       )
 
-      // 7. anti_echo_filter: 过滤重复
+      // 7. 质量门控 + anti_echo：过滤废话与重复
       const filteredInsights = newInsights.filter((insight) => {
+        if (isLowQualityInsight(insight)) return false
         return !existingInsights.some((existing) => this.isSimilar(insight, existing))
       })
 
@@ -633,43 +635,15 @@ ${summary || '（无）'}
   /**
    * 规则版关键词提取（fallback）
    *
-   * LLM 不可用时用，产出质量较低但保证 Reflect 不阻塞。
+   * 旧实现会把高频词写成「提到 X，可能是重要偏好」——全是噪声（如 Agent/dev/main）。
+   * LLM 不可用时宁可空写，也不再往 L5 灌废话。
    */
   private extractInsightsWithRules(
-    l2Facts: string[],
-    l4Sessions: string[],
-    existingInsights: string[]
+    _l2Facts: string[],
+    _l4Sessions: string[],
+    _existingInsights: string[],
   ): string[] {
-    const insights: string[] = []
-    const keywordCounts = new Map<string, number>()
-
-    // 同时从 L2 事实和 L4 会话中提取关键词
-    for (const fact of l2Facts) {
-      const keywords = fact.match(/[一-龥]{2,4}|[a-zA-Z]{3,}/g) || []
-      for (const keyword of keywords) {
-        keywordCounts.set(keyword, (keywordCounts.get(keyword) || 0) + 1)
-      }
-    }
-    for (const session of l4Sessions) {
-      const keywords = session.match(/[一-龥]{2,4}|[a-zA-Z]{3,}/g) || []
-      for (const keyword of keywords) {
-        keywordCounts.set(keyword, (keywordCounts.get(keyword) || 0) + 1)
-      }
-    }
-
-    // 合并所有文本用于关联检查
-    const allTexts = [...l2Facts, ...l4Sessions]
-
-    for (const [keyword, count] of keywordCounts) {
-      if (count >= 2 && !existingInsights.some((i) => i.includes(keyword))) {
-        const relatedTexts = allTexts.filter((t) => t.includes(keyword))
-        if (relatedTexts.length >= 2) {
-          insights.push(`用户在多个场景提到「${keyword}」，可能是一个重要偏好`)
-        }
-      }
-    }
-
-    return insights.slice(0, 5)
+    return []
   }
 
   /**
@@ -772,10 +746,17 @@ ${summary || '（无）'}
     const l5Content = this.readMdFile(path.join(dir, 'L5_insights.md'))
     const existingInsights = this.parseMdLines(l5Content)
 
-    // 2. anti-echo 去重：对 persisted + batch-internal 都去重
-    //    使用 isSimilar 对 batch 内部做语义去重（保留每个相似 group 的首条）
+    // 2. 质量门控 + anti-echo：丢掉空洞洞察 / 低置信度 / 与已有相似
+    const room = Math.max(0, MAX_INSIGHTS - existingInsights.length)
     const acceptedInsights: Insight[] = []
     const filteredInsights = insights.filter((insight) => {
+      if (
+        isLowQualityInsight(insight.content, {
+          confidence: insight.confidence,
+        })
+      ) {
+        return false
+      }
       // 对 persisted 去重
       if (existingInsights.some((existing) => this.isSimilar(insight.content, existing))) {
         return false
@@ -787,11 +768,17 @@ ${summary || '（无）'}
       acceptedInsights.push(insight)
       return true
     })
+    const toWrite = filteredInsights.slice(0, room)
 
-    // 3. 写入去重后的新洞察（含 metadata）
-    if (filteredInsights.length > 0) {
-      await this.appendStructuredInsights(dir, filteredInsights)
-      insightsApplied = filteredInsights.length
+    // 3. 写入去重后的新洞察（含 metadata）；已满则跳过，避免 L5 无限胀
+    if (toWrite.length > 0) {
+      await this.appendStructuredInsights(dir, toWrite)
+      insightsApplied = toWrite.length
+    }
+    if (filteredInsights.length > toWrite.length) {
+      console.log(
+        `[ReflectService] L5 已达上限 ${MAX_INSIGHTS}，跳过 ${filteredInsights.length - toWrite.length} 条洞察`,
+      )
     }
 
     // 4. contradictions 去重（按 content 与现有 corrections 比较）

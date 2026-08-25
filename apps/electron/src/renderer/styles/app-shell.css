@@ -110,7 +110,7 @@
   padding-right: var(--app-shell-session-gutter, 16px);
 }
 
-/* 权限条与输入同宽 */
+/* 权限条与输入同宽；审批/选择面板在 composer 内覆盖输入框，避免误输入。 */
 .session-permission-banner {
   box-sizing: border-box;
   width: 100%;
@@ -119,13 +119,45 @@
   padding-left: var(--app-shell-session-gutter, 16px);
   padding-right: var(--app-shell-session-gutter, 16px);
 }
-
+.session-composer-cluster > .session-permission-banner {
+  position: absolute;
+  inset-inline: 0;
+  bottom: max(
+    0px,
+    calc(
+      var(--shell-band-inset-bottom, 24px) - var(--spatial-status-bottom, 7px) -
+        var(--shell-token-slot, 0px)
+    )
+  );
+  z-index: 50;
+}
 /* 会话错误条与输入同宽 */
 .session-error-banner {
   box-sizing: border-box;
   width: 100%;
   max-width: none;
   margin-inline: 0;
+  /* 错误卡片属于会话信息流，给左侧刻度轨让出独立安全区。 */
+  --session-error-inset-left: 36px;
+  --session-error-inset-right: 12px;
+}
+.session-error-banner__card {
+  box-sizing: border-box;
+  width: calc(
+    100% - var(--session-error-inset-left) - var(--session-error-inset-right)
+  );
+  margin-left: var(--session-error-inset-left);
+  margin-right: var(--session-error-inset-right);
+}
+.session-chat-col:has(.session-bot-rail[data-visible="true"])
+  .session-error-banner {
+  --session-error-inset-right: calc(12px + 3.5rem);
+}
+.session-chat-col:has(
+    .session-bot-rail[data-visible="true"][data-expanded="true"]
+  )
+  .session-error-banner {
+  --session-error-inset-right: calc(12px + 12.75rem);
 }
 
 /* 输入 dock：margin-bottom 使输入框底贴 band（有 token 时扣掉 token 高） */

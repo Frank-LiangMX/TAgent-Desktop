@@ -15,6 +15,10 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import {
+  isLowQualityMemoryContent,
+  memoryContentDedupeKey,
+} from './memory-candidate-quality'
 import { getMemoryDir, type MemoryMode } from './memory-layer-service'
 import type { NudgeCandidate, NudgeType } from './nudge-service'
 
@@ -99,17 +103,33 @@ export function readStageQueue(mode: MemoryMode): StageEntry[] {
 /**
  * 入队 stage（background nudge 写入暂存）
  *
- * 幂等：相同 id 的条目不重复入队（内部查重，不改变 public contract）。
+ * 幂等：相同 id，或相同 targetLayer+正文，不重复入队。
+ * 低质量正文（path-slug / 半截纠正等）直接丢弃。
  * 文件不存在时自动创建（lazy）。
  */
 export function enqueueStage(mode: MemoryMode, candidate: NudgeCandidate): void {
+  const text = (candidate.suggestedContent || candidate.pattern || '').trim()
+  if (
+    isLowQualityMemoryContent(text, {
+      type: candidate.type,
+      targetLayer: candidate.targetLayer,
+    })
+  ) {
+    console.log(
+      `[StageQueue] 跳过低质量候选: ${candidate.id} (${candidate.targetLayer}) ${text.slice(0, 60)}`,
+    )
+    return
+  }
+
   const filePath = getStageFilePath(mode)
   const dir = path.dirname(filePath)
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true })
   }
 
-  // 幂等检查：相同 id 的条目不重复入队
+  const contentKey = memoryContentDedupeKey(candidate.targetLayer, text)
+
+  // 幂等检查：相同 id 或相同内容不重复入队
   if (fs.existsSync(filePath)) {
     try {
       const content = fs.readFileSync(filePath, 'utf-8')
@@ -118,12 +138,19 @@ export function enqueueStage(mode: MemoryMode, candidate: NudgeCandidate): void 
         try {
           const existing = JSON.parse(line) as StageEntry
           if (existing.id === candidate.id) {
-            console.log(`[StageQueue] 跳过重复入队: ${candidate.id}`)
+            console.log(`[StageQueue] 跳过重复入队(id): ${candidate.id}`)
+            return
+          }
+          const existingText = (existing.suggestedContent || existing.pattern || '').trim()
+          if (memoryContentDedupeKey(existing.targetLayer, existingText) === contentKey) {
+            console.log(
+              `[StageQueue] 跳过重复入队(content): ${candidate.targetLayer} ${text.slice(0, 60)}`,
+            )
             return
           }
         } catch (parseErr) {
           console.warn(
-            `[StageQueue] 幂等检查：单行解析失败跳过: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`
+            `[StageQueue] 幂等检查：单行 JSON 解析失败跳过: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`
           )
         }
       }

@@ -92,7 +92,7 @@ async function loadPiAgentCore(): Promise<PiAgentCoreModule> {
 
 import { createTaskTool } from './subagent-task-tool'
 import { getSessionMeta } from '../../agent/session-store'
-import { NoProgressGuard, buildNoProgressEventFromDecision, buildNoProgressAskUserInput, buildVerifyOnStopAskUserInput, VERIFY_ON_STOP_PAUSE_ERRORS } from '../../agent/no-progress-guard'
+import { NoProgressGuard, buildNoProgressEventFromDecision, buildNoProgressAskUserInput } from '../../agent/no-progress-guard'
 import { bashHooksForSession } from '../../agent/session-process-registry'
 
 // ===== 配置类型 =====
@@ -327,8 +327,6 @@ interface SessionEntry {
   maxTurnsHit: boolean
   /** 是否因无进展守卫安全暂停（result → paused_no_progress；优先级高于 maxTurnsHit，§20.5） */
   pausedNoProgressHit: boolean
-  /** brief 2026-08-19 §4：是否因 verify-on-stop 触发暂停（result → paused_no_progress 带验证文案） */
-  verifyOnStopHit: boolean
   /** 本轮已发过暂停 AskUserQuestion（brief 2026-08-19 §3；防 afterToolCall + beforeToolCall 双触发，per-turn reset 复位） */
   pauseAskUserFired: boolean
   /** 无进展守卫上下文（per-session；query() 起每轮 reset） */
@@ -474,7 +472,6 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     entry.turnCount = 0
     entry.maxTurnsHit = false
     entry.pausedNoProgressHit = false
-    entry.verifyOnStopHit = false
     entry.pauseAskUserFired = false
     // 无进展守卫：新用户回合重置为 observing（§8）；上一轮非 observing 则发 cleared
     if (entry.np) {
@@ -556,9 +553,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
 
     /**
      * 终态归一化（§20.5 单真源终态闸口）。
-     * pausedNoProgressHit 优先于 verifyOnStopHit 优先于 maxTurnsHit：三者不可共存，
-     * 暂停归一为 paused_no_progress（非错误），maxTurns 归一为 error_max_turns。
-     * brief 2026-08-19 §4：verifyOnStopHit 归一为带验证文案的 paused_no_progress。
+     * pausedNoProgressHit 优先于 maxTurnsHit：两者不可共存，暂停归一为 paused_no_progress（非错误），maxTurns 归一为 error_max_turns。
      */
     const remapTerminal = (p: TAgentControlEvent): TAgentControlEvent => {
       if (p.kind !== 'result') return p
@@ -569,15 +564,6 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           usage: p.usage,
           totalCostUsd: p.totalCostUsd,
           errors: ['已暂停：连续多次操作未获得新进展。会话与历史保留，可在原会话继续发送消息。'],
-        }
-      }
-      if (entry.verifyOnStopHit) {
-        return {
-          kind: 'result',
-          subtype: 'paused_no_progress',
-          usage: p.usage,
-          totalCostUsd: p.totalCostUsd,
-          errors: VERIFY_ON_STOP_PAUSE_ERRORS,
         }
       }
       if (!entry.maxTurnsHit) return p
@@ -718,34 +704,11 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             }
           }
 
-          // agent_end result：终态归一化（paused_no_progress 优先 / verify-on-stop / maxTurns 覆盖）；可重试错误暂扣
+          // agent_end result：终态归一化（paused_no_progress / maxTurns 覆盖）；可重试错误暂扣
           if (event.type === 'agent_end' && p.kind === 'result') {
-            // brief 2026-08-19 §4：verify-on-stop 终态收束前判定。
-            // 仅当无进展守卫未暂停且 enforce 模式时检查：本轮有 edit 无 verify 证据 → 触发验证提示。
-            if (
-              !entry.pausedNoProgressHit &&
-              !entry.maxTurnsHit &&
-              entry.np?.mode === 'enforce'
-            ) {
-              const verifyDecision = entry.np.guard.checkVerifyOnStop()
-              if (verifyDecision) {
-                entry.verifyOnStopHit = true
-                if (verifyDecision.emitPhase) {
-                  entry.np.onNoProgressEvent?.(
-                    buildNoProgressEventFromDecision(verifyDecision, entry.np.mode),
-                  )
-                }
-                // brief 2026-08-19 §4：fire verify-on-stop AskUser（复用 onNoProgressPauseAskUser 管线）。
-                // 内联而非调 firePiVerifyOnStopAskUser（后者是 createSession 内闭包，query 不可见）。
-                if (entry.np.onNoProgressPauseAskUser && !entry.pauseAskUserFired) {
-                  entry.pauseAskUserFired = true
-                  entry.np.onNoProgressPauseAskUser(buildVerifyOnStopAskUserInput())
-                }
-              }
-            }
             const remapped = remapTerminal(p)
-            // 暂停 / verify-on-stop / maxTurns：终态已归一，直接推，不走重试
-            if (entry.pausedNoProgressHit || entry.verifyOnStopHit || entry.maxTurnsHit) {
+            // 暂停 / maxTurns：终态已归一，直接推，不走重试
+            if (entry.pausedNoProgressHit || entry.maxTurnsHit) {
               retryGate.heldErrorAssistant = null
               retryGate.heldResult = null
               retryGate.lastEndRetryableError = null
@@ -1481,7 +1444,6 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       turnCount: 0,
       maxTurnsHit: false,
       pausedNoProgressHit: false,
-      verifyOnStopHit: false,
       pauseAskUserFired: false,
       np,
     }

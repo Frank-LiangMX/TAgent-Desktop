@@ -93,6 +93,28 @@ describe('sdkMessageToIR - partial / stop_reason（REGRESS-E）', () => {
     })
   })
 
+  test('原生 thinking_delta 进入独立思考流，不降级成普通 text', () => {
+    const msg = {
+      type: 'stream_event',
+      uuid: 'u-think',
+      parent_tool_use_id: null,
+      session_id: 's-1',
+      event: {
+        type: 'content_block_delta',
+        delta: { type: 'thinking_delta', thinking: '先检查入口' },
+      },
+    } as never
+
+    const { message, event } = sdkMessageToIR(msg)
+    expect(message).toBeUndefined()
+    expect(event).toEqual({
+      kind: 'stream_thinking_delta',
+      text: '先检查入口',
+      parentToolUseId: undefined,
+      uuid: 'u-think',
+    })
+  })
+
   test('user 顶层 attachments 透传到 IR（旁路后历史回放不能丢图）', () => {
     const msg = {
       type: 'user',

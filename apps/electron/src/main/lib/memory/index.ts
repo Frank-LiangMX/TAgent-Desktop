@@ -45,6 +45,14 @@ export {
   type StageEntry,
 } from './stage-queue-service'
 
+// memory-candidate-quality
+export {
+  isLowQualityMemoryContent,
+  isLowQualityInsight,
+  memoryContentDedupeKey,
+  MIN_INSIGHT_CONFIDENCE,
+} from './memory-candidate-quality'
+
 // memory-consolidation-service
 export {
   ConsolidationService,

@@ -96,6 +96,7 @@ import {
   type CollaborationHumanMember,
   type CollaborationRoomChangedPayload,
   type CollaborationRoomTask,
+  type CollaborationWorkspaceBindingView,
   type CollaborationUserApprovalRequest,
   type CollaborationRoomTaskStatus,
   type CollaborationTextDeltaPayload,
@@ -281,10 +282,28 @@ function buildRoomWorkspace(roomId: string, now: number) {
 }
 
 /**
- * 新融合房间的实际文件根目录。旧房间仍走 workspaceId 兼容路径；
- * 一旦存在 roomWorkspace，绝不回退到个人工作区。
+ * 解析房间成员实际可访问的文件根目录。
+ *
+ * 从单会话升级的房间虽然也有 roomWorkspace 元数据，但它应继续绑定来源会话的
+ * 项目工作区；否则 roomWorkspace 会把成员悄悄带到一个空的隔离目录，原会话里的
+ * 项目文件就会“消失”。独立创建的房间仍使用隔离的服务工作区。
  */
 function resolveRoomWorkspaceRoot(room: CollaborationRoom): string | undefined {
+  const isSourceSessionWorkspace = Boolean(
+    room.sourceSessionId && room.workspaceId,
+  );
+  if (isSourceSessionWorkspace) {
+    const workspace = resolveWorkspaceById(room.workspaceId!);
+    if (
+      !workspace?.projectDirectory ||
+      !existsSync(workspace.projectDirectory)
+    ) {
+      // 来源工作区失效时 fail-closed，绝不能回退到空的房间目录并误写错位置。
+      return undefined;
+    }
+    return realpathSafe(workspace.projectDirectory);
+  }
+
   if (room.roomWorkspace) {
     if (room.roomWorkspace.roomId !== room.id) return undefined;
     const root = getCollaborationRoomWorkspaceDir(room.id);
@@ -306,6 +325,34 @@ function resolveRoomWorkspaceRoot(room: CollaborationRoom): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * 给成员明确注入宿主已经绑定的工作区，而不是只把 workspaceId 留在运行时字段里。
+ * 绝对路径由宿主解析，模型只能通过 workspace_* 工具访问受守卫的相对路径。
+ */
+function buildRoomWorkspaceContextPrompt(
+  room: CollaborationRoom,
+  workspaceRoot: string | undefined,
+): string {
+  if (!workspaceRoot) {
+    return [
+      "## 工作区上下文（宿主提供）",
+      "当前协作室没有可访问的工作区。不要假设项目文件存在，也不要编造文件路径；如果任务需要文件操作，应先告知用户工作区不可用。",
+    ].join("\n");
+  }
+
+  const isSourceSessionWorkspace = Boolean(
+    room.sourceSessionId && room.workspaceId,
+  );
+  return [
+    "## 工作区上下文（宿主提供）",
+    "当前可访问的工作区根目录：" + workspaceRoot,
+    isSourceSessionWorkspace
+      ? "这是从来源单会话继承的项目工作区，协作室成员共享这份项目目录。"
+      : "这是当前协作室的隔离服务工作区，不等同于用户个人项目目录。",
+    "文件工具的 path 必须使用相对于该根目录的路径；需要了解项目结构时先使用 workspace_search。不要根据前情提要或其他成员正文臆造工作区路径。",
+  ].join("\n");
+}
 function resolveHumanActorUserId(value?: string): string {
   return value?.trim() || LOCAL_HUMAN_USER_ID;
 }
@@ -319,6 +366,7 @@ function defaultHumanMemberForRoom(
     roomId: room.id,
     userId: ownerUserId,
     displayName: ownerUserId === LOCAL_HUMAN_USER_ID ? "我" : ownerUserId,
+    workspaceId: room.workspaceId,
     status: "active",
     joinedAt: room.createdAt,
     updatedAt: room.updatedAt,
@@ -529,6 +577,64 @@ export class CollaborationRoomService {
       : [defaultHumanMemberForRoom(room)];
   }
 
+  /**
+   * 返回当前宿主可展示的工作区绑定，不把路径塞进共享房间实体。
+   * 用户工作区按成员标注；独立协作室额外展示一个房间共享工作区。
+   */
+  listWorkspaceBindings(roomId: string): CollaborationWorkspaceBindingView[] {
+    const room = getRoom(roomId);
+    if (!room) throw new Error("房间不存在");
+
+    const bindings: CollaborationWorkspaceBindingView[] = [];
+    const members = this.listHumanMembers(room.id);
+    for (const member of members) {
+      if (!member.workspaceId) continue;
+      const workspace = resolveWorkspaceById(member.workspaceId);
+      const directory = workspace?.projectDirectory;
+      bindings.push({
+        id: "user:" + member.userId + ":" + member.workspaceId,
+        userId: member.userId,
+        displayName: member.displayName,
+        label: "个人工作区",
+        workspaceId: member.workspaceId,
+        directory,
+        kind: "user-project",
+        status: directory ? "active" : "unavailable",
+      });
+    }
+
+    if (room.roomWorkspace && !(room.sourceSessionId && room.workspaceId)) {
+      const directory = getCollaborationRoomWorkspaceDir(room.id);
+      bindings.push({
+        id: "room:" + room.id,
+        userId: "room",
+        displayName: "协作室",
+        label: "共享工作区",
+        workspaceId: room.roomWorkspace.id,
+        directory,
+        kind: "room-shared",
+        status: directory ? "active" : "unavailable",
+      });
+    }
+
+    if (bindings.length === 0 && room.sourceSessionId && room.workspaceId) {
+      const workspace = resolveWorkspaceById(room.workspaceId);
+      const directory = workspace?.projectDirectory;
+      bindings.push({
+        id: "owner:" + (room.ownerUserId ?? LOCAL_HUMAN_USER_ID),
+        userId: room.ownerUserId ?? LOCAL_HUMAN_USER_ID,
+        displayName: room.ownerUserId === LOCAL_HUMAN_USER_ID ? "我" : "房主",
+        label: "来源项目工作区",
+        workspaceId: room.workspaceId,
+        directory,
+        kind: "user-project",
+        status: directory ? "active" : "unavailable",
+      });
+    }
+
+    return bindings;
+  }
+
   private saveHumanMembers(
     room: CollaborationRoom,
     humanMembers: CollaborationHumanMember[],
@@ -583,6 +689,7 @@ export class CollaborationRoomService {
       ? {
           ...existing,
           displayName,
+          workspaceId: input.workspaceId ?? existing.workspaceId,
           status: "invited",
           leftAt: undefined,
           updatedAt: now,
@@ -592,6 +699,7 @@ export class CollaborationRoomService {
           roomId: room.id,
           userId,
           displayName,
+          workspaceId: input.workspaceId,
           status: "invited",
           joinedAt: now,
           updatedAt: now,
@@ -628,6 +736,7 @@ export class CollaborationRoomService {
     const updated: CollaborationHumanMember = {
       ...existing,
       status: "active",
+      workspaceId: input.workspaceId ?? existing.workspaceId,
       leftAt: undefined,
       updatedAt: Date.now(),
     };
@@ -866,6 +975,7 @@ export class CollaborationRoomService {
           roomId,
           userId: input.ownerUserId?.trim() || "local-user",
           displayName: "房主",
+          workspaceId: input.workspaceId,
           status: "active",
           joinedAt: now,
           updatedAt: now,
@@ -2508,6 +2618,17 @@ export class CollaborationRoomService {
             .join("\n")}`
         : "";
       const prompt = projectedPrompt + attachmentPrompt;
+      const workspaceRoot = resolveRoomWorkspaceRoot(room);
+      const workspaceId =
+        room.sourceSessionId && room.workspaceId
+          ? room.workspaceId
+          : room.roomWorkspace?.id ?? room.workspaceId;
+      const systemPrompt = [
+        projected.systemPrompt,
+        buildRoomWorkspaceContextPrompt(room, workspaceRoot),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
       let streamed = "";
       const input: MemberTurnInput = {
         roomId: room.id,
@@ -2518,14 +2639,14 @@ export class CollaborationRoomService {
         cliWorkerId: member.cliWorkerId,
         backend: member.backend,
         triggerMessageId: triggerMessage.id,
-        workspaceId: room.roomWorkspace?.id ?? room.workspaceId,
-        workspaceRoot: resolveRoomWorkspaceRoot(room),
+        workspaceId,
+        workspaceRoot,
         permissionProfile: member.permissionProfile,
 
         capabilities: member.capabilities,
         channelId: member.channelId,
         modelId: member.modelId,
-        systemPrompt: projected.systemPrompt,
+        systemPrompt,
         prompt,
         signal: controller.signal,
         onTextDelta: (delta: string) => {
@@ -3991,6 +4112,12 @@ export class CollaborationRoomService {
     );
     if (!activeHuman)
       return { ok: false, reason: "当前用户不是该房间的活跃成员" };
+    if (room.sourceSessionId && room.workspaceId) {
+      return {
+        ok: false,
+        reason: "来源会话房间已直接连接项目工作区，无需再次导入",
+      };
+    }
     if (!room.roomWorkspace) {
       return {
         ok: false,

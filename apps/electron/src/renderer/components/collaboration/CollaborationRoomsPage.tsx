@@ -45,6 +45,7 @@ import type {
   CollaborationRoom,
   CollaborationRoomStatus,
   CollaborationRoomTask,
+  CollaborationWorkspaceBindingView,
   CollaborationRun,
   CollaborationRunsPage,
   CollaborationRunSummary,
@@ -57,6 +58,9 @@ import {
   Button,
   DestructiveConfirmDialog,
   Input,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
 } from "@tagent/ui";
 import {
   ChatInput,
@@ -274,6 +278,9 @@ function LocalCollaborationRoomsPage({
   const [humanMembers, setHumanMembers] = useState<CollaborationHumanMember[]>(
     [],
   );
+  const [workspaceBindings, setWorkspaceBindings] = useState<
+    CollaborationWorkspaceBindingView[]
+  >([]);
   const [runs, setRuns] = useState<CollaborationRun[]>([]);
   const [runSummary, setRunSummary] =
     useState<CollaborationRunSummary | null>(null);
@@ -347,6 +354,7 @@ function LocalCollaborationRoomsPage({
     setResumingRunId(null);
     setResumeErrorByRun({});
     setPendingAttachments([]);
+    setWorkspaceBindings([]);
     setHasDraft(false);
     setComposerMentionIds([]);
     setMessageCursor(null);
@@ -362,6 +370,7 @@ function LocalCollaborationRoomsPage({
         setRoom(null);
         setMessages([]);
         setMembers([]);
+        setWorkspaceBindings([]);
         setRuns([]);
         setRunSummary(null);
         setMessageCursor(null);
@@ -380,6 +389,7 @@ function LocalCollaborationRoomsPage({
           msgsPage,
           mems,
           humans,
+          workspaceBindingsResult,
           runsPage,
           runSummaryResult,
           box,
@@ -395,6 +405,7 @@ function LocalCollaborationRoomsPage({
             }),
             window.electronAPI.listCollaborationMembers(roomId),
             window.electronAPI.listCollaborationHumanMembers(roomId),
+            window.electronAPI.listCollaborationWorkspaceBindings(roomId),
             window.electronAPI.listCollaborationRuns({
               roomId,
               limit: COLLABORATION_HISTORY_PAGE_SIZE,
@@ -414,6 +425,11 @@ function LocalCollaborationRoomsPage({
         setMessageCursor(messagesPage?.nextCursor ?? null);
         setMembers(Array.isArray(mems) ? mems : []);
         setHumanMembers(Array.isArray(humans) ? humans : []);
+        setWorkspaceBindings(
+          Array.isArray(workspaceBindingsResult)
+            ? workspaceBindingsResult
+            : [],
+        );
         setRuns(
           Array.isArray(loadedRunsPage?.items) ? loadedRunsPage.items : [],
         );
@@ -1170,6 +1186,9 @@ function LocalCollaborationRoomsPage({
     room.sourceSessionId &&
     (!sourceSessionId || room.sourceSessionId === sourceSessionId),
   );
+  const usesSourceSessionWorkspace = Boolean(
+    room.sourceSessionId && room.workspaceId,
+  );
 
   return (
     <div className="session-body flex h-full min-h-0 flex-col">
@@ -1193,6 +1212,80 @@ function LocalCollaborationRoomsPage({
           >
             {roomStatusLabel(room.status)}
           </span>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                aria-label="查看工作区绑定"
+              >
+                <FolderOpen size={13} weight="regular" />
+                <span>工作区</span>
+                <span className="tabular-nums text-[10px] text-muted-foreground/75">
+                  {workspaceBindings.length}
+                </span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="end"
+              sideOffset={8}
+              className="w-[min(420px,calc(100vw-32px))] overflow-hidden p-0"
+            >
+              <div className="border-b border-border/60 px-3 py-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs font-semibold text-foreground">
+                    工作区绑定
+                  </div>
+                  <span className="text-[10px] text-muted-foreground">
+                    {workspaceBindings.length
+                      ? workspaceBindings.length + " 个目录"
+                      : "未绑定"}
+                  </span>
+                </div>
+                <div className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                  按用户区分个人目录；协作室共享目录单独标注。
+                </div>
+              </div>
+              <div className="max-h-64 overflow-y-auto p-1.5">
+                {workspaceBindings.length ? (
+                  workspaceBindings.map((binding) => (
+                    <div
+                      key={binding.id}
+                      className="rounded-md px-2.5 py-2 transition-colors hover:bg-accent/60"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={cn(
+                            "size-1.5 shrink-0 rounded-full",
+                            binding.status === "active"
+                              ? "bg-emerald-500"
+                              : "bg-amber-500",
+                          )}
+                          aria-hidden="true"
+                        />
+                        <span className="min-w-0 truncate text-xs font-medium text-foreground">
+                          {binding.displayName}
+                        </span>
+                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {binding.label}
+                        </span>
+                      </div>
+                      <div
+                        className="mt-1 truncate pl-3.5 font-mono text-[10px] leading-4 text-muted-foreground"
+                        title={binding.directory ?? "目录不可用"}
+                      >
+                        {binding.directory ?? "目录不可用"}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="px-2.5 py-3 text-xs text-muted-foreground">
+                    当前协作室没有可展示的工作区目录。
+                  </div>
+                )}
+              </div>
+            </PopoverContent>
+          </Popover>
           <div className="collab-room-actions ml-auto flex items-center gap-0.5 border-l border-border/35 pl-1">
             {canExitCollaboration ? (
               <Button
@@ -1215,7 +1308,7 @@ function LocalCollaborationRoomsPage({
               cliWorkers={cliWorkers}
               onSave={(patch) => void confirmAddMember(patch)}
             />
-            {room.roomWorkspace ? (
+            {room.roomWorkspace && !usesSourceSessionWorkspace ? (
               <AppTooltip label="导入个人工作区" side="bottom">
                 <button
                   type="button"

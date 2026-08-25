@@ -32,6 +32,12 @@ export class BrowserService {
       ipcMain.removeHandler(channel)
       ipcMain.handle(channel, handler)
     }
+    replace(BROWSER_IPC_CHANNELS.OPEN, (_event, input: { sessionId: string; url?: string; title?: string }) =>
+      this.controller.open(input.sessionId, input.url, input.title),
+    )
+    replace(BROWSER_IPC_CHANNELS.OPEN_WINDOW, (_event, input: { sessionId: string; url: string; title?: string }) =>
+      this.controller.openDetached(input.sessionId, input.url, input.title),
+    )
     replace(BROWSER_IPC_CHANNELS.ENSURE, (_event, input: { sessionId: string }) =>
       this.controller.ensure(input.sessionId),
     )
@@ -58,6 +64,12 @@ export class BrowserService {
     )
     replace(BROWSER_IPC_CHANNELS.OBSERVE, (_event, sessionId: string) =>
       this.controller.observe(sessionId),
+    )
+    replace(BROWSER_IPC_CHANNELS.EXTRACT_TEXT, (_event, sessionId: string) =>
+      this.controller.extractText(sessionId),
+    )
+    replace(BROWSER_IPC_CHANNELS.EXTRACT_WINDOW_TEXT, (_event, sessionId: string) =>
+      this.controller.extractDetachedText(sessionId),
     )
     replace(BROWSER_IPC_CHANNELS.CLICK, (_event, input: BrowserElementActionRequest) =>
       this.controller.click(input),

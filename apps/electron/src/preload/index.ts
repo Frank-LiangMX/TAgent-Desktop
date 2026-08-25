@@ -59,6 +59,7 @@ import type {
   CollaborationRunSummary,
   CollaborationMailboxEnvelope,
   CollaborationRoomTask,
+  CollaborationWorkspaceBindingView,
   CollaborationArtifact,
   CollaborationUserApprovalRequest,
   CollaborationTextDeltaPayload,
@@ -129,6 +130,7 @@ import type {
   BrowserTakeoverRequest,
   BrowserWorkspaceState,
   BrowserOpenRequest,
+  BrowserCloseRequest,
 } from "@tagent/shared";
 
 export interface SendMessageInput {
@@ -256,7 +258,70 @@ const electronAPI = {
     ) as Promise<string>,
   /** 打开系统文件选择器 */
   openFileDialog: () => ipcRenderer.invoke(AGENT_IPC_CHANNELS.OPEN_FILE_DIALOG),
+  /** 打开系统文件夹选择器（知识库绑定） */
+  openFolderDialog: () =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.OPEN_FOLDER_DIALOG) as Promise<
+      string[]
+    >,
+  /** 全局知识库管理（知识库与项目/工作区解耦） */
+  listKnowledgeBases: () =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_KNOWLEDGE_BASES),
+  createKnowledgeBase: (input: {
+    name: string;
+    description?: string;
+    sourcePaths?: string[];
+  }) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.CREATE_KNOWLEDGE_BASE, input),
+  deleteKnowledgeBase: (id: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_KNOWLEDGE_BASE, id),
+  addKnowledgeBaseSource: (input: { id: string; path: string }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.ADD_KNOWLEDGE_BASE_SOURCE, input),
+  removeKnowledgeBaseSource: (input: { id: string; sourceId: string }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.REMOVE_KNOWLEDGE_BASE_SOURCE, input),
+  listKnowledgeBaseDocuments: (input: {
+    knowledgeBaseId: string;
+    query?: string;
+  }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_KNOWLEDGE_BASE_DOCUMENTS, input),
+  createKnowledgeBaseDocument: (input: {
+    knowledgeBaseId: string;
+    title: string;
+    content?: string;
+    sourceUrl?: string;
+    sourceProvider?: "wps" | "feishu" | "google-drive" | "unknown";
+    sourceExternalId?: string;
+    sourceAccessMode?: "public" | "oauth" | "browser";
+    sourceSyncedAt?: number;
+  }) =>
+    ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.CREATE_KNOWLEDGE_BASE_DOCUMENT,
+      input,
+    ),
+  updateKnowledgeBaseDocument: (input: {
+    id: string;
+    title: string;
+    content: string;
+  }) =>
+    ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.UPDATE_KNOWLEDGE_BASE_DOCUMENT,
+      input,
+    ),
+  deleteKnowledgeBaseDocument: (id: string) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_KNOWLEDGE_BASE_DOCUMENT, id),
+  importKnowledgeBaseDocument: (input: { knowledgeBaseId: string }) =>
+    ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.IMPORT_KNOWLEDGE_BASE_DOCUMENT,
+      input,
+    ),
   /** 用系统默认程序打开文件（相对路径按会话工作区解析） */
+  importKnowledgeBaseDocumentFromUrl: (input: {
+    knowledgeBaseId: string;
+    url: string;
+    title?: string;
+  }) =>
+    ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.IMPORT_KNOWLEDGE_BASE_DOCUMENT_URL,
+      input,
+    ),
   openPath: (input: { sessionId: string; path: string }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.OPEN_PATH, input),
   /** 解析路径是否存在（文件 chip 存在性检查），返回存在的绝对路径或 null */
@@ -482,6 +547,10 @@ const electronAPI = {
       cliWorkerId?: string;
       /** 会话加入的 Bot 配置引用；1 个 Bot 为单 Bot 直连，多个 Bot 由融合路由承接 */
       botProfileIds?: string[];
+      /** 知识库绑定的根目录绝对路径列表（0..N）；主进程 trim+去重，空数组=解除绑定 */
+      kbRoots?: string[];
+      knowledgeBaseIds?: string[];
+      knowledgeBaseMode?: "off" | "preferred" | "strict";
     },
   ) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_META, {
@@ -936,11 +1005,7 @@ const electronAPI = {
       };
       transport: {
         status:
-          | "disabled"
-          | "listening"
-          | "loopback_only"
-          | "failed"
-          | "not_started";
+          "disabled" | "listening" | "loopback_only" | "failed" | "not_started";
         host?: string;
         port?: number;
         tls?: boolean;
@@ -1220,8 +1285,18 @@ const electronAPI = {
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_HUMAN_MEMBERS, {
       roomId,
     }) as Promise<CollaborationHumanMember[]>,
+  /** 列出按用户标注的工作区绑定视图 */
+  listCollaborationWorkspaceBindings: (roomId: string) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.LIST_WORKSPACE_BINDINGS,
+      {
+        roomId,
+      },
+    ) as Promise<CollaborationWorkspaceBindingView[]>,
   /** 邀请用户加入房间；当前桌面版 actorUserId 默认 local-user */
-  inviteCollaborationHumanMember: (input: InviteCollaborationHumanMemberInput) =>
+  inviteCollaborationHumanMember: (
+    input: InviteCollaborationHumanMemberInput,
+  ) =>
     ipcRenderer.invoke(
       COLLABORATION_ROOM_IPC_CHANNELS.INVITE_HUMAN_MEMBER,
       input,
@@ -1236,12 +1311,16 @@ const electronAPI = {
       COLLABORATION_ROOM_IPC_CHANNELS.LEAVE_HUMAN_MEMBER,
       input,
     ) as Promise<CollaborationHumanMember>,
-  removeCollaborationHumanMember: (input: RemoveCollaborationHumanMemberInput) =>
+  removeCollaborationHumanMember: (
+    input: RemoveCollaborationHumanMemberInput,
+  ) =>
     ipcRenderer.invoke(
       COLLABORATION_ROOM_IPC_CHANNELS.REMOVE_HUMAN_MEMBER,
       input,
     ) as Promise<CollaborationHumanMember>,
-  setCollaborationBotOwnerConsent: (input: SetCollaborationBotOwnerConsentInput) =>
+  setCollaborationBotOwnerConsent: (
+    input: SetCollaborationBotOwnerConsentInput,
+  ) =>
     ipcRenderer.invoke(
       COLLABORATION_ROOM_IPC_CHANNELS.SET_BOT_OWNER_CONSENT,
       input,
@@ -1350,8 +1429,8 @@ const electronAPI = {
     ) as Promise<ReadCollaborationArtifactResult>,
   /** 从主进程目录选择器把个人工作区显式导入到房间服务工作区。 */
   importCollaborationWorkspace: (input: {
-    roomId: string
-    actorUserId?: string
+    roomId: string;
+    actorUserId?: string;
   }) =>
     ipcRenderer.invoke(
       COLLABORATION_ROOM_IPC_CHANNELS.IMPORT_WORKSPACE,
@@ -1359,9 +1438,9 @@ const electronAPI = {
     ) as Promise<ImportCollaborationWorkspaceResponse>,
   /** 将产物复制到用户通过主进程保存对话框选择的本地文件。 */
   downloadCollaborationArtifact: (input: {
-    roomId: string
-    artifactId: string
-    actorUserId?: string
+    roomId: string;
+    artifactId: string;
+    actorUserId?: string;
   }) =>
     ipcRenderer.invoke(
       COLLABORATION_ROOM_IPC_CHANNELS.DOWNLOAD_ARTIFACT,
@@ -1395,10 +1474,9 @@ const electronAPI = {
     ) as Promise<ResolveCollaborationUserApprovalResult>,
   /** 列出某房间的可观察「待确认续跑」项（P2-1：blocked run / 待审批 / 深度停止 / outbox 等）。 */
   listCollaborationContinuations: (roomId: string) =>
-    ipcRenderer.invoke(
-      COLLABORATION_ROOM_IPC_CHANNELS.LIST_CONTINUATIONS,
-      { roomId },
-    ) as Promise<LocalCollaborationContinuationItem[]>,
+    ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_CONTINUATIONS, {
+      roomId,
+    }) as Promise<LocalCollaborationContinuationItem[]>,
   /**
    * 确认继续一个 blocked run（P2-1）：主进程新建一个新 turn（新 runId/fence）续跑，
    * 不复活旧 fence。成功返回新 run id；失败返回 { ok: false, reason }（不抛）。
@@ -1472,6 +1550,16 @@ const electronAPI = {
   },
 
   // ===== 受管浏览器（Dockview pane） =====
+  browserOpen: (input: { sessionId: string; url?: string; title?: string }) =>
+    ipcRenderer.invoke(
+      BROWSER_IPC_CHANNELS.OPEN,
+      input,
+    ) as Promise<BrowserWorkspaceState>,
+  browserOpenWindow: (input: { sessionId: string; url: string; title?: string }) =>
+    ipcRenderer.invoke(
+      BROWSER_IPC_CHANNELS.OPEN_WINDOW,
+      input,
+    ) as Promise<import("@tagent/shared").BrowserDetachedWindowState>,
   browserEnsure: (sessionId: string) =>
     ipcRenderer.invoke(BROWSER_IPC_CHANNELS.ENSURE, {
       sessionId,
@@ -1525,6 +1613,16 @@ const electronAPI = {
       BROWSER_IPC_CHANNELS.OBSERVE,
       sessionId,
     ) as Promise<BrowserObserveResult>,
+  browserExtractText: (sessionId: string) =>
+    ipcRenderer.invoke(
+      BROWSER_IPC_CHANNELS.EXTRACT_TEXT,
+      sessionId,
+    ) as Promise<import("@tagent/shared").BrowserPageTextResult>,
+  browserExtractWindowText: (sessionId: string) =>
+    ipcRenderer.invoke(
+      BROWSER_IPC_CHANNELS.EXTRACT_WINDOW_TEXT,
+      sessionId,
+    ) as Promise<import("@tagent/shared").BrowserPageTextResult>,
   browserClick: (input: BrowserElementActionRequest) =>
     ipcRenderer.invoke(BROWSER_IPC_CHANNELS.CLICK, input) as Promise<{
       ok: boolean;
@@ -1573,6 +1671,13 @@ const electronAPI = {
     ipcRenderer.on(BROWSER_IPC_CHANNELS.OPEN_REQUEST, handler);
     return () =>
       ipcRenderer.removeListener(BROWSER_IPC_CHANNELS.OPEN_REQUEST, handler);
+  },
+  onBrowserCloseRequest: (cb: (request: BrowserCloseRequest) => void) => {
+    const handler = (_e: unknown, request: BrowserCloseRequest): void =>
+      cb(request);
+    ipcRenderer.on(BROWSER_IPC_CHANNELS.CLOSE_REQUEST, handler);
+    return () =>
+      ipcRenderer.removeListener(BROWSER_IPC_CHANNELS.CLOSE_REQUEST, handler);
   },
   // ===== 自动更新 =====
   updater: {

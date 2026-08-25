@@ -16,6 +16,7 @@
  *   本轮 onTurnEnd 后 auto handleSend，避免静默无操作
  */
 import { ipcMain, type BrowserWindow } from "electron";
+import { randomUUID } from "node:crypto";
 import type {
   AgentProviderAdapter,
   SDKMessage,
@@ -161,10 +162,33 @@ import {
   injectKanbanMcpServer,
 } from "../kanban/kanban-agent-tools";
 import {
+  buildKbPromptAppend,
+  buildPiKbTools,
+  injectKbMcpServer,
+} from "../kb/kb-agent-tools";
+import {
+  addKnowledgeBaseSource,
+  createKnowledgeBase,
+  deleteKnowledgeBase,
+  listKnowledgeBases,
+  removeKnowledgeBaseSource,
+  resolveKnowledgeBaseRootsForSession,
+} from "../kb/knowledge-base-store";
+import {
+  createKnowledgeBaseDocument,
+  deleteKnowledgeBaseDocument,
+  deleteKnowledgeBaseDocumentsForKnowledgeBase,
+  listKnowledgeBaseDocuments,
+  updateKnowledgeBaseDocument,
+  importKnowledgeBaseDocument,
+  importKnowledgeBaseDocumentFromUrl,
+} from "../kb/knowledge-base-document-store";
+import {
   BROWSER_SYSTEM_PROMPT,
   buildPiBrowserTools,
   injectBrowserMcpServer,
 } from "../browser/browser-agent-tools";
+import { getBrowserController } from "./browser-service";
 import {
   assessWebSearchFallback,
   buildBrowserFallbackContext,
@@ -384,6 +408,23 @@ export class SessionService {
     private readonly permissionService: PermissionService | null,
   ) {}
 
+  /** Agent 每轮结束后释放受管浏览器，人工接管状态由 BrowserController 保留。 */
+  private cleanupAgentBrowser(sessionId: string): void {
+    try {
+      getBrowserController().cleanupAfterAgent(sessionId);
+    } catch {
+      // 浏览器服务可能尚未初始化，或应用正在退出；不影响会话收尾。
+    }
+  }
+
+  private disposeBrowserSession(sessionId: string): void {
+    try {
+      getBrowserController().disposeSession(sessionId);
+    } catch {
+      // 浏览器服务可能尚未初始化，或应用正在退出；不影响会话收尾。
+    }
+  }
+
   /** 会话当前绑定的运行内核；无 meta/渠道时 null */
   private resolveAdapterKindForSession(sessionId: string): ChannelKind | null {
     const meta = getSessionMeta(sessionId);
@@ -415,6 +456,7 @@ export class SessionService {
     const now = Date.now();
     const userMsg: SDKMessage = {
       type: "user",
+      uuid: randomUUID(),
       message: { role: "user", content: [{ type: "text", text }] },
       parent_tool_use_id: null,
       createdAt: now,
@@ -701,6 +743,7 @@ export class SessionService {
           kind: "tagent_event",
           event: { type: "turn_end" },
         });
+        this.cleanupAgentBrowser(sessionId);
         return { ok: true };
       },
     );
@@ -775,6 +818,7 @@ export class SessionService {
           kind: "tagent_event",
           event: { type: "turn_end" },
         });
+        this.cleanupAgentBrowser(sessionId);
         return { ok: true };
       },
     );
@@ -1153,6 +1197,138 @@ export class SessionService {
           if (found) return found;
         }
         return null;
+      },
+    );
+
+    ipcMain.handle(AGENT_IPC_CHANNELS.LIST_KNOWLEDGE_BASES, async () =>
+      listKnowledgeBases(),
+    );
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.CREATE_KNOWLEDGE_BASE,
+      async (
+        _e,
+        input: { name: string; description?: string; sourcePaths?: string[] },
+      ) => createKnowledgeBase(input),
+    );
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.DELETE_KNOWLEDGE_BASE,
+      async (_e, id: string) => {
+        if (!deleteKnowledgeBase(id)) throw new Error("知识库不存在");
+        deleteKnowledgeBaseDocumentsForKnowledgeBase(id);
+        for (const session of listSessions({ includeHidden: true })) {
+          if (session.knowledgeBaseIds?.includes(id)) {
+            updateSessionMeta(session.id, {
+              knowledgeBaseIds: session.knowledgeBaseIds.filter(
+                (value) => value !== id,
+              ),
+            });
+          }
+        }
+        return { ok: true };
+      },
+    );
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.ADD_KNOWLEDGE_BASE_SOURCE,
+      async (_e, input: { id: string; path: string }) =>
+        addKnowledgeBaseSource(input.id, input.path),
+    );
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.REMOVE_KNOWLEDGE_BASE_SOURCE,
+      async (_e, input: { id: string; sourceId: string }) =>
+        removeKnowledgeBaseSource(input.id, input.sourceId),
+    );
+
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.LIST_KNOWLEDGE_BASE_DOCUMENTS,
+      async (_e, input: { knowledgeBaseId: string; query?: string }) =>
+        listKnowledgeBaseDocuments(input.knowledgeBaseId, input.query),
+    );
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.CREATE_KNOWLEDGE_BASE_DOCUMENT,
+      async (
+        _e,
+        input: {
+          knowledgeBaseId: string;
+          title: string;
+          content?: string;
+          sourceUrl?: string;
+          sourceProvider?: "wps" | "feishu" | "google-drive" | "unknown";
+          sourceExternalId?: string;
+          sourceAccessMode?: "public" | "oauth" | "browser";
+          sourceSyncedAt?: number;
+        },
+      ) => createKnowledgeBaseDocument(input),
+    );
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.UPDATE_KNOWLEDGE_BASE_DOCUMENT,
+      async (_e, input: { id: string; title: string; content: string }) =>
+        updateKnowledgeBaseDocument(input),
+    );
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.DELETE_KNOWLEDGE_BASE_DOCUMENT,
+      async (_e, id: string) => {
+        if (!deleteKnowledgeBaseDocument(id)) throw new Error("文档不存在");
+        return { ok: true };
+      },
+    );
+
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.IMPORT_KNOWLEDGE_BASE_DOCUMENT,
+      async (_e, input: { knowledgeBaseId: string }) => {
+        const { dialog } = await import("electron");
+        const win = this.getWindow();
+        const result = win
+          ? await dialog.showOpenDialog(win, {
+              properties: ["openFile"],
+              title: "导入知识文档",
+              filters: [
+                {
+                  name: "知识文档",
+                  extensions: ["docx", "doc", "pdf", "md", "markdown", "txt"],
+                },
+              ],
+            })
+          : await dialog.showOpenDialog({
+              properties: ["openFile"],
+              title: "导入知识文档",
+              filters: [
+                {
+                  name: "知识文档",
+                  extensions: ["docx", "doc", "pdf", "md", "markdown", "txt"],
+                },
+              ],
+            });
+        if (result.canceled || !result.filePaths[0]) return null;
+        return importKnowledgeBaseDocument({
+          knowledgeBaseId: input.knowledgeBaseId,
+          filePath: result.filePaths[0],
+        });
+      },
+    );
+
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.IMPORT_KNOWLEDGE_BASE_DOCUMENT_URL,
+      async (
+        _e,
+        input: { knowledgeBaseId: string; url: string; title?: string },
+      ) => importKnowledgeBaseDocumentFromUrl(input),
+    );
+
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.OPEN_FOLDER_DIALOG,
+      async (): Promise<string[]> => {
+        const { dialog } = await import("electron");
+        const win = this.getWindow();
+        const options = {
+          properties: ["openDirectory", "multiSelections"] as Array<
+            "openDirectory" | "multiSelections"
+          >,
+          title: "选择知识库目录",
+        };
+        const result = win
+          ? await dialog.showOpenDialog(win, options)
+          : await dialog.showOpenDialog(options);
+        return result.canceled ? [] : result.filePaths;
       },
     );
 
@@ -1540,6 +1716,9 @@ export class SessionService {
             | "cliWorkerId"
             | "botProfileIds"
             | "turnDurations"
+            | "kbRoots"
+            | "knowledgeBaseIds"
+            | "knowledgeBaseMode"
           >;
         },
       ) => {
@@ -1555,6 +1734,46 @@ export class SessionService {
           const v = patch.cliWorkerId;
           patch.cliWorkerId =
             typeof v === "string" && v.trim() ? v.trim() : undefined;
+        }
+        if (patch.knowledgeBaseIds !== undefined) {
+          patch.knowledgeBaseIds = Array.isArray(patch.knowledgeBaseIds)
+            ? [
+                ...new Set(
+                  patch.knowledgeBaseIds
+                    .filter(
+                      (id): id is string =>
+                        typeof id === "string" && Boolean(id.trim()),
+                    )
+                    .map((id) => id.trim()),
+                ),
+              ]
+            : [];
+        }
+        if (patch.knowledgeBaseMode !== undefined) {
+          const mode = patch.knowledgeBaseMode;
+          const hasKnowledgeBase =
+            (
+              patch.knowledgeBaseIds ??
+              getSessionMeta(args.id)?.knowledgeBaseIds ??
+              []
+            ).length > 0;
+          patch.knowledgeBaseMode =
+            hasKnowledgeBase && (mode === "preferred" || mode === "strict")
+              ? mode
+              : "off";
+        }
+        if (patch.kbRoots !== undefined) {
+          // 规范化知识库绑定根目录：仅保留 trim 后非空字符串、去重；空数组 = 解除绑定。
+          // 不在此强制绝对路径（跨平台判定繁琐），kb-fs-index 在访问时按 root 解析并做容器校验防穿越。
+          patch.kbRoots = Array.isArray(patch.kbRoots)
+            ? [
+                ...new Set(
+                  patch.kbRoots
+                    .map((r) => (typeof r === "string" ? r.trim() : ""))
+                    .filter((r): r is string => Boolean(r)),
+                ),
+              ]
+            : [];
         }
         if (patch.botProfileIds !== undefined) {
           patch.botProfileIds = Array.isArray(patch.botProfileIds)
@@ -1581,7 +1800,32 @@ export class SessionService {
             patch.fusionCoordinatorBotProfileId = undefined;
           }
         }
-        return updateSessionMeta(args.id, patch);
+        const previous = getSessionMeta(args.id);
+        const updated = updateSessionMeta(args.id, patch);
+        if (
+          (patch.kbRoots !== undefined &&
+            JSON.stringify(previous?.kbRoots ?? []) !==
+              JSON.stringify(updated?.kbRoots ?? [])) ||
+          (patch.knowledgeBaseIds !== undefined &&
+            JSON.stringify(previous?.knowledgeBaseIds ?? []) !==
+              JSON.stringify(updated?.knowledgeBaseIds ?? [])) ||
+          (patch.knowledgeBaseMode !== undefined &&
+            (previous?.knowledgeBaseMode ?? "off") !==
+              (updated?.knowledgeBaseMode ?? "off"))
+        ) {
+          // KB 工具/提示词是在 spawn 时装配的。kscc 是长驻进程，必须丢弃旧进程；
+          // Pi 会在下一轮依据 toolingKey 自动重建 Agent。
+          try {
+            this.runtimes
+              .get(args.id)
+              ?.dropLiveProcessForConfigChange(
+                "knowledge-base configuration changed",
+              );
+          } catch (err) {
+            console.warn(`[会话 ${args.id}] KB 配置变化重建进程失败:`, err);
+          }
+        }
+        return updated;
       },
     );
 
@@ -1740,7 +1984,9 @@ export class SessionService {
         type: "user",
         createdAt: Date.now(),
         content: [{ type: "text", text: input.prompt }],
-        ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+        ...(input.attachments?.length
+          ? { attachments: input.attachments }
+          : {}),
       };
       try {
         appendPanelMessages(meta.workspaceId, input.sessionId, [userMessage]);
@@ -2158,6 +2404,7 @@ export class SessionService {
             this.flushPendingSteer(input.sessionId);
           }
           this.resolveNextTurnEndWaiters(input.sessionId);
+          this.cleanupAgentBrowser(input.sessionId);
         },
         onLoopIdle: () => {
           // Pi（及 kscc 进程退出）：loop 停稳后再开下一轮，避免假「自动恢复失败」
@@ -2177,6 +2424,7 @@ export class SessionService {
             },
           });
           this.resolveNextTurnEndWaiters(input.sessionId);
+          this.cleanupAgentBrowser(input.sessionId);
         },
       });
 
@@ -2767,6 +3015,11 @@ export class SessionService {
       } catch (err) {
         console.warn("[会话] 注入浏览器 MCP 失败:", err);
       }
+      try {
+        await injectKbMcpServer(mcpServers, { sessionId: input.sessionId });
+      } catch (err) {
+        console.warn("[会话] 注入知识库 MCP 失败:", err);
+      }
       if (executionMode === "work") {
         try {
           await injectKanbanMcpServer(mcpServers, {
@@ -2826,6 +3079,10 @@ export class SessionService {
             this.buildMentionPromptAppend(input.sessionId, executionMode),
             botSessionPrompt,
             buildRichContentSystemPrompt(),
+            buildKbPromptAppend(
+              resolveKnowledgeBaseRootsForSession(meta ?? {}),
+              meta?.knowledgeBaseMode,
+            ),
             mem.managementRules,
             mem.memorySnapshotSection,
           ]
@@ -2920,6 +3177,10 @@ export class SessionService {
         ? "## 看板派工工具n可用 kanban_create_board / kanban_add_task / kanban_list_*。长任务拆任务并指定 roleId。"
         : "",
       this.buildMentionPromptAppend(input.sessionId, piExecutionMode),
+      buildKbPromptAppend(
+        resolveKnowledgeBaseRootsForSession(piMeta ?? {}),
+        piMeta?.knowledgeBaseMode,
+      ),
       buildBotSessionPromptAppend(
         piMeta?.botProfileIds,
         input.prompt,
@@ -2939,7 +3200,8 @@ export class SessionService {
           })
         : [];
     const browserExtra = buildPiBrowserTools({ sessionId: input.sessionId });
-    const extraTools = [...browserExtra, ...kanbanExtra];
+    const kbExtra = buildPiKbTools({ sessionId: input.sessionId });
+    const extraTools = [...browserExtra, ...kanbanExtra, ...kbExtra];
     const opts = {
       sessionId: input.sessionId,
       prompt: input.prompt,
@@ -3103,15 +3365,14 @@ export class SessionService {
     this.emitPlanStepSignals(sessionId, msg);
     const { message, event } = sdkMessageToIR(msg);
     const msgType = (msg as { type?: string }).type;
-    // E（IPC delta）：把 kscc 累计 partial assistant 快照转成增量 suffix delta（前缀不匹配 → replace resync）。
-    // partial 的 sdk_message 剥掉 thinking/text 主体后发 renderer，IPC 不再每帧重传全串（O(N²)→O(N)）；
-    // final 发全量校准。落盘仍走原始全量 msg（下方 feedStreamPersistGate），不受 delta 影响。
+    // KSCC 单一流式来源：实时 text/thinking 只来自 SDK 原生 stream_event delta。
+    // partial assistant 仅保留 block 结构，避免累计快照与原生 delta 双重追加；
+    // final assistant 发送完整内容做最终校准。落盘仍走原始全量 msg。
     let irMessage = message;
-    // E（IPC delta）只服务主线 assistant（40K reasoning O(N) 优化）：剥主体 + 发 suffix delta。
-    // 子代理 assistant（parentToolUseId）正文进 SubagentDetailView 的 items 渲染（不进主 streamState，
-    // Chat 对 parentToolUseId delta 直接 return），剥离主体会让详情页流式变空 → 子代理保持全量 sdk_message。
     if (shouldDeltaTrackAssistant(message)) {
       const isFinal = message._partial !== true;
+      // 原生 stream_event 尚未出现时，用累计快照做兜底，保证无原生 delta 的 KSCC 仍有运行中内容。
+      // 一旦见到原生 delta，DeltaTracker 会停止派生，避免后续双追加。
       const deltas = this.getDeltaTracker(sessionId).feedAssistant(
         message.uuid,
         message.content,
@@ -3126,7 +3387,7 @@ export class SessionService {
           ...(d.parentToolUseId ? { parentToolUseId: d.parentToolUseId } : {}),
         } as TAgentDesktopStreamPayload);
       }
-      // partial：剥掉 body 主体（保块结构与 blockIndex 稳定）；final：发全量校准
+      // partial：剥掉 body 主体（保块结构与 blockIndex 稳定）；final：发全量校准。
       if (!isFinal) {
         irMessage = {
           ...message,
@@ -3148,19 +3409,14 @@ export class SessionService {
         this.getStreamPersistGate(sessionId),
       );
       this.persistStreamMessages(workspaceId, sessionId, toPersist);
-      this.getDeltaTracker(sessionId).resetAll(); // E: 轮结束清追踪，防串块/串会话
     }
     if (event) {
-      // 单一权威 delta 源（风险1）：主线原生 stream_event delta 即权威 live delta——标记本轮
-      // nativeDeltaActive，后续主线 assistant 快照不再经 DeltaTracker 发派生 delta（防双 append）。
-      // 仅主线 delta（无 parentToolUseId）服务主 streamState；子代理 delta 在 renderer 被 return，不标记。
       if (
-        event.kind === "stream_text_delta" ||
-        event.kind === "stream_thinking_delta"
+        (event.kind === "stream_text_delta" ||
+          event.kind === "stream_thinking_delta") &&
+        !event.parentToolUseId
       ) {
-        if (!event.parentToolUseId) {
-          this.getDeltaTracker(sessionId).markNativeDeltaActive();
-        }
+        this.getDeltaTracker(sessionId).markNativeDeltaActive();
       }
       this.sendPayload(sessionId, event);
     }
@@ -3490,6 +3746,7 @@ export class SessionService {
         runtime.destroy();
         this.runtimes.delete(sessionId);
       }
+      this.disposeBrowserSession(sessionId);
     }
 
     return deleteSessionsByWorkspace(workspaceId).length;
@@ -3497,7 +3754,10 @@ export class SessionService {
 
   /** 销毁所有会话（应用退出） */
   disposeAll(): void {
-    for (const rt of this.runtimes.values()) rt.destroy();
+    for (const [sessionId, rt] of this.runtimes) {
+      rt.destroy();
+      this.disposeBrowserSession(sessionId);
+    }
     this.runtimes.clear();
   }
 

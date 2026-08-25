@@ -19,7 +19,10 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { getWorkspaceById } from '../workspace/workspace-manager'
+import { isLowQualityMemoryContent } from './memory-candidate-quality'
 import { getMemoryDir, memoryLayerService, type MemoryMode } from './memory-layer-service'
+import { readStageQueue } from './stage-queue-service'
 
 // ===== 类型定义 =====
 
@@ -364,7 +367,7 @@ class NudgeService {
         byWorkspace.set(s.workspace_slug, arr)
       }
 
-      // 同一 workspace ≥2 个会话 → 候选
+      // 同一 workspace ≥2 个会话 → 候选（正文用人可读项目名，不把 sanitizePath slug 当记忆）
       for (const [slug, group] of byWorkspace) {
         if (group.length < 2) continue
 
@@ -374,11 +377,12 @@ class NudgeService {
           .slice(0, 5) // 证据最多 5 条
         if (titles.length === 0) continue
 
+        const label = this.resolveProjectLabel(slug)
         patterns.push({
           type: 'project_repeat',
-          pattern: slug,
+          pattern: label,
           count: group.length,
-          evidence: titles,
+          evidence: [`workspace:${slug}`, ...titles],
         })
       }
     } catch (e) {
@@ -389,16 +393,39 @@ class NudgeService {
   }
 
   /**
+   * workspace slug → 人可读项目名（优先 workspace-meta.name，否则 basename / 去盘符前缀）。
+   */
+  private resolveProjectLabel(slug: string): string {
+    try {
+      const ws = getWorkspaceById(slug)
+      const name = ws?.name?.trim()
+      if (name) return name
+      if (ws?.projectDirectory) {
+        const base = path.basename(ws.projectDirectory)
+        if (base) return base
+      }
+    } catch {
+      // workspace-meta 缺失时走 fallback
+    }
+    // F--TAgent-Desktop → TAgent-Desktop
+    const m = slug.match(/^[A-Za-z]--(.+)$/)
+    if (m?.[1]) return m[1]
+    return slug
+  }
+
+  /**
    * 加载已处理过的 project workspace slug 集合
    *
    * 用户点过"记住"（写入 L1_project.md）或"不记"（写入 nudges/rejected.jsonl）
    * 的 workspace，不再重复触发 project_repeat Nudge。
+   * 已在 pending_approval 队列中的项目同样视为已处理，避免每晚 consolidation 再堆一条。
    *
    * 跨 session 持久化——与 L0/L1/L2/L3 冷却（按 sessionId 隔离）不同，
    * project_repeat 是跨 session 检测，已处理的 workspace 应该永久跳过。
    */
   private loadHandledProjects(mode: MemoryMode): Set<string> {
     const handled = new Set<string>()
+    const handledLabels = new Set<string>()
     const dir = getMemoryDir(mode)
 
     // 1. 从 L1_project.md 读已存为模板的 workspace slug
@@ -431,6 +458,7 @@ class NudgeService {
             const record = JSON.parse(line) as { type?: string; pattern?: string }
             if (record.type === 'project_repeat' && record.pattern) {
               handled.add(record.pattern)
+              handledLabels.add(record.pattern)
             }
           } catch {
             // 跳过无法解析的行
@@ -439,6 +467,38 @@ class NudgeService {
       } catch {
         // 忽略读取失败
       }
+    }
+
+    // 3. 已在 stage 队列中的项目：按 workspace:slug 证据或历史裸 slug pattern 标记
+    try {
+      for (const entry of readStageQueue(mode)) {
+        if (entry.type !== 'project_repeat') continue
+        handledLabels.add(entry.pattern)
+        if (/^[A-Za-z]--/.test(entry.pattern)) {
+          handled.add(entry.pattern)
+        }
+        for (const ev of entry.evidence) {
+          if (ev.startsWith('workspace:')) {
+            handled.add(ev.slice('workspace:'.length))
+          }
+        }
+      }
+    } catch {
+      // 忽略 stage 读取失败
+    }
+
+    // 4. 人可读标签 → slug（rejected / pending 写的是项目名时）
+    try {
+      const sessions = memoryLayerService.listRecentSessions(mode, 50)
+      for (const s of sessions) {
+        if (!s.workspace_slug) continue
+        const label = this.resolveProjectLabel(s.workspace_slug)
+        if (handledLabels.has(label) || handled.has(label)) {
+          handled.add(s.workspace_slug)
+        }
+      }
+    } catch {
+      // 忽略
     }
 
     return handled
@@ -565,6 +625,9 @@ class NudgeService {
           }
 
           for (const match of found) {
+            if (isLowQualityMemoryContent(match, { type: 'correction', targetLayer: 'L3' })) {
+              continue
+            }
             patterns.push({
               type: 'correction',
               pattern: match,

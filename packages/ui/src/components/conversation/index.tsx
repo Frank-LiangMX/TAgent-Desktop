@@ -10,34 +10,39 @@
  * - ConversationScrollButton — 滚动到底部按钮
  */
 
-import { ArrowDownIcon } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom'
+import { ArrowDownIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 
-import type { ComponentProps, ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from "react";
 
-import { Button } from '../button'
-import { cn } from '../../lib/utils'
+import { Button } from "../button";
+import { cn } from "../../lib/utils";
 
 // ===== Conversation 根容器 =====
 
-export type ConversationProps = ComponentProps<typeof StickToBottom>
+export type ConversationProps = ComponentProps<typeof StickToBottom>;
 
-export function Conversation({ className, ...props }: ConversationProps): React.ReactElement {
+export function Conversation({
+  className,
+  ...props
+}: ConversationProps): React.ReactElement {
   return (
     <StickToBottom
-      className={cn('relative flex-1 overflow-y-hidden', className)}
+      className={cn("relative flex-1 overflow-y-hidden", className)}
       initial="instant"
       resize="smooth"
       role="log"
       {...props}
     />
-  )
+  );
 }
 
 // ===== ConversationContent 内容区域 =====
 
-export type ConversationContentProps = ComponentProps<typeof StickToBottom.Content>
+export type ConversationContentProps = ComponentProps<
+  typeof StickToBottom.Content
+>;
 
 export function ConversationContent({
   className,
@@ -50,34 +55,37 @@ export function ConversationContent({
       // 会把非可见面板的 DOM 从文档摘掉，此时探测拿不到样式 → 容器永远不可滚动，
       // 且该 effect 空依赖不会重跑。自己声明就与挂载时机彻底解耦。
       scrollClassName="scrollbar-none will-change-scroll-position overflow-y-auto"
-      className={cn('selectable-content flex flex-col gap-1 py-4 px-8', className)}
+      className={cn(
+        "selectable-content flex flex-col gap-1 py-4 px-8",
+        className,
+      )}
       {...props}
     />
-  )
+  );
 }
 
 // ===== ConversationEmptyState 空状态 =====
 
 export interface ConversationEmptyStateProps {
-  title?: string
-  description?: string
-  icon?: ReactNode
-  className?: string
-  children?: ReactNode
+  title?: string;
+  description?: string;
+  icon?: ReactNode;
+  className?: string;
+  children?: ReactNode;
 }
 
 export function ConversationEmptyState({
   className,
-  title = '暂无消息',
-  description = '在下方输入框开始对话',
+  title = "暂无消息",
+  description = "在下方输入框开始对话",
   icon,
   children,
 }: ConversationEmptyStateProps): React.ReactElement {
   return (
     <div
       className={cn(
-        'flex size-full flex-col items-center justify-center gap-3 p-8 text-center',
-        className
+        "flex size-full flex-col items-center justify-center gap-3 p-8 text-center",
+        className,
       )}
     >
       {children ?? (
@@ -85,69 +93,78 @@ export function ConversationEmptyState({
           {icon && <div className="text-muted-foreground">{icon}</div>}
           <div className="space-y-1">
             <h3 className="font-medium text-sm">{title}</h3>
-            {description && <p className="text-muted-foreground text-sm">{description}</p>}
+            {description && (
+              <p className="text-muted-foreground text-sm">{description}</p>
+            )}
           </div>
         </>
       )}
     </div>
-  )
+  );
 }
 
 // ===== ConversationScrollButton 滚动到底部 =====
 
-export type ConversationScrollButtonProps = ComponentProps<typeof Button>
+export type ConversationScrollButtonProps = ComponentProps<typeof Button>;
 
 export function ConversationScrollButton({
   className,
   ...props
 }: ConversationScrollButtonProps): React.ReactElement | null {
-  const { scrollRef, contentRef, scrollToBottom } = useStickToBottomContext()
-  const [isActuallyAtBottom, setIsActuallyAtBottom] = useState(true)
-  const syncRafRef = useRef<number | null>(null)
+  const { scrollRef, contentRef, scrollToBottom } = useStickToBottomContext();
+  const [isActuallyAtBottom, setIsActuallyAtBottom] = useState(true);
+  const syncRafRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const scroller = scrollRef.current
-    if (!scroller) return
+    const scroller = scrollRef.current;
+    if (!scroller) return;
 
     const sync = (): void => {
-      if (syncRafRef.current != null) return
+      if (syncRafRef.current != null) return;
       syncRafRef.current = requestAnimationFrame(() => {
-        syncRafRef.current = null
+        syncRafRef.current = null;
         const distance =
-          scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
-        setIsActuallyAtBottom(distance <= 8)
-      })
-    }
+          scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+        const coordinatorIsFollowing =
+          scroller.dataset.chatFollowMode === "following";
+        setIsActuallyAtBottom(coordinatorIsFollowing || distance <= 8);
+      });
+    };
 
-    sync()
-    scroller.addEventListener('scroll', sync, { passive: true })
-    const resizeObserver = new ResizeObserver(sync)
-    resizeObserver.observe(scroller)
-    if (contentRef.current) resizeObserver.observe(contentRef.current)
+    sync();
+    scroller.addEventListener("scroll", sync, { passive: true });
+    const resizeObserver = new ResizeObserver(sync);
+    resizeObserver.observe(scroller);
+    if (contentRef.current) resizeObserver.observe(contentRef.current);
 
     return () => {
-      scroller.removeEventListener('scroll', sync)
-      resizeObserver.disconnect()
+      scroller.removeEventListener("scroll", sync);
+      resizeObserver.disconnect();
       if (syncRafRef.current != null) {
-        cancelAnimationFrame(syncRafRef.current)
-        syncRafRef.current = null
+        cancelAnimationFrame(syncRafRef.current);
+        syncRafRef.current = null;
       }
-    }
-  }, [contentRef, scrollRef])
+    };
+  }, [contentRef, scrollRef]);
 
   const handleScrollToBottom = useCallback(() => {
-    void Promise.resolve(scrollToBottom('instant')).finally(() => {
-      const scroller = scrollRef.current
+    // 让会话滚动协调器知道这是用户明确要求回到底部，
+    // 从而恢复后续输出的跟随锁，而不是只改变一次 scrollTop。
+    scrollRef.current?.dispatchEvent(
+      new CustomEvent("conversation-scroll-to-bottom"),
+    );
+    void Promise.resolve(scrollToBottom("instant")).finally(() => {
+      const scroller = scrollRef.current;
       if (scroller) {
         scroller.scrollTop = Math.max(
           0,
           scroller.scrollHeight - scroller.clientHeight,
-        )
+        );
       }
-    })
-  }, [scrollRef, scrollToBottom])
+    });
+  }, [scrollRef, scrollToBottom]);
 
-  if (isActuallyAtBottom) return null
+  if (isActuallyAtBottom) return null;
 
   return (
     <Button
@@ -156,9 +173,9 @@ export function ConversationScrollButton({
          * 完全不依赖 transform，避免 hover/active 的 translateY 覆盖
          * translateX 导致按钮水平弹跳 */
         /* bottom/z-index 由 chat.css 用 --session-composer-top 覆盖（!important） */
-        'conversation-scroll-btn absolute bottom-[26px] left-0 right-0 z-30 mx-auto size-9 rounded-full',
-        'border shadow-none',
-        className
+        "conversation-scroll-btn absolute bottom-[26px] left-0 right-0 z-30 mx-auto size-9 rounded-full",
+        "border shadow-none",
+        className,
       )}
       data-conversation-scroll-btn
       onClick={handleScrollToBottom}
@@ -169,5 +186,5 @@ export function ConversationScrollButton({
     >
       <ArrowDownIcon className="size-4" />
     </Button>
-  )
+  );
 }

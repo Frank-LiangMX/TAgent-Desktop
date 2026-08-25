@@ -29,4 +29,16 @@ describe('plan step signals', () => {
       }),
     ).toEqual([])
   })
+
+  it('parses plain-text fallbacks when HTML comments are omitted', () => {
+    expect(parsePlanStepSignals('tagent-plan-step: 2 completed')).toEqual([
+      { step: 2, status: 'completed' },
+    ])
+    expect(parsePlanStepSignals('第 3 步：完成，准备联调')).toEqual([
+      { step: 3, status: 'completed' },
+    ])
+    expect(parsePlanStepSignals('Step 1 running — collecting context')).toEqual([
+      { step: 1, status: 'running' },
+    ])
+  })
 })

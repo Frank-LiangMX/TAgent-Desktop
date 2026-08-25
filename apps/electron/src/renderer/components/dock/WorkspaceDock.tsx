@@ -393,6 +393,15 @@ export function WorkspaceDock(): JSX.Element {
     );
     return off;
   }, [setBrowserOpenRequest]);
+  useEffect(() => {
+    const off = browserApi().onBrowserCloseRequest(({ sessionId }) => {
+      setBrowserOpenRequest((prev) =>
+        prev?.sessionId === sessionId ? null : prev,
+      );
+      apiRef.current?.getPanel(`browser:${sessionId}`)?.api.close();
+    });
+    return off;
+  }, [setBrowserOpenRequest]);
 
   // 事件订阅：api 就绪时挂，卸载时清（onReady 回调返回值会被 Dockview 忽略，故用 effect）
   useEffect(() => {

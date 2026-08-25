@@ -24,6 +24,9 @@ export function SessionRouter(): JSX.Element | null {
     modelId: activeTab.modelId,
     botProfileIds: persistedMeta?.botProfileIds,
     fusionRoomId: persistedMeta?.fusionRoomId,
+    kbRoots: persistedMeta?.kbRoots,
+    knowledgeBaseIds: persistedMeta?.knowledgeBaseIds,
+    knowledgeBaseMode: persistedMeta?.knowledgeBaseMode,
   };
   // 已成正式 tab：工作区已锁定、不再改；无返回钮
   return <Chat key={session.id} session={session} />;

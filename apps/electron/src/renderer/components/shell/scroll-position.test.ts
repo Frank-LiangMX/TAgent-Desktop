@@ -2,7 +2,9 @@ import { describe, expect, test } from "vitest";
 import {
   compensateScrollForHeightDelta,
   hasSavedMidPosition,
+  resolveScrollFollowMode,
   shouldFollowContentGrowth,
+  shouldUseSoftFollow,
   shouldPreserveBottomIntent,
   shouldRepinScrollerToBottom,
   targetScrollTop,
@@ -114,6 +116,86 @@ describe("scroll-position", () => {
         grew: true,
         wasNearBottom: true,
         escapedFromLock: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("跟随状态只响应用户滚动，不被内部布局变化改写", () => {
+    expect(
+      resolveScrollFollowMode({ mode: "following", distanceFromBottom: 160 }),
+    ).toBe("following");
+    expect(
+      resolveScrollFollowMode({
+        mode: "following",
+        userIntent: "up",
+        distanceFromBottom: 0,
+      }),
+    ).toBe("detached");
+    expect(
+      resolveScrollFollowMode({
+        mode: "detached",
+        userIntent: "down",
+        distanceFromBottom: 40,
+      }),
+    ).toBe("detached");
+    expect(
+      resolveScrollFollowMode({
+        mode: "detached",
+        userIntent: "down",
+        distanceFromBottom: 8,
+      }),
+    ).toBe("following");
+  });
+
+  test("流式输出使用软跟随，结构变化和明显偏离才硬校正", () => {
+    expect(
+      shouldUseSoftFollow({
+        live: true,
+        grew: true,
+        shrunk: false,
+        hasPendingIntent: false,
+        followMode: "following",
+        distanceFromBottom: 8,
+      }),
+    ).toBe(true);
+    expect(
+      shouldUseSoftFollow({
+        live: true,
+        grew: true,
+        shrunk: false,
+        hasPendingIntent: false,
+        followMode: "following",
+        distanceFromBottom: 40,
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseSoftFollow({
+        live: true,
+        grew: true,
+        shrunk: false,
+        hasPendingIntent: true,
+        followMode: "following",
+        distanceFromBottom: 8,
+      }),
+    ).toBe(false);
+  });
+
+  test("显式跟随状态优先于第三方 escaped 标记", () => {
+    expect(
+      shouldFollowContentGrowth({
+        hasMidPosition: true,
+        grew: true,
+        wasNearBottom: false,
+        escapedFromLock: true,
+        followMode: "following",
+      }),
+    ).toBe(true);
+    expect(
+      shouldFollowContentGrowth({
+        hasMidPosition: false,
+        grew: true,
+        wasNearBottom: true,
+        followMode: "detached",
       }),
     ).toBe(false);
   });

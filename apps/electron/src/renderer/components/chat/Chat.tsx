@@ -158,6 +158,8 @@ import {
 } from "./ChatInput";
 import { ModelSelector } from "./ModelSelector";
 import { WorkspaceSelector } from "./WorkspaceSelector";
+import { KnowledgeBaseSelector } from "../knowledge-base/KnowledgeBaseSelector";
+
 import { NewConversationLanding } from "./NewConversationLanding";
 import {
   resolveEagerness,
@@ -182,6 +184,7 @@ import { PermissionBanner } from "../permission/PermissionBanner";
 import { AskUserQuestionBanner } from "./AskUserQuestionBanner";
 import { ExitPlanModeBanner } from "./ExitPlanModeBanner";
 import { PlanProgressCard } from "./PlanProgressCard";
+import { isPlanIncomplete, pauseActivePlanSteps } from "./plan-progress-model";
 import { sessionPlanProgressAtom } from "../../atoms/plan-progress-atoms";
 import { ExecutionModeSuggestionBanner } from "./ExecutionModeSuggestionBanner";
 import { SessionErrorBanner } from "./SessionErrorBanner";
@@ -253,6 +256,9 @@ export interface SessionMeta {
   channelId?: string;
   botProfileIds?: string[];
   fusionRoomId?: string;
+  kbRoots?: string[];
+  knowledgeBaseIds?: string[];
+  knowledgeBaseMode?: "off" | "preferred" | "strict";
 }
 
 interface StreamEventEnvelope {
@@ -429,6 +435,19 @@ export function Chat({
   // running 同步到 ref：handlePayload 是首渲染闭包（onStreamEvent effect 空依赖），用 ref 取最新
   const runningRef = useRef(running);
   runningRef.current = running;
+  // 历史异步回流不能覆盖已经进入运行态的当前列表。引导消息尤其容易
+  // 与看板/会话元数据回流撞在同一时间窗内，使用运行态和 stream 缓冲做保护。
+  const shouldPreserveLiveItems = (current: DisplayItem[]): boolean =>
+    current.length > 0 &&
+    (runningRef.current ||
+      runStartedAtRef.current != null ||
+      hasStreamContent(streamStateRef.current) ||
+      current.some(
+        (item) =>
+          item.streaming ||
+          item.streamingText !== undefined ||
+          item.streamingThinking !== undefined,
+      ));
   // 最后一个 assistant-turn 的 key：完成时把全程耗时记到它名下（按 turn.key 查）
   const lastAssistantTurnKeyRef = useRef<string | null>(null);
   /**
@@ -500,6 +519,14 @@ export function Chat({
       pendingHardStopTimerRef.current = null;
     }
   }, []);
+  const pausePlanIfIncomplete = useCallback((): void => {
+    setSessionPlanProgress((prev) => {
+      const current = prev[sessionId];
+      if (!current || !isPlanIncomplete(current)) return prev;
+      const next = pauseActivePlanSteps(current);
+      return next === current ? prev : { ...prev, [sessionId]: next };
+    });
+  }, [sessionId, setSessionPlanProgress]);
   const scheduleRunStop = useCallback(() => {
     if (!shouldScheduleRunStopAfterTurnEnd(sessionHasOpenWork())) return;
     clearPendingStop();
@@ -509,15 +536,29 @@ export function Chat({
       if (sessionHasOpenWork()) return;
       // 只软停：保留 startedAt。硬清交给 result / 用户停 / 看门狗。
       softStopSessionRun(sessionId);
+      // 计划未做完时把当前步标成 paused，进度卡继续留着等用户跟进。
+      pausePlanIfIncomplete();
     }, RUN_STOP_GRACE_MS);
-  }, [clearPendingStop, sessionHasOpenWork, sessionId, softStopSessionRun]);
+  }, [
+    clearPendingStop,
+    pausePlanIfIncomplete,
+    sessionHasOpenWork,
+    sessionId,
+    softStopSessionRun,
+  ]);
   /** 开始一轮运行：写 atom 置 running 并记起始时间戳 */
   const startRun = (): void => {
     clearPendingStop();
-    // 新一轮开始时清掉上一轮计划；本轮若进入 PlanMode，
-    // useExitPlanSync 会把新计划写回全局 atom。
+    // 仅清掉「已全部完成」的旧计划；未完成的计划跨 turn 保留，
+    // 避免跟进一句后进度卡被抹掉、步骤又从头开始。
+    // 新的 ExitPlanMode 请求会直接覆盖为新计划。
     setSessionPlanProgress((prev) => {
-      if (!(sessionId in prev)) return prev;
+      const existing = prev[sessionId];
+      if (!existing) return prev;
+      const incomplete = existing.steps.some(
+        (step) => step.status !== "completed",
+      );
+      if (incomplete) return prev;
       const next = { ...prev };
       delete next[sessionId];
       return next;
@@ -536,6 +577,7 @@ export function Chat({
     inFlightToolIdsRef.current = new Set();
     setFinalOutputState(null);
     stopSessionRun(sessionId);
+    pausePlanIfIncomplete();
   };
   /**
    * 用户主动停止：渲染层硬清 running + 起点记忆（与主进程 STOP_AGENT 双保险）。
@@ -593,6 +635,7 @@ export function Chat({
     recordCompletion("complete");
     inFlightToolIdsRef.current = new Set();
     stopSessionRun(sessionId);
+    pausePlanIfIncomplete();
   };
   /** 输入框是否有草稿（供发送/停止键同槽复用：运行中且有草稿→仍可追加发送，显示发送键；运行中无草稿→停止键） */
   const [hasDraft, setHasDraft] = useState(false);
@@ -747,12 +790,14 @@ export function Chat({
   const pendingExitPlanMap = useAtomValue(allPendingExitPlanRequestsAtom);
   const sessionPlanProgressMap = useAtomValue(sessionPlanProgressAtom);
   const sessionPlanProgress = sessionPlanProgressMap[sessionId] ?? null;
+  const planStillOpen = isPlanIncomplete(sessionPlanProgress);
   const hasPendingExitPlan =
     (pendingExitPlanMap.get(sessionId)?.length ?? 0) > 0;
   const pendingPermissionMap = useAtomValue(pendingPermissionMapAtom);
   const hasBlockingBottomBanner =
     (pendingAskUserMap.get(sessionId)?.length ?? 0) > 0 ||
-    (pendingPermissionMap[sessionId]?.length ?? 0) > 0;
+    (pendingPermissionMap[sessionId]?.length ?? 0) > 0 ||
+    hasPendingExitPlan;
   /** Chat @ 角色库短列表 */
   const [mentionRoles, setMentionRoles] = useState<ChatMentionOption[]>([]);
   const [mentionBots, setMentionBots] = useState<ChatMentionOption[]>([]);
@@ -1195,8 +1240,11 @@ export function Chat({
         irItems,
         taskCardApply,
       );
-      inFlightToolIdsRef.current = collectPendingToolUseIds(rehydrated);
-      setItems(rehydrated);
+      setItems((current) => {
+        if (shouldPreserveLiveItems(current)) return current;
+        inFlightToolIdsRef.current = collectPendingToolUseIds(rehydrated);
+        return rehydrated;
+      });
       // 默认只挂尾部窗口；中间位恢复才拉满。≤100 也曾 Infinity，60 轮流式会被历史树拖死。
       setVisibleCount((prev) => {
         if (prev === Number.POSITIVE_INFINITY) return prev;
@@ -1341,7 +1389,11 @@ export function Chat({
         // 仅刷新与当前会话相关的看板完成
         if (!matchesParent && !matchesBoard) return;
         setBackgroundCrewBanner(null);
-        if (hasStreamContent(streamStateRef.current) || runningRef.current)
+        if (
+          hasStreamContent(streamStateRef.current) ||
+          runningRef.current ||
+          runStartedAtRef.current != null
+        )
           return;
         void (async () => {
           try {
@@ -1378,7 +1430,9 @@ export function Chat({
               idx,
               rehydrated.length,
             );
-            setItems(rehydrated);
+            setItems((current) =>
+              shouldPreserveLiveItems(current) ? current : rehydrated,
+            );
           } catch {
             /* 回流刷新失败不影响主流程 */
           }
@@ -3150,6 +3204,9 @@ export function Chat({
           }
         }}
       />
+      {!onDraftWorkspaceChange && (
+        <KnowledgeBaseSelector sessionId={sessionId} />
+      )}
       <ModelSelector
         selection={effectiveSelection}
         lockedKind={null}
@@ -3507,9 +3564,13 @@ export function Chat({
               roomId={session.fusionRoomId}
               sourceSessionId={sessionId}
               refreshKey={fusionRoomRefreshKey}
-              onRoomsChanged={() => setFusionRoomRefreshKey((value) => value + 1)}
+              onRoomsChanged={() =>
+                setFusionRoomRefreshKey((value) => value + 1)
+              }
               onNewRoom={() => undefined}
-              onCollaborationExited={() => setFusionRoomRefreshKey((value) => value + 1)}
+              onCollaborationExited={() =>
+                setFusionRoomRefreshKey((value) => value + 1)
+              }
               onOpenAttachment={openAttachmentPreview}
               onPreviewAttachment={openPendingAttachmentPreview}
             />
@@ -3522,9 +3583,13 @@ export function Chat({
                   "session-chat-col relative min-h-0 min-w-0 flex-1",
                   composerCompact && "is-composer-compact",
                 )}
-                data-composer-density={composerCompact ? "compact" : "comfortable"}
+                data-composer-density={
+                  composerCompact ? "compact" : "comfortable"
+                }
                 data-mention-open={mentionPickerOpen ? "true" : "false"}
-                data-bottom-banner-open={hasBlockingBottomBanner ? "true" : "false"}
+                data-bottom-banner-open={
+                  hasBlockingBottomBanner ? "true" : "false"
+                }
               >
                 <SessionBotBar
                   sessionId={sessionId}
@@ -3581,15 +3646,15 @@ export function Chat({
                                 <>
                                   <span className="size-3.5 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground/60" />
                                   <span>
-                                正在加载更早的 {turnCount - effectiveVisible}{" "}
-                                轮…
-                              </span>
+                                    正在加载更早的{" "}
+                                    {turnCount - effectiveVisible} 轮…
+                                  </span>
                                 </>
                               ) : (
                                 <span>
-                              向上滚动加载更早的 {turnCount - effectiveVisible}{" "}
-                              轮
-                            </span>
+                                  向上滚动加载更早的{" "}
+                                  {turnCount - effectiveVisible} 轮
+                                </span>
                               )}
                             </div>
                           )}
@@ -3646,7 +3711,9 @@ export function Chat({
                                     runStartedAt={
                                       isLiveTurn ? runStartedAt : undefined
                                     }
-                                    isLatestAssistantTurn={isLatestAssistantTurn}
+                                    isLatestAssistantTurn={
+                                      isLatestAssistantTurn
+                                    }
                                     streamState={
                                       isLiveTurn ? streamState : undefined
                                     }
@@ -3664,7 +3731,9 @@ export function Chat({
                                         : undefined
                                     }
                                     mentionRoles={mentionRoles}
-                                    completedDuration={completedDurations[turn.key]}
+                                    completedDuration={
+                                      completedDurations[turn.key]
+                                    }
                                     finalOutputState={
                                       turn.kind === "assistant-turn" &&
                                       turnIndex === lastAssistantIdx
@@ -3710,7 +3779,8 @@ export function Chat({
                           })()}
                           {(() => {
                             const runActive = running || runStartedAt != null;
-                            const lastTurn = visibleTurns[visibleTurns.length - 1];
+                            const lastTurn =
+                              visibleTurns[visibleTurns.length - 1];
                             const needsSyntheticLiveTurn =
                               runActive && lastTurn?.kind !== "assistant-turn";
                             if (!needsSyntheticLiveTurn) return null;
@@ -3782,7 +3852,7 @@ export function Chat({
         底栏坐标系（对齐 General）：
         窗底 ── status(7) ── token 栏 ── 间隙 ── 输入框底（= band = rail/sidebar 底）
         stack 锚在 status；输入用 margin-bottom 抬到 band，token 不把输入顶上去。
-        权限确认面板放在 composer 上方（stack 内、cluster 之前），从输入框上方伸出，靠文档流撑高。
+        权限确认面板挂在 composer 内部，以绝对定位覆盖输入框，避免用户误把内容写进输入框。
       */}
                     <div
                       ref={bottomStackRef}
@@ -3793,7 +3863,10 @@ export function Chat({
             该变量被抬高，背板顶自动上移、高度自动变大。输入框 / token 栏 / 功能栏都不再
             各自 backdrop-filter，共用这一块，避免两层模糊叠成糊块。z-index:-1 沉到 stack
             内最底（在 token(z1)/输入框(z2) 与 MessageQueue/PermissionBanner 之下）。 */}
-                      <div className="composer-blur-underlay" aria-hidden="true" />
+                      <div
+                        className="composer-blur-underlay"
+                        aria-hidden="true"
+                      />
                       <MessageQueue
                         queue={messageQueue}
                         onRemove={removeQueueItem}
@@ -3871,20 +3944,21 @@ export function Chat({
                         }
                         onRetry={retryLastUserPrompt}
                       />
-                      <PermissionBanner sessionId={sessionId} />
-                      <AskUserQuestionBanner sessionId={sessionId} />
-                      <ExitPlanModeBanner sessionId={sessionId} />
-                      {sessionPlanProgress &&
-                      (running || runStartedAt != null || hasPendingExitPlan) &&
-                      !hasPendingExitPlan ? (
-                        <PlanProgressCard progress={sessionPlanProgress} />
-                      ) : null}
                       <div
                         ref={composerClusterRef}
                         className={`session-composer-cluster ${showTokenBar ? "has-token-bar" : ""}`}
                       >
+                        <PermissionBanner sessionId={sessionId} />
+                        <AskUserQuestionBanner sessionId={sessionId} />
+                        <ExitPlanModeBanner sessionId={sessionId} />
+
                         <div className="composer-float-row">
                           <ComposerRunTimer startedAt={runStartedAt} />
+                          {sessionPlanProgress &&
+                          !hasPendingExitPlan &&
+                          (running || runStartedAt != null || planStillOpen) ? (
+                            <PlanProgressCard progress={sessionPlanProgress} />
+                          ) : null}
                           <ComposerActivityIsland
                             items={visibleComposerActivityItems}
                             pillLabel={composerActivity.pillLabel}
@@ -3916,16 +3990,21 @@ export function Chat({
                             onDraftChange={setHasDraft}
                             attachments={pendingAttachments}
                             onAttachmentsChange={setPendingAttachments}
-                                                  onPreviewAttachment={openPendingAttachmentPreview}
-                            mentionRoles={executionMode === "chat" ? mentionOptions : undefined}
-                        topBar={activeMentionBar}
+                            onPreviewAttachment={openPendingAttachmentPreview}
+                            mentionRoles={
+                              executionMode === "chat"
+                                ? mentionOptions
+                                : undefined
+                            }
+                            topBar={activeMentionBar}
                             onMentionOpenChange={setMentionPickerOpen}
                             footer={
                               /* h-7 固定底栏；窄宽时 is-composer-compact 走图标优先方案 */
                               <div
                                 className={cn(
                                   "composer-footer-bar flex h-7 items-center justify-between gap-1 px-2 pb-2 pt-0.5",
-                                  composerCompact && "composer-footer-bar--compact",
+                                  composerCompact &&
+                                    "composer-footer-bar--compact",
                                 )}
                               >
                                 <div className="composer-footer-bar__left flex h-7 min-w-0 items-center gap-0.5">
@@ -3999,6 +4078,9 @@ export function Chat({
                                   />
                                 </div>
                                 <div className="composer-footer-bar__right flex h-7 min-w-0 shrink items-center gap-0.5">
+                                  <KnowledgeBaseSelector
+                                    sessionId={sessionId}
+                                  />
                                   <ModelSelector
                                     selection={effectiveSelection}
                                     lockedKind={lockedKind}
@@ -4042,7 +4124,9 @@ export function Chat({
                                       channel={selectionChannel}
                                       hasDraft={hasSendable}
                                       onSend={() => void send()}
-                                      onConsultPreset={(id) => void sendConsult(id)}
+                                      onConsultPreset={(id) =>
+                                        void sendConsult(id)
+                                      }
                                       onDiscussionPreset={(id) =>
                                         void sendDiscussion(id)
                                       }
@@ -4096,7 +4180,8 @@ export function Chat({
                   width={crewPanelWidth}
                   onWidthChange={handleCrewPanelWidth}
                 />
-              ) : null}            </>
+              ) : null}{" "}
+            </>
           )}
 
           {/* 子代理独立会话页面：从入口卡片全屏切换（覆盖整个 Chat 区域，返回回主会话） */}
@@ -4154,7 +4239,9 @@ export function Chat({
               fallbackModelId={effectiveSelection?.modelId ?? session.modelId}
               onClose={() =>
                 setSidecarBots((current) =>
-                  current.filter((item) => item.bot.profile.id !== bot.profile.id),
+                  current.filter(
+                    (item) => item.bot.profile.id !== bot.profile.id,
+                  ),
                 )
               }
             />

@@ -23,6 +23,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { createHash } from 'node:crypto'
 
+import { isLowQualityMemoryContent } from './memory-candidate-quality'
 import { getMemoryDir, type MemoryMode } from './memory-layer-service'
 import type { MemoryEvidenceEntry } from './memory-evidence-sink'
 
@@ -264,9 +265,10 @@ export async function defaultExecutor(request: ConsolidationRequest): Promise<Ba
 要求：
 1. sessionKeyFacts：每会话 1-3 个关键事实
 2. memoryCandidates：L0/L1/L2/L3 候选（高置信度优先）
-3. insights：跨会话洞察（content≤80字、confidence 0-1、evidenceIds）
+3. insights：仅跨会话、可复用的行为/工作方式洞察（content≤80字、confidence≥0.75、evidenceIds）；禁止「提到某词可能是偏好」、单次排障流水账、金价/天气等瞬时话题
 4. contradictions：矛盾发现
 5. 如果证据中包含 nudge，必须将有效 nudge 映射为 memoryCandidates，不能只返回 sessionKeyFacts；evidenceIds 必须使用给出的证据 id。
+6. 没有高质量洞察时 insights 必须返回 []，宁缺毋滥。
 严格 JSON：
 {"sessionKeyFacts":[{"sessionId":"...","facts":["..."]}],"memoryCandidates":[{"targetLayer":"L2","content":"...","confidence":0.9,"evidenceIds":[]}],"insights":[{"content":"...","confidence":0.8,"evidenceIds":[]}],"contradictions":[{"content":"...","evidenceIds":[]}]}`
 
@@ -306,7 +308,12 @@ export function addDeterministicNudgeCandidates(
   output: BatchOutput,
   evidence: MemoryEvidenceEntry[],
 ): BatchOutput {
-  const candidates = [...output.memoryCandidates]
+  const candidates = [...output.memoryCandidates].filter(
+    (c) =>
+      !isLowQualityMemoryContent(c.content, {
+        targetLayer: c.targetLayer,
+      }),
+  )
   const seen = new Set(
     candidates.map((candidate) => `${candidate.targetLayer}\u0000${candidate.content.trim()}`),
   )
@@ -316,6 +323,14 @@ export function addDeterministicNudgeCandidates(
     if (!nudge) continue
     const content = String(nudge.suggestedContent ?? nudge.pattern ?? '').trim()
     if (!content) continue
+    if (
+      isLowQualityMemoryContent(content, {
+        type: nudge.type,
+        targetLayer: nudge.targetLayer,
+      })
+    ) {
+      continue
+    }
     const key = `${nudge.targetLayer}\u0000${content}`
     if (seen.has(key)) continue
     seen.add(key)
@@ -417,7 +432,7 @@ export function sanitizeBatchOutput(raw: unknown): BatchOutput {
  *
  * 幂等性保证：
  * - sessionKeyFacts → memoryLayerService.updateSessionKeyFacts（UPDATE 幂等）
- * - memoryCandidates → enqueueStage 按 ID 去重，stage ID 由 batchId+序号稳定生成
+ * - memoryCandidates → enqueueStage 按 ID + 内容去重，并丢弃低质量正文；stage ID 由 batchId+序号稳定生成
  * - insights + contradictions → reflectService.applyConsolidationInsights（纯本地，anti-echo）
  */
 export async function defaultApplier(
@@ -436,23 +451,24 @@ export async function defaultApplier(
     }
   }
 
-  // 2. memoryCandidates 入 stage 队列（ID 由 batchId+序号稳定生成）
+  // 2. memoryCandidates 入 stage 队列（ID 由 batchId+序号稳定生成；enqueueStage 再做内容去重/质量门控）
   for (let i = 0; i < output.memoryCandidates.length; i++) {
     const c = output.memoryCandidates[i]!
     if (c.targetLayer && c.content) {
       const stableId = batchId
         ? `consolidation-${batchId}-${i}`
         : `consolidation-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const type =
+        c.targetLayer === 'L0'
+          ? ('behavior_repeat' as const)
+          : c.targetLayer === 'L1'
+            ? ('project_repeat' as const)
+            : c.targetLayer === 'L3'
+              ? ('correction' as const)
+              : ('fact_repeat' as const)
       enqueueStage(mode, {
         id: stableId,
-        type:
-          c.targetLayer === 'L0'
-            ? ('behavior_repeat' as const)
-            : c.targetLayer === 'L1'
-              ? ('project_repeat' as const)
-              : c.targetLayer === 'L3'
-                ? ('correction' as const)
-                : ('fact_repeat' as const),
+        type,
         targetLayer: c.targetLayer,
         pattern: c.content,
         evidence: c.evidenceIds,

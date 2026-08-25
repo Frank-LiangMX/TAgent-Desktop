@@ -30,6 +30,7 @@ import type {
   CollaborationRunSummary,
   CollaborationMailboxEnvelope,
   CollaborationRoomTask,
+  CollaborationWorkspaceBindingView,
   CollaborationArtifact,
   CollaborationUserApprovalRequest,
   CollaborationTextDeltaPayload,
@@ -97,6 +98,7 @@ import { MemoryMonitorPanel, showNudgeToasts } from "./components/memory";
 import { SessionSidebar } from "./components/workspace/SessionSidebar";
 import { PluginStoreSettings } from "./components/settings/PluginStoreSettings";
 import { RolesPage } from "./components/roles/RolesPage";
+import { KnowledgeBasePage } from "./components/knowledge-base/KnowledgeBasePage";
 import {
   SettingsDialog,
   normalizeSettingsTab,
@@ -309,7 +311,53 @@ declare global {
         dataUrl?: string;
         mime?: string;
       } | null>;
+      openFolderDialog: () => Promise<string[]>;
+      listKnowledgeBases: () => Promise<
+        import("@tagent/shared").KnowledgeBaseRecord[]
+      >;
+      createKnowledgeBase: (input: {
+        name: string;
+        description?: string;
+        sourcePaths?: string[];
+      }) => Promise<import("@tagent/shared").KnowledgeBaseRecord>;
+      deleteKnowledgeBase: (id: string) => Promise<{ ok: boolean }>;
+      addKnowledgeBaseSource: (input: {
+        id: string;
+        path: string;
+      }) => Promise<import("@tagent/shared").KnowledgeBaseRecord>;
+      removeKnowledgeBaseSource: (input: {
+        id: string;
+        sourceId: string;
+      }) => Promise<import("@tagent/shared").KnowledgeBaseRecord>;
+      listKnowledgeBaseDocuments: (input: {
+        knowledgeBaseId: string;
+        query?: string;
+      }) => Promise<import("@tagent/shared").KnowledgeBaseDocument[]>;
+      createKnowledgeBaseDocument: (input: {
+        knowledgeBaseId: string;
+        title: string;
+        content?: string;
+        sourceUrl?: string;
+        sourceProvider?: "wps" | "feishu" | "google-drive" | "unknown";
+        sourceExternalId?: string;
+        sourceAccessMode?: "public" | "oauth" | "browser";
+        sourceSyncedAt?: number;
+      }) => Promise<import("@tagent/shared").KnowledgeBaseDocument>;
+      updateKnowledgeBaseDocument: (input: {
+        id: string;
+        title: string;
+        content: string;
+      }) => Promise<import("@tagent/shared").KnowledgeBaseDocument>;
+      deleteKnowledgeBaseDocument: (id: string) => Promise<{ ok: boolean }>;
+      importKnowledgeBaseDocument: (input: {
+        knowledgeBaseId: string;
+      }) => Promise<import("@tagent/shared").KnowledgeBaseDocument | null>;
       // 会话元数据（重命名/置顶/归档/模型 modelId/子代理委派积极性/思考强度/会话偏好 CLI 工人；status 由主进程内部写，渲染层不直接写）
+      importKnowledgeBaseDocumentFromUrl: (input: {
+        knowledgeBaseId: string;
+        url: string;
+        title?: string;
+      }) => Promise<import("@tagent/shared").KnowledgeBaseDocument>;
       updateSessionMeta: (
         id: string,
         patch: {
@@ -327,6 +375,10 @@ declare global {
           botProfileIds?: string[];
           /** 各轮完成耗时（key = 该轮最后一条主线 assistant 消息 createdAt） */
           turnDurations?: Record<string, number>;
+          /** 知识库绑定的根目录绝对路径列表（0..N）；主进程 trim+去重，空数组=解除绑定 */
+          kbRoots?: string[];
+          knowledgeBaseIds?: string[];
+          knowledgeBaseMode?: "off" | "preferred" | "strict";
         },
       ) => Promise<unknown>;
       togglePin: (id: string) => Promise<unknown>;
@@ -783,15 +835,20 @@ declare global {
       listCollaborationHumanMembers: (
         roomId: string,
       ) => Promise<CollaborationHumanMember[]>;
+      listCollaborationWorkspaceBindings: (
+        roomId: string,
+      ) => Promise<CollaborationWorkspaceBindingView[]>;
       inviteCollaborationHumanMember: (input: {
         roomId: string;
         userId: string;
         displayName: string;
+        workspaceId?: string;
         actorUserId?: string;
       }) => Promise<CollaborationHumanMember>;
       joinCollaborationHumanMember: (input: {
         roomId: string;
         userId: string;
+        workspaceId?: string;
         actorUserId?: string;
       }) => Promise<CollaborationHumanMember>;
       leaveCollaborationHumanMember: (input: {
@@ -1093,6 +1150,20 @@ export function App(): JSX.Element {
     setSettingsInitialTab(normalizeSettingsTab(tab));
     setShowSettings(true);
   };
+
+  useEffect(() => {
+    const openKnowledgeBases = () => {
+      setShowSettings(false);
+      setActiveRail("knowledge");
+      setSidebarOpen(false);
+    };
+    window.addEventListener("tagent:open-knowledge-bases", openKnowledgeBases);
+    return () =>
+      window.removeEventListener(
+        "tagent:open-knowledge-bases",
+        openKnowledgeBases,
+      );
+  }, []);
 
   const railActive: RailItem = showSettings ? "settings" : activeRail;
 
@@ -1431,6 +1502,7 @@ export function App(): JSX.Element {
               }}
               onPlugins={() => selectRail("plugins")}
               onMemory={() => selectRail("memory")}
+              onKnowledge={() => selectRail("knowledge")}
               onRoles={() => selectRail("roles")}
               onSettings={() => openSettings(settingsInitialTab)}
             />
@@ -1467,7 +1539,14 @@ export function App(): JSX.Element {
             欢迎页 / 新会话页的入场动画由 NewConversationLanding 内各元素自行承担
             （标题逐词模糊渐现、输入框上滑淡入、提示词错落淡入），非整页位移；
             故此处不做整页过渡，直接切换，新页元素各自重新入场。 */}
-          {activeRail === "plugins" ? (
+          {activeRail === "knowledge" ? (
+            <div
+              key="knowledge"
+              className="app-shell-content-stage relative h-full min-h-0 animate-in fade-in duration-300"
+            >
+              <KnowledgeBasePage />
+            </div>
+          ) : activeRail === "plugins" ? (
             <div
               key="plugins"
               className="plugins-main-view scrollbar-thin animate-in fade-in duration-300"

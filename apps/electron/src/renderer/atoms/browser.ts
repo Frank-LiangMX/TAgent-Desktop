@@ -1,6 +1,7 @@
 import { atom } from 'jotai'
 import type {
   BrowserOpenRequest,
+  BrowserCloseRequest,
   BrowserWorkspaceState,
 } from '@tagent/shared'
 
@@ -8,6 +9,8 @@ export const browserOpenRequestAtom = atom<BrowserOpenRequest | null>(null)
 export const browserStateAtom = atom<Record<string, BrowserWorkspaceState>>({})
 
 export type BrowserRendererApi = {
+  browserOpen: (input: { sessionId: string; url?: string; title?: string }) => Promise<BrowserWorkspaceState>
+  browserOpenWindow: (input: { sessionId: string; url: string; title?: string }) => Promise<{ sessionId: string; url: string; title: string }>
   browserEnsure: (sessionId: string) => Promise<BrowserWorkspaceState>
   browserSetBounds: (input: { sessionId: string; bounds: { x: number; y: number; width: number; height: number }; visible: boolean }) => Promise<BrowserWorkspaceState>
   browserHide: (sessionId: string) => Promise<{ ok: boolean }>
@@ -19,12 +22,15 @@ export type BrowserRendererApi = {
   browserCloseTab: (input: { sessionId: string; tabId?: string }) => Promise<BrowserWorkspaceState>
   browserSelectTab: (input: { sessionId: string; tabId: string }) => Promise<BrowserWorkspaceState>
   browserObserve: (sessionId: string) => Promise<unknown>
+  browserExtractText: (sessionId: string) => Promise<{ sessionId: string; tabId: string; url: string; title: string; text: string }>
+  browserExtractWindowText: (sessionId: string) => Promise<{ sessionId: string; tabId: string; url: string; title: string; text: string }>
   browserScreenshot: (sessionId: string) => Promise<{ dataUrl: string }>
   browserStop: (sessionId: string) => Promise<{ ok: boolean; message?: string }>
   browserTakeover: (input: { sessionId: string; reason?: string }) => Promise<BrowserWorkspaceState>
   browserResume: (sessionId: string) => Promise<BrowserWorkspaceState>
   onBrowserStateChanged: (cb: (state: BrowserWorkspaceState) => void) => () => void
   onBrowserOpenRequest: (cb: (request: BrowserOpenRequest) => void) => () => void
+  onBrowserCloseRequest: (cb: (request: BrowserCloseRequest) => void) => () => void
 }
 
 export function browserApi(): BrowserRendererApi {

@@ -76,4 +76,36 @@ describe('addDeterministicNudgeCandidates', () => {
 
     expect(output.memoryCandidates).toHaveLength(1)
   })
+
+  it('drops path-slug junk from both model output and nudge fallback', () => {
+    const output = addDeterministicNudgeCandidates(
+      {
+        ...emptyOutput,
+        memoryCandidates: [
+          {
+            targetLayer: 'L1',
+            content: 'F--TAgent-Desktop',
+            confidence: 0.9,
+            evidenceIds: ['e0'],
+          },
+          {
+            targetLayer: 'L2',
+            content: '使用 TypeScript',
+            confidence: 0.9,
+            evidenceIds: ['e1'],
+          },
+        ],
+      },
+      [nudgeEvidence('e2', 'L1', 'H--j3-statics')],
+    )
+
+    expect(output.memoryCandidates).toEqual([
+      {
+        targetLayer: 'L2',
+        content: '使用 TypeScript',
+        confidence: 0.9,
+        evidenceIds: ['e1'],
+      },
+    ])
+  })
 })

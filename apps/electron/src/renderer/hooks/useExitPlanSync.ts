@@ -16,7 +16,9 @@ import {
 import { sessionPlanProgressAtom } from "../atoms/plan-progress-atoms";
 import {
   applyPlanStepSignal,
+  inferPlanStepSignalsFromText,
   parsePlanProgress,
+  type PlanProgress,
   type PlanStepSignal,
 } from "../components/chat/plan-progress-model";
 import { updatePlanModeSessionSet } from "../lib/agent-plan-mode";
@@ -24,6 +26,52 @@ import {
   adoptSessionRunAtom,
   sessionRunMapAtom,
 } from "../atoms/session-run-atoms";
+
+type PlanProgressMap = Record<string, PlanProgress>;
+type SetPlanProgress = (
+  update: (prev: PlanProgressMap) => PlanProgressMap,
+) => void;
+
+function applySignalsToSession(
+  setPlanProgress: SetPlanProgress,
+  sessionId: string,
+  signals: PlanStepSignal[],
+): void {
+  if (signals.length === 0) return;
+  setPlanProgress((prev) => {
+    const current = prev[sessionId];
+    if (!current) return prev;
+    let next = current;
+    for (const signal of signals) {
+      next = applyPlanStepSignal(next, signal);
+    }
+    return next === current ? prev : { ...prev, [sessionId]: next };
+  });
+}
+
+function assistantTextFromPayload(payload: {
+  kind?: string;
+  message?: {
+    type?: string;
+    content?: unknown;
+    message?: { content?: unknown };
+  };
+}): string {
+  if (payload.kind !== "sdk_message") return "";
+  const msg = payload.message;
+  if (!msg || msg.type !== "assistant") return "";
+  const content = msg.content ?? msg.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => {
+      const item = block as { type?: string; text?: unknown };
+      return item?.type === "text" && typeof item.text === "string"
+        ? item.text
+        : "";
+    })
+    .join("\n");
+}
 
 export function useExitPlanSync(): void {
   const setAllRequests = useSetAtom(allPendingExitPlanRequestsAtom);
@@ -85,33 +133,50 @@ export function useExitPlanSync(): void {
         payload?: {
           kind?: string;
           event?: { type?: string; step?: unknown; status?: unknown };
+          message?: {
+            type?: string;
+            content?: unknown;
+            message?: { content?: unknown };
+          };
         };
       };
-      const event = packet.payload?.event;
+      if (!packet.sessionId || !packet.payload) return;
+
+      // 1) 主进程显式 plan_step_update
+      const event = packet.payload.event;
       if (
-        !packet.sessionId ||
-        packet.payload?.kind !== "tagent_event" ||
-        event?.type !== "plan_step_update"
+        packet.payload.kind === "tagent_event" &&
+        event?.type === "plan_step_update"
       ) {
+        const step = Number(event.step);
+        const status = event.status;
+        if (
+          Number.isInteger(step) &&
+          step >= 1 &&
+          ["running", "completed", "failed", "paused"].includes(String(status))
+        ) {
+          applySignalsToSession(setPlanProgress, packet.sessionId, [
+            {
+              step,
+              status: status as PlanStepSignal["status"],
+            },
+          ]);
+        }
         return;
       }
-      const step = Number(event.step);
-      const status = event.status;
-      if (
-        !Number.isInteger(step) ||
-        step < 1 ||
-        !["running", "completed", "failed", "paused"].includes(String(status))
-      ) {
-        return;
-      }
-      const signal: PlanStepSignal = {
-        step,
-        status: status as PlanStepSignal["status"],
-      };
+
+      // 2) 模型不写隐藏标记时：用步骤标题是否出现在 assistant 正文推断推进
+      const text = assistantTextFromPayload(packet.payload);
+      if (!text.trim()) return;
       setPlanProgress((prev) => {
         const current = prev[packet.sessionId!];
         if (!current) return prev;
-        const next = applyPlanStepSignal(current, signal);
+        const inferred = inferPlanStepSignalsFromText(current, text);
+        if (inferred.length === 0) return prev;
+        let next = current;
+        for (const signal of inferred) {
+          next = applyPlanStepSignal(next, signal);
+        }
         return next === current
           ? prev
           : { ...prev, [packet.sessionId!]: next };

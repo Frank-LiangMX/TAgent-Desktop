@@ -8,6 +8,9 @@ export interface PersistedSessionMeta {
   modelId?: string;
   botProfileIds?: string[];
   fusionRoomId?: string;
+  kbRoots?: string[];
+  knowledgeBaseIds?: string[];
+  knowledgeBaseMode?: "off" | "preferred" | "strict";
 }
 
 /**
@@ -21,9 +24,8 @@ export function usePersistedSessionMeta(
 
   useEffect(() => {
     const handleMetaChanged = (event: Event): void => {
-      const changedSessionId = (
-        event as CustomEvent<{ sessionId?: string }>
-      ).detail?.sessionId;
+      const changedSessionId = (event as CustomEvent<{ sessionId?: string }>)
+        .detail?.sessionId;
       if (changedSessionId === sessionId) {
         setRevision((value) => value + 1);
       }

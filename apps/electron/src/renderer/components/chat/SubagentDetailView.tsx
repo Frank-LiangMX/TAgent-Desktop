@@ -4,10 +4,9 @@
  * 从主会话入口（SubagentEntryCard）进入后全屏切换到此页：
  * - 顶部栏：返回 + 标题 + 模型 + 状态（chrome 只一次）
  * - 任务指令区：默认折叠，只显示一行摘要
- * - 过程区：与主会话同一套过程展示偏好（chatProcessDisplayModeAtom）
- *   · full → ProcessGroupView
- *   · concise → ConciseTimelineView
- * - 回答区：full 模式末尾交付文本；concise 时正文已并入时间线
+ * - 过程区：复用主会话的 ProcessGroupView，整轮执行内容保持在一个过程组内
+ *   · full / concise 只控制过程组内部的投影方式
+ * - 回答区：full 模式末尾交付文本；concise 时正文并入过程组
  */
 import { memo, useMemo, useRef, useState } from 'react'
 import { useAtomValue } from 'jotai'
@@ -30,8 +29,6 @@ import { summarizeFirstText } from './subagent-ui-model'
 import type { TaskCardState } from './subagent-ui-model'
 import type { TAgentContentBlock, TAgentMessage } from '@tagent/shared'
 import { ProcessGroupView } from './ProcessGroupView'
-import { ConciseTimelineView } from './ConciseTimelineView'
-import { buildConciseTimeline } from './concise-timeline-model'
 
 interface SubagentDetailViewProps {
   /** Chat 全部显示项（实时，含流式） */
@@ -187,24 +184,6 @@ export function SubagentDetailView({
     )
   }, [subagentItems, parentToolUseId, isRunning, modelId, processDisplayMode])
 
-  const conciseSegments = useMemo(
-    () =>
-      isConcise
-        ? buildConciseTimeline(presentation.process, {
-            answerTexts: presentation.answerTexts,
-            streamingText: presentation.streamingText,
-            isLive: isRunning,
-          })
-        : [],
-    [
-      isConcise,
-      presentation.process,
-      presentation.answerTexts,
-      presentation.streamingText,
-      isRunning,
-    ],
-  )
-
   const answerText = presentation.answerTexts.join('\n\n').trim()
   const copyText = (answerText || fullText).trim()
 
@@ -237,39 +216,26 @@ export function SubagentDetailView({
             <div className="subagent-detail__empty">子代理尚未产生消息…</div>
           )}
 
-          {isConcise ? (
-            conciseSegments.length > 0 ? (
-              <ConciseTimelineView
-                segments={conciseSegments}
+          {presentation.process.length > 0 && (
+            <div className="agent-turn-process">
+              <ProcessGroupView
+                process={presentation.process}
                 isLive={isRunning}
-                isLatestTurn
-                workedMs={elapsedMs}
+                autoExpandWhenLive
+                displayMode={processDisplayMode}
+                hasFinalOutput={Boolean(answerText)}
               />
-            ) : null
-          ) : (
-            <>
-              {presentation.process.length > 0 && (
-                <div className="agent-turn-process">
-                  <ProcessGroupView
-                    process={presentation.process}
-                    isLive={isRunning}
-                    autoExpandWhenLive
-                    displayMode="full"
-                    hasFinalOutput={Boolean(answerText)}
-                  />
-                </div>
-              )}
-              {answerText ? (
-                <div className="agent-answer-block subagent-detail__answer">
-                  <Message from="assistant">
-                    <MessageContent>
-                      <MessageResponse>{answerText}</MessageResponse>
-                    </MessageContent>
-                  </Message>
-                </div>
-              ) : null}
-            </>
+            </div>
           )}
+          {!isConcise && answerText ? (
+            <div className="agent-answer-block subagent-detail__answer">
+              <Message from="assistant">
+                <MessageContent>
+                  <MessageResponse>{answerText}</MessageResponse>
+                </MessageContent>
+              </Message>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

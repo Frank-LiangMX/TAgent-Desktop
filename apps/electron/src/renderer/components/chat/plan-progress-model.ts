@@ -33,18 +33,73 @@ export function applyPlanStepSignal(
 ): PlanProgress {
   const index = signal.step - 1;
   if (index < 0 || index >= progress.steps.length) return progress;
+  const nextSteps = progress.steps.map((step, stepIndex) => ({
+    ...step,
+    status:
+      stepIndex < index
+        ? ("completed" as PlanStepStatus)
+        : stepIndex === index
+          ? signal.status
+          : step.status,
+  }));
+  // 无变化则返回原对象，便于调用方跳过 setState
+  if (
+    nextSteps.every(
+      (step, stepIndex) => step.status === progress.steps[stepIndex]?.status,
+    )
+  ) {
+    return progress;
+  }
   return {
     ...progress,
-    steps: progress.steps.map((step, stepIndex) => ({
-      ...step,
-      status:
-        stepIndex < index
-          ? "completed"
-          : stepIndex === index
-            ? signal.status
-            : step.status,
-    })),
+    steps: nextSteps,
   };
+}
+
+/** 计划是否还有未完成步骤（失败也算未收尾，保留卡片）。 */
+export function isPlanIncomplete(progress: PlanProgress | null | undefined): boolean {
+  if (!progress || progress.steps.length === 0) return false;
+  return progress.steps.some(
+    (step) => step.status !== "completed",
+  );
+}
+
+/** 运行结束但计划未做完时，把当前 running 收成 paused，避免卡片假装还在跑。 */
+export function pauseActivePlanSteps(progress: PlanProgress): PlanProgress {
+  let changed = false;
+  const steps = progress.steps.map((step) => {
+    if (step.status !== "running") return step;
+    changed = true;
+    return { ...step, status: "paused" as const };
+  });
+  return changed ? { ...progress, steps } : progress;
+}
+
+/**
+ * 模型不写隐藏标记时：用步骤标题是否出现在 assistant 正文里推断推进。
+ * 只匹配足够长的标题，避免短词误伤；命中后将该步标为 running，并把更早步骤标完成。
+ */
+export function inferPlanStepSignalsFromText(
+  progress: PlanProgress,
+  text: string,
+): PlanStepSignal[] {
+  const haystack = text.trim();
+  if (!haystack || progress.steps.length === 0) return [];
+
+  let bestIndex = -1;
+  for (let i = 0; i < progress.steps.length; i++) {
+    const title = progress.steps[i]?.title?.trim() ?? "";
+    if (title.length < 6) continue;
+    if (haystack.includes(title)) bestIndex = i;
+  }
+  if (bestIndex < 0) return [];
+
+  const current = progress.steps[bestIndex];
+  if (!current) return [];
+  // 已完成/失败不再因正文回声回退
+  if (current.status === "completed" || current.status === "failed") return [];
+  if (current.status === "running") return [];
+  return [{ step: bestIndex + 1, status: "running" }];
 }
 
 const STEP_RE = /^\s*(?:[-*]|\d+[.)])\s+(?:\[([ xX~✓])\]\s*)?(.+?)\s*$/;

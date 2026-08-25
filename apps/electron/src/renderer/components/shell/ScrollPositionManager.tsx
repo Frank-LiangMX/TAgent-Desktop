@@ -24,9 +24,13 @@ import {
 import {
   compensateScrollForHeightDelta,
   hasSavedMidPosition,
+  resolveScrollFollowMode,
   shouldFollowContentGrowth,
+  shouldUseSoftFollow,
   shouldRepinScrollerToBottom,
   targetScrollTop,
+  type ScrollFollowMode,
+  type UserScrollIntent,
 } from "./scroll-position";
 
 /** 模块级缓存：会话 ID → 距底部像素距离 */
@@ -84,12 +88,83 @@ export function ScrollPositionManager({
   const prevScrollHeightRef = useRef<number | null>(null);
   const viewportAnchorRef = useRef<ViewportAnchor | null>(null);
   const wasLiveRef = useRef(live);
-  const escapedRef = useRef(state.escapedFromLock);
-  escapedRef.current = state.escapedFromLock;
+  // 本地跟随状态是唯一真相。第三方 escapedFromLock 会被虚拟化收缩的
+  // 内部 scroll 误触发，不能再拿它判断用户是否上滑。
+  const followModeRef = useRef<ScrollFollowMode>("following");
+  const userScrollIntentRef = useRef<UserScrollIntent | undefined>(undefined);
+  const userScrollIntentTimerRef = useRef<number | null>(null);
+  const pointerScrollActiveRef = useRef(false);
+  const lastScrollTopRef = useRef<number | null>(null);
   const onSettledRef = useRef(onSettled);
   onSettledRef.current = onSettled;
   const scrollToBottomRef = useRef(scrollToBottom);
   scrollToBottomRef.current = scrollToBottom;
+
+  const syncFollowModeAttribute = (): void => {
+    scrollRef.current?.setAttribute(
+      "data-chat-follow-mode",
+      followModeRef.current,
+    );
+  };
+
+  const setUserScrollIntent = (intent: UserScrollIntent): void => {
+    userScrollIntentRef.current = intent;
+    if (userScrollIntentTimerRef.current != null) {
+      window.clearTimeout(userScrollIntentTimerRef.current);
+    }
+    userScrollIntentTimerRef.current = window.setTimeout(() => {
+      userScrollIntentRef.current = undefined;
+      userScrollIntentTimerRef.current = null;
+    }, 300);
+
+    const el = scrollRef.current;
+    if (intent === "up") {
+      followModeRef.current = "detached";
+      pendingBottomIntentCache.delete(id);
+      bottomIntentCache.delete(id);
+    } else if (el) {
+      followModeRef.current = resolveScrollFollowMode({
+        mode: followModeRef.current,
+        userIntent: intent,
+        distanceFromBottom: el.scrollHeight - el.scrollTop - el.clientHeight,
+      });
+    }
+    syncFollowModeAttribute();
+  };
+
+  const updateFollowModeFromScroll = (): void => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // 发送动作会先收回虚拟化窗口，再挂载新用户消息；这期间产生的
+    // 内部 scroll 不能继承旧的 detached 状态。用户上滑时输入监听会
+    // 先清掉这个 intent，因此不会抢回用户主动阅读的位置。
+    if (pendingBottomIntentCache.has(id) || bottomIntentCache.has(id)) {
+      followModeRef.current = "following";
+      syncFollowModeAttribute();
+      lastScrollTopRef.current = el.scrollTop;
+      return;
+    }
+    const previousScrollTop = lastScrollTopRef.current;
+    const direction =
+      previousScrollTop == null
+        ? undefined
+        : el.scrollTop < previousScrollTop
+          ? "up"
+          : el.scrollTop > previousScrollTop
+            ? "down"
+            : undefined;
+    const intent =
+      userScrollIntentRef.current ??
+      (pointerScrollActiveRef.current ? direction : undefined);
+    followModeRef.current = resolveScrollFollowMode({
+      mode: followModeRef.current,
+      userIntent: intent,
+      distanceFromBottom,
+    });
+    syncFollowModeAttribute();
+    lastScrollTopRef.current = el.scrollTop;
+  };
 
   // 主滚动协调器唯一的钉底出口：清掉 StickToBottom spring 后再写 floor。
   // 注意：不能调用 stopScroll()，它的语义是用户主动脱离跟随，会把
@@ -118,7 +193,7 @@ export function ScrollPositionManager({
 
   const rememberViewportAnchor = (): void => {
     const el = scrollRef.current;
-    if (!el || !escapedRef.current) {
+    if (!el || followModeRef.current !== "detached") {
       viewportAnchorRef.current = null;
       return;
     }
@@ -134,8 +209,9 @@ export function ScrollPositionManager({
     const savePosition = (): void => {
       // 收回历史窗口会产生临时 scroll 事件；在本轮贴底意图仍有效时，
       // 不把这次中间态写回缓存。用户主动上滚则立即解除意图并保存真实位置。
+      updateFollowModeFromScroll();
       const hasPendingIntent = pendingBottomIntentCache.has(id);
-      if (state.escapedFromLock && !hasPendingIntent) {
+      if (followModeRef.current === "detached" && !hasPendingIntent) {
         pendingBottomIntentCache.delete(id);
         bottomIntentCache.delete(id);
       } else if (hasPendingIntent) {
@@ -143,7 +219,10 @@ export function ScrollPositionManager({
         // use-stick-to-bottom 会把这次内部布局滚动误判为用户上滑。
         // 真实的向上滚轮/键盘操作会在下面的输入监听中取消意图。
         return;
-      } else if (bottomIntentCache.has(id)) {
+      } else if (
+        bottomIntentCache.has(id) ||
+        followModeRef.current === "following"
+      ) {
         scrollPositionCache.set(id, 0);
         return;
       }
@@ -153,27 +232,56 @@ export function ScrollPositionManager({
     };
     el.addEventListener("scroll", savePosition, { passive: true });
     const cancelOnUserInput = (event: WheelEvent): void => {
-      if (event.deltaY < 0) {
-        pendingBottomIntentCache.delete(id);
-        bottomIntentCache.delete(id);
-      }
+      if (event.deltaY < 0) setUserScrollIntent("up");
+      else if (event.deltaY > 0) setUserScrollIntent("down");
     };
-    const cancelOnKeyboard = (event: KeyboardEvent): void => {
+    const onKeyboard = (event: KeyboardEvent): void => {
       if (
         event.key === "ArrowUp" ||
         event.key === "PageUp" ||
         event.key === "Home"
       ) {
-        pendingBottomIntentCache.delete(id);
-        bottomIntentCache.delete(id);
+        setUserScrollIntent("up");
+      } else if (
+        event.key === "ArrowDown" ||
+        event.key === "PageDown" ||
+        event.key === "End"
+      ) {
+        setUserScrollIntent("down");
       }
     };
+    const onPointerDown = (): void => {
+      pointerScrollActiveRef.current = true;
+    };
+    const onPointerUp = (): void => {
+      pointerScrollActiveRef.current = false;
+    };
+    const onScrollToBottom = (): void => {
+      followModeRef.current = "following";
+      syncFollowModeAttribute();
+      userScrollIntentRef.current = undefined;
+      pendingBottomIntentCache.delete(id);
+      bottomIntentCache.add(id);
+      scrollPositionCache.set(id, 0);
+    };
     el.addEventListener("wheel", cancelOnUserInput, { passive: true });
-    el.addEventListener("keydown", cancelOnKeyboard);
+    el.addEventListener("keydown", onKeyboard);
+    el.addEventListener("pointerdown", onPointerDown, { passive: true });
+    el.addEventListener("pointerup", onPointerUp, { passive: true });
+    el.addEventListener("pointercancel", onPointerUp, { passive: true });
+    el.addEventListener("conversation-scroll-to-bottom", onScrollToBottom);
     return () => {
       el.removeEventListener("scroll", savePosition);
       el.removeEventListener("wheel", cancelOnUserInput);
-      el.removeEventListener("keydown", cancelOnKeyboard);
+      el.removeEventListener("keydown", onKeyboard);
+      el.removeEventListener("pointerdown", onPointerDown);
+      el.removeEventListener("pointerup", onPointerUp);
+      el.removeEventListener("pointercancel", onPointerUp);
+      el.removeEventListener("conversation-scroll-to-bottom", onScrollToBottom);
+      if (userScrollIntentTimerRef.current != null) {
+        window.clearTimeout(userScrollIntentTimerRef.current);
+        userScrollIntentTimerRef.current = null;
+      }
     };
   }, [scrollRef, id, ready, restoreReady, state]);
 
@@ -187,6 +295,12 @@ export function ScrollPositionManager({
       prevScrollHeightRef.current = null;
       pendingBottomIntentCache.delete(previousId);
       bottomIntentCache.delete(previousId);
+      followModeRef.current = hasSavedMidPosition(scrollPositionCache.get(id))
+        ? "detached"
+        : "following";
+      lastScrollTopRef.current = null;
+      userScrollIntentRef.current = undefined;
+      syncFollowModeAttribute();
     }
   }, [id]);
 
@@ -199,7 +313,7 @@ export function ScrollPositionManager({
     if (!restoreReady) return;
     // An explicit send overrides stale lock and mid-position state until the
     // user scrolls upward and the input handlers cancel the pending intent.
-    if (state.escapedFromLock && !hasBottomIntent) return;
+    if (followModeRef.current !== "following" && !hasBottomIntent) return;
     if (!hasBottomIntent && hasSavedMidPosition(scrollPositionCache.get(id))) {
       return;
     }
@@ -233,8 +347,15 @@ export function ScrollPositionManager({
     }
 
     const savedDistance = scrollPositionCache.get(id);
+    const hasBottomIntent =
+      pendingBottomIntentCache.has(id) || bottomIntentCache.has(id);
     if (hasSavedMidPosition(savedDistance) && !restoreReady) return;
 
+    followModeRef.current =
+      hasBottomIntent || !hasSavedMidPosition(savedDistance)
+        ? "following"
+        : "detached";
+    syncFollowModeAttribute();
     restoredRef.current = true;
     prevScrollHeightRef.current = el.scrollHeight;
     markPending();
@@ -284,7 +405,7 @@ export function ScrollPositionManager({
     if (!wasLive || live) return;
     const el = scrollRef.current;
     if (!el) return;
-    if (escapedRef.current) {
+    if (followModeRef.current === "detached") {
       stopScroll();
       restoreViewportAnchor(el, viewportAnchorRef.current);
       el.setAttribute("data-chat-scroll-owner", "coordinator");
@@ -326,9 +447,32 @@ export function ScrollPositionManager({
     let lastHeight = content.scrollHeight;
     let wasNearBottom = !hasSavedMidPosition(scrollPositionCache.get(id));
     let pinRaf = 0;
+    let liveRepairTimer = 0;
+    const scheduleLiveRepair = (): void => {
+      if (liveRepairTimer !== 0) return;
+      liveRepairTimer = window.setTimeout(() => {
+        liveRepairTimer = 0;
+        const currentScroller = scrollRef.current;
+        if (!currentScroller || followModeRef.current !== "following") return;
+        const distanceFromBottom =
+          currentScroller.scrollHeight -
+          currentScroller.scrollTop -
+          currentScroller.clientHeight;
+        const stillSoft = shouldUseSoftFollow({
+          live: true,
+          grew: true,
+          shrunk: false,
+          hasPendingIntent: false,
+          followMode: followModeRef.current,
+          distanceFromBottom,
+        });
+        if (!stillSoft) pinToBottomRef.current();
+      }, 180);
+    };
     const onScroll = (): void => {
       const dist =
         scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      updateFollowModeFromScroll();
       wasNearBottom = dist <= 40;
       rememberViewportAnchor();
     };
@@ -340,16 +484,13 @@ export function ScrollPositionManager({
       // 流式内容增长和用户上滚可能发生在同一帧：ResizeObserver 已排了钉底 rAF
       // 后，用户才通过滚轮/拖拽离开底部。必须在真正写 scrollTop 前再读一次
       // StickToBottom 的同步逃离标记，否则这条旧 rAF 会把人强行拉回最新输出。
-      if (state.escapedFromLock && !hasBottomIntent) return;
+      if (followModeRef.current !== "following" && !hasBottomIntent) return;
       if (!wasNearBottom && !hasBottomIntent) return;
 
       if (Math.abs(scroller.scrollTop - top) < 2) return;
       // 直接写 scrollTop 不会清除 use-stick-to-bottom 的 escapedFromLock。
       // 只在本轮发送意图仍有效且仍被旧 lock 挡住时调用一次 instant，后续流式
       // 增长继续走低开销的 pinToBottomRef，避免逐字输出触发 React 重渲染。
-      if (hasBottomIntent && state.escapedFromLock) {
-        void scrollToBottomRef.current("instant");
-      }
       pinToBottomRef.current();
       wasNearBottom = true;
     };
@@ -369,7 +510,7 @@ export function ScrollPositionManager({
         // 不要把这个旧 DOM 的底部当成本轮底部。
         if (pendingBottomIntentCache.has(id)) {
           // 保留自然布局结果，等首个主线 assistant 内容到达后再统一钉底。
-        } else if (escapedRef.current) {
+        } else if (followModeRef.current === "detached") {
           stopScroll();
           restoreViewportAnchor(scroller, viewportAnchorRef.current);
         } else {
@@ -381,16 +522,27 @@ export function ScrollPositionManager({
       const hasBottomIntent =
         pendingBottomIntentCache.has(id) || bottomIntentCache.has(id);
       if (hasBottomIntent) {
+        followModeRef.current = "following";
+        syncFollowModeAttribute();
         wasNearBottom = true;
       }
+      const canDeferLiveGrowth =
+        live &&
+        grew &&
+        !shrunk &&
+        !pendingBottomIntentCache.has(id) &&
+        followModeRef.current === "following";
+      if (canDeferLiveGrowth) {
+        scheduleLiveRepair();
+        return;
+      }
+
       if (
         !shouldFollowContentGrowth({
           hasMidPosition: hasSavedMidPosition(scrollPositionCache.get(id)),
           grew,
           wasNearBottom,
-          // A pending send is an explicit follow-bottom override. Once the
-          // intent is activated, escapedFromLock protects a user's upward scroll.
-          escapedFromLock: state.escapedFromLock && !hasBottomIntent,
+          followMode: followModeRef.current,
         })
       ) {
         return;
@@ -405,8 +557,9 @@ export function ScrollPositionManager({
       scroller.removeEventListener("scroll", onScroll);
       ro.disconnect();
       if (pinRaf !== 0) window.cancelAnimationFrame(pinRaf);
+      if (liveRepairTimer !== 0) window.clearTimeout(liveRepairTimer);
     };
-  }, [ready, id, restoreReady, scrollRef, contentRef, state, stopScroll]);
+  }, [ready, id, restoreReady, live, scrollRef, contentRef, state, stopScroll]);
 
   // 虚拟化往前补页：内容从顶部长高，绘制前把 scrollTop 顺延，视口不跳
   useLayoutEffect(() => {

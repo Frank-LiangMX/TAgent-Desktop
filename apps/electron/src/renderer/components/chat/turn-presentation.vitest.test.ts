@@ -136,6 +136,28 @@ describe('buildTurnPresentation：条件拆分（交付正文进回答区流式�
     expect(pres.process.some((p) => p.type === 'text')).toBe(false)
   })
 
+  it('live partial assistant 的尾部 text 不提前进入回答区', () => {
+    const turn = makeTurn(
+      [
+        {
+          key: 'a1',
+          message: {
+            type: 'assistant',
+            uuid: 'partial-text',
+            _partial: true,
+            modelId: 'test-model',
+            content: [{ type: 'text', text: '仍在分析当前问题，尚未给出最终答复。' }],
+          } as TAgentMessage,
+        },
+      ],
+      true,
+    )
+    const pres = buildTurnPresentation(turn, { isLiveTurn: true, displayMode: 'full' })
+
+    expect(pres.answerTexts).toEqual([])
+    expect(pres.process.some((p) => p.type === 'text')).toBe(true)
+  })
+
   it('isLiveTurn 且工具已有 result 时，尾部 text 进 answerTexts', () => {
     const turn = makeTurn(thinkingToolTextItems({ withResult: true }), false)
     const pres = buildTurnPresentation(turn, { isLiveTurn: true })

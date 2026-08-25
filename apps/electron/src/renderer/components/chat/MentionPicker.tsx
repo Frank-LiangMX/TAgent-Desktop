@@ -1,6 +1,6 @@
 /**
  * Chat @ 角色选择器（Phase B1）
- * 浮在输入框**外侧**（fixed portal，不被 chat-input-glass overflow 裁切）。
+ * 覆盖输入框区域（fixed portal，不被 chat-input-glass overflow 裁切）。
  * 过滤与 ChatInput 键盘选择共用 filterMentionRoles。
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -24,7 +24,7 @@ interface MentionPickerProps {
   activeIndex: number;
   onSelect: (role: MentionRoleOption) => void;
   onActiveIndexChange: (index: number) => void;
-  /** 锚定元素：输入浮岛外框，用于定位在输入框上方外侧 */
+  /** 锚定元素：输入浮岛外框，用于定位在输入框上方并覆盖输入框 */
   anchorRef: React.RefObject<HTMLElement | null>;
   className?: string;
 }
@@ -66,7 +66,7 @@ export function MentionPicker({
     el?.scrollIntoView({ block: "nearest" });
   }, [activeIndex, open, filtered.length]);
 
-  // 贴在输入框上方外侧（fixed，相对视口）
+  // 底边贴住输入框底边，让选择面板覆盖输入框而不是留下可误输入的空档
   useLayoutEffect(() => {
     if (!open) {
       setPos(null);
@@ -79,7 +79,7 @@ export function MentionPicker({
       setPos({
         left: Math.max(8, r.left),
         width: Math.min(r.width, window.innerWidth - 16),
-        bottom: Math.max(8, window.innerHeight - r.top + 8),
+        bottom: Math.max(8, window.innerHeight - r.bottom),
       });
     };
     update();

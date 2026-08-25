@@ -630,6 +630,7 @@ export function buildConciseTimeline(
   let stageSteps: WorkStageStep[] = []
   let stageStartKey = ''
   let sawTool = false
+  const seenThinking = new Set<string>()
 
   const flushLeadingThink = (): void => {
     if (leadingThink.length === 0) return
@@ -686,6 +687,9 @@ export function buildConciseTimeline(
     if (cur.type === 'thinking') {
       const t = cur.thinking.trim()
       if (!t) continue
+      // SDK 的累计快照可能把同一段 thinking 以不同 key 重放；同一回合只保留一次。
+      if (seenThinking.has(t)) continue
+      seenThinking.add(t)
       // 首轮工具前：合并为顶部 ThinkingFold
       if (!sawTool && stageSteps.length === 0) {
         if (leadingThink.length === 0) {
@@ -699,17 +703,14 @@ export function buildConciseTimeline(
       }
       // REGRESS-K1：idle 不再因 trivial 整段丢弃——短思考也要留「思考了片刻」可点开，
       // 否则 live 可见、结束后执行块无思考行（用户观感=流完即消）。
-      // 中段思考单独成为折叠块：用户必须能看到“思考”这一层入口，
-      // 但正文仍默认收起，避免把完整思考链直接铺在会话里。
+      // 中段思考保留在当前执行阶段的 chronological steps；阶段仍是唯一外层块，正文由阶段展开态承载。
       if (stageSteps.some((s) => s.kind === 'tool')) {
-        flushStage()
         const durationSec = resolveThinkingDurationSec(t, cur.durationSec)
-        segments.push({
+        stageSteps.push({
           kind: 'thinking',
           key: `think-${cur.key}`,
           thinking: t,
           durationSec,
-          summary: formatThinkingSummary(durationSec),
         })
         continue
       }

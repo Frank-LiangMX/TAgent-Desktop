@@ -564,8 +564,9 @@ describe("applySdkMessageToItems：uuid 原地 upsert（S2.1 单真源）", () =
 });
 describe("thinking 显示摘要：限长、去重、合并阶段", () => {
   it("长 thinking 只保留计划、进展信号和最近结论", () => {
-    const raw = Array.from({ length: 40 }, (_, i) =>
-      `第${i}步：继续检查无关的内部推演内容。`,
+    const raw = Array.from(
+      { length: 40 },
+      (_, i) => `第${i}步：继续检查无关的内部推演内容。`,
     ).join("\n");
     const compact = compactThinkingForDisplay(
       `${raw}\n发现关键问题：滚动锚点需要修复。\n下一步：运行测试并验证。`,
@@ -612,15 +613,23 @@ describe("thinking 显示摘要：限长、去重、合并阶段", () => {
       ],
     };
     const display = compactAssistantMessageForDisplay(message);
-    expect(display.content.filter((b) => b.type === "thinking")).toHaveLength(1);
+    expect(display.content.filter((b) => b.type === "thinking")).toHaveLength(
+      1,
+    );
     const thinking = display.content.find((b) => b.type === "thinking");
     expect(
-      thinking && thinking.type === "thinking" && typeof thinking.thinking === "string"
+      thinking &&
+        thinking.type === "thinking" &&
+        typeof thinking.thinking === "string"
         ? thinking.thinking.length
         : 0,
-    ).toBeLessThanOrEqual(
-      MAX_DISPLAY_THINKING_CHARS,
+    ).toBeLessThanOrEqual(MAX_DISPLAY_THINKING_CHARS);
+    expect(message.content.filter((b) => b.type === "thinking")).toHaveLength(
+      2,
     );
-    expect(message.content.filter((b) => b.type === "thinking")).toHaveLength(2);
+    expect(
+      (display as TAgentMessage & { __fullThinking?: string }).__fullThinking
+        ?.length,
+    ).toBeGreaterThan(MAX_DISPLAY_THINKING_CHARS);
   });
 });

@@ -1,8 +1,11 @@
-import { WebContentsView, type BrowserWindow } from 'electron'
+import { BrowserWindow, WebContentsView } from 'electron'
 import {
   BROWSER_IPC_CHANNELS,
   type BrowserActionResult,
   type BrowserBounds,
+  type BrowserDetachedWindowState,
+  type BrowserPageTextResult,
+  type BrowserCloseRequest,
   type BrowserElementActionRequest,
   type BrowserElementRef,
   type BrowserNavigateRequest,
@@ -47,6 +50,7 @@ export class BrowserController {
   private readonly workspaces = new Map<string, BrowserWorkspaceRuntime>()
   private nextTabNumber = 1
   private nextRequestId = 1
+  private readonly detachedWindows = new Map<string, BrowserWindow>()
 
   constructor(private readonly getWindow: () => BrowserWindow | null) {}
 
@@ -205,6 +209,142 @@ export class BrowserController {
     return tab
   }
 
+  async openDetached(sessionId: string, url: string, title?: string): Promise<BrowserDetachedWindowState> {
+    const normalizedUrl = normalizeBrowserUrl(url)
+    let detached = this.detachedWindows.get(sessionId)
+    if (!detached || detached.isDestroyed()) {
+      detached = new BrowserWindow({
+        width: 1440,
+        height: 920,
+        minWidth: 900,
+        minHeight: 640,
+        show: false,
+        parent: this.window(),
+        title: title || '内置浏览器',
+        autoHideMenuBar: true,
+        backgroundColor: '#ffffff',
+        webPreferences: {
+          partition: 'persist:tagent-browser-' + safeId(sessionId),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+          webSecurity: true,
+        },
+      })
+      detached.setMenuBarVisibility(false)
+      detached.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+      detached.webContents.session.setPermissionCheckHandler(() => false)
+      detached.webContents.setWindowOpenHandler(({ url: nextUrl }) => {
+        if (!isAllowedBrowserUrl(nextUrl)) return { action: 'deny' }
+        void detached?.loadURL(nextUrl).catch(() => undefined)
+        return { action: 'deny' }
+      })
+      detached.on('closed', () => {
+        if (this.detachedWindows.get(sessionId) === detached) this.detachedWindows.delete(sessionId)
+      })
+      this.detachedWindows.set(sessionId, detached)
+    } else {
+      detached.setTitle(title || '内置浏览器')
+    }
+    try {
+      await detached.loadURL(normalizedUrl)
+    } catch {
+      // 即使页面加载失败也显示窗口，让用户看到浏览器错误页或重试。
+    }
+    if (!detached.isDestroyed()) {
+      detached.show()
+      detached.focus()
+    }
+    return {
+      sessionId,
+      url: detached.isDestroyed() ? normalizedUrl : detached.webContents.getURL() || normalizedUrl,
+      title: detached.isDestroyed() ? title || '内置浏览器' : detached.getTitle() || title || '内置浏览器',
+    }
+  }
+
+  async extractDetachedText(sessionId: string): Promise<BrowserPageTextResult> {
+    const detached = this.detachedWindows.get(sessionId)
+    if (!detached || detached.isDestroyed()) throw new Error('独立浏览器窗口已关闭，请重新打开云文档')
+    const result = (await detached.webContents.executeJavaScript(`(function () {
+      const root = document.body || document.documentElement
+      if (!root) return { title: document.title || '', text: '' }
+      const raw = root.innerText || root.textContent || ''
+      const emojiPattern = /[\\p{Extended_Pictographic}\\uFE0F\\u200D]/gu
+      const lines = raw
+        .replace(/\\u00a0/g, ' ')
+        .split(/\\r?\\n/)
+        .map((line) => line.replace(/[ \\t]+/g, ' ').trim())
+        .map((line) => {
+          const emojiCount = (line.match(emojiPattern) || []).length
+          const firstEmoji = line.search(emojiPattern)
+          if (emojiCount >= 12 && firstEmoji >= 0) return line.slice(0, firstEmoji).trim()
+          return line
+        })
+        .filter(Boolean)
+        .join('\\n')
+        .replace(/\\n{3,}/g, '\\n\\n')
+        .trim()
+      return { title: document.title || '', text: lines }
+    })()`)) as { title?: string; text?: string }
+    return {
+      sessionId,
+      tabId: 'detached-window',
+      url: detached.webContents.getURL(),
+      title: detached.getTitle() || result.title || '内置浏览器',
+      text: result.text || '',
+    }
+  }
+
+  async extractText(sessionId: string): Promise<{
+    sessionId: string
+    tabId: string
+    url: string
+    title: string
+    text: string
+  }> {
+    const tab = this.activeTab(sessionId)
+    const result = (await tab.view.webContents.executeJavaScript(`(function () {
+      const root = document.body || document.documentElement
+      if (!root) return { title: document.title || '', text: '' }
+
+      // 读取真实页面的 innerText。克隆 body 会丢失原页面的 CSS 可见性，
+      // WPS 等页面的隐藏工具栏、表情面板就会被误当成正文。
+      const raw = root.innerText || root.textContent || ''
+      const emojiPattern = /[\\p{Extended_Pictographic}\\uFE0F\\u200D]/gu
+      const lines = raw
+        .replace(/\\u00a0/g, ' ')
+        .split(/\\r?\\n/)
+        .map((line) => line.replace(/[ \\t]+/g, ' ').trim())
+        .map((line) => {
+          const emojiCount = (line.match(emojiPattern) || []).length
+          const firstEmoji = line.search(emojiPattern)
+          // 过滤明显的整行表情选择器；若正文前面还有文字，只保留文字部分。
+          if (emojiCount >= 12 && firstEmoji >= 0) return line.slice(0, firstEmoji).trim()
+          return line
+        })
+        .filter(Boolean)
+        .join('\\n')
+        .replace(/\\n{3,}/g, '\\n\\n')
+        .trim()
+      return { title: document.title || '', text: lines }
+    })()`)) as { title?: string; text?: string }
+    let url = tab.url
+    let title = result.title || tab.title
+    try {
+      url = tab.view.webContents.getURL() || url
+      title = tab.view.webContents.getTitle() || title
+    } catch {
+      /* ignore */
+    }
+    return {
+      sessionId,
+      tabId: tab.id,
+      url,
+      title,
+      text: result.text || '',
+    }
+  }
+
   async ensure(sessionId: string): Promise<BrowserWorkspaceState> {
     const workspace = this.workspace(sessionId)
     if (workspace.tabs.size === 0) this.addTab(workspace)
@@ -226,6 +366,12 @@ export class BrowserController {
       ...(title ? { title } : {}),
       requestId: this.nextRequestId++,
     })
+  }
+  private requestClose(sessionId: string): void {
+    const win = this.getWindow()
+    if (!win || win.isDestroyed()) return
+    const request: BrowserCloseRequest = { sessionId }
+    win.webContents.send(BROWSER_IPC_CHANNELS.CLOSE_REQUEST, request)
   }
 
   getState(sessionId: string): BrowserWorkspaceState {
@@ -413,17 +559,61 @@ export class BrowserController {
     return this.publish(workspace)
   }
 
-  dispose(): void {
-    for (const workspace of this.workspaces.values()) {
-      for (const tab of workspace.tabs.values()) {
-        try {
-          this.window().contentView.removeChildView(tab.view)
-          tab.view.webContents.close()
-        } catch {
-          /* ignore */
-        }
+  /**
+   * 清理一个会话的浏览器工作区。
+   *
+   * hide() 只负责把视图藏起来，不能释放 WebContentsView 及其页面进程；
+   * Agent 一轮结束后需要走这里，避免每次网页调用都把标签页留在主窗口里。
+   */
+  disposeSession(sessionId: string): void {
+    const workspace = this.workspaces.get(sessionId)
+    if (!workspace) return
+
+    const tabs = [...workspace.tabs.values()]
+    workspace.tabs.clear()
+    workspace.activeTabId = null
+    workspace.status = 'idle'
+    workspace.error = undefined
+    workspace.takeoverReason = undefined
+    workspace.bounds = undefined
+    this.publish(workspace)
+    this.workspaces.delete(sessionId)
+    this.requestClose(sessionId)
+
+    for (const tab of tabs) {
+      try {
+        const win = this.getWindow()
+        if (win && !win.isDestroyed()) win.contentView.removeChildView(tab.view)
+      } catch {
+        /* window may be closing */
+      }
+      try {
+        if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close()
+      } catch {
+        /* web contents may already be closed */
       }
     }
-    this.workspaces.clear()
+  }
+
+  /**
+   * Agent 轮次结束后的清理。
+   * 人工接管是唯一需要跨轮保留浏览器的状态，等用户点击恢复后再清理。
+   */
+  cleanupAfterAgent(sessionId: string): void {
+    const workspace = this.workspaces.get(sessionId)
+    if (!workspace || workspace.status === 'waiting-user') return
+    this.disposeSession(sessionId)
+  }
+
+  dispose(): void {
+    for (const sessionId of [...this.workspaces.keys()]) this.disposeSession(sessionId)
+    for (const detached of this.detachedWindows.values()) {
+      try {
+        if (!detached.isDestroyed()) detached.close()
+      } catch {
+        /* window may be closing */
+      }
+    }
+    this.detachedWindows.clear()
   }
 }

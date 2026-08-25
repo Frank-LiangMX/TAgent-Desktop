@@ -43,7 +43,8 @@
 }
 
 /* Bot rail 可见时，整个会话信息流避开 rail；折叠态只预留窄条，展开态预留完整面板宽度。 */
-.session-chat-col:has(.session-bot-rail[data-visible="true"]) .session-conversation-pad {
+.session-chat-col:has(.session-bot-rail[data-visible="true"])
+  .session-conversation-pad {
   --session-bot-rail-reserve: 3.5rem;
 }
 .session-chat-col:has(
@@ -51,6 +52,15 @@
   )
   .session-conversation-pad {
   --session-bot-rail-reserve: 12.75rem;
+}
+
+/* 流式输出时交给浏览器的滚动锚定跟随底部，避免每个 token 都硬写 scrollTop。 */
+.tagent-thread {
+  overflow-anchor: none;
+}
+
+.session-conversation-bottom-spacer {
+  overflow-anchor: auto;
 }
 
 .session-conversation-bottom-spacer {
@@ -1584,7 +1594,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin: 0 0 10px;
+  /* 子代理入口与头像轨道共用消息内缩，避免卡片横跨到 turn 的外边缘。 */
+  margin: 0 0.625rem 10px;
 }
 
 /* Cursor 式子代理嵌套行 */
@@ -2637,8 +2648,8 @@
   position: relative;
   isolation: isolate;
   margin: 0 0 6px;
-  border: 1px solid rgb(var(--glass-rgb) / 0.42);
-  border-radius: 14px;
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
+  border-radius: var(--app-shell-drawer-radius, 22px);
   background:
     linear-gradient(90deg, hsl(var(--primary) / 0.06), transparent 26%),
     linear-gradient(
@@ -2647,17 +2658,19 @@
       rgb(var(--glass-rgb) / 0.18)
     );
   box-shadow:
-    0 6px 16px -10px rgb(48 59 76 / 0.18),
-    inset 2px 0 0 hsl(var(--primary) / 0.22),
-    inset 0 1px 0 rgb(255 255 255 / 0.42);
+    0 12px 28px -10px rgb(48 59 76 / 0.22),
+    0 4px 12px -4px rgb(48 59 76 / 0.12),
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    inset 1px 0 0 rgb(255 255 255 / 0.14);
   overflow: hidden;
 }
 .dark .message-queue-panel {
-  border-color: rgb(255 255 255 / 0.1);
+  border-color: rgb(255 255 255 / 0.14);
   box-shadow:
-    0 8px 18px -10px rgb(0 0 0 / 0.34),
-    inset 2px 0 0 hsl(var(--primary) / 0.28),
-    inset 0 1px 0 rgb(255 255 255 / 0.2);
+    0 14px 32px -10px rgb(0 0 0 / 0.48),
+    0 4px 14px -4px rgb(0 0 0 / 0.3),
+    inset 0 1px 0 rgb(255 255 255 / 0.32),
+    inset 1px 0 0 rgb(255 255 255 / 0.08);
 }
 .message-queue-panel__head {
   display: flex;
@@ -2835,8 +2848,9 @@
   right: var(--app-shell-session-gutter, 16px);
   bottom: calc(100% + var(--session-stack-over-cluster, 0px));
   z-index: 30;
-  display: flex;
-  flex-wrap: nowrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
+  /* 步骤卡展开时向上增长，左右控制仍锁在同一条底线。 */
   align-items: flex-end;
   gap: 8px;
   margin: 0 0 calc(var(--session-scroll-btn-gap, 12px) + 4px);
@@ -2849,6 +2863,23 @@
   bottom: auto;
   margin: 0;
   z-index: auto;
+  grid-column: 1;
+  justify-self: start;
+}
+
+/* 执行计划与运行计时、回到底部箭头共用一条浮层控制带，不再撑高 bottom-stack。 */
+.session-composer-cluster .composer-float-row > .session-plan-progress {
+  grid-column: 2;
+  justify-self: center;
+  width: fit-content;
+  max-width: min(680px, calc(100% - 32px));
+  margin: 0;
+}
+.session-composer-cluster
+  .composer-float-row:has(.session-plan-progress)
+  > .composer-activity-island {
+  grid-column: 3;
+  justify-self: end;
 }
 
 /*
@@ -2998,7 +3029,9 @@
 }
 
 /* 任务面板展开后，下箭头移到右侧空位，保持与运行胶囊同一底线，不被面板盖住。 */
-.session-chat-col:has(.composer-activity-island.is-open) [data-conversation-scroll-btn] {
+.session-chat-col:has(.composer-activity-island.is-open)
+  [data-conversation-scroll-btn],
+.session-chat-col:has(.session-plan-progress) [data-conversation-scroll-btn] {
   left: auto;
   right: calc(var(--app-shell-session-gutter, 16px) + 4px);
   margin-inline: 0;
@@ -6197,30 +6230,21 @@ button.composer-activity-island__title:hover {
   max-width: min(100%, 680px);
   margin: 0 auto 8px;
   padding: 5px 7px;
-  border: 1px solid hsl(var(--primary) / 0.2);
+  border: 1px solid rgb(var(--glass-rgb) / 0.5);
   border-radius: var(--app-shell-composer-radius, 16px);
-  background:
-    radial-gradient(
-      120% 120% at 8% 0%,
-      hsl(var(--primary) / 0.09),
-      transparent 66%
-    ),
-    linear-gradient(
-      145deg,
-      rgb(var(--glass-rgb) / 0.52),
-      rgb(var(--glass-rgb) / 0.3)
-    );
+  background: rgb(var(--glass-rgb) / 0.6);
   box-shadow:
-    0 8px 20px -12px rgb(48 59 76 / 0.25),
-    inset 0 1px 0 rgb(255 255 255 / 0.48),
-    inset 1px 0 0 hsl(var(--primary) / 0.08);
+    0 8px 20px -6px rgb(23 30 40 / 0.16),
+    inset 0 1px 0 rgb(255 255 255 / 0.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.06);
+  backdrop-filter: blur(18px) saturate(1.06);
 }
 .dark .session-plan-progress {
-  border-color: hsl(var(--primary) / 0.28);
+  border-color: rgb(var(--glass-rgb) / 0.5);
+  background: rgb(var(--glass-rgb) / 0.6);
   box-shadow:
-    0 10px 24px -12px rgb(0 0 0 / 0.45),
-    inset 0 1px 0 rgb(255 255 255 / 0.12),
-    inset 1px 0 0 hsl(var(--primary) / 0.1);
+    0 8px 20px -6px rgb(0 0 0 / 0.35),
+    inset 0 1px 0 rgb(255 255 255 / 0.08);
 }
 .session-plan-progress__head,
 .session-plan-progress__title-wrap,
@@ -6234,9 +6258,11 @@ button.composer-activity-island__title:hover {
   gap: 6px;
 }
 .session-plan-progress__title-wrap {
+  flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
   gap: 7px;
+  overflow: hidden;
 }
 .session-plan-progress__icon {
   display: inline-flex;
@@ -6263,6 +6289,10 @@ button.composer-activity-island__title:hover {
   color: hsl(var(--muted-foreground) / 0.75);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
+}
+.session-plan-progress__count {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 .session-plan-progress__toggle {
   display: inline-flex;
@@ -6312,6 +6342,7 @@ button.composer-activity-island__title:hover {
   white-space: nowrap;
 }
 .session-plan-progress__current-title {
+  flex: 1 1 auto;
   min-width: 0;
   max-width: min(42vw, 310px);
   color: hsl(var(--foreground) / 0.9);
@@ -6419,4 +6450,43 @@ button.composer-activity-island__title:hover {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* AskUser 前景隔离：覆盖输入框时，面板本身必须不透出消息内容。 */
+.ask-user-card {
+  background:
+    radial-gradient(
+      120% 100% at 8% 0%,
+      rgb(var(--scene-a-rgb, 68 94 122) / 0.08),
+      transparent 66%
+    ),
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, hsl(var(--background)) 96%, rgb(var(--glass-rgb, 50 52 56)) 4%),
+      color-mix(in srgb, hsl(var(--background)) 91%, rgb(var(--glass-rgb, 50 52 56)) 9%)
+    );
+  -webkit-backdrop-filter: blur(24px) saturate(1.08);
+  backdrop-filter: blur(24px) saturate(1.08);
+}
+
+.dark .ask-user-card {
+  background:
+    radial-gradient(
+      120% 100% at 8% 0%,
+      rgb(var(--scene-a-rgb, 68 94 122) / 0.08),
+      transparent 66%
+    ),
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, hsl(var(--background)) 97%, rgb(var(--glass-rgb, 50 52 56)) 3%),
+      color-mix(in srgb, hsl(var(--background)) 93%, rgb(var(--glass-rgb, 50 52 56)) 7%)
+    );
+}
+
+.ask-user-opt {
+  background: color-mix(
+    in srgb,
+    hsl(var(--background)) 72%,
+    rgb(var(--glass-rgb, 50 52 56)) 28%
+  );
 }

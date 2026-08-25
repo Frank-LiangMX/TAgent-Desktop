@@ -1043,6 +1043,40 @@ export function migrateSubagentEagerness(
   return DEFAULT_SUBAGENT_EAGERNESS;
 }
 
+/** 知识库来源类型（当前 Phase 0 只读本地目录，后续可扩展上传/远程来源） */
+export interface KnowledgeBaseSource {
+  id: string;
+  type: "directory";
+  path: string;
+  label: string;
+  createdAt: number;
+}
+
+/** 全局知识库实体，与项目/工作区解耦 */
+export interface KnowledgeBaseRecord {
+  id: string;
+  name: string;
+  description?: string;
+  sources: KnowledgeBaseSource[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 知识库中的正式 Markdown 文档 */
+export interface KnowledgeBaseDocument {
+  id: string;
+  knowledgeBaseId: string;
+  title: string;
+  content: string;
+  sourceUrl?: string;
+  sourceProvider?: "wps" | "feishu" | "google-drive" | "unknown";
+  sourceExternalId?: string;
+  sourceAccessMode?: "public" | "oauth" | "browser";
+  sourceSyncedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 // ===== Agent 会话管理 =====
 
 /**
@@ -1053,6 +1087,10 @@ export function migrateSubagentEagerness(
  */
 /** 一轮运行的结束方式：正常完成 / 用户停止 / 出错 */
 export type TurnEndKind = "complete" | "stopped" | "error";
+
+/** 当前会话使用知识库的策略。 */
+export type KnowledgeBaseMode = "off" | "preferred" | "strict";
+
 
 /** 一轮运行的完成耗时（毫秒）+ 结束方式 */
 export interface TurnDuration {
@@ -1240,6 +1278,20 @@ export interface AgentSessionMeta {
    * 发消息时写入；turn_end 后清空。
    */
   pendingMentionRoleIds?: string[];
+  /**
+   * 知识库（Library）绑定的根目录绝对路径列表（0..N）。
+   *
+   * Phase 0：会话级只读检索配置。Agent 经 kb_list_roots / kb_search / kb_get 工具
+   * 在这些根目录下扫描 .md/.txt 并按需引用，命中带来源路径。未配置（空/缺省）时
+   * 工具明确返回空结果，不扫全盘。与 L0–L5 记忆 / BotMemory 物理隔离，KB 零写入。
+   * 绑定变化会影响工具指纹（Pi 热重建）/ 长驻进程配置（kscc re-spawn）。
+   * @see docs/dev/knowledge-base/KB-PRODUCT-SPEC-v1.md §5 Phase 0
+   */
+  kbRoots?: string[];
+  /** 全局知识库 ID 列表；与 workspaceId 无关，可跨项目复用 */
+  knowledgeBaseIds?: string[];
+  /** 当前会话的知识库使用策略，缺省为 off 以兼容旧会话。 */
+  knowledgeBaseMode?: KnowledgeBaseMode;
   /** 创建时间戳 */
   createdAt: number;
   /** 更新时间戳 */
@@ -2021,6 +2073,28 @@ export const AGENT_IPC_CHANNELS = {
   UPDATE_TITLE: "agent:update-title",
   /** 更新会话元数据（channelId, modelId 等） */
   UPDATE_SESSION_META: "agent:update-session-meta",
+  /** 列出全局知识库 */
+  LIST_KNOWLEDGE_BASES: "agent:list-knowledge-bases",
+  /** 创建全局知识库 */
+  CREATE_KNOWLEDGE_BASE: "agent:create-knowledge-base",
+  /** 删除全局知识库 */
+  DELETE_KNOWLEDGE_BASE: "agent:delete-knowledge-base",
+  /** 添加知识库来源目录 */
+  ADD_KNOWLEDGE_BASE_SOURCE: "agent:add-knowledge-base-source",
+  /** 移除知识库来源 */
+  REMOVE_KNOWLEDGE_BASE_SOURCE: "agent:remove-knowledge-base-source",
+  /** 列出知识库文档，可按标题和正文搜索 */
+  LIST_KNOWLEDGE_BASE_DOCUMENTS: "agent:list-knowledge-base-documents",
+  /** 创建知识库文档 */
+  CREATE_KNOWLEDGE_BASE_DOCUMENT: "agent:create-knowledge-base-document",
+  /** 更新知识库文档 */
+  UPDATE_KNOWLEDGE_BASE_DOCUMENT: "agent:update-knowledge-base-document",
+  /** 删除知识库文档 */
+  DELETE_KNOWLEDGE_BASE_DOCUMENT: "agent:delete-knowledge-base-document",
+  /** 从本地文档导入知识库文档 */
+  IMPORT_KNOWLEDGE_BASE_DOCUMENT: "agent:import-knowledge-base-document",
+  IMPORT_KNOWLEDGE_BASE_DOCUMENT_URL:
+    "agent:import-knowledge-base-document-url",
   /** 删除会话 */
   DELETE_SESSION: "agent:delete-session",
   /** 迁移 Chat 对话记录到 Agent 会话 */

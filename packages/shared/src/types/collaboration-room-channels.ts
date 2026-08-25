@@ -73,6 +73,8 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   LIST_MEMBERS: "collaboration-room:list-members",
   /** 列出房间内真实用户成员 */
   LIST_HUMAN_MEMBERS: "collaboration-room:list-human-members",
+  /** 列出按用户标注的工作区绑定视图 */
+  LIST_WORKSPACE_BINDINGS: "collaboration-room:list-workspace-bindings",
   /** 邀请/加入/离开/移除用户成员 */
   INVITE_HUMAN_MEMBER: "collaboration-room:invite-human-member",
   JOIN_HUMAN_MEMBER: "collaboration-room:join-human-member",

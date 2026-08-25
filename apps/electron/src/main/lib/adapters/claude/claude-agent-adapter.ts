@@ -35,7 +35,7 @@ import type {
 import { createMessageChannel, type MessageChannel } from '../shared/message-channel'
 import { getDiscardedMemoryDir } from '../../memory/discarded-memory'
 import { spawnKscc } from './spawn-kscc'
-import { NoProgressGuard, buildNoProgressEventFromDecision, buildNoProgressAskUserInput, buildVerifyOnStopAskUserInput, VERIFY_ON_STOP_PAUSE_ERRORS } from '../../agent/no-progress-guard'
+import { NoProgressGuard, buildNoProgressEventFromDecision, buildNoProgressAskUserInput } from '../../agent/no-progress-guard'
 import {
   attachImageBlocksToText,
 } from '../../agent/build-user-content-with-attachments'
@@ -137,8 +137,6 @@ interface NoProgressCtx {
   turnId: string
   /** 已触发暂停、待终态归一化的标志（单真源终态闸口，§20.5） */
   pendingPauseNoProgress: boolean
-  /** brief 2026-08-19 §4：verify-on-stop 触发的暂停（待终态归一化为带验证文案的 paused_no_progress） */
-  pendingVerifyOnStop: boolean
   /** 本轮已发过暂停 AskUserQuestion（防 PostToolBatch + PreToolUse 双触发，per-turn reset 复位） */
   pauseAskUserFired: boolean
   /** 停止当前 turn（保进程）：query.interrupt()，由 query() 创建后回填 */
@@ -178,7 +176,6 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       onNoProgressPauseAskUser: input.onNoProgressPauseAskUser,
       turnId: `${input.sessionId}-t1`,
       pendingPauseNoProgress: false,
-      pendingVerifyOnStop: false,
       pauseAskUserFired: false,
     }
     np.guard.resetForNewTurn() // fresh guard = observing，首 turn 无 cleared 事件
@@ -217,36 +214,16 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
           input.onSessionId?.(msgAny.session_id)
         }
 
-        // brief 2026-08-19 §4：verify-on-stop 终态收束前判定。
-        // 仅当无进展守卫未暂停且 enforce 模式时检查：本轮有 edit 无 verify 证据 → 触发验证提示。
-        // 复用 pendingPauseNoProgress 终态闸口 + onNoProgressPauseAskUser 回调（不新增第二套问答协议）；
-        // pendingVerifyOnStop 标记决定终态归一化文案（验证提示 vs 无进展暂停）。
-        if (
-          msg.type === 'result' &&
-          !np.pendingPauseNoProgress &&
-          np.mode === 'enforce'
-        ) {
-          const verifyDecision = np.guard.checkVerifyOnStop()
-          if (verifyDecision) {
-            np.pendingPauseNoProgress = true
-            np.pendingVerifyOnStop = true
-            emitNoProgressFromDecision(np, verifyDecision)
-            fireVerifyOnStopAskUser(np)
-          }
-        }
-
         // 单真源终态归一化（§20.5）：暂停触发后，底层 result（error_max_turns /
         // error_during_execution / 乃至 success）一律归一为 paused_no_progress，且只一次。
-        // brief 2026-08-19 §4：verify-on-stop 暂停用验证提示文案。
         const out =
           msg.type === 'result' && np.pendingPauseNoProgress
             ? normalizeResultToPausedNoProgress(
                 msg,
-                np.pendingVerifyOnStop ? VERIFY_ON_STOP_PAUSE_ERRORS : undefined,
+                undefined,
               )
             : msg
         np.pendingPauseNoProgress = false
-        np.pendingVerifyOnStop = false
 
         yield out
 
@@ -340,7 +317,6 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       const cleared = sess.np.guard.resetForNewTurn()
       emitNoProgressFromDecision(sess.np, cleared)
       sess.np.pauseAskUserFired = false // 复位暂停 AskUser 标志（新回合可再触发）
-      sess.np.pendingVerifyOnStop = false // 复位 verify-on-stop 标志（brief §4）
     }
     sess.channel.enqueue(message as SDKUserMessage)
   }
@@ -486,24 +462,9 @@ function firePauseAskUser(np: NoProgressCtx, decision: NoProgressDecision): void
 }
 
 /**
- * brief 2026-08-19 §4：verify-on-stop 触发验证提示。
- * 复用现有 ask-user 管线（onNoProgressPauseAskUser 回调 → askUserService.handleAskUserQuestion），
- * 把 {@link buildVerifyOnStopAskUserInput} 产出的工具输入注入。提示不写入持久化会话历史
- *（askUserService 事件/UI 临时态 + 续跑 skipUserPersist:true）。
- * 防重复由守卫 checkVerifyOnStop 的 verifyPromptFired 标志保证；若无进展暂停已发过 AskUser 则跳过。
- */
-function fireVerifyOnStopAskUser(np: NoProgressCtx): void {
-  if (np.pauseAskUserFired) return // 无进展暂停已发 AskUser → 不重复
-  if (!np.onNoProgressPauseAskUser) return
-  np.pauseAskUserFired = true
-  const input = buildVerifyOnStopAskUserInput()
-  np.onNoProgressPauseAskUser(input)
-}
-
-/**
  * 把底层终态 result 归一化为唯一的 `paused_no_progress`（§20.5）。
  * 抑制 error_max_turns / error_during_execution 等重复终态；errors 用友好暂停文案。
- * brief 2026-08-19 §4：`errors` 可选，verify-on-stop 传验证提示文案。
+ * brief 2026-08-19 §4：`errors` 可选，用于无进展暂停时覆盖默认文案。
  */
 export function normalizeResultToPausedNoProgress(
   msg: SDKMessage,
