@@ -304,6 +304,9 @@ export class SessionRuntime {
           // 两者经同一 AsyncIterable<SDKMessage> 契约；此处按形状归一化 result 判定。
           const m = msg as { type?: string; kind?: string; errors?: unknown }
           const isResult = m.type === 'result' || m.kind === 'result'
+          // result 后等待下一条 enqueue 时，非终态消息属于旧 turn 的迟到尾声。
+          // 否则 renderer 会把已完成会话重新 adopt 成 running。
+          if (!isResult && !this.turnInFlight) continue
 
           // 捕获 SDK session id（恢复时作为 resumeSessionId）；pi 无 session_id（自管），undefined 无害
           const sid = (msg as { session_id?: unknown }).session_id

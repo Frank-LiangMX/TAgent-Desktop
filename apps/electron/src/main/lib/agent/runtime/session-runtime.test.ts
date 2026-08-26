@@ -20,6 +20,7 @@ type Behavior =
   | { kind: 'crash' } // yield assistant(带 session_id) 后 return：模拟 turn 进行中进程退出
   | { kind: 'crashNoSessionId' } // yield assistant(无 session_id) 后 return：无 resumeId 可恢复
   | { kind: 'ok' } // yield assistant + success result 后 return：干净结束
+  | { kind: 'okThenLate'; signal: Promise<void> } // result 后模拟迟到非终态消息
   | { kind: 'throw'; message: string } // 直接抛错
   | { kind: 'promptTooLongResult' } // yield assistant + error result(过长 errors)
   | { kind: 'crashAfterSignal'; signal: Promise<void> } // yield assistant 后等信号再 return
@@ -60,13 +61,20 @@ function createMock(behaviors: Behavior[], opts?: { interruptQuery?: () => Promi
           live = false
           return
         }
-        if (beh.kind === 'ok') {
+        if (beh.kind === 'ok' || beh.kind === 'okThenLate') {
           yield {
             type: 'result',
             subtype: 'success',
             usage: { input_tokens: 0, output_tokens: 0 },
           } as SDKMessage
-          live = false
+          if (beh.kind === 'okThenLate') {
+            await beh.signal
+            yield {
+              type: 'assistant',
+              message: { content: [{ type: 'text', text: 'late' }] },
+              parent_tool_use_id: null,
+            } as SDKMessage
+          }          live = false
           return
         }
         if (beh.kind === 'promptTooLongResult') {
@@ -178,6 +186,29 @@ describe('SessionRuntime 崩溃恢复', () => {
     expect(r.errors.length).toBe(1)
   })
 
+  it('result 后迟到的非终态消息不会重新上送', async () => {
+    let releaseLate!: () => void
+    const lateSignal = new Promise<void>((resolve) => {
+      releaseLate = resolve
+    })
+    const { adapter } = createMock([{ kind: 'okThenLate', signal: lateSignal }])
+    const rt = new SessionRuntime('s-late', adapter)
+    const messages: SDKMessage[] = []
+    let turnEnded!: () => void
+    const turnEnd = new Promise<void>((resolve) => {
+      turnEnded = resolve
+    })
+    rt.setCallbacks({
+      onMessage: (message) => messages.push(message),
+      onTurnEnd: () => turnEnded(),
+    })
+    await rt.sendMessage({ sessionId: 's-late', prompt: 'hello' } as QueryInput)
+    await withTimeout(turnEnd)
+    expect(messages).toHaveLength(2)
+    releaseLate()
+    await withTimeout(waitFor(() => !rt.isRunning()))
+    expect(messages).toHaveLength(2)
+  })
   it('正常 turn（result 后退出）不触发恢复', async () => {
     const r = await runSimple([{ kind: 'ok' }])
     expect(r.calls.length).toBe(1)

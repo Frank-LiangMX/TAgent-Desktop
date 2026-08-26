@@ -7,6 +7,7 @@ import {
   Brain,
   ChatsCircle,
   IdentificationCard,
+  Clock,
   PuzzlePiece,
 } from "@phosphor-icons/react";
 import { useAtomValue } from "jotai";
@@ -17,7 +18,7 @@ import { cn } from "../../lib/utils";
 const RAIL_ICON = { size: 18, weight: "regular" as const };
 
 export type RailItem =
-  "chat" | "plugins" | "memory" | "knowledge" | "roles" | "settings";
+  "chat" | "plugins" | "memory" | "knowledge" | "roles" | "automation" | "settings";
 
 interface RailProps {
   active?: RailItem;
@@ -27,6 +28,7 @@ interface RailProps {
   onKnowledge?: () => void;
   onRoles?: () => void;
   onSettings?: () => void;
+  onAutomation?: () => void;
 }
 
 export function Rail({
@@ -36,6 +38,7 @@ export function Rail({
   onMemory,
   onKnowledge,
   onRoles,
+  onAutomation,
   onSettings,
 }: RailProps): JSX.Element {
   const userName = useAtomValue(userProfileAtom).userName;
@@ -80,6 +83,13 @@ export function Rail({
           label="角色库"
           active={active === "roles"}
           onClick={onRoles}
+        />
+        <RailIcon
+          railId="automation"
+          icon={<Clock {...RAIL_ICON} />}
+          label="自动化"
+          active={active === "automation"}
+          onClick={onAutomation}
         />
       </div>
       {/* 下胶囊：设置（用户名首字头像，对齐 TAgent_General rail-avatar-btn） */}

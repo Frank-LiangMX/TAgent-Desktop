@@ -78,10 +78,11 @@ function writeIndex(index: AgentSessionsIndex): void {
 }
 
 /** 看板工人 / 隐藏会话：不进侧栏 */
-export function isHiddenSessionMeta(s: Pick<AgentSessionMeta, 'id' | 'hidden' | 'sourceKanbanTaskId' | 'parentBoardId'>): boolean {
+export function isHiddenSessionMeta(s: Pick<AgentSessionMeta, 'id' | 'hidden' | 'sourceKanbanTaskId' | 'parentBoardId' | 'sourceAutomationId'>): boolean {
   if (s.hidden === true) return true
   if (s.sourceKanbanTaskId) return true
   if (s.parentBoardId) return true
+  if (s.sourceAutomationId) return true
   if (typeof s.id === 'string' && s.id.startsWith('kw_')) return true
   return false
 }

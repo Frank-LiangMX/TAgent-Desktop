@@ -784,6 +784,10 @@
   opacity: 1;
 }
 
+.agent-concise-run__panel.is-completing {
+  transition-duration: 0.32s, 0.24s;
+}
+
 /* 新消息挤成历史：瞬时收起，避免 StickToBottom smooth resize 扫视口 */
 .agent-concise-run__panel.is-instant {
   transition: none;
@@ -1018,6 +1022,12 @@
   font-size: 13px;
   line-height: 1.55;
   color: hsl(var(--foreground) / 0.9);
+}
+
+.agent-concise-narrative--completion-enter {
+  animation: agent-concise-completion-enter 280ms var(--app-shell-expand-ease) both;
+  animation-delay: 60ms;
+  will-change: opacity, transform;
 }
 
 .agent-concise-narrative--final {
@@ -1531,7 +1541,21 @@
   }
 }
 
+@keyframes agent-concise-completion-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .agent-concise-narrative--completion-enter {
+    animation: none;
+  }
   .agent-concise-live-status {
     animation: none;
     transition: none;
@@ -1596,6 +1620,10 @@
   gap: 2px;
   /* 子代理入口与头像轨道共用消息内缩，避免卡片横跨到 turn 的外边缘。 */
   margin: 0 0.625rem 10px;
+
+  /* Right-side avatar safe area for the subagent timeline. */
+  padding-inline-end: 3.125rem;
+  box-sizing: border-box;
 }
 
 /* Cursor 式子代理嵌套行 */
@@ -1650,6 +1678,11 @@
 
 .agent-concise-subagent__meta {
   flex-shrink: 0;
+  min-width: 0;
+  max-width: min(32%, 16rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11.5px;
   line-height: 1.45;
   color: hsl(var(--muted-foreground) / 0.58);

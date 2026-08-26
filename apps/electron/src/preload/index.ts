@@ -11,6 +11,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import {
   AGENT_IPC_CHANNELS,
   AGENT_ROLE_IPC_CHANNELS,
+  AUTOMATION_IPC_CHANNELS,
   BOT_IPC_CHANNELS,
   BALANCE_IPC_CHANNELS,
   CHANNEL_IPC_CHANNELS,
@@ -175,6 +176,18 @@ export interface FusionRoomPublicCertRecord {
 }
 
 const electronAPI = {
+  // ===== Automation =====
+  listAutomations: () =>
+    ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.LIST) as Promise<import('@tagent/shared').Automation[]>,
+  createAutomation: (input: import('@tagent/shared').CreateAutomationInput) =>
+    ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.CREATE, input) as Promise<import('@tagent/shared').Automation>,
+  updateAutomation: (input: import('@tagent/shared').UpdateAutomationInput) =>
+    ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.UPDATE, input) as Promise<import('@tagent/shared').Automation>,
+  deleteAutomation: (id: string) =>
+    ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.DELETE, id) as Promise<boolean>,
+  toggleAutomation: (id: string) =>
+    ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.TOGGLE, id) as Promise<import('@tagent/shared').Automation>,
+
   // ===== 会话 =====
   /** 发消息（首次 spawn + 起循环，后续 enqueue 复用；按 channelId 绑核） */
   sendMessage: (input: SendMessageInput) =>

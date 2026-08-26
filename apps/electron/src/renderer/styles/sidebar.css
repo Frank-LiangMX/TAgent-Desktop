@@ -767,6 +767,35 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* 知识库/文档行的按钮覆盖整张卡片，边缘空白也可点击。 */
+.knowledge-row {
+  padding: 0;
+}
+.knowledge-row > .body {
+  display: block;
+  box-sizing: border-box;
+  min-height: 48px;
+  padding: 8px 10px 9px;
+}
+/* 知识库行：图标列与正文列保持同一基线；摘要和时间各占独立列。 */
+.knowledge-row .title .t {
+  max-width: none;
+}
+.knowledge-row .meta {
+  padding-left: 20px;
+  gap: 8px;
+}
+.knowledge-row .meta .summary {
+  min-width: 0;
+  flex: 1;
+}
+.knowledge-row .meta .time {
+  flex: none;
+  margin-left: auto;
+  padding-left: 8px;
+  font-variant-numeric: tabular-nums;
+}
 .row .m.time {
   margin-left: auto;
   flex: none;

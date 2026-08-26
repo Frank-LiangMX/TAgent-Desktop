@@ -181,16 +181,16 @@ describe('NoProgressGuard 归一化与签名', () => {
 // 内部 parseBashOutcome 不单独导出；结果签名稳定性通过 guard 行为间接断言（见上）。
 
 describe('NoProgressGuard 核心进展判定（SPEC §14.1）', () => {
-  it('Edit 成功不重置无进展计数', () => {
+  it('成功 Edit 会重置无进展计数', () => {
     const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
     g.resetForNewTurn(0)
     const cmd = 'node tools/a0-kscc-resume-crash.js'
     g.observe(bashFail(cmd, { error: 'Exit code 1', output: 'err: spawn ENOENT', at: 100 })) // 首次 neutral
     g.observe(bashFail(cmd, { error: 'Exit code 1', output: 'err: spawn ENOENT', at: 200 })) // 重复 noProgress → np=1
     expect(g.getState().noProgressBatchCount).toBe(1)
-    const d = g.observe(editCall('tools/a0-kscc-resume-crash.js', { at: 300 })) // Edit 成功（neutral）
+    const d = g.observe(editCall('tools/a0-kscc-resume-crash.js', { at: 300 })) // Edit 成功且产生新修改（progress）
     expect(d.kind).toBe('continue')
-    expect(g.getState().noProgressBatchCount).toBe(1) // 未被重置
+    expect(g.getState().noProgressBatchCount).toBe(0) // 已被重置
   })
 
   it('验证从失败变成功会重置无进展计数', () => {
@@ -291,7 +291,7 @@ describe('NoProgressGuard 误判防护（SPEC §12 / §16.4）', () => {
     expect(g.getState().noProgressBatchCount).toBe(0)
   })
 
-  it('同一文件累计 5 次编辑（验证未变）→ 一级提醒 same_target_edited_without_verification_change', () => {
+  it('同一文件连续不同区域编辑不会被误报为无进展', () => {
     const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
     g.resetForNewTurn(0)
     const file = 'tools/a0-kscc-resume-crash.js'
@@ -300,8 +300,8 @@ describe('NoProgressGuard 误判防护（SPEC §12 / §16.4）', () => {
       expect(d.kind).toBe('continue')
     }
     const d5 = g.observe(editCall(file, { oldStr: 'o4', newStr: 'n4', at: 500 }))
-    expect(d5.kind).toBe('warn')
-    expect(d5.reasonCodes).toContain('same_target_edited_without_verification_change')
+    expect(d5.kind).toBe('continue')
+    expect(d5.reasonCodes).not.toContain('same_target_edited_without_verification_change')
   })
 
   it('Read/Grep 调查类不增加无进展计数', () => {

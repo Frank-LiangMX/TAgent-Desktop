@@ -203,6 +203,22 @@ describe('REGRESS-O O1：narrative key 跨 stream→partial→commit 稳定（�
     expect(narr.key).toBe(keyA)
   })
 
+  it('tool_start commit：已有正文是 pending 正文前缀时必须补全，不能清空后留下半句话', () => {
+    let items: Item[] = []
+    items = applySdkMessageToItems(
+      items,
+      assistantPartial('u1', [{ type: 'text', text: '啊，我理解错了你的意思。你说的是：' }]),
+      allocKey,
+    ) as Item[]
+
+    const fullText = '啊，我理解错了你的意思。你说的是：后半截也应该继续显示。'
+    items = commitStreamTextToLastAssistant(items, fullText) as Item[]
+
+    const textBlocks = items[0]!.message!.content.filter((b) => b.type === 'text')
+    expect(textBlocks).toHaveLength(1)
+    expect(textBlocks[0]).toMatchObject({ type: 'text', text: fullText })
+  })
+
   it('narrative key 形如 narrative-${index}，不再泄露过程条目 key（stream-text / text-${owner}-${i}）', () => {
     const items: Item[] = [
       {

@@ -282,3 +282,8 @@ export interface AutomationPromptBlockedEvent {
   reasons: string[]
   timestamp: number
 }
+
+/** Fields added by the durable scheduler. */
+export interface Automation {
+  lastTriggerAt?: number
+}

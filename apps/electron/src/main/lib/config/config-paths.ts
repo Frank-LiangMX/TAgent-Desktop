@@ -285,3 +285,13 @@ export function getCollaborationMemberPresetsPath(): string {
 export function getFusionRoomNetworkPrefsPath(): string {
   return join(getCollaborationDir(), 'fusion-room-network-prefs.json')
 }
+
+/** Automation 定时任务定义：~/.tagent[-dev]/automations.json */
+export function getAutomationsPath(): string {
+  return join(getConfigDir(), 'automations.json')
+}
+
+/** Automation 触发/跳过/失败事件：~/.tagent[-dev]/automation-events.jsonl */
+export function getAutomationEventsPath(): string {
+  return join(getConfigDir(), 'automation-events.jsonl')
+}

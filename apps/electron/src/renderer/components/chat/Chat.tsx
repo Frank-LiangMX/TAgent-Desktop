@@ -13,6 +13,7 @@ import {
   useCallback,
   Fragment,
 } from "react";
+import { useReducedMotion } from "motion/react";
 import { getDefaultStore, useAtomValue, useSetAtom } from "jotai";
 import {
   sessionRunMapAtom,
@@ -162,6 +163,10 @@ import { KnowledgeBaseSelector } from "../knowledge-base/KnowledgeBaseSelector";
 
 import { NewConversationLanding } from "./NewConversationLanding";
 import {
+  SessionInitializationScreen,
+  type SessionInitializationStage,
+} from "./SessionInitializationScreen";
+import {
   resolveEagerness,
   reduceTaskEvent,
   rehydrateSubagentTaskCardsFromHistory,
@@ -184,7 +189,11 @@ import { PermissionBanner } from "../permission/PermissionBanner";
 import { AskUserQuestionBanner } from "./AskUserQuestionBanner";
 import { ExitPlanModeBanner } from "./ExitPlanModeBanner";
 import { PlanProgressCard } from "./PlanProgressCard";
-import { isPlanIncomplete, pauseActivePlanSteps } from "./plan-progress-model";
+import {
+  isPlanIncomplete,
+  pauseActivePlanSteps,
+  resumePausedPlanStep,
+} from "./plan-progress-model";
 import { sessionPlanProgressAtom } from "../../atoms/plan-progress-atoms";
 import { ExecutionModeSuggestionBanner } from "./ExecutionModeSuggestionBanner";
 import { SessionErrorBanner } from "./SessionErrorBanner";
@@ -367,6 +376,7 @@ export function Chat({
   onTabEvicted,
   crewExternalized = false,
   onOpenCrew,
+  isActive = true,
 }: {
   session: SessionMeta;
   /** 草稿态（无 tab）改工作区：改 App 的 draftSession。已有 tab 时由 SessionRouter 不传 */
@@ -390,8 +400,11 @@ export function Chat({
   crewExternalized?: boolean;
   /** 分屏模式下，点 chat 内部班组按钮时开外部 crew pane（由 ChatPane 传入） */
   onOpenCrew?: () => void;
+  /** 正式会话在切到插件/记忆页时保持挂载，但隐藏其视觉层。 */
+  isActive?: boolean;
 }): JSX.Element {
   const sessionId = session.id;
+  const reducedMotion = useReducedMotion();
   const [fusionRoomRefreshKey, setFusionRoomRefreshKey] = useState(0);
   useEffect(() => {
     const roomId = session.fusionRoomId;
@@ -481,6 +494,8 @@ export function Chat({
    * 不当「运行出错」，保持已中断语义。新一轮 startRun 清零。
    */
   const userStoppedRef = useRef(false);
+  /** 硬结束后的迟到事件不得再次 adopt；下一次 startRun 才打开这道闸。 */
+  const closedRunRef = useRef(false);
   /** 上次用户停止的时间戳：短窗口内到达的 error 视为迟到的 abort 副作用，不弹错误条 */
   const lastUserStopAtRef = useRef(0);
   /** 本轮发送快照：未进入处理即停止时撤回气泡并回填输入框 */
@@ -527,6 +542,14 @@ export function Chat({
       return next === current ? prev : { ...prev, [sessionId]: next };
     });
   }, [sessionId, setSessionPlanProgress]);
+  const resumePlanIfPaused = useCallback((): void => {
+    setSessionPlanProgress((prev) => {
+      const current = prev[sessionId];
+      if (!current) return prev;
+      const next = resumePausedPlanStep(current);
+      return next === current ? prev : { ...prev, [sessionId]: next };
+    });
+  }, [sessionId, setSessionPlanProgress]);
   const scheduleRunStop = useCallback(() => {
     if (!shouldScheduleRunStopAfterTurnEnd(sessionHasOpenWork())) return;
     clearPendingStop();
@@ -536,16 +559,8 @@ export function Chat({
       if (sessionHasOpenWork()) return;
       // 只软停：保留 startedAt。硬清交给 result / 用户停 / 看门狗。
       softStopSessionRun(sessionId);
-      // 计划未做完时把当前步标成 paused，进度卡继续留着等用户跟进。
-      pausePlanIfIncomplete();
     }, RUN_STOP_GRACE_MS);
-  }, [
-    clearPendingStop,
-    pausePlanIfIncomplete,
-    sessionHasOpenWork,
-    sessionId,
-    softStopSessionRun,
-  ]);
+  }, [clearPendingStop, sessionHasOpenWork, sessionId, softStopSessionRun]);
   /** 开始一轮运行：写 atom 置 running 并记起始时间戳 */
   const startRun = (): void => {
     clearPendingStop();
@@ -564,18 +579,22 @@ export function Chat({
       return next;
     });
     userStoppedRef.current = false;
+    closedRunRef.current = false;
     completionRecordedRef.current = false;
     finalOutputSeenRef.current = false;
     setFinalOutputState(null);
     inFlightToolIdsRef.current = new Set();
     const now = Date.now();
     runStartedAtPersistRef.current = now;
+    resumePlanIfPaused();
     startSessionRun({ id: sessionId, startedAt: now });
   };
   /** 硬停一轮（清 running + 起点记忆；发送失败 / result / error / 用户停止） */
   const stopRun = (): void => {
     inFlightToolIdsRef.current = new Set();
     setFinalOutputState(null);
+    closedRunRef.current = true;
+    runStartedAtPersistRef.current = null;
     stopSessionRun(sessionId);
     pausePlanIfIncomplete();
   };
@@ -634,6 +653,8 @@ export function Chat({
   const completeRun = (): void => {
     recordCompletion("complete");
     inFlightToolIdsRef.current = new Set();
+    closedRunRef.current = true;
+    runStartedAtPersistRef.current = null;
     stopSessionRun(sessionId);
     pausePlanIfIncomplete();
   };
@@ -699,6 +720,13 @@ export function Chat({
   }, [moaPresetsRevision]);
   /** 历史已写入 items：钉底只等这个，不等虚拟化全挂。 */
   const [scrollReady, setScrollReady] = useState(false);
+  /** 正式会话切换时的可见初始化阶段，避免 IPC 读取期间主区白屏。 */
+  const [sessionInitializationStage, setSessionInitializationStage] =
+    useState<SessionInitializationStage>("checking");
+  const [sessionInitializationRetry, setSessionInitializationRetry] =
+    useState(0);
+  const [sessionInitializationDismissed, setSessionInitializationDismissed] =
+    useState(false);
   /**
    * 虚拟化：尾部挂载窗口。默认只挂最近 CHAT_MOUNT_WINDOW 条；
    * 上滑 / 中间位恢复 / 锚点跳转才允许拉满。开流且在底部时收回窗口，避免 60+ 轮拖死流式。
@@ -1151,6 +1179,7 @@ export function Chat({
     sessionIdRef.current = sessionId;
     // 切会话清同轮完成耗时幂等闸，避免上轮残留 true 屏蔽新会话首条终态记录
     completionRecordedRef.current = false;
+    closedRunRef.current = false;
     finalOutputSeenRef.current = false;
     setFinalOutputState(null);
     setItems([]);
@@ -1158,6 +1187,8 @@ export function Chat({
     // 运行态：不在此 stopRun（见下方 async reconcile 注释）。
     setHasDraft(false);
     setScrollReady(false);
+    setSessionInitializationStage("checking");
+    setSessionInitializationDismissed(false);
     const restoreMid = hasSavedMidPosition(
       peekSessionScrollDistance(sessionId),
     );
@@ -1188,6 +1219,7 @@ export function Chat({
         const status = await window.electronAPI.getSessionStatus(sessionId);
         if (!cancelled) {
           if (status?.status === "running") {
+            closedRunRef.current = false;
             const latest = getDefaultStore().get(sessionRunMapAtom)[sessionId];
             adoptSessionRun({
               id: sessionId,
@@ -1202,6 +1234,7 @@ export function Chat({
               !isSessionAwaitingUser(sessionId) &&
               (latest?.running || latest?.startedAt != null)
             ) {
+              closedRunRef.current = true;
               runStartedAtPersistRef.current = null;
               stopSessionRun(sessionId);
             }
@@ -1210,6 +1243,7 @@ export function Chat({
       } catch {
         // IPC 失败：保留 atom 现状
       }
+      setSessionInitializationStage("history");
       if (cancelled) return;
       const history = (await window.electronAPI.getMessages(
         sessionId,
@@ -1263,7 +1297,7 @@ export function Chat({
           break;
         }
       }
-      setScrollReady(true);
+      setSessionInitializationStage("settings");
       // 回显子代理委派积极性：会话 meta → 设置页全局默认 → conservative
       try {
         const metas = (await window.electronAPI.listSessions()) as Array<{
@@ -1340,11 +1374,16 @@ export function Chat({
       } catch (err) {
         console.warn("[chat] replayMoADiscussions failed:", err);
       }
-    })();
+      setScrollReady(true);
+    })().catch((error: unknown) => {
+      if (cancelled) return;
+      console.error("[chat] session initialization failed:", error);
+      setSessionInitializationStage("error");
+    });
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [sessionId, sessionInitializationRetry]);
 
   // main 会话滚动时关闭滚动内容自身的 backdrop-filter，避免 GPU 合成滞后产生拖影。
   // 输入框是滚动容器的兄弟节点，不受 is-scrolling 选择器影响，玻璃遮挡保持不变。
@@ -1965,6 +2004,13 @@ export function Chat({
   const handlePayload = (p: TAgentDesktopStreamPayload): void => {
     // 终态 assistant（有 stop_reason、非 partial）不再 adopt / 取消停止计时——
     // 否则 turn_end 已 scheduleStop，终态 sdk_message 又 clearPendingStop，result 一丢就永远 live。
+    // 落盘摘要回传只做同 UUID 校准，不代表新的运行事件；不能唤醒已结束的 turn。
+    const isPassiveReconcile =
+      p.kind === "sdk_message" &&
+      Boolean(
+        (p.message as TAgentMessage & { __streamReconcile?: boolean })
+          .__streamReconcile,
+      );
     const isTerminalAssistant =
       p.kind === "sdk_message" &&
       p.message.type === "assistant" &&
@@ -1994,6 +2040,7 @@ export function Chat({
       p.kind === "stream_thinking_delta" && p.text.trim().length > 0;
     const hasMainlineAssistantMessage =
       p.kind === "sdk_message" &&
+      !isPassiveReconcile &&
       !isParentedSdk &&
       p.message.type === "assistant";
     if (
@@ -2011,7 +2058,12 @@ export function Chat({
 
     // run 仍在进行：取消 turn_end 的延迟停止；流式/落盘事件恢复 running
     // （保过程区展开、停止键在位；adopt 沿用原 startedAt，不重置计时）
-    if (!isTerminalAssistant && !isParentedSdk) {
+    if (
+      !isTerminalAssistant &&
+      !isParentedSdk &&
+      !isPassiveReconcile &&
+      !closedRunRef.current
+    ) {
       clearPendingStop();
       if (
         p.kind === "stream_text_delta" ||
@@ -2390,7 +2442,7 @@ export function Chat({
           // 终态（done/error/cancelled）由后续 result/turn_end 收尾，不在此抢停。
           const isRunning =
             panel.phase === "references" || panel.phase === "aggregating";
-          if (isRunning && !runningRef.current) {
+          if (isRunning && !runningRef.current && !closedRunRef.current) {
             adoptSessionRun({
               id: sessionId,
               startedAt:
@@ -2411,7 +2463,7 @@ export function Chat({
           // 非终态（discussing / finalizing）→ 标 running；终态由后续 result 收尾
           const isRunning =
             panel.phase === "discussing" || panel.phase === "finalizing";
-          if (isRunning && !runningRef.current) {
+          if (isRunning && !runningRef.current && !closedRunRef.current) {
             adoptSessionRun({
               id: sessionId,
               startedAt:
@@ -3559,6 +3611,20 @@ export function Chat({
     <MessageRichPreviewProvider value={richPreviewProviderValue}>
       <MessageFilePathProvider value={filePathProviderValue}>
         <div className="session-body flex h-full min-h-0">
+          {isActive &&
+          !onDraftWorkspaceChange &&
+          !sessionInitializationDismissed ? (
+            <SessionInitializationScreen
+              sessionTitle={session.title}
+              stage={sessionInitializationStage}
+              completed={scrollReady}
+              reducedMotion={reducedMotion === true}
+              onRetry={() =>
+                setSessionInitializationRetry((value) => value + 1)
+              }
+              onExited={() => setSessionInitializationDismissed(true)}
+            />
+          ) : null}
           {session.fusionRoomId ? (
             <CollaborationRoomsPage
               roomId={session.fusionRoomId}

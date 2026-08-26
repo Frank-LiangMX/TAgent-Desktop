@@ -88,6 +88,34 @@ describe('stream-persist-gate（REGRESS-G 落盘闸口）', () => {
     expect(uuids).toEqual(['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7'])
   })
 
+  it('工具阶段前的长 text → 只落盘压缩后的阶段摘要', () => {
+    const persisted = runSequence([
+      assistantText(
+        'u-long',
+        '我先看看当前目录。\n这目录确实没法让人眼瞅——全是二进制文件。\n换个能直接看的办法：我把缓存路径和资产名对照。\n然后再检查路径转换逻辑，最后补一个脚本。',
+      ),
+      assistantToolUse('u-tool', 'call-long'),
+    ])
+    const text = (persisted[0] as { message: { content: Array<{ text: string }> } }).message.content[0]!.text
+    expect(text.length).toBeLessThanOrEqual(80)
+    expect(text).not.toContain('；')
+    expect(text).not.toContain('我先看看')
+    expect((persisted[1] as { uuid: string }).uuid).toBe('u-tool')
+  })
+
+  it('不同阶段的相同摘要都保留，thinking 原文不被压缩', () => {
+    const persisted = runSequence([
+      assistantThinking('u-think-1', '完整 thinking：确认缓存路径。'),
+      assistantText('u-progress-1', '已确认缓存路径，开始检查文件名。'),
+      assistantToolUse('u-tool-1', 'call-1'),
+      assistantThinking('u-think-2', '完整 thinking：确认缓存路径。'),
+      assistantText('u-progress-2', '已确认缓存路径，开始检查文件名。'),
+      assistantToolUse('u-tool-2', 'call-2'),
+    ])
+    expect(persisted.filter((msg) => (msg as { type?: string }).type === 'assistant')).toHaveLength(6)
+    expect(persisted.filter((msg) => (msg as { uuid?: string }).uuid === 'u-think-1')).toHaveLength(1)
+    expect(persisted.filter((msg) => (msg as { uuid?: string }).uuid === 'u-think-2')).toHaveLength(1)
+  })
   it('tool_use-only 独立段（glm 块拆分）→ 落盘（工具/阶段/Files Changed 历史）', () => {
     const persisted = runSequence([assistantToolUse('u-tool', 'call_9')])
     expect(persisted).toHaveLength(1)

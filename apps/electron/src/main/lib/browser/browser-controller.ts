@@ -1,4 +1,6 @@
-import { BrowserWindow, WebContentsView } from 'electron'
+import { BrowserWindow, WebContentsView, nativeTheme, type WebContents } from 'electron'
+import path from 'node:path'
+import { existsSync } from 'node:fs'
 import {
   BROWSER_IPC_CHANNELS,
   type BrowserActionResult,
@@ -42,10 +44,22 @@ function safeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 72) || 'session'
 }
 
+function browserWindowTitle(pageTitle?: string): string {
+  const normalized = pageTitle?.trim()
+  return normalized ? `内置浏览器 - ${normalized}` : '内置浏览器'
+}
+
+function browserWindowIconPath(): string {
+  const fromDist = path.join(__dirname, 'resources')
+  const resourcesDir = existsSync(fromDist) ? fromDist : path.join(__dirname, '..', 'resources')
+  return path.join(resourcesDir, 'logo', 'appicon', nativeTheme.shouldUseDarkColors ? 'dark.png' : 'light.png')
+}
+
 function action(ok: boolean, message?: string): BrowserActionResult {
   return { ok, ...(message ? { message } : {}) }
 }
 
+const EXTRACT_PAGE_TEXT_SCRIPT = "(function () {\n  const emojiPattern = /[\\p{Extended_Pictographic}\\uFE0F\\u200D]/gu\n  const hiddenLinePattern = /^(编辑|预览|保存|分享|评论|插入|WPS AI|正文|撤销|重做|设置|搜索|更多|协作|通知)$/\n  const visible = (element) => {\n    if (!(element instanceof Element)) return false\n    const style = getComputedStyle(element)\n    const rect = element.getBoundingClientRect()\n    return style.display !== \"none\" && style.visibility !== \"hidden\" && style.opacity !== \"0\" && rect.width > 0 && rect.height > 0\n  }\n  const clean = (raw, dropUi) => {\n    const lines = String(raw || \"\")\n      .replace(/\\u00a0/g, \" \")\n      .split(/\\r?\\n/)\n      .map((line) => line.replace(/[ \\t]+/g, \" \").trim())\n      .map((line) => {\n        const emojiCount = (line.match(emojiPattern) || []).length\n        const firstEmoji = line.search(emojiPattern)\n        if (emojiCount >= 12 && firstEmoji >= 0) return line.slice(0, firstEmoji).trim()\n        return line\n      })\n      .filter((line) => line && (!dropUi || !hiddenLinePattern.test(line)))\n    return lines.join(\"\\n\").replace(/\\n{3,}/g, \"\\n\\n\").trim()\n  }\n  const render = (node) => {\n    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue || \"\"\n    if (node.nodeType !== Node.ELEMENT_NODE) return \"\"\n    const element = node\n    if (!visible(element)) return \"\"\n    const tag = element.tagName.toLowerCase()\n    const className = typeof element.className === \"string\" ? element.className.toLowerCase() : \"\"\n    if (element.getAttribute(\"role\") === \"button\" || /toolbar|sidebar|topbar|navbar|comment-panel|share-panel|modal|dialog/.test(className)) return \"\"\n    if ([\"script\", \"style\", \"noscript\", \"template\", \"svg\", \"nav\", \"header\", \"footer\", \"aside\", \"button\", \"input\", \"textarea\"].includes(tag)) return \"\"\n    if (tag === \"br\") return \"\\n\"\n    if (tag === \"table\") {\n      const rows = Array.from(element.querySelectorAll(\"tr\")).map((row) => Array.from(row.querySelectorAll(\"th,td\")).map((cell) => clean(cell.innerText || cell.textContent || \"\", false).replace(/\\n/g, \" \")))\n      return rows.filter((row) => row.length).map((row, index) => \"| \" + row.join(\" | \") + \" |\" + (index === 0 ? \"\\n| \" + row.map(() => \"---\").join(\" | \") + \" |\" : \"\")).join(\"\\n\") + \"\\n\\n\"\n    }\n    const inner = Array.from(element.childNodes).map(render).join(\"\")\n    if ([\"h1\", \"h2\", \"h3\", \"h4\", \"h5\", \"h6\"].includes(tag)) return \"\\n\\n\" + \"#\".repeat(Number(tag.slice(1))) + \" \" + inner.trim() + \"\\n\\n\"\n    if (tag === \"li\") return \"- \" + inner.trim() + \"\\n\"\n    if (tag === \"a\") { const href = element.href; return inner.trim() && href ? \"[\" + inner.trim() + \"](\" + href + \")\" : inner }\n    if ([\"strong\", \"b\"].includes(tag)) return inner.trim() ? \"**\" + inner.trim() + \"**\" : inner\n    if ([\"em\", \"i\"].includes(tag)) return inner.trim() ? \"*\" + inner.trim() + \"*\" : inner\n    if (tag === \"pre\") return \"\\n\\n~~~\\n\" + (element.innerText || inner).trim() + \"\\n~~~\\n\\n\"\n    if (tag === \"blockquote\") return \"\\n\\n\" + inner.split(\"\\n\").map((line) => line ? \"> \" + line : line).join(\"\\n\") + \"\\n\\n\"\n    if ([\"p\", \"div\", \"section\", \"article\", \"ul\", \"ol\", \"dl\"].includes(tag)) return \"\\n\\n\" + inner.trim() + \"\\n\\n\"\n    return inner\n  }\n  const candidates = []\n  const seen = new Set()\n  const add = (element, priority) => {\n    if (!visible(element) || seen.has(element)) return\n    seen.add(element)\n    const plain = clean(element.innerText || element.textContent || \"\", element === document.body)\n    if (plain.length < 20) return\n    const formatted = clean(render(element), element === document.body)\n    const value = formatted.length >= 20 ? formatted : plain\n    const uiWords = (plain.match(/编辑|预览|保存|分享|评论|插入|WPS AI|协作|通知/g) || []).length\n    const score = Math.min(plain.length, 30000) + priority * 5000 + Math.min(plain.split(\"\\n\").length, 120) * 20 - uiWords * 350\n    candidates.push({ value, score })\n  }\n  add(document.body, 0)\n  const selectors = [\n    [\"[contenteditable=\\\"true\\\"]\", 100],\n    [\"[role=\\\"textbox\\\"]\", 90],\n    [\"main\", 75], [\"article\", 75], [\"[role=\\\"main\\\"]\", 75],\n    [\"[class*=\\\"editor\\\" i]\", 70], [\"[class*=\\\"document\\\" i]\", 70],\n    [\"[class*=\\\"page\\\" i]\", 65], [\"[class*=\\\"content\\\" i]\", 60], [\"[class*=\\\"canvas\\\" i]\", 55],\n  ]\n  for (const [selector, priority] of selectors) {\n    try { document.querySelectorAll(selector).forEach((element) => add(element, priority)) } catch {}\n  }\n  candidates.sort((a, b) => b.score - a.score)\n  const best = candidates[0]\n  return { title: document.title || \"\", text: best?.value || \"\", score: best?.score || 0 }\n})()"
 export class BrowserController {
   private readonly workspaces = new Map<string, BrowserWorkspaceRuntime>()
   private nextTabNumber = 1
@@ -209,6 +223,28 @@ export class BrowserController {
     return tab
   }
 
+  private async extractFromContents(contents: WebContents, sessionId: string, tabId: string): Promise<BrowserPageTextResult> {
+    const frames = [contents.mainFrame, ...contents.mainFrame.frames]
+    const results: Array<{ text: string; score: number; title?: string }> = []
+    for (const frame of frames) {
+      try {
+        const result = (await frame.executeJavaScript(EXTRACT_PAGE_TEXT_SCRIPT)) as { text?: string; score?: number; title?: string }
+        if (result?.text?.trim()) results.push({ text: result.text, score: result.score || 0, title: result.title })
+      } catch {
+        // 跨域或已销毁 frame 无法读取时跳过。
+      }
+    }
+    results.sort((a, b) => b.score - a.score)
+    const best = results[0]
+    return {
+      sessionId,
+      tabId,
+      url: contents.getURL(),
+      title: contents.getTitle() || best?.title || '',
+      text: best?.text || '',
+    }
+  }
+
   async openDetached(sessionId: string, url: string, title?: string): Promise<BrowserDetachedWindowState> {
     const normalizedUrl = normalizeBrowserUrl(url)
     let detached = this.detachedWindows.get(sessionId)
@@ -220,7 +256,8 @@ export class BrowserController {
         minHeight: 640,
         show: false,
         parent: this.window(),
-        title: title || '内置浏览器',
+        title: browserWindowTitle(title),
+        ...(existsSync(browserWindowIconPath()) ? { icon: browserWindowIconPath() } : {}),
         autoHideMenuBar: true,
         backgroundColor: '#ffffff',
         webPreferences: {
@@ -244,8 +281,14 @@ export class BrowserController {
       })
       this.detachedWindows.set(sessionId, detached)
     } else {
-      detached.setTitle(title || '内置浏览器')
+      detached.setTitle(browserWindowTitle(title))
     }
+    const updateDetachedTitle = (_event: unknown, pageTitle: string): void => {
+      if (!detached || detached.isDestroyed()) return
+      detached.setTitle(browserWindowTitle(pageTitle))
+    }
+    detached.webContents.removeAllListeners("page-title-updated")
+    detached.webContents.on("page-title-updated", updateDetachedTitle)
     try {
       await detached.loadURL(normalizedUrl)
     } catch {
@@ -258,91 +301,19 @@ export class BrowserController {
     return {
       sessionId,
       url: detached.isDestroyed() ? normalizedUrl : detached.webContents.getURL() || normalizedUrl,
-      title: detached.isDestroyed() ? title || '内置浏览器' : detached.getTitle() || title || '内置浏览器',
+      title: detached.isDestroyed() ? browserWindowTitle(title) : detached.getTitle() || browserWindowTitle(title),
     }
   }
 
   async extractDetachedText(sessionId: string): Promise<BrowserPageTextResult> {
     const detached = this.detachedWindows.get(sessionId)
     if (!detached || detached.isDestroyed()) throw new Error('独立浏览器窗口已关闭，请重新打开云文档')
-    const result = (await detached.webContents.executeJavaScript(`(function () {
-      const root = document.body || document.documentElement
-      if (!root) return { title: document.title || '', text: '' }
-      const raw = root.innerText || root.textContent || ''
-      const emojiPattern = /[\\p{Extended_Pictographic}\\uFE0F\\u200D]/gu
-      const lines = raw
-        .replace(/\\u00a0/g, ' ')
-        .split(/\\r?\\n/)
-        .map((line) => line.replace(/[ \\t]+/g, ' ').trim())
-        .map((line) => {
-          const emojiCount = (line.match(emojiPattern) || []).length
-          const firstEmoji = line.search(emojiPattern)
-          if (emojiCount >= 12 && firstEmoji >= 0) return line.slice(0, firstEmoji).trim()
-          return line
-        })
-        .filter(Boolean)
-        .join('\\n')
-        .replace(/\\n{3,}/g, '\\n\\n')
-        .trim()
-      return { title: document.title || '', text: lines }
-    })()`)) as { title?: string; text?: string }
-    return {
-      sessionId,
-      tabId: 'detached-window',
-      url: detached.webContents.getURL(),
-      title: detached.getTitle() || result.title || '内置浏览器',
-      text: result.text || '',
-    }
+    return this.extractFromContents(detached.webContents, sessionId, 'detached-window')
   }
 
-  async extractText(sessionId: string): Promise<{
-    sessionId: string
-    tabId: string
-    url: string
-    title: string
-    text: string
-  }> {
+  async extractText(sessionId: string): Promise<BrowserPageTextResult> {
     const tab = this.activeTab(sessionId)
-    const result = (await tab.view.webContents.executeJavaScript(`(function () {
-      const root = document.body || document.documentElement
-      if (!root) return { title: document.title || '', text: '' }
-
-      // 读取真实页面的 innerText。克隆 body 会丢失原页面的 CSS 可见性，
-      // WPS 等页面的隐藏工具栏、表情面板就会被误当成正文。
-      const raw = root.innerText || root.textContent || ''
-      const emojiPattern = /[\\p{Extended_Pictographic}\\uFE0F\\u200D]/gu
-      const lines = raw
-        .replace(/\\u00a0/g, ' ')
-        .split(/\\r?\\n/)
-        .map((line) => line.replace(/[ \\t]+/g, ' ').trim())
-        .map((line) => {
-          const emojiCount = (line.match(emojiPattern) || []).length
-          const firstEmoji = line.search(emojiPattern)
-          // 过滤明显的整行表情选择器；若正文前面还有文字，只保留文字部分。
-          if (emojiCount >= 12 && firstEmoji >= 0) return line.slice(0, firstEmoji).trim()
-          return line
-        })
-        .filter(Boolean)
-        .join('\\n')
-        .replace(/\\n{3,}/g, '\\n\\n')
-        .trim()
-      return { title: document.title || '', text: lines }
-    })()`)) as { title?: string; text?: string }
-    let url = tab.url
-    let title = result.title || tab.title
-    try {
-      url = tab.view.webContents.getURL() || url
-      title = tab.view.webContents.getTitle() || title
-    } catch {
-      /* ignore */
-    }
-    return {
-      sessionId,
-      tabId: tab.id,
-      url,
-      title,
-      text: result.text || '',
-    }
+    return this.extractFromContents(tab.view.webContents, sessionId, tab.id)
   }
 
   async ensure(sessionId: string): Promise<BrowserWorkspaceState> {

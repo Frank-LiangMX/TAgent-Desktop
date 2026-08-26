@@ -26,6 +26,7 @@ import {
 } from './lib/channel/channel-store'
 import { discoverAndReconcileCliWorkers } from './lib/agent/cli-workers-service'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
+import { stopAutomationScheduler } from './lib/automation-scheduler'
 import { createTray, destroyTray, getTray, updateTrayTheme } from './tray'
 import { initAutoUpdater, configureUpdater, cleanupUpdater, registerUpdaterIpc } from './lib/updater'
 import {
@@ -408,6 +409,49 @@ app.whenReady().then(async () => {
   )
   permissionService = PermissionService.create(() => mainWindow)
   sessionService = SessionService.create(() => mainWindow, permissionService)
+  const { registerAutomationIpc } = await import('./lib/automation-ipc')
+  registerAutomationIpc()
+  // Automation：复用当前 2.0 SessionService，后台执行不经过 renderer IPC。
+  const { startAutomationScheduler } = await import('./lib/automation-scheduler')
+  const { isSameLocalDay } = await import('@tagent/shared')
+  const { createSession, getSessionMeta, updateSessionMeta } = await import('./lib/agent/session-store')
+  startAutomationScheduler({
+    runAutomation: async (automation) => {
+      let sessionId: string | undefined
+      const last = automation.lastSessionId ? getSessionMeta(automation.lastSessionId) : undefined
+      if (last && !last.automationGraduated) {
+        const dailyReuse = automation.sessionMode !== 'reuse' &&
+          automation.lastRunAt !== undefined &&
+          isSameLocalDay(automation.lastRunAt, Date.now())
+        if (automation.sessionMode === 'reuse' || dailyReuse) sessionId = last.id
+      }
+      if (!sessionId) {
+        const created = createSession({
+          title: automation.name,
+          channelId: automation.channelId,
+          modelId: automation.modelId,
+          workspaceId: automation.workspaceId,
+          mode: 'general',
+          executionMode: 'work',
+          permissionMode: automation.permissionMode ?? 'bypassPermissions',
+        })
+        sessionId = created.id
+        updateSessionMeta(sessionId, { sourceAutomationId: automation.id })
+      }
+      const currentSessionId = sessionId
+      const service = sessionService
+      if (!service) throw new Error('SessionService 尚未初始化')
+      await service.runAutomatedTurn({
+        sessionId: currentSessionId,
+        prompt: automation.prompt,
+        channelId: automation.channelId,
+        model: automation.modelId,
+        workspaceId: automation.workspaceId,
+        contextPrompt: `这是定时任务「${automation.name}」的自动执行。直接执行当前任务，不要再次创建定时任务；如需调整频率或内容，请更新当前任务。`,
+      })
+      return { sessionId: currentSessionId }
+    },
+  })
   browserService = BrowserService.create(() => mainWindow)
   setMemoryForegroundActivityProbe(() => sessionService?.hasActiveAgents() ?? false)
   WorkspaceService.create(
@@ -454,6 +498,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   setQuitting(true)
+  stopAutomationScheduler()
   try {
     stopIdleConsolidationScheduler()
     memoryLayerService.close()

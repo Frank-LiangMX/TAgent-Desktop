@@ -59,7 +59,8 @@ describe('role-projection', () => {
     const explorer = getOperationalSubagentRoles().find((r) => r.id === 'explorer')!
     const def = roleToSubagentDef(explorer, { claudeAvailable: true })
     expect(def.prompt).toMatch(/探索/)
-    expect(def.tools).toEqual(['Read', 'Glob', 'Grep', 'Bash'])
+    expect(def.tools).toEqual(['Read', 'Glob', 'Grep'])
+    expect(def.disallowedTools).toEqual(expect.arrayContaining(['Bash', 'Edit', 'Write', 'AskUserQuestion']))
   })
 
   test('code-reviewer 映射 reviewer', () => {

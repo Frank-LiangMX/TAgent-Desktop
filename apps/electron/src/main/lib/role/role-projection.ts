@@ -13,6 +13,20 @@ const LANGUAGE_INSTRUCTION =
 /** 只读向工具（审核 / 探索类；permissionMode=auto 时默认） */
 export const ROLE_READONLY_TOOLS = ['Read', 'Glob', 'Grep', 'Bash'] as const
 
+/** Explorer 的硬只读工具集：搜索即可，不允许通过 Bash 绕过文件写入边界。 */
+export const ROLE_EXPLORER_TOOLS = ['Read', 'Glob', 'Grep'] as const
+export const ROLE_EXPLORER_DISALLOWED_TOOLS = [
+  'Bash',
+  'Edit',
+  'Write',
+  'NotebookEdit',
+  'Task',
+  'Agent',
+  'AskUserQuestion',
+  'EnterPlanMode',
+  'ExitPlanMode',
+] as const
+
 /** 可写向工具（bypass 时显式列出，避免子代理继承 kanban 等编排工具） */
 export const ROLE_WRITE_TOOLS = ['Read', 'Glob', 'Grep', 'Bash', 'Edit', 'Write'] as const
 
@@ -127,7 +141,11 @@ export function roleToSubagentDef(
   options: RoleToSubagentOptions = {},
 ): AgentDefinition {
   const purpose = options.purpose ?? 'subagent'
-  const tools = options.tools ?? toolsForRolePermission(role.permissionMode, purpose)
+  const tools =
+    options.tools ??
+    (role.id === 'explorer'
+      ? [...ROLE_EXPLORER_TOOLS]
+      : toolsForRolePermission(role.permissionMode, purpose))
   const model = resolveModelForRole(role, {
     claudeAvailable: options.claudeAvailable,
     modelOverride: options.modelOverride,
@@ -141,6 +159,9 @@ export function roleToSubagentDef(
       maxRolePromptChars: options.maxRolePromptChars,
     }),
     tools: [...tools],
+  }
+  if (role.id === 'explorer') {
+    def.disallowedTools = [...ROLE_EXPLORER_DISALLOWED_TOOLS]
   }
   if (model) def.model = model
   return def

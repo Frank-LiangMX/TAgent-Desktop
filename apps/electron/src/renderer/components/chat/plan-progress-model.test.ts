@@ -5,6 +5,7 @@ import {
   isPlanIncomplete,
   parsePlanProgress,
   pauseActivePlanSteps,
+  resumePausedPlanStep,
   type PlanProgress,
 } from "./plan-progress-model";
 
@@ -66,6 +67,17 @@ describe("plan incompleteness helpers", () => {
   });
 });
 
+describe("resumePausedPlanStep", () => {
+  it("only resumes the first incomplete paused step", () => {
+    const paused = pauseActivePlanSteps(samplePlan());
+    const resumed = resumePausedPlanStep(paused);
+    expect(resumed.steps.map((step) => step.status)).toEqual([
+      "running",
+      "pending",
+      "pending",
+    ]);
+  });
+});
 describe("inferPlanStepSignalsFromText", () => {
   it("advances when a later step title appears in assistant text", () => {
     const plan = samplePlan();

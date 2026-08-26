@@ -1,14 +1,15 @@
 # TAgent 知识库 · 产品规格 v1
 
-> 状态：已拍板（Q1–Q3），待实现  
-> 依据：`KB-FEASIBILITY-R2-SYNTHESIS.md` + 用户拍板 2026-08-24  
+> 状态：已拍板；Phase 0 已完成，Phase 1 部分落地
+> 依据：`KB-FEASIBILITY-R2-SYNTHESIS.md` + 用户拍板 2026-08-24
+> 当前契约：以 KB-PRODUCT-SPEC-v2.md 为准，实施进度见 KB-PHASE0-FINDINGS.md
 > 对外话术：**项目参考书**（比记忆更稳、比附件更好找）— 不向用户暴露 L0–L5 术语
 
 ---
 
 ## 0. 一句话定位
 
-用户显式维护的 **知识库（Library）**：可挂多份文档/素材，会话里 **按需绑定 0..N 个库** 检索引用。  
+用户显式维护的 **知识库（Library）**：可挂多份文档/素材，会话里 **按需绑定 0..N 个库** 检索引用。
 与 L0–L5 记忆、BotMemory **物理隔离**；解释权归用户（库 ≠ 项目文件夹）。
 
 ---
@@ -67,7 +68,7 @@ Library（库）          用户命名，如「TAgent-Desktop」「个人规范�
 | 截图 | 原图 | OCR/描述 | 描述文本 |
 | 链接 | URL + 可选快照 | 正文 MD | 正文切块 |
 
-- **Canonical 成稿格式（P2）**：Markdown；Office **不作**唯一真相，只作 Asset。  
+- **Canonical 成稿格式（P2）**：Markdown；Office **不作**唯一真相，只作 Asset。
 - **PixelRAG**：不进 P0/P1；P2+ 仅当复杂版式 PDF 检索失败再作可选派生管道。
 
 ---
@@ -85,8 +86,8 @@ Library（库）          用户命名，如「TAgent-Desktop」「个人规范�
 **不做：** 新 db、新 Rail 面板、写入、Office、向量、策展
 
 **验收：**
-1. 放入 2–3 份 TAgent 相关 MD，绑定后问「IPC / 目录约定」类问题，能命中并带来源  
-2. 未绑定则工具明确无库 / 空结果，不静默搜全盘  
+1. 放入 2–3 份 TAgent 相关 MD，绑定后问「IPC / 目录约定」类问题，能命中并带来源
+2. 未绑定则工具明确无库 / 空结果，不静默搜全盘
 3. 不写 L0–L5、不碰 BotMemory
 
 **闸门：** 若 Phase 0 已满足「能搜到」且用户暂无策展需求 → **可暂停**，不强制开 Phase 1。若需要面板/多格式/确认入库 → 开 Phase 1。
@@ -98,21 +99,21 @@ Library（库）          用户命名，如「TAgent-Desktop」「个人规范�
 - 库 CRUD；模板仅影响默认 collection 标签（规范/架构/笔记/参考/待整理）
 - 入库：MD/纯文本优先；其它格式 = 原件 + best-effort 派生
 - 会话 `libraryIds[]`；`@kb` / 工具检索；来源徽章
-- 用户显式「整理入库 / 加入知识库」→ candidate → 确认 → active  
-- KB Rail：库列表 / 条目列表 / 预览  
+- 用户显式「整理入库 / 加入知识库」→ candidate → 确认 → active
+- KB Rail：库列表 / 条目列表 / 预览
 - 独立 IPC（`KB_IPC_CHANNELS`），禁塞进 `memory-service`
 
 **不做：** 素材池、Agent 主动合并、多视图导出、向量库、Office 高保真、PixelRAG、BotMemory 收编、信任模式 append
 
 **验收：**
-1. 创建两库，会话同时绑定，联合检索正确隔离未绑定库  
-2. 拖入 MD → 可搜可预览  
-3. candidate 未经确认不进检索结果  
+1. 创建两库，会话同时绑定，联合检索正确隔离未绑定库
+2. 拖入 MD → 可搜可预览
+3. candidate 未经确认不进检索结果
 4. 注入不进 Frozen；与 memory 引用徽章可区分
 
 ### Phase 2（预留，用过再开）
 
-素材池、Agent 提议合并（**diff + confirm + Revision**）、简单版本链、可选 Office 加强 / MCP 重解析。  
+素材池、Agent 提议合并（**diff + confirm + Revision**）、简单版本链、可选 Office 加强 / MCP 重解析。
 触发建议（mimo）：观察期内确有合并/拼凑需求再开，不默认排期。
 
 ---
@@ -132,34 +133,34 @@ Library（库）          用户命名，如「TAgent-Desktop」「个人规范�
 
 ## 7. 与现有代码挂载点（实现指引）
 
-- 工具装配：仿 `kanban-agent-tools.ts`（Pi `extraTools` / kscc MCP）  
-- 门控：仿 `bot-memory-service.ts` 的 candidate→active，**独立文件/表**  
-- SQLite 范式：仿 `memory-layer-service.ts`（WAL + FTS5 + 迁移），**独立 `kb.db`**  
+- 工具装配：仿 `kanban-agent-tools.ts`（Pi `extraTools` / kscc MCP）
+- 门控：仿 `bot-memory-service.ts` 的 candidate→active，**独立文件/表**
+- SQLite 范式：仿 `memory-layer-service.ts`（WAL + FTS5 + 迁移），**独立 `kb.db`**
 - 注入：`agent-prompt-builder` / coordinator **独立段或工具返回**，不混 Frozen snapshot
 
 ---
 
 ## 8. 本轮不做（明确）
 
-- PixelRAG / Qdrant / RAGFlow 默认进程  
-- Word/脑图/表格多视图导出管线  
-- Agent 无人值守改规范  
-- 库强制绑定 workspace  
-- 信任模式自动 append  
+- PixelRAG / Qdrant / RAGFlow 默认进程
+- Word/脑图/表格多视图导出管线
+- Agent 无人值守改规范
+- 库强制绑定 workspace
+- 信任模式自动 append
 - 与 BotMemory / L5 合并存储
 
 ---
 
 ## 9. 附录 · Phase B（整理成稿）效果验证（预留，非本轮）
 
-开源无成熟「开箱整理」产品；可参考 Karpathy llm-wiki（raw+wiki）与 Provenance-First（防自毒化）。  
+开源无成熟「开箱整理」产品；可参考 Karpathy llm-wiki（raw+wiki）与 Provenance-First（防自毒化）。
 **上 B 前须满足：**
 
-1. A 已稳定：搜得到、来源对、用户愿意绑库  
-2. 仅 **提议 + diff + 确认**；raw/原件不可被 Agent 改写  
-3. 成稿句可回链到原件；一键回滚  
-4. 小库试跑（数十条级）；规范集合永不无人值守  
-5. 验收：「你是否敢把合并结果当正式规范」— 经常不敢则停在 A + 半自动归类  
+1. A 已稳定：搜得到、来源对、用户愿意绑库
+2. 仅 **提议 + diff + 确认**；raw/原件不可被 Agent 改写
+3. 成稿句可回链到原件；一键回滚
+4. 小库试跑（数十条级）；规范集合永不无人值守
+5. 验收：「你是否敢把合并结果当正式规范」— 经常不敢则停在 A + 半自动归类
 
 ## 10. 文档关系
 

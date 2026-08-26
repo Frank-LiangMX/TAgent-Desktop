@@ -544,6 +544,17 @@ export class SessionService {
     }
   }
 
+  /** 将闸口最终落盘的 assistant 摘要回传给 renderer，按 uuid 原地校准 live 项。 */
+  private reconcilePersistedStreamMessages(sessionId: string, msgs: unknown[]): void {
+    for (const raw of msgs) {
+      if ((raw as { type?: string }).type !== "assistant") continue
+      const converted = sdkMessageToIR(raw as SDKMessage).message
+      if (converted?.type === "assistant") {
+        this.sendPayload(sessionId, { kind: "sdk_message", message: { ...converted, __streamReconcile: true } as TAgentMessage })
+      }
+    }
+  }
+
   /**
    * 轮结束/中断兜底：flush 待提交 assistant 落盘。
    * result 路径已自行 flush，此处幂等；STOP/Chat 拦截/turn_end 调用以清理 stale pending。
@@ -555,6 +566,7 @@ export class SessionService {
     if (toPersist.length === 0) return;
     const workspaceId = getSessionMeta(sessionId)?.workspaceId;
     this.persistStreamMessages(workspaceId, sessionId, toPersist);
+    this.reconcilePersistedStreamMessages(sessionId, toPersist);
   }
 
   /**
@@ -3340,7 +3352,7 @@ export class SessionService {
    *  assistant 暂存为 pending，等下一条不同 uuid（或轮结束 flush）再提交；同 uuid 后到快照只留最新（= final），
    *  避免流式中间快照堆积（不回退 E/S1）；显式 `_partial:true` 与空 content 不落盘。
    *  替原「按 IR `_partial` 一刀切跳过」——glm 每 content 块为独立 uuid 且 `stop_reason` 始终 null，旧规则全标 `_partial` 全跳过 → 段间短文/工具/思考落盘全丢。
-   *  live 推流（sendPayload）不受影响——闸口只管落盘。 */
+   *  落盘后的阶段摘要会按 uuid 回传给 renderer 做同源校准，避免 live / reload 两套内容。 */
   private handleSdkStreamMessage(
     sessionId: string,
     workspaceId: string | undefined,
@@ -3402,6 +3414,7 @@ export class SessionService {
         msg,
       );
       this.persistStreamMessages(workspaceId, sessionId, toPersist);
+      this.reconcilePersistedStreamMessages(sessionId, toPersist);
       this.sendPayload(sessionId, { kind: "sdk_message", message: irMessage });
     } else if (msgType === "result") {
       // result 不带 message 但标志轮结束：先 flush 待提交 assistant，再走下方 result 事件
@@ -3409,6 +3422,7 @@ export class SessionService {
         this.getStreamPersistGate(sessionId),
       );
       this.persistStreamMessages(workspaceId, sessionId, toPersist);
+      this.reconcilePersistedStreamMessages(sessionId, toPersist);
     }
     if (event) {
       if (
@@ -3770,5 +3784,31 @@ export class SessionService {
       if (rt.isTurnInFlight()) return true;
     }
     return this.moaInFlight.size > 0;
+  }
+  /**
+   * 后台 Automation 专用执行入口。
+   * 不走 renderer IPC，也不参与协作室路由；仍复用当前 2.0 的 SessionRuntime、权限和持久化链路。
+   */
+  async runAutomatedTurn(input: {
+    sessionId: string
+    prompt: string
+    channelId: string
+    model?: string
+    workspaceId?: string
+    contextPrompt?: string
+  }): Promise<void> {
+    if (!getSessionMeta(input.sessionId)) {
+      throw new Error(`自动任务会话不存在: ${input.sessionId}`)
+    }
+    await this.handleSend({
+      sessionId: input.sessionId,
+      prompt: input.prompt,
+      contextPrompt: input.contextPrompt,
+      channelId: input.channelId,
+      model: input.model,
+      workspaceId: input.workspaceId,
+      skipFusionRouting: true,
+      executionMode: 'work',
+    })
   }
 }

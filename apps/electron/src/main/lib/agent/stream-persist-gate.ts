@@ -13,9 +13,11 @@
  *   显式 `_partial:true`（真流式快照）与空 content 不落盘。
  * - **user 等**：立即落盘（并先 flush 待提交 assistant）。
  *
- * 纯函数 + 显式状态，便于单测；live 推流（sendPayload）不受影响——闸口只管落盘。
+ * 纯函数 + 显式状态，便于单测；落盘后的阶段摘要由调用方按 uuid 回传做同源校准。
  * 详见 docs/dev/core-loop/REGRESS-G-FINDINGS.md、REGRESS-G-implement-brief.md。
  */
+
+import { compactStageProgress } from '@tagent/shared'
 
 /** 闸口状态：当前同 uuid 流式替换链里「最新」的一条待提交消息（未落盘）。 */
 export interface StreamPersistGateState {
@@ -36,6 +38,58 @@ function isAssistantPersistable(msg: unknown): boolean {
   return Array.isArray(content) && content.length > 0
 }
 
+function contentBlocks(msg: unknown): Array<Record<string, unknown>> {
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  return Array.isArray(content)
+    ? content.filter(
+        (item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'),
+      )
+    : []
+}
+
+function isTextOnlyAssistant(msg: unknown): boolean {
+  const blocks = contentBlocks(msg)
+  return blocks.length > 0 && blocks.every((block) => block.type === 'text' && typeof block.text === 'string')
+}
+
+function isToolBoundary(msg: unknown): boolean {
+  const raw = msg as { type?: string; message?: { content?: unknown[] } }
+  if (raw.type === 'user') {
+    return Array.isArray(raw.message?.content)
+      && raw.message.content.some((block) => (block as { type?: string })?.type === 'tool_result')
+  }
+  if (raw.type !== 'assistant') return false
+  return contentBlocks(msg).some((block) => block.type === 'tool_use')
+}
+
+function compactProgressMessage(msg: unknown): unknown | null {
+  const blocks = contentBlocks(msg)
+  const text = blocks.map((block) => String(block.text ?? '')).join('\n')
+  const summary = compactStageProgress(text)
+  if (!summary) return null
+  const raw = msg as { message?: Record<string, unknown> }
+  return {
+    ...raw,
+    message: {
+      ...(raw.message ?? {}),
+      content: [{ type: 'text', text: summary }],
+    },
+  }
+}
+
+function resolvePending(state: StreamPersistGateState, next: unknown | null): unknown[] {
+  const pending = state.pending
+  state.pending = null
+  if (!pending?.persist) return []
+  if (next && isTextOnlyAssistant(pending.raw) && isToolBoundary(next)) {
+    const compacted = compactProgressMessage(pending.raw)
+    if (!compacted) return []
+    // 只能按 uuid 去重，不能按全文在整回合去重：两个阶段可能合法地产生相同摘要。
+    // 旧逻辑用 lastStageSummary 全局吞掉第二个相同摘要，导致实时内容在落盘重投影时消失。
+    return [compacted]
+  }
+  return [pending.raw]
+}
 /**
  * 喂入一条流式消息，返回**应立即落盘**的原始消息列表。
  *
@@ -59,16 +113,14 @@ export function feedStreamPersistGate(
     if (!uuid) {
       // 无 uuid 不能去重：flush 旧 pending，立即落盘本条（可落盘时）
       if (state.pending) {
-        if (state.pending.persist) out.push(state.pending.raw)
-        state.pending = null
+        out.push(...resolvePending(state, msg))
       }
       if (isAssistantPersistable(msg)) out.push(msg)
       return out
     }
     // 不同 uuid：提交前一条链（若可落盘）
     if (state.pending && state.pending.uuid !== uuid) {
-      if (state.pending.persist) out.push(state.pending.raw)
-      state.pending = null
+      out.push(...resolvePending(state, msg))
     }
     // 进 / 替换 pending（同 uuid 替换 = 留最新 = final）
     state.pending = { uuid, raw: msg, persist: isAssistantPersistable(msg) }
@@ -77,8 +129,7 @@ export function feedStreamPersistGate(
 
   // 非 assistant：先 flush 待提交 assistant，再落盘自身
   if (state.pending) {
-    if (state.pending.persist) out.push(state.pending.raw)
-    state.pending = null
+    out.push(...resolvePending(state, msg))
   }
   if (type === 'user') out.push(msg)
   return out
@@ -89,8 +140,5 @@ export function feedStreamPersistGate(
  * 幂等：pending 已提交或不存在时返回空。
  */
 export function flushStreamPersistGate(state: StreamPersistGateState): unknown[] {
-  if (!state.pending) return []
-  const out = state.pending.persist ? [state.pending.raw] : []
-  state.pending = null
-  return out
+  return resolvePending(state, null)
 }

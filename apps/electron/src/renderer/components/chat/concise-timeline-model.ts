@@ -11,6 +11,7 @@
  */
 import {
   cleanFilePathInput,
+  compactStageProgress,
   isToolCallArtifactText,
   sanitizeAssistantTextForDisplay,
 } from '@tagent/shared'
@@ -742,8 +743,7 @@ export function buildConciseTimeline(
     }
 
     if (cur.type === 'text') {
-      const displayText = sanitizeAssistantTextForDisplay(cur.text)
-      if (!displayText.trim()) continue
+      const rawDisplayText = sanitizeAssistantTextForDisplay(cur.text)
       flushLeadingThink()
       // REGRESS-N（否决 REGRESS-J J1/J4 的 isShortIdleProgress → continue）：
       // 旧规则按长度（≤ SHORT_PROGRESS_MAX_CHARS）一刀切，idle 把「正在跑验证」「准备编辑」
@@ -755,6 +755,8 @@ export function buildConciseTimeline(
       // （禁止 live 一套、idle 把总结删光）。回合末文本（isRoundFinal）即便是 filler 也保留
       // ——那可能是用户的短回答，不得丢。
       const isRoundFinal = i > lastToolIdx || lastToolIdx < 0
+      const displayText = isRoundFinal ? rawDisplayText : compactStageProgress(rawDisplayText) ?? ''
+      if (!displayText.trim()) continue
       const isFiller = !isRoundFinal && isFillerProgressText(displayText)
       // 工具调用前的 call / antml 尾段 / function_call 标记 → 不单独占 narrative 行
       const isArtifact = !isRoundFinal && isToolCallArtifactText(displayText)

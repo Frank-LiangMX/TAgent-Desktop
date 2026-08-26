@@ -99,6 +99,9 @@ import { SessionSidebar } from "./components/workspace/SessionSidebar";
 import { PluginStoreSettings } from "./components/settings/PluginStoreSettings";
 import { RolesPage } from "./components/roles/RolesPage";
 import { KnowledgeBasePage } from "./components/knowledge-base/KnowledgeBasePage";
+import { KnowledgeBaseSidebar } from "./components/knowledge-base/KnowledgeBaseSidebar";
+import { AutomationMainView } from "./components/automation/AutomationMainView";
+import { AutomationSidebar } from "./components/automation/AutomationSidebar";
 import {
   SettingsDialog,
   normalizeSettingsTab,
@@ -995,7 +998,7 @@ export function App(): JSX.Element {
     useState<Exclude<RailItem, "settings">>("chat");
   /**
    * 会话侧栏展开态（对齐 General navigationSidebarOpen + deriveRailSelection）：
-   * - 仅 chat 支持侧栏；plugins / memory / roles 强制收起
+   * - chat 和 knowledge 支持侧栏；plugins / memory / roles 强制收起
    * - 再点当前 chat rail → 切换展开/收起
    * - 从其它页切回 chat → 自动展开
    */
@@ -1006,14 +1009,14 @@ export function App(): JSX.Element {
   const loadUserProfile = useSetAtom(loadUserProfileAtom);
   const workspaces = useAtomValue(workspacesAtom);
 
-  /** 会话页需要侧栏；插件/记忆/角色库为 rail-only 主区页 */
+  /** 会话页和知识库页使用 NavIsland 浮岛侧栏；其他页面为 rail-only 主区页 */
   const railSupportsSidebar = (item: Exclude<RailItem, "settings">): boolean =>
-    item === "chat";
+    item === "chat" || item === "knowledge" || item === "automation";
 
   const selectRail = (next: Exclude<RailItem, "settings">): void => {
     setShowSettings(false);
     if (next === activeRail) {
-      // 再点当前 chat rail 可折叠侧栏；rail-only 页无操作
+      // 再点当前支持侧栏的 rail 可折叠侧栏；rail-only 页无操作
       if (railSupportsSidebar(next)) {
         setSidebarOpen((v) => !v);
       }
@@ -1504,45 +1507,80 @@ export function App(): JSX.Element {
               onMemory={() => selectRail("memory")}
               onKnowledge={() => selectRail("knowledge")}
               onRoles={() => selectRail("roles")}
+              onAutomation={() => selectRail("automation")}
               onSettings={() => openSettings(settingsInitialTab)}
             />
           }
           sidebar={
-            <SessionSidebar
-              activeSessionId={activeTabId}
-              onSelect={(s) => {
-                setShowSettings(false);
-                setActiveRail("chat");
-                setSidebarOpen(true);
-                // 选中已有会话 → 清掉草稿（避免关掉所有 tab 后复活旧草稿）
-                setDraftSession(null);
-                openSession(
-                  s.id,
-                  s.title,
-                  s.workspaceId,
-                  s.channelId,
-                  s.modelId,
-                );
-              }}
-              onNew={(workspaceId) => {
-                setShowSettings(false);
-                setActiveRail("chat");
-                setSidebarOpen(true);
-                newSession(workspaceId);
-              }}
-              onOpenProject={() => void handleOpenProject()}
-              onWorkspaceDeleted={handleWorkspaceDeleted}
-            />
+            activeRail === "automation" ? (
+              <AutomationSidebar />
+            ) : activeRail === "knowledge" ? (
+              <KnowledgeBaseSidebar />
+            ) : (
+              <SessionSidebar
+                activeSessionId={activeTabId}
+                onSelect={(s) => {
+                  setShowSettings(false);
+                  setActiveRail("chat");
+                  setSidebarOpen(true);
+                  // 选中已有会话 → 清掉草稿（避免关掉所有 tab 后复活旧草稿）
+                  setDraftSession(null);
+                  openSession(
+                    s.id,
+                    s.title,
+                    s.workspaceId,
+                    s.channelId,
+                    s.modelId,
+                  );
+                }}
+                onNew={(workspaceId) => {
+                  setShowSettings(false);
+                  setActiveRail("chat");
+                  setSidebarOpen(true);
+                  newSession(workspaceId);
+                }}
+                onOpenProject={() => void handleOpenProject()}
+                onWorkspaceDeleted={handleWorkspaceDeleted}
+              />
+            )
           }
         >
+          {activeTab && !splitDockMode ? (
+            <div
+              className="absolute inset-0"
+              style={{
+                visibility:
+                  activeRail === "chat" && !showSettings ? "visible" : "hidden",
+                pointerEvents:
+                  activeRail === "chat" && !showSettings ? "auto" : "none",
+              }}
+              aria-hidden={activeRail !== "chat" || showSettings}
+            >
+              <div className="flex h-full flex-col">
+                {showTabBar && <TabBar />}
+                <div className="min-h-0 flex-1">
+                  <SessionRouter
+                    isActive={activeRail === "chat" && !showSettings}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
           {/* main：插件页 | 会话页/欢迎页（底层）+ 新会话草稿 overlay（覆盖层）。
             欢迎页 / 新会话页的入场动画由 NewConversationLanding 内各元素自行承担
             （标题逐词模糊渐现、输入框上滑淡入、提示词错落淡入），非整页位移；
             故此处不做整页过渡，直接切换，新页元素各自重新入场。 */}
-          {activeRail === "knowledge" ? (
+          {activeRail === "automation" ? (
+            <div
+              key="automation"
+              className="app-shell-content-stage relative h-full min-h-0 min-w-0 w-full overflow-x-hidden animate-in fade-in duration-300"
+            >
+              <AutomationMainView />
+            </div>
+          ) : activeRail === "knowledge" ? (
             <div
               key="knowledge"
-              className="app-shell-content-stage relative h-full min-h-0 animate-in fade-in duration-300"
+              className="app-shell-content-stage relative h-full min-h-0 min-w-0 w-full overflow-x-hidden animate-in fade-in duration-300"
             >
               <KnowledgeBasePage />
             </div>
@@ -1644,17 +1682,8 @@ export function App(): JSX.Element {
                 )}
               </AnimatePresence>
             </div>
-          ) : activeTab ? (
-            splitDockMode ? (
-              <WorkspaceDock />
-            ) : (
-              <div className="flex h-full flex-col">
-                {showTabBar && <TabBar />}
-                <div className="min-h-0 flex-1">
-                  <SessionRouter />
-                </div>
-              </div>
-            )
+          ) : activeTab && splitDockMode ? (
+            <WorkspaceDock />
           ) : null}
         </AppShell>
 

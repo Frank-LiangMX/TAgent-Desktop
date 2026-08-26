@@ -826,6 +826,7 @@ export class NoProgressGuard {
 
     let hasProgress = false
     let hasNoProgress = false
+    let hasProgressingEdit = false
 
     for (const call of batch.calls ?? []) {
       const cls = this.classifyCall(call.toolName, call.input, call.output, call.error)
@@ -839,6 +840,7 @@ export class NoProgressGuard {
 
       if (cls.cls === 'progress') {
         hasProgress = true
+        if (classifyTool(call.toolName) === 'edit') hasProgressingEdit = true
       } else if (cls.cls === 'noProgress') {
         hasNoProgress = true
       }
@@ -851,7 +853,7 @@ export class NoProgressGuard {
         if (next > this.repeatedFailureCount) this.repeatedFailureCount = next
       }
 
-      // edit 类：成功标记 + per-file 计数（edit 恒 neutral，不计入 np；仅 per-file 与失败计数）
+      // edit 类：成功标记 + per-file 计数；不同的成功修改会推进状态机。
       if (classifyTool(call.toolName) === 'edit') {
         const file = normalizePath(getField(call.input, 'file_path', 'path'))
         if (file) {
@@ -897,10 +899,10 @@ export class NoProgressGuard {
 
     // —— 批次级状态推进 ——
     if (hasProgress) {
-      return this.handleProgress(batch.observedAt)
+      return this.handleProgress(batch.observedAt, hasProgressingEdit)
     }
     // 非进展批次（含 noProgress 与 neutral）：统一走阶段推进；
-    // 仅 noProgress 才计入 noProgressBatchCount（7.1.3 / 7.3.2），neutral（Edit/Read）不计入，
+    // 仅 noProgress 才计入 noProgressBatchCount（7.1.3 / 7.3.2），neutral（Read）不计入，
     // 但 neutral 仍可能触发 7.1.2（同文件 5 次编辑）与 batchesSinceReflection 推进。
     return this.handleNoProgress(batch.observedAt, hasNoProgress)
   }
@@ -952,7 +954,7 @@ export class NoProgressGuard {
 
   // ===== 内部：状态推进 =====
 
-  private handleProgress(observedAt: number): NoProgressDecision {
+  private handleProgress(observedAt: number, preserveEditProgress = false): NoProgressDecision {
     const wasNonObserving = this.phase !== 'observing'
     // 有效进展 → 重置无进展累计（§6.4 / §8：新证据回 observing）
     this.noProgressBatchCount = 0
@@ -962,14 +964,24 @@ export class NoProgressGuard {
     this.perFileEditCount.clear()
     this.perCommandEmptyTimeout.clear()
     this.hadSuccessfulEditSinceLastProgress = false
-    this.lastSuccessSig = undefined
-    this.successRepeatStreak = 0
-    this.maxSuccessRepeat = 0
+    if (!preserveEditProgress) {
+      this.lastSuccessSig = undefined
+      this.successRepeatStreak = 0
+      this.maxSuccessRepeat = 0
+    } else {
+      // 保留当前 Edit 签名，下一次相同 Edit 才能被识别为重复操作。
+      this.maxSuccessRepeat = this.successRepeatStreak
+    }
     this.maxStrategyVariants = 0
     // brief 2026-08-19 §4：有效进展重置本轮 edit/verify 追踪（新证据 = 重新计 edit 窗口），
     // 但保留 verifyPromptFired（防重复：每轮最多一次验证提示）
-    this.hadEditThisTurn = false
-    this.hadVerifyEvidenceThisTurn = false
+    if (!preserveEditProgress) {
+      this.hadEditThisTurn = false
+      this.hadVerifyEvidenceThisTurn = false
+    } else {
+      this.hadEditThisTurn = true
+      this.hadVerifyEvidenceThisTurn = false
+    }
     this.failedActionSigsByStrategy.clear()
     this.lastProgressAt = observedAt
     this.phase = 'observing'
@@ -1105,8 +1117,8 @@ export class NoProgressGuard {
     }
 
     if (tclass === 'edit') {
-      // Edit/Write 成功只是动作完成，非目标进展（§6.4）；不进 np 计数，仅 per-file 计数。
-      // 但「同一动作+同一目标+同一有效结果连续重复成功」应视为无进展（brief 2026-08-19 §1）。
+      // 成功且实际修改不同区域/内容的 Edit 是有效进展；只有连续重复同一成功
+      // 操作才算无进展。否则连续正常迭代编辑会被误判为「0 个新证据」。
       if (outcome.isFailure) {
         this.resetSuccessStreak()
         return { cls: 'neutral', actionSig, outcomeSig, outcome }
@@ -1126,9 +1138,8 @@ export class NoProgressGuard {
           return { cls: 'noProgress', actionSig, outcomeSig, outcome }
         }
       }
-      return { cls: 'neutral', actionSig, outcomeSig, outcome }
+      return { cls: 'progress', actionSig, outcomeSig, outcome }
     }
-
     // 调查 / MCP / Task / 未知：权重低，不计入；同样打断成功 streak
     this.resetSuccessStreak()
     return { cls: 'neutral', actionSig, outcomeSig, outcome }

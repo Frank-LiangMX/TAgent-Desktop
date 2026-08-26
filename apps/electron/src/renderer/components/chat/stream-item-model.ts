@@ -503,9 +503,17 @@ export function commitStreamTextToLastAssistant<T extends StreamItemLike>(
       if (b.type !== "text") continue;
       const existing = textBlockText(b).trim();
       if (!existing) continue;
-      // 已有相同 / 互为前缀 → 视为已落盘，防与随后 sdk_message 双份
-      if (existing === t || t.startsWith(existing) || existing.startsWith(t))
-        return prev;
+      // 已有内容更长或相同 → 视为已落盘，防与随后 sdk_message 双份。
+      if (existing === t || existing.startsWith(t)) return prev;
+      // streamState 可能比 sdk_message 先走完整；已有块只是它的前缀时，
+      // 必须补全同一个正文块，否则下面清空 streamState 后只会留下半句话。
+      if (t.startsWith(existing)) {
+        const content = [...m.content];
+        content[content.indexOf(b)] = { ...b, text: t };
+        const next = [...prev];
+        next[i] = { ...prev[i]!, message: { ...m, content } };
+        return next;
+      }
     }
     const content = [...m.content];
     const toolIdx = content.findIndex((b) => b.type === "tool_use");

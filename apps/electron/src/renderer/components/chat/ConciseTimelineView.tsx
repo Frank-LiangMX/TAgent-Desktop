@@ -24,6 +24,29 @@ import { isNearBottom } from './thinking-scroll-follow'
 
 /** 与 `.agent-concise-run__panel` / fold 的 grid 过渡时长对齐；收起时晚卸 DOM，否则动画无内容可过渡 */
 const CONCISE_PANEL_MS = 280
+const COMPLETION_TRANSITION_MS = 320
+
+/** live→idle 时给执行块和最终正文一个共同的收束窗口。 */
+function useCompletionTransition(isLive: boolean): boolean {
+  const [active, setActive] = useState(false)
+  const wasLiveRef = useRef(isLive)
+
+  useEffect(() => {
+    if (isLive) {
+      wasLiveRef.current = true
+      setActive(false)
+      return
+    }
+    if (!wasLiveRef.current) return
+    wasLiveRef.current = false
+    setActive(true)
+    const id = window.setTimeout(() => setActive(false), COMPLETION_TRANSITION_MS)
+    return () => window.clearTimeout(id)
+  }, [isLive])
+
+  return active
+}
+
 
 /** open 时立即挂载；关闭后等过渡结束再卸，避免「展开有动画、收起瞬切」 */
 function useMountDuringTransition(open: boolean, instant = false): boolean {
@@ -62,6 +85,7 @@ export function ConciseTimelineView({
   isLatestTurn = false,
   workedMs = 0,
 }: ConciseTimelineViewProps): JSX.Element | null {
+  const isCompleting = useCompletionTransition(isLive)
   if (segments.length === 0) return null
 
   const processSegs = segments.filter(
@@ -98,7 +122,7 @@ export function ConciseTimelineView({
   return (
     <div className="agent-concise-timeline">
       {hasProcess ? (
-        <RunQueueShell workedMs={workedMs} isLive={isLive} isLatestTurn={isLatestTurn}>
+        <RunQueueShell workedMs={workedMs} isLive={isLive} isLatestTurn={isLatestTurn} isCompleting={isCompleting}>
           {processSegs.map((seg, idx) => {
             if (seg.kind === 'thinking') {
               return (
@@ -148,6 +172,7 @@ export function ConciseTimelineView({
           key={seg.key}
           text={seg.text}
           tone="final"
+          animateOnComplete={isCompleting}
           isStreaming={isLive && seg.key === lastNarrativeKey}
         />
       ))}
@@ -168,11 +193,13 @@ const RunQueueShell = memo(function RunQueueShell({
   workedMs,
   isLive,
   isLatestTurn,
+  isCompleting,
   children,
 }: {
   workedMs: number
   isLive: boolean
   isLatestTurn: boolean
+  isCompleting: boolean
   children: ReactNode
 }): JSX.Element {
   // 重挂载默认折叠（切会话回来）；仅中途挂上的 live 轮才默认开
@@ -231,7 +258,7 @@ const RunQueueShell = memo(function RunQueueShell({
   }
 
   return (
-    <div className={cn('agent-concise-run', isLive && 'is-live')}>
+    <div className={cn('agent-concise-run', isLive && 'is-live', isCompleting && 'is-completing')}>
       <button
         type="button"
         className="agent-concise-run__head"
@@ -256,6 +283,7 @@ const RunQueueShell = memo(function RunQueueShell({
           'agent-concise-run__panel',
           open && 'is-open',
           collapseInstant && 'is-instant',
+          isCompleting && 'is-completing',
         )}
         aria-hidden={!open}
       >
@@ -827,12 +855,14 @@ const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
   target,
   tone,
   smoothStreaming,
+  animateOnComplete,
   onCaughtUp,
 }: {
   seed: string
   target: string
   tone: 'progress' | 'final'
   smoothStreaming: boolean
+  animateOnComplete: boolean
   onCaughtUp: () => void
 }): JSX.Element | null {
   const { displayedContent } = useSmoothStream({
@@ -874,7 +904,7 @@ const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
   }
 
   return (
-    <div className="agent-concise-narrative agent-concise-narrative--final">
+    <div className={cn('agent-concise-narrative agent-concise-narrative--final', animateOnComplete && 'agent-concise-narrative--completion-enter')}>
       {/* py-0：句尾工具条贴正文，避免 Message 默认 py-2.5 撑出大空白 */}
       <Message from="assistant" className="py-0">
         <MessageContent>
@@ -890,10 +920,12 @@ const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
 const NarrativeRow = memo(function NarrativeRow({
   text,
   tone,
+  animateOnComplete = false,
   isStreaming,
 }: {
   text: string
   tone: 'progress' | 'final'
+  animateOnComplete?: boolean
   isStreaming: boolean
 }): JSX.Element {
   // 历史轮 / progress→final remount（!isStreaming 且已完整）：instant 全文，不重播打字机
@@ -967,6 +999,7 @@ const NarrativeRow = memo(function NarrativeRow({
       seed={seed}
       target={text}
       tone={tone}
+      animateOnComplete={animateOnComplete}
       smoothStreaming={smoothStreaming}
       onCaughtUp={() => setOneShot(false)}
     />

@@ -1,9 +1,10 @@
 # Phase 0 brief · KB 只读检索验证
 
-> **角色**：实现（可派 `kscc -p --model glm-5.2 --dangerously-skip-permissions`）  
-> **契约**：`docs/dev/knowledge-base/KB-PRODUCT-SPEC-v1.md` §5 Phase 0  
-> **本轮**：只做「目录 → 检索工具 → 来源标注」，**不建 kb.db / 不写 Rail UI / 不写入**  
-> **禁止**：改 L0–L5、BotMemory、FusionRoom；禁止 commit（除非用户另嘱）
+> **状态**：已完成的历史派工 brief；当前实施进度以 KB-PHASE0-FINDINGS.md 和 KB-PRODUCT-SPEC-v2.md 为准
+> **原始角色**：实现（可派 kscc agent cli）
+> **原始契约**：KB-PRODUCT-SPEC-v1.md §5 Phase 0
+> **原始本轮**：只做「目录 → 检索工具 → 来源标注」，**不建 kb.db / 不写 Rail UI / 不写入**
+> **原始禁止项**：改 L0–L5、BotMemory、FusionRoom；禁止 commit（除非用户另嘱）
 
 ---
 

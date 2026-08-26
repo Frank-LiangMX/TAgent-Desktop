@@ -75,6 +75,17 @@ export function pauseActivePlanSteps(progress: PlanProgress): PlanProgress {
   return changed ? { ...progress, steps } : progress;
 }
 
+/** 新回合确实开始工作时，恢复当前暂停步骤；后续 pending 步骤保持不变。 */
+export function resumePausedPlanStep(progress: PlanProgress): PlanProgress {
+  const index = progress.steps.findIndex((step) => step.status !== "completed");
+  if (index < 0 || progress.steps[index]?.status !== "paused") return progress;
+  return {
+    ...progress,
+    steps: progress.steps.map((step, stepIndex) =>
+      stepIndex === index ? { ...step, status: "running" as const } : step,
+    ),
+  };
+}
 /**
  * 模型不写隐藏标记时：用步骤标题是否出现在 assistant 正文里推断推进。
  * 只匹配足够长的标题，避免短词误伤；命中后将该步标为 running，并把更早步骤标完成。

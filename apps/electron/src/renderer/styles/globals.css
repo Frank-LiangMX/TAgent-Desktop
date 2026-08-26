@@ -342,6 +342,14 @@ samp {
   --tw-prose-invert-hr: hsl(var(--foreground) / 0.22);
   --tw-prose-invert-quote-borders: hsl(var(--foreground) / 0.34);
 }
+
+/* 知识库文档阅读：取消 typography 默认 65ch 窄栏，吃满主区 */
+.kb-reader,
+.kb-reader .prose,
+.kb-reader .kb-reader-prose {
+  width: 100% !important;
+  max-width: none !important;
+}
 .prose :where(li)::marker {
   color: hsl(var(--foreground) / 0.72);
 }
