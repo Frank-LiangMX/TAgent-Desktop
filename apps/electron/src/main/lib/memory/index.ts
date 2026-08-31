@@ -161,5 +161,5 @@ export {
 } from './context-limits-store'
 export { completeMemoryLlm, embedTexts, resolveMemoryLlmChannel, MemoryLlmError } from './memory-llm-client'
 export { indexSessionChunks, searchSessionVectors } from './session-vector-store'
-export { buildMemoryRecallContext } from './memory-retrieval'
+export { buildMemoryRecallContext, searchLongTermMemory, rankMemoryRecallEntries, type MemoryRecallHit } from './memory-retrieval'
 export { buildGraphPayload } from './learning-graph-service'

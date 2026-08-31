@@ -23,6 +23,7 @@ export type BrowserRendererApi = {
   browserSelectTab: (input: { sessionId: string; tabId: string }) => Promise<BrowserWorkspaceState>
   browserObserve: (sessionId: string) => Promise<unknown>
   browserExtractText: (sessionId: string) => Promise<{ sessionId: string; tabId: string; url: string; title: string; text: string }>
+  browserPrepareDownload: (sessionId: string) => Promise<{ ok: boolean; message?: string }>
   browserExtractWindowText: (sessionId: string) => Promise<{ sessionId: string; tabId: string; url: string; title: string; text: string }>
   browserScreenshot: (sessionId: string) => Promise<{ dataUrl: string }>
   browserStop: (sessionId: string) => Promise<{ ok: boolean; message?: string }>

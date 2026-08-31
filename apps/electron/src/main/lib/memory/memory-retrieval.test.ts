@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildMemoryRecallContext } from './memory-retrieval'
+import { buildMemoryRecallContext, rankMemoryRecallEntries } from './memory-retrieval'
 
 const record = (overrides: Partial<{
   id: number; session_slug: string; title: string; summary: string; key_facts: string
@@ -25,6 +25,24 @@ describe('buildMemoryRecallContext', () => {
     expect(context).toContain('标签上限为 4')
   })
 
+
+describe('rankMemoryRecallEntries', () => {
+  it('ranks only entries related to the current query', () => {
+    const hits = rankMemoryRecallEntries('请修复 Claude 的协议调用', [
+      { source: 'L3', text: '不是 http 协议，而是固定死的 Claude 客户端' },
+      { source: 'L5', text: '用户偏好简洁回答' },
+    ])
+
+    expect(hits).toHaveLength(1)
+    expect(hits[0]?.source).toBe('L3')
+  })
+
+  it('does not turn a generic prompt into a memory dump', () => {
+    expect(
+      rankMemoryRecallEntries('继续处理这个问题', [{ source: 'L3', text: '不要把协议当成 HTTP' }]),
+    ).toEqual([])
+  })
+})
   it('does not recall the current session or trivial prompts', () => {
     expect(buildMemoryRecallContext('继续处理这个问题', [record({ session_slug: 'current-session' })], 'current-session')).toBe('')
     expect(buildMemoryRecallContext('你好', [record()], 'current-session')).toBe('')

@@ -23,5 +23,5 @@ export const BROWSER_IPC_CHANNELS = {
   BACK: 'browser:back', FORWARD: 'browser:forward', RELOAD: 'browser:reload', NEW_TAB: 'browser:new-tab',
   CLOSE_TAB: 'browser:close-tab', SELECT_TAB: 'browser:select-tab', OBSERVE: 'browser:observe', EXTRACT_TEXT: 'browser:extract-text', EXTRACT_WINDOW_TEXT: 'browser:extract-window-text', CLICK: 'browser:click',
   TYPE: 'browser:type', SCROLL: 'browser:scroll', SCREENSHOT: 'browser:screenshot', STOP: 'browser:stop',
-  TAKEOVER: 'browser:takeover', RESUME: 'browser:resume', STATE_CHANGED: 'browser:state-changed', OPEN_REQUEST: 'browser:open-request', CLOSE_REQUEST: 'browser:close-request',
+  TAKEOVER: 'browser:takeover', RESUME: 'browser:resume', PREPARE_DOWNLOAD: 'browser:prepare-download', STATE_CHANGED: 'browser:state-changed', OPEN_REQUEST: 'browser:open-request', CLOSE_REQUEST: 'browser:close-request',
 } as const

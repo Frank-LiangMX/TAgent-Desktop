@@ -12,6 +12,8 @@ const PATH_SLUG_TOKEN_RE = /[A-Za-z]--[\w.-]+/
 const KEYWORD_PREFERENCE_FLUFF_RE =
   /用户在多个场景提到「[^」]{1,30}」，可能是一个重要偏好/
 
+
+const INCOMPLETE_MEMORY_END_RE = /(?:[，、：:]|而|也|的|或|和|与|是|为|在|对|把|将|等)$/
 /** L5 洞察最低置信度（consolidation 结构化写入） */
 export const MIN_INSIGHT_CONFIDENCE = 0.75
 
@@ -33,9 +35,12 @@ export function isLowQualityMemoryContent(
     // 纠正正则常截出半截指令，例如「改成员，Slate」「改为队列模式。」
     if (/^改[成变为成员标签]/.test(t) && t.length <= 16) return true
     if (/^(改为队列模式|改变标签，跳过|改成员)/.test(t) && t.length < 24) return true
-    // 截断到句中（以顿号/逗号/冒号/「而」「的」等收尾）
-    if (/[，、：:而的是]$/.test(t) && t.length < 40) return true
+
   }
+
+  // 适用于所有层级：孤立的半句话不能直接成为长期记忆。
+  if (INCOMPLETE_MEMORY_END_RE.test(t)) return true
+  if (isCorrection && /(?:\.\.\.|…)$/.test(t)) return true
 
   return false
 }

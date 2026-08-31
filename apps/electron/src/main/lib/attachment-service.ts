@@ -4,8 +4,16 @@
  * 存储路径：~/.tagent[-dev]/attachments/{sessionId}/{uuid}.{ext}
  * 参考 Proma attachment-service.ts，适配 TAgent 数据目录。
  */
-import { join, extname } from 'node:path'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs'
+import { extname, isAbsolute, join, relative, resolve } from 'node:path'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { getConfigDir } from './config/config-paths'
 import { rmSyncRobust } from './fs-robust'
@@ -85,6 +93,74 @@ export function readAttachmentAsBase64(localPath: string): string {
 /** 附件绝对路径（供注入 prompt / Read 工具；越界抛错） */
 export function getAttachmentAbsolutePath(localPath: string): string {
   return resolveAttachmentPath(localPath)
+}
+
+/**
+ * target 是否严格位于 parent 之内（不含 parent 自身）。
+ * 经 resolve 后 `..` 已折叠，再用 relative 判定，可拒绝绝对路径穿越。
+ * 与 kb-fs-index 的 isWithinRoot 同构。
+ */
+function isWithinParent(parent: string, target: string): boolean {
+  const rel = relative(parent, target)
+  if (rel === '') return false // target === parent 本身（目录），非文件
+  return !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+/**
+ * 解析「当前会话」附件的绝对路径，强制会话隔离（kb_read_attachment 用）。
+ *
+ * 接受相对 localPath（标准存储形 `{sessionId}/{uuid}.{ext}`，或裸 `{uuid}.{ext}`），
+ * 解析后必须严格落在 `attachments/{sessionId}/` 之内。拒绝：
+ * - 绝对路径、空路径
+ * - 路径穿越（`..` 折叠后逃出会话目录）
+ * - 其它会话的附件（第一段不是当前 sessionId 且不在本会话目录内）
+ * - 符号链接逃逸（realpath 后跑到会话目录之外）
+ * - 不存在 / 非常规文件
+ *
+ * 注意：与 {@link resolveAttachmentPath} 不同——后者只校验落在 attachments 根下，
+ * 不区分会话；本函数额外钉死当前 sessionId，故 kb_read_attachment 不能偷读他局附件。
+ *
+ * @returns 安全的绝对路径（已通过 realpath + isFile 校验）；任何违规返回 null（由调用方转 error JSON）
+ */
+export function resolveSessionAttachmentPath(
+  sessionId: string,
+  localPath: string,
+): string | null {
+  const sid = typeof sessionId === 'string' ? sessionId.trim() : ''
+  if (!sid) return null
+  const raw = typeof localPath === 'string' ? localPath.trim() : ''
+  if (!raw || isAbsolute(raw)) return null
+
+  // 统一分隔符后判定解析基：标准形以 `{sessionId}/` 开头 → 相对 attachments 根；
+  // 裸文件名 → 相对当前会话目录。最终都以 isWithinParent(sessionDir, …) 兜底。
+  const normalized = raw.replace(/\\/g, '/')
+  const attachmentsDir = getAttachmentsDir()
+  const sessionDir = join(attachmentsDir, sid)
+  const resolved =
+    normalized === sid || normalized.startsWith(sid + '/')
+      ? resolve(attachmentsDir, normalized)
+      : resolve(sessionDir, normalized)
+  if (!isWithinParent(sessionDir, resolved)) return null
+
+  // lexical 包含不足以抵御中间目录 / 文件本身的符号链接；realpath 两侧后再次校验。
+  let realSession: string
+  let realResolved: string
+  try {
+    realSession = realpathSync(sessionDir)
+    realResolved = realpathSync(resolved)
+  } catch {
+    return null // 会话目录或附件不存在 / 链接断裂
+  }
+  if (!isWithinParent(realSession, realResolved)) return null
+
+  let st: ReturnType<typeof statSync>
+  try {
+    st = statSync(resolved)
+  } catch {
+    return null
+  }
+  if (!st.isFile()) return null
+  return resolved
 }
 
 /** 删除单个附件 */

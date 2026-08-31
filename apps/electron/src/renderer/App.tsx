@@ -14,6 +14,8 @@ import type {
   AskUserResponse,
   ExitPlanModeRequest,
   ExitPlanModeResponse,
+  KbProposeSaveRequest,
+  KbProposeSaveResponse,
   Channel,
   ChannelBalanceResult,
   ChannelCreateInput,
@@ -99,7 +101,11 @@ import { SessionSidebar } from "./components/workspace/SessionSidebar";
 import { PluginStoreSettings } from "./components/settings/PluginStoreSettings";
 import { RolesPage } from "./components/roles/RolesPage";
 import { KnowledgeBasePage } from "./components/knowledge-base/KnowledgeBasePage";
-import { KnowledgeBaseSidebar } from "./components/knowledge-base/KnowledgeBaseSidebar";
+import {
+  BASE_SELECT_EVENT,
+  DOCUMENT_SELECT_EVENT,
+  KnowledgeBaseSidebar,
+} from "./components/knowledge-base/KnowledgeBaseSidebar";
 import { AutomationMainView } from "./components/automation/AutomationMainView";
 import { AutomationSidebar } from "./components/automation/AutomationSidebar";
 import {
@@ -116,6 +122,7 @@ import { Chat, type SessionMeta } from "./components/chat/Chat";
 import { WelcomeStart } from "./components/shell/WelcomeStart";
 import { NewConversationLanding } from "./components/chat/NewConversationLanding";
 import { ProjectOnboarding } from "./components/chat/ProjectOnboarding";
+import { AppStartupScreen } from "./components/shell/AppStartupScreen";
 import {
   MAX_SESSION_TABS,
   tabsAtom,
@@ -148,6 +155,7 @@ import { useGlobalSessionRunSync } from "./hooks/useGlobalSessionRunSync";
 import { useGlobalPermissionSync } from "./hooks/useGlobalPermissionSync";
 import { useAskUserSync } from "./hooks/useAskUserSync";
 import { useExitPlanSync } from "./hooks/useExitPlanSync";
+import { useKbProposeSaveSync } from "./hooks/useKbProposeSaveSync";
 import { useInitUpdaterListener } from "./atoms/updater";
 import { useSplitSuggestion } from "./hooks/useSplitSuggestion";
 import { acknowledgeSessionStatusAtom } from "./atoms/session-status-atoms";
@@ -323,6 +331,13 @@ declare global {
         description?: string;
         sourcePaths?: string[];
       }) => Promise<import("@tagent/shared").KnowledgeBaseRecord>;
+      /** 刀 3：更新知识库元数据（名称 / 描述；relatedWorkspaceIds 暂不暴露 UI） */
+      updateKnowledgeBase: (input: {
+        id: string;
+        name?: string;
+        description?: string;
+        relatedWorkspaceIds?: string[];
+      }) => Promise<import("@tagent/shared").KnowledgeBaseRecord>;
       deleteKnowledgeBase: (id: string) => Promise<{ ok: boolean }>;
       addKnowledgeBaseSource: (input: {
         id: string;
@@ -340,6 +355,9 @@ declare global {
         knowledgeBaseId: string;
         title: string;
         content?: string;
+        kind?: "note" | "contract" | "norm" | "snapshot";
+        snapshotAt?: number;
+        originNote?: string;
         sourceUrl?: string;
         sourceProvider?: "wps" | "feishu" | "google-drive" | "unknown";
         sourceExternalId?: string;
@@ -354,13 +372,33 @@ declare global {
       deleteKnowledgeBaseDocument: (id: string) => Promise<{ ok: boolean }>;
       importKnowledgeBaseDocument: (input: {
         knowledgeBaseId: string;
-      }) => Promise<import("@tagent/shared").KnowledgeBaseDocument | null>;
+      }) => Promise<
+        | import("@tagent/shared").KnowledgeBaseDocument
+        | import("@tagent/shared").KnowledgeBaseDocument[]
+        | null
+      >;
+      importKnowledgeBaseDocumentDownload: (input: {
+        knowledgeBaseId: string;
+        sessionId: string;
+        title?: string;
+      }) => Promise<import("@tagent/shared").KnowledgeBaseDocument[]>;
       // 会话元数据（重命名/置顶/归档/模型 modelId/子代理委派积极性/思考强度/会话偏好 CLI 工人；status 由主进程内部写，渲染层不直接写）
       importKnowledgeBaseDocumentFromUrl: (input: {
         knowledgeBaseId: string;
         url: string;
         title?: string;
       }) => Promise<import("@tagent/shared").KnowledgeBaseDocument>;
+      /** 刀 4：导出知识库分享包（主进程弹保存对话框写 .tagent-kb.json） */
+      exportKnowledgeBase: (input: { id: string }) => Promise<{
+        ok: boolean;
+        path?: string;
+        reason?: "canceled" | "build_failed" | "write_failed";
+        error?: string;
+      }>;
+      /** 刀 4：导入知识库分享包（主进程弹打开对话框读 JSON → 建新库；取消返回 null） */
+      importKnowledgeBaseShare: () => Promise<
+        import("@tagent/shared").KnowledgeBaseRecord | null
+      >;
       updateSessionMeta: (
         id: string,
         patch: {
@@ -466,6 +504,14 @@ declare global {
         cb: (e: { requestId: string }) => void,
       ) => () => void;
       respondExitPlanMode: (response: ExitPlanModeResponse) => Promise<void>;
+      // 知识库受控写入 kb_propose_save（主进程推确认请求 / 已决回听 / renderer 回用户选择）
+      onKbProposeSaveRequest: (
+        cb: (request: KbProposeSaveRequest) => void,
+      ) => () => void;
+      onKbProposeSaveResolved: (
+        cb: (e: { requestId: string }) => void,
+      ) => () => void;
+      respondKbProposeSave: (response: KbProposeSaveResponse) => Promise<void>;
       // 计划模式切换（主进程 → 渲染进程：EnterPlanMode / ExitPlanMode 审批后更新输入框 pill）
       onPlanModeChanged: (
         cb: (payload: {
@@ -991,6 +1037,8 @@ declare global {
 export function App(): JSX.Element {
   const reducedMotion = useReducedMotion();
   const [showSettings, setShowSettings] = useState(false);
+  const [appReady, setAppReady] = useState(false);
+  const [startupSplashDismissed, setStartupSplashDismissed] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] =
     useState<SettingsTab>("general");
   /** 主区导航：会话 | 插件 | 记忆 | 角色库（设置走对话框，打开时 rail 高亮 settings） */
@@ -1062,6 +1110,8 @@ export function App(): JSX.Element {
   useAskUserSync();
   // 全局 ExitPlanMode 审批队列同步（REQUEST 入队 / RESOLVED 出队，切会话不丢审批横幅）
   useExitPlanSync();
+  // 全局 kb_propose_save 确认队列同步（REQUEST 入队 / RESOLVED 出队，切会话不丢确认横幅）
+  useKbProposeSaveSync();
   // 自动更新状态监听（主进程推送 → atom → 顶栏 UpdateBanner）
   useInitUpdaterListener();
   // 非分屏模式下频繁切换两个会话 → 建议开启分屏
@@ -1168,10 +1218,54 @@ export function App(): JSX.Element {
       );
   }, []);
 
+  // 知识库来源芯片点击：切到知识库 rail，再派发选中目标库 + 文档。
+  // 事件监听都在 useEffect 里注册（paint 之后），不能用 rAF（会在监听注册前派发而丢失），
+  // 故用 setTimeout 留出挂载 + effect 注册时间；KnowledgeBaseDetail 还会在列表未加载完时
+  // 暂存 pendingDocumentId，兜底加载竞态。
+  useEffect(() => {
+    const openKnowledgeDocument = (event: Event): void => {
+      const detail = (
+        event as CustomEvent<{
+          knowledgeBaseId?: string;
+          documentId?: string;
+        }>
+      ).detail;
+      if (!detail?.documentId) return;
+      const { knowledgeBaseId, documentId } = detail;
+      setShowSettings(false);
+      setActiveRail("knowledge");
+      setSidebarOpen(false);
+      // 先选库（KnowledgeBasePage 监听 BASE_SELECT_EVENT → setSelectedId）；
+      // 再延迟选文档，等库详情挂载 + 其 DOCUMENT_SELECT_EVENT 监听注册 + 列表开始加载。
+      window.setTimeout(() => {
+        if (knowledgeBaseId) {
+          window.dispatchEvent(
+            new CustomEvent(BASE_SELECT_EVENT, { detail: { knowledgeBaseId } }),
+          );
+        }
+        window.setTimeout(() => {
+          window.dispatchEvent(
+            new CustomEvent(DOCUMENT_SELECT_EVENT, { detail: { documentId } }),
+          );
+        }, 100);
+      }, 50);
+    };
+    window.addEventListener(
+      "tagent:open-knowledge-document",
+      openKnowledgeDocument,
+    );
+    return () =>
+      window.removeEventListener(
+        "tagent:open-knowledge-document",
+        openKnowledgeDocument,
+      );
+  }, []);
+
   const railActive: RailItem = showSettings ? "settings" : activeRail;
 
-  // 启动时同时加载渠道列表 + 工作区列表 + 用户档案
+  // 启动时同时加载渠道列表 + 工作区列表 + 用户档案；开屏只等待这一次。
   useEffect(() => {
+    let cancelled = false;
     void Promise.all([
       loadChannels(),
       loadWorkspaces(),
@@ -1189,9 +1283,15 @@ export function App(): JSX.Element {
           /* 校验失败不影响启动 */
         }
       })(),
-    ]);
+    ])
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setAppReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [loadChannels, loadWorkspaces, loadUserProfile, setTabs, setActiveTabId]);
-
   // tab 切换（包括 TabBar / Dockview 内切换）就是工作区被激活，跨重启记住它。
   useEffect(() => {
     if (activeTab?.workspaceId) {
@@ -1545,27 +1645,6 @@ export function App(): JSX.Element {
             )
           }
         >
-          {activeTab && !splitDockMode ? (
-            <div
-              className="absolute inset-0"
-              style={{
-                visibility:
-                  activeRail === "chat" && !showSettings ? "visible" : "hidden",
-                pointerEvents:
-                  activeRail === "chat" && !showSettings ? "auto" : "none",
-              }}
-              aria-hidden={activeRail !== "chat" || showSettings}
-            >
-              <div className="flex h-full flex-col">
-                {showTabBar && <TabBar />}
-                <div className="min-h-0 flex-1">
-                  <SessionRouter
-                    isActive={activeRail === "chat" && !showSettings}
-                  />
-                </div>
-              </div>
-            </div>
-          ) : null}
           {/* main：插件页 | 会话页/欢迎页（底层）+ 新会话草稿 overlay（覆盖层）。
             欢迎页 / 新会话页的入场动画由 NewConversationLanding 内各元素自行承担
             （标题逐词模糊渐现、输入框上滑淡入、提示词错落淡入），非整页位移；
@@ -1605,14 +1684,24 @@ export function App(): JSX.Element {
             >
               <RolesPage />
             </div>
+          ) : activeTab ? (
+            splitDockMode ? (
+              <WorkspaceDock />
+            ) : (
+              <div className="flex h-full flex-col">
+                {showTabBar && <TabBar />}
+                <div className="min-h-0 flex-1">
+                  <SessionRouter />
+                </div>
+              </div>
+            )
           ) : workspaces.length === 0 ? (
             <ProjectOnboarding onOpenProject={() => void handleOpenProject()} />
-          ) : (draftSession && draftSession.id !== activeTab?.sessionId) ||
-            !activeTab ? (
+          ) : (
             // 欢迎页和草稿会话共享同一舞台，保证它们在切换时可以交叉过渡。
             <div className="relative h-full min-h-0">
               <AnimatePresence initial={false} mode="sync">
-                {draftSession && draftSession.id !== activeTab?.sessionId ? (
+                {draftSession ? (
                   <motion.div
                     key={draftSession.id}
                     className="absolute inset-0"
@@ -1682,10 +1771,16 @@ export function App(): JSX.Element {
                 )}
               </AnimatePresence>
             </div>
-          ) : activeTab && splitDockMode ? (
-            <WorkspaceDock />
-          ) : null}
+          )}
         </AppShell>
+
+        {!startupSplashDismissed ? (
+          <AppStartupScreen
+            ready={appReady}
+            reducedMotion={reducedMotion === true}
+            onExited={() => setStartupSplashDismissed(true)}
+          />
+        ) : null}
 
         <SettingsDialog
           open={showSettings}

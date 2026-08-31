@@ -26,6 +26,7 @@ export default defineConfig({
       'apps/electron/src/main/lib/permission/session-whitelist.test.ts',
       'apps/electron/src/renderer/components/chat/session-turn-model.test.ts',
       'apps/electron/src/renderer/components/chat/tool-phrase.test.ts',
+      'apps/electron/src/renderer/components/chat/kb-citations.test.ts',
       'tools/chaos-openai-proxy/server.test.mjs',
     ],
     // 满负荷并行时个别用例（如 session-store 动态 import + module reload）

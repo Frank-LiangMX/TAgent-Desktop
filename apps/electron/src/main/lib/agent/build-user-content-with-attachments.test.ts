@@ -69,4 +69,25 @@ describe('build-user-content-with-attachments', () => {
       expect(content.at(-1)).toMatchObject({ type: 'text', text })
     }
   })
+
+  it('二进制附件（.docx）→ 附 localPath + kb_read_attachment 提示（供 Agent 调用工具）', async () => {
+    const { saveAttachment } = await import('../attachment-service')
+    const { appendAttachmentPathsToPrompt } = await import('./build-user-content-with-attachments')
+    const saved = saveAttachment({
+      sessionId: 's1',
+      filename: 'report.docx',
+      mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      data: Buffer.from('placeholder').toString('base64'),
+    })
+    const out = appendAttachmentPathsToPrompt('请整理成知识库', [saved])
+    expect(out).toContain('请整理成知识库')
+    expect(out).toContain('report.docx')
+    // 透出相对 localPath，供 Agent 喂给 kb_read_attachment
+    expect(out).toContain('localPath=' + saved.localPath)
+    expect(out).toContain('kb_read_attachment')
+    // 仍保留绝对路径供回退
+    expect(out).toContain('绝对路径')
+    // 工作流提示：整理需先读取再经确认保存
+    expect(out).toContain('kb_propose_save')
+  })
 })

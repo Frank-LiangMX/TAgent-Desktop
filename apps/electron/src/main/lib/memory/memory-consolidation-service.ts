@@ -47,20 +47,28 @@ export interface Insight {
   content: string
   confidence: number
   evidenceIds: string[]
+  scope?: 'global' | 'project'
+  workspaceSlug?: string
 }
 
 /** 带结构化元数据的矛盾（ADR §3） */
 export interface Contradiction {
   existingId?: string
   content: string
+  scope?: 'global' | 'project'
+  workspaceSlug?: string
   evidenceIds: string[]
 }
 
 /** 批量整理的结构化输出（ADR §3 完整结构） */
 export interface BatchOutput {
+  /** Set only when the whole batch has one known workspace. */
+  workspaceSlug?: string
   sessionKeyFacts: Array<{ sessionId: string; facts: string[] }>
   memoryCandidates: Array<{
     targetLayer: 'L0' | 'L1' | 'L2' | 'L3'
+    scope?: 'global' | 'project'
+    workspaceSlug?: string
     content: string
     confidence: number
     evidenceIds: string[]
@@ -425,6 +433,41 @@ export function sanitizeBatchOutput(raw: unknown): BatchOutput {
   return { sessionKeyFacts, memoryCandidates, insights, contradictions }
 }
 
+function inferBatchWorkspace(evidence: readonly MemoryEvidenceEntry[]): string | undefined {
+  const workspaceSlugs = evidence.map((entry) => entry.workspaceSlug ?? entry.nudgeCandidate?.workspaceSlug)
+  if (workspaceSlugs.length === 0 || workspaceSlugs.some((slug) => !slug)) return undefined
+
+  const unique = [...new Set(workspaceSlugs)]
+  return unique.length === 1 ? unique[0] : undefined
+}
+
+function applyBatchWorkspaceScope(output: BatchOutput, workspaceSlug?: string): BatchOutput {
+  if (!workspaceSlug) return output
+
+  return {
+    ...output,
+    workspaceSlug,
+    memoryCandidates: output.memoryCandidates.map((candidate) => {
+      const isProjectLayer = candidate.targetLayer === 'L1' || candidate.targetLayer === 'L3'
+      return {
+        ...candidate,
+        scope: isProjectLayer ? 'project' : 'global',
+        workspaceSlug: isProjectLayer ? workspaceSlug : undefined,
+      }
+    }),
+    insights: output.insights.map((insight) => ({
+      ...insight,
+      scope: 'project',
+      workspaceSlug,
+    })),
+    contradictions: output.contradictions.map((contradiction) => ({
+      ...contradiction,
+      scope: 'project',
+      workspaceSlug,
+
+    })),
+  }
+}
 // ===== 默认 applier =====
 
 /**
@@ -474,13 +517,15 @@ export async function defaultApplier(
         evidence: c.evidenceIds,
         suggestedContent: c.content,
         userMessage: `后台整理建议写入 ${c.targetLayer}：${c.content.slice(0, 80)}`,
+        scope: c.scope,
+        workspaceSlug: c.workspaceSlug,
       })
     }
   }
 
   // 3. insights + contradictions 通过 ReflectService 纯本地应用（不调 LLM）
   if (output.insights.length > 0 || output.contradictions.length > 0) {
-    await reflectService.applyConsolidationInsights(mode, output.insights, output.contradictions)
+    await reflectService.applyConsolidationInsights(mode, output.insights, output.contradictions, output.workspaceSlug)
   }
 }
 
@@ -694,7 +739,7 @@ export class ConsolidationService {
         evidence: batch,
         mode,
       })
-      const output = sanitizeBatchOutput(rawOutput as unknown)
+      const output = applyBatchWorkspaceScope(sanitizeBatchOutput(rawOutput as unknown), inferBatchWorkspace(batch))
       const requestsUsed = 1
 
       // 构建 pending application record（在任何 apply 之前持久化）

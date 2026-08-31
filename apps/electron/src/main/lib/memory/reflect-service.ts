@@ -21,6 +21,7 @@ import * as path from 'node:path'
 
 import { isLowQualityInsight } from './memory-candidate-quality'
 import { getMemoryDir, memoryLayerService, type MemoryMode } from './memory-layer-service'
+import { getProjectMemoryDir } from '../config/config-paths'
 import type { Insight, Contradiction } from './memory-consolidation-service'
 
 // ===== 类型定义 =====
@@ -702,10 +703,16 @@ ${summary || '（无）'}
     const mdEntries: string[] = []
     for (const insight of insights) {
       mdEntries.push(`- [${timestamp}] ${insight.content}`)
-      if (insight.confidence !== undefined || (insight.evidenceIds?.length ?? 0) > 0) {
+      if (
+        insight.confidence !== undefined ||
+        (insight.evidenceIds?.length ?? 0) > 0 ||
+        insight.scope !== undefined
+      ) {
         const meta: Record<string, unknown> = {}
         if (insight.confidence !== undefined) meta.confidence = insight.confidence
         if (insight.evidenceIds?.length) meta.evidenceIds = insight.evidenceIds
+        if (insight.scope !== undefined) meta.scope = insight.scope
+        if (insight.workspaceSlug) meta.workspaceSlug = insight.workspaceSlug
         mdEntries.push(`  <!-- ${JSON.stringify(meta)} -->`)
       }
     }
@@ -736,9 +743,10 @@ ${summary || '（无）'}
   async applyConsolidationInsights(
     mode: MemoryMode,
     insights: Insight[],
-    contradictions: Contradiction[]
+    contradictions: Contradiction[],
+    workspaceSlug?: string
   ): Promise<{ insightsApplied: number; contradictionsApplied: number }> {
-    const dir = getMemoryDir(mode)
+    const dir = workspaceSlug ? getProjectMemoryDir(workspaceSlug) : getMemoryDir(mode)
     let insightsApplied = 0
     let contradictionsApplied = 0
 

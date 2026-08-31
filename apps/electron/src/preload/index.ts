@@ -42,6 +42,8 @@ import type {
   AskUserResponse,
   ExitPlanModeRequest,
   ExitPlanModeResponse,
+  KbProposeSaveRequest,
+  KbProposeSaveResponse,
   BoardProjectedSummary,
   BoardProjectedTask,
   Channel,
@@ -284,6 +286,13 @@ const electronAPI = {
     description?: string;
     sourcePaths?: string[];
   }) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.CREATE_KNOWLEDGE_BASE, input),
+  /** 更新知识库元数据（刀 3：名称 / 描述 / 关联工作区弱关联；关联仅用于荐库，不自动挂载） */
+  updateKnowledgeBase: (input: {
+    id: string;
+    name?: string;
+    description?: string;
+    relatedWorkspaceIds?: string[];
+  }) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_KNOWLEDGE_BASE, input),
   deleteKnowledgeBase: (id: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.DELETE_KNOWLEDGE_BASE, id),
   addKnowledgeBaseSource: (input: { id: string; path: string }) =>
@@ -299,6 +308,9 @@ const electronAPI = {
     knowledgeBaseId: string;
     title: string;
     content?: string;
+    kind?: "note" | "contract" | "norm" | "snapshot";
+    snapshotAt?: number;
+    originNote?: string;
     sourceUrl?: string;
     sourceProvider?: "wps" | "feishu" | "google-drive" | "unknown";
     sourceExternalId?: string;
@@ -325,7 +337,20 @@ const electronAPI = {
       AGENT_IPC_CHANNELS.IMPORT_KNOWLEDGE_BASE_DOCUMENT,
       input,
     ),
-  /** 用系统默认程序打开文件（相对路径按会话工作区解析） */
+  /**
+   * 从已认证内置浏览器会话捕获下载导入（DOCX/XLSX 原始下载）。
+   * 调用前需先用 browserOpenWindow 打开云文档并完成登录；调用后请在内置浏览器中点击「下载为 DOCX/XLSX」，
+   * 主进程经 will-download 捕获后复用现有解析器导入。XLSX 按工作表拆分为多篇文档。
+   */
+  importKnowledgeBaseDocumentDownload: (input: {
+    knowledgeBaseId: string;
+    sessionId: string;
+    title?: string;
+  }) =>
+    ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.IMPORT_KNOWLEDGE_BASE_DOCUMENT_DOWNLOAD,
+      input,
+    ) as Promise<import("@tagent/shared").KnowledgeBaseDocument[]>,
   importKnowledgeBaseDocumentFromUrl: (input: {
     knowledgeBaseId: string;
     url: string;
@@ -335,6 +360,20 @@ const electronAPI = {
       AGENT_IPC_CHANNELS.IMPORT_KNOWLEDGE_BASE_DOCUMENT_URL,
       input,
     ),
+  /** 刀 4：导出知识库分享包（主进程弹保存对话框写 .tagent-kb.json） */
+  exportKnowledgeBase: (input: { id: string }) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.EXPORT_KNOWLEDGE_BASE, input) as Promise<{
+      ok: boolean;
+      path?: string;
+      reason?: "canceled" | "build_failed" | "write_failed";
+      error?: string;
+    }>,
+  /** 刀 4：导入知识库分享包（主进程弹打开对话框读 JSON → 建新库；取消返回 null） */
+  importKnowledgeBaseShare: () =>
+    ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.IMPORT_KNOWLEDGE_BASE_SHARE,
+    ) as Promise<import("@tagent/shared").KnowledgeBaseRecord | null>,
+  /** 用系统默认程序打开文件（相对路径按会话工作区解析） */
   openPath: (input: { sessionId: string; path: string }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.OPEN_PATH, input),
   /** 解析路径是否存在（文件 chip 存在性检查），返回存在的绝对路径或 null */
@@ -736,6 +775,30 @@ const electronAPI = {
   },
   respondExitPlanMode: (response: ExitPlanModeResponse) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESPOND, response),
+  // 知识库受控写入 kb_propose_save（主进程推确认请求 / 已决回听 / renderer 回用户选择）
+  onKbProposeSaveRequest: (cb: (request: KbProposeSaveRequest) => void) => {
+    const handler = (_e: unknown, request: KbProposeSaveRequest): void =>
+      cb(request);
+    ipcRenderer.on(AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_REQUEST, handler);
+    return () =>
+      ipcRenderer.removeListener(
+        AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_REQUEST,
+        handler,
+      );
+  },
+  /** 用户 respond / 会话清理后推送，渲染层按 requestId 出队 */
+  onKbProposeSaveResolved: (cb: (e: { requestId: string }) => void) => {
+    const handler = (_e: unknown, payload: { requestId: string }): void =>
+      cb(payload);
+    ipcRenderer.on(AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_RESOLVED, handler);
+    return () =>
+      ipcRenderer.removeListener(
+        AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_RESOLVED,
+        handler,
+      );
+  },
+  respondKbProposeSave: (response: KbProposeSaveResponse) =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_RESPOND, response),
   // 计划模式切换（主进程 → 渲染进程：EnterPlanMode / ExitPlanMode 审批后更新输入框 pill）
   onPlanModeChanged: (
     cb: (payload: { sessionId: string; mode: string; source: string }) => void,
@@ -1636,6 +1699,11 @@ const electronAPI = {
       BROWSER_IPC_CHANNELS.EXTRACT_WINDOW_TEXT,
       sessionId,
     ) as Promise<import("@tagent/shared").BrowserPageTextResult>,
+  browserPrepareDownload: (sessionId: string) =>
+    ipcRenderer.invoke(
+      BROWSER_IPC_CHANNELS.PREPARE_DOWNLOAD,
+      sessionId,
+    ) as Promise<import("@tagent/shared").BrowserActionResult>,
   browserClick: (input: BrowserElementActionRequest) =>
     ipcRenderer.invoke(BROWSER_IPC_CHANNELS.CLICK, input) as Promise<{
       ok: boolean;

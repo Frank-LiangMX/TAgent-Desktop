@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Check, Clock3, Loader2, Pause, Play, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, Check, Clock3, Loader2, Pause, Play, Plus, Trash2 } from 'lucide-react'
 import type { Automation, Channel, CreateAutomationInput, UpdateAutomationInput } from '@tagent/shared'
 import { formatScheduleLabel } from '@tagent/shared'
 import { toast } from 'sonner'
-import { SettingsPageIntro } from '@tagent/ui'
+import {
+  DestructiveConfirmDialog,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  SettingsPageIntro,
+} from '@tagent/ui'
 
 type AutomationApi = {
   listAutomations: () => Promise<Automation[]>
@@ -83,6 +91,7 @@ export function AutomationSettings({ editAutomation = null, onSaved, onCancel }:
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Automation | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const selectedChannel = useMemo(
@@ -241,12 +250,17 @@ export function AutomationSettings({ editAutomation = null, onSaved, onCancel }:
     }
   }
 
-  const handleDelete = async (automation: Automation): Promise<void> => {
-    if (!window.confirm(`确定删除「${automation.name}」吗？运行历史也会一起删除。`)) return
+  const requestDelete = (automation: Automation): void => {
+    setDeleteTarget(automation)
+  }
+  const confirmDelete = async (): Promise<void> => {
+    const automation = deleteTarget
+    if (!automation) return
     setBusyId(automation.id)
     try {
       await getApi().deleteAutomation(automation.id)
       setAutomations((current) => current.filter((item) => item.id !== automation.id))
+      setDeleteTarget(null)
       toast.success('自动化任务已删除')
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : '删除失败')
@@ -280,13 +294,18 @@ export function AutomationSettings({ editAutomation = null, onSaved, onCancel }:
           </label>
           <label className="settings-field">
             <span className="settings-field-label">执行频率</span>
-            <select value={draft.scheduleType} onChange={(event) => updateDraft('scheduleType', event.target.value as Draft['scheduleType'])} className="settings-input">
-              <option value="interval">每隔一段时间</option>
-              <option value="daily">每天</option>
-              <option value="weekly">每周</option>
-              <option value="monthly">每月</option>
-              <option value="once">执行一次</option>
-            </select>
+            <Select value={draft.scheduleType} onValueChange={(value) => updateDraft('scheduleType', value as Draft['scheduleType'])}>
+              <SelectTrigger className="settings-input settings-select-trigger">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="scrollbar-thin !z-[130]">
+                <SelectItem value="interval">每隔一段时间</SelectItem>
+                <SelectItem value="daily">每天</SelectItem>
+                <SelectItem value="weekly">每周</SelectItem>
+                <SelectItem value="monthly">每月</SelectItem>
+                <SelectItem value="once">执行一次</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
 
           {draft.scheduleType === 'interval' ? (
@@ -299,9 +318,14 @@ export function AutomationSettings({ editAutomation = null, onSaved, onCancel }:
           {draft.scheduleType === 'weekly' ? (
             <label className="settings-field">
               <span className="settings-field-label">星期</span>
-              <select value={draft.dayOfWeek} onChange={(event) => updateDraft('dayOfWeek', Number(event.target.value))} className="settings-input">
-                <option value={1}>周一</option><option value={2}>周二</option><option value={3}>周三</option><option value={4}>周四</option><option value={5}>周五</option><option value={6}>周六</option><option value={0}>周日</option>
-              </select>
+              <Select value={String(draft.dayOfWeek)} onValueChange={(value) => updateDraft('dayOfWeek', Number(value))}>
+                <SelectTrigger className="settings-input settings-select-trigger">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="scrollbar-thin !z-[130]">
+                  <SelectItem value="1">周一</SelectItem><SelectItem value="2">周二</SelectItem><SelectItem value="3">周三</SelectItem><SelectItem value="4">周四</SelectItem><SelectItem value="5">周五</SelectItem><SelectItem value="6">周六</SelectItem><SelectItem value="0">周日</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
           ) : null}
 
@@ -328,18 +352,28 @@ export function AutomationSettings({ editAutomation = null, onSaved, onCancel }:
 
           <label className="settings-field">
             <span className="settings-field-label">AI 渠道</span>
-            <select value={draft.channelId} onChange={(event) => handleChannelChange(event.target.value)} className="settings-input" disabled={channels.length === 0}>
-              {channels.length === 0 ? <option value="">暂无可用渠道</option> : null}
-              {channels.map((channel) => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
-            </select>
+            <Select value={draft.channelId || '__none__'} onValueChange={(value) => handleChannelChange(value === '__none__' ? '' : value)} disabled={channels.length === 0}>
+              <SelectTrigger className="settings-input settings-select-trigger">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="scrollbar-thin !z-[130]">
+                {channels.length === 0 ? <SelectItem value="__none__" disabled>暂无可用渠道</SelectItem> : null}
+                {channels.map((channel) => <SelectItem key={channel.id} value={channel.id}>{channel.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </label>
 
           <label className="settings-field">
             <span className="settings-field-label">模型（可选）</span>
-            <select value={draft.modelId} onChange={(event) => updateDraft('modelId', event.target.value)} className="settings-input" disabled={models.length === 0}>
-              <option value="">使用渠道默认模型</option>
-              {models.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
-            </select>
+            <Select value={draft.modelId || '__default__'} onValueChange={(value) => updateDraft('modelId', value === '__default__' ? '' : value)} disabled={models.length === 0}>
+              <SelectTrigger className="settings-input settings-select-trigger">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="scrollbar-thin !z-[130]">
+                <SelectItem value="__default__">使用渠道默认模型</SelectItem>
+                {models.map((model) => <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </label>
 
           <label className="settings-field md:col-span-2">
@@ -391,7 +425,7 @@ export function AutomationSettings({ editAutomation = null, onSaved, onCancel }:
                   <button type="button" onClick={() => void handleToggle(automation.id)} disabled={busyId === automation.id} className="settings-icon-button" aria-label={automation.enabled ? `暂停 ${automation.name}` : `启用 ${automation.name}`} title={automation.enabled ? '暂停' : '启用'}>
                     {busyId === automation.id ? <Loader2 size={14} className="animate-spin" /> : automation.enabled ? <Pause size={14} /> : <Play size={14} />}
                   </button>
-                  <button type="button" onClick={() => void handleDelete(automation)} disabled={busyId === automation.id} className="settings-icon-button settings-icon-button--danger" aria-label={`删除 ${automation.name}`} title="删除">
+                  <button type="button" onClick={() => requestDelete(automation)} disabled={busyId === automation.id} className="settings-icon-button settings-icon-button--danger" aria-label={`删除 ${automation.name}`} title="删除">
                     <Trash2 size={14} />
                   </button>
                 </div>
@@ -400,6 +434,15 @@ export function AutomationSettings({ editAutomation = null, onSaved, onCancel }:
           </div>
         )}
       </section>
+      <DestructiveConfirmDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => { if (!open && !busyId) setDeleteTarget(null) }}
+        title="删除自动化任务？"
+        description={deleteTarget ? <>确定删除「{deleteTarget.name}」吗？运行历史也会一起删除。</> : null}
+        confirmLabel="删除任务"
+        onConfirm={confirmDelete}
+        icon={<AlertTriangle size={16} aria-hidden="true" />}
+      />
     </div>
   )
 }

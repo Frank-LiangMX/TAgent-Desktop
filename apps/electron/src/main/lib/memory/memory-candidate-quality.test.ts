@@ -55,6 +55,13 @@ describe('isLowQualityMemoryContent', () => {
       }),
     ).toBe(false)
   })
+    expect(
+      isLowQualityMemoryContent('不是遇到困难就绕弯路。比如说这种，uasset就是不可读的，我纵使再努力也', {
+        targetLayer: 'L3',
+      }),
+    ).toBe(true)
+    expect(isLowQualityMemoryContent('回答必须简洁，')).toBe(true)
+    expect(isLowQualityMemoryContent('回答必须简洁')).toBe(false)
 })
 
 describe('isLowQualityInsight', () => {

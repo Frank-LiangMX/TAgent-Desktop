@@ -2,7 +2,7 @@ import { Type } from '@earendil-works/pi-ai'
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core'
 import { getBrowserController } from '../ipc/browser-service'
 
-export const BROWSER_SYSTEM_PROMPT = '## 受管浏览器\n网页/实时查询策略：如果当前运行时提供 WebSearch 或 WebFetch，先使用它们获取初步结果；如果工具失败、为空、过短、缺乏来源或时效性不足，系统会注入回退指令，此时必须调用 browser_open，再使用 browser_observe、browser_click、browser_type、browser_scroll 或 browser_screenshot 完成网页核验。如果当前运行时没有普通网页搜索工具，网页查询直接使用 browser_open。用户明确要求打开网页或执行网页交互时，直接使用 browser_open。遇到登录、验证码或风控挑战时，调用 browser_takeover，让用户在网页标签中完成操作；用户完成后再调用 browser_resume。'
+export const BROWSER_SYSTEM_PROMPT = '## 受管浏览器\n网页/实时查询策略：如果当前会话已绑定知识库，且知识库提示要求先调用 kb_search，必须先完成 kb_search，不能先调用 WebSearch 或 WebFetch；仅当知识库模式允许通用补充且知识库检索结果不足时，才可使用网页工具。没有知识库前置要求时，如果当前运行时提供 WebSearch 或 WebFetch，可先使用它们获取初步结果；如果工具失败、为空、过短、缺乏来源或时效性不足，系统会注入回退指令，此时必须调用 browser_open，再使用 browser_observe、browser_click、browser_type、browser_scroll 或 browser_screenshot 完成网页核验。如果当前运行时没有普通网页搜索工具，网页查询直接使用 browser_open。用户明确要求打开网页或执行网页交互时，直接使用 browser_open。遇到登录、验证码或风控挑战时，调用 browser_takeover，让用户在网页标签中完成操作；用户完成后再调用 browser_resume。'
 
 export interface BrowserToolContext {
   sessionId: string

@@ -20,6 +20,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { getWorkspaceById } from '../workspace/workspace-manager'
+import { getProjectMemoryDir } from '../config/config-paths'
 import { isLowQualityMemoryContent } from './memory-candidate-quality'
 import { getMemoryDir, memoryLayerService, type MemoryMode } from './memory-layer-service'
 import { readStageQueue } from './stage-queue-service'
@@ -28,6 +29,9 @@ import { readStageQueue } from './stage-queue-service'
 
 /** Nudge 类型 */
 export type NudgeType = 'behavior_repeat' | 'fact_repeat' | 'correction' | 'project_repeat'
+export type MemoryScope = 'global' | 'project'
+export type MemoryRecordStatus = 'candidate' | 'pending_approval' | 'active' | 'rejected' | 'deferred'
+
 
 /** Nudge 候选项 */
 export interface NudgeCandidate {
@@ -38,6 +42,10 @@ export interface NudgeCandidate {
   evidence: string[]
   suggestedContent: string
   userMessage: string // LLM 改写后的用户友好提示
+  scope?: MemoryScope
+  workspaceSlug?: string
+  evidenceIds?: string[]
+  status?: MemoryRecordStatus
 }
 
 /** Nudge 结果 */
@@ -55,6 +63,41 @@ interface PatternMatch {
   evidence: string[]
 }
 
+
+function correctionEvidence(content: string): string {
+  // 让 LLM 看到完整用户语句；不要把 regex 的局部命中直接当作记忆正文。
+  return content.replace(/\s+/g, ' ').trim().slice(0, 240)
+}
+
+const PROJECT_TITLE_STOP_WORDS = new Set(['项目', '会话', '问题', '继续', '处理', '修复', '相关'])
+
+function projectTitleTerms(title: string): Set<string> {
+  const terms = new Set<string>()
+  for (const part of title.toLocaleLowerCase().match(/[a-z0-9_]{3,}|[\u4e00-\u9fff]{2,}/g) ?? []) {
+    if (/^[\u4e00-\u9fff]+$/.test(part)) {
+      for (let i = 0; i < part.length - 1; i++) {
+        const term = part.slice(i, i + 2)
+        if (!PROJECT_TITLE_STOP_WORDS.has(term)) terms.add(term)
+      }
+    } else if (!PROJECT_TITLE_STOP_WORDS.has(part)) {
+      terms.add(part)
+    }
+  }
+  return terms
+}
+
+function hasRelatedProjectTitles(titles: string[]): boolean {
+  const termSets = titles.map(projectTitleTerms)
+  for (let i = 0; i < termSets.length; i++) {
+    for (let j = i + 1; j < termSets.length; j++) {
+      const left = termSets[i] ?? new Set<string>()
+      const right = termSets[j] ?? new Set<string>()
+      const overlap = [...left].filter((term) => right.has(term))
+      if (overlap.length >= 2) return true
+    }
+  }
+  return false
+}
 // ===== 配置 =====
 
 /** 各层冷却 turn 数（2026-07-06 P0 临时止血：L0=10 / L1=20 / L2=10 / L3=30） */
@@ -153,7 +196,8 @@ class NudgeService {
   onTurnStart(
     sessionId: string,
     recentMessages: Array<{ role: 'user' | 'assistant'; content: string }>,
-    mode: MemoryMode
+    mode: MemoryMode,
+    workspaceSlug?: string
   ): NudgeCandidate[] {
     // 增加 turn 计数
     const currentTurn = (this.sessionTurnCounts.get(sessionId) || 0) + 1
@@ -190,7 +234,7 @@ class NudgeService {
     if (localCandidates.length > 0) {
       // fire-and-forget：同步检测候选，异步写入 evidence sink
       const candidatesToRecord = localCandidates
-        .map((pattern) => this.createNudgeCandidate(pattern))
+        .map((pattern) => this.createNudgeCandidate(pattern, workspaceSlug))
         .filter((c) => !this.isInCooldown(sessionId, c.targetLayer))
 
       if (candidatesToRecord.length > 0) {
@@ -339,10 +383,10 @@ class NudgeService {
   /**
    * 检测项目重复
    *
-   * 设计文档 §6.5.4：用户加载项目 ≥2 次相似 → 候选 L1（询问是否存为模板）。
+   * 需要至少 3 个历史会话，且标题之间有主题重叠，才生成候选 L1。
    *
    * 实现：读 L4 最近 50 个会话，按 workspace_slug 分组，
-   * 同一 workspace 下 ≥2 个会话即触发（简化版，不做标题相似度判断）。
+   * 仅凭“打开过同一 workspace”不足以形成项目记忆。
    *
    * 跨 session 检测——与 fact_repeat / behavior_repeat（当前 session 内检测）不同，
    * project_repeat 依赖 L4 历史数据，是真正的跨会话记忆。
@@ -369,13 +413,14 @@ class NudgeService {
 
       // 同一 workspace ≥2 个会话 → 候选（正文用人可读项目名，不把 sanitizePath slug 当记忆）
       for (const [slug, group] of byWorkspace) {
-        if (group.length < 2) continue
+        if (group.length < 3) continue
 
         const titles = group
           .map((s) => s.title || '')
           .filter(Boolean)
           .slice(0, 5) // 证据最多 5 条
         if (titles.length === 0) continue
+        if (!hasRelatedProjectTitles(titles)) continue
 
         const label = this.resolveProjectLabel(slug)
         patterns.push({
@@ -518,26 +563,28 @@ class NudgeService {
     ]
 
     for (const regex of preferencePatterns) {
-      const matches = new Map<string, string[]>()
+      const matches = new Map<string, Map<number, string>>()
 
-      for (const msg of userMessages) {
+      for (let messageIndex = 0; messageIndex < userMessages.length; messageIndex++) {
+        const msg = userMessages[messageIndex] ?? ''
         const found = msg.match(regex)
         if (found) {
           for (const match of found) {
-            const evidence = matches.get(match) || []
-            evidence.push(msg.slice(0, 100))
+            const evidence = matches.get(match) || new Map<number, string>()
+            evidence.set(messageIndex, msg.slice(0, 100))
             matches.set(match, evidence)
           }
         }
       }
 
       // ≥5 次的行为作为候选（2026-07-06 P0 临时止血：从 ≥2 改到 ≥5）
-      for (const [pattern, evidence] of matches) {
-        if (evidence.length >= 5) {
+      for (const [pattern, evidenceByMessage] of matches) {
+        if (evidenceByMessage.size >= 5) {
+          const evidence = [...evidenceByMessage.values()]
           patterns.push({
             type: 'behavior_repeat',
             pattern,
-            count: evidence.length,
+            count: evidenceByMessage.size,
             evidence,
           })
         }
@@ -566,26 +613,28 @@ class NudgeService {
     ]
 
     for (const regex of factPatterns) {
-      const matches = new Map<string, string[]>()
+      const matches = new Map<string, Map<number, string>>()
 
-      for (const msg of userMessages) {
+      for (let messageIndex = 0; messageIndex < userMessages.length; messageIndex++) {
+        const msg = userMessages[messageIndex] ?? ''
         const found = msg.match(regex)
         if (found) {
           for (const match of found) {
-            const evidence = matches.get(match) || []
-            evidence.push(msg.slice(0, 100))
+            const evidence = matches.get(match) || new Map<number, string>()
+            evidence.set(messageIndex, msg.slice(0, 100))
             matches.set(match, evidence)
           }
         }
       }
 
       // ≥3 次的事实作为候选（2026-07-06 P0 临时止血：从 ≥1 改到 ≥3）
-      for (const [pattern, evidence] of matches) {
-        if (evidence.length >= 3) {
+      for (const [pattern, evidenceByMessage] of matches) {
+        if (evidenceByMessage.size >= 3) {
+          const evidence = [...evidenceByMessage.values()]
           patterns.push({
             type: 'fact_repeat',
             pattern,
-            count: evidence.length,
+            count: evidenceByMessage.size,
             evidence,
           })
         }
@@ -625,14 +674,16 @@ class NudgeService {
           }
 
           for (const match of found) {
-            if (isLowQualityMemoryContent(match, { type: 'correction', targetLayer: 'L3' })) {
+            const content = correctionEvidence(msg.content)
+            if (!match) continue
+            if (isLowQualityMemoryContent(content, { type: 'correction', targetLayer: 'L3' })) {
               continue
             }
             patterns.push({
               type: 'correction',
-              pattern: match,
+              pattern: content,
               count: 1,
-              evidence: [context ? `AI: ${context}` : '', `用户: ${msg.content.slice(0, 100)}`],
+              evidence: [context ? `AI: ${context}` : '', `用户: ${content}`],
             })
           }
         }
@@ -661,7 +712,7 @@ class NudgeService {
   /**
    * 创建 Nudge 候选项
    */
-  private createNudgeCandidate(pattern: PatternMatch): NudgeCandidate {
+  private createNudgeCandidate(pattern: PatternMatch, workspaceSlug?: string): NudgeCandidate {
     const id = `${pattern.type}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     const targetLayer = this.getLayerForType(pattern.type)
 
@@ -676,6 +727,10 @@ class NudgeService {
       evidence: pattern.evidence,
       suggestedContent: pattern.pattern,
       userMessage,
+      scope: workspaceSlug ? 'project' : 'global',
+      workspaceSlug,
+      evidenceIds: [id],
+      status: 'candidate',
     }
   }
 
@@ -822,7 +877,8 @@ class NudgeService {
         break
       case 'L1': {
         // L1 项目画像 + 索引层（P4.2 ≤30 行硬约束）
-        const l1Path = path.join(dir, 'L1_project.md')
+        const l1Dir = nudge.workspaceSlug ? getProjectMemoryDir(nudge.workspaceSlug) : dir
+        const l1Path = path.join(l1Dir, 'L1_project.md')
         if (fs.existsSync(l1Path)) {
           const l1Content = fs.readFileSync(l1Path, 'utf-8')
           const l1Lines = l1Content
@@ -846,7 +902,10 @@ class NudgeService {
         break
       case 'L3':
         // L3 纠错记录 - 追加到 corrections.jsonl
-        await this.appendCorrection(dir, nudge)
+        const correctionDir = nudge.scope === 'project' && nudge.workspaceSlug
+          ? getProjectMemoryDir(nudge.workspaceSlug)
+          : dir
+        await this.appendCorrection(correctionDir, nudge)
         break
     }
   }
@@ -905,6 +964,10 @@ class NudgeService {
       evidence: string[]
       suggestedContent: string
       userMessage: string
+      scope?: MemoryScope
+      workspaceSlug?: string
+      evidenceIds?: string[]
+      status?: MemoryRecordStatus
     },
     mode: MemoryMode
   ): Promise<void> {
@@ -916,6 +979,10 @@ class NudgeService {
       evidence: entry.evidence,
       suggestedContent: entry.suggestedContent,
       userMessage: entry.userMessage,
+      scope: entry.scope,
+      workspaceSlug: entry.workspaceSlug,
+      evidenceIds: entry.evidenceIds ?? [entry.pattern],
+      status: entry.status ?? 'active',
     }
     await this.writeToLayer(nudge, mode)
   }
@@ -951,7 +1018,7 @@ class NudgeService {
 
     if (!fs.existsSync(filePath)) {
       // 创建新文件（header + 首行）
-      const line = this.formatMemoryLine(timestamp, content, 1, timestamp, sourceSession)
+      const line = this.formatMemoryLine(timestamp, content, 1, timestamp, sourceSession, nudge)
       const header = `# ${section}\n\n${line}\n`
       await fs.promises.writeFile(filePath, header, 'utf-8')
       // 记录 hash
@@ -993,7 +1060,7 @@ class NudgeService {
       console.log(`[Nudge] 去重更新：pattern="${content.slice(0, 30)}..." hit_count 增加`)
     } else {
       // 新增：appendFile 追加单行（patch 语义，不动现有内容）
-      const line = this.formatMemoryLine(timestamp, content, 1, timestamp, sourceSession)
+      const line = this.formatMemoryLine(timestamp, content, 1, timestamp, sourceSession, nudge)
       await fs.promises.appendFile(filePath, line + '\n', 'utf-8')
       // 更新 hash（读文件重新计算，因为 appendFile 后文件内容变了）
       const updated = await fs.promises.readFile(filePath, 'utf-8')
@@ -1061,9 +1128,20 @@ class NudgeService {
     content: string,
     hitCount: number,
     lastRef: string,
-    sourceSession: string
+    sourceSession: string,
+    nudge?: NudgeCandidate,
   ): string {
-    return `- [${date}] ${content} <!-- hit:${hitCount} last_ref:${lastRef} src:${sourceSession} -->`
+    const metadata = [
+      `hit:${hitCount}`,
+      `last_ref:${lastRef}`,
+      `src:${sourceSession}`,
+      `scope:${nudge?.scope ?? 'global'}`,
+      nudge?.workspaceSlug ? `workspace:${encodeURIComponent(nudge.workspaceSlug)}` : '',
+      `status:${nudge?.status ?? 'active'}`,
+    ]
+      .filter(Boolean)
+      .join(' ')
+    return `- [${date}] ${content} <!-- ${metadata} -->`
   }
 
   /**
@@ -1088,17 +1166,17 @@ class NudgeService {
    * 增加 hit_count + 更新 last_referenced_at
    */
   private bumpHitCount(line: string, newDate: string, sourceSession: string): string {
-    const match = line.match(/<!-- hit:(\d+) last_ref:([^ ]+) src:([^ ]*) -->/)
+    const match = line.match(/<!-- hit:(\d+) last_ref:([^ ]+) src:([^ ]*)(?: [^>]*)? -->/)
     if (!match) {
       // 老格式行（无元数据），补上元数据
       const textOnly = line.replace(/<!--.*?-->/, '').trim()
-      return `${textOnly} <!-- hit:2 last_ref:${newDate} src:${sourceSession} -->`
+      return `${textOnly} <!-- hit:2 last_ref:${newDate} src:${sourceSession} scope:global status:active -->`
     }
     const currentHit = parseInt(match[1] ?? '1', 10)
     const newHit = currentHit + 1
     return line.replace(
-      /<!-- hit:\d+ last_ref:[^ ]+ src:[^ ]* -->/,
-      `<!-- hit:${newHit} last_ref:${newDate} src:${sourceSession} -->`
+      /<!-- hit:\d+ last_ref:[^ ]+ src:[^ ]*/,
+      `<!-- hit:${newHit} last_ref:${newDate} src:${sourceSession}`
     )
   }
 
@@ -1111,6 +1189,11 @@ class NudgeService {
       timestamp: Date.now(),
       correction: nudge.suggestedContent,
       context: nudge.evidence.join('\n'),
+      scope: nudge.scope ?? 'global',
+      workspaceSlug: nudge.workspaceSlug,
+      status: 'active',
+      evidenceIds: nudge.evidenceIds ?? [nudge.id],
+      sourceSession: nudge.evidence[0]?.slice(0, 8) ?? '',
     }
     const line = JSON.stringify(record) + '\n'
 

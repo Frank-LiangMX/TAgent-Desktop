@@ -43,6 +43,7 @@ import {
 import {
   buildMemoryPromptSections,
   memoryLayerService,
+  searchLongTermMemory,
   type MemoryMode,
 } from '../../memory'
 
@@ -1233,6 +1234,13 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             asyncAuto: true,
             retrieveRag: async (query: string) => {
               const out: Array<{ source: string; text: string; score?: number }> = []
+              for (const hit of searchLongTermMemory(sessionMode, query, 3)) {
+                out.push({
+                  source: hit.source,
+                  text: hit.text,
+                  score: hit.score,
+                })
+              }
               try {
                 const hits = memoryLayerService.searchSessions(sessionMode, query, 5)
                 for (const h of hits) {

@@ -13,6 +13,14 @@ describe("knowledge-base-document-store cloud URL parsing", () => {
     );
   });
 
+  test("从 WPS 规范文档标题和 Markdown 链接中提取 URL", () => {
+    const pasted =
+      "【金山文档 | WPS云文档】 JX3\\_UE\\_场景资源命名规范\\n[https://365.kdocs.cn/l/chkOSp07TCPM](https://365.kdocs.cn/l/chkOSp07TCPM)";
+    expect(extractCloudDocumentUrl(pasted)).toBe(
+      "https://365.kdocs.cn/l/chkOSp07TCPM",
+    );
+  });
+
   test("保留直接 URL 并清理复制时的标点", () => {
     expect(
       extractCloudDocumentUrl("https://365.kdocs.cn/l/cqmXGBESDqBl。"),
@@ -34,5 +42,4 @@ describe("knowledge-base-document-store cloud URL parsing", () => {
       ),
     ).toMatchObject({ provider: "google-drive", externalId: "abc123" });
   });
-
 });

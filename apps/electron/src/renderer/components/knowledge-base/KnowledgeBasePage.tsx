@@ -1,19 +1,24 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSetAtom } from "jotai";
 import {
   ArrowClockwise,
   Books,
   CaretDown,
   CheckCircle,
+  DotsThreeVertical,
+  DownloadSimple,
   FileArrowUp,
   FileText,
   FolderOpen,
   LinkSimple,
+  Share,
   Trash,
   WarningCircle,
 } from "@phosphor-icons/react";
+import { toast } from "sonner";
 import type {
   KnowledgeBaseDocument,
+  KnowledgeBaseDocumentKind,
   KnowledgeBaseRecord,
 } from "@tagent/shared";
 import {
@@ -25,6 +30,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
   MessageResponse,
 } from "@tagent/ui";
@@ -39,6 +45,11 @@ import {
   NEW_DOCUMENT_EVENT,
   REMOVE_SOURCE_EVENT,
 } from "./KnowledgeBaseSidebar";
+import {
+  KIND_CREATE_OPTIONS,
+  kindLabel,
+  templateForKind,
+} from "./kb-document-templates";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -65,6 +76,7 @@ function KnowledgeOverviewStat({
     </div>
   );
 }
+
 function extractHttpUrl(raw: string): string {
   const embedded = raw.match(/https?:\/\/[^\s<>{}\]\)]+/i)?.[0];
   return (embedded ?? raw.trim()).replace(/[),.;!?，。；！？】》]+$/g, "");
@@ -270,6 +282,24 @@ export function KnowledgeBasePage(): JSX.Element {
       setBusy(false);
     }
   };
+  /** 刀 4：导入知识库分享包（弹打开对话框 → 建新库 → 选中新库 + 刷新列表） */
+  const importSharePackage = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await window.electronAPI.importKnowledgeBaseShare();
+      if (!created) return; // 用户取消
+      setItems((current) => [created, ...current]);
+      setSelectedId(created.id);
+      toast.success(`已导入知识库「${created.name}」`);
+    } catch (e) {
+      const msg = errorText(e);
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
 
   if (selected) {
     return (
@@ -282,6 +312,7 @@ export function KnowledgeBasePage(): JSX.Element {
         onAddSource={() => void addSource(selected.id)}
         onRemoveSource={(sourceId) => void removeSource(selected.id, sourceId)}
         onDelete={() => void remove(selected)}
+        onImportShare={() => void importSharePackage()}
       />
     );
   }
@@ -299,19 +330,32 @@ export function KnowledgeBasePage(): JSX.Element {
                 : "把确认过的资料整理成可持续查阅的集合"}
             </p>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void reload()}
-            disabled={loading || busy}
-            aria-label="刷新知识库"
-            title="刷新知识库"
-          >
-            <ArrowClockwise
-              size={16}
-              className={cn(loading && "animate-spin")}
-            />
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void importSharePackage()}
+              disabled={loading || busy}
+              className="gap-1.5"
+              title="从分享包文件导入知识库"
+            >
+              <DownloadSimple size={15} />
+              导入分享包
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void reload()}
+              disabled={loading || busy}
+              aria-label="刷新知识库"
+              title="刷新知识库"
+            >
+              <ArrowClockwise
+                size={16}
+                className={cn(loading && "animate-spin")}
+              />
+            </Button>
+          </div>
         </header>
         {error ? (
           <div className="px-1 pb-3">
@@ -455,6 +499,26 @@ function ErrorBanner({ message }: { message: string }): JSX.Element {
   );
 }
 
+/** 文档类型小标签：按 kind 显示「笔记 / 接口约定 / 规范 / 常识快照」；无 kind 归一为笔记 */
+function KindBadge({
+  kind,
+  className,
+}: {
+  kind: KnowledgeBaseDocument["kind"];
+  className?: string;
+}): JSX.Element {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full border border-border/50 bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground",
+        className,
+      )}
+    >
+      {kindLabel(kind)}
+    </span>
+  );
+}
+
 function KnowledgeBaseDetail({
   item,
   busy,
@@ -464,6 +528,7 @@ function KnowledgeBaseDetail({
   onAddSource,
   onRemoveSource,
   onDelete,
+  onImportShare,
 }: {
   item: KnowledgeBaseRecord;
   busy: boolean;
@@ -473,6 +538,8 @@ function KnowledgeBaseDetail({
   onAddSource: () => void;
   onRemoveSource: (sourceId: string) => void;
   onDelete: () => void;
+  /** 刀 4：导入分享包（建新库并跳转；由父组件驱动选中新库） */
+  onImportShare: () => void;
 }): JSX.Element {
   const [documents, setDocuments] = useState<KnowledgeBaseDocument[]>([]);
   const [loading, setLoading] = useState(true);
@@ -485,8 +552,20 @@ function KnowledgeBaseDetail({
   const [remoteUrl, setRemoteUrl] = useState("");
   const [remoteTitle, setRemoteTitle] = useState("");
   const [browserImportOpened, setBrowserImportOpened] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const setSidebarState = useSetAtom(knowledgeBaseSidebarAtom);
   const browserImportSessionId = "knowledge-base-import-" + item.id;
+  /**
+   * 跨库打开文档时的 pending：来源芯片点击 → App 派发 DOCUMENT_SELECT_EVENT，
+   * 但此时文档列表可能仍在加载（loadDocuments 会 setActiveId(null)）。
+   * 列表未就绪时暂存 documentId，加载完成后若文档存在则补选。
+   */
+  const pendingDocumentIdRef = useRef<string | null>(null);
+  // 事件监听 closure 需要「最新」loading：切库时 listener effect 重注册那一刻
+  // loading 尚未翻 true，直接读 state 会读到陈旧 false 而误判已加载、被 loadDocuments 的
+  // setActiveId(null) 冲掉选中。用 ref 在 render 期同步，handler 永远读最新值。
+  const loadingRef = useRef(true);
+  loadingRef.current = loading;
 
   const loadDocuments = useCallback(async () => {
     setLoading(true);
@@ -495,7 +574,15 @@ function KnowledgeBaseDetail({
         knowledgeBaseId: item.id,
       });
       setDocuments(next);
-      setActiveId(null);
+      // 优先消费 pending 文档选中（来自引用芯片跨库打开）；否则清空选中。
+      const pending = pendingDocumentIdRef.current;
+      pendingDocumentIdRef.current = null;
+      if (pending && next.some((doc) => doc.id === pending)) {
+        setActiveId(pending);
+        setMode("preview");
+      } else {
+        setActiveId(null);
+      }
     } catch (e) {
       onError(errorText(e));
     } finally {
@@ -545,15 +632,17 @@ function KnowledgeBaseDetail({
     setEditorContent(active?.content ?? "");
   }, [activeId, active?.content, active?.title]);
 
-  const newDocument = async () => {
+  const newDocument = async (kind: KnowledgeBaseDocumentKind = "note") => {
     if (!confirmDiscard()) return;
     setSaving(true);
     onError(null);
     try {
+      const tpl = templateForKind(kind);
       const created = await window.electronAPI.createKnowledgeBaseDocument({
         knowledgeBaseId: item.id,
-        title: "未命名文档",
-        content: "# 未命名文档\n\n",
+        title: tpl.title,
+        content: tpl.content,
+        kind,
       });
       setDocuments((current) => [created, ...current]);
       setActiveId(created.id);
@@ -573,8 +662,11 @@ function KnowledgeBaseDetail({
         knowledgeBaseId: item.id,
       });
       if (!imported) return;
-      setDocuments((current) => [imported, ...current]);
-      setActiveId(imported.id);
+      const importedDocuments = Array.isArray(imported) ? imported : [imported];
+      const firstImported = importedDocuments[0];
+      if (!firstImported) return;
+      setDocuments((current) => [...importedDocuments, ...current]);
+      setActiveId(firstImported.id);
       setMode("preview");
     } catch (e) {
       onError(errorText(e));
@@ -596,12 +688,41 @@ function KnowledgeBaseDetail({
         url,
         title: "云文档导入",
       });
+      await browserApi().browserPrepareDownload(browserImportSessionId);
       setRemoteUrl(url);
       setBrowserImportOpened(true);
     } catch (e) {
       onError(errorText(e));
     }
   };
+
+  const importBrowserFile = async () => {
+    if (!confirmDiscard()) return;
+    setSaving(true);
+    onError(null);
+    try {
+      const imported = await window.electronAPI.importKnowledgeBaseDocumentDownload({
+        knowledgeBaseId: item.id,
+        sessionId: browserImportSessionId,
+        title: remoteTitle.trim() || undefined,
+      });
+      const importedDocuments = Array.isArray(imported) ? imported : [imported];
+      const firstImported = importedDocuments[0];
+      if (!firstImported) return;
+      setDocuments((current) => [...importedDocuments, ...current]);
+      setActiveId(firstImported.id);
+      setMode("preview");
+      setUrlDialogOpen(false);
+      setRemoteUrl("");
+      setRemoteTitle("");
+      setBrowserImportOpened(false);
+    } catch (e) {
+      onError(errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const importBrowserPage = async () => {
     if (!confirmDiscard()) return;
     setSaving(true);
@@ -643,13 +764,22 @@ function KnowledgeBaseDetail({
     const handleDocumentSelect = (event: Event): void => {
       const documentId = (event as CustomEvent<{ documentId?: string }>).detail
         ?.documentId;
-      if (documentId) selectDocument(documentId);
+      if (!documentId) return;
+      // 列表仍在加载：暂存 pending，loadDocuments 完成后补选（避免被 setActiveId(null) 冲掉）。
+      if (loadingRef.current) {
+        pendingDocumentIdRef.current = documentId;
+        return;
+      }
+      selectDocument(documentId);
     };
     const handleBaseBack = (): void => {
       if (confirmDiscard()) onBack();
     };
-    const handleNewDocument = (): void => {
-      void newDocument();
+    const handleNewDocument = (event: Event): void => {
+      const kind = (
+        event as CustomEvent<{ kind?: KnowledgeBaseDocumentKind }>
+      ).detail?.kind;
+      void newDocument(kind ?? "note");
     };
     const handleRemoveSource = (event: Event): void => {
       const sourceId = (event as CustomEvent<{ sourceId?: string }>).detail
@@ -702,6 +832,26 @@ function KnowledgeBaseDetail({
       setSaving(false);
     }
   };
+  /** 刀 4：导出当前知识库为分享包（主进程弹保存对话框写 .tagent-kb.json） */
+  const exportSharePackage = async () => {
+    setExporting(true);
+    try {
+      const res = await window.electronAPI.exportKnowledgeBase({ id: item.id });
+      if (res.ok) {
+        toast.success(res.path ? `已导出到 ${res.path}` : "已导出分享包");
+      } else if (res.reason !== "canceled") {
+        const msg = res.error || res.reason || "导出失败";
+        toast.error(msg);
+        onError(msg);
+      }
+    } catch (e) {
+      const msg = errorText(e);
+      toast.error(msg);
+      onError(msg);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <main className="app-shell-content-stage h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-hidden">
@@ -714,6 +864,7 @@ function KnowledgeBaseDetail({
                   {item.name}
                   <span className="mx-1.5 text-muted-foreground/40">/</span>
                   DOCUMENT
+                  <KindBadge kind={active.kind} className="ml-2" />
                 </p>
                 {mode === "edit" ? (
                   <input
@@ -782,6 +933,7 @@ function KnowledgeBaseDetail({
               )
             ) : null}
             {!active ? (
+              <>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -794,11 +946,20 @@ function KnowledgeBaseDetail({
                     <CaretDown size={13} weight="bold" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-52 p-1.5">
-                  <DropdownMenuItem onSelect={() => void newDocument()}>
-                    <FileText size={15} className="mr-2" />
-                    新建文档
-                  </DropdownMenuItem>
+                <DropdownMenuContent align="end" className="w-56 p-1.5">
+                  {KIND_CREATE_OPTIONS.map((option) => (
+                    <DropdownMenuItem
+                      key={option.kind}
+                      onSelect={() => void newDocument(option.kind)}
+                    >
+                      <FileText size={15} className="mr-2" />
+                      <span className="flex-1">{option.label}</span>
+                      <span className="ml-2 text-[11px] text-muted-foreground">
+                        {option.description}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator className="my-1" />
                   <DropdownMenuItem onSelect={() => void importDocument()}>
                     <FileArrowUp size={15} className="mr-2" />
                     导入本地文件
@@ -813,6 +974,34 @@ function KnowledgeBaseDetail({
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+              {/* 刀 4：知识库分享包导出 / 导入（更多菜单；仅库概览态可见） */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-muted-foreground"
+                    disabled={busy || saving || exporting}
+                    aria-label="更多知识库操作"
+                    title="更多知识库操作"
+                  >
+                    <DotsThreeVertical size={16} />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56 p-1.5">
+                  <DropdownMenuItem
+                    onSelect={() => void exportSharePackage()}
+                  >
+                    <Share size={15} className="mr-2" />
+                    导出分享包…
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => onImportShare()}>
+                    <DownloadSimple size={15} className="mr-2" />
+                    导入分享包…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              </>
             ) : null}
             {active ? (
               <Button
@@ -891,32 +1080,36 @@ function KnowledgeBaseDetail({
             </div>
           ) : loading ? (
             <p className="kb-quiet-meta">正在加载文档…</p>
-          ) : documents.length ? (
-            <section className="w-full max-w-4xl">
-              <div className="grid grid-cols-2 border-y border-border/50 md:grid-cols-4">
-                <KnowledgeOverviewStat
-                  label="文档"
-                  value={String(documents.length)}
-                />
-                <KnowledgeOverviewStat
-                  label="来源目录"
-                  value={String(item.sources.length)}
-                />
-                <KnowledgeOverviewStat label="内容状态" value="可查阅" />
-                <KnowledgeOverviewStat
-                  label="最近更新"
-                  value={formatKnowledgeDate(item.updatedAt)}
-                />
-              </div>
-            </section>
           ) : (
-            <section className="kb-empty kb-empty--inline">
-              <h2>还没有文档</h2>
-              <p>
-                用右上角「添加内容」新建
-                Markdown，或导入本地文件、云文档、目录来源。
-              </p>
-            </section>
+            <div className="flex w-full max-w-4xl flex-col gap-4">
+              {documents.length ? (
+                <section>
+                  <div className="grid grid-cols-2 border-y border-border/50 md:grid-cols-4">
+                    <KnowledgeOverviewStat
+                      label="文档"
+                      value={String(documents.length)}
+                    />
+                    <KnowledgeOverviewStat
+                      label="来源目录"
+                      value={String(item.sources.length)}
+                    />
+                    <KnowledgeOverviewStat label="内容状态" value="可查阅" />
+                    <KnowledgeOverviewStat
+                      label="最近更新"
+                      value={formatKnowledgeDate(item.updatedAt)}
+                    />
+                  </div>
+                </section>
+              ) : (
+                <section className="kb-empty kb-empty--inline">
+                  <h2>还没有文档</h2>
+                  <p>
+                    用右上角「添加内容」新建
+                    Markdown，或导入本地文件、云文档、目录来源。
+                  </p>
+                </section>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -943,13 +1136,13 @@ function KnowledgeBaseDetail({
               <input
                 value={remoteTitle}
                 onChange={(e) => setRemoteTitle(e.target.value)}
-                placeholder="不填则使用网页标题"
+                placeholder="不填则使用下载文件名或网页标题"
                 className="h-10 w-full rounded-lg border border-input bg-background px-3 outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
             </label>
             {browserImportOpened && (
               <p className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
-                已在独立浏览器窗口打开。完成登录并进入文档正文后，回到这里点击“读取当前网页”。
+                已在独立浏览器窗口打开。请在网页中完成登录并点击下载，下载完成后回到这里导入原始文件；也可直接读取网页正文。
               </p>
             )}
             <div className="flex flex-wrap justify-end gap-2">
@@ -968,10 +1161,17 @@ function KnowledgeBaseDetail({
                 打开独立浏览器
               </Button>
               <Button
+                variant="outline"
                 onClick={() => void importBrowserPage()}
                 disabled={saving || !browserImportOpened}
               >
-                {saving ? "读取中…" : "读取当前网页"}
+                {saving ? "读取中…" : "读取网页正文"}
+              </Button>
+              <Button
+                onClick={() => void importBrowserFile()}
+                disabled={saving || !browserImportOpened}
+              >
+                {saving ? "导入中…" : "下载并导入原始文件"}
               </Button>
             </div>
           </div>

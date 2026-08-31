@@ -39,6 +39,8 @@ import {
 import type { TaskCardState } from "./subagent-ui-model";
 import type { TurnDuration } from "@tagent/shared";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { collectTurnKbCitations } from "./kb-citations";
+import { KbCitationBar } from "./KbCitationBar";
 import {
   formatElapsedDuration,
   formatMessageTime,
@@ -272,6 +274,12 @@ export function AssistantTurnView({
     () => collectTurnEditedFiles(presentation.process),
     [presentation.process],
   );
+  // 知识库来源芯片：从过程链 kb_search 成功结果解析（document/directory 去重）。
+  // live 未完成时已完成的 kb_search 也会贡献命中，故不依赖 processLive。
+  const kbCitations = useMemo(
+    () => collectTurnKbCitations(presentation.process),
+    [presentation.process],
+  );
   // 本轮编辑补丁（与 editedFiles 同源；分屏审阅还原旧稿 / 算 unified diff 用）
   const editedPatches = useMemo(
     () => (!processLive ? collectTurnFilePatches(presentation.process) : []),
@@ -390,6 +398,7 @@ export function AssistantTurnView({
             workedMs={workedMs}
           />
           {filesCard}
+          <KbCitationBar citations={kbCitations} />
           {!processLive && (copyText || endFooter) ? (
             <div className="agent-answer-toolbar">
               {endFooter ? <TurnEndFooter {...endFooter} /> : null}
@@ -419,6 +428,11 @@ export function AssistantTurnView({
       {/* full：无回答壳时仍展示 Files Changed */}
       {!isConcise && !showAnswerShell ? filesCard : null}
 
+      {/* full：无回答壳（live 仅过程 / 未收到正文）时仍展示已有知识库来源 */}
+      {!isConcise && !showAnswerShell ? (
+        <KbCitationBar citations={kbCitations} />
+      ) : null}
+
       {!isConcise && !showAnswerShell && !processLive && endFooter ? (
         <div className="agent-answer-toolbar agent-answer-toolbar--outcome-only">
           <TurnEndFooter {...endFooter} />
@@ -441,6 +455,7 @@ export function AssistantTurnView({
               ) : null}
             </MessageContent>
           </Message>
+          <KbCitationBar citations={kbCitations} />
           {filesCard}
           {!processLive && (copyText || endFooter) ? (
             <div className="agent-answer-toolbar">

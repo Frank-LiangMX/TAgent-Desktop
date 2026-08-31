@@ -11,9 +11,16 @@ import type {
   KnowledgeBaseDocument,
   KnowledgeBaseRecord,
 } from "@tagent/shared";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@tagent/ui";
 import { useEffect, useMemo, useState } from "react";
 import { knowledgeBaseSidebarAtom } from "../../atoms/knowledge-base";
 import { cn } from "../../lib/utils";
+import { KIND_CREATE_OPTIONS, kindShortLabel } from "./kb-document-templates";
 
 export const BASE_SELECT_EVENT = "tagent:knowledge-sidebar-select-base";
 export const NEW_BASE_EVENT = "tagent:knowledge-sidebar-new-base";
@@ -87,14 +94,32 @@ export function KnowledgeBaseSidebar(): JSX.Element {
             <span className="en">Knowledge</span>
           </button>
           <span className="title-actions">
-            <button
-              type="button"
-              className="pill-new"
-              onClick={() => emit(NEW_DOCUMENT_EVENT, {})}
-              aria-label="新建文档"
-            >
-              新建
-            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="pill-new"
+                  aria-label="新建文档"
+                >
+                  新建
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52 p-1.5">
+                {KIND_CREATE_OPTIONS.map((option) => (
+                  <DropdownMenuItem
+                    key={option.kind}
+                    onSelect={() =>
+                      emit(NEW_DOCUMENT_EVENT, { kind: option.kind })
+                    }
+                  >
+                    <span className="flex-1">{option.label}</span>
+                    <span className="ml-2 text-[11px] text-muted-foreground">
+                      {option.description}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </span>
         </div>
         <SidebarSearch
@@ -259,6 +284,12 @@ function DocumentRow({
           <span className="t">{document.title}</span>
         </div>
         <div className="meta">
+          <span
+            className="m shrink-0 rounded-full border border-border/40 bg-muted/40 px-1.5"
+            title={kindShortLabel(document.kind)}
+          >
+            {kindShortLabel(document.kind)}
+          </span>
           <span className="m summary">{documentSummary(document)}</span>
           <span className="m time">{documentTime(document.updatedAt)}</span>
         </div>

@@ -71,6 +71,9 @@ export class BrowserService {
     replace(BROWSER_IPC_CHANNELS.EXTRACT_WINDOW_TEXT, (_event, sessionId: string) =>
       this.controller.extractDetachedText(sessionId),
     )
+    replace(BROWSER_IPC_CHANNELS.PREPARE_DOWNLOAD, (_event, sessionId: string) =>
+      this.controller.prepareDownloadCapture(sessionId),
+    )
     replace(BROWSER_IPC_CHANNELS.CLICK, (_event, input: BrowserElementActionRequest) =>
       this.controller.click(input),
     )

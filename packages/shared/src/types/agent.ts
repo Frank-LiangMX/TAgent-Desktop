@@ -70,6 +70,9 @@ export const BTW_IPC_CHANNELS = {
 export type NudgeType =
   "behavior_repeat" | "fact_repeat" | "correction" | "project_repeat";
 
+export type MemoryScope = "global" | "project";
+export type MemoryRecordStatus = "candidate" | "pending_approval" | "active" | "rejected" | "deferred";
+
 /** Nudge 候选项 */
 export interface NudgeCandidate {
   id: string;
@@ -79,6 +82,10 @@ export interface NudgeCandidate {
   evidence: string[];
   suggestedContent: string;
   userMessage: string;
+  scope?: MemoryScope;
+  workspaceSlug?: string;
+  evidenceIds?: string[];
+  status?: MemoryRecordStatus;
 }
 
 /**
@@ -108,6 +115,10 @@ export interface StageEntry {
   userMessage: string;
   /** 来源会话 id 前 8 位 */
   sourceSession: string;
+  scope?: MemoryScope;
+  workspaceSlug?: string;
+  evidenceIds?: string[];
+  status?: MemoryRecordStatus;
 }
 
 /**
@@ -1058,8 +1069,72 @@ export interface KnowledgeBaseRecord {
   name: string;
   description?: string;
   sources: KnowledgeBaseSource[];
+  /**
+   * 可选：与工作区的弱关联（仅用于「未挂库时口头荐哪个库可挂」，不自动挂载）。
+   * 刀 3：未绑定会话里 Agent 经 kb_list_available 发现这些库并口头轻问，
+   * 用户确认后仍须自己在「+」里挂上；本字段不授权读正文。
+   * @see docs/dev/knowledge-base/KB-P1-7-DISCOVER-brief.md
+   */
+  relatedWorkspaceIds?: string[];
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * 知识库正式文档的类型标注（刀 2：公约 / 常识卡模板）。
+ *
+ * - `note`：通用笔记（默认；旧文档无 kind 视为 note）
+ * - `contract`：接口公约（入口 / 参数 / 禁忌 / 相关文件指针）
+ * - `norm`：规范（适用范围 / 必须做到 / 禁止 / 示例）
+ * - `snapshot`：常识快照（探查时间 / 范围 / 数据 / 如何更新；建议写 snapshotAt）
+ */
+export type KnowledgeBaseDocumentKind = "note" | "contract" | "norm" | "snapshot";
+
+const KNOWLEDGE_BASE_DOCUMENT_KINDS: readonly KnowledgeBaseDocumentKind[] = [
+  "note",
+  "contract",
+  "norm",
+  "snapshot",
+];
+
+/** 判定值是否为合法的文档 kind（运行时窄化，供 store / 工具层校验入参） */
+export function isKnowledgeBaseDocumentKind(
+  value: unknown,
+): value is KnowledgeBaseDocumentKind {
+  return (
+    typeof value === "string" &&
+    (KNOWLEDGE_BASE_DOCUMENT_KINDS as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * 规范化文档 kind：合法值原样返回；undefined / 非法值统一回退 `note`。
+ * 旧文档无 kind → 视为 note（刀 2 §A）；检索命中 / kb_get / UI 列表均经此归一。
+ */
+export function normalizeKnowledgeBaseDocumentKind(
+  kind: string | undefined,
+): KnowledgeBaseDocumentKind {
+  return isKnowledgeBaseDocumentKind(kind) ? kind : "note";
+}
+
+/** 结构化知识草稿中的来源位置。 */
+export interface KnowledgeBaseDraftSource {
+  /** 来源文件名、链接标题或其他可读名称。 */
+  label: string;
+  /** 可选的原始位置，如页码、工作表、章节或行号。 */
+  location?: string;
+}
+
+/**
+ * Agent 整理资料时提交给用户审核的结构化草稿元数据。
+ *
+ * 草稿只存在于确认请求中，不参与正式检索；用户确认后才进入正式文档。
+ */
+export interface KnowledgeBaseStructuredDraft {
+  summary?: string;
+  sources?: KnowledgeBaseDraftSource[];
+  warnings?: string[];
+  uncertainties?: string[];
 }
 
 /** 知识库中的正式 Markdown 文档 */
@@ -1068,6 +1143,19 @@ export interface KnowledgeBaseDocument {
   knowledgeBaseId: string;
   title: string;
   content: string;
+  /** 文档类型标注（缺省视为 note）；由创建模板或 kb_propose_save 写入 */
+  kind?: KnowledgeBaseDocumentKind;
+  /** snapshot 类文档的探查时间（epoch ms；建议写，其它 kind 可省略） */
+  snapshotAt?: number;
+  /** 沉淀来源备注（如「由会话确认沉淀」）；kb_propose_save 确认写入时可填 */
+  originNote?: string;
+  /** 结构化知识摘要和来源；外部资料确认入库后保留可追溯信息。 */
+  summary?: string;
+  sources?: KnowledgeBaseDraftSource[];
+  parseWarnings?: string[];
+  uncertainties?: string[];
+  author?: "user" | "agent";
+  status?: "draft" | "confirmed" | "archived";
   sourceUrl?: string;
   sourceProvider?: "wps" | "feishu" | "google-drive" | "unknown";
   sourceExternalId?: string;
@@ -1075,6 +1163,83 @@ export interface KnowledgeBaseDocument {
   sourceSyncedAt?: number;
   createdAt: number;
   updatedAt: number;
+}
+
+/** 判定值是否为合法的云来源 provider（运行时窄化，供分享包导入校验） */
+export function isKnowledgeBaseSourceProvider(
+  value: unknown,
+): value is KnowledgeBaseDocument["sourceProvider"] {
+  return (
+    value === "wps" ||
+    value === "feishu" ||
+    value === "google-drive" ||
+    value === "unknown"
+  );
+}
+
+/** 判定值是否为合法的云来源 access mode（运行时窄化，供分享包导入校验） */
+export function isKnowledgeBaseSourceAccessMode(
+  value: unknown,
+): value is KnowledgeBaseDocument["sourceAccessMode"] {
+  return value === "public" || value === "oauth" || value === "browser";
+}
+
+// ===== 知识库导出 / 导入分享包（刀 4） =====
+
+/**
+ * 知识库分享包格式标识 + 版本（刀 4）。
+ *
+ * 单文件 JSON（建议扩展名 `.tagent-kb.json`）。`format` 不匹配 / `version` 不支持时导入抛错。
+ */
+export const KNOWLEDGE_BASE_SHARE_FORMAT = "tagent-kb-share" as const;
+export const KNOWLEDGE_BASE_SHARE_VERSION = 1 as const;
+
+/** 分享包中的来源目录项：仅带 label + 可选 path 作提示，导入默认不绑定目录 */
+export interface KnowledgeBaseSharePackageSource {
+  label: string;
+  /** 来源目录绝对路径（仅作提示；别人机器上不一定存在，导入默认不自动绑定） */
+  path?: string;
+}
+
+/** 分享包中的库元数据：不导出 id / relatedWorkspaceIds（别人机器上无意义） */
+export interface KnowledgeBaseSharePackageLibrary {
+  name: string;
+  description?: string;
+  /** 可选导出来源目录列表（仅提示用，导入默认不绑定） */
+  sources?: KnowledgeBaseSharePackageSource[];
+}
+
+/** 分享包中的文档项：不导出 id / knowledgeBaseId（导入一律新生成） */
+export interface KnowledgeBaseSharePackageDocument {
+  title: string;
+  content: string;
+  kind?: KnowledgeBaseDocumentKind;
+  summary?: string;
+  sources?: KnowledgeBaseDraftSource[];
+  parseWarnings?: string[];
+  uncertainties?: string[];
+  author?: "user" | "agent";
+  status?: "draft" | "confirmed" | "archived";
+  snapshotAt?: number;
+  originNote?: string;
+  // 云来源元数据原样带上（url 等），无则省略
+  sourceUrl?: string;
+  sourceProvider?: KnowledgeBaseDocument["sourceProvider"];
+  sourceExternalId?: string;
+  sourceAccessMode?: KnowledgeBaseDocument["sourceAccessMode"];
+  sourceSyncedAt?: number;
+}
+
+/**
+ * 知识库分享包（刀 4）：单库导出为 JSON，导入成新库（新 id）。
+ * 不含本机会话绑定信息、不含原库 / 文档 id；来源目录路径仅作提示。
+ */
+export interface KnowledgeBaseSharePackage {
+  format: typeof KNOWLEDGE_BASE_SHARE_FORMAT;
+  version: typeof KNOWLEDGE_BASE_SHARE_VERSION;
+  exportedAt: number;
+  library: KnowledgeBaseSharePackageLibrary;
+  documents: KnowledgeBaseSharePackageDocument[];
 }
 
 // ===== Agent 会话管理 =====
@@ -1923,6 +2088,51 @@ export interface ExitPlanModeResponse {
   feedback?: string;
 }
 
+// ===== 知识库受控写入（kb_propose_save）=====
+
+/** 受控写入文档类型（与 {@link KnowledgeBaseDocumentKind} 同集；可选标注透传，不影响写入正文） */
+export type KbProposeSaveKind = KnowledgeBaseDocumentKind;
+
+/** kb_propose_save 请求（主进程 → 渲染进程，弹确认横幅） */
+export interface KbProposeSaveRequest {
+  /** 请求唯一 ID */
+  requestId: string;
+  /** 会话 ID */
+  sessionId: string;
+  /** 目标知识库 id（已校验 ∈ 会话绑定列表且库存在） */
+  knowledgeBaseId: string;
+  /** 目标知识库名（横幅展示「保存到《库名》」用） */
+  knowledgeBaseName: string;
+  /** 文档标题（trim 后非空） */
+  title: string;
+  /** Markdown 正文（trim 后非空；横幅做 Markdown 预览） */
+  content: string;
+  /** 可选文档类型标注 */
+  kind?: KbProposeSaveKind;
+  /** 可选：待用户审核的结构化草稿元数据；确认前不进入正式检索。 */
+  draft?: KnowledgeBaseStructuredDraft;
+}
+
+/** kb_propose_save 用户选择行为 */
+export type KbProposeSaveAction = "confirm" | "reject";
+
+/** kb_propose_save 响应（渲染进程 → 主进程） */
+export interface KbProposeSaveResponse {
+  /** 请求 ID */
+  requestId: string;
+  /** 用户选择：confirm 写入 / reject 不写入 */
+  action: KbProposeSaveAction;
+}
+
+/**
+ * kb_propose_save 工具返回（JSON text）。
+ * ok:true 表示已写入并给出 documentId；ok:false 表示未写入（用户拒绝 / 会话中止 / 写入失败）。
+ * 模型只有看到 ok:true 才能声称已保存。
+ */
+export type KbProposeSaveResult =
+  | { ok: true; documentId: string; knowledgeBaseId: string; title: string }
+  | { ok: false; reason: "user_rejected" | "aborted" | "write_failed"; error?: string };
+
 // ===== 权限系统类型 =====
 
 /** 当前 TAgent 支持的权限模式，值直接映射 SDK 原生 permissionMode */
@@ -2079,6 +2289,11 @@ export const AGENT_IPC_CHANNELS = {
   CREATE_KNOWLEDGE_BASE: "agent:create-knowledge-base",
   /** 删除全局知识库 */
   DELETE_KNOWLEDGE_BASE: "agent:delete-knowledge-base",
+  /**
+   * 更新全局知识库元数据（刀 3：名称 / 描述 / 关联工作区弱关联）。
+   * 关联仅用于「未挂库时荐库」，不自动挂载、不授权读正文。
+   */
+  UPDATE_KNOWLEDGE_BASE: "agent:update-knowledge-base",
   /** 添加知识库来源目录 */
   ADD_KNOWLEDGE_BASE_SOURCE: "agent:add-knowledge-base-source",
   /** 移除知识库来源 */
@@ -2095,6 +2310,23 @@ export const AGENT_IPC_CHANNELS = {
   IMPORT_KNOWLEDGE_BASE_DOCUMENT: "agent:import-knowledge-base-document",
   IMPORT_KNOWLEDGE_BASE_DOCUMENT_URL:
     "agent:import-knowledge-base-document-url",
+  /**
+   * 从已认证内置浏览器会话捕获下载导入知识库文档（DOCX/XLSX 原始下载）。
+   * 复用内置浏览器登录态，不依赖 WPS OAuth：用户在内置浏览器中点击「下载为 DOCX/XLSX」，
+   * 主进程经 will-download 捕获到临时文件后复用现有解析器导入。
+   */
+  IMPORT_KNOWLEDGE_BASE_DOCUMENT_DOWNLOAD:
+    "agent:import-knowledge-base-document-download",
+  /**
+   * 导出知识库分享包（刀 4）：主进程经 dialog.showSaveDialog 把单库 JSON 写到用户选择路径。
+   * 返回 { ok, path?, error? }；取消 → ok:false reason:canceled。
+   */
+  EXPORT_KNOWLEDGE_BASE: "agent:export-knowledge-base",
+  /**
+   * 导入知识库分享包（刀 4）：主进程经 dialog.showOpenDialog 读 JSON → 校验 format/version →
+   * 生成新库（新 id）+ 逐条建文档；不绑定他人目录。返回新库 record；取消 → null。
+   */
+  IMPORT_KNOWLEDGE_BASE_SHARE: "agent:import-knowledge-base-share",
   /** 删除会话 */
   DELETE_SESSION: "agent:delete-session",
   /** 迁移 Chat 对话记录到 Agent 会话 */
@@ -2370,6 +2602,14 @@ export const AGENT_IPC_CHANNELS = {
   EXIT_PLAN_MODE_RESPOND: "agent:exit-plan-mode:respond",
   /** ExitPlanMode 已决（主进程 → 渲染进程：用户 respond / 会话清理，渲染层按 requestId 出队） */
   EXIT_PLAN_MODE_RESOLVED: "agent:exit-plan-mode:resolved",
+
+  // 知识库受控写入（kb_propose_save 门控）
+  /** kb_propose_save 请求（主进程 → 渲染进程，弹确认横幅） */
+  KB_PROPOSE_SAVE_REQUEST: "agent:kb-propose-save:request",
+  /** kb_propose_save 响应（渲染进程 → 主进程：confirm 写入 / reject 不写入） */
+  KB_PROPOSE_SAVE_RESPOND: "agent:kb-propose-save:respond",
+  /** kb_propose_save 已决（主进程 → 渲染进程：用户 respond / 会话清理，渲染层按 requestId 出队） */
+  KB_PROPOSE_SAVE_RESOLVED: "agent:kb-propose-save:resolved",
 
   // 计划模式切换（主进程 → 渲染进程：EnterPlanMode 进入 / ExitPlanMode 审批后切换输入框 pill）
   /** 权限模式变更通知（主进程 → 渲染进程，更新输入框权限 pill；与 pill 手动切换同路径） */

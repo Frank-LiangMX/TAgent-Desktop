@@ -1,0 +1,266 @@
+.app-startup {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  isolation: isolate;
+  background: #e8edf5;
+  color: #263042;
+  opacity: 1;
+  transition: opacity 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.app-startup[data-ready="true"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app-startup__wash {
+  position: absolute;
+  inset: -20%;
+  z-index: -1;
+  background:
+    radial-gradient(circle at 20% 18%, rgb(255 255 255 / 82%), transparent 34%),
+    radial-gradient(circle at 82% 84%, rgb(222 207 233 / 60%), transparent 38%),
+    linear-gradient(135deg, #e7edf6 0%, #eef1f5 50%, #e4e8f0 100%);
+  animation: app-startup-wash 10s ease-in-out infinite alternate;
+}
+
+.app-startup__panel {
+  width: min(460px, calc(100vw - 40px));
+  box-sizing: border-box;
+  padding: 34px 36px 32px;
+  border: 1px solid rgb(255 255 255 / 72%);
+  border-radius: 22px;
+  background: rgb(248 250 253 / 76%);
+  box-shadow:
+    0 24px 70px rgb(58 73 102 / 14%),
+    inset 0 1px rgb(255 255 255 / 92%);
+  backdrop-filter: blur(24px);
+  animation: app-startup-panel-in 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.app-startup[data-ready="true"] .app-startup__panel {
+  animation: app-startup-panel-out 420ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.app-startup__brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #526078;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.app-startup__mark {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.app-startup__mark--dark,
+.dark .app-startup__mark--light {
+  display: none;
+}
+
+.dark .app-startup__mark--dark {
+  display: block;
+}
+
+.app-startup__eyebrow {
+  margin: 40px 0 12px;
+  color: #586987;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+}
+
+.app-startup__title {
+  margin: 0;
+  color: #202a3a;
+  font-size: clamp(26px, 4vw, 32px);
+  font-weight: 750;
+  letter-spacing: -0.045em;
+  line-height: 1.15;
+}
+
+.app-startup__description {
+  margin: 8px 0 34px;
+  color: #758198;
+  font-size: 13px;
+}
+
+.app-startup__progress-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.app-startup__progress-track {
+  height: 6px;
+  flex: 1;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(90 108 140 / 14%);
+}
+
+.app-startup__progress-value {
+  position: relative;
+  width: 72%;
+  height: 100%;
+  border-radius: inherit;
+  background: #4d617f;
+  transition: width 480ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.app-startup__progress-value[data-ready="true"] {
+  width: 100%;
+}
+
+.app-startup__progress-value::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / 45%),
+    transparent
+  );
+  animation: app-startup-shimmer 1.8s ease-in-out infinite;
+}
+
+.app-startup__progress-number {
+  min-width: 32px;
+  color: #62708a;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.app-startup__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 25px 0 0;
+  color: #738198;
+  font-size: 11px;
+}
+
+.app-startup__status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4d617f;
+  box-shadow: 0 0 0 4px rgb(77 97 127 / 12%);
+  animation: app-startup-pulse 1.8s ease-in-out infinite;
+}
+
+.dark .app-startup {
+  background: #1b2029;
+  color: #e6ebf4;
+}
+
+.dark .app-startup__wash {
+  background:
+    radial-gradient(circle at 20% 18%, rgb(91 112 149 / 20%), transparent 34%),
+    radial-gradient(circle at 82% 84%, rgb(116 84 122 / 20%), transparent 38%),
+    linear-gradient(135deg, #1b2029 0%, #222a36 50%, #1c222c 100%);
+}
+
+.dark .app-startup__panel {
+  border-color: rgb(255 255 255 / 10%);
+  background: rgb(30 36 47 / 82%);
+  box-shadow:
+    0 24px 70px rgb(0 0 0 / 28%),
+    inset 0 1px rgb(255 255 255 / 8%);
+}
+
+.dark .app-startup__brand,
+.dark .app-startup__description,
+.dark .app-startup__status {
+  color: #9ba8bc;
+}
+
+.dark .app-startup__eyebrow,
+.dark .app-startup__progress-number {
+  color: #9eacc4;
+}
+
+.dark .app-startup__title {
+  color: #f1f4fa;
+}
+
+.dark .app-startup__progress-track {
+  background: rgb(190 205 231 / 15%);
+}
+
+@keyframes app-startup-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes app-startup-panel-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.99);
+  }
+}
+
+@keyframes app-startup-wash {
+  from {
+    transform: translate3d(-1%, -1%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(1%, 1%, 0) scale(1.03);
+  }
+}
+
+@keyframes app-startup-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(220%);
+  }
+}
+
+@keyframes app-startup-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-startup,
+  .app-startup__panel,
+  .app-startup__progress-value {
+    transition: none;
+    animation: none;
+  }
+
+  .app-startup__progress-value::after,
+  .app-startup__status-dot {
+    animation: none;
+  }
+}

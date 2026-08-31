@@ -21,6 +21,7 @@ import {
 } from './memory-candidate-quality'
 import { getMemoryDir, type MemoryMode } from './memory-layer-service'
 import type { NudgeCandidate, NudgeType } from './nudge-service'
+import type { MemoryRecordStatus, MemoryScope } from './nudge-service'
 
 /** stage 队列条目 */
 export interface StageEntry {
@@ -44,6 +45,10 @@ export interface StageEntry {
   userMessage: string
   /** 来源会话 id 前 8 位 */
   sourceSession: string
+  scope?: MemoryScope
+  workspaceSlug?: string
+  evidenceIds?: string[]
+  status?: MemoryRecordStatus
 }
 
 /** 30 天未审批自动 reject */
@@ -167,6 +172,10 @@ export function enqueueStage(mode: MemoryMode, candidate: NudgeCandidate): void 
     origin: 'background',
     type: candidate.type,
     targetLayer: candidate.targetLayer,
+    scope: candidate.scope,
+    workspaceSlug: candidate.workspaceSlug,
+    evidenceIds: candidate.evidenceIds ?? [candidate.id],
+    status: 'pending_approval',
     pattern: candidate.pattern,
     evidence: candidate.evidence,
     suggestedContent: candidate.suggestedContent,

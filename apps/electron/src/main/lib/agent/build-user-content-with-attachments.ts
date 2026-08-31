@@ -6,7 +6,8 @@
  * 策略：
  * 1) 文本类（长粘贴转 .md、txt、json…）→ **内联正文**（附件在 ~/.tagent/attachments，常在 cwd 外，Read 读不到）
  * 2) 图片 → Anthropic image content block（kscc）+ 文案提示
- * 3) 其它二进制 → 附绝对路径（若工具允许跨目录再读）
+ * 3) 其它二进制（docx/pdf/xlsx 等）→ 附 localPath + 绝对路径，并提示可用 kb_read_attachment
+ *    读取解析正文（会话隔离、不写入知识库）；localPath 形如 {sessionId}/{uuid}.{ext}
  */
 import {
   getAttachmentAbsolutePath,
@@ -95,14 +96,16 @@ export function appendAttachmentPathsToPrompt(
 
     try {
       const abs = getAttachmentAbsolutePath(att.localPath)
-      sections.push(`- ${att.filename} (${att.mediaType}): ${abs}`)
+      sections.push(
+        `- ${att.filename}（${att.mediaType}）：localPath=${att.localPath}（.docx/.pdf/.xlsx/.md/.txt/.csv 可用 kb_read_attachment 读取并解析正文，供整理成知识草稿）；绝对路径 ${abs}`,
+      )
     } catch (err) {
       console.warn('[attachments] 解析附件路径失败:', att.filename, err)
       sections.push(`- ${att.filename} (${att.mediaType}): ${att.localPath}（路径无效）`)
     }
   }
 
-  sections.push('以上附件正文已在消息中提供时请直接使用；图片请根据 image 块描述并回答。')
+  sections.push('以上附件正文已在消息中提供时请直接使用；图片请根据 image 块描述并回答。需要把附件整理成知识库时，先用 kb_read_attachment 读取附件正文，生成结构化草稿并经用户确认后，再调用 kb_propose_save 保存；不要未经确认就声称已保存。')
   const block = sections.join('\n')
   return prompt.trim() ? `${prompt.trim()}\n\n${block}` : block
 }

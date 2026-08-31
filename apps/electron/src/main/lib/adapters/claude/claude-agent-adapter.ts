@@ -39,6 +39,7 @@ import { NoProgressGuard, buildNoProgressEventFromDecision, buildNoProgressAskUs
 import {
   attachImageBlocksToText,
 } from '../../agent/build-user-content-with-attachments'
+import type { KnowledgeBaseToolGate } from '../../kb/kb-tool-policy'
 
 /** kscc 核查询选项（扩展 AgentQueryInput） */
 export interface KsccQueryOptions extends AgentQueryInput {
@@ -73,6 +74,8 @@ export interface KsccQueryOptions extends AgentQueryInput {
   resumeSessionId?: string
   /** MCP 服务器配置 */
   mcpServers?: Record<string, unknown>
+  /** 知识库网页工具门控（preferred 先 kb_search；strict 禁止网页搜索） */
+  knowledgeBaseToolGate?: KnowledgeBaseToolGate
   /** stderr 回调 */
   onStderr?: (data: string) => void
   /** session_id 捕获回调 */
@@ -120,6 +123,8 @@ interface ActiveSession {
   pid?: number
   /** 无进展守卫上下文（per-session，per-turn reset） */
   np?: NoProgressCtx
+  /** 知识库网页工具门控（per-turn reset） */
+  knowledgeBaseToolGate?: KnowledgeBaseToolGate
 }
 
 /**
@@ -169,6 +174,7 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
 
     // 无进展守卫（per-session；首 turn reset；后续 turn 由 sendQueuedMessage reset）
     const npMode = input.noProgressGuardMode ?? NO_PROGRESS_GUARD_DEFAULT_MODE
+    input.knowledgeBaseToolGate?.resetForNewTurn()
     const np: NoProgressCtx = {
       guard: new NoProgressGuard({ mode: npMode }),
       mode: npMode,
@@ -199,6 +205,7 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       channel,
       query: queryIterable,
       np,
+      knowledgeBaseToolGate: input.knowledgeBaseToolGate,
     })
 
     try {
@@ -282,7 +289,12 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       }),
       // 无进展守卫 hooks（§10.2）：PostToolBatch→observe 注入复盘 / PreToolUse→final_response_only 拦截。
       // shadow 模式只发诊断事件（带 shadow=true），不改行为；enforce 才注入 / 拦截 / 暂停。
-      ...buildNoProgressHooks(options.sessionId, np, options.onPostToolBatch),
+      ...buildNoProgressHooks(
+        options.sessionId,
+        np,
+        options.onPostToolBatch,
+        options.knowledgeBaseToolGate,
+      ),
       // Phase 2.4：SDK auto-memory 重定向到废目录（主防线是 MEMORY_MANAGEMENT_RULES）
       autoMemoryDirectory: getDiscardedMemoryDir(),
       toolUseConcurrency: 1,
@@ -318,6 +330,7 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       emitNoProgressFromDecision(sess.np, cleared)
       sess.np.pauseAskUserFired = false // 复位暂停 AskUser 标志（新回合可再触发）
     }
+    sess.knowledgeBaseToolGate?.resetForNewTurn()
     sess.channel.enqueue(message as SDKUserMessage)
   }
 
@@ -494,9 +507,11 @@ function buildNoProgressHooks(
   sessionId: string,
   np: NoProgressCtx,
   onPostToolBatch?: (input: PostToolBatchHookInputLike) => string | undefined | Promise<string | undefined>,
+  knowledgeBaseToolGate?: KnowledgeBaseToolGate,
 ): Pick<SdkOptions, 'hooks'> {
-  if (np.mode === 'off' && !onPostToolBatch) return {} // 紧急回滚：无守卫且无网页回退时不注册
+  if (np.mode === 'off' && !onPostToolBatch && !knowledgeBaseToolGate) return {} // 无守卫、网页回退和知识库门控时不注册
   const postToolBatch = async (hookInput: PostToolBatchHookInputLike) => {
+    knowledgeBaseToolGate?.observeToolBatch(hookInput.tool_calls)
     const webFallbackContext = await onPostToolBatch?.(hookInput)
     const decision = np.mode === 'off'
       ? undefined
@@ -522,6 +537,16 @@ function buildNoProgressHooks(
     return {}
   }
   const preToolUse = async (hookInput: PreToolUseHookInputLike) => {
+    const knowledgeBaseBlockReason = knowledgeBaseToolGate?.beforeToolUse(hookInput.tool_name)
+    if (knowledgeBaseBlockReason) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny' as const,
+          permissionDecisionReason: knowledgeBaseBlockReason,
+        },
+      }
+    }
     if (np.mode !== 'enforce') return {}
     const advice = np.guard.onPreToolUse(hookInput.tool_name, hookInput.tool_input)
     if (advice.allow) return {}

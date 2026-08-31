@@ -827,6 +827,7 @@ export class NoProgressGuard {
     let hasProgress = false
     let hasNoProgress = false
     let hasProgressingEdit = false
+    let hasProgressingVerify = false
 
     for (const call of batch.calls ?? []) {
       const cls = this.classifyCall(call.toolName, call.input, call.output, call.error)
@@ -841,6 +842,7 @@ export class NoProgressGuard {
       if (cls.cls === 'progress') {
         hasProgress = true
         if (classifyTool(call.toolName) === 'edit') hasProgressingEdit = true
+        if (classifyTool(call.toolName) === 'verify') hasProgressingVerify = true
       } else if (cls.cls === 'noProgress') {
         hasNoProgress = true
       }
@@ -899,6 +901,16 @@ export class NoProgressGuard {
 
     // —— 批次级状态推进 ——
     if (hasProgress) {
+      // 进入复盘后，成功 Edit 只说明动作完成，不能单独作为新证据解除复盘；
+      // 必须等验证结果发生变化。这样“复盘 → 探针编辑 → 重复验证”仍会继续
+      // 推进复盘宽限计数，而正常 observing 阶段的 Edit 仍保留原有进展语义。
+      if (
+        this.phase !== 'observing' &&
+        hasProgressingEdit &&
+        !hasProgressingVerify
+      ) {
+        return this.handleNoProgress(batch.observedAt, hasNoProgress)
+      }
       return this.handleProgress(batch.observedAt, hasProgressingEdit)
     }
     // 非进展批次（含 noProgress 与 neutral）：统一走阶段推进；
@@ -962,7 +974,9 @@ export class NoProgressGuard {
     this.repeatedFailureCount = 0
     this.actionOutcomeCounts.clear()
     this.perFileEditCount.clear()
-    this.perCommandEmptyTimeout.clear()
+    // 成功 Edit 只代表动作完成，不代表目标已验证；保留同命令空超时历史，
+    // 让中间夹着探针编辑的重复复现仍能命中 §7.1.4。
+    if (!preserveEditProgress) this.perCommandEmptyTimeout.clear()
     this.hadSuccessfulEditSinceLastProgress = false
     if (!preserveEditProgress) {
       this.lastSuccessSig = undefined

@@ -11,7 +11,7 @@
  *
  * mock adapter 不发真实 HTTP；runTurn 行为可控（正文 / 延迟 / 抛错）。
  */
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,12 +32,12 @@ import { FakeMemberSessionLifecycleAdapter } from "./member-session-lifecycle-fa
 
 let tmpDir: string;
 
-beforeAll(() => {
+beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), `tagent-collab-run-test-`));
   process.env.TAGENT_CONFIG_DIR = tmpDir;
 });
 
-afterAll(() => {
+afterEach(() => {
   delete process.env.TAGENT_CONFIG_DIR;
   rmSync(tmpDir, { recursive: true, force: true });
 });

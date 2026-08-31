@@ -17,6 +17,8 @@
  */
 import { ipcMain, type BrowserWindow } from "electron";
 import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import type {
   AgentProviderAdapter,
   SDKMessage,
@@ -27,6 +29,7 @@ import type {
   AgentSessionMeta,
   AskUserResponse,
   ExitPlanModeResponse,
+  KbProposeSaveResponse,
 } from "@tagent/shared";
 import {
   AGENT_IPC_CHANNELS,
@@ -40,6 +43,7 @@ import {
 } from "../agent/build-user-content-with-attachments";
 import { askUserService } from "../agent/agent-ask-user-service";
 import { exitPlanService } from "../agent/agent-exit-plan-service";
+import { kbProposeSaveService } from "../kb/kb-propose-save-service";
 import { getAdapter, PiAgentAdapter, type ChannelKind } from "../adapters";
 import { resolveKsccPath } from "../adapters/claude/kscc-path";
 import {
@@ -165,7 +169,9 @@ import {
   buildKbPromptAppend,
   buildPiKbTools,
   injectKbMcpServer,
+  resolveAvailableKnowledgeBases,
 } from "../kb/kb-agent-tools";
+import { createKnowledgeBaseToolGate } from "../kb/kb-tool-policy";
 import {
   addKnowledgeBaseSource,
   createKnowledgeBase,
@@ -173,6 +179,7 @@ import {
   listKnowledgeBases,
   removeKnowledgeBaseSource,
   resolveKnowledgeBaseRootsForSession,
+  updateKnowledgeBase,
 } from "../kb/knowledge-base-store";
 import {
   createKnowledgeBaseDocument,
@@ -181,8 +188,18 @@ import {
   listKnowledgeBaseDocuments,
   updateKnowledgeBaseDocument,
   importKnowledgeBaseDocument,
+  importKnowledgeBaseDocuments,
   importKnowledgeBaseDocumentFromUrl,
 } from "../kb/knowledge-base-document-store";
+import { parseCloudDocumentReference } from "../kb/cloud-document-adapter";
+import {
+  buildKnowledgeBaseSharePackage,
+  importKnowledgeBaseSharePackage,
+} from "../kb/kb-share-package";
+import {
+  areKnowledgeBaseWritesEnabled,
+  assertKnowledgeBaseWritesEnabled,
+} from "../kb/kb-write-policy";
 import {
   BROWSER_SYSTEM_PROMPT,
   buildPiBrowserTools,
@@ -236,6 +253,7 @@ import type {
   NoProgressGuardMode,
   AgentDiscussPrefs,
   AgentCrewPrefs,
+  KnowledgeBaseRecord,
 } from "@tagent/shared";
 import {
   extractSdkUserText,
@@ -734,6 +752,15 @@ export class SessionService {
             },
           );
         }
+        // 清待处理 kb_propose_save 确认请求（resolve aborted 零写入 + 推 RESOLVED 让渲染层出队）
+        for (const rid of kbProposeSaveService.clearSessionPending(sessionId)) {
+          this.getWindow()?.webContents.send(
+            AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_RESOLVED,
+            {
+              requestId: rid,
+            },
+          );
+        }
         // MoA 会诊在途：abort 杀未完成 bare 进程（runMoaTurn 检测 signal 后推 cancelled 卡）。
         // MoA 不经 SessionRuntime，下方 rt 为 null，靠此 controller 中止。
         const moaCtrl = this.moaAbortBySession.get(sessionId);
@@ -916,6 +943,25 @@ export class SessionService {
         if (sessionId) {
           this.getWindow()?.webContents.send(
             AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED,
+            { requestId },
+          );
+        }
+      },
+    );
+
+    // 响应 kb_propose_save：渲染层回用户选择 → kbProposeSaveService resolve ok:true/false。
+    // confirm 路径在 service 内调 createKnowledgeBaseDocument 写入；reject 零写入。
+    // + 推 KB_PROPOSE_SAVE_RESOLVED 让渲染层按 requestId 出队（Banner 乐观出队的兜底）。
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_RESPOND,
+      async (_e, response: KbProposeSaveResponse): Promise<void> => {
+        assertKnowledgeBaseWritesEnabled();
+        const requestId = response?.requestId;
+        if (!requestId) return;
+        const handled = kbProposeSaveService.respond(response);
+        if (handled) {
+          this.getWindow()?.webContents.send(
+            AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_RESOLVED,
             { requestId },
           );
         }
@@ -1222,6 +1268,21 @@ export class SessionService {
         input: { name: string; description?: string; sourcePaths?: string[] },
       ) => createKnowledgeBase(input),
     );
+    // 刀 3：更新知识库元数据（名称 / 描述 / 关联工作区弱关联）。
+    // 关联仅用于「未挂库时荐库」（kb_list_available / buildKbPromptAppend 读 relatedWorkspaceIds），
+    // 不自动挂载、不授权读正文，故无需触发会话 re-spawn。
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.UPDATE_KNOWLEDGE_BASE,
+      async (
+        _e,
+        input: {
+          id: string;
+          name?: string;
+          description?: string;
+          relatedWorkspaceIds?: string[];
+        },
+      ) => updateKnowledgeBase(input),
+    );
     ipcMain.handle(
       AGENT_IPC_CHANNELS.DELETE_KNOWLEDGE_BASE,
       async (_e, id: string) => {
@@ -1263,18 +1324,26 @@ export class SessionService {
           knowledgeBaseId: string;
           title: string;
           content?: string;
+          kind?: "note" | "contract" | "norm" | "snapshot";
+          snapshotAt?: number;
+          originNote?: string;
           sourceUrl?: string;
           sourceProvider?: "wps" | "feishu" | "google-drive" | "unknown";
           sourceExternalId?: string;
           sourceAccessMode?: "public" | "oauth" | "browser";
           sourceSyncedAt?: number;
         },
-      ) => createKnowledgeBaseDocument(input),
+      ) => {
+        assertKnowledgeBaseWritesEnabled();
+        return createKnowledgeBaseDocument(input);
+      },
     );
     ipcMain.handle(
       AGENT_IPC_CHANNELS.UPDATE_KNOWLEDGE_BASE_DOCUMENT,
-      async (_e, input: { id: string; title: string; content: string }) =>
-        updateKnowledgeBaseDocument(input),
+      async (_e, input: { id: string; title: string; content: string }) => {
+        assertKnowledgeBaseWritesEnabled();
+        return updateKnowledgeBaseDocument(input);
+      },
     );
     ipcMain.handle(
       AGENT_IPC_CHANNELS.DELETE_KNOWLEDGE_BASE_DOCUMENT,
@@ -1287,6 +1356,7 @@ export class SessionService {
     ipcMain.handle(
       AGENT_IPC_CHANNELS.IMPORT_KNOWLEDGE_BASE_DOCUMENT,
       async (_e, input: { knowledgeBaseId: string }) => {
+        assertKnowledgeBaseWritesEnabled();
         const { dialog } = await import("electron");
         const win = this.getWindow();
         const result = win
@@ -1296,7 +1366,7 @@ export class SessionService {
               filters: [
                 {
                   name: "知识文档",
-                  extensions: ["docx", "doc", "pdf", "md", "markdown", "txt"],
+                  extensions: ["docx", "doc", "pdf", "xlsx", "xls", "md", "markdown", "txt"],
                 },
               ],
             })
@@ -1306,15 +1376,48 @@ export class SessionService {
               filters: [
                 {
                   name: "知识文档",
-                  extensions: ["docx", "doc", "pdf", "md", "markdown", "txt"],
+                  extensions: ["docx", "doc", "pdf", "xlsx", "xls", "md", "markdown", "txt"],
                 },
               ],
             });
         if (result.canceled || !result.filePaths[0]) return null;
-        return importKnowledgeBaseDocument({
+        return importKnowledgeBaseDocuments({
           knowledgeBaseId: input.knowledgeBaseId,
           filePath: result.filePaths[0],
         });
+      },
+    );
+
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.IMPORT_KNOWLEDGE_BASE_DOCUMENT_DOWNLOAD,
+      async (
+        _e,
+        input: { knowledgeBaseId: string; sessionId: string; title?: string },
+      ): Promise<import("@tagent/shared").KnowledgeBaseDocument[]> => {
+        assertKnowledgeBaseWritesEnabled();
+        const controller = getBrowserController();
+        const captured = await controller.captureDownload(input.sessionId);
+        const downloadDirectory = captured.tempDirectory;
+        if (!basename(downloadDirectory).startsWith("tagent-kb-download-")) {
+          throw new Error("下载目录校验失败");
+        }
+        try {
+          const reference = captured.sourceUrl
+            ? parseCloudDocumentReference(captured.sourceUrl)
+            : undefined;
+          return await importKnowledgeBaseDocuments({
+            knowledgeBaseId: input.knowledgeBaseId,
+            filePath: captured.filePath,
+            title: input.title?.trim() || undefined,
+            sourceUrl: reference?.sourceUrl ?? (captured.sourceUrl || undefined),
+            sourceProvider: reference?.provider,
+            sourceExternalId: reference?.externalId,
+            sourceAccessMode: "browser",
+            sourceSyncedAt: Date.now(),
+          });
+        } finally {
+          rmSync(downloadDirectory, { recursive: true, force: true });
+        }
       },
     );
 
@@ -1323,7 +1426,98 @@ export class SessionService {
       async (
         _e,
         input: { knowledgeBaseId: string; url: string; title?: string },
-      ) => importKnowledgeBaseDocumentFromUrl(input),
+      ) => {
+        assertKnowledgeBaseWritesEnabled();
+        return importKnowledgeBaseDocumentFromUrl(input);
+      },
+    );
+
+    // 刀 4：导出知识库分享包（dialog.showSaveDialog 写单库 JSON）。
+    // 返回 { ok, path?, reason?, error? }；取消 → ok:false reason:canceled；构建失败 → build_failed。
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.EXPORT_KNOWLEDGE_BASE,
+      async (
+        _e,
+        input: { id: string },
+      ): Promise<{
+        ok: boolean;
+        path?: string;
+        reason?: "canceled" | "build_failed" | "write_failed";
+        error?: string;
+      }> => {
+        let json: string;
+        let libName: string;
+        try {
+          const built = buildKnowledgeBaseSharePackage(input.id);
+          json = built.json;
+          libName = built.package.library.name;
+        } catch (err) {
+          return {
+            ok: false,
+            reason: "build_failed",
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+        const { dialog } = await import("electron");
+        const win = this.getWindow();
+        const safeName =
+          libName.replace(/[\\/:*?"<>|]/g, "_").trim() || "knowledge-base";
+        const saveOptions = {
+          title: "导出知识库分享包",
+          defaultPath: `${safeName}.tagent-kb.json`,
+          filters: [
+            { name: "TAgent 知识库分享包", extensions: ["json"] },
+          ],
+        };
+        const save = win
+          ? await dialog.showSaveDialog(win, saveOptions)
+          : await dialog.showSaveDialog(saveOptions);
+        if (save.canceled || !save.filePath) {
+          return { ok: false, reason: "canceled" };
+        }
+        try {
+          const { writeFileSync } = await import("node:fs");
+          writeFileSync(save.filePath, json, "utf8");
+          return { ok: true, path: save.filePath };
+        } catch (err) {
+          return {
+            ok: false,
+            reason: "write_failed",
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      },
+    );
+
+    // 刀 4：导入知识库分享包（dialog.showOpenDialog 读 JSON → 校验 → 建新库）。
+    // 取消 → null；JSON 坏 / format/version 不支持 → throw（渲染层 try/catch 出 toast）。
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.IMPORT_KNOWLEDGE_BASE_SHARE,
+      async (_e): Promise<KnowledgeBaseRecord | null> => {
+        assertKnowledgeBaseWritesEnabled();
+        const { dialog } = await import("electron");
+        const win = this.getWindow();
+        const openOptions = {
+          title: "导入知识库分享包",
+          properties: ["openFile"] as Array<"openFile">,
+          filters: [{ name: "TAgent 知识库分享包", extensions: ["json"] }],
+        };
+        const result = win
+          ? await dialog.showOpenDialog(win, openOptions)
+          : await dialog.showOpenDialog(openOptions);
+        if (result.canceled || !result.filePaths[0]) return null;
+        const { readFileSync } = await import("node:fs");
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(readFileSync(result.filePaths[0], "utf8"));
+        } catch (err) {
+          throw new Error(
+            "分享包文件不是合法的 JSON：" +
+              (err instanceof Error ? err.message : String(err)),
+          );
+        }
+        return importKnowledgeBaseSharePackage(parsed);
+      },
     );
 
     ipcMain.handle(
@@ -1692,6 +1886,15 @@ export class SessionService {
         for (const rid of exitPlanService.clearSessionPending(sessionId)) {
           this.getWindow()?.webContents.send(
             AGENT_IPC_CHANNELS.EXIT_PLAN_MODE_RESOLVED,
+            {
+              requestId: rid,
+            },
+          );
+        }
+        // 清待处理 kb_propose_save 确认请求（resolve aborted 零写入 + 推 RESOLVED 让渲染层出队）
+        for (const rid of kbProposeSaveService.clearSessionPending(sessionId)) {
+          this.getWindow()?.webContents.send(
+            AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_RESOLVED,
             {
               requestId: rid,
             },
@@ -2964,6 +3167,17 @@ export class SessionService {
         throw new Error("未检测到 kscc 命令，请先安装 kscc（内网渠道）");
       }
       const meta = getSessionMeta(input.sessionId);
+      const knowledgeBaseIds = Array.isArray(meta?.knowledgeBaseIds)
+        ? meta.knowledgeBaseIds.filter(
+            (id): id is string => typeof id === "string" && Boolean(id.trim()),
+          )
+        : [];
+      const knowledgeBaseRoots = resolveKnowledgeBaseRootsForSession(meta ?? {});
+      const knowledgeBaseMode =
+        meta?.knowledgeBaseMode === "preferred" ||
+        meta?.knowledgeBaseMode === "strict"
+          ? meta.knowledgeBaseMode
+          : "off";
       // 子代理委派积极性：读会话 meta（持久化，默认 conservative），注入 kscc systemPrompt append。
       // 每次发送都重新读取，UI 改完下次发送即生效（kscc 长驻进程 system prompt 在 spawn 时定稿，
       // 切换积极性需重建进程才完全生效；非首次发送走 resume，沿用上一次注入的策略）。
@@ -2979,7 +3193,7 @@ export class SessionService {
       const reasoningEffort = migrateReasoningEffort(meta?.reasoningEffort);
       // Phase 2.2：记忆管理规则 + Frozen 记忆快照（createSession/spawn 时注入，会话内不刷新）
       const sessionMode: MemoryMode = meta?.mode === "ta" ? "ta" : "general";
-      const snap = memoryLayerService.readMemorySnapshot(sessionMode);
+      const snap = memoryLayerService.readMemorySnapshot(sessionMode, meta?.workspaceId ?? undefined);
       const mem = buildMemoryPromptSections({
         mode: sessionMode,
         memorySnapshot: {
@@ -2994,8 +3208,9 @@ export class SessionService {
       try {
         recallContext = buildMemoryRecallContext(
           input.prompt,
-          memoryLayerService.searchSessions(sessionMode, input.prompt, 5),
+          memoryLayerService.searchSessions(sessionMode, input.prompt, 5, meta?.workspaceId ?? undefined),
           input.sessionId,
+          { mode: sessionMode, workspaceSlug: meta?.workspaceId ?? undefined },
         );
       } catch (err) {
         console.warn("[memory] kscc recall failed:", err);
@@ -3028,7 +3243,16 @@ export class SessionService {
         console.warn("[会话] 注入浏览器 MCP 失败:", err);
       }
       try {
-        await injectKbMcpServer(mcpServers, { sessionId: input.sessionId });
+        await injectKbMcpServer(mcpServers, {
+          sessionId: input.sessionId,
+          knowledgeBaseWritesEnabled: areKnowledgeBaseWritesEnabled(),
+          sendToRenderer: (request) => {
+            this.getWindow()?.webContents.send(
+              AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_REQUEST,
+              request,
+            );
+          },
+        });
       } catch (err) {
         console.warn("[会话] 注入知识库 MCP 失败:", err);
       }
@@ -3091,10 +3315,15 @@ export class SessionService {
             this.buildMentionPromptAppend(input.sessionId, executionMode),
             botSessionPrompt,
             buildRichContentSystemPrompt(),
-            buildKbPromptAppend(
-              resolveKnowledgeBaseRootsForSession(meta ?? {}),
-              meta?.knowledgeBaseMode,
-            ),
+            buildKbPromptAppend({
+              kbRoots: resolveKnowledgeBaseRootsForSession(meta ?? {}),
+              knowledgeBaseIds: meta?.knowledgeBaseIds,
+              mode: meta?.knowledgeBaseMode,
+              knowledgeBaseWritesEnabled: areKnowledgeBaseWritesEnabled(),
+              // 刀 3：未挂库时注入「可发现」库名（仅元数据），供口头轻问；已挂库时 helper 返回空。
+              available: resolveAvailableKnowledgeBases(input.sessionId)
+                .available,
+            }),
             mem.managementRules,
             mem.memorySnapshotSection,
           ]
@@ -3111,6 +3340,10 @@ export class SessionService {
           return decision ? buildBrowserFallbackContext(decision) : undefined;
         },
         mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
+        knowledgeBaseToolGate: createKnowledgeBaseToolGate({
+          bound: knowledgeBaseIds.length > 0 || knowledgeBaseRoots.length > 0,
+          mode: knowledgeBaseMode,
+        }),
         // 子代理定义：仅 Work 注册（Chat 硬拦 Task，注册无意义）。
         // claudeAvailable 按渠道判定（isClaudeAvailableForChannel）：非 Anthropic 系（kscc-internal 等）
         // → false → 操作型角色不带 model → SDK 继承父会话模型（glm 等），避免钉 haiku 打到无 Claude
@@ -3189,10 +3422,14 @@ export class SessionService {
         ? "## 看板派工工具n可用 kanban_create_board / kanban_add_task / kanban_list_*。长任务拆任务并指定 roleId。"
         : "",
       this.buildMentionPromptAppend(input.sessionId, piExecutionMode),
-      buildKbPromptAppend(
-        resolveKnowledgeBaseRootsForSession(piMeta ?? {}),
-        piMeta?.knowledgeBaseMode,
-      ),
+      buildKbPromptAppend({
+        kbRoots: resolveKnowledgeBaseRootsForSession(piMeta ?? {}),
+        knowledgeBaseIds: piMeta?.knowledgeBaseIds,
+        mode: piMeta?.knowledgeBaseMode,
+        knowledgeBaseWritesEnabled: areKnowledgeBaseWritesEnabled(),
+        // 刀 3：未挂库时注入「可发现」库名（仅元数据），供口头轻问；已挂库时 helper 返回空。
+        available: resolveAvailableKnowledgeBases(input.sessionId).available,
+      }),
       buildBotSessionPromptAppend(
         piMeta?.botProfileIds,
         input.prompt,
@@ -3212,7 +3449,16 @@ export class SessionService {
           })
         : [];
     const browserExtra = buildPiBrowserTools({ sessionId: input.sessionId });
-    const kbExtra = buildPiKbTools({ sessionId: input.sessionId });
+    const kbExtra = buildPiKbTools({
+      sessionId: input.sessionId,
+      knowledgeBaseWritesEnabled: areKnowledgeBaseWritesEnabled(),
+      sendToRenderer: (request) => {
+        this.getWindow()?.webContents.send(
+          AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_REQUEST,
+          request,
+        );
+      },
+    });
     const extraTools = [...browserExtra, ...kanbanExtra, ...kbExtra];
     const opts = {
       sessionId: input.sessionId,
@@ -3600,7 +3846,7 @@ export class SessionService {
       const recentMsgs = normalizeToTextMessages(
         readPanelMessages(meta?.workspaceId, sessionId).slice(-10),
       ).map((m) => ({ role: m.role, content: m.contentText }));
-      const candidates = nudgeService.onTurnStart(sessionId, recentMsgs, mode);
+      const candidates = nudgeService.onTurnStart(sessionId, recentMsgs, mode, meta?.workspaceId ?? undefined);
       if (candidates.length > 0) {
         const win = this.getWindow();
         win?.webContents.send(MEMORY_IPC_CHANNELS.NUdge_EVENT, {
@@ -3658,6 +3904,7 @@ export class SessionService {
           summary,
           toolsUsed,
           userMessages,
+          workspaceSlug,
         );
       } catch (e) {
         console.warn("[session-service] writeSessionEvidence failed:", e);

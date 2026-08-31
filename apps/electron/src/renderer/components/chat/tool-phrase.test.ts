@@ -17,6 +17,39 @@ describe('getToolPhrase', () => {
   test('loading label is progressive', () => {
     expect(getToolPhrase('Read', { path: 'a.ts' }).loadingLabel).toContain('正在')
   })
+
+  test('kb_* 工具用中文短语（兼容 MCP 前缀）', () => {
+    expect(getToolPhrase('kb_search', { query: '接线顺序' }).label).toBe(
+      '检索知识库「接线顺序」',
+    )
+    expect(getToolPhrase('mcp__kb__kb_search', { query: '接线' }).label).toBe(
+      '检索知识库「接线」',
+    )
+    expect(getToolPhrase('kb_search', {}).label).toBe('检索知识库')
+    expect(getToolPhrase('kb_search', { query: '  ' }).label).toBe('检索知识库')
+
+    expect(getToolPhrase('kb_list_roots', {}).label).toBe('列出知识库')
+    expect(getToolPhrase('mcp__kb__kb_list_roots', {}).label).toBe('列出知识库')
+
+    expect(getToolPhrase('kb_get', { documentId: 'd1' }).label).toBe('读取知识文档')
+    expect(getToolPhrase('kb_get', { path: 'guide.md' }).label).toBe('读取知识文件')
+    expect(getToolPhrase('kb_get', {}).label).toBe('读取知识库')
+    expect(getToolPhrase('mcp__kb__kb_get', { documentId: 'd1' }).label).toBe(
+      '读取知识文档',
+    )
+
+    // 刀 3：kb_list_available 口头荐库用的可发现元数据查询
+    expect(getToolPhrase('kb_list_available', {}).label).toBe('查看可挂知识库')
+    expect(getToolPhrase('mcp__kb__kb_list_available', {}).label).toBe(
+      '查看可挂知识库',
+    )
+  })
+
+  test('kb_search loading label 带正在', () => {
+    expect(
+      getToolPhrase('kb_search', { query: '接线' }).loadingLabel,
+    ).toContain('正在检索知识库')
+  })
 })
 
 describe('summarizeToolResult', () => {
@@ -25,5 +58,41 @@ describe('summarizeToolResult', () => {
   })
   test('error', () => {
     expect(summarizeToolResult('x', true)).toBe('失败')
+  })
+  test('kb_search JSON（text blocks）→ 命中 N 条', () => {
+    const content = [
+      { type: 'text', text: JSON.stringify({ count: 2, hits: [{}, {}] }) },
+    ]
+    expect(summarizeToolResult(content)).toBe('命中 2 条')
+  })
+  test('kb_search JSON（string）→ 命中 N 条；空命中 → 命中 0 条', () => {
+    expect(summarizeToolResult(JSON.stringify({ count: 0, hits: [] }))).toBe(
+      '命中 0 条',
+    )
+  })
+  test('kb_list_roots（有 count 无 hits）不误判为命中', () => {
+    const content = [
+      {
+        type: 'text',
+        text: JSON.stringify({ count: 3, roots: [], knowledgeBases: [] }),
+      },
+    ]
+    // 无 hits → 走原有「首行」逻辑（首行是 `{`，截断后返回）
+    expect(summarizeToolResult(content)).not.toContain('命中')
+  })
+  test('kb_list_available（刀 3）→ 可发现 N 个库 / 无可发现库 / 已挂库', () => {
+    const found = [
+      { type: 'text', text: JSON.stringify({ bound: false, available: [{}, {}] }) },
+    ]
+    expect(summarizeToolResult(found)).toBe('可发现 2 个库')
+    expect(
+      summarizeToolResult(JSON.stringify({ bound: false, available: [] })),
+    ).toBe('无可发现库')
+    expect(
+      summarizeToolResult(JSON.stringify({ bound: true, available: [] })),
+    ).toBe('已挂库')
+  })
+  test('非 JSON 文本不受影响', () => {
+    expect(summarizeToolResult('纯文本结果')).toBe('纯文本结果')
   })
 })

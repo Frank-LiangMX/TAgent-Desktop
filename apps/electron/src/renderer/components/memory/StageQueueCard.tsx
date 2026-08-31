@@ -17,6 +17,22 @@ interface StageQueueCardProps {
   onChanged: () => void
 }
 
+function memoryStatusLabel(status?: string): string {
+  switch (status) {
+    case 'active':
+      return '已生效'
+    case 'candidate':
+      return '候选'
+    case 'pending_approval':
+      return '待审批'
+    case 'rejected':
+      return '已拒绝'
+    case 'deferred':
+      return '已延后'
+    default:
+      return '待治理'
+  }
+}
 export function StageQueueCard({
   mode,
   onChanged,
@@ -120,12 +136,36 @@ export function StageQueueCard({
                 <span>{entry.type}</span>
                 <span>·</span>
                 <span>{new Date(entry.enqueuedAt).toLocaleDateString('zh-CN')}</span>
+                <span>·</span>
+                <span>
+                  {entry.scope === 'project'
+                    ? '项目'
+                    : entry.scope === 'global'
+                      ? '全局'
+                      : '旧记录'}
+                </span>
+                {entry.workspaceSlug ? <span>workspace · {entry.workspaceSlug}</span> : null}
+                <span>· {memoryStatusLabel(entry.status)}</span>
               </div>
               <AppTooltip label={entry.pattern} multiline>
                 <p className="md-text mt-1 line-clamp-2 text-[12px] leading-relaxed">
                   {entry.pattern}
                 </p>
               </AppTooltip>
+              {entry.evidence.length > 0 ? (
+                <details className="mt-1 text-[10px]">
+                  <summary className="md-text-faint cursor-pointer select-none">
+                    查看依据 · {entry.evidence.length} 条
+                  </summary>
+                  <ul className="md-text-faint mt-1 space-y-0.5 border-l border-foreground/[0.12] pl-2 leading-relaxed">
+                    {entry.evidence.map((evidence, index) => (
+                      <li key={`${entry.id}-evidence-${index}`}>{evidence}</li>
+                    ))}
+                  </ul>
+                </details>
+              ) : (
+                <p className="md-text-faint mt-1 text-[10px]">暂无结构化依据</p>
+              )}
             </div>
             <div className="flex shrink-0 gap-0.5">
               <AppTooltip label="接受">
@@ -134,12 +174,12 @@ export function StageQueueCard({
                   disabled={acting !== null}
                   onClick={() =>
                     void run(`accept-${entry.id}`, () =>
-                      window.electronAPI.acceptStageOne(mode, entry.id)
+                      window.electronAPI.acceptStageOne(mode, entry.id),
                     )
                   }
                   className={cn(
                     'inline-flex size-7 items-center justify-center rounded-full',
-                    'text-emerald-600 hover:bg-emerald-500/10 disabled:opacity-35 dark:text-emerald-400'
+                    'text-emerald-600 hover:bg-emerald-500/10 disabled:opacity-35 dark:text-emerald-400',
                   )}
                   aria-label="接受"
                 >
@@ -156,7 +196,7 @@ export function StageQueueCard({
                   disabled={acting !== null}
                   onClick={() =>
                     void run(`reject-${entry.id}`, () =>
-                      window.electronAPI.rejectStageOne(mode, entry.id)
+                      window.electronAPI.rejectStageOne(mode, entry.id),
                     )
                   }
                   className="inline-flex size-7 items-center justify-center rounded-full md-text-variant hover:bg-foreground/[0.05] hover:text-foreground disabled:opacity-35"

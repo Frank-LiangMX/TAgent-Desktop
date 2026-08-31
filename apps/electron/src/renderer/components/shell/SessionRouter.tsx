@@ -12,11 +12,7 @@ import { Chat, type SessionMeta } from "../chat/Chat";
 import { activeTabAtom } from "../../atoms/tabs";
 import { usePersistedSessionMeta } from "../../hooks/usePersistedSessionMeta";
 
-export function SessionRouter({
-  isActive = true,
-}: {
-  isActive?: boolean;
-}): JSX.Element | null {
+export function SessionRouter(): JSX.Element | null {
   const activeTab = useAtomValue(activeTabAtom);
   const persistedMeta = usePersistedSessionMeta(activeTab?.sessionId);
   if (!activeTab) return null;
@@ -33,5 +29,5 @@ export function SessionRouter({
     knowledgeBaseMode: persistedMeta?.knowledgeBaseMode,
   };
   // 已成正式 tab：工作区已锁定、不再改；无返回钮
-  return <Chat key={session.id} session={session} isActive={isActive} />;
+  return <Chat key={session.id} session={session} />;
 }

@@ -1,13 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
-import {
-  BookOpen,
-  Check,
-  ChevronDown,
-  FolderOpen,
-  Settings2,
-} from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, FolderOpen, Settings2 } from "lucide-react";
 import type { KnowledgeBaseRecord } from "@tagent/shared";
-import { Button, Popover, PopoverContent, PopoverTrigger } from "@tagent/ui";
+import {
+  MenuPopoverItem,
+  MenuPopoverSeparator,
+  SegmentedTabs,
+  SegmentedTabsItem,
+} from "@tagent/ui";
 import { cn } from "../../lib/utils";
 import { usePersistedSessionMeta } from "../../hooks/usePersistedSessionMeta";
 
@@ -25,34 +24,43 @@ const modeOptions: Array<{
   },
   {
     value: "preferred",
-    label: "优先使用",
+    label: "优先",
     description: "先检索知识库，必要时补充通用知识",
   },
   {
     value: "strict",
-    label: "仅使用",
+    label: "仅用",
     description: "只依据知识库，找不到就明确说明",
   },
 ];
 
-export function KnowledgeBaseSelector({
+/**
+ * 知识库绑定 / 使用方式面板（无 Popover 外壳）。
+ * 供 ComposerPlusMenu「+」→「知识库」子视图挂载；紧凑菜单态，不堆说明文案。
+ */
+export function KnowledgeBasePanel({
   sessionId,
+  onManage,
 }: {
   sessionId: string;
+  onManage?: () => void;
 }): JSX.Element {
   const meta = usePersistedSessionMeta(sessionId);
   const [items, setItems] = useState<KnowledgeBaseRecord[]>([]);
-  const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const selectedIds = meta?.knowledgeBaseIds ?? [];
   const mode: KnowledgeBaseMode = meta?.knowledgeBaseMode ?? "off";
-  const selected = useMemo(
-    () => items.filter((item) => selectedIds.includes(item.id)),
-    [items, selectedIds],
-  );
+  const hasSelection = selectedIds.length > 0;
+
+  const notifySessionMetaChanged = (): void => {
+    window.dispatchEvent(
+      new CustomEvent("tagent:session-meta-changed", {
+        detail: { sessionId },
+      }),
+    );
+  };
 
   useEffect(() => {
-    if (!open) return;
     let alive = true;
     void window.electronAPI
       .listKnowledgeBases()
@@ -65,7 +73,7 @@ export function KnowledgeBaseSelector({
     return () => {
       alive = false;
     };
-  }, [open]);
+  }, []);
 
   const toggle = async (id: string) => {
     const wasSelected = selectedIds.includes(id);
@@ -79,10 +87,12 @@ export function KnowledgeBaseSelector({
           ? "preferred"
           : mode;
     try {
-      await window.electronAPI.updateSessionMeta(sessionId, {
+      const updated = await window.electronAPI.updateSessionMeta(sessionId, {
         knowledgeBaseIds: next,
         knowledgeBaseMode: nextMode,
       });
+      if (!updated) throw new Error("当前会话无法保存知识库设置");
+      notifySessionMetaChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -91,148 +101,123 @@ export function KnowledgeBaseSelector({
   const setKnowledgeBaseMode = async (nextMode: KnowledgeBaseMode) => {
     if (nextMode !== "off" && selectedIds.length === 0) return;
     try {
-      await window.electronAPI.updateSessionMeta(sessionId, {
+      const updated = await window.electronAPI.updateSessionMeta(sessionId, {
         knowledgeBaseMode: nextMode,
       });
+      if (!updated) throw new Error("当前会话无法保存知识库设置");
+      notifySessionMetaChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   };
 
   const manage = () => {
-    setOpen(false);
+    onManage?.();
     window.dispatchEvent(new CustomEvent("tagent:open-knowledge-bases"));
   };
-  const modeLabel = mode === "strict" ? " · 仅使用" : mode === "preferred" ? " · 优先" : "";
-  const label =
-    selected.length === 0
-      ? "知识库"
-      : selected.length === 1
-        ? (selected[0]?.name ?? "知识库") + modeLabel
-        : "知识库 · " + selected.length + modeLabel;
+
+  const sourceMeta = (item: KnowledgeBaseRecord): string => {
+    if (!item.sources.length) return "无来源";
+    return item.sources.length + " 个来源";
+  };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className={cn(
-            "max-w-[220px] gap-1.5",
-            selected.length > 0 && mode !== "off" && "text-primary",
-          )}
-          aria-label="选择知识库和使用模式"
-        >
-          <BookOpen size={15} />
-          <span className="truncate">{label}</span>
-          <ChevronDown size={14} />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 p-0">
-        <div className="border-b px-4 py-3">
-          <p className="text-sm font-medium">本次会话的知识范围</p>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            先选择知识库，再决定 Agent 是否主动使用。知识库可以跨项目复用。
-          </p>
-        </div>
-        <div className="max-h-64 overflow-y-auto p-2">
-          {error && (
-            <p className="px-2 py-2 text-xs text-destructive">{error}</p>
-          )}
-          {items.length === 0 ? (
-            <div className="px-3 py-5 text-center">
-              <FolderOpen
-                size={22}
-                className="mx-auto mb-2 text-muted-foreground"
-              />
-              <p className="text-xs text-muted-foreground">
-                还没有可用的知识库。
-              </p>
-              <Button
-                variant="link"
-                size="sm"
-                className="mt-1"
-                onClick={manage}
-              >
-                去创建
-              </Button>
-            </div>
-          ) : (
-            items.map((item) => {
+    <div className="flex flex-col">
+      <div className="max-h-52 overflow-y-auto px-1 py-1">
+        {error && (
+          <p className="px-2 py-1.5 text-[11px] text-destructive">{error}</p>
+        )}
+        {items.length === 0 ? (
+          <div className="px-3 py-6 text-center">
+            <FolderOpen
+              size={18}
+              className="mx-auto mb-2 text-muted-foreground/70"
+            />
+            <p className="text-[11px] text-muted-foreground">还没有知识库</p>
+            <button
+              type="button"
+              className="mt-1.5 text-[11px] text-primary hover:underline"
+              onClick={manage}
+            >
+              去创建
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-0.5">
+            {items.map((item) => {
               const checked = selectedIds.includes(item.id);
               return (
-                <button
+                <MenuPopoverItem
                   key={item.id}
-                  type="button"
-                  className={cn(
-                    "flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-accent",
-                    checked && "bg-primary/5",
-                  )}
-                  onClick={() => void toggle(item.id)}
-                >
-                  <span
-                    className={cn(
-                      "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border",
-                      checked &&
-                        "border-primary bg-primary text-primary-foreground",
-                    )}
-                  >
-                    {checked && <Check size={12} />}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm">{item.name}</span>
-                    <span className="mt-0.5 block text-xs text-muted-foreground">
-                      {item.sources.length
-                        ? item.sources.length + " 个来源目录"
-                        : "待添加来源"}
+                  selected={checked}
+                  label={item.name}
+                  trailing={
+                    <span className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-muted-foreground">
+                        {sourceMeta(item)}
+                      </span>
+                      {checked ? (
+                        <Check className="size-3.5 text-primary" />
+                      ) : null}
                     </span>
-                  </span>
-                </button>
-              );
-            })
-          )}
-        </div>
-        <div className="border-t px-3 py-3">
-          <p className="px-1 text-xs font-medium text-muted-foreground">
-            Agent 使用方式
-          </p>
-          <div className="mt-2 space-y-1">
-            {modeOptions.map((option) => {
-              const disabled = option.value !== "off" && selectedIds.length === 0;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  disabled={disabled}
-                  aria-pressed={mode === option.value}
-                  className={cn(
-                    "w-full rounded-md px-2 py-1.5 text-left transition-colors",
-                    mode === option.value ? "bg-primary/10" : "hover:bg-accent",
-                    disabled && "cursor-not-allowed opacity-40",
-                  )}
-                  onClick={() => void setKnowledgeBaseMode(option.value)}
-                >
-                  <span className="block text-xs font-medium">{option.label}</span>
-                  <span className="block text-[11px] text-muted-foreground">
-                    {option.description}
-                  </span>
-                </button>
+                  }
+                  onClick={() => void toggle(item.id)}
+                />
               );
             })}
           </div>
+        )}
+      </div>
+
+      <MenuPopoverSeparator className="mx-2 my-1" />
+
+      <div className="px-2.5 pb-2 pt-0.5">
+        <div className="mb-1.5 flex items-center justify-between gap-2 px-0.5">
+          <span className="text-[10px] font-medium tracking-wide text-muted-foreground/80">
+            使用方式
+          </span>
+          {!hasSelection && (
+            <span className="text-[10px] text-muted-foreground/60">
+              先勾选知识库
+            </span>
+          )}
         </div>
-        <div className="border-t p-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start gap-2"
-            onClick={manage}
-          >
-            <Settings2 size={15} />
-            管理知识库
-          </Button>
-        </div>
-      </PopoverContent>
-    </Popover>
+        <SegmentedTabs
+          value={mode}
+          onValueChange={(v) =>
+            void setKnowledgeBaseMode(v as KnowledgeBaseMode)
+          }
+          className="flex w-full"
+        >
+          {modeOptions.map((option) => {
+            const disabled = option.value !== "off" && !hasSelection;
+            return (
+              <SegmentedTabsItem
+                key={option.value}
+                value={option.value}
+                disabled={disabled}
+                title={option.description}
+                className={cn(
+                  "min-w-0 flex-1 justify-center px-1 text-[11px]",
+                  disabled && "opacity-40",
+                )}
+              >
+                {option.label}
+              </SegmentedTabsItem>
+            );
+          })}
+        </SegmentedTabs>
+      </div>
+
+      <MenuPopoverSeparator className="mx-2 my-1" />
+
+      <div className="px-1 pb-1">
+        <MenuPopoverItem
+          icon={<Settings2 className="size-3.5" />}
+          label="管理知识库"
+          onClick={manage}
+        />
+      </div>
+    </div>
   );
 }

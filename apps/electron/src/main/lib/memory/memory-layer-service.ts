@@ -19,7 +19,8 @@ import * as path from 'node:path'
 
 import Database from 'better-sqlite3'
 
-import { getConfigDir } from '../config/config-paths'
+import { getConfigDir, getProjectMemoryDir } from '../config/config-paths'
+import { filterProjectMemoryMarkdown } from './memory-scope'
 
 export { getDiscardedMemoryDir } from './discarded-memory'
 
@@ -467,7 +468,7 @@ export class MemoryLayerService {
   /**
    * 搜索 L4 会话（FTS5）
    */
-  searchSessions(mode: MemoryMode, query: string, limit: number = 20): SessionMemoryRecord[] {
+  searchSessions(mode: MemoryMode, query: string, limit: number = 20, workspaceSlug?: string): SessionMemoryRecord[] {
     const db = this.getL4Db(mode)
     if (!db) {
       return []
@@ -481,7 +482,7 @@ export class MemoryLayerService {
       const tableExists = tableCheck.get()
       if (!tableExists) {
         // FTS5 表不存在，fallback 到 LIKE 搜索
-        return this.searchSessionsFallback(mode, query, limit)
+        return this.searchSessionsFallback(mode, query, limit, workspaceSlug)
       }
 
       // FTS5 搜索
@@ -490,15 +491,16 @@ export class MemoryLayerService {
         SELECT s.* FROM sessions s
         JOIN sessions_fts fts ON s.rowid = fts.rowid
         WHERE fts MATCH ?
+          AND (? IS NULL OR s.workspace_slug = ? OR s.workspace_slug IS NULL OR s.workspace_slug = '')
         ORDER BY bm25(fts) ASC
         LIMIT ?
       `)
-      const matches = stmt.all(ftsQuery, limit) as SessionMemoryRecord[]
+      const matches = stmt.all(ftsQuery, workspaceSlug ?? null, workspaceSlug ?? null, limit) as SessionMemoryRecord[]
       // FTS 的默认分词对中文长句召回较弱；无命中时回退到片段 LIKE 检索。
-      return matches.length > 0 ? matches : this.searchSessionsFallback(mode, query, limit)
+      return matches.length > 0 ? matches : this.searchSessionsFallback(mode, query, limit, workspaceSlug)
     } catch (error) {
       console.warn('[MemoryLayerService] FTS5 搜索失败，fallback:', error)
-      return this.searchSessionsFallback(mode, query, limit)
+      return this.searchSessionsFallback(mode, query, limit, workspaceSlug)
     }
   }
 
@@ -508,7 +510,8 @@ export class MemoryLayerService {
   private searchSessionsFallback(
     mode: MemoryMode,
     query: string,
-    limit: number
+    limit: number,
+    workspaceSlug?: string
   ): SessionMemoryRecord[] {
     const db = this.getL4Db(mode)
     if (!db) {
@@ -519,9 +522,10 @@ export class MemoryLayerService {
       const terms = buildMemoryLikeTerms(query)
       if (terms.length === 0) return []
       const predicate = terms.map(() => '(title LIKE ? OR summary LIKE ? OR key_facts LIKE ?)').join(' OR ')
+      const workspacePredicate = '(? IS NULL OR workspace_slug = ? OR workspace_slug IS NULL OR workspace_slug = \'\')'
       const stmt = db.prepare(`
         SELECT * FROM sessions
-        WHERE ${predicate}
+        WHERE (${predicate}) AND ${workspacePredicate}
         ORDER BY created_at DESC
         LIMIT ?
       `)
@@ -529,7 +533,7 @@ export class MemoryLayerService {
         const pattern = `%${term}%`
         return [pattern, pattern, pattern]
       })
-      return stmt.all(...parameters, limit) as SessionMemoryRecord[]
+      return stmt.all(...parameters, workspaceSlug ?? null, workspaceSlug ?? null, limit) as SessionMemoryRecord[]
     } catch {
       return []
     }
@@ -660,19 +664,19 @@ export class MemoryLayerService {
    * - 只读 raw 文件内容（包含 header 注释 + 记忆条目）
    * - 不读 L3/L4/L5
    */
-  readMemorySnapshot(mode: MemoryMode): {
+  readMemorySnapshot(mode: MemoryMode, workspaceSlug?: string): {
     l0User: string
     l1Project: string
     l2Facts: string
   } {
     const dir = getMemoryDir(mode)
-    const readSafe = (name: string): string => {
+    const readSafe = (name: string, directory = dir, recreate = true): string => {
       try {
-        const filePath = path.join(dir, name)
+        const filePath = path.join(directory, name)
         if (!fs.existsSync(filePath)) {
           // PersonaTrigger P3.4：文件被误删时自动重建（带 header）
           console.warn(`[MemoryLayerService] readMemorySnapshot: ${name} 不存在，自动重建`)
-          this.recreateLayerFile(mode, name)
+          if (recreate) this.recreateLayerFile(mode, name)
           return ''
         }
         const stats = fs.statSync(filePath)
@@ -691,7 +695,12 @@ export class MemoryLayerService {
     }
     return {
       l0User: readSafe('L0_user.md'),
-      l1Project: readSafe('L1_project.md'),
+      l1Project: workspaceSlug
+        ? filterProjectMemoryMarkdown(
+            readSafe('L1_project.md', getProjectMemoryDir(workspaceSlug), false),
+            workspaceSlug,
+          )
+        : readSafe('L1_project.md'),
       l2Facts: readSafe('L2_facts.md'),
     }
   }
@@ -754,7 +763,7 @@ export class MemoryLayerService {
   getCorrections(
     mode: MemoryMode,
     limit: number = 50
-  ): Array<{ timestamp: number; correction: string; context: string }> {
+  ): Array<{ timestamp: number; correction: string; context: string; scope?: 'global' | 'project'; workspaceSlug?: string; evidenceIds?: string[]; status?: string; sourceSession?: string }> {
     const dir = getMemoryDir(mode)
     const filePath = path.join(dir, 'corrections.jsonl')
 

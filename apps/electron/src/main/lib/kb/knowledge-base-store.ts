@@ -77,6 +77,8 @@ export function createKnowledgeBase(input: {
   name: string;
   description?: string;
   sourcePaths?: string[];
+  /** 可选：与工作区的弱关联（刀 3，仅用于未挂库时荐库，不自动挂载） */
+  relatedWorkspaceIds?: string[];
 }): KnowledgeBaseRecord {
   const name = input.name.trim();
   if (!name) throw new Error("知识库名称不能为空");
@@ -87,6 +89,9 @@ export function createKnowledgeBase(input: {
         .filter(Boolean),
     ),
   );
+  const relatedWorkspaceIds = normalizeRelatedWorkspaceIds(
+    input.relatedWorkspaceIds,
+  );
   const now = Date.now();
   const record: KnowledgeBaseRecord = {
     id: randomUUID(),
@@ -95,11 +100,79 @@ export function createKnowledgeBase(input: {
       ? { description: input.description.trim() }
       : {}),
     sources: paths.map((path) => makeSource(path)),
+    ...(relatedWorkspaceIds.length > 0 ? { relatedWorkspaceIds } : {}),
     createdAt: now,
     updatedAt: now,
   };
   writeRecords([...readRecords(), record]);
   return record;
+}
+
+/**
+ * 规范化关联工作区 id 列表：trim、去重、去空（保留顺序）。
+ * 纯函数，便于单测。
+ */
+export function normalizeRelatedWorkspaceIds(
+  ids: string[] | undefined,
+): string[] {
+  if (!Array.isArray(ids)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ids) {
+    if (typeof id !== "string") continue;
+    const trimmed = id.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * 更新全局知识库元数据（刀 3：名称 / 描述 / 关联工作区）。
+ * 全部字段可选：仅传需要改的字段；未传字段保持原值。
+ * - name：trim 后非空，否则抛错。
+ * - description：传入字符串则覆盖（trim 后空串 → 清除）；不传则保留。
+ * - relatedWorkspaceIds：传入数组则覆盖（normalize 去重）；不传则保留。
+ * 返回更新后的记录（含 sources 副本）。
+ */
+export function updateKnowledgeBase(input: {
+  id: string;
+  name?: string;
+  description?: string;
+  relatedWorkspaceIds?: string[];
+}): KnowledgeBaseRecord {
+  const records = readRecords();
+  const record = records.find((item) => item.id === input.id);
+  if (!record) throw new Error("知识库不存在");
+  if (typeof input.name === "string") {
+    const name = input.name.trim();
+    if (!name) throw new Error("知识库名称不能为空");
+    record.name = name;
+  }
+  if (typeof input.description === "string") {
+    const description = input.description.trim();
+    if (description) {
+      record.description = description;
+    } else {
+      delete record.description;
+    }
+  }
+  if (Array.isArray(input.relatedWorkspaceIds)) {
+    const relatedWorkspaceIds = normalizeRelatedWorkspaceIds(
+      input.relatedWorkspaceIds,
+    );
+    if (relatedWorkspaceIds.length > 0) {
+      record.relatedWorkspaceIds = relatedWorkspaceIds;
+    } else {
+      delete record.relatedWorkspaceIds;
+    }
+  }
+  record.updatedAt = Date.now();
+  writeRecords(records);
+  return { ...record, sources: [...record.sources] };
 }
 
 export function deleteKnowledgeBase(id: string): boolean {

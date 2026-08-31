@@ -30,6 +30,8 @@ Thumbs.db
 
 # Electron
 out/
+electron-dist*/
+out-local*/
 release-notes/__generated/
 
 # 临时实验（docs/dev/ 可定期清，但先保留）

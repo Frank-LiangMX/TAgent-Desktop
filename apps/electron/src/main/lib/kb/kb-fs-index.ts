@@ -32,6 +32,12 @@ import {
   isAbsolute,
   sep,
 } from "node:path";
+import {
+  SEARCH_EXCERPT_LEN,
+  clampSearchLimit,
+  scoreKeywordHits,
+  tokenize,
+} from "./kb-search-score";
 
 /** 最大递归深度（root 直接子项记为深度 0） */
 const MAX_DEPTH = 4;
@@ -43,12 +49,6 @@ const MAX_FILES_PER_ROOT = 2000;
 const MAX_GET_BYTES = 256 * 1024;
 /** 读取文件头部用于提取标题的字节数 */
 const HEAD_BYTES = 4096;
-/** 单条命中摘录最大字符数 */
-const SEARCH_EXCERPT_LEN = 200;
-/** kb_search 默认返回上限 */
-const DEFAULT_SEARCH_LIMIT = 10;
-/** kb_search 绝对上限 */
-const MAX_SEARCH_LIMIT = 50;
 /** 正文缓存条目上限，超过即整体清空（简单防膨胀） */
 const MAX_CACHE_ENTRIES = 5000;
 
@@ -128,10 +128,6 @@ function stripExt(name: string): string {
   return e ? name.slice(0, -e.length) : name;
 }
 
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
-}
-
 /**
  * 容器校验：target 是否严格位于 root 之内（不含 root 自身）。
  * 经 resolve 后 `..` 已折叠，再用 relative 判定，可拒绝绝对路径穿越。
@@ -187,32 +183,8 @@ function extractTitle(head: string, fallbackName: string): string {
   return stripExt(fallbackName);
 }
 
-/** 查询分词：空白 / 常见标点切分，小写去重；CJK 无空格则整体作一词 */
-function tokenize(query: string): string[] {
-  if (!query) return [];
-  const lower = query.toLowerCase();
-  const tokens = lower
-    .split(/[\s,，。、；;:：!?！？()（）\[\]{}'"`|/\\]+/u)
-    .map((t) => t.trim())
-    .filter(Boolean);
-  return [...new Set(tokens)];
-}
-
-/** 围绕首个关键词命中位置截取短摘录，折叠空白 */
-function makeExcerpt(content: string, firstKw: string, maxLen: number): string {
-  if (!content) return "";
-  const lower = content.toLowerCase();
-  const idx = firstKw ? lower.indexOf(firstKw) : -1;
-  let start = 0;
-  if (idx >= 0) start = Math.max(0, idx - Math.floor(maxLen / 3));
-  let snippet = content
-    .slice(start, start + maxLen)
-    .replace(/\s+/g, " ")
-    .trim();
-  if (start > 0) snippet = "…" + snippet;
-  if (start + maxLen < content.length) snippet = snippet + "…";
-  return snippet;
-}
+// tokenize / makeExcerpt / 关键词打分常量统一来自 ./kb-search-score，
+// 与正式文档检索共享同一套打分逻辑（P1-1 §B）。
 
 /**
  * 规范化 kbRoots 列表为 KbRoot[]：resolve 去重，仅保留现存目录。
@@ -379,11 +351,7 @@ export class KbFsIndex {
     if (roots.length === 0) return [];
     const keywords = tokenize(query);
     if (keywords.length === 0) return [];
-    const limit = clamp(
-      opts?.limit ?? DEFAULT_SEARCH_LIMIT,
-      1,
-      MAX_SEARCH_LIMIT,
-    );
+    const limit = clampSearchLimit(opts?.limit);
     const rootFilter = opts?.rootId;
     const rootLabelById = new Map(roots.map((r) => [r.id, r.label]));
     const entries = this.listEntries(roots);
@@ -391,44 +359,17 @@ export class KbFsIndex {
     for (const e of entries) {
       if (rootFilter && e.rootId !== rootFilter) continue;
       const content = this.getContent(e.absolutePath, e.mtimeMs);
-      const titleLower = e.title.toLowerCase();
-      const bodyLower = content.toLowerCase();
-      let score = 0;
-      let matchedInTitle = false;
-      let matchedInBody = false;
-      for (const kw of keywords) {
-        if (titleLower.includes(kw)) {
-          score += 5;
-          matchedInTitle = true;
-        }
-        let c = 0;
-        let idx = 0;
-        while ((idx = bodyLower.indexOf(kw, idx)) !== -1) {
-          c += 1;
-          idx += kw.length;
-          if (c >= 100) break;
-        }
-        if (c > 0) {
-          score += Math.min(c, 10);
-          matchedInBody = true;
-        }
-      }
-      if (score > 0) {
-        const matchedIn =
-          matchedInTitle && matchedInBody
-            ? "both"
-            : matchedInTitle
-              ? "title"
-              : "body";
+      const scored = scoreKeywordHits(e.title, content, keywords, SEARCH_EXCERPT_LEN);
+      if (scored) {
         hits.push({
           rootId: e.rootId,
           rootLabel: rootLabelById.get(e.rootId) ?? "",
           relativePath: e.relativePath,
           absolutePath: e.absolutePath,
           title: e.title,
-          score,
-          excerpt: makeExcerpt(content, keywords[0] ?? "", SEARCH_EXCERPT_LEN),
-          matchedIn,
+          score: scored.score,
+          excerpt: scored.excerpt,
+          matchedIn: scored.matchedIn,
         });
       }
     }

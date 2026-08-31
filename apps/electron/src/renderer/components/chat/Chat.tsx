@@ -78,7 +78,7 @@ import {
   Button,
   AppTooltip,
 } from "@tagent/ui";
-import { Square, Plus, X } from "lucide-react";
+import { Square, X } from "lucide-react";
 import { UsersThree } from "@phosphor-icons/react";
 import {
   collectSessionCollabOutline,
@@ -159,13 +159,9 @@ import {
 } from "./ChatInput";
 import { ModelSelector } from "./ModelSelector";
 import { WorkspaceSelector } from "./WorkspaceSelector";
-import { KnowledgeBaseSelector } from "../knowledge-base/KnowledgeBaseSelector";
+import { ComposerPlusMenu } from "./ComposerPlusMenu";
 
 import { NewConversationLanding } from "./NewConversationLanding";
-import {
-  SessionInitializationScreen,
-  type SessionInitializationStage,
-} from "./SessionInitializationScreen";
 import {
   resolveEagerness,
   reduceTaskEvent,
@@ -188,6 +184,7 @@ import {
 import { PermissionBanner } from "../permission/PermissionBanner";
 import { AskUserQuestionBanner } from "./AskUserQuestionBanner";
 import { ExitPlanModeBanner } from "./ExitPlanModeBanner";
+import { KbProposeSaveBanner } from "./KbProposeSaveBanner";
 import { PlanProgressCard } from "./PlanProgressCard";
 import {
   isPlanIncomplete,
@@ -376,7 +373,6 @@ export function Chat({
   onTabEvicted,
   crewExternalized = false,
   onOpenCrew,
-  isActive = true,
 }: {
   session: SessionMeta;
   /** 草稿态（无 tab）改工作区：改 App 的 draftSession。已有 tab 时由 SessionRouter 不传 */
@@ -400,8 +396,6 @@ export function Chat({
   crewExternalized?: boolean;
   /** 分屏模式下，点 chat 内部班组按钮时开外部 crew pane（由 ChatPane 传入） */
   onOpenCrew?: () => void;
-  /** 正式会话在切到插件/记忆页时保持挂载，但隐藏其视觉层。 */
-  isActive?: boolean;
 }): JSX.Element {
   const sessionId = session.id;
   const reducedMotion = useReducedMotion();
@@ -720,13 +714,6 @@ export function Chat({
   }, [moaPresetsRevision]);
   /** 历史已写入 items：钉底只等这个，不等虚拟化全挂。 */
   const [scrollReady, setScrollReady] = useState(false);
-  /** 正式会话切换时的可见初始化阶段，避免 IPC 读取期间主区白屏。 */
-  const [sessionInitializationStage, setSessionInitializationStage] =
-    useState<SessionInitializationStage>("checking");
-  const [sessionInitializationRetry, setSessionInitializationRetry] =
-    useState(0);
-  const [sessionInitializationDismissed, setSessionInitializationDismissed] =
-    useState(false);
   /**
    * 虚拟化：尾部挂载窗口。默认只挂最近 CHAT_MOUNT_WINDOW 条；
    * 上滑 / 中间位恢复 / 锚点跳转才允许拉满。开流且在底部时收回窗口，避免 60+ 轮拖死流式。
@@ -1187,8 +1174,6 @@ export function Chat({
     // 运行态：不在此 stopRun（见下方 async reconcile 注释）。
     setHasDraft(false);
     setScrollReady(false);
-    setSessionInitializationStage("checking");
-    setSessionInitializationDismissed(false);
     const restoreMid = hasSavedMidPosition(
       peekSessionScrollDistance(sessionId),
     );
@@ -1243,7 +1228,6 @@ export function Chat({
       } catch {
         // IPC 失败：保留 atom 现状
       }
-      setSessionInitializationStage("history");
       if (cancelled) return;
       const history = (await window.electronAPI.getMessages(
         sessionId,
@@ -1297,7 +1281,6 @@ export function Chat({
           break;
         }
       }
-      setSessionInitializationStage("settings");
       // 回显子代理委派积极性：会话 meta → 设置页全局默认 → conservative
       try {
         const metas = (await window.electronAPI.listSessions()) as Array<{
@@ -1378,12 +1361,11 @@ export function Chat({
     })().catch((error: unknown) => {
       if (cancelled) return;
       console.error("[chat] session initialization failed:", error);
-      setSessionInitializationStage("error");
     });
     return () => {
       cancelled = true;
     };
-  }, [sessionId, sessionInitializationRetry]);
+  }, [sessionId]);
 
   // main 会话滚动时关闭滚动内容自身的 backdrop-filter，避免 GPU 合成滞后产生拖影。
   // 输入框是滚动容器的兄弟节点，不受 is-scrolling 选择器影响，玻璃遮挡保持不变。
@@ -3211,6 +3193,12 @@ export function Chat({
    *  工作区选择已移到输入框下方的独立容器（见 workspaceSlot），不再挤在 footer。 */
   const landingFooter = (
     <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1">
+      <ComposerPlusMenu
+        sessionId={sessionId}
+        onPickFiles={handleOpenFileDialog}
+        showKnowledgeBase={!onDraftWorkspaceChange}
+        className="mr-auto"
+      />
       {/* 运行模式（草稿会话仅改本地状态，首条发送时主进程创建 meta 会带上） */}
       <RunModeSelector
         executionMode={executionMode}
@@ -3256,9 +3244,6 @@ export function Chat({
           }
         }}
       />
-      {!onDraftWorkspaceChange && (
-        <KnowledgeBaseSelector sessionId={sessionId} />
-      )}
       <ModelSelector
         selection={effectiveSelection}
         lockedKind={null}
@@ -3611,20 +3596,6 @@ export function Chat({
     <MessageRichPreviewProvider value={richPreviewProviderValue}>
       <MessageFilePathProvider value={filePathProviderValue}>
         <div className="session-body flex h-full min-h-0">
-          {isActive &&
-          !onDraftWorkspaceChange &&
-          !sessionInitializationDismissed ? (
-            <SessionInitializationScreen
-              sessionTitle={session.title}
-              stage={sessionInitializationStage}
-              completed={scrollReady}
-              reducedMotion={reducedMotion === true}
-              onRetry={() =>
-                setSessionInitializationRetry((value) => value + 1)
-              }
-              onExited={() => setSessionInitializationDismissed(true)}
-            />
-          ) : null}
           {session.fusionRoomId ? (
             <CollaborationRoomsPage
               roomId={session.fusionRoomId}
@@ -4017,6 +3988,7 @@ export function Chat({
                         <PermissionBanner sessionId={sessionId} />
                         <AskUserQuestionBanner sessionId={sessionId} />
                         <ExitPlanModeBanner sessionId={sessionId} />
+                        <KbProposeSaveBanner sessionId={sessionId} />
 
                         <div className="composer-float-row">
                           <ComposerRunTimer startedAt={runStartedAt} />
@@ -4074,21 +4046,12 @@ export function Chat({
                                 )}
                               >
                                 <div className="composer-footer-bar__left flex h-7 min-w-0 items-center gap-0.5">
-                                  {/* 加号最左 */}
-                                  <AppTooltip label="添加附件">
-                                    {/* size-7 与 size="icon" 冲突：Tailwind v3.4 里 h/w 排在 size 之后，
-                          size="icon" 的 h-9 w-9 会盖掉 size-7，+ 按钮变成 36px 高出 h-7 底栏，
-                          使同行运行模式 pill 显得偏低。改用 icon-sm（h-7 w-7）与底栏等高。 */}
-                                    <Button
-                                      variant="ghost"
-                                      size="icon-sm"
-                                      className="shrink-0 rounded-xl text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                                      onClick={handleOpenFileDialog}
-                                      aria-label="添加附件"
-                                    >
-                                      <Plus className="size-4" />
-                                    </Button>
-                                  </AppTooltip>
+                                  {/* 「+」菜单：附件 + 知识库收拢（原裸 + 按钮 + 底栏常驻 KB） */}
+                                  <ComposerPlusMenu
+                                    sessionId={sessionId}
+                                    onPickFiles={handleOpenFileDialog}
+                                    showKnowledgeBase={!onDraftWorkspaceChange}
+                                  />
                                   {/* 运行模式：Chat|Work + 权限档 + 子代理，一个入口 */}
                                   <RunModeSelector
                                     compact={composerCompact}
@@ -4144,9 +4107,6 @@ export function Chat({
                                   />
                                 </div>
                                 <div className="composer-footer-bar__right flex h-7 min-w-0 shrink items-center gap-0.5">
-                                  <KnowledgeBaseSelector
-                                    sessionId={sessionId}
-                                  />
                                   <ModelSelector
                                     selection={effectiveSelection}
                                     lockedKind={lockedKind}

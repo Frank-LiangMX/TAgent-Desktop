@@ -81,7 +81,11 @@ interface MemoryLayerStats {
   l1: { exists: boolean; lines: number; lastUpdated: number | null }
   l2: { exists: boolean; lines: number; lastUpdated: number | null }
   l3: { rawCount: number; rulesCount: number; lastUpdated: number | null }
-  l4: { sessions: number; oldestDate: number | null; newestDate: number | null }
+  l4: {
+    sessions: number
+    oldestDate: number | null
+    newestDate: number | null
+  }
   l5: { exists: boolean; lines: number; lastUpdated: number | null }
 }
 
@@ -184,11 +188,33 @@ function formatSessionStamp(ts: number): string {
   const startOfToday = new Date()
   startOfToday.setHours(0, 0, 0, 0)
   if (ts >= startOfToday.getTime()) {
-    return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    return new Date(ts).toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
   }
-  return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+  return new Date(ts).toLocaleDateString('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+  })
 }
 
+function memoryStatusLabel(status?: string): string {
+  switch (status) {
+    case 'active':
+      return '已生效'
+    case 'candidate':
+      return '候选'
+    case 'pending_approval':
+      return '待审批'
+    case 'rejected':
+      return '已拒绝'
+    case 'deferred':
+      return '已延后'
+    default:
+      return '旧记录'
+  }
+}
 // ===== 主组件 =====
 
 export function MemoryMonitorPanel(): React.ReactElement {
@@ -237,7 +263,7 @@ export function MemoryMonitorPanel(): React.ReactElement {
           title: s.title,
           summary: s.summary,
           created_at: s.created_at,
-        }))
+        })),
       )
     } catch {
       setSessions([])
@@ -270,7 +296,7 @@ export function MemoryMonitorPanel(): React.ReactElement {
             className={cn(
               'inline-flex size-9 items-center justify-center rounded-full',
               'text-foreground/60 hover:text-foreground',
-              surface === 'graph' && 'text-blue-500 dark:text-blue-400'
+              surface === 'graph' && 'text-blue-500 dark:text-blue-400',
             )}
             aria-label={surface === 'graph' ? '退出图谱' : '记忆图谱'}
             aria-pressed={surface === 'graph'}
@@ -372,7 +398,7 @@ export function MemoryMonitorPanel(): React.ReactElement {
                       rowGrid,
                       'rounded-glass-popover bg-amber-500/[0.08] px-4 py-3 text-left titlebar-no-drag ui-pressable',
                       pendingOpen && 'rounded-b-none',
-                      'hover:bg-amber-500/[0.11]'
+                      'hover:bg-amber-500/[0.11]',
                     )}
                   >
                     <span className="flex size-9 items-center justify-center justify-self-center rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400">
@@ -390,7 +416,7 @@ export function MemoryMonitorPanel(): React.ReactElement {
                       <ChevronDown
                         className={cn(
                           'size-4 text-foreground/45 transition-transform duration-200 ease-linear',
-                          pendingOpen && 'rotate-180'
+                          pendingOpen && 'rotate-180',
                         )}
                         strokeWidth={1.75}
                       />
@@ -446,7 +472,7 @@ export function MemoryMonitorPanel(): React.ReactElement {
                           <span
                             className={cn(
                               'flex size-9 items-center justify-center justify-self-center rounded-full',
-                              'bg-foreground/[0.04] md-text-variant'
+                              'bg-foreground/[0.04] md-text-variant',
                             )}
                           >
                             {layer.icon}
@@ -457,7 +483,7 @@ export function MemoryMonitorPanel(): React.ReactElement {
                               <span
                                 className={cn(
                                   'text-[14px] font-medium tracking-tight',
-                                  open ? 'md-text' : 'md-text'
+                                  open ? 'md-text' : 'md-text',
                                 )}
                               >
                                 {layer.label}
@@ -522,8 +548,7 @@ export function MemoryMonitorPanel(): React.ReactElement {
 // ===== 层展开体：读真实内容 + 限高滚动（主题 scrollbar-thin）=====
 
 /** 层内容区：不整页平铺，限高后主题细滚动条 */
-const LAYER_SCROLL =
-  'max-h-[min(280px,42vh)] overflow-y-auto overflow-x-hidden scrollbar-thin pr-1'
+const LAYER_SCROLL = 'max-h-[min(280px,42vh)] overflow-y-auto overflow-x-hidden scrollbar-thin pr-1'
 
 const LAYER_MD_KEY: Record<Exclude<LayerKey, 'l3' | 'l4'>, 'L0' | 'L1' | 'L2' | 'L5'> = {
   l0: 'L0',
@@ -650,7 +675,16 @@ function LayerCorrectionsBody({
   stats: MemoryLayerStats | null
 }): React.ReactElement {
   const [items, setItems] = React.useState<
-    Array<{ timestamp: number; correction: string; context: string }>
+    Array<{
+      timestamp: number
+      correction: string
+      context: string
+      scope?: 'global' | 'project'
+      workspaceSlug?: string
+      evidenceIds?: string[]
+      status?: string
+      sourceSession?: string
+    }>
   >([])
   const [loading, setLoading] = React.useState(true)
 
@@ -705,12 +739,27 @@ function LayerCorrectionsBody({
             >
               <p className="md-text text-[12px] leading-relaxed">{item.correction}</p>
               {item.context ? (
-                <p className="md-text-faint mt-0.5 line-clamp-2 text-[11px] leading-relaxed">
-                  {item.context}
-                </p>
+                <details className="mt-0.5 text-[11px]">
+                  <summary className="md-text-faint cursor-pointer select-none">查看前情</summary>
+                  <p className="md-text-faint mt-0.5 whitespace-pre-wrap leading-relaxed">
+                    {item.context}
+                  </p>
+                </details>
               ) : null}
+              <div className="md-text-faint mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
+                <span className="rounded-full bg-foreground/[0.06] px-1.5 py-0.5">
+                  {item.scope === 'project' ? '项目' : item.scope === 'global' ? '全局' : '旧记录'}
+                </span>
+                {item.workspaceSlug ? <span>workspace · {item.workspaceSlug}</span> : null}
+                <span>· {memoryStatusLabel(item.status)}</span>
+                <span>
+                  ·{' '}
+                  {item.evidenceIds?.length ? `依据 ${item.evidenceIds.length} 条` : '无结构化依据'}
+                </span>
+                {item.sourceSession ? <span>· session {item.sourceSession}</span> : null}
+              </div>
               {item.timestamp ? (
-                <p className="md-text-faint mt-1 text-[10px] tabular-nums">
+                <p className="md-text-faint mt-0.5 text-[10px] tabular-nums">
                   {formatRelativeTime(item.timestamp)}
                 </p>
               ) : null}

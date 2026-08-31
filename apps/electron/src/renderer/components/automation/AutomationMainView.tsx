@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Clock3, Loader2, Pause, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { AlertTriangle, Clock3, Loader2, Pause, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import type { Automation } from '@tagent/shared'
 import { formatScheduleLabel } from '@tagent/shared'
 import { toast } from 'sonner'
+import { DestructiveConfirmDialog } from '@tagent/ui'
 import { AutomationSettings } from '../settings/AutomationSettings'
 
 type AutomationApi = {
@@ -22,6 +23,7 @@ export function AutomationMainView(): JSX.Element {
   const [editingTask, setEditingTask] = useState<Automation | null>(null)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Automation | null>(null)
   const selected = tasks.find((task) => task.id === selectedId) ?? null
   const reload = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -53,8 +55,12 @@ export function AutomationMainView(): JSX.Element {
       setBusyId(null)
     }
   }
-  const deleteTask = async (task: Automation): Promise<void> => {
-    if (!window.confirm(`确定删除「${task.name}」吗？运行历史也会一起删除。`)) return
+  const requestDeleteTask = (task: Automation): void => {
+    setDeleteTarget(task)
+  }
+  const confirmDeleteTask = async (): Promise<void> => {
+    const task = deleteTarget
+    if (!task) return
     setBusyId(task.id)
     try {
       await getApi().deleteAutomation(task.id)
@@ -62,6 +68,7 @@ export function AutomationMainView(): JSX.Element {
       setTasks(remaining)
       setSelectedId(remaining[0]?.id ?? null)
       window.dispatchEvent(new Event('tagent:automations-changed'))
+      setDeleteTarget(null)
       toast.success('自动化任务已删除')
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : '删除失败')
@@ -144,7 +151,7 @@ export function AutomationMainView(): JSX.Element {
                 <div className="automation-detail-actions">
                   <button type="button" onClick={() => openEdit(selected)} className="automation-secondary-button"><Pencil size={14} /> 编辑</button>
                   <button type="button" onClick={() => void toggleTask(selected.id)} disabled={busyId === selected.id} className="automation-secondary-button">{busyId === selected.id ? <Loader2 size={14} className="animate-spin" /> : selected.enabled ? <Pause size={14} /> : <Play size={14} />}{selected.enabled ? '暂停' : '启用'}</button>
-                  <button type="button" onClick={() => void deleteTask(selected)} disabled={busyId === selected.id} className="automation-danger-button"><Trash2 size={14} /> 删除</button>
+                  <button type="button" onClick={() => requestDeleteTask(selected)} disabled={busyId === selected.id} className="automation-danger-button"><Trash2 size={14} /> 删除</button>
                 </div>
               </div>
               <div className="automation-summary-grid">
@@ -161,6 +168,15 @@ export function AutomationMainView(): JSX.Element {
           )}
         </main>
       </div>
+      <DestructiveConfirmDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => { if (!open && !busyId) setDeleteTarget(null) }}
+        title="删除自动化任务？"
+        description={deleteTarget ? <>确定删除「{deleteTarget.name}」吗？运行历史也会一起删除。</> : null}
+        confirmLabel="删除任务"
+        onConfirm={confirmDeleteTask}
+        icon={<AlertTriangle size={16} aria-hidden="true" />}
+      />
     </div>
   )
 }

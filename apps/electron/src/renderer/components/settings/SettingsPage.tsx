@@ -66,7 +66,6 @@ import { AgentCrewSettings } from './AgentCrewSettings'
 import { PromptSettings } from './PromptSettings'
 import { UpdateChecker } from './UpdateChecker'
 import { FusionRoomNetworkSettings } from './FusionRoomNetworkSettings'
-import { AutomationSettings } from './AutomationSettings'
 import { ComposerRunTimer } from '../chat/ComposerRunTimer'
 import appiconLight from '../../assets/tagent-appicon-light.png'
 import appiconDark from '../../assets/tagent-appicon-dark.png'
@@ -89,7 +88,6 @@ export type SettingsTab =
   | 'appearance'
   | 'channels'
   | 'prompts'
-  | 'automation'
   | 'agent-roundtable'
   | 'agent-cli'
   | 'agent-crew'
@@ -107,7 +105,6 @@ export function normalizeSettingsTab(tab: SettingsTab | string | undefined): Set
     'appearance',
     'channels',
     'prompts',
-    'automation',
     'agent-roundtable',
     'agent-cli',
     'agent-crew',
@@ -158,13 +155,6 @@ const ALL_TABS: TabItem[] = [
     label: '提示词',
     description: 'Chat 系统提示与模板',
     icon: <ScrollText size={14} strokeWidth={1.75} />,
-    group: 'core',
-  },
-  {
-    id: 'automation',
-    label: '自动化',
-    description: '按频率运行重复任务',
-    icon: <BrainCircuit size={14} strokeWidth={1.75} />,
     group: 'core',
   },
   {
@@ -402,8 +392,6 @@ function renderTabContent(tab: SettingsTab): JSX.Element {
       return <ChannelsSettings />
     case 'prompts':
       return <PromptSettings />
-    case 'automation':
-      return <AutomationSettings />
     case 'agent-roundtable':
       return <MoaSettings />
     case 'agent-cli':
@@ -522,7 +510,6 @@ export function SettingsDialog({
                       activeTab === 'channels' ||
                       activeTab === 'prompts' ||
                       activeTab === 'agent-roundtable' ||
-                      activeTab === 'automation' ||
                       activeTab === 'agent-cli'
                         ? 'settings-shell-content--wide'
                         : ''

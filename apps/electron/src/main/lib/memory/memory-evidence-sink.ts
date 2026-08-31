@@ -37,6 +37,8 @@ export interface MemoryEvidenceEntry {
   source: 'nudge' | 'session'
   /** 会话 id */
   sessionId: string
+  /** Workspace slug for project-scoped evidence. */
+  workspaceSlug?: string
   /** Nudge 候选（仅 source=nudge 时有值） */
   nudgeCandidate?: NudgeCandidate
   /** 会话标题（仅 source=session 时有值） */
@@ -105,6 +107,7 @@ class MemoryEvidenceSink {
       source: 'nudge',
       sessionId,
       nudgeCandidate: candidate,
+      workspaceSlug: candidate.workspaceSlug,
     }
     this.appendEntry(mode, entry)
     this.markModeDirty(mode)
@@ -122,7 +125,8 @@ class MemoryEvidenceSink {
     title: string,
     summary: string,
     toolsUsed: string[],
-    userMessages: string[] = []
+    userMessages: string[] = [],
+    workspaceSlug?: string
   ): void {
     const entry: MemoryEvidenceEntry = {
       id: `ev-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -137,6 +141,7 @@ class MemoryEvidenceSink {
         .filter(Boolean)
         .slice(-8),
       toolsUsed,
+      workspaceSlug,
     }
     this.appendEntry(mode, entry)
     this.markModeDirty(mode)
