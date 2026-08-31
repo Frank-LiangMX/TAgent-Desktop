@@ -1,6 +1,6 @@
 # ADR-0007：Agent 协作室采用独立 Rail 入口与独立运行时
 
-> 状态：已拍板（2026-08-11）
+> 状态：运行时边界已拍板；用户入口部分由 [ADR-0009](./ADR-0009-fusion-session-bridge-and-orchestration.md) 修订（2026-08-31）
 > 模块：agent-collaboration-room
 > 详设：[总纲](../plans/agent-collaboration-room/00-MASTER.md)
 
@@ -75,4 +75,5 @@ TAgent 已有普通会话、会诊、圆桌、SubAgent、看板/班组和本地 
 
 | 日期 | 说明 |
 | --- | --- |
-| 2026-08-11 | 采纳独立 Rail 入口、独立房间运行时与结构化 A2A |
+| 2026-08-11 | 采纳独立房间运行时与结构化 A2A；当时用户入口采用独立 Rail |
+| 2026-08-31 | ADR-0009 修订用户入口：来源普通会话采用同一 sessionId 的显式融合桥接；独立运行时边界不变 |

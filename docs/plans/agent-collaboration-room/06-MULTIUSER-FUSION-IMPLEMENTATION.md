@@ -11,7 +11,7 @@
 
 - 00-MASTER、01-PRODUCT-UX-SPEC、02-RUNTIME-A2A-SPEC、03-IMPLEMENTATION-PHASES 是已有协作室设计与历史实施基础。
 - 04-HERMES-BORROW-SPEC 和 05-PERSISTENT-BOTS-AND-ROOM-SEATS 记录了 Hermes 借鉴、持久 Bot、席位和记忆的讨论结论。
-- ADR-0007 当前仍是历史决策，里面的“独立 Rail / 独立入口”不能直接覆盖本规格提出的统一会话入口；在代码验证完成前，不修改 ADR-0007，而把本文件视为拟议的扩展和后续修订依据。
+- ADR-0007 的“独立运行时”仍然有效；其中关于“独立 Rail / 独立入口”的用户信息架构已由 ADR-0009 修订。本文件关于统一会话入口的实现约束，以 ADR-0009 和当前融合桥接代码为准。
 
 ## 0.1 当前实现校正（2026-08-23）
 

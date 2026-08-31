@@ -6,7 +6,7 @@
 > **用途**：协作层（Chat/Work、角色库、看板、SubAgent、MoA、@ 讨论）的**唯一入口文档族**。回溯时先读本页。  
 > **续作交接**：[09-handoff-2026-08-03.md](./09-handoff-2026-08-03.md)（含当日对话决策记忆）
 
-> **新增一级容器（2026-08-11）**：持久多 Agent 聊天与 A2A 不属于普通会话内机制，采用独立 Rail 入口。见 [Agent 协作室总纲](../agent-collaboration-room/00-MASTER.md) 与 [ADR-0007](../../decisions/ADR-0007-agent-collaboration-room.md)。
+> **运行时边界（2026-08-31 修订）**：持久多 Agent 聊天与 A2A 仍使用独立协作室运行时；来源普通会话采用显式融合桥接，在同一 `sessionId` 会话壳内呈现。无来源房间仍可从协作列表进入。见 [ADR-0009](../../decisions/ADR-0009-fusion-session-bridge-and-orchestration.md)。
 
 ---
 
@@ -55,7 +55,8 @@ TAgent-Desktop 2.0 不只是「单会话 Agent」，还要：
 | [ADR-0004](../../decisions/ADR-0004-multi-runtime-mechanism-boundaries.md) | SubAgent / 看板 / MoA / @ 边界 | 四种调度语法，禁止混用语义 |
 | [ADR-0005](../../decisions/ADR-0005-user-owned-mode-switch.md) | 模式切换用户主权 | Agent 只建议，确认后系统切换 |
 | [ADR-0006](../../decisions/ADR-0006-role-vs-soul.md) | 角色库 vs SOUL | 岗位契约 vs 全局身份；主会话默认不绑岗 |
-| [ADR-0007](../../decisions/ADR-0007-agent-collaboration-room.md) | Agent 协作室独立入口 | 独立 Rail、房间真值与结构化 A2A；不伪装成会话模式 |
+| [ADR-0007](../../decisions/ADR-0007-agent-collaboration-room.md) | Agent 协作室运行时边界 | 房间真值、独立成员和结构化 A2A |
+| [ADR-0009](../../decisions/ADR-0009-fusion-session-bridge-and-orchestration.md) | 融合会话桥接 | 普通会话内显式升级/回退，复用同一会话壳 |
 
 相关但不属于本模块：
 
@@ -83,7 +84,7 @@ TAgent-Desktop 2.0 不只是「单会话 Agent」，还要：
 | D13 | 看板主路径=会话右栏；独立大页非必须 | 06 |
 | D14 | kscc 一渠多模=默认会诊池 | 05 |
 | D15 | 布局先可拖分栏；mosaic 仅可选工作台 | 06 |
-| D16 | 持久多 Agent 协作是独立 Rail/房间容器；普通会话只可显式创建或打开 | ADR-0007 + Agent 协作室文档族 |
+| D16 | 持久多 Agent 协作使用独立 room runtime；来源普通会话可显式升级为同一会话壳内的融合协作 | ADR-0007 + ADR-0009 + Agent 协作室文档族 |
 
 ---
 

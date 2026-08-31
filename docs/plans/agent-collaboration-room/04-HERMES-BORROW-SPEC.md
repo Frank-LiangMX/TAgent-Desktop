@@ -2,7 +2,7 @@
 
 > 上位文档：[00-MASTER](./00-MASTER.md) · [01 UI/UX](./01-PRODUCT-UX-SPEC.md) · [02 Runtime/A2A](./02-RUNTIME-A2A-SPEC.md) · [03 实施阶段](./03-IMPLEMENTATION-PHASES.md)
 > 决策：[ADR-0007](../../decisions/ADR-0007-agent-collaboration-room.md)
-> 对照：`C:\Users\loumi\Desktop\AI\hermes-studio` 群聊实现（只读）；旧文 [HERMES-STUDIO-TAKEAWAYS](../../dev/moa-roundtable/HERMES-STUDIO-TAKEAWAYS.md)（2026-08-08，MoA 主线，群聊当时被标为「勿整室搬迁」）
+> 对照：`F:\hermes-studio` 群聊实现（只读）；旧文 [HERMES-STUDIO-TAKEAWAYS](../../dev/moa-roundtable/HERMES-STUDIO-TAKEAWAYS.md)（2026-08-08，MoA 主线，群聊当时被标为「勿整室搬迁」）
 > 实现 brief：[HERMES-BORROW-brief](../../dev/collaboration-room/HERMES-BORROW-brief.md)
 > 日期：2026-08-16
 > 状态：规格定稿，**机制切片已全部实现（2026-08-18）**。本文是协作室机制补强的实现真源；与 01/02 冲突时以 ADR-0007 与 02 红线为准，细节以本文为准。

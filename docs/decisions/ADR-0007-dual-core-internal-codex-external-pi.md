@@ -3,6 +3,12 @@
 **日期：** 2026-08-31  
 **状态：** 方向确认，待分阶段实施
 
+> **后续决策：** 本文确定的“双核产品架构、Internal 多后端、External Pi”
+> 仍然有效。Codex 从一次性 CLI worker 升级为主后端的认证边界和 App
+> Server 实施方案，见 [ADR-0008](./ADR-0008-codex-account-auth-and-app-server.md)。
+> 本文第 7、9 节中关于 Codex worker 和待补主 Backend 的内容属于阶段性
+> 基线，不再是最终接入形态。
+
 ## 1. 背景
 
 TAgent 最初围绕公司 `kscc` CLI 建设。公司内部有较大的 kscc 使用额度，但原生入口主要是命令行，普通用户不容易使用。TAgent 通过桌面 UI、会话管理、权限、工作区和任务编排，把 kscc 变成可持续使用的 Agent 产品。
