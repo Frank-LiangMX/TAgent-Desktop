@@ -497,14 +497,13 @@ export function resolveCodexRuntime(
 }
 
 let cachedAsyncResolution:
-  | { at: number; promise: Promise<CodexRuntimeResolution> }
+  | Promise<CodexRuntimeResolution>
   | undefined
-const ASYNC_RESOLUTION_TTL_MS = 30_000
 
 /**
  * 异步解析 Codex Runtime。
  *
- * 默认调用共享 30 秒缓存，多个页面同时查询只会共用一轮探测；
+ * 默认调用共享的进程级缓存，整个主进程生命周期只执行一轮探测；
  * 传入解析选项时不进入缓存，便于安装器和测试使用。
  */
 export function resolveCodexRuntimeAsync(
@@ -512,16 +511,10 @@ export function resolveCodexRuntimeAsync(
 ): Promise<CodexRuntimeResolution> {
   const hasOverrides = Object.keys(options).length > 0
   if (!hasOverrides) {
-    const now = Date.now()
-    if (
-      cachedAsyncResolution &&
-      now - cachedAsyncResolution.at < ASYNC_RESOLUTION_TTL_MS
-    ) {
-      return cachedAsyncResolution.promise
+    if (!cachedAsyncResolution) {
+      cachedAsyncResolution = resolveCodexRuntimeAsyncUncached(options)
     }
-    const promise = resolveCodexRuntimeAsyncUncached(options)
-    cachedAsyncResolution = { at: now, promise }
-    return promise
+    return cachedAsyncResolution
   }
   return resolveCodexRuntimeAsyncUncached(options)
 }
