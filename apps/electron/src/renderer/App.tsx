@@ -34,6 +34,8 @@ import type {
   CollaborationRoomTask,
   CollaborationWorkspaceBindingView,
   CollaborationArtifact,
+  BoardProjectedSummary,
+  BoardProjectedTask,
   CollaborationUserApprovalRequest,
   CollaborationTextDeltaPayload,
   LocalCollaborationContinuationItem,
@@ -989,6 +991,12 @@ declare global {
         artifactId: string;
         actorUserId?: string;
       }) => Promise<DownloadCollaborationArtifactResult>;
+      listCollaborationBoardTasks: (
+        roomId: string,
+      ) => Promise<BoardProjectedTask[]>;
+      getCollaborationBoardSummary: (
+        roomId: string,
+      ) => Promise<BoardProjectedSummary | null>;
       listCollaborationUserApprovals: (
         roomId: string,
       ) => Promise<CollaborationUserApprovalRequest[]>;

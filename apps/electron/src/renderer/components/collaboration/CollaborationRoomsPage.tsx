@@ -46,6 +46,8 @@ import type {
   CollaborationRoom,
   CollaborationRoomStatus,
   CollaborationRoomTask,
+  BoardProjectedSummary,
+  BoardProjectedTask,
   CollaborationWorkspaceBindingView,
   CollaborationRun,
   CollaborationRunsPage,
@@ -313,6 +315,10 @@ function LocalCollaborationRoomsPage({
   /** S5：室级任务/产物（主进程真值，CHANGED 后重新拉取；渲染层不是真值源） */
   const [tasks, setTasks] = useState<CollaborationRoomTask[]>([]);
   const [artifacts, setArtifacts] = useState<CollaborationArtifact[]>([]);
+  /** S5 看板桥：挂载看板的只读投影（看板仍是唯一真值） */
+  const [boardTasks, setBoardTasks] = useState<BoardProjectedTask[]>([]);
+  const [boardSummary, setBoardSummary] =
+    useState<BoardProjectedSummary | null>(null);
   const [approvals, setApprovals] = useState<
     CollaborationUserApprovalRequest[]
   >([]);
@@ -379,6 +385,8 @@ function LocalCollaborationRoomsPage({
         setMailbox([]);
         setTasks([]);
         setArtifacts([]);
+        setBoardTasks([]);
+        setBoardSummary(null);
         setApprovals([]);
         setContinuations([]);
         setStreamByRun({});
@@ -472,6 +480,8 @@ function LocalCollaborationRoomsPage({
         setMailbox([]);
         setTasks([]);
         setArtifacts([]);
+        setBoardTasks([]);
+        setBoardSummary(null);
         setApprovals([]);
         setContinuations([]);
       }
@@ -480,6 +490,45 @@ function LocalCollaborationRoomsPage({
       cancelled = true;
     };
   }, [roomId, refreshKey]);
+
+  // 挂载看板使用独立只读投影，避免把看板任务伪装成 room task。
+  // 看板任务状态变化会通过 collaboration-room:changed 触发 refreshKey，从而重新读取权威数据。
+  useEffect(() => {
+    let cancelled = false;
+    const attachedBoardId = room?.attachedBoardId;
+    if (!roomId || !attachedBoardId) {
+      setBoardTasks([]);
+      setBoardSummary(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void (async (): Promise<void> => {
+      try {
+        const [projectedTasks, summary] = await Promise.all([
+          window.electronAPI.listCollaborationBoardTasks(roomId),
+          window.electronAPI.getCollaborationBoardSummary(roomId),
+        ]);
+        if (cancelled) return;
+        setBoardTasks(Array.isArray(projectedTasks) ? projectedTasks : []);
+        setBoardSummary(
+          summary && typeof summary === "object"
+            ? (summary as BoardProjectedSummary)
+            : null,
+        );
+      } catch (err) {
+        if (cancelled) return;
+        console.error("[协作室看板投影] 加载失败:", err);
+        setBoardTasks([]);
+        setBoardSummary(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId, room?.attachedBoardId, refreshKey]);
 
   /** 向上加载更早历史；消息和 run 各自使用游标，某一类读完后不再重复请求。 */
   const loadOlderHistory = useCallback(async (): Promise<void> => {
@@ -1775,6 +1824,8 @@ function LocalCollaborationRoomsPage({
           <CollaborationWorkPanel
             room={room}
             tasks={tasks}
+            boardTasks={boardTasks}
+            boardSummary={boardSummary}
             artifacts={artifacts}
             members={members}
             runs={runs}

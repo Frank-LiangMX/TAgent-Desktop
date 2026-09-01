@@ -36,6 +36,8 @@ vi.mock('@tagent/ui', () => ({
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 
 import type {
+  BoardProjectedSummary,
+  BoardProjectedTask,
   CollaborationArtifact,
   CollaborationMember,
   CollaborationRoom,
@@ -254,6 +256,70 @@ describe('CollaborationWorkPanel 渲染与分组', () => {
     const text = m.container.textContent ?? ''
     expect(text).toContain('已挂载看板')
     expect(text).not.toContain('新建任务')
+    m.unmount()
+  })
+
+  test('挂载看板时展示看板摘要和只读任务投影', () => {
+    installElectronApi()
+    const boardTasks: BoardProjectedTask[] = [
+      {
+        kanbanTaskId: 'kt_1',
+        boardId: 'kb_1',
+        title: '看板任务',
+        description: '看板任务说明',
+        kanbanStatus: 'blocked',
+        roomLabel: '阻塞',
+        priority: 3,
+        blockedReason: '等待外部输入',
+        createdAt: 1,
+        updatedAt: 2,
+      },
+    ]
+    const boardSummary: BoardProjectedSummary = {
+      boardId: 'kb_1',
+      boardTitle: '发布看板',
+      total: 1,
+      done: 0,
+      failed: 0,
+      blocked: 1,
+      running: 0,
+      ready: 0,
+      pending: 0,
+      boardCreatedAt: 1,
+    }
+    const m = mount(
+      <CollaborationWorkPanel
+        room={mkRoom({ attachedBoardId: 'kb_1' })}
+        tasks={[mkTask({ title: '旧房间任务' })]}
+        boardTasks={boardTasks}
+        boardSummary={boardSummary}
+        artifacts={[]}
+        members={[mkMember()]}
+        runs={[]}
+        onLocateRun={vi.fn()}
+        onLocateMessage={vi.fn()}
+        onChanged={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+    const text = m.container.textContent ?? ''
+    expect(text).toContain('挂载看板')
+    expect(text).toContain('只读投影')
+    expect(text).toContain('发布看板')
+    expect(text).toContain('阻塞')
+    expect(text).toContain('看板任务')
+    expect(text).toContain('房间任务历史')
+    expect(text).toContain('旧房间任务')
+    expect(text).not.toContain('新建任务')
+
+    const expandBtn = Array.from(m.container.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-label') === '展开看板任务详情',
+    )
+    expect(expandBtn).toBeTruthy()
+    act(() => {
+      expandBtn!.click()
+    })
+    expect(m.container.textContent).toContain('等待外部输入')
     m.unmount()
   })
 })

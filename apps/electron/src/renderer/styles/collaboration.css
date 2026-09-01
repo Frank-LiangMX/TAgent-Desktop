@@ -162,6 +162,12 @@
   border-radius: 8px;
   background: transparent;
 }
+.collab-work-panel__board-summary {
+  border: 1px solid hsl(var(--primary) / 0.18);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: hsl(var(--primary) / 0.045);
+}
 .collab-work-panel__row[data-status='blocked'] {
   border-color: rgb(234 179 8 / 0.4);
 }

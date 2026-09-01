@@ -36,6 +36,8 @@ import {
   type CollaborationRoomTask,
   type CollaborationRoomTaskStatus,
   type CollaborationRun,
+  type BoardProjectedSummary,
+  type BoardProjectedTask,
   type ReadCollaborationArtifactResult,
 } from '@tagent/shared'
 import { AppTooltip } from '@tagent/ui'
@@ -101,6 +103,10 @@ function statusBadgeClass(status: CollaborationRoomTaskStatus): string {
 export interface CollaborationWorkPanelProps {
   room: CollaborationRoom
   tasks: CollaborationRoomTask[]
+  /** 挂载看板的只读任务投影；看板是唯一真值 */
+  boardTasks?: BoardProjectedTask[]
+  /** 挂载看板的只读统计摘要 */
+  boardSummary?: BoardProjectedSummary | null
   artifacts: CollaborationArtifact[]
   members: CollaborationMember[]
   runs: CollaborationRun[]
@@ -123,6 +129,8 @@ interface PreviewState {
 export function CollaborationWorkPanel({
   room,
   tasks,
+  boardTasks = [],
+  boardSummary = null,
   artifacts,
   members,
   runs,
@@ -278,6 +286,7 @@ export function CollaborationWorkPanel({
   }, [])
 
   const taskCount = tasks.length
+  const boardTaskCount = boardTasks.length
   const artifactCount = artifacts.length
 
   return (
@@ -287,7 +296,7 @@ export function CollaborationWorkPanel({
         <FileText size={14} className="text-primary/80" />
         <h2 className="flex-1 text-xs font-semibold text-foreground/90">工作面板</h2>
         <span className="text-[10px] text-muted-foreground" title="任务数 / 产物数">
-          任务 {taskCount} · 产物 {artifactCount}
+          任务 {attachedBoard ? boardTaskCount : taskCount} · 产物 {artifactCount}
         </span>
         <AppTooltip label="收起面板" side="left">
           <button
@@ -313,11 +322,18 @@ export function CollaborationWorkPanel({
       ) : null}
 
       <div ref={scrollRef} className="collab-work-panel__scroll scrollbar-thin">
+        {attachedBoard ? (
+          <BoardProjectionSection
+            tasks={boardTasks}
+            summary={boardSummary}
+          />
+        ) : null}
+
         {/* ===== 任务区 ===== */}
         <section className="collab-work-panel__section">
           <div className="mb-1.5 flex items-center gap-1.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              任务
+              {attachedBoard ? '房间任务历史' : '任务'}
             </h3>
             {!tasksReadOnly ? (
               <button
@@ -415,7 +431,9 @@ export function CollaborationWorkPanel({
 
           {taskCount === 0 && !creating ? (
             <div className="collab-work-panel__empty px-2.5 py-2 text-[11px] text-muted-foreground">
-              暂无任务。{tasksReadOnly ? '' : '点「新建任务」创建一个。'}
+              {attachedBoard
+                ? '暂无房间任务历史。'
+                : `暂无任务。${tasksReadOnly ? '' : '点「新建任务」创建一个。'}`}
             </div>
           ) : null}
 
@@ -489,6 +507,127 @@ export function CollaborationWorkPanel({
         </section>
       </div>
     </aside>
+  )
+}
+
+// ===== 看板只读投影 =====
+
+function boardTaskStatusClass(status: string): string {
+  switch (status) {
+    case 'running':
+      return 'bg-emerald-500/15 text-emerald-600'
+    case 'blocked':
+      return 'bg-amber-500/15 text-amber-600'
+    case 'done':
+      return 'bg-sky-500/15 text-sky-600'
+    case 'failed':
+      return 'bg-destructive/15 text-destructive'
+    case 'cancelled':
+      return 'bg-muted text-muted-foreground'
+    case 'review':
+      return 'bg-violet-500/15 text-violet-600'
+    default:
+      return 'border border-border/45 bg-transparent text-muted-foreground/80'
+  }
+}
+
+function BoardProjectionSection({
+  tasks,
+  summary,
+}: {
+  tasks: BoardProjectedTask[]
+  summary: BoardProjectedSummary | null
+}): JSX.Element {
+  return (
+    <section className="collab-work-panel__section">
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          挂载看板
+        </h3>
+        <span className="ml-auto text-[10px] text-muted-foreground">只读投影</span>
+      </div>
+
+      {summary ? (
+        <div className="collab-work-panel__board-summary mb-2">
+          <div className="truncate text-xs font-medium text-foreground/90" title={summary.boardTitle}>
+            {summary.boardTitle}
+          </div>
+          <div className="mt-1 flex flex-wrap gap-x-2.5 gap-y-1 text-[10px] text-muted-foreground">
+            <span>共 {summary.total}</span>
+            <span className="text-emerald-600">执行中 {summary.running}</span>
+            <span className="text-sky-600">完成 {summary.done}</span>
+            <span className="text-amber-600">阻塞 {summary.blocked}</span>
+            <span className="text-destructive">失败 {summary.failed}</span>
+            <span>待处理 {summary.ready + summary.pending}</span>
+          </div>
+        </div>
+      ) : (
+        <div className="collab-work-panel__empty mb-2 px-2.5 py-2 text-[11px] text-muted-foreground">
+          看板暂不可用，无法读取权威任务状态。
+        </div>
+      )}
+
+      {tasks.length === 0 ? (
+        <div className="collab-work-panel__empty px-2.5 py-2 text-[11px] text-muted-foreground">
+          看板暂无任务。
+        </div>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {tasks.map((task) => (
+            <BoardProjectedTaskRow key={task.kanbanTaskId} task={task} />
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function BoardProjectedTaskRow({ task }: { task: BoardProjectedTask }): JSX.Element {
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <li className="collab-work-panel__row" data-board-task-id={task.kanbanTaskId}>
+      <div className="flex items-start gap-1.5">
+        <button
+          type="button"
+          className="mt-0.5 text-muted-foreground transition-colors hover:text-foreground"
+          aria-label={expanded ? '收起看板任务详情' : '展开看板任务详情'}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? <CaretDown size={12} /> : <CaretRight size={12} />}
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className="break-words text-xs font-medium text-foreground/90" title={task.title}>
+            {task.title}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+            <span className={cn('rounded-full px-1.5 py-0.5 font-medium', boardTaskStatusClass(task.kanbanStatus))}>
+              {task.roomLabel}
+            </span>
+            {task.priority > 0 ? <span>优先级 {task.priority}</span> : null}
+            {task.roleId ? <span title="绑定角色">{task.roleId}</span> : null}
+          </div>
+        </div>
+      </div>
+
+      {expanded ? (
+        <div className="mt-2 flex flex-col gap-1.5 border-t border-border/30 pt-2 text-[10px] text-muted-foreground">
+          {task.description ? (
+            <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-foreground/80">
+              {task.description}
+            </p>
+          ) : null}
+          {task.resultSummary ? <div><span className="font-medium">结果：</span>{task.resultSummary}</div> : null}
+          {task.blockedReason ? <div className="text-amber-600"><span className="font-medium">阻塞：</span>{task.blockedReason}</div> : null}
+          {task.error ? <div className="text-destructive"><span className="font-medium">失败：</span>{task.error}</div> : null}
+          {task.assigneeSessionId ? <div>执行会话：<span className="font-mono">{task.assigneeSessionId}</span></div> : null}
+          <div className="font-mono opacity-70" title="看板任务 ID">
+            {task.kanbanTaskId}
+          </div>
+        </div>
+      ) : null}
+    </li>
   )
 }
 
