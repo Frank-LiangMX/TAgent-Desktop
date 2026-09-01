@@ -43,6 +43,7 @@ import {
   DEFAULT_EXECUTION_MODE,
   parseMentions,
   classifyUserFacingError,
+  isLocalRuntimeProvider,
   isMoaModelId,
 } from "@tagent/shared";
 import {
@@ -222,6 +223,7 @@ import {
 } from "./chat-mount-window";
 import {
   channelsAtom,
+  loadChannelsAtom,
   selectedModelSelectionAtom,
   bumpSessionsRefreshAtom,
 } from "../../atoms/channel-atoms";
@@ -993,6 +995,7 @@ export function Chat({
   const channels = useAtomValue(channelsAtom);
   const tabs = useAtomValue(tabsAtom);
   const selectedModelSelection = useAtomValue(selectedModelSelectionAtom);
+  const loadChannels = useSetAtom(loadChannelsAtom);
   const setSelectedModelSelection = useSetAtom(selectedModelSelectionAtom);
   const bumpRefresh = useSetAtom(bumpSessionsRefreshAtom);
   const setTabs = useSetAtom(tabsAtom);
@@ -1174,8 +1177,8 @@ export function Chat({
   /** 已绑定渠道即显示 token 栏；kscc 仅隐藏占用圆环（占用不可信），累计统计照常 */
   const showTokenBar = lockedKind !== null;
   const showInternalBackend =
-    selectionChannel?.provider === "kscc-internal" ||
-    sessionChannel?.provider === "kscc-internal";
+    (selectionChannel && isLocalRuntimeProvider(selectionChannel.provider)) ||
+    (sessionChannel && isLocalRuntimeProvider(sessionChannel.provider));
   const isDraftSession = Boolean(onDraftWorkspaceChange);
   const internalBackendSwitchDisabled = running || runStartedAt != null;
   useEffect(() => {
@@ -1188,13 +1191,19 @@ export function Chat({
         setCodexRuntimeStatus(status);
         // 新草稿优先 Codex；若本机没有可用 App Server，自动回退到 KSCC。
         // 已物化会话不在这里改写，避免旧会话在打开时悄然换核。
+        const selectedBackend =
+          selectionChannel?.provider === "codex-internal"
+            ? "codex-app-server"
+            : selectionChannel?.provider === "kscc-internal"
+              ? "kscc"
+              : undefined;
         if (
           isDraftSession &&
           !session.internalBackend &&
           !internalBackendTouchedRef.current
         ) {
           setInternalBackend(
-            status.available ? "codex-app-server" : "kscc",
+            selectedBackend ?? (status.available ? "codex-app-server" : "kscc"),
           );
         }
       })
@@ -1206,24 +1215,36 @@ export function Chat({
           managedInstallSupported: false,
         };
         setCodexRuntimeStatus(fallbackStatus);
+        const selectedBackend =
+          selectionChannel?.provider === "codex-internal"
+            ? "codex-app-server"
+            : selectionChannel?.provider === "kscc-internal"
+              ? "kscc"
+              : undefined;
         if (
           isDraftSession &&
           !session.internalBackend &&
           !internalBackendTouchedRef.current
         ) {
-          setInternalBackend("kscc");
+          setInternalBackend(selectedBackend ?? "kscc");
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [showInternalBackend, isDraftSession, session.internalBackend]);
+  }, [
+    showInternalBackend,
+    isDraftSession,
+    session.internalBackend,
+    selectionChannel?.provider,
+  ]);
   const installCodexRuntime = useCallback(async (): Promise<void> => {
     if (codexRuntimeInstalling) return;
     setCodexRuntimeInstalling(true);
     try {
       const result = await window.electronAPI.installCodexRuntime();
       setCodexRuntimeStatus(result.status);
+      await loadChannels();
       if (!result.ok) {
         toast.error("Codex Runtime 安装失败", {
           description: result.error,
@@ -1255,6 +1276,7 @@ export function Chat({
   }, [
     codexRuntimeInstalling,
     isDraftSession,
+    loadChannels,
     session.internalBackend,
   ]);
   const changeInternalBackend = (
@@ -1277,6 +1299,19 @@ export function Chat({
         setInternalBackend(previous);
         console.error("[Chat] 切换主 Agent 失败:", error);
       });
+  };
+
+  const handleModelSelection = (nextSelection: ModelSelection): void => {
+    setSelectionOverride(nextSelection);
+    setSelectedModelSelection(nextSelection);
+    const nextChannel = channels.find(
+      (channel) => channel.id === nextSelection.channelId,
+    );
+    if (nextChannel?.provider === "codex-internal") {
+      changeInternalBackend("codex-app-server");
+    } else if (nextChannel?.provider === "kscc-internal") {
+      changeInternalBackend("kscc");
+    }
   };
 
   // 滚动位置恢复交给 ScrollPositionManager（Conversation 内部）：
@@ -1355,16 +1390,16 @@ export function Chat({
       if (cancelled) return;
       // 按核分流转译：kscc 会话落盘 SDKMessage → sdkMessageToIR；pi 会话落盘 TAgentMessage IR → 直读。
       // 旧 pi 会话可能仍是 SDKMessage 形态（有 message 包装），用 sdkMessageToIR 兜底。
-      const isKsccCore = sessionChannel
-        ? getChannelCoreKind(sessionChannel) === "kscc"
-        : true;
+      const isCodexCore =
+        sessionChannel?.provider === "codex-internal" ||
+        session.internalBackend === "codex-app-server";
       const irItems: DisplayItem[] = [];
       for (const raw of history) {
-        const message = isKsccCore
-          ? sdkMessageToIR(raw as never).message
-          : isIRMessage(raw)
+        const message = isCodexCore
+          ? isIRMessage(raw)
             ? (raw as TAgentMessage)
-            : sdkMessageToIR(raw as never).message;
+            : sdkMessageToIR(raw as never).message
+          : sdkMessageToIR(raw as never).message;
         if (message) {
           irItems.push({
             key: `h${itemIdxRef.current++}`,
@@ -1557,15 +1592,17 @@ export function Chat({
               sid,
             )) as unknown[];
             const ch = channels.find((c) => c.id === session.channelId);
-            const isKsccCore = ch ? getChannelCoreKind(ch) === "kscc" : true;
+            const isCodexCore =
+              ch?.provider === "codex-internal" ||
+              session.internalBackend === "codex-app-server";
             const irItems: DisplayItem[] = [];
             let idx = 0;
             for (const raw of history) {
-              const message = isKsccCore
-                ? sdkMessageToIR(raw as never).message
-                : isIRMessage(raw)
+              const message = isCodexCore
+                ? isIRMessage(raw)
                   ? (raw as TAgentMessage)
-                  : sdkMessageToIR(raw as never).message;
+                  : sdkMessageToIR(raw as never).message
+                : sdkMessageToIR(raw as never).message;
               if (message) {
                 irItems.push({
                   key: `h${idx++}`,
@@ -2930,7 +2967,7 @@ export function Chat({
         ...(savedAttachments.length ? { attachments: savedAttachments } : {}),
         ...(moaOneShotPresetId ? { moaOneShotPresetId } : {}),
         ...(moaDiscussionPresetId ? { moaDiscussionPresetId } : {}),
-        ...(channel.provider === "kscc-internal" ? { internalBackend } : {}),
+        ...(isLocalRuntimeProvider(channel.provider) ? { internalBackend } : {}),
         mentionRoleIds:
           executionMode === "chat" && roleMentionOptions.length > 0
             ? parseMentions(text, roleMentionOptions).map((h) => h.roleId)
@@ -3390,10 +3427,7 @@ export function Chat({
       <ModelSelector
         selection={effectiveSelection}
         lockedKind={null}
-        onSelect={(nextSelection) => {
-          setSelectionOverride(nextSelection);
-          setSelectedModelSelection(nextSelection);
-        }}
+        onSelect={handleModelSelection}
         reasoningEffort={reasoningEffort}
         onReasoningEffortChange={(effort) => {
           setReasoningEffort(effort);
@@ -4268,10 +4302,7 @@ export function Chat({
                                   <ModelSelector
                                     selection={effectiveSelection}
                                     lockedKind={lockedKind}
-                                    onSelect={(nextSelection) => {
-                                      setSelectionOverride(nextSelection);
-                                      setSelectedModelSelection(nextSelection);
-                                    }}
+                                    onSelect={handleModelSelection}
                                     reasoningEffort={reasoningEffort}
                                     onReasoningEffortChange={(effort) => {
                                       setReasoningEffort(effort);

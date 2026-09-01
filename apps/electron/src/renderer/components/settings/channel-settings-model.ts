@@ -1,4 +1,5 @@
 import {
+  isLocalRuntimeProvider,
   PROVIDER_DEFAULT_URLS,
   type Channel,
   type ChannelCreateInput,
@@ -23,6 +24,11 @@ export interface ChannelDraftValidation {
 }
 
 export const KSCC_PROVIDER: ProviderType = 'kscc-internal'
+export const CODEX_PROVIDER: ProviderType = 'codex-internal'
+
+export function isBuiltinProvider(provider: ProviderType): boolean {
+  return isLocalRuntimeProvider(provider)
+}
 
 export function createChannelDraft(): ChannelDraft {
   return {
@@ -119,7 +125,7 @@ export function validateChannelDraft(
   const errors: ChannelDraftValidation['errors'] = {}
   if (!draft.name.trim()) errors.name = '请输入渠道名称'
 
-  if (draft.provider !== KSCC_PROVIDER) {
+  if (!isBuiltinProvider(draft.provider)) {
     const baseUrl = draft.baseUrl.trim()
     try {
       const url = new URL(baseUrl)
@@ -151,7 +157,7 @@ export function buildCreateInput(draft: ChannelDraft): ChannelCreateInput {
 
 export function buildUpdateInput(draft: ChannelDraft): ChannelUpdateInput {
   const normalized = normalizeModels(draft.models, draft.defaultModelId)
-  const builtin = draft.provider === KSCC_PROVIDER
+  const builtin = isBuiltinProvider(draft.provider)
   return {
     name: draft.name.trim(),
     provider: builtin ? undefined : draft.provider,

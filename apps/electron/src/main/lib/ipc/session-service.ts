@@ -37,6 +37,7 @@ import {
   AGENT_IPC_CHANNELS,
   MEMORY_IPC_CHANNELS,
   msysPathToWindowsDrivePath,
+  isLocalRuntimeProvider,
 } from "@tagent/shared";
 import { SessionRuntime } from "../agent/runtime/session-runtime";
 import {
@@ -74,6 +75,7 @@ import {
   getManagedCodexRuntimeRelease,
   installManagedCodexRuntime,
 } from "../adapters/codex/codex-runtime-installer";
+import { syncCodexChannelAvailability } from "../channel/channel-store";
 import { resolveKsccPath } from "../adapters/claude/kscc-path";
 import {
   buildOutputStylePrompt,
@@ -111,9 +113,11 @@ import {
 import {
   getChannel,
   getDecryptedApiKey,
+  getCodexChannelId,
   getKsccChannelId,
 } from "../channel/channel-store";
 import {
+  CODEX_DEFAULT_MODEL_ID,
   KSCC_DEFAULT_MODEL_ID,
   isClaudeAvailableForChannel,
 } from "../channel/default-models";
@@ -553,6 +557,7 @@ export class SessionService {
     if (!meta?.channelId) return null;
     const channel = getChannel(meta.channelId);
     if (!channel) return null;
+    if (channel.provider === "codex-internal") return "codex";
     return channel.provider === "kscc-internal" ? "kscc" : "external";
   }
 
@@ -851,6 +856,7 @@ export class SessionService {
               // 安装前可能已缓存 KSCC fallback；成功后让无显式选择的兼容路径
               // 重新探测，使托管 Codex Runtime 立即成为默认 Internal Backend。
               detectedDefaultInternalAdapterKind = undefined;
+              syncCodexChannelAvailability(true);
               return {
                 ok: true as const,
                 status: getCodexRuntimeStatus(),
@@ -2246,7 +2252,11 @@ export class SessionService {
         const channelId = meta?.channelId;
         const channel = channelId ? getChannel(channelId) : undefined;
         const kind: ChannelKind =
-          channel?.provider === "kscc-internal" ? "kscc" : "external";
+          channel?.provider === "codex-internal"
+            ? "codex"
+            : channel?.provider === "kscc-internal"
+              ? "kscc"
+              : "external";
         const adapter = getAdapter(kind);
         if (typeof adapter.compactSession !== "function") {
           return {
@@ -2421,7 +2431,8 @@ export class SessionService {
     )
       return;
 
-    const requestedChannelId = input.channelId ?? getKsccChannelId();
+    const requestedChannelId =
+      input.channelId ?? getCodexChannelId() ?? getKsccChannelId();
     // 会话参与的 Bot 只用于独立旁路窗口；主会话沿用自身渠道/模型。
     const channelId = requestedChannelId;
     if (!channelId) {
@@ -2439,9 +2450,11 @@ export class SessionService {
 
     const meta = getSessionMeta(input.sessionId);
     const adapterKind: ChannelKind =
-      channel.provider === "kscc-internal"
-        ? resolveInternalAdapterKind(meta, input.internalBackend)
-        : "external";
+      channel.provider === "codex-internal"
+        ? "codex"
+        : channel.provider === "kscc-internal"
+          ? resolveInternalAdapterKind(meta, input.internalBackend)
+          : "external";
 
     // Phase 2.5：每轮 turn 开始统一跑 Nudge（双核共用，读面板消息）
     this.runNudgeOnTurnStart(input.sessionId, meta);
@@ -2454,9 +2467,11 @@ export class SessionService {
         throw new Error("该会话原绑定渠道已不存在，无法确认运行内核");
       }
       const boundKind: ChannelKind =
-        boundChannel.provider === "kscc-internal"
-          ? resolveInternalAdapterKind(meta)
-          : "external";
+        boundChannel.provider === "codex-internal"
+          ? "codex"
+          : boundChannel.provider === "kscc-internal"
+            ? resolveInternalAdapterKind(meta)
+            : "external";
       if (boundKind !== adapterKind) {
         throw new Error(
           `该会话已锁定${boundKind === "kscc" ? "KSCC 内网" : "外部"}运行时，不能跨运行内核切换`,
@@ -3218,7 +3233,11 @@ export class SessionService {
       inputModel ??
       channel.defaultModelId ??
       channel.models.find((model) => model.enabled)?.id ??
-      (channel.provider === "kscc-internal" ? KSCC_DEFAULT_MODEL_ID : "");
+      (channel.provider === "codex-internal"
+        ? CODEX_DEFAULT_MODEL_ID
+        : channel.provider === "kscc-internal"
+          ? KSCC_DEFAULT_MODEL_ID
+          : "");
     const configured = channel.models.find((model) => model.id === modelId);
     if (!configured) {
       throw new Error(`模型「${modelId}」不属于渠道「${channel.name}」`);
@@ -3333,8 +3352,9 @@ export class SessionService {
     const mcpConfig = { servers: enabledMcpServers };
 
     if (
-      channel.provider === "kscc-internal" &&
-      resolveInternalAdapterKind(metaForMode) === "codex"
+      (channel.provider === "codex-internal" ||
+        (channel.provider === "kscc-internal" &&
+          resolveInternalAdapterKind(metaForMode) === "codex"))
     ) {
       const executionMode = this.getExecutionMode(input.sessionId);
       const reasoningEffort = migrateReasoningEffort(

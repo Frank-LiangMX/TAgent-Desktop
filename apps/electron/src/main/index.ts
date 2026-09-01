@@ -20,6 +20,7 @@ import { BalanceService } from './lib/ipc/balance-service'
 import { PermissionService } from './lib/permission/permission-service'
 import {
   seedBuiltinChannels,
+  syncCodexChannelAvailability,
   migrateModelWindows,
   syncKsccChannelAvailability,
   syncKsccDefaultModels,
@@ -298,6 +299,7 @@ app.whenReady().then(async () => {
     seedBuiltinChannels()
     // 无本机 kscc 时强制停用内置渠道，避免用户无脑打开后发送才失败
     syncKsccChannelAvailability()
+    syncCodexChannelAvailability()
     // 网关新上的默认模型追加进已有 kscc-internal（seed 不覆盖存量渠道）
     syncKsccDefaultModels()
     migrateModelWindows()

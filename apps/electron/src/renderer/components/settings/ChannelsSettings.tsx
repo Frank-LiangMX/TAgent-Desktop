@@ -5,7 +5,9 @@ import {
   ArrowLeft,
   CheckCircle2,
   CloudDownload,
+  Download,
   KeyRound,
+  LoaderCircle,
   Pencil,
   Plus,
   RefreshCw,
@@ -31,10 +33,12 @@ import {
   PROVIDER_LABELS,
   type Channel,
   type ChannelModel,
+  type CodexRuntimeStatus,
   type ProviderType,
 } from '@tagent/shared'
 import {
   channelsAtom,
+  codexChannelAtom,
   externalChannelsAtom,
   ksccChannelAtom,
   loadChannelsAtom,
@@ -44,6 +48,7 @@ import {
   buildCreateInput,
   buildUpdateInput,
   channelToDraft,
+  isBuiltinProvider,
   createChannelDraft,
   mergeFetchedModels,
   normalizeModels,
@@ -56,11 +61,12 @@ type EditorMode = 'add' | 'edit'
 type Operation = { kind: 'testing' | 'success' | 'error'; message: string }
 
 const PROVIDERS = Object.entries(PROVIDER_LABELS)
-  .filter(([provider]) => provider !== KSCC_PROVIDER) as Array<[ProviderType, string]>
+  .filter(([provider]) => provider !== KSCC_PROVIDER && provider !== 'codex-internal') as Array<[ProviderType, string]>
 
 export function ChannelsSettings(): JSX.Element {
   const channels = useAtomValue(channelsAtom)
   const builtin = useAtomValue(ksccChannelAtom)
+  const codex = useAtomValue(codexChannelAtom)
   const externals = useAtomValue(externalChannelsAtom)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const [loading, setLoading] = useState(channels.length === 0)
@@ -69,6 +75,9 @@ export function ChannelsSettings(): JSX.Element {
   const [operations, setOperations] = useState<Record<string, Operation>>({})
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set())
   const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null)
+  const [codexRuntimeStatus, setCodexRuntimeStatus] =
+    useState<CodexRuntimeStatus | null>(null)
+  const [codexRuntimeInstalling, setCodexRuntimeInstalling] = useState(false)
 
   const reload = async (): Promise<void> => {
     setLoadError('')
@@ -84,6 +93,27 @@ export function ChannelsSettings(): JSX.Element {
   useEffect(() => {
     void reload()
   }, [loadChannels])
+
+  useEffect(() => {
+    let cancelled = false
+    void window.electronAPI
+      .getCodexRuntimeStatus()
+      .then((status) => {
+        if (!cancelled) setCodexRuntimeStatus(status)
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setCodexRuntimeStatus({
+            available: false,
+            managedInstallSupported: false,
+            reason: error instanceof Error ? error.message : String(error),
+          })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const setBusy = (id: string, busy: boolean): void => {
     setBusyIds((current) => {
@@ -171,6 +201,42 @@ export function ChannelsSettings(): JSX.Element {
     }
   }
 
+  const installCodexRuntime = async (): Promise<void> => {
+    if (codexRuntimeInstalling) return
+    setCodexRuntimeInstalling(true)
+    try {
+      const result = await window.electronAPI.installCodexRuntime()
+      setCodexRuntimeStatus(result.status)
+      await reload()
+      if (!result.ok) {
+        setOperations((current) => ({
+          ...current,
+          ['codex-internal']: { kind: 'error', message: result.error },
+        }))
+      } else {
+        setOperations((current) => ({
+          ...current,
+          ['codex-internal']: {
+            kind: 'success',
+            message: result.reusedExistingInstall
+              ? 'Codex Runtime 已恢复可用'
+              : 'Codex Runtime 安装完成',
+          },
+        }))
+      }
+    } catch (error) {
+      setOperations((current) => ({
+        ...current,
+        ['codex-internal']: {
+          kind: 'error',
+          message: error instanceof Error ? error.message : 'Codex Runtime 安装失败',
+        },
+      }))
+    } finally {
+      setCodexRuntimeInstalling(false)
+    }
+  }
+
   if (editor) {
     return (
       <ChannelEditor
@@ -220,6 +286,29 @@ export function ChannelsSettings(): JSX.Element {
         </div>
       ) : (
         <>
+          {codex && (
+            <SettingsSection
+              title="本机 Agent"
+              description="使用本机已授权的 Codex Runtime，不需要填写 API Key"
+            >
+              <SettingsCard>
+                <ChannelRow
+                  channel={codex}
+                  builtin
+                  runtimeKind="codex"
+                  codexRuntimeStatus={codexRuntimeStatus}
+                  codexRuntimeInstalling={codexRuntimeInstalling}
+                  operation={operations[codex.id]}
+                  busy={busyIds.has(codex.id)}
+                  onEdit={() => setEditor({ mode: 'edit', channel: codex })}
+                  onTest={() => void testChannel(codex)}
+                  onToggle={() => void toggleChannel(codex)}
+                  onInstall={installCodexRuntime}
+                />
+              </SettingsCard>
+            </SettingsSection>
+          )}
+
           {builtin && (
             <SettingsSection title="内置服务" description="由 TAgent 提供，无需配置 API Key">
               <SettingsCard>
@@ -286,21 +375,30 @@ function ChannelRow({
   builtin = false,
   operation,
   busy,
+  runtimeKind,
+  codexRuntimeStatus,
+  codexRuntimeInstalling = false,
   onEdit,
   onDelete,
   onTest,
   onToggle,
+  onInstall,
 }: {
   channel: Channel
   builtin?: boolean
+  runtimeKind?: 'kscc' | 'codex'
+  codexRuntimeStatus?: CodexRuntimeStatus | null
+  codexRuntimeInstalling?: boolean
   operation?: Operation
   busy: boolean
   onEdit: () => void
   onDelete?: () => void
   onTest: () => void
   onToggle: () => void
+  onInstall?: () => void | Promise<void>
 }): JSX.Element {
   const enabledModels = channel.models.filter((model) => model.enabled)
+  const isCodex = runtimeKind === 'codex'
   return (
     <article className="channel-shell-row">
       <div className="channel-shell-main min-w-0 flex-1">
@@ -308,20 +406,28 @@ function ChannelRow({
           <strong className="channel-shell-name">{channel.name}</strong>
           {builtin && <span className="channel-shell-tag">内置</span>}
           <span className={`channel-shell-status${channel.enabled ? ' channel-shell-status--on' : ''}`}>
-            {channel.enabled ? '已启用' : '已停用'}
+          {channel.enabled ? '已启用' : '已停用'}
           </span>
         </div>
         <AppTooltip
           label={
-            builtin
-              ? '依赖本机 kscc 命令；未安装时不可启用。点「测试」可检测环境。'
+            isCodex
+              ? '使用本机 Codex App Server；账号认证由 Codex Runtime 自己管理。'
+              : builtin
+                ? '依赖本机 kscc 命令；未安装时不可启用。点「测试」可检测环境。'
               : channel.baseUrl || '外部渠道'
           }
           multiline
         >
           <p className="channel-shell-url">
             {PROVIDER_LABELS[channel.provider]} ·{' '}
-            {builtin ? '需本机安装 kscc' : channel.baseUrl || '外部网关'}
+            {isCodex
+              ? codexRuntimeStatus?.available
+                ? `App Server ${codexRuntimeStatus.version ?? ''}`
+                : 'Runtime 未就绪'
+              : builtin
+                ? '需本机安装 kscc'
+                : channel.baseUrl || '外部网关'}
           </p>
         </AppTooltip>
         <div className="channel-shell-details">
@@ -353,6 +459,23 @@ function ChannelRow({
           onCheckedChange={onToggle}
         />
         <div className="channel-shell-actions">
+          {isCodex &&
+            !codexRuntimeStatus?.available &&
+            codexRuntimeStatus?.managedInstallSupported ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={codexRuntimeInstalling}
+              onClick={() => void onInstall?.()}
+            >
+              {codexRuntimeInstalling ? (
+                <LoaderCircle size={13} className="animate-spin" />
+              ) : (
+                <Download size={13} />
+              )}
+              {codexRuntimeInstalling ? '正在安装…' : '安装 Runtime'}
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="sm"
@@ -403,7 +526,7 @@ function ChannelEditor({
   const [syncing, setSyncing] = useState(false)
   const [newModelId, setNewModelId] = useState('')
   const syncRequest = useRef(0)
-  const builtin = draft.provider === KSCC_PROVIDER
+  const builtin = isBuiltinProvider(draft.provider)
 
   const update = (patch: Partial<ChannelDraft>): void => {
     setDraft((current) => ({ ...current, ...patch }))
@@ -553,7 +676,11 @@ function ChannelEditor({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="scrollbar-thin !z-[130]">
-                {builtin && <SelectItem value={KSCC_PROVIDER}>{PROVIDER_LABELS[KSCC_PROVIDER]}</SelectItem>}
+                {builtin && (
+                  <SelectItem value={draft.provider}>
+                    {PROVIDER_LABELS[draft.provider]}
+                  </SelectItem>
+                )}
                 {!builtin && PROVIDERS.map(([provider, label]) => (
                   <SelectItem key={provider} value={provider}>{label}</SelectItem>
                 ))}

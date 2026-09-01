@@ -25,6 +25,7 @@ export type ProviderType =
   | 'xiaomi'
   | 'xiaomi-token-plan'
   | 'kscc-internal'
+  | 'codex-internal'
   | 'custom'
 
 /**
@@ -47,6 +48,7 @@ export const PROVIDER_DEFAULT_URLS: Record<ProviderType, string> = {
   xiaomi: 'https://api.xiaomimimo.com/anthropic',
   'xiaomi-token-plan': 'https://token-plan-cn.xiaomimimo.com/anthropic',
   'kscc-internal': '', // 内置默认值，无需配置
+  'codex-internal': '', // 本机 App Server，无需 API Key
   custom: '',
 }
 
@@ -70,6 +72,7 @@ export const PROVIDER_LABELS: Record<ProviderType, string> = {
   xiaomi: '小米 MiMo (API)',
   'xiaomi-token-plan': '小米 MiMo Token Plan',
   'kscc-internal': '金山云',
+  'codex-internal': 'Codex App Server',
   custom: 'OpenAI 兼容格式',
 }
 
@@ -92,6 +95,16 @@ export const AGENT_COMPATIBLE_PROVIDERS: ReadonlySet<ProviderType> = new Set<Pro
   'qwen-anthropic',
   'kscc-internal',
 ])
+
+/** 不经外部 API 渠道，直接使用本机已授权 Runtime 的 Provider。 */
+export const LOCAL_RUNTIME_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
+  'kscc-internal',
+  'codex-internal',
+])
+
+export function isLocalRuntimeProvider(provider: ProviderType): boolean {
+  return LOCAL_RUNTIME_PROVIDERS.has(provider)
+}
 
 /**
  * 判断供应商是否兼容 Agent 模式

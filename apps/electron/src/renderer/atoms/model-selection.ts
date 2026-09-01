@@ -1,4 +1,8 @@
-import { resolveChannelDefaultModelId, type Channel } from '@tagent/shared'
+import {
+  isLocalRuntimeProvider,
+  resolveChannelDefaultModelId,
+  type Channel,
+} from '@tagent/shared'
 
 export interface ModelSelection {
   channelId: string
@@ -10,7 +14,7 @@ export type ChannelCoreKind = 'kscc' | 'external'
 export function getChannelCoreKind(
   channel: Pick<Channel, 'provider'>,
 ): ChannelCoreKind {
-  return channel.provider === 'kscc-internal' ? 'kscc' : 'external'
+  return isLocalRuntimeProvider(channel.provider) ? 'kscc' : 'external'
 }
 
 export function isModelSelectionAvailable(
@@ -31,7 +35,8 @@ export function resolveModelSelection(
   const usableChannels = channels.filter(
     (channel) => channel.enabled && channel.models.some((model) => model.enabled),
   )
-  const fallback = usableChannels.find((channel) => channel.provider === 'kscc-internal')
+  const fallback = usableChannels.find((channel) => channel.provider === 'codex-internal')
+    ?? usableChannels.find((channel) => channel.provider === 'kscc-internal')
     ?? usableChannels[0]
   if (!fallback) return null
 

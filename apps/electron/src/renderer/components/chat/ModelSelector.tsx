@@ -26,6 +26,7 @@ import {
   type Channel,
   type ReasoningEffort,
   PROVIDER_LABELS,
+  isLocalRuntimeProvider,
   isMoaModelId,
 } from '@tagent/shared'
 import { cn } from '../../lib/utils'
@@ -86,14 +87,20 @@ export function ModelSelector({
     }))
     .filter((group) => group.models.length > 0)
   const allInternalGroups = groups.filter(({ channel }) => getChannelCoreKind(channel) === 'kscc')
+  // 同一台机器可能遗留多个 kscc-internal 记录，但 Codex 是独立的一等渠道；
+  // 每种本机 Runtime 保留一组，避免历史重复记录把 Codex 藏掉。
+  const uniqueInternalGroups = allInternalGroups.filter(
+    ({ channel }, index, list) =>
+      list.findIndex(({ channel: candidate }) => candidate.provider === channel.provider) === index,
+  )
   // 历史版本可能遗留多个 kscc-internal 记录。它们属于同一个内网运行时，
   // 选择器只展示一组；旧会话优先沿用自己记录的 channelId，避免兼容数据重复露出。
-  const activeInternalGroup = activeChannel?.provider === 'kscc-internal'
-    ? allInternalGroups.find(({ channel }) => channel.id === activeChannel.id)
+  const activeInternalGroup = activeChannel && isLocalRuntimeProvider(activeChannel.provider)
+    ? uniqueInternalGroups.find(({ channel }) => channel.id === activeChannel.id)
     : undefined
-  const internalGroups = (activeInternalGroup ?? allInternalGroups[0])
-    ? [activeInternalGroup ?? allInternalGroups[0]!]
-    : []
+  const internalGroups = activeInternalGroup
+    ? [activeInternalGroup]
+    : uniqueInternalGroups
   const externalGroups = groups.filter(({ channel }) => getChannelCoreKind(channel) === 'external')
 
   const totalAvailable = useMemo(

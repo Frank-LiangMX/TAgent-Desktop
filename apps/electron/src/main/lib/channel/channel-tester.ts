@@ -189,6 +189,23 @@ export async function testChannelConnection(
   channel: Channel,
   decryptedApiKey: string,
 ): Promise<ChannelTestResult> {
+  if (channel.provider === 'codex-internal') {
+    const { resolveCodexRuntime } = await import(
+      '../adapters/codex/codex-runtime-resolver'
+    )
+    const runtime = resolveCodexRuntime()
+    return runtime.available
+      ? {
+          success: true,
+          message: `Codex App Server 就绪：${runtime.version ?? 'unknown'}`,
+        }
+      : {
+          success: false,
+          message:
+            runtime.diagnostics[0]?.reason ??
+            '未检测到支持 App Server 的 Codex Runtime',
+        }
+  }
   if (channel.provider === 'kscc-internal') {
     const { resolveKsccPath } = await import('../adapters/claude/kscc-path')
     const ksccPath = resolveKsccPath()

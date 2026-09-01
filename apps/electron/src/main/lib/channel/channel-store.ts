@@ -4,10 +4,11 @@
  * 职责：
  * - 渠道 CRUD（~/.tagent[-dev]/channels.json）
  * - API Key 加密/解密（Electron safeStorage，底层 OS 级加密）
- * - 启动时 seed kscc-internal 内置渠道（OAuth，无 apiKey，不可删）
+ * - 启动时 seed kscc-internal / codex-internal 本机渠道（无需 apiKey，不可删）
  *
- * kscc-internal 是特殊渠道：
+ * 本机 Runtime 渠道是特殊渠道：
  * - 走 OAuth（kscc native exe 内置 token + 内置网关），不填 apiKey
+ * - Codex App Server 由本机 Codex Runtime 持有账号登录态，不填 apiKey
  * - 内置 baseUrl + 模型列表
  * - 不可删除，仅允许改 name/models/enabled/defaultModelId
  *
@@ -25,15 +26,23 @@ import type {
 } from '@tagent/shared'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import { getChannelsPath } from '../config/config-paths'
-import { getDefaultModelsForProvider, KSCC_DEFAULT_MODEL_ID, KSCC_DEFAULT_MODELS } from './default-models'
+import {
+  CODEX_DEFAULT_MODEL_ID,
+  CODEX_DEFAULT_MODELS,
+  getDefaultModelsForProvider,
+  KSCC_DEFAULT_MODEL_ID,
+  KSCC_DEFAULT_MODELS,
+} from './default-models'
 import { inferContextWindow } from '@tagent/shared'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
+import { resolveCodexRuntime } from '../adapters/codex/codex-runtime-resolver'
 
 /** 启用 / 依赖 kscc 内置渠道时的统一错误文案（与 channel-tester / session-service 一致） */
 export const KSCC_MISSING_MESSAGE = '未检测到 kscc 命令，请先安装 kscc（内网渠道）后再启用'
 
 /** kscc 内置渠道 seed 时用的固定 ID（仅 fresh 安装时用；识别 kscc 一律按 provider） */
 const KSCC_BUILTIN_CHANNEL_ID = 'kscc-internal'
+const CODEX_BUILTIN_CHANNEL_ID = 'codex-internal'
 
 /** 配置版本号 */
 const CONFIG_VERSION = 1
@@ -41,6 +50,11 @@ const CONFIG_VERSION = 1
 /** 取 kscc 内置渠道 ID（按 provider 识别，兼容 TAgent_General 用随机 UUID id 的情况） */
 export function getKsccChannelId(): string | undefined {
   return readConfig().channels.find((c) => c.provider === 'kscc-internal')?.id
+}
+
+/** 取 Codex 本机渠道 ID。 */
+export function getCodexChannelId(): string | undefined {
+  return readConfig().channels.find((c) => c.provider === 'codex-internal')?.id
 }
 
 /** 读渠道配置文件（损坏时从 .bak 自愈恢复） */
@@ -110,12 +124,15 @@ export function getChannel(id: string): Channel | undefined {
 export function getDecryptedApiKey(id: string): string {
   const ch = getChannel(id)
   if (!ch) return ''
-  if (ch.provider === 'kscc-internal') return ''
+  if (ch.provider === 'kscc-internal' || ch.provider === 'codex-internal') return ''
   return decryptKey(ch.apiKey)
 }
 
 /** 创建渠道 */
 export function createChannel(input: ChannelCreateInput): Channel {
+  if (input.provider === 'kscc-internal' || input.provider === 'codex-internal') {
+    throw new Error('本机 Runtime 渠道不可手动创建')
+  }
   const now = Date.now()
   const models = input.models.length > 0 ? input.models : getDefaultModelsForProvider(input.provider)
   const channel: Channel = {
@@ -123,8 +140,8 @@ export function createChannel(input: ChannelCreateInput): Channel {
     name: input.name,
     provider: input.provider,
     baseUrl: input.baseUrl,
-    // kscc-internal 不加密（无 apiKey）；其余加密
-    apiKey: input.provider === 'kscc-internal' ? '' : encryptApiKey(input.apiKey),
+    // createChannel 已拒绝本机 Runtime Provider，这里只处理外部渠道凭据。
+    apiKey: encryptApiKey(input.apiKey),
     models,
     defaultModelId: normalizeDefaultModelId(models, input.defaultModelId),
     enabled: input.enabled,
@@ -137,17 +154,29 @@ export function createChannel(input: ChannelCreateInput): Channel {
   return channel
 }
 
-/** 更新渠道（部分字段）。kscc-internal 仅允许改 name/models/enabled/defaultModelId */
+/** 更新渠道（部分字段）。本机 Runtime 仅允许改 name/models/enabled/defaultModelId */
 export function updateChannel(id: string, patch: ChannelUpdateInput): Channel | undefined {
   const config = readConfig()
   const idx = config.channels.findIndex((c) => c.id === id)
   const existing = idx === -1 ? undefined : config.channels[idx]
   if (!existing) return undefined
 
-  const kscc = existing.provider === 'kscc-internal'
+  const builtin =
+    existing.provider === 'kscc-internal' || existing.provider === 'codex-internal'
   // 无本机 kscc 时禁止启用内置渠道（避免用户「打开」后发送才炸）
-  if (kscc && patch.enabled === true && !resolveKsccPath()) {
+  if (
+    existing.provider === 'kscc-internal' &&
+    patch.enabled === true &&
+    !resolveKsccPath()
+  ) {
     throw new Error(KSCC_MISSING_MESSAGE)
+  }
+  if (
+    existing.provider === 'codex-internal' &&
+    patch.enabled === true &&
+    !resolveCodexRuntime().available
+  ) {
+    throw new Error('未检测到支持 App Server 的 Codex Runtime，请先安装 Codex Runtime')
   }
 
   const models = patch.models ?? existing.models
@@ -160,7 +189,7 @@ export function updateChannel(id: string, patch: ChannelUpdateInput): Channel | 
     updatedAt: Date.now(),
   }
 
-  if (!kscc) {
+  if (!builtin) {
     // 外部渠道：允许改 provider/baseUrl/apiKey
     if (patch.provider !== undefined) updated.provider = patch.provider
     if (patch.baseUrl !== undefined) updated.baseUrl = patch.baseUrl
@@ -169,18 +198,18 @@ export function updateChannel(id: string, patch: ChannelUpdateInput): Channel | 
       updated.apiKey = encryptApiKey(patch.apiKey)
     }
   }
-  // kscc-internal：provider/baseUrl/apiKey 忽略（内置，用户改不了）
+  // 本机 Runtime：provider/baseUrl/apiKey 忽略（内置，用户改不了）
 
   config.channels[idx] = updated
   writeConfig(config)
   return updated
 }
 
-/** 删除渠道。kscc-internal 不可删（按 provider 识别） */
+/** 删除渠道。本机 Runtime 渠道不可删（按 provider 识别） */
 export function deleteChannel(id: string): { ok: boolean; error?: string } {
   const ch = getChannel(id)
-  if (ch?.provider === 'kscc-internal') {
-    return { ok: false, error: 'kscc 内置渠道不可删除' }
+  if (ch?.provider === 'kscc-internal' || ch?.provider === 'codex-internal') {
+    return { ok: false, error: '本机 Runtime 渠道不可删除' }
   }
   const config = readConfig()
   const next = config.channels.filter((c) => c.id !== id)
@@ -192,7 +221,7 @@ export function deleteChannel(id: string): { ok: boolean; error?: string } {
 }
 
 /**
- * 启动时 seed kscc-internal 内置渠道（幂等）。
+ * 启动时 seed 本机 Runtime 内置渠道（幂等）。
  *
  * kscc 走 OAuth，不填 apiKey；baseUrl 留空（kscc native exe 内置网关地址）；
  * 模型列表用 KSCC_DEFAULT_MODELS。已存在任意 kscc-internal 渠道则不覆盖（按 provider 判定，
@@ -200,28 +229,44 @@ export function deleteChannel(id: string): { ok: boolean; error?: string } {
  */
 export function seedBuiltinChannels(): void {
   const config = readConfig()
-  const exists = config.channels.some((c) => c.provider === 'kscc-internal')
-  if (exists) return
   const now = Date.now()
-  const ksccReady = Boolean(resolveKsccPath())
-  const kscc: Channel = {
-    id: KSCC_BUILTIN_CHANNEL_ID,
-    name: 'kscc 内网',
-    provider: 'kscc-internal' as ProviderType,
-    baseUrl: '',
-    apiKey: '',
-    models: KSCC_DEFAULT_MODELS.map((m) => ({ ...m })),
-    defaultModelId: KSCC_DEFAULT_MODEL_ID,
-    // 无本机 kscc 时默认不启用，避免新装机「开箱就能选内网核却必炸」
-    enabled: ksccReady,
-    createdAt: now,
-    updatedAt: now,
+  let changed = false
+  if (!config.channels.some((c) => c.provider === 'kscc-internal')) {
+    const ksccReady = Boolean(resolveKsccPath())
+    config.channels.push({
+      id: KSCC_BUILTIN_CHANNEL_ID,
+      name: 'kscc 内网',
+      provider: 'kscc-internal' as ProviderType,
+      baseUrl: '',
+      apiKey: '',
+      models: KSCC_DEFAULT_MODELS.map((m) => ({ ...m })),
+      defaultModelId: KSCC_DEFAULT_MODEL_ID,
+      enabled: ksccReady,
+      createdAt: now,
+      updatedAt: now,
+    })
+    changed = true
   }
-  config.channels.push(kscc)
-  writeConfig(config)
-  console.log(
-    `[渠道存储] 已 seed kscc-internal 内置渠道（enabled=${ksccReady}${ksccReady ? '' : '，本机无 kscc'}）`,
-  )
+  if (!config.channels.some((c) => c.provider === 'codex-internal')) {
+    const codexReady = resolveCodexRuntime().available
+    config.channels.push({
+      id: CODEX_BUILTIN_CHANNEL_ID,
+      name: 'Codex App Server',
+      provider: 'codex-internal' as ProviderType,
+      baseUrl: '',
+      apiKey: '',
+      models: CODEX_DEFAULT_MODELS.map((m) => ({ ...m })),
+      defaultModelId: CODEX_DEFAULT_MODEL_ID,
+      enabled: codexReady,
+      createdAt: now,
+      updatedAt: now,
+    })
+    changed = true
+  }
+  if (changed) {
+    writeConfig(config)
+    console.log('[渠道存储] 已补齐本机 Runtime 渠道')
+  }
 }
 
 /**
@@ -245,6 +290,27 @@ export function syncKsccChannelAvailability(): number {
       `[渠道存储] 本机未检测到 kscc，已强制停用 ${changed} 个 kscc-internal 渠道`,
     )
   }
+  return changed
+}
+
+/** Codex Runtime 安装后启用本机渠道；不可用时只停用，不覆盖用户主动停用。 */
+export function syncCodexChannelAvailability(enableIfAvailable = false): number {
+  const ready = resolveCodexRuntime().available
+  const config = readConfig()
+  let changed = 0
+  const next = config.channels.map((c) => {
+    if (c.provider !== 'codex-internal') return c
+    if (!ready && c.enabled) {
+      changed++
+      return { ...c, enabled: false, updatedAt: Date.now() }
+    }
+    if (ready && enableIfAvailable && !c.enabled) {
+      changed++
+      return { ...c, enabled: true, updatedAt: Date.now() }
+    }
+    return c
+  })
+  if (changed > 0) writeConfig({ ...config, channels: next })
   return changed
 }
 
@@ -297,6 +363,12 @@ export function migrateModelWindows(): void {
           if (defaults.safeContextLimit && !model.safeContextLimit) {
             model.safeContextLimit = defaults.safeContextLimit
           }
+          changed = true
+        }
+      } else if (channel.provider === 'codex-internal') {
+        const defaults = CODEX_DEFAULT_MODELS.find((d) => d.id === model.id)
+        if (defaults?.contextWindow) {
+          model.contextWindow = defaults.contextWindow
           changed = true
         }
       } else {

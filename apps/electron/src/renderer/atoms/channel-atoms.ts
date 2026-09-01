@@ -5,7 +5,7 @@
  * 用 Jotai 默认 store（无需 Provider），与项目约定一致（CLAUDE.md：状态管理用 Jotai）。
  */
 import { atom } from 'jotai'
-import type { Channel } from '@tagent/shared'
+import { isLocalRuntimeProvider, type Channel } from '@tagent/shared'
 import {
   resolveModelSelection,
   type ModelSelection,
@@ -43,9 +43,14 @@ export const ksccChannelAtom = atom<Channel | undefined>((get) =>
   get(channelsAtom).find((c) => c.provider === KSCC_PROVIDER)
 )
 
-/** 外部渠道列表（派生，排除 kscc-internal） */
+/** Codex 本机渠道（派生） */
+export const codexChannelAtom = atom<Channel | undefined>((get) =>
+  get(channelsAtom).find((c) => c.provider === 'codex-internal')
+)
+
+/** 外部渠道列表（派生，排除本机 Runtime 渠道） */
 export const externalChannelsAtom = atom<Channel[]>((get) =>
-  get(channelsAtom).filter((c) => c.provider !== KSCC_PROVIDER)
+  get(channelsAtom).filter((c) => !isLocalRuntimeProvider(c.provider))
 )
 
 /** 当前选中渠道对象（派生） */

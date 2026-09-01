@@ -2,7 +2,7 @@
  * 渠道服务：注册 CHANNEL_IPC_CHANNELS handler
  *
  * 渠道 CRUD + 连接测试（HTTP）/ 拉模型（HTTP）；apiKey 仅在主进程解密。
- * kscc-internal 内置渠道：不可删，TEST 走 resolveKsccPath 检测。
+ * kscc-internal / codex-internal 本机渠道：不可删，TEST 走本机 Runtime 检测。
  *
  * 见 shared/types/channel.ts 的 CHANNEL_IPC_CHANNELS。
  */
@@ -73,7 +73,7 @@ export class ChannelService {
       }
     )
 
-    // 删除渠道（kscc-internal 不可删）
+    // 删除渠道（本机 Runtime 不可删）
     ipcMain.handle(
       CHANNEL_IPC_CHANNELS.DELETE,
       async (_e, id: string): Promise<{ ok: boolean; error?: string }> => {
@@ -106,7 +106,10 @@ export class ChannelService {
       async (_e, input: FetchModelsForChannelInput): Promise<FetchModelsResult> => {
         const channel = getChannel(input.channelId)
         if (!channel) return { success: false, message: '渠道不存在', models: [] }
-        if (channel.provider === 'kscc-internal') {
+        if (
+          channel.provider === 'kscc-internal' ||
+          channel.provider === 'codex-internal'
+        ) {
           return { success: false, message: '内置渠道不支持远程同步模型', models: channel.models }
         }
         const apiKey = getDecryptedApiKey(channel.id)
