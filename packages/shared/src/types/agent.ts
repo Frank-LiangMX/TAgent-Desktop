@@ -1475,6 +1475,25 @@ export interface AgentSessionMeta {
   updatedAt: number;
 }
 
+/** Codex App Server Runtime 的主进程权威探测状态。 */
+export interface CodexRuntimeStatus {
+  available: boolean;
+  source?: "explicit" | "environment" | "system" | "managed";
+  version?: string;
+  reason?: string;
+  /** 当前平台是否支持由 TAgent 按需安装固定官方 Runtime。 */
+  managedInstallSupported: boolean;
+  /** TAgent 当前固定的托管 Runtime 版本。 */
+  managedVersion?: string;
+  /** 固定平台包的压缩下载体积。 */
+  managedDownloadBytes?: number;
+}
+
+/** 按需安装 TAgent 托管 Codex Runtime 的 IPC 结果。 */
+export type InstallCodexRuntimeResult =
+  | { ok: true; status: CodexRuntimeStatus; reusedExistingInstall: boolean }
+  | { ok: false; status: CodexRuntimeStatus; error: string };
+
 /**
  * Agent 持久化消息
  *
@@ -2597,6 +2616,8 @@ export const AGENT_IPC_CHANNELS = {
   UPDATE_SESSION_EXECUTION_MODE: "agent:update-session-execution-mode",
   /** 探测本机或 TAgent 托管的 Codex App Server Runtime。 */
   GET_CODEX_RUNTIME_STATUS: "agent:get-codex-runtime-status",
+  /** 按需安装固定版本的 TAgent 托管 Codex Runtime。 */
+  INSTALL_CODEX_RUNTIME: "agent:install-codex-runtime",
   /**
    * 主进程 → 渲染：建议切换 Chat|Work（不改变 mode，等用户确认条）
    * @see docs/plans/multi-runtime/02-chat-work-and-permissions.md §3.4

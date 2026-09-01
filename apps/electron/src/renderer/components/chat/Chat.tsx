@@ -36,6 +36,7 @@ import type {
   FileAttachment,
   FileReviewContext,
   BotProfileRecord,
+  CodexRuntimeStatus,
 } from "@tagent/shared";
 import {
   migrateExecutionMode,
@@ -80,6 +81,7 @@ import {
 } from "@tagent/ui";
 import { Square, X } from "lucide-react";
 import { UsersThree } from "@phosphor-icons/react";
+import { toast } from "sonner";
 import {
   collectSessionCollabOutline,
   type SessionCollabItem,
@@ -739,12 +741,9 @@ export function Chat({
       (onDraftWorkspaceChange ? "codex-app-server" : "kscc"),
   );
   const internalBackendTouchedRef = useRef(false);
-  const [codexRuntimeStatus, setCodexRuntimeStatus] = useState<{
-    available: boolean;
-    source?: "explicit" | "environment" | "system" | "managed";
-    version?: string;
-    reason?: string;
-  } | null>(null);
+  const [codexRuntimeStatus, setCodexRuntimeStatus] =
+    useState<CodexRuntimeStatus | null>(null);
+  const [codexRuntimeInstalling, setCodexRuntimeInstalling] = useState(false);
   /**
    * 协作形态 Chat|Work（默认 work；旧会话无字段回显 work）
    * 仅用户可切换（含点确认建议）
@@ -1204,6 +1203,7 @@ export function Chat({
         const fallbackStatus = {
           available: false,
           reason: error instanceof Error ? error.message : String(error),
+          managedInstallSupported: false,
         };
         setCodexRuntimeStatus(fallbackStatus);
         if (
@@ -1218,6 +1218,45 @@ export function Chat({
       cancelled = true;
     };
   }, [showInternalBackend, isDraftSession, session.internalBackend]);
+  const installCodexRuntime = useCallback(async (): Promise<void> => {
+    if (codexRuntimeInstalling) return;
+    setCodexRuntimeInstalling(true);
+    try {
+      const result = await window.electronAPI.installCodexRuntime();
+      setCodexRuntimeStatus(result.status);
+      if (!result.ok) {
+        toast.error("Codex Runtime 安装失败", {
+          description: result.error,
+        });
+        return;
+      }
+      if (
+        isDraftSession &&
+        !session.internalBackend &&
+        !internalBackendTouchedRef.current
+      ) {
+        setInternalBackend("codex-app-server");
+      }
+      toast.success(
+        result.reusedExistingInstall
+          ? "Codex Runtime 已恢复可用"
+          : "Codex Runtime 安装完成",
+        {
+          description: `App Server ${result.status.version ?? result.status.managedVersion ?? ""}`,
+        },
+      );
+    } catch (error) {
+      toast.error("Codex Runtime 安装失败", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setCodexRuntimeInstalling(false);
+    }
+  }, [
+    codexRuntimeInstalling,
+    isDraftSession,
+    session.internalBackend,
+  ]);
   const changeInternalBackend = (
     next: NonNullable<AgentSessionMeta["internalBackend"]>,
   ): void => {
@@ -3343,6 +3382,8 @@ export function Chat({
         showInternalBackend={showInternalBackend}
         internalBackend={internalBackend}
         codexRuntimeStatus={codexRuntimeStatus}
+        codexRuntimeInstalling={codexRuntimeInstalling}
+        onInstallCodexRuntime={installCodexRuntime}
         internalBackendDisabled={internalBackendSwitchDisabled}
         onInternalBackendChange={changeInternalBackend}
       />
@@ -4209,6 +4250,12 @@ export function Chat({
                                     showInternalBackend={showInternalBackend}
                                     internalBackend={internalBackend}
                                     codexRuntimeStatus={codexRuntimeStatus}
+                                    codexRuntimeInstalling={
+                                      codexRuntimeInstalling
+                                    }
+                                    onInstallCodexRuntime={
+                                      installCodexRuntime
+                                    }
                                     internalBackendDisabled={
                                       internalBackendSwitchDisabled
                                     }

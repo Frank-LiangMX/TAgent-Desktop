@@ -15,6 +15,8 @@ import {
   Check,
   ChevronDown,
   Compass,
+  Download,
+  LoaderCircle,
   MessageCircle,
   ShieldCheck,
   SquareTerminal,
@@ -23,6 +25,7 @@ import {
 import { AppTooltip, MenuPopoverItem, Popover, PopoverContent, PopoverTrigger } from '@tagent/ui'
 import type {
   ExecutionMode,
+  CodexRuntimeStatus,
   SubagentEagerness,
   TAgentPermissionMode,
 } from '@tagent/shared'
@@ -66,12 +69,9 @@ export interface RunModeSelectorProps {
   showInternalBackend?: boolean
   internalBackend?: 'codex-app-server' | 'kscc'
   onInternalBackendChange?: (backend: 'codex-app-server' | 'kscc') => void
-  codexRuntimeStatus?: {
-    available: boolean
-    source?: 'explicit' | 'environment' | 'system' | 'managed'
-    version?: string
-    reason?: string
-  } | null
+  codexRuntimeStatus?: CodexRuntimeStatus | null
+  codexRuntimeInstalling?: boolean
+  onInstallCodexRuntime?: () => void | Promise<void>
   /** 当前轮运行中禁止拆换主 Agent runtime。 */
   internalBackendDisabled?: boolean
   /** 窄栏：隐藏文字只留图标 */
@@ -90,6 +90,8 @@ export function RunModeSelector({
   internalBackend = 'codex-app-server',
   onInternalBackendChange,
   codexRuntimeStatus,
+  codexRuntimeInstalling,
+  onInstallCodexRuntime,
   internalBackendDisabled,
   compact,
   disabled,
@@ -175,6 +177,33 @@ export function RunModeSelector({
               }
               onClick={() => onInternalBackendChange?.('codex-app-server')}
             />
+            {codexRuntimeStatus &&
+            !codexRuntimeStatus.available &&
+            codexRuntimeStatus.managedInstallSupported ? (
+              <MenuPopoverItem
+                icon={
+                  codexRuntimeInstalling ? (
+                    <LoaderCircle className="size-3.5 animate-spin" />
+                  ) : (
+                    <Download className="size-3.5" />
+                  )
+                }
+                label={
+                  codexRuntimeInstalling
+                    ? '正在安装 Codex Runtime'
+                    : '安装 Codex Runtime'
+                }
+                description={`官方 ${codexRuntimeStatus.managedVersion ?? ''} · 约 ${Math.ceil(
+                  (codexRuntimeStatus.managedDownloadBytes ?? 0) /
+                    1024 /
+                    1024,
+                )} MB`}
+                disabled={codexRuntimeInstalling}
+                onClick={() => {
+                  void onInstallCodexRuntime?.()
+                }}
+              />
+            ) : null}
             <MenuPopoverItem
               icon={<SquareTerminal className="size-3.5" />}
               label="Claude Code"

@@ -389,6 +389,9 @@ Windows x64 的 `codex-cli 0.151.0` 本地实测基线：
   拆换后端，新会话首发会把选择写入 session meta。
 - 输入区会探测本机或 TAgent 托管的 Codex Runtime，显示版本与来源；
   Runtime 不可用时禁用 Codex 选择。
+- Windows x64 可从输入区按需安装经过版本和 SHA-256 固定的 OpenAI 官方
+  Codex 平台包；安装器使用 staging、App Server 能力探针和原子清单激活，
+  Windows 目录暂时占用时退避重试，失败不会污染现有 Runtime。
 - `item/tool/requestUserInput` 已映射到现有 AskUserQuestion 横幅，支持
   选项、自定义输入、Codex question id 回传和 secret 输入。
 - `item/permissions/requestApproval` 已映射到现有 PermissionService：
@@ -503,9 +506,9 @@ TAGENT_CODEX_MODEL=<可选，缺省使用 Codex Runtime 默认模型>
 
 会话一旦写入 `internalBackend` / `codexThreadId` 就按会话绑定，不跟随
 后续环境变量漂移。Codex 与 KSCC 分别保留自己的 native thread/session
-id，切回对应后端时恢复各自上下文。默认值暂时仍为 KSCC，等真实
-Electron 端到端、模型列表、Windows 权限烟测和主会话长期回归完成后
-再切默认。
+id，切回对应后端时恢复各自上下文。新建 Internal 会话在 Codex Runtime
+可用时默认使用 Codex App Server；Runtime 不可用时回退 KSCC。应用内
+完成托管 Runtime 安装后会立即失效旧的 KSCC fallback 探测缓存。
 
 ### Phase 0：账号认证与协议探针
 

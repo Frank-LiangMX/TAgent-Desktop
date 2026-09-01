@@ -28,7 +28,9 @@ import type {
   Channel,
   AgentSessionMeta,
   AskUserResponse,
+  CodexRuntimeStatus,
   ExitPlanModeResponse,
+  InstallCodexRuntimeResult,
   KbProposeSaveResponse,
 } from "@tagent/shared";
 import {
@@ -68,6 +70,10 @@ import {
   resolveCodexDynamicToolPermission,
 } from "../adapters/codex/codex-dynamic-tools";
 import { resolveCodexRuntime } from "../adapters/codex/codex-runtime-resolver";
+import {
+  getManagedCodexRuntimeRelease,
+  installManagedCodexRuntime,
+} from "../adapters/codex/codex-runtime-installer";
 import { resolveKsccPath } from "../adapters/claude/kscc-path";
 import {
   buildOutputStylePrompt,
@@ -433,8 +439,32 @@ function userContentHasAttachmentAppendix(content: unknown): boolean {
   );
 }
 
+function getCodexRuntimeStatus(): CodexRuntimeStatus {
+  const result = resolveCodexRuntime();
+  const managedRelease = getManagedCodexRuntimeRelease();
+  return {
+    available: result.available,
+    source: result.source,
+    version: result.version,
+    reason: result.available
+      ? undefined
+      : result.diagnostics
+          .map((item) => item.reason)
+          .filter(Boolean)
+          .slice(0, 3)
+          .join("；"),
+    managedInstallSupported: Boolean(managedRelease),
+    managedVersion: managedRelease?.version,
+    managedDownloadBytes: managedRelease?.downloadBytes,
+  };
+}
+
 export class SessionService {
   private runtimes = new Map<string, SessionRuntime>();
+  /** 托管 Codex Runtime 安装是进程级单例任务，重复点击共享同一个 Promise。 */
+  private codexRuntimeInstallPromise:
+    | Promise<InstallCodexRuntimeResult>
+    | undefined;
   /**
    * Pi 等非长驻 loop：steer 降级队列。
    * 本轮结束后（onTurnEnd）拼接为一条用户消息 auto handleSend。
@@ -809,20 +839,34 @@ export class SessionService {
 
     ipcMain.handle(
       AGENT_IPC_CHANNELS.GET_CODEX_RUNTIME_STATUS,
-      async () => {
-        const result = resolveCodexRuntime();
-        return {
-          available: result.available,
-          source: result.source,
-          version: result.version,
-          reason: result.available
-            ? undefined
-            : result.diagnostics
-                .map((item) => item.reason)
-                .filter(Boolean)
-                .slice(0, 3)
-                .join("；"),
-        };
+      async (): Promise<CodexRuntimeStatus> => getCodexRuntimeStatus(),
+    );
+
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.INSTALL_CODEX_RUNTIME,
+      async (): Promise<InstallCodexRuntimeResult> => {
+        if (!this.codexRuntimeInstallPromise) {
+          this.codexRuntimeInstallPromise = installManagedCodexRuntime()
+            .then((result) => {
+              // 安装前可能已缓存 KSCC fallback；成功后让无显式选择的兼容路径
+              // 重新探测，使托管 Codex Runtime 立即成为默认 Internal Backend。
+              detectedDefaultInternalAdapterKind = undefined;
+              return {
+                ok: true as const,
+                status: getCodexRuntimeStatus(),
+                reusedExistingInstall: result.reusedExistingInstall,
+              };
+            })
+            .catch((error) => ({
+              ok: false as const,
+              status: getCodexRuntimeStatus(),
+              error: error instanceof Error ? error.message : String(error),
+            }))
+            .finally(() => {
+              this.codexRuntimeInstallPromise = undefined;
+            });
+        }
+        return this.codexRuntimeInstallPromise;
       },
     );
 

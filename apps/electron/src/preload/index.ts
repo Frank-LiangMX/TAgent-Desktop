@@ -122,6 +122,8 @@ import type {
   CliWorkersProbeResult,
   AgentDiscussPrefs,
   AgentCrewPrefs,
+  CodexRuntimeStatus,
+  InstallCodexRuntimeResult,
 } from "@tagent/shared";
 
 import type {
@@ -617,12 +619,14 @@ const electronAPI = {
     }) as Promise<unknown>,
   /** 探测 Codex App Server Runtime（系统安装 / TAgent 托管版本）。 */
   getCodexRuntimeStatus: () =>
-    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_CODEX_RUNTIME_STATUS) as Promise<{
-      available: boolean;
-      source?: "explicit" | "environment" | "system" | "managed";
-      version?: string;
-      reason?: string;
-    }>,
+    ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.GET_CODEX_RUNTIME_STATUS,
+    ) as Promise<CodexRuntimeStatus>,
+  /** 按需安装固定版本的 TAgent 托管 Codex Runtime。 */
+  installCodexRuntime: () =>
+    ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.INSTALL_CODEX_RUNTIME,
+    ) as Promise<InstallCodexRuntimeResult>,
   /** 切换会话置顶 */
   togglePin: (id: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.TOGGLE_PIN, id) as Promise<unknown>,

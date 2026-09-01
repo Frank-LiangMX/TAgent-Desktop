@@ -76,6 +76,8 @@ import type {
   CliWorkersProbeResult,
   AgentDiscussPrefs,
   AgentCrewPrefs,
+  CodexRuntimeStatus,
+  InstallCodexRuntimeResult,
   NudgeCandidate,
   PluginStoreCatalog,
   StageEntry,
@@ -428,12 +430,8 @@ declare global {
           knowledgeBaseMode?: "off" | "preferred" | "strict";
         },
       ) => Promise<unknown>;
-      getCodexRuntimeStatus: () => Promise<{
-        available: boolean;
-        source?: "explicit" | "environment" | "system" | "managed";
-        version?: string;
-        reason?: string;
-      }>;
+      getCodexRuntimeStatus: () => Promise<CodexRuntimeStatus>;
+      installCodexRuntime: () => Promise<InstallCodexRuntimeResult>;
       togglePin: (id: string) => Promise<unknown>;
       toggleArchive: (id: string) => Promise<unknown>;
       /** 清除 Chat @ 对话跟随（activeSpeaker 回默认总助） */
