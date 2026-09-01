@@ -185,6 +185,7 @@ import {
   findRunByIdempotencyKey,
 } from "./collaboration-room-repository";
 import {
+  abortCodexRoomSession,
   channelSupportsRoomToolBridge,
   MemberBackendResolveError,
   pickDefaultMemberChannelBinding,
@@ -1283,10 +1284,14 @@ export class CollaborationRoomService {
    *   捕获任何错误（含未来可能的 NOT_FOUND / 未知 session）避免影响 cancel 本身。
    */
   private interruptMemberSession(run: CollaborationRun): void {
-    if (!this.lifecycle) return;
     const member = getMember(run.memberId);
     const logicalSessionId = member?.logicalSessionId?.trim();
     if (!logicalSessionId) return;
+    if (member?.backend === "codex") {
+      abortCodexRoomSession(logicalSessionId);
+      return;
+    }
+    if (!this.lifecycle) return;
     const handle: MemberSessionHandle = {
       sessionId: logicalSessionId,
       logicalSessionId,
@@ -3299,13 +3304,23 @@ export class CollaborationRoomService {
       input.channelId !== undefined &&
       input.channelId !== (member.channelId ?? "");
     const nextChannelId =
-      input.channelId === undefined
-        ? member.channelId
-        : input.channelId || undefined;
+      nextBackend === "codex"
+        ? undefined
+        : input.channelId === undefined
+          ? member.channelId
+          : input.channelId || undefined;
     let nextModelId =
-      input.modelId === undefined ? member.modelId : input.modelId || undefined;
+      nextBackend === "codex"
+        ? input.modelId?.trim() || undefined
+        : input.modelId === undefined
+          ? member.modelId
+          : input.modelId || undefined;
     // 换渠道且未同时指定模型 → 清掉旧模型，由 adapter 回落新渠道默认
-    if (channelChanged && input.modelId === undefined) {
+    if (
+      nextBackend !== "codex" &&
+      channelChanged &&
+      input.modelId === undefined
+    ) {
       nextModelId = undefined;
     }
 
@@ -3321,9 +3336,16 @@ export class CollaborationRoomService {
           : undefined,
       channelId: nextChannelId,
       modelId: nextModelId,
+      backendResumeToken:
+        nextBackend === "codex" && member.backend === "codex"
+          ? member.backendResumeToken
+          : undefined,
       capabilities: {
         ...member.capabilities,
-        supportsToolBridge: channelSupportsRoomToolBridge(nextChannelId),
+        supportsToolBridge:
+          nextBackend === "codex"
+            ? true
+            : channelSupportsRoomToolBridge(nextChannelId),
       },
       updatedAt: Date.now(),
     };
@@ -5613,31 +5635,37 @@ function buildMember(
   now: number,
 ): CollaborationMember {
   const displayName = spec.displayName.trim();
+  const backend = spec.backend ?? "channel";
   // 未显式绑渠道时：自动绑 kscc（可用）或首个可用外部渠道，保证「新建即能聊」
   const autoBind =
     !spec.channelId &&
-    (spec.backend === undefined || spec.backend === "channel")
+    backend === "channel"
       ? pickDefaultMemberChannelBinding()
       : null;
-  const channelId = spec.channelId ?? autoBind?.channelId;
+  const channelId =
+    backend === "codex" || backend === "cli"
+      ? undefined
+      : spec.channelId ?? autoBind?.channelId;
+  const modelId =
+    backend === "codex" ? spec.modelId?.trim() || undefined : spec.modelId ?? autoBind?.modelId;
   return {
     id: genId(COLLABORATION_MEMBER_ID_PREFIX),
     roomId,
     displayName,
     roleId: spec.roleId,
     roleSnapshot: spec.roleSnapshot ?? { roleId: spec.roleId, displayName },
-    backend: spec.backend ?? "channel",
+    backend,
     channelId,
-    modelId: spec.modelId ?? autoBind?.modelId,
+    modelId,
     cliWorkerId: spec.cliWorkerId,
     logicalSessionId: genId(COLLABORATION_LOGICAL_SESSION_ID_PREFIX),
     permissionProfile: spec.permissionProfile ?? "read-only",
     capabilities: {
       ...DEFAULT_MEMBER_CAPABILITIES,
       ...(spec.capabilities ?? {}),
-      // 不能由创建方把外部渠道宣称成有工具回路；只有已接入的 kscc 才可为 true。
+      // Codex 通过 App Server Dynamic Tools 接入；其它后端仍按渠道能力保守探测。
       supportsToolBridge:
-        channelSupportsRoomToolBridge(channelId) &&
+        (backend === "codex" || channelSupportsRoomToolBridge(channelId)) &&
         spec.capabilities?.supportsToolBridge !== false,
     },
     status: "offline",
@@ -5682,7 +5710,8 @@ function materializeBotProfileSnapshot(
     capabilities: {
       ...seat.capabilities,
       supportsToolBridge:
-        channelSupportsRoomToolBridge(seat.channelId ?? member.channelId) &&
+        (seat.backend === "codex" ||
+          channelSupportsRoomToolBridge(seat.channelId ?? member.channelId)) &&
         seat.capabilities.supportsToolBridge,
     },
   };

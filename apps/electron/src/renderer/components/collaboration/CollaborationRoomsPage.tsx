@@ -39,6 +39,7 @@ import type {
   CollaborationRoleSnapshot,
   CollaborationMailboxEnvelope,
   CollaborationMember,
+  CollaborationMemberBackend,
   CollaborationHistoryCursor,
   CollaborationMessage,
   CollaborationMessagesPage,
@@ -577,10 +578,15 @@ function LocalCollaborationRoomsPage({
 
   // 成员是否具备可执行后端：channel 后端需绑定渠道；cli 后端需 cliWorkerId
   const memberHasExecutableBackend = (m: CollaborationMember): boolean =>
-    m.backend === "cli" ? Boolean(m.cliWorkerId) : Boolean(m.channelId);
+    m.backend === "codex"
+      ? true
+      : m.backend === "cli"
+        ? Boolean(m.cliWorkerId)
+        : Boolean(m.channelId);
 
   // 渠道显示名（未找到则回退 channelId）
   const channelLabel = (m: CollaborationMember): string => {
+    if (m.backend === "codex") return "Codex";
     if (m.backend === "cli") return m.cliWorkerId ? "CLI" : "未绑定";
     if (!m.channelId) return "未绑定";
     return channels.find((c) => c.id === m.channelId)?.name ?? m.channelId;
@@ -853,7 +859,7 @@ function LocalCollaborationRoomsPage({
       displayName: string;
       channelId: string;
       modelId: string;
-      backend: "channel" | "pi" | "cli";
+      backend: CollaborationMemberBackend;
       cliWorkerId?: string;
       permissionProfile?: "read-only" | "workspace-write";
       isCoordinator: boolean;
@@ -987,7 +993,7 @@ function LocalCollaborationRoomsPage({
       displayName: string;
       channelId: string;
       modelId: string;
-      backend?: "channel" | "pi" | "cli";
+      backend?: CollaborationMemberBackend;
       cliWorkerId?: string;
       permissionProfile?: "read-only" | "workspace-write";
     }): Promise<void> => {

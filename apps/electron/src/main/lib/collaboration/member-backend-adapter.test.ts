@@ -46,6 +46,17 @@ const cliState = vi.hoisted(() => ({
   available: true,
   result: { ok: true, summary: 'cli-reply', durationMs: 17 },
 }))
+const codexState = vi.hoisted(() => ({
+  lastInput: null as Record<string, unknown> | null,
+  resumeThreadIds: [] as Array<string | undefined>,
+  aborts: [] as string[],
+  toolCallResult: null as unknown,
+  hang: false,
+  rejectHang: null as ((error: Error) => void) | null,
+}))
+const codexMemberState = vi.hoisted(() => ({
+  member: null as Record<string, unknown> | null,
+}))
 vi.mock('../channel/channel-store', () => ({
   listChannels: () => channelState.channels,
   getChannel: (id: string) => channelState.channels.find((c) => c.id === id),
@@ -98,6 +109,56 @@ vi.mock('@tagent/pi-core', () => {
     },
   }
 })
+vi.mock('../adapters/codex/codex-app-server-adapter', () => ({
+  CodexAppServerAdapter: class {
+    async *query(input: {
+      sessionId: string
+      resumeThreadId?: string
+      onThreadId?: (threadId: string) => void
+      onServerRequest?: (request: unknown) => unknown | Promise<unknown>
+    }) {
+      codexState.lastInput = input as unknown as Record<string, unknown>
+      codexState.resumeThreadIds.push(input.resumeThreadId)
+      input.onThreadId?.('codex-thread-1')
+      if (codexState.hang) {
+        await new Promise<void>((_, reject) => {
+          codexState.rejectHang = reject
+        })
+      }
+      if (input.onServerRequest) {
+        codexState.toolCallResult = await input.onServerRequest({
+          id: 'request-1',
+          method: 'item/tool/call',
+          params: {
+            threadId: 'codex-thread-1',
+            turnId: 'turn-1',
+            callId: 'call-1',
+            namespace: null,
+            tool: 'room_send',
+            arguments: {
+              toMemberId: 'cm_target',
+              message: '来自 Codex',
+            },
+          },
+        })
+      }
+      yield { kind: 'stream_text_delta', text: 'codex-reply' }
+      yield { kind: 'result', subtype: 'completed' }
+    }
+
+    abort(sessionId: string): void {
+      codexState.aborts.push(sessionId)
+      codexState.rejectHang?.(new Error('native aborted'))
+      codexState.rejectHang = null
+    }
+  },
+}))
+vi.mock('./collaboration-room-repository', () => ({
+  getMember: () => codexMemberState.member,
+  upsertMember: (member: Record<string, unknown>) => {
+    codexMemberState.member = member
+  },
+}))
 
 import {
   resolveChannelBackendConfig,
@@ -137,6 +198,18 @@ beforeEach(() => {
   cliState.lastInput = null
   cliState.available = true
   cliState.result = { ok: true, summary: 'cli-reply', durationMs: 17 }
+  codexState.lastInput = null
+  codexState.resumeThreadIds = []
+  codexState.aborts = []
+  codexState.toolCallResult = null
+  codexState.hang = false
+  codexState.rejectHang = null
+  codexMemberState.member = {
+    id: 'cm_codex',
+    backend: 'codex',
+    logicalSessionId: 'codex-member-session',
+    updatedAt: 0,
+  }
 })
 
 describe('resolveChannelBackendConfig', () => {
@@ -381,6 +454,77 @@ describe('ChannelBackendAdapter.runTurn', () => {
     expect(seatState.lastFactoryOpts).toMatchObject({ provider: 'anthropic', apiKey: 'sk-1', baseUrl: 'https://api.anthropic.com' })
     expect(seatState.lastRunArgs).toMatchObject({ modelId: 'claude-x', prompt: '你好', systemPrompt: '你是协调者' })
     expect(seatState.lastRunArgs?.signal).toBe(controller.signal)
+  })
+
+  test('Codex 后端复用 App Server thread，并通过 Dynamic Tool 调用宿主 handler', async () => {
+    const hostToolHandler = vi.fn(async () => ({ output: '通知已发送' }))
+    const adapter = new ChannelBackendAdapter()
+
+    const first = await adapter.runTurn({
+      roomId: 'cr_codex',
+      memberId: 'cm_codex',
+      runId: 'run_codex_1',
+      triggerMessageId: 'msg_codex_1',
+      logicalSessionId: 'codex-member-session',
+      backend: 'codex',
+      permissionProfile: 'workspace-write',
+      workspaceId: 'rws_codex',
+      systemPrompt: '你是 Codex 成员',
+      prompt: '先通知目标成员',
+      signal: new AbortController().signal,
+      hostToolHandler,
+    })
+
+    expect(first.text).toBe('codex-reply')
+    expect(hostToolHandler).toHaveBeenCalledWith({
+      name: 'room_send',
+      arguments: { toMemberId: 'cm_target', message: '来自 Codex' },
+    })
+    expect(codexState.toolCallResult).toMatchObject({
+      success: true,
+      contentItems: [{ type: 'inputText', text: '通知已发送' }],
+    })
+    expect(codexMemberState.member?.backendResumeToken).toBe('codex-thread-1')
+
+    const second = await adapter.runTurn({
+      roomId: 'cr_codex',
+      memberId: 'cm_codex',
+      runId: 'run_codex_2',
+      triggerMessageId: 'msg_codex_2',
+      logicalSessionId: 'codex-member-session',
+      backend: 'codex',
+      systemPrompt: '你是 Codex 成员',
+      prompt: '继续',
+      signal: new AbortController().signal,
+    })
+    expect(second.text).toBe('codex-reply')
+    expect(codexState.resumeThreadIds).toEqual([undefined, 'codex-thread-1'])
+  })
+
+  test('Codex 后端的取消会中断对应 native turn', async () => {
+    codexState.hang = true
+    const adapter = new ChannelBackendAdapter()
+    const promise = adapter.runTurn({
+      roomId: 'cr_codex',
+      memberId: 'cm_codex',
+      runId: 'run_codex_cancel',
+      triggerMessageId: 'msg_codex_cancel',
+      logicalSessionId: 'codex-cancel-session',
+      backend: 'codex',
+      systemPrompt: '你是 Codex 成员',
+      prompt: '等待取消',
+      signal: new AbortController().signal,
+    })
+
+    await vi.waitFor(() => {
+      expect(codexState.lastInput).not.toBeNull()
+    })
+    codexState.lastInput = null
+    // 直接触发宿主可见的中断出口，等价于 service.cancelRun 的 Codex 分支。
+    const { abortCodexRoomSession } = await import('./member-backend-adapter')
+    abortCodexRoomSession('codex-cancel-session')
+    await expect(promise).rejects.toThrow('native aborted')
+    expect(codexState.aborts).toContain('codex-cancel-session')
   })
 
   test('capabilities：S2 全 false（无 resume/工具/实时输入）', () => {

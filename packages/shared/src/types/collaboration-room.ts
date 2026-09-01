@@ -47,7 +47,11 @@ export type CollaborationRoomStatus =
 // ===== 成员相关状态 =====
 
 /** 成员后端类型（成员的执行后端，S2+ 由 MemberBackendAdapter 解释） */
-export type CollaborationMemberBackend = "pi" | "channel" | "cli";
+export type CollaborationMemberBackend =
+  | "pi"
+  | "channel"
+  | "codex"
+  | "cli";
 
 /** 成员权限档位（room 上限与 member profile 的交集） */
 export type CollaborationPermissionProfile = "read-only" | "workspace-write";
@@ -557,7 +561,7 @@ export interface CollaborationMember {
   backend: CollaborationMemberBackend;
   /** channel 后端渠道 ID（backend === 'channel' 时） */
   channelId?: string;
-  /** 模型 ID（pi/channel 后端） */
+  /** 模型 ID（pi/channel/codex 后端；Codex 为空时使用 Runtime 默认模型） */
   modelId?: string;
   /** CLI worker ID（backend === 'cli' 时） */
   cliWorkerId?: string;
@@ -1700,7 +1704,7 @@ export interface CreateCollaborationMemberInput {
   backend?: CollaborationMemberBackend;
   /** channel 后端渠道 ID */
   channelId?: string;
-  /** 模型 ID */
+  /** 模型 ID；Codex 后端为空时使用 Runtime 默认模型 */
   modelId?: string;
   /** CLI worker ID */
   cliWorkerId?: string;

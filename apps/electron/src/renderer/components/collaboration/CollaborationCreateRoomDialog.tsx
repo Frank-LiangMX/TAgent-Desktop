@@ -59,6 +59,10 @@ export function CollaborationCreateRoomDialog({
   ])
   const [channels, setChannels] = useState<Channel[]>([])
   const [roles, setRoles] = useState<AgentRoleProfile[]>([])
+  const [codexRuntimeStatus, setCodexRuntimeStatus] = useState<{
+    available: boolean
+    reason?: string
+  } | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
@@ -69,6 +73,7 @@ export function CollaborationCreateRoomDialog({
     setPresetId('')
     setPresetName('')
     setMembers([{ displayName: '协调者', isCoordinator: true }])
+    setCodexRuntimeStatus(null)
     setSubmitting(false)
     void Promise.all([
       window.electronAPI.listCollaborationMemberPresets(),
@@ -83,6 +88,13 @@ export function CollaborationCreateRoomDialog({
       setChannels([])
       setRoles([])
     })
+    void window.electronAPI
+      .getCodexRuntimeStatus()
+      .then((status) => setCodexRuntimeStatus(status))
+      .catch((error) => setCodexRuntimeStatus({
+        available: false,
+        reason: error instanceof Error ? error.message : String(error),
+      }))
   }, [defaultWorkspaceId, open])
 
   const enabledChannels = useMemo(() => channels.filter((channel) => channel.enabled), [channels])
@@ -302,23 +314,60 @@ export function CollaborationCreateRoomDialog({
                         <Trash2 className="size-3.5" />
                       </Button>
                     </div>
+                    <div className="mt-2">
+                      <Select
+                        value={member.backend ?? 'channel'}
+                        onValueChange={(value) => {
+                          const backend = value as CreateCollaborationMemberInput['backend']
+                          updateMember(index, {
+                            backend,
+                            channelId: backend === 'codex' ? undefined : member.channelId,
+                            modelId: backend === 'codex' ? undefined : member.modelId,
+                            permissionProfile: backend === 'codex' ? 'workspace-write' : member.permissionProfile,
+                          })
+                        }}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue placeholder="渠道 / Pi" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="channel">渠道 / Pi</SelectItem>
+                          <SelectItem
+                            value="codex"
+                            disabled={codexRuntimeStatus?.available !== true}
+                          >
+                            Codex（账号 / CLI Runtime）
+                          </SelectItem>
+                          {member.backend === 'cli' ? (
+                            <SelectItem value="cli">CLI worker（现有配置）</SelectItem>
+                          ) : null}
+                        </SelectContent>
+                      </Select>
+                      {codexRuntimeStatus && !codexRuntimeStatus.available ? (
+                        <p className="mt-1 text-[10px] text-muted-foreground">
+                          Codex 暂不可用：{codexRuntimeStatus.reason || '未检测到 App Server Runtime'}
+                        </p>
+                      ) : null}
+                    </div>
                     <div className="mt-2 grid grid-cols-2 gap-2">
                       <Select
-                        value={member.channelId || 'auto'}
+                        value={member.backend === 'codex' ? 'codex-runtime' : member.channelId || 'auto'}
+                        disabled={member.backend === 'codex'}
                         onValueChange={(value) => updateMember(index, { channelId: value === 'auto' ? undefined : value, modelId: undefined })}
                       >
                         <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="自动渠道" /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="auto">自动渠道（kscc 优先）</SelectItem>
+                          <SelectItem value="codex-runtime">Codex Runtime（无需渠道）</SelectItem>
                           {enabledChannels.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}
                         </SelectContent>
                       </Select>
                       <Select
                         value={member.modelId || 'default'}
                         onValueChange={(value) => updateMember(index, { modelId: value === 'default' ? undefined : value })}
-                        disabled={!member.channelId || models.length === 0}
+                        disabled={member.backend === 'codex' || !member.channelId || models.length === 0}
                       >
-                        <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="渠道默认模型" /></SelectTrigger>
+                        <SelectTrigger className="h-8 text-xs"><SelectValue placeholder={member.backend === 'codex' ? 'Codex Runtime 默认模型' : '渠道默认模型'} /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="default">渠道默认模型</SelectItem>
                           {models.map((model) => <SelectItem key={model.id} value={model.id}>{model.name || model.id}</SelectItem>)}

@@ -34,7 +34,12 @@ import type {
  * 本机子进程）与 `channel`（外部 HTTP 渠道），供 handle 精确记录 createSession 的解析结果。
  * `pi` / `cli` 与 {@link CollaborationMemberBackend} 同义。
  */
-export type MemberSessionBackend = "pi" | "kscc" | "cli" | "channel";
+export type MemberSessionBackend =
+  | "pi"
+  | "kscc"
+  | "codex"
+  | "cli"
+  | "channel";
 
 /**
  * resume 模式：

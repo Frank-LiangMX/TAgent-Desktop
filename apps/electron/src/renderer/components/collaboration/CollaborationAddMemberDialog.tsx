@@ -1,8 +1,9 @@
 /**
  * 协作室「添加成员」弹出面板（对齐模型选择器形态：锚定按钮的 Popover，不做全局弹窗）。
  *
- * 字段：显示名 + 内核（渠道）+ 模型 + 是否协调者 + 角色（角色库 / 自定义 prompt）。
+ * 字段：显示名 + 执行后端 + 渠道/模型 + 是否协调者 + 角色（角色库 / 自定义 prompt）。
  * - 内核 = 渠道（kscc 内网走 kscc CLI；外部渠道走 Pi HTTP）
+ * - Codex = 本机 Codex App Server（复用账号/CLI Runtime，不需要渠道或 API Key）
  * - 不选渠道时由主进程自动绑定默认渠道（kscc 优先），与建房间行为一致
  * - 模型随渠道联动；选「渠道默认」则不传 modelId
  * 表单控件全部用 @tagent/ui 主题化组件（Input / Select / Textarea / Switch）。
@@ -68,6 +69,10 @@ export function CollaborationAddMemberDialog({
   const [channelId, setChannelId] = useState("");
   const [modelId, setModelId] = useState("");
   const [backend, setBackend] = useState<CollaborationMemberBackend>("channel");
+  const [codexRuntimeStatus, setCodexRuntimeStatus] = useState<{
+    available: boolean;
+    reason?: string;
+  } | null>(null);
   const [cliWorkerId, setCliWorkerId] = useState("");
   const [isCoordinator, setIsCoordinator] = useState(false);
   const [roles, setRoles] = useState<AgentRoleProfile[]>([]);
@@ -84,6 +89,7 @@ export function CollaborationAddMemberDialog({
     setChannelId("");
     setModelId("");
     setBackend("channel");
+    setCodexRuntimeStatus(null);
     setCliWorkerId("");
     setIsCoordinator(false);
     setRoleMode("none");
@@ -101,6 +107,15 @@ export function CollaborationAddMemberDialog({
         setRoles([]);
         setBots([]);
       });
+    void window.electronAPI
+      .getCodexRuntimeStatus()
+      .then((status) => setCodexRuntimeStatus(status))
+      .catch((error) =>
+        setCodexRuntimeStatus({
+          available: false,
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      );
   }, [open]);
 
   const enabledChannels = useMemo(
@@ -144,11 +159,20 @@ export function CollaborationAddMemberDialog({
 
     onSave({
       displayName: name,
-      channelId: selectedBotId || backend === "cli" ? "" : channelId,
-      modelId: selectedBotId || backend === "cli" ? "" : modelId,
+      channelId:
+        selectedBotId || backend === "cli" || backend === "codex"
+          ? ""
+          : channelId,
+      modelId:
+        selectedBotId || backend === "cli" || backend === "codex"
+          ? ""
+          : modelId,
       backend: selectedBotId ? "channel" : backend,
       cliWorkerId: selectedBotId || backend !== "cli" ? undefined : cliWorkerId,
-      permissionProfile: backend === "cli" ? "workspace-write" : undefined,
+      permissionProfile:
+        backend === "cli" || backend === "codex"
+          ? "workspace-write"
+          : undefined,
       isCoordinator,
       roleId,
       roleSnapshot,
@@ -172,7 +196,9 @@ export function CollaborationAddMemberDialog({
         <div className="flex items-baseline justify-between">
           <h2 className="text-sm font-semibold text-foreground">添加成员</h2>
           <span className="text-[11px] text-muted-foreground">
-            不选渠道 = 自动（kscc 优先）
+            {backend === "codex"
+              ? "Codex 使用本机账号 / Runtime"
+              : "不选渠道 = 自动（kscc 优先）"}
           </span>
         </div>
 
@@ -266,12 +292,26 @@ export function CollaborationAddMemberDialog({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="channel">渠道 / Pi</SelectItem>
+            <SelectItem
+              value="codex"
+              disabled={codexRuntimeStatus?.available !== true}
+            >
+              Codex（账号 / CLI Runtime）
+            </SelectItem>
             {cliWorkerOptions.length > 0 ? (
               <SelectItem value="cli">CLI worker（本机工作区）</SelectItem>
             ) : null}
           </SelectContent>
         </Select>
-        {!cliWorkers?.enabled ? (
+        {backend === "codex" ? (
+          <p className="mt-1.5 text-xs text-primary">
+            直接复用本机 Codex 账号认证；无需 API Key，模型使用 Codex Runtime 默认值。
+          </p>
+        ) : codexRuntimeStatus && !codexRuntimeStatus.available ? (
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Codex 暂不可用：{codexRuntimeStatus.reason || "未检测到 App Server Runtime"}。
+          </p>
+        ) : !cliWorkers?.enabled ? (
           <p className="mt-1.5 text-xs text-muted-foreground">
             CLI worker 当前未启用，请先在设置中打开本机 CLI worker 总开关。
           </p>
@@ -320,8 +360,10 @@ export function CollaborationAddMemberDialog({
           内核（渠道）
         </label>
         <Select
-          value={channelId || "auto"}
-          disabled={Boolean(selectedBotId) || backend === "cli"}
+          value={backend === "codex" ? "codex-runtime" : channelId || "auto"}
+          disabled={
+            Boolean(selectedBotId) || backend === "cli" || backend === "codex"
+          }
           onValueChange={(v) => {
             setChannelId(v === "auto" ? "" : v);
             setModelId("");
@@ -332,6 +374,7 @@ export function CollaborationAddMemberDialog({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="auto">自动（kscc 优先）</SelectItem>
+            <SelectItem value="codex-runtime">Codex Runtime（无需渠道）</SelectItem>
             {enabledChannels.map((c) => (
               <SelectItem key={c.id} value={c.id}>
                 {c.name}
@@ -339,7 +382,7 @@ export function CollaborationAddMemberDialog({
             ))}
           </SelectContent>
         </Select>
-        {enabledChannels.length === 0 ? (
+        {backend !== "codex" && enabledChannels.length === 0 ? (
           <p className="mt-1.5 text-xs text-amber-600">
             没有已启用的渠道，成员将无法回复。请先到设置启用渠道。
           </p>
@@ -357,6 +400,7 @@ export function CollaborationAddMemberDialog({
           disabled={
             Boolean(selectedBotId) ||
             backend === "cli" ||
+            backend === "codex" ||
             !channelId ||
             enabledModels.length === 0
           }
@@ -364,11 +408,13 @@ export function CollaborationAddMemberDialog({
           <SelectTrigger id="collab-add-member-model" className="mt-1">
             <SelectValue
               placeholder={
-                channelId
-                  ? enabledModels.length > 0
-                    ? "渠道默认"
-                    : "该渠道无可用模型"
-                  : "自动时用渠道默认模型"
+                backend === "codex"
+                  ? "Codex Runtime 默认模型"
+                  : channelId
+                    ? enabledModels.length > 0
+                      ? "渠道默认"
+                      : "该渠道无可用模型"
+                    : "自动时用渠道默认模型"
               }
             />
           </SelectTrigger>

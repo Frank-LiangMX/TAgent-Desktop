@@ -1,7 +1,7 @@
 /**
  * 协作室成员设置弹出面板（锚定成员气泡，对齐模型选择器形态，不做全局弹窗）。
  *
- * 触发 = 页面传入的成员气泡（children）；面板内可改显示名、渠道、模型。
+ * 触发 = 页面传入的成员气泡（children）；面板内可改显示名、执行后端、渠道、模型。
  * 表单控件用 @tagent/ui 主题化组件（Input / Select）。
  */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -56,6 +56,10 @@ export function CollaborationMemberSettings({
   const [channelId, setChannelId] = useState("");
   const [modelId, setModelId] = useState("");
   const [backend, setBackend] = useState<CollaborationMemberBackend>("channel");
+  const [codexRuntimeStatus, setCodexRuntimeStatus] = useState<{
+    available: boolean;
+    reason?: string;
+  } | null>(null);
   const [cliWorkerId, setCliWorkerId] = useState("");
   const [permissionProfile, setPermissionProfile] = useState<
     "read-only" | "workspace-write"
@@ -68,8 +72,18 @@ export function CollaborationMemberSettings({
     setChannelId(member.channelId ?? "");
     setModelId(member.modelId ?? "");
     setBackend(member.backend ?? "channel");
+    setCodexRuntimeStatus(null);
     setCliWorkerId(member.cliWorkerId ?? "");
     setPermissionProfile(member.permissionProfile ?? "read-only");
+    void window.electronAPI
+      .getCodexRuntimeStatus()
+      .then((status) => setCodexRuntimeStatus(status))
+      .catch((error) =>
+        setCodexRuntimeStatus({
+          available: false,
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      );
   }, [open, member]);
 
   const isBotSnapshot = Boolean(member.botProfileId);
@@ -94,12 +108,14 @@ export function CollaborationMemberSettings({
     onSave({
       memberId: member.id,
       displayName: name,
-      channelId: backend === "cli" ? "" : channelId,
-      modelId: backend === "cli" ? "" : modelId,
+      channelId: backend === "cli" || backend === "codex" ? "" : channelId,
+      modelId: backend === "cli" || backend === "codex" ? "" : modelId,
       backend,
       cliWorkerId: backend === "cli" ? cliWorkerId : undefined,
       permissionProfile:
-        backend === "cli" ? "workspace-write" : permissionProfile,
+        backend === "cli" || backend === "codex"
+          ? "workspace-write"
+          : permissionProfile,
     });
     setOpen(false);
   };
@@ -120,12 +136,16 @@ export function CollaborationMemberSettings({
           <span className="text-[11px] text-muted-foreground">
             {isBotSnapshot
               ? "Bot 配置副本；替换请重新添加"
-              : "改渠道/模型后下一次 turn 生效"}
+              : backend === "codex"
+                ? "使用本机 Codex 账号 / Runtime"
+                : "改渠道/模型后下一次 turn 生效"}
           </span>
         </div>
         <p className="mt-1 text-[11px] text-muted-foreground">
           后端：
-          {channels.find((c) => c.id === member.channelId)?.name ?? "未绑定"}
+          {member.backend === "codex"
+            ? "Codex（账号 / CLI Runtime）"
+            : channels.find((c) => c.id === member.channelId)?.name ?? "未绑定"}
           {member.roleSnapshot.roleId
             ? ` · 角色：${member.roleSnapshot.displayName}`
             : ""}
@@ -176,12 +196,28 @@ export function CollaborationMemberSettings({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="channel">渠道 / Pi</SelectItem>
+            <SelectItem
+              value="codex"
+              disabled={
+                backend !== "codex" && codexRuntimeStatus?.available !== true
+              }
+            >
+              Codex（账号 / CLI Runtime）
+            </SelectItem>
             {cliWorkerOptions.length > 0 ? (
               <SelectItem value="cli">CLI worker（本机工作区）</SelectItem>
             ) : null}
           </SelectContent>
         </Select>
-        {!cliWorkers?.enabled ? (
+        {backend === "codex" ? (
+          <p className="mt-1.5 text-xs text-primary">
+            无需 API Key，直接使用本机 Codex Runtime 的账号认证和默认模型。
+          </p>
+        ) : codexRuntimeStatus && !codexRuntimeStatus.available ? (
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            Codex 暂不可用：{codexRuntimeStatus.reason || "未检测到 App Server Runtime"}。
+          </p>
+        ) : !cliWorkers?.enabled ? (
           <p className="mt-1.5 text-xs text-muted-foreground">
             CLI worker 当前未启用，请先在设置中打开本机 CLI worker 总开关。
           </p>
@@ -229,8 +265,10 @@ export function CollaborationMemberSettings({
           渠道
         </label>
         <Select
-          disabled={isBotSnapshot || backend === "cli"}
-          value={channelId || "none"}
+          disabled={
+            isBotSnapshot || backend === "cli" || backend === "codex"
+          }
+          value={backend === "codex" ? "codex-runtime" : channelId || "none"}
           onValueChange={(v) => {
             setChannelId(v === "none" ? "" : v);
             setModelId("");
@@ -241,6 +279,7 @@ export function CollaborationMemberSettings({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="none">未绑定</SelectItem>
+            <SelectItem value="codex-runtime">Codex Runtime（无需渠道）</SelectItem>
             {enabledChannels.map((c) => (
               <SelectItem key={c.id} value={c.id}>
                 {c.name}
@@ -261,12 +300,21 @@ export function CollaborationMemberSettings({
           disabled={
             isBotSnapshot ||
             backend === "cli" ||
+            backend === "codex" ||
             !channelId ||
             enabledModels.length === 0
           }
         >
           <SelectTrigger id="collab-member-model" className="mt-1">
-            <SelectValue placeholder={channelId ? "渠道默认" : "先选渠道"} />
+            <SelectValue
+              placeholder={
+                backend === "codex"
+                  ? "Codex Runtime 默认模型"
+                  : channelId
+                    ? "渠道默认"
+                    : "先选渠道"
+              }
+            />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="default">渠道默认</SelectItem>
@@ -283,7 +331,7 @@ export function CollaborationMemberSettings({
             该成员是 Bot 在加入房间时的配置快照。要换模型或渠道，请先移除，再从
             Bot 库重新加入。
           </p>
-        ) : enabledChannels.length === 0 ? (
+        ) : backend !== "codex" && enabledChannels.length === 0 ? (
           <p className="mt-2 text-xs text-amber-600">
             没有已启用的渠道。请先去设置 → 渠道启用。
           </p>

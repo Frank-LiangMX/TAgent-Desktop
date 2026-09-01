@@ -25,6 +25,7 @@
  * 不代表本机 kscc/Pi 真机 create→resume E2E 已完成（那是 P1-2b）。
  */
 import {
+  abortCodexRoomSession,
   MemberBackendResolveError,
   resolveChannelBackendConfig,
 } from "./member-backend-adapter";
@@ -89,6 +90,18 @@ export class ChannelMemberSessionLifecycleAdapter
         "ABORTED",
       );
     }
+    if (input.backend === "codex") {
+      const sessionId = input.logicalSessionId;
+      this.sessions.add(sessionId);
+      this.interrupted.delete(sessionId);
+      return {
+        sessionId,
+        logicalSessionId: input.logicalSessionId,
+        backend: "codex",
+        resumeMode: "native",
+        createdAt: Date.now(),
+      };
+    }
     // 解析渠道后端；失败抛 MemberBackendResolveError（NO_CHANNEL / CHANNEL_DISABLED /
     // NO_API_KEY / NO_KSCC / NO_MODEL / NO_CHANNEL_BACKEND），调用方据此 fail-closed。
     const cfg = resolveChannelBackendConfig({
@@ -115,6 +128,25 @@ export class ChannelMemberSessionLifecycleAdapter
   async resumeSession(
     input: MemberSessionResumeInput,
   ): Promise<MemberSessionHandle> {
+    if (
+      input.handle.backend === "codex" &&
+      input.handle.resumeMode === "native"
+    ) {
+      if (input.signal?.aborted) {
+        throw new MemberSessionLifecycleError(
+          "Codex resumeSession 已在调用前取消",
+          "ABORTED",
+        );
+      }
+      this.sessions.add(input.handle.sessionId);
+      this.interrupted.delete(input.handle.sessionId);
+      return {
+        ...input.handle,
+        // Codex App Server 的 thread ID 由 adapter 按 logicalSessionId 管理；
+        // providerSessionId 不改写这里的逻辑寻址键。
+        createdAt: Date.now(),
+      };
+    }
     // 诚实 fail-closed：CHANNEL 不支持原生 resume，禁止假装成功。
     throw new MemberSessionLifecycleError(
       "channel 后端不支持原生 resume（supportsResume=false）；续跑请走 execution bridge 的 continuation 路径",
@@ -134,6 +166,9 @@ export class ChannelMemberSessionLifecycleAdapter
   ): Promise<void> {
     // 登记 interrupt（heartbeat 据此返回 alive=false）。
     this.interrupted.add(input.handle.sessionId);
+    if (input.handle.backend === "codex") {
+      abortCodexRoomSession(input.handle.logicalSessionId);
+    }
     // P1-2b：abort 该 session 的 inflight turn controller → 组合 signal 随之 abort →
     // 取消进行中的 turn。abort 后从登记表移除，使下一次 bindTurnAbort 拿到全新 controller
     // （避免被中断过的 session 新 turn 一启动即已 abort）。

@@ -420,6 +420,36 @@ describe('CollaborationRoomService A2A 信箱 host 侧（Stage 4-2）', () => {
     expect(svc.listMembers(roomId).find((m) => m.id === coordinatorId)?.displayName).toBe('主协调')
   })
 
+  test('Codex 成员不需要渠道，并启用协作室工具桥', () => {
+    const svc = createService()
+    const room = svc.createRoom({
+      title: 'Codex 房间',
+      members: [{ displayName: 'Codex 协调者', backend: 'codex', isCoordinator: true }],
+    })
+    const member = svc.listMembers(room.id)[0]!
+    expect(member.backend).toBe('codex')
+    expect(member.channelId).toBeUndefined()
+    expect(member.capabilities.supportsToolBridge).toBe(true)
+
+    const added = svc.addMember(room.id, {
+      displayName: 'Codex 开发',
+      backend: 'codex',
+    })
+    expect(added.backend).toBe('codex')
+    expect(added.channelId).toBeUndefined()
+
+    const updated = svc.updateMember({
+      roomId: room.id,
+      memberId: added.id,
+      backend: 'channel',
+      channelId: '',
+      modelId: '',
+    })
+    expect(updated.backend).toBe('channel')
+    expect(updated.channelId).toBeUndefined()
+    expect(updated.capabilities.supportsToolBridge).toBe(false)
+  })
+
   test('updateMember：换渠道未传 modelId → 清空旧模型', () => {
     const svc = createService()
     const { roomId, coordinatorId } = createRoomWithTwoMembers(svc)

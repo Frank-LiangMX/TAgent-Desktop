@@ -285,6 +285,27 @@ describe("ChannelMemberSessionLifecycleAdapter", () => {
     expect(handle.resumeMode).toBe("none");
   });
 
+  test("createSession：Codex → backend='codex'，native resume 可复用 logicalSessionId", async () => {
+    const adapter = new ChannelMemberSessionLifecycleAdapter();
+    const handle = await adapter.createSession({
+      roomId: "cr_1",
+      memberId: "cm_codex",
+      logicalSessionId: "ls_codex",
+      backend: "codex",
+    });
+
+    expect(handle.backend).toBe("codex");
+    expect(handle.resumeMode).toBe("native");
+    expect(handle.sessionId).toBe("ls_codex");
+
+    const resumed = await adapter.resumeSession({ handle });
+    expect(resumed.backend).toBe("codex");
+    expect(resumed.logicalSessionId).toBe("ls_codex");
+    expect(resumed.sessionId).toBe("ls_codex");
+    expect(resumed.createdAt).toBeTypeOf("number");
+    expect((await adapter.heartbeat(resumed)).alive).toBe(true);
+  });
+
   test("createSession：渠道解析失败 → 透传 MemberBackendResolveError（fail-closed）", async () => {
     // 无任何渠道 + 未绑定 channelId → NO_CHANNEL_BACKEND。
     // 注：resolveChannelBackendConfig 把短码放 Error.message、人类可读说明放 .code

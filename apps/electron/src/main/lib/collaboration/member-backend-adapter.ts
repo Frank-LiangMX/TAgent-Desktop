@@ -47,8 +47,14 @@ import {
   listChannels,
 } from "../channel/channel-store";
 import { resolveKsccPath } from "../adapters/claude/kscc-path";
+import { CodexAppServerAdapter } from "../adapters/codex/codex-app-server-adapter";
+import {
+  CodexDynamicToolRegistry,
+  dispatchCodexDynamicToolCall,
+} from "../adapters/codex/codex-dynamic-tools";
 import { resolveTaskSubagentBackend } from "../agent/cli-workers/resolve-backend";
 import { runCliWorker } from "../agent/cli-workers/run-cli-worker";
+import { getMember, upsertMember } from "./collaboration-room-repository";
 
 /** 单 turn 超时（ms）；外部渠道长回复兜底，取消由 AbortSignal 即时生效 */
 const MEMBER_TURN_TIMEOUT_MS = 120_000;
@@ -351,6 +357,50 @@ const CHANNEL_BACKEND_CAPABILITIES: CollaborationMemberCapabilities = {
   supportsStructuredEvents: false,
 };
 
+/** 协作室 Codex 成员共享 App Server 进程，但按 logicalSessionId 隔离 native thread。 */
+const codexRoomAdapter = new CodexAppServerAdapter();
+const codexRoomThreadIds = new Map<string, string>();
+
+/** 供协作室 service 的取消路径中断对应 Codex native turn。 */
+export function abortCodexRoomSession(logicalSessionId: string): void {
+  codexRoomAdapter.abort(logicalSessionId);
+}
+
+/**
+ * 保存协作室成员对应的 Codex native thread。
+ *
+ * 内存 Map 只负责当前进程内的快速寻址，成员记录中的 backendResumeToken 才是
+ * 重启后的恢复真值。持久化失败不打断当前 turn，因为当前 App Server thread
+ * 仍然可以完成；下一次启动时会由运行时错误明确暴露无法恢复，而不是丢掉本轮回复。
+ */
+function persistCodexRoomThreadId(
+  memberId: string,
+  logicalSessionId: string,
+  threadId: string,
+): void {
+  try {
+    const member = getMember(memberId);
+    if (
+      !member ||
+      member.backend !== "codex" ||
+      member.logicalSessionId !== logicalSessionId ||
+      member.backendResumeToken === threadId
+    ) {
+      return;
+    }
+    upsertMember({
+      ...member,
+      backendResumeToken: threadId,
+      updatedAt: Date.now(),
+    });
+  } catch (error) {
+    console.error(
+      `[协作室] Codex thread 持久化失败 member=${memberId}:`,
+      error,
+    );
+  }
+}
+
 /** 解析出的后端配置（主进程内部，含解密 apiKey / ksccPath，不落盘不外传 renderer） */
 interface ResolvedChannelBackend {
   /** 'external' 走 Pi HTTP 直连；'kscc' 走 kscc bare 子进程 */
@@ -378,6 +428,126 @@ export class MemberBackendResolveError extends Error {
     super(message);
     this.name = "MemberBackendResolveError";
   }
+}
+
+/**
+ * Codex 协作室成员路径：
+ * - 复用主会话 Codex App Server adapter，按成员 logicalSessionId 维护独立 thread；
+ * - 房间工具通过 Dynamic Tools 接入，调用仍由宿主 hostToolHandler 执行；
+ * - Codex 原生文件/命令请求全部拒绝，成员工作区写入只能走受控 workspace_* 工具；
+ * - signal abort 时中断对应 native turn，不留下后台 App Server 请求。
+ */
+async function runCodexRoomTurn(
+  input: MemberTurnInput,
+): Promise<MemberTurnResult> {
+  const logicalSessionId = input.logicalSessionId?.trim() || input.runId;
+  const roomTools = input.hostToolHandler
+    ? buildRoomBridgeTools({
+        hostToolHandler: input.hostToolHandler,
+        abortAgent: () => codexRoomAdapter.abort(logicalSessionId),
+        permissionProfile: input.permissionProfile,
+        workspaceId: input.workspaceId,
+      })
+    : [];
+  const dynamicTools = new CodexDynamicToolRegistry(
+    roomTools.map((tool) => ({
+      tool,
+      // 房间宿主是唯一权限真值；workspace_* 的读写校验在 hostToolHandler 内执行。
+      permission: "read-only" as const,
+    })),
+  );
+  let text = "";
+  let finalText = "";
+  let usage: MemberTurnResult["usage"];
+  let completed = false;
+  const onAbort = (): void => {
+    codexRoomAdapter.abort(logicalSessionId);
+  };
+  if (input.signal.aborted) onAbort();
+  else input.signal.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    for await (const payload of codexRoomAdapter.query({
+      sessionId: logicalSessionId,
+      prompt: input.prompt,
+      cwd: input.workspaceRoot ?? process.cwd(),
+      model: input.modelId?.trim() || process.env.TAGENT_CODEX_MODEL?.trim(),
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      baseInstructions: [
+        input.systemPrompt,
+        "协作室 Codex 成员约束：只通过已注册的 room_* / workspace_* 宿主工具协作；不得调用原生 shell、文件修改或其他未注册能力。若信息不足，向协调者或用户说明阻塞原因。",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      dynamicTools: dynamicTools.specs,
+      resumeThreadId:
+        codexRoomThreadIds.get(logicalSessionId) ??
+        getMember(input.memberId)?.backendResumeToken,
+      onThreadId: (threadId) => {
+        codexRoomThreadIds.set(logicalSessionId, threadId);
+        persistCodexRoomThreadId(
+          input.memberId,
+          logicalSessionId,
+          threadId,
+        );
+      },
+      onServerRequest: async (request) => {
+        if (request.method === "item/tool/call") {
+          return dispatchCodexDynamicToolCall({
+            registry: dynamicTools,
+            params: request.params,
+            executionMode: "work",
+            permissionMode: "bypassPermissions",
+          });
+        }
+        if (
+          request.method === "item/commandExecution/requestApproval" ||
+          request.method === "item/fileChange/requestApproval"
+        ) {
+          return { decision: "decline" };
+        }
+        throw new Error(
+          `协作室 Codex 成员不支持该原生请求：${request.method}`,
+        );
+      },
+    })) {
+      const item = payload as {
+        kind?: string;
+        text?: string;
+        message?: unknown;
+        usage?: MemberTurnResult["usage"];
+      };
+      if (item.kind === "stream_text_delta" && item.text) {
+        text += item.text;
+        input.onTextDelta?.(item.text);
+      } else if (item.kind === "sdk_message") {
+        const messageText = extractAssistantSnapshotText(item.message);
+        if (messageText) finalText = messageText;
+      } else if (item.kind === "result") {
+        usage = item.usage;
+        completed = true;
+        break;
+      }
+    }
+  } finally {
+    input.signal.removeEventListener("abort", onAbort);
+  }
+
+  if (input.signal.aborted) {
+    throw new Error("协作室 Codex 成员回合已取消");
+  }
+  if (!completed) {
+    throw new Error("协作室 Codex 成员回合未正常完成");
+  }
+  const resultText = (finalText || text).trim();
+  if (!resultText) {
+    throw new Error("协作室 Codex 成员未返回正文");
+  }
+  return {
+    text: resultText,
+    ...(usage ? { usage } : {}),
+  };
 }
 
 /**
@@ -628,6 +798,7 @@ export class ChannelBackendAdapter implements MemberBackendAdapter {
 
   async runTurn(input: MemberTurnInput): Promise<MemberTurnResult> {
     if (input.backend === "cli") return runCliRoomTurn(input);
+    if (input.backend === "codex") return runCodexRoomTurn(input);
     const cfg = resolveChannelBackendConfig({
       channelId: input.channelId,
       modelId: input.modelId,
