@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest"
 import type { RoomBotSeat, RoomWorkspace } from "@tagent/shared"
+import { isCollaborationAttemptId } from "@tagent/shared"
 import {
   FusionRoomAuthority,
   FusionRoomAuthorityError,
@@ -402,6 +403,7 @@ describe("FusionRoomAuthority", () => {
     })
     expect(question.type).toBe("question")
     expect(question.depth).toBe(0)
+    expect(isCollaborationAttemptId(question.attemptId)).toBe(true)
     expect(room.sendMailbox({
       actorUserId: "owner", roomId: "room_test", fromMemberId: first.id,
       toMemberId: second.id, runId: firstRun.id, type: "question",

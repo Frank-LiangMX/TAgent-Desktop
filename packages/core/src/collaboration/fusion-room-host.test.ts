@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest"
 import type { CollaborationMailboxEnvelope, RoomBotSeat, RoomWorkspace } from "@tagent/shared"
+import { isCollaborationAttemptId } from "@tagent/shared"
 import { FusionRoomHost } from "./fusion-room-host"
 import { FusionRoomAuthorityError } from "./fusion-room-authority"
 
@@ -398,6 +399,7 @@ describe("FusionRoomHost", () => {
     const nextEnvelope = snapshot.mailbox.find((item) => item.id !== stopped.id)!
     expect(nextEnvelope.depth).toBe(stopped.depth + 1)
     expect(nextEnvelope.delivery).toBe("dispatched")
+    expect(isCollaborationAttemptId(nextEnvelope.attemptId)).toBe(true)
     expect(nextEnvelope.deliveryRunId).toBe(result && "runId" in result ? result.runId : "")
     expect(snapshot.runs).toHaveLength(1)
     expect(snapshot.runs[0]?.seatId).toBe("seat-b")

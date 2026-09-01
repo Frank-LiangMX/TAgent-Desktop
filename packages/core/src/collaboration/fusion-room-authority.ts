@@ -243,6 +243,20 @@ export interface FinishFusionRunInput {
 
 let authorityIdCounter = 0
 const uniqueId = (): string => Date.now().toString(36) + "_" + (authorityIdCounter++).toString(36) + "_" + Math.random().toString(36).slice(2, 10)
+const uniqueAttemptId = (): string => {
+  const bytes = new Uint8Array(16)
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes)
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256)
+    }
+  }
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("")
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
 
 const DEFAULT_LEASE_MS = 30_000
 const MAX_LEASE_MS = 15 * 60 * 1000
@@ -728,7 +742,7 @@ export class FusionRoomAuthority {
       fromMemberId: from.id, toMemberId: to.id, type: input.type,
       ...(input.type === "question" ? { requestId: "req_" + uniqueId() } : {}),
       payload, rootMessageId, causationId: run.id, depth, state: "pending",
-      attemptId: "attempt_" + uniqueId(), delivery: "outbox",
+      attemptId: uniqueAttemptId(), delivery: "outbox",
       sourceMessageId: source.id, createdAt: nowOf(this.clock),
     }
     this.state.mailbox.push(envelope)
@@ -1356,7 +1370,7 @@ export class FusionRoomAuthority {
       id: "env_" + uniqueId(),
       depth: stopped.depth + 1,
       state: "pending",
-      attemptId: "attempt_" + uniqueId(),
+      attemptId: uniqueAttemptId(),
       delivery: "dispatched",
       stopReason: undefined,
       continueUsed: undefined,
