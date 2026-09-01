@@ -135,6 +135,55 @@ afterEach(() => {
 });
 
 describe("FusionRoomRemotePage metadata edit (P2-2)", () => {
+  test("远程消息可结构化点名成员，未选择时保持默认协调者路由", async () => {
+    const { session, dispatch } = mkSession(
+      mkView({
+        bots: [
+          {
+            id: "seat-coordinator",
+            botProfileId: "bot-coordinator",
+            ownerUserId: "owner",
+            displayName: "协调者",
+            backend: "pi",
+            permissionProfile: "read-only",
+            status: "idle",
+            isCoordinator: true,
+            ownerConsent: true,
+          },
+          {
+            id: "seat-reviewer",
+            botProfileId: "bot-reviewer",
+            ownerUserId: "owner",
+            displayName: "审阅者",
+            backend: "codex",
+            permissionProfile: "read-only",
+            status: "idle",
+            isCoordinator: false,
+            ownerConsent: true,
+          },
+        ],
+      }),
+    );
+    const m = mount(<FusionRoomRemotePage session={session} onClose={vi.fn()} />);
+    await act(async () => {});
+
+    const textarea = m.container.querySelector<HTMLTextAreaElement>("textarea")!;
+    setTextareaValue(textarea, "请审阅这份结果");
+    await act(async () => {
+      findButton(m.container, "审阅者").click();
+    });
+    await act(async () => {
+      findButton(m.container, "发送").click();
+      await Promise.resolve();
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "message",
+      input: { content: "请审阅这份结果", targetSeatIds: ["seat-reviewer"] },
+    });
+    m.unmount();
+  });
+
   test("owner（canEditMetadata=true）见标题与目标编辑按钮", async () => {
     const { session } = mkSession(mkView({ canEditMetadata: true }));
     const m = mount(<FusionRoomRemotePage session={session} onClose={vi.fn()} />);

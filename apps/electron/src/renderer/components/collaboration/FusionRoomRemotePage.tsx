@@ -39,6 +39,7 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
   const actions = useMemo(() => new FusionRoomActionAdapter(session.controller), [session.controller])
   const [view, setView] = useState<FusionRoomViewModel | undefined>(session.controller.currentView)
   const [draft, setDraft] = useState('')
+  const [targetSeatIds, setTargetSeatIds] = useState<string[]>([])
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
@@ -79,8 +80,12 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
     setPending(true)
     setError(null)
     try {
-      await actions.sendMessage({ content })
+      await actions.sendMessage({
+        content,
+        ...(targetSeatIds.length ? { targetSeatIds } : {}),
+      })
       setDraft('')
+      setTargetSeatIds([])
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -141,6 +146,14 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
     } finally {
       setResumePendingId(null)
     }
+  }
+
+  const toggleTargetSeat = (seatId: string): void => {
+    setTargetSeatIds((current) =>
+      current.includes(seatId)
+        ? current.filter((id) => id !== seatId)
+        : [...current, seatId],
+    )
   }
 
   const retryRun = async (runId: string, seatId?: string): Promise<void> => {
@@ -570,6 +583,40 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
       </div>
 
       <footer className="shrink-0 border-t border-border/35 p-3">
+        {view?.bots.length ? (
+          <div className="mb-2 flex flex-wrap items-center gap-1.5" aria-label="指定协作成员">
+            <span className="mr-0.5 text-[11px] text-muted-foreground">发送给</span>
+            <button
+              type="button"
+              aria-pressed={targetSeatIds.length === 0}
+              onClick={() => setTargetSeatIds([])}
+              className={[
+                'rounded-md border px-2 py-1 text-[11px] transition-colors',
+                targetSeatIds.length === 0
+                  ? 'border-primary/50 bg-primary/10 text-foreground'
+                  : 'border-border/45 text-muted-foreground hover:bg-accent hover:text-foreground',
+              ].join(' ')}
+            >
+              协调者
+            </button>
+            {view.bots.map((bot) => (
+              <button
+                key={bot.id}
+                type="button"
+                aria-pressed={targetSeatIds.includes(bot.id)}
+                onClick={() => toggleTargetSeat(bot.id)}
+                className={[
+                  'rounded-md border px-2 py-1 text-[11px] transition-colors',
+                  targetSeatIds.includes(bot.id)
+                    ? 'border-primary/50 bg-primary/10 text-foreground'
+                    : 'border-border/45 text-muted-foreground hover:bg-accent hover:text-foreground',
+                ].join(' ')}
+              >
+                {bot.displayName}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
