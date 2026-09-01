@@ -23,6 +23,7 @@ import {
   migrateModelWindows,
   syncKsccChannelAvailability,
   syncKsccDefaultModels,
+  syncCodexDefaultModels,
 } from './lib/channel/channel-store'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
 import { stopAutomationScheduler } from './lib/automation-scheduler'
@@ -298,6 +299,7 @@ app.whenReady().then(async () => {
     // 避免窗口已显示后主进程被同步 where/spawn 卡住。
     syncKsccChannelAvailability()
     syncKsccDefaultModels()
+    syncCodexDefaultModels()
     migrateModelWindows()
   } catch (err) {
     // 渠道迁移失败不能阻断后续 IPC 注册；用户仍应能打开设置并修复配置。

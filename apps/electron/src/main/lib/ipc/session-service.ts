@@ -121,6 +121,7 @@ import {
 } from "../channel/channel-store";
 import {
   CODEX_DEFAULT_MODEL_ID,
+  CODEX_LEGACY_MODEL_ID,
   KSCC_DEFAULT_MODEL_ID,
   isClaudeAvailableForChannel,
 } from "../channel/default-models";
@@ -3233,8 +3234,13 @@ export class SessionService {
 
   /** 解析模型 ID：input > 渠道默认 > 第一个启用模型 > kscc 兜底 */
   private resolveModel(channel: Channel, inputModel?: string): string {
+    const normalizedInputModel =
+      channel.provider === "codex-internal" &&
+      inputModel === CODEX_LEGACY_MODEL_ID
+        ? CODEX_DEFAULT_MODEL_ID
+        : inputModel;
     const modelId =
-      inputModel ??
+      normalizedInputModel ??
       channel.defaultModelId ??
       channel.models.find((model) => model.enabled)?.id ??
       (channel.provider === "codex-internal"
@@ -3553,7 +3559,9 @@ export class SessionService {
       ]
         .filter(Boolean)
         .join("\n\n");
-      const codexModel = process.env.TAGENT_CODEX_MODEL?.trim() || undefined;
+      // Codex 会话模型以渠道/会话选择为准；环境变量只作为无选择时的开发兜底。
+      const codexModel =
+        input.model?.trim() || process.env.TAGENT_CODEX_MODEL?.trim() || undefined;
       const opts: CodexQueryOptions = {
         sessionId: input.sessionId,
         prompt: input.prompt,

@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest'
 import type { Channel, ProviderType } from '@tagent/shared'
-import { isClaudeAvailableForChannel } from './default-models'
+import {
+  CODEX_DEFAULT_MODEL_ID,
+  CODEX_DEFAULT_MODELS,
+  isClaudeAvailableForChannel,
+} from './default-models'
 
 describe('isClaudeAvailableForChannel', () => {
   /** 最小 Channel：仅 provider 决定结果（其余字段不影响判定） */
@@ -35,5 +39,21 @@ describe('isClaudeAvailableForChannel', () => {
     for (const p of others) {
       expect(isClaudeAvailableForChannel(mk(p))).toBe(false)
     }
+  })
+})
+
+describe('Codex default models', () => {
+  test('uses the three current GPT-5.6 Codex model IDs', () => {
+    expect(CODEX_DEFAULT_MODEL_ID).toBe('gpt-5.6-sol')
+    expect(CODEX_DEFAULT_MODELS.map((model) => model.id)).toEqual([
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+    ])
+    expect(CODEX_DEFAULT_MODELS.map((model) => model.name)).toEqual([
+      'GPT-5.6 Sol',
+      'GPT-5.6 Terra',
+      'GPT-5.6 Luna',
+    ])
   })
 })

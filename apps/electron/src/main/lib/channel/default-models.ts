@@ -3,7 +3,7 @@
  *
  * 用途：
  * - kscc-internal：seed 内置渠道时写入（kscc 网关代理的模型，OAuth 无需 apiKey）
- * - codex-internal：seed 本机 Codex App Server 渠道时写入，模型名由 Runtime 决定
+ * - codex-internal：seed 本机 Codex App Server 渠道时写入正式模型列表
  * - 外部渠道：新建渠道时预填 + FETCH_MODELS IPC 返回（真实拉取未实现前用此兜底）
  *
  * 用户可在渠道管理 UI 里增删改模型，此处仅是初始默认值。
@@ -25,12 +25,25 @@ export const KSCC_DEFAULT_MODELS: ChannelModel[] = [
 /** kscc 内置渠道默认模型 ID */
 export const KSCC_DEFAULT_MODEL_ID = 'glm-5.2'
 
-/** Codex App Server 使用 Runtime 默认模型，UI 只需要一个可选渠道模型占位。 */
-export const CODEX_DEFAULT_MODEL_ID = 'codex-default'
+/** Codex App Server 的正式模型 ID。 */
+export const CODEX_DEFAULT_MODEL_ID = 'gpt-5.6-sol'
+export const CODEX_LEGACY_MODEL_ID = 'codex-default'
 export const CODEX_DEFAULT_MODELS: ChannelModel[] = [
   {
-    id: CODEX_DEFAULT_MODEL_ID,
-    name: 'Codex 默认模型',
+    id: 'gpt-5.6-sol',
+    name: 'GPT-5.6 Sol',
+    enabled: true,
+    contextWindow: 200_000,
+  },
+  {
+    id: 'gpt-5.6-terra',
+    name: 'GPT-5.6 Terra',
+    enabled: true,
+    contextWindow: 200_000,
+  },
+  {
+    id: 'gpt-5.6-luna',
+    name: 'GPT-5.6 Luna',
     enabled: true,
     contextWindow: 200_000,
   },

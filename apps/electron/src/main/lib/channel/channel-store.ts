@@ -29,6 +29,7 @@ import { getChannelsPath } from '../config/config-paths'
 import {
   CODEX_DEFAULT_MODEL_ID,
   CODEX_DEFAULT_MODELS,
+  CODEX_LEGACY_MODEL_ID,
   getDefaultModelsForProvider,
   KSCC_DEFAULT_MODEL_ID,
   KSCC_DEFAULT_MODELS,
@@ -332,6 +333,82 @@ export function syncKsccDefaultModels(): number {
     console.log(`[渠道存储] 已为 kscc-internal 追加 ${added} 个默认模型`)
   }
   return added
+}
+
+/**
+ * 启动迁移：把 Codex 内置渠道从旧的占位模型升级为正式模型列表。
+ *
+ * 旧版本使用 `codex-default`，它既不是 Codex 的真实模型 ID，也会让
+ * 会话元数据无法表达实际使用的模型。将旧占位项迁移为 Sol，再追加
+ * Terra / Luna；已有的用户启用状态保留。
+ *
+ * @returns 发生变化的模型条数
+ */
+export function syncCodexDefaultModels(): number {
+  const config = readConfig()
+  let changed = 0
+  const next = config.channels.map((channel) => {
+    if (channel.provider !== 'codex-internal') return channel
+
+    let models = channel.models
+    let modelListChanged = false
+    const legacy = models.find((model) => model.id === CODEX_LEGACY_MODEL_ID)
+    const hasSol = models.some((model) => model.id === CODEX_DEFAULT_MODEL_ID)
+
+    if (legacy && !hasSol) {
+      models = models.map((model) =>
+        model.id === CODEX_LEGACY_MODEL_ID
+          ? {
+              ...model,
+              ...CODEX_DEFAULT_MODELS[0],
+              enabled: model.enabled,
+            }
+          : model,
+      )
+      modelListChanged = true
+      changed++
+    } else if (legacy) {
+      models = models.filter((model) => model.id !== CODEX_LEGACY_MODEL_ID)
+      modelListChanged = true
+      changed++
+    }
+
+    const have = new Set(models.map((model) => model.id))
+    const missing = CODEX_DEFAULT_MODELS.filter((model) => !have.has(model.id)).map(
+      (model) => ({ ...model }),
+    )
+    const nextDefaultModelId =
+      channel.defaultModelId === CODEX_LEGACY_MODEL_ID ||
+      !channel.defaultModelId ||
+      !models.some(
+        (model) => model.id === channel.defaultModelId && model.enabled,
+      )
+        ? CODEX_DEFAULT_MODEL_ID
+        : channel.defaultModelId
+    const defaultChanged = nextDefaultModelId !== channel.defaultModelId
+    if (
+      missing.length === 0 &&
+      !modelListChanged &&
+      !defaultChanged
+    ) {
+      return channel
+    }
+
+    changed += missing.length
+    if (defaultChanged) changed++
+    return {
+      ...channel,
+      models: [...models, ...missing],
+      defaultModelId: nextDefaultModelId,
+      updatedAt: Date.now(),
+    }
+  })
+
+  if (changed > 0) {
+    writeConfig({ ...config, channels: next })
+    console.log(`[渠道存储] 已为 codex-internal 升级正式模型列表，变更 ${changed} 项`)
+  }
+  return changed
 }
 
 /**
