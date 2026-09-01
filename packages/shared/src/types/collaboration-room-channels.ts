@@ -102,6 +102,8 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   CANCEL_ALL_RUNS: "collaboration-room:cancel-all-runs",
   /** 取消某 run（abort 后端调用 + 置 cancelled，Stage 2） */
   CANCEL_RUN: "collaboration-room:cancel-run",
+  /** 重试失败/已取消 run（新建 run，不复活旧 run） */
+  RETRY_RUN: "collaboration-room:retry-run",
   /** 列出某房间全部 A2A 信箱信封（S4 审计视图） */
   LIST_MAILBOX: "collaboration-room:list-mailbox",
   /** 继续一次已达 A2A 深度上限的交接（S4.5：仅 max_depth 停止且未继续过可继续一次） */
@@ -250,6 +252,26 @@ export interface CancelCollaborationRunInput {
   /** run ID */
   runId: string;
 }
+
+/** 重试失败/已取消 run 输入；memberId 可选，用于切换执行成员。 */
+export interface RetryCollaborationRunInput {
+  /** 房间 ID */
+  roomId: string;
+  /** 原 run ID */
+  runId: string;
+  /** 可选的新执行成员；缺省沿用原成员 */
+  memberId?: string;
+  /** 调用方幂等键；同键重复调用返回同一 newRunId */
+  idempotencyKey?: string;
+}
+
+/**
+ * 重试结果：始终创建新的 run/fence，旧 run 保留失败或取消状态。
+ * blocked run 不走此接口，必须经用户确认的 blocked continuation 入口。
+ */
+export type RetryCollaborationRunResult =
+  | { ok: true; newRunId: string }
+  | { ok: false; reason: string };
 
 /** 列出某房间全部 A2A 信箱信封输入（S4） */
 export interface ListCollaborationMailboxInput {
@@ -471,7 +493,8 @@ export interface CollaborationRoomChangedPayload {
     | "run-awaiting-peer"
     | "run-awaiting-user"
     | "mailbox-updated"
-    | "run-continued";
+    | "run-continued"
+    | "run-retried";
   /** 发生时间戳 */
   at: number;
 }
@@ -495,7 +518,8 @@ export interface CollaborationRoomChangedPayload {
 //   - LIST_RUNS         → CollaborationRunsPage
 //   - GET_RUN_SUMMARY   → CollaborationRunSummary
 //   - CANCEL_ALL_RUNS   → { cancelled: number }
- //   - CANCEL_RUN        → CollaborationRun | null
+//   - CANCEL_RUN        → CollaborationRun | null
+//   - RETRY_RUN         → RetryCollaborationRunResult
 //   - LIST_MAILBOX      → CollaborationMailboxEnvelope[]
 //   - CONTINUE_DEPTH_STOP → ContinueCollaborationDepthStopResult
 //   - LIST_ROOM_TASKS    → CollaborationRoomTask[]

@@ -102,6 +102,27 @@ function seedBlockedRun(opts: {
   });
 }
 
+/** 直接落盘一个 failed run（模拟成员后端失败后的历史记录）。 */
+function seedFailedRun(opts: {
+  roomId: string;
+  memberId: string;
+  triggerMessageId: string;
+  runId?: string;
+  fence?: number;
+}): void {
+  upsertRun({
+    id: opts.runId ?? "run_failed",
+    roomId: opts.roomId,
+    memberId: opts.memberId,
+    triggerMessageId: opts.triggerMessageId,
+    idempotencyKey: `${opts.triggerMessageId}:${opts.memberId}`,
+    status: "failed",
+    attempt: 1,
+    fence: opts.fence ?? 3,
+    error: { code: "UPSTREAM_FAILED", message: "上游不可用" },
+  });
+}
+
 describe("CollaborationRoomService.listContinuations（P2-1）", () => {
   test("blocked run → listContinuations 出现 blocked_run 项", () => {
     const svc = createService();
@@ -296,5 +317,110 @@ describe("CollaborationRoomService.confirmResumeBlockedRun（P2-1）", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toContain("触发消息");
+  });
+});
+
+describe("CollaborationRoomService.retryRun（P1 恢复动作）", () => {
+  test("failed run 重试：旧 run 保持 failed，新 run 完成", async () => {
+    const svc = createService();
+    const { roomId, coordinatorId } = createRoomWithCoordinator(svc);
+    const triggerId = appendTriggerMessage(svc, roomId, "请重试");
+    seedFailedRun({
+      roomId,
+      memberId: coordinatorId,
+      triggerMessageId: triggerId,
+      runId: "run_failed",
+      fence: 7,
+    });
+
+    const result = svc.retryRun({
+      roomId,
+      runId: "run_failed",
+      idempotencyKey: "retry-run:run_failed:same",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const oldRun = svc.getRunById("run_failed")!;
+    const newRun = svc.getRunById(result.newRunId)!;
+    expect(oldRun.status).toBe("failed");
+    expect(oldRun.fence).toBe(7);
+    expect(newRun.id).not.toBe(oldRun.id);
+    expect(newRun.fence).not.toBe(oldRun.fence);
+    expect(newRun.memberId).toBe(coordinatorId);
+    expect(newRun.triggerMessageId).toBe(triggerId);
+
+    await svc.awaitAllRuns();
+    expect(svc.getRunById(result.newRunId)!.status).toBe("done");
+    expect(svc.getRunById("run_failed")!.status).toBe("failed");
+  });
+
+  test("换成员重试：新 run 使用选择的成员；重复调用幂等", async () => {
+    const svc = createService();
+    const room = svc.createRoom({
+      title: "换成员重试",
+      members: [
+        { displayName: "协调者", isCoordinator: true },
+        { displayName: "审阅者" },
+      ],
+    });
+    const members = svc.listMembers(room.id);
+    const coordinator = members.find((member) => member.isCoordinator)!;
+    const reviewer = members.find((member) => !member.isCoordinator)!;
+    const triggerId = appendTriggerMessage(svc, room.id, "换人再试");
+    seedFailedRun({
+      roomId: room.id,
+      memberId: coordinator.id,
+      triggerMessageId: triggerId,
+      runId: "run_switch",
+    });
+
+    const key = "retry-run:run_switch:reviewer";
+    const first = svc.retryRun({
+      roomId: room.id,
+      runId: "run_switch",
+      memberId: reviewer.id,
+      idempotencyKey: key,
+    });
+    const second = svc.retryRun({
+      roomId: room.id,
+      runId: "run_switch",
+      memberId: reviewer.id,
+      idempotencyKey: key,
+    });
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+    expect(second.newRunId).toBe(first.newRunId);
+    expect(svc.getRunById(first.newRunId)!.memberId).toBe(reviewer.id);
+    expect(svc.listRuns(room.id)).toHaveLength(2);
+
+    await svc.awaitAllRuns();
+    expect(svc.getRunById(first.newRunId)!.status).toBe("done");
+  });
+
+  test("blocked/done run 不允许走普通重试入口", async () => {
+    const svc = createService();
+    const { roomId, coordinatorId } = createRoomWithCoordinator(svc);
+    const triggerId = appendTriggerMessage(svc, roomId, "状态守卫");
+    seedBlockedRun({
+      roomId,
+      memberId: coordinatorId,
+      triggerMessageId: triggerId,
+      runId: "run_blocked_no_retry",
+    });
+    const blocked = svc.retryRun({
+      roomId,
+      runId: "run_blocked_no_retry",
+    });
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.reason).toContain("blocked");
+
+    svc.appendUserMessage({ roomId, content: "完成后再试" });
+    await svc.awaitAllRuns();
+    const doneRun = svc.listRuns(roomId).find((run) => run.status === "done")!;
+    const done = svc.retryRun({ roomId, runId: doneRun.id });
+    expect(done.ok).toBe(false);
+    if (!done.ok) expect(done.reason).toContain("failed");
   });
 });

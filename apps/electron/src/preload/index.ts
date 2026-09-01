@@ -76,6 +76,8 @@ import type {
   ContinueCollaborationDepthStopInput,
   ContinueCollaborationDepthStopResult,
   ConfirmResumeBlockedRunResult,
+  RetryCollaborationRunInput,
+  RetryCollaborationRunResult,
   EnterCollaborationWithBridgeInput,
   EnterCollaborationWithBridgeResult,
   ExitCollaborationWithBridgeInput,
@@ -1467,6 +1469,12 @@ const electronAPI = {
       COLLABORATION_ROOM_IPC_CHANNELS.CANCEL_RUN,
       input,
     ) as Promise<CollaborationRun | null>,
+  /** 重试 failed/cancelled run；可选 memberId 切换成员，始终创建新 run。 */
+  retryCollaborationRun: (input: RetryCollaborationRunInput) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.RETRY_RUN,
+      input,
+    ) as Promise<RetryCollaborationRunResult>,
   /** 列出某房间全部 A2A 信箱信封（S4 审计视图） */
   listCollaborationMailbox: (roomId: string) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MAILBOX, {

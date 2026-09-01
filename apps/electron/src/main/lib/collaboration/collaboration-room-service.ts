@@ -106,6 +106,8 @@ import {
   type LocalCollaborationContinuationItem,
   type ConfirmResumeBlockedRunInput,
   type ConfirmResumeBlockedRunResult,
+  type RetryCollaborationRunInput,
+  type RetryCollaborationRunResult,
   type CreateCollaborationMemberInput,
   type RemoveCollaborationMemberInput,
   type CreateCollaborationRoomInput,
@@ -1271,6 +1273,84 @@ export class CollaborationRoomService {
 
     this.broadcast(run.roomId, "run-cancelled");
     return updated;
+  }
+
+  /**
+   * P1：重试一个失败/已取消 run。
+   *
+   * 重试永远创建新 run，不复活旧 run 的状态或 fence；可选 memberId 允许用户把失败任务
+   * 交给房间内另一名仍可运行的成员。blocked run 不在此处处理，因为它可能存在未知外部
+   * 副作用，必须走 confirmResumeBlockedRun 的显式确认闸门。
+   */
+  retryRun(
+    input: RetryCollaborationRunInput,
+  ): RetryCollaborationRunResult {
+    const room = getRoom(input.roomId);
+    if (!room || room.status !== "active") {
+      return { ok: false, reason: "房间不存在或未激活" };
+    }
+    const oldRun = getRun(input.runId);
+    if (!oldRun || oldRun.roomId !== input.roomId) {
+      return { ok: false, reason: "run 不存在或不属于该房间" };
+    }
+    if (oldRun.status !== "failed" && oldRun.status !== "cancelled") {
+      return {
+        ok: false,
+        reason: "只有 failed 或 cancelled run 可以重试；blocked run 请确认继续",
+      };
+    }
+
+    const target = getMember(input.memberId?.trim() || oldRun.memberId);
+    if (!target || target.roomId !== room.id || target.status === "removed") {
+      return { ok: false, reason: "目标成员不存在或已移除" };
+    }
+    if (target.botOwnerUserId && target.ownerConsent !== true) {
+      return { ok: false, reason: "目标 Bot 尚未获得所有者授权" };
+    }
+    const triggerMessage = listMessagesByRoom(room.id).find(
+      (message) => message.id === oldRun.triggerMessageId,
+    );
+    if (!triggerMessage) {
+      return { ok: false, reason: "触发消息已删除，无法重试" };
+    }
+
+    const callerKey = input.idempotencyKey?.trim();
+    const idempotencyKey =
+      callerKey || `retry-of:${oldRun.id}:${target.id}:${randomUUID()}`;
+    const existing = findRunByIdempotencyKey(idempotencyKey);
+    if (existing) {
+      if (existing.roomId !== room.id) {
+        return { ok: false, reason: "幂等键已被其他房间使用" };
+      }
+      return { ok: true, newRunId: existing.id };
+    }
+
+    const nextRun: CollaborationRun = {
+      id: genId(COLLABORATION_RUN_ID_PREFIX),
+      roomId: room.id,
+      memberId: target.id,
+      triggerMessageId: triggerMessage.id,
+      idempotencyKey,
+      taskId: oldRun.taskId,
+      status: "queued",
+      attempt: 0,
+      fence: 0,
+    };
+    upsertRun(nextRun);
+    this.scheduler.enqueue({
+      runId: nextRun.id,
+      roomId: room.id,
+      memberId: target.id,
+      room,
+      member: target,
+      run: nextRun,
+      triggerMessage: triggerMessage,
+    });
+    if (!this.scheduler.isMemberRunning(target.id)) {
+      this.setMemberStatus(target.id, "queued");
+    }
+    this.broadcast(room.id, "run-retried");
+    return { ok: true, newRunId: nextRun.id };
   }
 
   /**

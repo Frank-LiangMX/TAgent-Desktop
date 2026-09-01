@@ -28,6 +28,8 @@ import {
   type BoardProjectedSummary,
   type BoardProjectedTask,
   type CancelCollaborationRunInput,
+  type RetryCollaborationRunInput,
+  type RetryCollaborationRunResult,
   type CollaborationArtifact,
   type CollaborationMailboxEnvelope,
   type CollaborationMember,
@@ -462,6 +464,14 @@ export function registerCollaborationRoomIpc(
       if (!run || run.roomId !== input.roomId) return null;
       return service.cancelRun(input.runId) ?? null;
     },
+  );
+
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.RETRY_RUN,
+    async (
+      _e,
+      input: RetryCollaborationRunInput,
+    ): Promise<RetryCollaborationRunResult> => service.retryRun(input),
   );
 
   ipcMain.handle(

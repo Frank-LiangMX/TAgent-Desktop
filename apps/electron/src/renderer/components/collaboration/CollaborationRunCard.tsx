@@ -2,6 +2,7 @@
  * 协作室 Run 卡（S3.5-c）：一 run 一卡，聚合该 run 的成员正文 + 状态。
  * 进行中带流式正文 / 排队 / 等待成员；完成后渲染最终发言；失败显示原因。
  */
+import { useState } from 'react'
 import { StopCircle } from '@phosphor-icons/react'
 import { MessageResponse, useSmoothStream } from '@tagent/ui'
 import type {
@@ -58,21 +59,28 @@ export interface CollaborationRunCardProps {
   /** 该 run 已落盘的成员 chat 正文（按时间序） */
   messages: CollaborationMessage[]
   member?: CollaborationMember
+  /** 可用于「换成员重试」的房间成员列表 */
+  members?: CollaborationMember[]
   channels: Channel[]
   /** 进行中流式正文增量（累积） */
   streamedText?: string
   cancelling: boolean
+  retrying: boolean
   onCancel: () => void
+  onRetry: (memberId?: string) => void
 }
 
 export function CollaborationRunCard({
   run,
   messages,
   member,
+  members = [],
   channels,
   streamedText,
   cancelling,
+  retrying,
   onCancel,
+  onRetry,
 }: CollaborationRunCardProps): JSX.Element {
   const queued = run.status === 'queued'
   const waitingPeer = run.status === 'awaiting_peer'
@@ -84,6 +92,10 @@ export function CollaborationRunCard({
   const live = Boolean(streamedText && running)
   const memberName = member?.displayName ?? '成员'
   const cancellable = !waitingPeer && (running || queued)
+  const retryable = failed || cancelled
+  const [retryMemberId, setRetryMemberId] = useState(run.memberId)
+  const availableMembers = members.filter((candidate) => candidate.status !== 'removed')
+  const canSwitchMember = availableMembers.length > 1
 
   return (
     <li data-run-id={run.id} className="flex w-full min-w-0 justify-start">
@@ -160,6 +172,45 @@ export function CollaborationRunCard({
             >
               <StopCircle size={12} />
               {cancelling ? '取消中…' : '取消'}
+            </button>
+          </div>
+        ) : null}
+        {retryable ? (
+          <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1.5">
+            {canSwitchMember ? (
+              <>
+                <select
+                  value={retryMemberId}
+                  onChange={(event) => setRetryMemberId(event.target.value)}
+                  disabled={retrying}
+                  aria-label="重试执行成员"
+                  className="max-w-[11rem] rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground outline-none focus:border-primary/50 disabled:opacity-50"
+                >
+                  {availableMembers.map((candidate) => (
+                    <option key={candidate.id} value={candidate.id}>
+                      {candidate.displayName}
+                      {candidate.id === run.memberId ? '（原成员）' : ''}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="rounded-md border border-border/50 px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/10 hover:text-foreground disabled:opacity-50"
+                  onClick={() => onRetry(retryMemberId)}
+                  disabled={retrying}
+                  title="可选择另一成员后重新执行"
+                >
+                  {retrying ? '重试中…' : '换成员重试'}
+                </button>
+              </>
+            ) : null}
+            <button
+              type="button"
+              className="rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+              onClick={() => onRetry()}
+              disabled={retrying}
+            >
+              {retrying ? '重试中…' : '重试'}
             </button>
           </div>
         ) : null}

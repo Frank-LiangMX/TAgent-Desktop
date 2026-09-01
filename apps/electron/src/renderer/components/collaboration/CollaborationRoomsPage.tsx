@@ -296,6 +296,7 @@ function LocalCollaborationRoomsPage({
   const [channels, setChannels] = useState<Channel[]>([]);
   const [cliWorkers, setCliWorkers] = useState<CliWorkersConfig | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   const [stoppingRuns, setStoppingRuns] = useState(false);
   const [addingMember, setAddingMember] = useState(false);
   const [inviteUserId, setInviteUserId] = useState("");
@@ -360,6 +361,7 @@ function LocalCollaborationRoomsPage({
     setDepthStopErrorByEnvelope({});
     setResumingRunId(null);
     setResumeErrorByRun({});
+    setRetryingId(null);
     setPendingAttachments([]);
     setWorkspaceBindings([]);
     setHasDraft(false);
@@ -736,6 +738,33 @@ function LocalCollaborationRoomsPage({
       }
     },
     [room, onRoomsChanged],
+  );
+
+  const handleRetryRun = useCallback(
+    async (runId: string, memberId?: string): Promise<void> => {
+      if (!room || retryingId) return;
+      setRetryingId(runId);
+      try {
+        const result = await window.electronAPI.retryCollaborationRun({
+          roomId: room.id,
+          runId,
+          memberId,
+          idempotencyKey: `retry-run:${runId}:${memberId ?? "same"}`,
+        });
+        if (!result.ok) {
+          toast.error("重试失败", { description: result.reason });
+          return;
+        }
+        onRoomsChanged();
+      } catch (err) {
+        toast.error("重试失败", {
+          description: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        setRetryingId(null);
+      }
+    },
+    [room, retryingId, onRoomsChanged],
   );
 
   /** 会话同款停止键：一次停止当前房间内所有可取消的 run。 */
@@ -1689,7 +1718,11 @@ function LocalCollaborationRoomsPage({
             channels={channels}
             streamByRun={streamByRun}
             cancellingId={cancellingId}
+            retryingId={retryingId}
             onCancelRun={(runId) => void handleCancelRun(runId)}
+            onRetryRun={(runId, memberId) =>
+              void handleRetryRun(runId, memberId)
+            }
             scrollRef={scrollRef}
             mailbox={mailbox}
             maxDepth={room.maxA2ADepth}

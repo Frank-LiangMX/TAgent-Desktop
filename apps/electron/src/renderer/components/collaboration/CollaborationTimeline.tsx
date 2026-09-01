@@ -30,7 +30,9 @@ export interface CollaborationTimelineProps {
   channels: Channel[]
   streamByRun: Record<string, string>
   cancellingId: string | null
+  retryingId: string | null
   onCancelRun: (runId: string) => void
+  onRetryRun: (runId: string, memberId?: string) => void
   scrollRef: Ref<HTMLDivElement>
   /** S4.5：A2A 信箱信封（深度停止卡从中筛选可呈现项） */
   mailbox: CollaborationMailboxEnvelope[]
@@ -69,7 +71,9 @@ export function CollaborationTimeline({
   channels,
   streamByRun,
   cancellingId,
+  retryingId,
   onCancelRun,
+  onRetryRun,
   scrollRef,
   mailbox,
   maxDepth,
@@ -204,10 +208,13 @@ export function CollaborationTimeline({
                       run={item.run}
                       messages={item.messages}
                       member={members.find((m) => m.id === item.run.memberId)}
+                      members={members}
                       channels={channels}
                       streamedText={streamByRun[item.run.id]}
                       cancelling={cancellingId === item.run.id}
+                      retrying={retryingId === item.run.id}
                       onCancel={() => onCancelRun(item.run.id)}
+                      onRetry={(memberId) => onRetryRun(item.run.id, memberId)}
                     />
                     {pendingApprovals.map((approval) => (
                       <li key={approval.id} className="flex justify-start">

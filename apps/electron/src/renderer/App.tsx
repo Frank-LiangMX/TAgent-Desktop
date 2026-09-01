@@ -48,6 +48,8 @@ import type {
   ContinueCollaborationDepthStopInput,
   ContinueCollaborationDepthStopResult,
   ConfirmResumeBlockedRunResult,
+  RetryCollaborationRunInput,
+  RetryCollaborationRunResult,
   EnterCollaborationWithBridgeInput,
   EnterCollaborationWithBridgeResult,
   ExitCollaborationWithBridgeInput,
@@ -943,6 +945,9 @@ declare global {
         roomId: string;
         runId: string;
       }) => Promise<CollaborationRun | null>;
+      retryCollaborationRun: (
+        input: RetryCollaborationRunInput,
+      ) => Promise<RetryCollaborationRunResult>;
       addCollaborationMember: (
         input: AddCollaborationMemberInput,
       ) => Promise<CollaborationMember>;
