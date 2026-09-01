@@ -214,6 +214,12 @@ export interface StartFusionRunInput {
   actorUserId: string; seatId: string; backend: FusionRunBackend; triggerMessageId?: string
   idempotencyKey?: string
 }
+export interface RetryFusionRunInput {
+  actorUserId: string
+  runId: string
+  seatId?: string
+  idempotencyKey?: string
+}
 export interface AwaitFusionRunInput {
   actorUserId: string; runId: string; fence: number
   status: "awaiting_peer" | "awaiting_user"; summary?: string; idempotencyKey?: string
@@ -1215,6 +1221,64 @@ export class FusionRoomAuthority {
       item.id === seat.id ? { ...item, status: "running" as const, updatedAt: now } : item)
     this.event("run.changed", input.actorUserId, run.id, {
       runId: run.id, seatId: run.seatId, status: run.status, fence, backend: run.backend,
+    }, input.idempotencyKey)
+    return copy(run)
+  }
+
+  retryRun(input: RetryFusionRunInput): FusionRoomRun {
+    this.activeRoom(); this.active(input.actorUserId)
+    const oldRun = this.run(input.runId)
+    if (oldRun.status !== "failed" && oldRun.status !== "cancelled") {
+      throw new FusionRoomAuthorityError(
+        "INVALID_STATE",
+        "只有 failed 或 cancelled run 可以重试；blocked run 请确认继续",
+      )
+    }
+    const triggerMessageId = oldRun.triggerMessageId
+    if (!triggerMessageId || !this.state.messages.some((item) => item.id === triggerMessageId)) {
+      throw new FusionRoomAuthorityError("INVALID_STATE", "触发消息不存在，无法重试")
+    }
+    const seat = this.seat(input.seatId?.trim() || oldRun.seatId)
+    this.canRun(seat)
+    if (input.idempotencyKey) {
+      const oldEvent = this.state.events.find((event) =>
+        event.idempotencyKey === input.idempotencyKey &&
+        event.type === "run.changed" &&
+        event.payload.retryOfRunId === oldRun.id)
+      const existing = oldEvent && this.state.runs.find((item) => item.id === oldEvent.entityId)
+      if (existing) return copy(existing)
+    }
+    if (seat.status === "running") {
+      throw new FusionRoomAuthorityError("CONFLICT", "Bot already has a running task")
+    }
+    const fence = Math.max(
+      0,
+      ...this.state.runs.filter((item) => item.seatId === seat.id).map((item) => item.fence),
+    ) + 1
+    const now = nowOf(this.clock)
+    const run: FusionRoomRun = {
+      id: "run_" + uniqueId(),
+      roomId: this.state.roomId,
+      seatId: seat.id,
+      initiatedByUserId: input.actorUserId,
+      backend: seat.backend,
+      fence,
+      triggerMessageId,
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+    }
+    this.state.runs.push(run)
+    this.state.botSeats = this.state.botSeats.map((item) =>
+      item.id === seat.id ? { ...item, status: "running" as const, updatedAt: now } : item)
+    this.event("run.changed", input.actorUserId, run.id, {
+      runId: run.id,
+      seatId: run.seatId,
+      status: run.status,
+      fence,
+      backend: run.backend,
+      triggerMessageId,
+      retryOfRunId: oldRun.id,
     }, input.idempotencyKey)
     return copy(run)
   }

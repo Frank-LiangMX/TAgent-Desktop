@@ -397,6 +397,60 @@ const adapter: MemberBackendAdapter = {
     bridge.dispose()
   })
 
+  test('retry-run：复用原触发消息执行新 run，旧 failed run 保持不变', async () => {
+    const host = new FusionRoomHost()
+    host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })
+    host.dispatch('execution-room', { type: 'add-bot', input: { actorUserId: 'owner', seat } })
+    const userMessage = host.dispatch('execution-room', {
+      type: 'message',
+      input: { actorUserId: 'owner', content: '请在失败后重试' },
+    })
+    const messageId = userMessage && 'id' in userMessage ? userMessage.id : ''
+    const started = host.dispatch('execution-room', {
+      type: 'start-run',
+      input: {
+        actorUserId: 'owner',
+        seatId: seat.id,
+        backend: 'pi',
+        triggerMessageId: messageId,
+        idempotencyKey: 'retry-bridge-start',
+      },
+    })
+    const oldRun = started && 'fence' in started ? started : undefined
+    expect(oldRun).toBeTruthy()
+    host.dispatch('execution-room', {
+      type: 'finish-run',
+      input: {
+        actorUserId: 'owner',
+        runId: oldRun!.id,
+        fence: oldRun!.fence,
+        status: 'failed',
+        summary: '第一次失败',
+      },
+    })
+
+    const bridge = new FusionRoomExecutionBridge({ host, adapter })
+    const retried = host.dispatch('execution-room', {
+      type: 'retry-run',
+      input: {
+        actorUserId: 'owner',
+        runId: oldRun!.id,
+        idempotencyKey: 'retry-bridge-once',
+      },
+    })
+    bridge.handleAction('execution-room', { type: 'retry-run' }, retried)
+    await bridge.waitForIdle()
+
+    const snapshot = host.getSnapshot('execution-room')
+    expect(snapshot.runs).toHaveLength(2)
+    expect(snapshot.runs.find((run) => run.id === oldRun!.id)?.status).toBe('failed')
+    const newRun = snapshot.runs.find((run) => run.id !== oldRun!.id)
+    expect(newRun?.status).toBe('completed')
+    expect(newRun?.fence).not.toBe(oldRun!.fence)
+    expect(snapshot.messages.filter((message) => message.authorType === 'member')).toHaveLength(1)
+    bridge.dispose()
+  })
+
   test('confirm-resume outbox：唤醒 toMember 以新 turn 处理重投', async () => {
     const host = new FusionRoomHost()
     host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })

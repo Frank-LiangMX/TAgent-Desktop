@@ -14,6 +14,7 @@ import {
   type DeleteFusionWorkspaceFileInput, type MoveFusionWorkspaceFileInput,
   type RecordFusionUsageInput,
   type StartFusionRunInput,
+  type RetryFusionRunInput,
   type FinishFusionRunInput,
   type FusionAuthorityRoomStatus,
   type FusionRoomAuthoritySnapshot,
@@ -78,6 +79,10 @@ export type FusionRoomGatewayAction =
   | {
       type: 'start-run'
       input: Omit<StartFusionRunInput, 'actorUserId'>
+    }
+  | {
+      type: 'retry-run'
+      input: Omit<RetryFusionRunInput, 'actorUserId'>
     }
   | {
       type: 'finish-run'
@@ -370,6 +375,11 @@ export class FusionRoomGateway {
       case 'start-run':
         return {
           type: 'start-run',
+          input: withScopedIdempotency(action.type, actorUserId, { ...action.input, actorUserId }),
+        }
+      case 'retry-run':
+        return {
+          type: 'retry-run',
           input: withScopedIdempotency(action.type, actorUserId, { ...action.input, actorUserId }),
         }
       case 'finish-run':

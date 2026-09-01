@@ -45,6 +45,8 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null)
   const [approvalPendingId, setApprovalPendingId] = useState<string | null>(null)
   const [resumePendingId, setResumePendingId] = useState<string | null>(null)
+  const [retryPendingId, setRetryPendingId] = useState<string | null>(null)
+  const [retrySeatByRun, setRetrySeatByRun] = useState<Record<string, string>>({})
   /** P2-2：标题/目标内联编辑弹层（owner-only，由 view.canEditMetadata 闸门）。 */
   const [editing, setEditing] = useState<'title' | 'goal' | null>(null)
   const [metadataPending, setMetadataPending] = useState(false)
@@ -137,6 +139,23 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setResumePendingId(null)
+    }
+  }
+
+  const retryRun = async (runId: string, seatId?: string): Promise<void> => {
+    if (retryPendingId) return
+    setRetryPendingId(runId)
+    setError(null)
+    try {
+      await actions.retryRun({
+        runId,
+        ...(seatId ? { seatId } : {}),
+        idempotencyKey: `retry-run:${runId}:${seatId ?? 'same'}`,
+      })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setRetryPendingId(null)
     }
   }
 
@@ -433,8 +452,40 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
               {view.runs.length ? (
                 <ul className="space-y-1">
                   {[...view.runs].reverse().slice(0, 4).map((run) => (
-                    <li key={run.id} className="truncate text-[11px] text-muted-foreground">
-                      {run.seatId} · {run.backend} · {run.status} · {run.fence}
+                    <li key={run.id} className="rounded-lg border border-border/25 px-2 py-1.5 text-[11px] text-muted-foreground">
+                      <div className="truncate">
+                        {labelFor(run.seatId)} · {run.backend} · {run.status} · fence {run.fence}
+                      </div>
+                      {run.status === 'failed' || run.status === 'cancelled' ? (
+                        <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1.5">
+                          {view.bots.filter((bot) => bot.status !== 'removed').length > 1 ? (
+                            <select
+                              value={retrySeatByRun[run.id] ?? run.seatId}
+                              onChange={(event) => setRetrySeatByRun((current) => ({
+                                ...current,
+                                [run.id]: event.target.value,
+                              }))}
+                              disabled={retryPendingId === run.id}
+                              aria-label="重试执行成员"
+                              className="max-w-[11rem] rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground outline-none focus:border-primary/50 disabled:opacity-50"
+                            >
+                              {view.bots.filter((bot) => bot.status !== 'removed').map((bot) => (
+                                <option key={bot.id} value={bot.id}>
+                                  {bot.displayName}{bot.id === run.seatId ? '（原成员）' : ''}
+                                </option>
+                              ))}
+                            </select>
+                          ) : null}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={retryPendingId !== null}
+                            onClick={() => void retryRun(run.id, retrySeatByRun[run.id] ?? run.seatId)}
+                          >
+                            {retryPendingId === run.id ? '重试中…' : '重试'}
+                          </Button>
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

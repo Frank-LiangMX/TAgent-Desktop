@@ -32,7 +32,7 @@ import type {
 
   FusionWorkspaceLock,
   RecordFusionUsageInput,
-  StartFusionRunInput, FinishFusionRunInput, AwaitFusionRunInput, UpdateFusionRoomMetadataInput, FusionRoomRun,
+  StartFusionRunInput, RetryFusionRunInput, FinishFusionRunInput, AwaitFusionRunInput, UpdateFusionRoomMetadataInput, FusionRoomRun,
 } from "./fusion-room-authority"
 import type {
   ConfirmFusionResumeContinuationInput,
@@ -59,6 +59,7 @@ export type FusionRoomAction =
   | { type: "move-file"; input: MoveFusionWorkspaceFileInput }
   | { type: "usage"; input: RecordFusionUsageInput }
   | { type: "start-run"; input: StartFusionRunInput }
+  | { type: "retry-run"; input: RetryFusionRunInput }
   | { type: "finish-run"; input: FinishFusionRunInput }
   | { type: "await-run"; input: AwaitFusionRunInput }
   | { type: "update-metadata"; input: UpdateFusionRoomMetadataInput }
@@ -368,6 +369,9 @@ export class FusionRoomHost {
         break
       case "start-run":
         result = room.startRun(action.input)
+        break
+      case "retry-run":
+        result = room.retryRun(action.input)
         break
       case "finish-run":
         result = room.finishRun(action.input)

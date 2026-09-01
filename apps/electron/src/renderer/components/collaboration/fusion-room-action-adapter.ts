@@ -16,6 +16,7 @@ import type {
   FusionRoomGatewayAction,
   RecordFusionUsageInput,
   StartFusionRunInput,
+  RetryFusionRunInput,
 } from '@tagent/core'
 import type { CollaborationHumanMemberStatus } from '@tagent/shared'
 import {
@@ -114,6 +115,10 @@ export class FusionRoomActionAdapter {
 
   async startRun(input: Omit<StartFusionRunInput, 'actorUserId'>): Promise<FusionRoomViewModel> {
     return this.dispatch({ type: 'start-run', input })
+  }
+
+  async retryRun(input: Omit<RetryFusionRunInput, 'actorUserId'>): Promise<FusionRoomViewModel> {
+    return this.dispatch({ type: 'retry-run', input })
   }
 
   async finishRun(

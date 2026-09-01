@@ -292,6 +292,62 @@ describe("FusionRoomHost", () => {
     expect(host.getSnapshot(roomId).runs[0]?.status).toBe("blocked")
   })
 
+  test("retry-run 为 failed run 创建新 fence，支持换成员且幂等", () => {
+    const host = new FusionRoomHost()
+    const roomId = "retry-run-room"
+    host.createRoom({ roomId, ownerUserId: "owner", workspace: { ...workspace, id: "rws_retry", roomId, storageKey: roomId }, now: 1 })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat-a", roomId, "bot-a") } })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat-b", roomId, "bot-b") } })
+    const message = host.dispatch(roomId, {
+      type: "message",
+      input: { actorUserId: "owner", content: "请执行并在失败后重试" },
+    })
+    const messageId = message && "id" in message ? message.id : ""
+    const started = host.dispatch(roomId, {
+      type: "start-run",
+      input: { actorUserId: "owner", seatId: "seat-a", backend: "pi", triggerMessageId: messageId, idempotencyKey: "retry-start" },
+    })
+    const oldRun = started && "fence" in started ? started : undefined
+    expect(oldRun).toBeTruthy()
+    const failed = host.dispatch(roomId, {
+      type: "finish-run",
+      input: {
+        actorUserId: "owner",
+        runId: oldRun!.id,
+        fence: oldRun!.fence,
+        status: "failed",
+        summary: "上游不可用",
+      },
+    })
+    expect(failed && "status" in failed ? failed.status : "").toBe("failed")
+
+    const retried = host.dispatch(roomId, {
+      type: "retry-run",
+      input: {
+        actorUserId: "owner",
+        runId: oldRun!.id,
+        seatId: "seat-b",
+        idempotencyKey: "retry-once",
+      },
+    })
+    expect(retried && "status" in retried ? retried.status : "").toBe("running")
+    expect(retried && "seatId" in retried ? retried.seatId : "").toBe("seat-b")
+    expect(retried && "fence" in retried ? retried.fence : 0).toBe(1)
+    expect(host.getSnapshot(roomId).runs.find((run) => run.id === oldRun!.id)?.status).toBe("failed")
+
+    const again = host.dispatch(roomId, {
+      type: "retry-run",
+      input: {
+        actorUserId: "owner",
+        runId: oldRun!.id,
+        seatId: "seat-b",
+        idempotencyKey: "retry-once",
+      },
+    })
+    expect(again && "id" in again ? again.id : "").toBe(retried && "id" in retried ? retried.id : "")
+    expect(host.getSnapshot(roomId).runs).toHaveLength(2)
+  })
+
   test("confirmResumeContinuation 对 outbox 信封 delivery 合法前进到 dispatched，幂等", () => {
     const host = new FusionRoomHost()
     const roomId = "confirm-outbox-room"

@@ -106,6 +106,25 @@ export class FusionRoomExecutionBridge {
       if (result.status === 'confirmed' || result.status === 'already_confirmed') {
         this.scheduleResumeContinuation(roomId, result)
       }
+      return
+    }
+    if (action.type === 'retry-run' && isRun(result)) {
+      let snapshot: FusionRoomAuthoritySnapshot
+      try { snapshot = this.options.host.getSnapshot(roomId) } catch { return }
+      const seat = snapshot.botSeats.find((item) => item.id === result.seatId && item.status !== 'removed')
+      const message = result.triggerMessageId
+        ? snapshot.messages.find((item) => item.id === result.triggerMessageId)
+        : undefined
+      if (seat && message) {
+        this.scheduleExisting(
+          snapshot,
+          message,
+          seat,
+          result,
+          'retry:' + result.id,
+          '用户请求重试此前失败或取消的工作。',
+        )
+      }
     }
   }
 
@@ -119,6 +138,22 @@ export class FusionRoomExecutionBridge {
     const key = snapshot.roomId + ':' + executionKey + ':' + seat.id
     if (this.inflight.has(key)) return
     const task = this.execute(snapshot, message, seat, executionKey, continuationPrompt)
+      .catch(() => undefined)
+      .finally(() => { this.inflight.delete(key) })
+    this.inflight.set(key, task)
+  }
+
+  private scheduleExisting(
+    snapshot: FusionRoomAuthoritySnapshot,
+    message: CollaborationMessage,
+    seat: RoomBotSeat,
+    run: FusionRoomRun,
+    executionKey: string,
+    continuationPrompt?: string,
+  ): void {
+    const key = snapshot.roomId + ':' + executionKey + ':' + seat.id
+    if (this.inflight.has(key)) return
+    const task = this.execute(snapshot, message, seat, executionKey, continuationPrompt, run)
       .catch(() => undefined)
       .finally(() => { this.inflight.delete(key) })
     this.inflight.set(key, task)
@@ -230,20 +265,23 @@ export class FusionRoomExecutionBridge {
     seat: RoomBotSeat,
     executionKey: string,
     continuationPrompt?: string,
+    existingRun?: FusionRoomRun,
   ): Promise<void> {
     const runKey = 'fusion-run:' + executionKey + ':' + seat.id
-    let run: FusionRoomRun | undefined
+    let run: FusionRoomRun | undefined = existingRun
     try {
-      run = asRun(this.options.host.dispatch(snapshot.roomId, {
-        type: 'start-run',
-        input: {
-          actorUserId: snapshot.ownerUserId,
-          seatId: seat.id,
-          backend: seat.backend,
-          triggerMessageId: message.id,
-          idempotencyKey: runKey,
-        },
-      }))
+      if (!run) {
+        run = asRun(this.options.host.dispatch(snapshot.roomId, {
+          type: 'start-run',
+          input: {
+            actorUserId: snapshot.ownerUserId,
+            seatId: seat.id,
+            backend: seat.backend,
+            triggerMessageId: message.id,
+            idempotencyKey: runKey,
+          },
+        }))
+      }
       if (!run || run.status !== 'running') return
 
       const controller = new AbortController()
@@ -457,4 +495,8 @@ function finishRun(
     // The host may have been disposed or fenced by another runtime; keep the
     // original execution result and let the durable run recovery handle it.
   }
+}
+
+function isRun(value: unknown): value is FusionRoomRun {
+  return Boolean(asRun(value))
 }

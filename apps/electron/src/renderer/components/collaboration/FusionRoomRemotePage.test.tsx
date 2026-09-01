@@ -235,4 +235,56 @@ describe("FusionRoomRemotePage metadata edit (P2-2)", () => {
     });
     m.unmount();
   });
+
+  test("远程 failed run 显示重试并派发 retry-run（不注入 actorUserId）", async () => {
+    const failedRun = {
+      id: "run-failed",
+      roomId: "room-remote",
+      seatId: "seat-a",
+      initiatedByUserId: "owner",
+      backend: "pi" as const,
+      fence: 1,
+      status: "failed" as const,
+      triggerMessageId: "msg-root",
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const { session, dispatch } = mkSession(
+      mkView({
+        bots: [
+          {
+            id: "seat-a",
+            botProfileId: "bot-a",
+            ownerUserId: "owner",
+            displayName: "开发者",
+            backend: "pi",
+            permissionProfile: "read-only",
+            status: "idle",
+            isCoordinator: true,
+            ownerConsent: true,
+          },
+        ],
+        runs: [failedRun],
+      }),
+    );
+    const m = mount(<FusionRoomRemotePage session={session} onClose={vi.fn()} />);
+    await act(async () => {});
+
+    const retry = findButton(m.container, "重试");
+    await act(async () => {
+      retry.click();
+      await Promise.resolve();
+    });
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "retry-run",
+      input: {
+        runId: "run-failed",
+        seatId: "seat-a",
+        idempotencyKey: "retry-run:run-failed:seat-a",
+      },
+    });
+    const action = dispatch.mock.calls[0]![0] as { input: Record<string, unknown> };
+    expect("actorUserId" in action.input).toBe(false);
+    m.unmount();
+  });
 });
