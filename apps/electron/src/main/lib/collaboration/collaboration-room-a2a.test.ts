@@ -354,6 +354,39 @@ describe('CollaborationRoomService A2A 信箱 host 侧（Stage 4-2）', () => {
     expect(recovered.deliveryRunId).toBeTruthy()
   })
 
+  test('continueDepthStop：重复确认使用同一幂等键时不重复唤醒目标成员', () => {
+    const svc = createService()
+    const { roomId, coordinatorId, devId } = createRoomWithTwoMembers(svc)
+    const { runId, triggerMessageId } = triggerRunningRun(svc, roomId)
+    const room = svc.getRoomById(roomId)!
+    appendMailboxEnvelope({
+      id: 'env_depth_stop',
+      roomId,
+      fromMemberId: coordinatorId,
+      toMemberId: devId,
+      type: 'message',
+      payload: '继续处理',
+      rootMessageId: triggerMessageId,
+      causationId: runId,
+      depth: room.maxA2ADepth,
+      state: 'cancelled',
+      attemptId: '550e8400-e29b-41d4-a716-446655440000',
+      delivery: 'failed',
+      stopReason: 'max_depth',
+      continueUsed: false,
+      sourceMessageId: triggerMessageId,
+      createdAt: Date.now(),
+    })
+
+    const first = svc.continueDepthStop('env_depth_stop', 'continue-depth-once')
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+    const second = svc.continueDepthStop('env_depth_stop', 'continue-depth-once')
+    expect(second).toEqual(first)
+    expect(svc.listMailbox(roomId)).toHaveLength(2)
+    expect(svc.listRuns(roomId).filter((run) => run.triggerMessageId === triggerMessageId)).toHaveLength(2)
+  })
+
   test('roomAsk：房间非 active → 拒绝', () => {
     const svc = createService()
     const { roomId, devId } = createRoomWithTwoMembers(svc)

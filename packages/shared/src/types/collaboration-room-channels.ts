@@ -285,6 +285,8 @@ export interface ContinueCollaborationDepthStopInput {
   roomId: string;
   /** 已达深度上限的停止信封 ID */
   envelopeId: string;
+  /** 调用方幂等键；重试同一确认不得重复创建目标 run */
+  idempotencyKey?: string;
 }
 
 /** 继续一次 A2A 深度停止结果（与 CollaborationRoomService.continueDepthStop 一致） */

@@ -835,6 +835,7 @@ function LocalCollaborationRoomsPage({
         const res = await window.electronAPI.continueCollaborationDepthStop({
           roomId: room.id,
           envelopeId,
+          idempotencyKey: `continue-depth-stop:${envelopeId}`,
         });
         if (res.ok) {
           onRoomsChanged();

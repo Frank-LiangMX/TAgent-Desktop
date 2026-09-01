@@ -192,7 +192,11 @@ describe('S4.5 depth-stop presentability guard（普通失败不得触发卡片�
 
   test('CONTINUE_DEPTH_STOP 通道与输入/结果类型契约', () => {
     expect(COLLABORATION_ROOM_IPC_CHANNELS.CONTINUE_DEPTH_STOP).toBe('collaboration-room:continue-depth-stop')
-    const input: ContinueCollaborationDepthStopInput = { roomId: 'cr_1', envelopeId: 'env_1' }
+    const input: ContinueCollaborationDepthStopInput = {
+      roomId: 'cr_1',
+      envelopeId: 'env_1',
+      idempotencyKey: 'continue-1',
+    }
     expect(input.envelopeId).toBe('env_1')
     const ok: ContinueCollaborationDepthStopResult = { ok: true, envelopeId: 'env_2' }
     const fail: ContinueCollaborationDepthStopResult = { ok: false, reason: '已达硬深度上限' }

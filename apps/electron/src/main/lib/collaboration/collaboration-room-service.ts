@@ -2175,9 +2175,10 @@ export class CollaborationRoomService {
     target: CollaborationMember,
     envelope: CollaborationMailboxEnvelope,
     triggerMessage: CollaborationMessage,
+    idempotencyKeyOverride?: string,
   ): void {
     if (!envelope.attemptId) return;
-    const idempotencyKey = collaborationEnvelopeIdempotencyKey({
+    const idempotencyKey = idempotencyKeyOverride ?? collaborationEnvelopeIdempotencyKey({
       fromMemberId: envelope.fromMemberId,
       toMemberId: target.id,
       rootMessageId: envelope.rootMessageId,
@@ -2230,9 +2231,26 @@ export class CollaborationRoomService {
   /** S4.5 最小用户入口：深度停止只可继续一次；新 attempt 仍受硬上限 10 限制。 */
   continueDepthStop(
     envelopeId: string,
+    idempotencyKey?: string,
   ): { ok: true; envelopeId: string } | { ok: false; reason: string } {
     const stopped = getMailboxEnvelope(envelopeId);
-    if (!stopped || !canContinueCollaborationDepthStop(stopped)) {
+    if (!stopped) {
+      return { ok: false, reason: "深度停止信封不存在" };
+    }
+    const normalizedKey = idempotencyKey?.trim();
+    const scopedIdempotencyKey = normalizedKey
+      ? `depth-stop:${stopped.roomId}:${stopped.id}:${normalizedKey}`
+      : undefined;
+    if (scopedIdempotencyKey) {
+      const existingRun = findRunByIdempotencyKey(scopedIdempotencyKey);
+      if (existingRun?.roomId === stopped.roomId) {
+        const existingEnvelope = listMailboxByRoom(stopped.roomId).find(
+          (envelope) => envelope.deliveryRunId === existingRun.id,
+        );
+        if (existingEnvelope) return { ok: true, envelopeId: existingEnvelope.id };
+      }
+    }
+    if (!canContinueCollaborationDepthStop(stopped)) {
       return { ok: false, reason: "该深度停止不可继续或已使用过继续机会" };
     }
     const room = getRoom(stopped.roomId);
@@ -2261,7 +2279,7 @@ export class CollaborationRoomService {
     };
     upsertMailboxEnvelope({ ...stopped, continueUsed: true });
     appendMailboxEnvelope(next);
-    this.dispatchEnvelope(room, target, next, source);
+    this.dispatchEnvelope(room, target, next, source, scopedIdempotencyKey);
     this.broadcast(room.id, "mailbox-updated");
     return { ok: true, envelopeId: next.id };
   }

@@ -497,7 +497,7 @@ export function registerCollaborationRoomIpc(
         input,
       );
       if (!resolved.ok) return { ok: false, reason: resolved.reason };
-      return service.continueDepthStop(resolved.envelope.id);
+      return service.continueDepthStop(resolved.envelope.id, input.idempotencyKey);
     },
   );
 
