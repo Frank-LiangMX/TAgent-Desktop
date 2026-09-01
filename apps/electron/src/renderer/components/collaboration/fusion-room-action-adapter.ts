@@ -127,6 +127,14 @@ export class FusionRoomActionAdapter {
     return this.dispatch({ type: 'finish-run', input })
   }
 
+  async cancelRun(input: Pick<FinishFusionRunInput, 'runId' | 'fence'>): Promise<FusionRoomViewModel> {
+    return this.finishRun({
+      ...input,
+      status: 'cancelled',
+      summary: '用户取消了远程运行。',
+    })
+  }
+
   async awaitRun(input: Omit<AwaitFusionRunInput, 'actorUserId'>): Promise<FusionRoomViewModel> {
     return this.dispatch({ type: 'await-run', input })
   }

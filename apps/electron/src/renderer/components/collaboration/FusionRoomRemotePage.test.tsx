@@ -287,4 +287,53 @@ describe("FusionRoomRemotePage metadata edit (P2-2)", () => {
     expect("actorUserId" in action.input).toBe(false);
     m.unmount();
   });
+
+  test("远程 running run 显示取消并派发 finish-run(cancelled)", async () => {
+    const runningRun = {
+      id: "run-running",
+      roomId: "room-remote",
+      seatId: "seat-a",
+      initiatedByUserId: "owner",
+      backend: "pi" as const,
+      fence: 3,
+      status: "running" as const,
+      triggerMessageId: "msg-root",
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const { session, dispatch } = mkSession(
+      mkView({
+        bots: [{
+          id: "seat-a",
+          botProfileId: "bot-a",
+          ownerUserId: "owner",
+          displayName: "开发者",
+          backend: "pi",
+          permissionProfile: "read-only",
+          status: "running",
+          isCoordinator: true,
+          ownerConsent: true,
+        }],
+        runs: [runningRun],
+      }),
+    );
+    const m = mount(<FusionRoomRemotePage session={session} onClose={vi.fn()} />);
+    await act(async () => {});
+
+    const cancel = findButton(m.container, "取消");
+    await act(async () => {
+      cancel.click();
+      await Promise.resolve();
+    });
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "finish-run",
+      input: {
+        runId: "run-running",
+        fence: 3,
+        status: "cancelled",
+        summary: "用户取消了远程运行。",
+      },
+    });
+    m.unmount();
+  });
 });

@@ -125,6 +125,10 @@ export class FusionRoomExecutionBridge {
           '用户请求重试此前失败或取消的工作。',
         )
       }
+      return
+    }
+    if (action.type === 'finish-run' && isRun(result) && result.status === 'cancelled') {
+      this.abortControllers.get(result.id)?.abort()
     }
   }
 

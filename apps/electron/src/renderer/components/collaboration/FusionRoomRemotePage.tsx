@@ -47,6 +47,7 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
   const [resumePendingId, setResumePendingId] = useState<string | null>(null)
   const [retryPendingId, setRetryPendingId] = useState<string | null>(null)
   const [retrySeatByRun, setRetrySeatByRun] = useState<Record<string, string>>({})
+  const [cancelPendingId, setCancelPendingId] = useState<string | null>(null)
   /** P2-2：标题/目标内联编辑弹层（owner-only，由 view.canEditMetadata 闸门）。 */
   const [editing, setEditing] = useState<'title' | 'goal' | null>(null)
   const [metadataPending, setMetadataPending] = useState(false)
@@ -156,6 +157,19 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setRetryPendingId(null)
+    }
+  }
+
+  const cancelRun = async (runId: string, fence: number): Promise<void> => {
+    if (cancelPendingId) return
+    setCancelPendingId(runId)
+    setError(null)
+    try {
+      await actions.cancelRun({ runId, fence })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setCancelPendingId(null)
     }
   }
 
@@ -456,6 +470,18 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
                       <div className="truncate">
                         {labelFor(run.seatId)} · {run.backend} · {run.status} · fence {run.fence}
                       </div>
+                      {run.status === 'running' ? (
+                        <div className="mt-1.5 flex justify-end">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={cancelPendingId !== null}
+                            onClick={() => void cancelRun(run.id, run.fence)}
+                          >
+                            {cancelPendingId === run.id ? '取消中…' : '取消'}
+                          </Button>
+                        </div>
+                      ) : null}
                       {run.status === 'failed' || run.status === 'cancelled' ? (
                         <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1.5">
                           {view.bots.filter((bot) => bot.status !== 'removed').length > 1 ? (

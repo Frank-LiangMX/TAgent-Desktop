@@ -451,6 +451,44 @@ const adapter: MemberBackendAdapter = {
     bridge.dispose()
   })
 
+  test('finish-run(cancelled) 会中断远程执行中的后端 turn', async () => {
+    const host = new FusionRoomHost()
+    host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })
+    host.dispatch('execution-room', { type: 'add-bot', input: { actorUserId: 'owner', seat } })
+    const hangingAdapter: MemberBackendAdapter = {
+      capabilities: adapter.capabilities,
+      runTurn: (input) => new Promise((_, reject) => {
+        input.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      }),
+    }
+    const bridge = new FusionRoomExecutionBridge({ host, adapter: hangingAdapter })
+    const message = host.dispatch('execution-room', {
+      type: 'message',
+      input: { actorUserId: 'owner', content: '请取消' },
+    })
+    bridge.handleAction('execution-room', { type: 'message' }, message)
+    await Promise.resolve()
+    const running = host.getSnapshot('execution-room').runs[0]!
+    expect(running.status).toBe('running')
+
+    const cancelled = host.dispatch('execution-room', {
+      type: 'finish-run',
+      input: {
+        actorUserId: 'owner',
+        runId: running.id,
+        fence: running.fence,
+        status: 'cancelled',
+        summary: '用户取消',
+      },
+    })
+    bridge.handleAction('execution-room', { type: 'finish-run' }, cancelled)
+    await bridge.waitForIdle()
+
+    expect(host.getSnapshot('execution-room').runs[0]?.status).toBe('cancelled')
+    expect(host.getSnapshot('execution-room').messages.filter((item) => item.authorType === 'member')).toHaveLength(0)
+    bridge.dispose()
+  })
+
   test('confirm-resume outbox：唤醒 toMember 以新 turn 处理重投', async () => {
     const host = new FusionRoomHost()
     host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })
