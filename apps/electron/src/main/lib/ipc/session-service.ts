@@ -70,7 +70,10 @@ import {
   dispatchCodexDynamicToolCall,
   resolveCodexDynamicToolPermission,
 } from "../adapters/codex/codex-dynamic-tools";
-import { resolveCodexRuntime } from "../adapters/codex/codex-runtime-resolver";
+import {
+  clearCodexRuntimeAsyncCache,
+  resolveCodexRuntimeAsync,
+} from "../adapters/codex/codex-runtime-resolver";
 import {
   getManagedCodexRuntimeRelease,
   installManagedCodexRuntime,
@@ -380,9 +383,9 @@ function resolveDetectedDefaultInternalAdapterKind(): Extract<
   if (detectedDefaultInternalAdapterKind) {
     return detectedDefaultInternalAdapterKind;
   }
-  detectedDefaultInternalAdapterKind = resolveCodexRuntime().available
-    ? "codex"
-    : "kscc";
+  // 这里必须保持同步且无 I/O：真正的新会话默认已由 codex-internal 渠道
+  // 选择；这个兼容分支只服务于旧的 kscc-internal 元数据。
+  detectedDefaultInternalAdapterKind = "kscc";
   return detectedDefaultInternalAdapterKind;
 }
 
@@ -443,8 +446,8 @@ function userContentHasAttachmentAppendix(content: unknown): boolean {
   );
 }
 
-function getCodexRuntimeStatus(): CodexRuntimeStatus {
-  const result = resolveCodexRuntime();
+async function getCodexRuntimeStatus(): Promise<CodexRuntimeStatus> {
+  const result = await resolveCodexRuntimeAsync();
   const managedRelease = getManagedCodexRuntimeRelease();
   return {
     available: result.available,
@@ -852,20 +855,21 @@ export class SessionService {
       async (): Promise<InstallCodexRuntimeResult> => {
         if (!this.codexRuntimeInstallPromise) {
           this.codexRuntimeInstallPromise = installManagedCodexRuntime()
-            .then((result) => {
+            .then(async (result) => {
               // 安装前可能已缓存 KSCC fallback；成功后让无显式选择的兼容路径
               // 重新探测，使托管 Codex Runtime 立即成为默认 Internal Backend。
               detectedDefaultInternalAdapterKind = undefined;
-              syncCodexChannelAvailability(true);
+              clearCodexRuntimeAsyncCache();
+              syncCodexChannelAvailability(true, true);
               return {
                 ok: true as const,
-                status: getCodexRuntimeStatus(),
+                status: await getCodexRuntimeStatus(),
                 reusedExistingInstall: result.reusedExistingInstall,
               };
             })
-            .catch((error) => ({
+            .catch(async (error) => ({
               ok: false as const,
-              status: getCodexRuntimeStatus(),
+              status: await getCodexRuntimeStatus(),
               error: error instanceof Error ? error.message : String(error),
             }))
             .finally(() => {

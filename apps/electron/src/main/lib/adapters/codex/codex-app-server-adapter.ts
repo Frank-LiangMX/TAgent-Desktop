@@ -24,7 +24,7 @@ import type { CodexDynamicToolSpec } from './codex-dynamic-tools'
 import { CodexEventNormalizer } from './codex-event-normalizer'
 import type { CodexThreadConfig } from './codex-mcp-config'
 import {
-  resolveCodexRuntime,
+  resolveCodexRuntimeAsync,
   type CodexRuntimeResolution,
 } from './codex-runtime-resolver'
 
@@ -273,7 +273,7 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
     executablePath?: string,
   ): Promise<ResolvedCodexRuntime> {
     if (executablePath) {
-      const resolution = await resolveCodexRuntime({ explicitPath: executablePath })
+      const resolution = await resolveCodexRuntimeAsync({ explicitPath: executablePath })
       if (!resolution.available || !resolution.executablePath) {
         throw new Error(`指定的 Codex Runtime 不可用：${executablePath}`)
       }
@@ -281,7 +281,7 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
     }
     if (!this.runtimePromise) {
       this.runtimePromise = Promise.resolve(
-        this.options.resolveRuntime?.() ?? resolveCodexRuntime(),
+        this.options.resolveRuntime?.() ?? resolveCodexRuntimeAsync(),
       ).then((runtime) => {
         if (!runtime?.available || !runtime.executablePath) {
           throw new Error(

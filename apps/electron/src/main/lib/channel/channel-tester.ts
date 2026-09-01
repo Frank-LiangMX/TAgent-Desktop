@@ -190,10 +190,10 @@ export async function testChannelConnection(
   decryptedApiKey: string,
 ): Promise<ChannelTestResult> {
   if (channel.provider === 'codex-internal') {
-    const { resolveCodexRuntime } = await import(
+    const { resolveCodexRuntimeAsync } = await import(
       '../adapters/codex/codex-runtime-resolver'
     )
-    const runtime = resolveCodexRuntime()
+    const runtime = await resolveCodexRuntimeAsync()
     return runtime.available
       ? {
           success: true,

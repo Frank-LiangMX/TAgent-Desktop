@@ -35,7 +35,6 @@ import {
 } from './default-models'
 import { inferContextWindow } from '@tagent/shared'
 import { resolveKsccPath } from '../adapters/claude/kscc-path'
-import { resolveCodexRuntime } from '../adapters/codex/codex-runtime-resolver'
 
 /** 启用 / 依赖 kscc 内置渠道时的统一错误文案（与 channel-tester / session-service 一致） */
 export const KSCC_MISSING_MESSAGE = '未检测到 kscc 命令，请先安装 kscc（内网渠道）后再启用'
@@ -171,13 +170,6 @@ export function updateChannel(id: string, patch: ChannelUpdateInput): Channel | 
   ) {
     throw new Error(KSCC_MISSING_MESSAGE)
   }
-  if (
-    existing.provider === 'codex-internal' &&
-    patch.enabled === true &&
-    !resolveCodexRuntime().available
-  ) {
-    throw new Error('未检测到支持 App Server 的 Codex Runtime，请先安装 Codex Runtime')
-  }
 
   const models = patch.models ?? existing.models
   const updated: Channel = {
@@ -232,7 +224,6 @@ export function seedBuiltinChannels(): void {
   const now = Date.now()
   let changed = false
   if (!config.channels.some((c) => c.provider === 'kscc-internal')) {
-    const ksccReady = Boolean(resolveKsccPath())
     config.channels.push({
       id: KSCC_BUILTIN_CHANNEL_ID,
       name: 'kscc 内网',
@@ -241,14 +232,14 @@ export function seedBuiltinChannels(): void {
       apiKey: '',
       models: KSCC_DEFAULT_MODELS.map((m) => ({ ...m })),
       defaultModelId: KSCC_DEFAULT_MODEL_ID,
-      enabled: ksccReady,
+      // 由下面一次性 availability sync 决定是否停用，seed 本身不重复探测。
+      enabled: true,
       createdAt: now,
       updatedAt: now,
     })
     changed = true
   }
   if (!config.channels.some((c) => c.provider === 'codex-internal')) {
-    const codexReady = resolveCodexRuntime().available
     config.channels.push({
       id: CODEX_BUILTIN_CHANNEL_ID,
       name: 'Codex App Server',
@@ -257,7 +248,8 @@ export function seedBuiltinChannels(): void {
       apiKey: '',
       models: CODEX_DEFAULT_MODELS.map((m) => ({ ...m })),
       defaultModelId: CODEX_DEFAULT_MODEL_ID,
-      enabled: codexReady,
+      // 先让渠道可见；真实 Runtime 状态由异步探针和发送时的 adapter gate 判断。
+      enabled: true,
       createdAt: now,
       updatedAt: now,
     })
@@ -294,8 +286,12 @@ export function syncKsccChannelAvailability(): number {
 }
 
 /** Codex Runtime 安装后启用本机渠道；不可用时只停用，不覆盖用户主动停用。 */
-export function syncCodexChannelAvailability(enableIfAvailable = false): number {
-  const ready = resolveCodexRuntime().available
+export function syncCodexChannelAvailability(
+  enableIfAvailable = false,
+  ready?: boolean,
+): number {
+  // 不在同步渠道 CRUD / 启动路径中探测 Runtime。ready 由异步探针或安装成功回调提供。
+  if (ready === undefined) return 0
   const config = readConfig()
   let changed = 0
   const next = config.channels.map((c) => {

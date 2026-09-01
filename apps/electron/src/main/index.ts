@@ -20,12 +20,10 @@ import { BalanceService } from './lib/ipc/balance-service'
 import { PermissionService } from './lib/permission/permission-service'
 import {
   seedBuiltinChannels,
-  syncCodexChannelAvailability,
   migrateModelWindows,
   syncKsccChannelAvailability,
   syncKsccDefaultModels,
 } from './lib/channel/channel-store'
-import { discoverAndReconcileCliWorkers } from './lib/agent/cli-workers-service'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
 import { stopAutomationScheduler } from './lib/automation-scheduler'
 import { createTray, destroyTray, getTray, updateTrayTheme } from './tray'
@@ -294,19 +292,18 @@ app.whenReady().then(async () => {
     },
   })
 
-  createWindow()
   try {
     seedBuiltinChannels()
-    // 无本机 kscc 时强制停用内置渠道，避免用户无脑打开后发送才失败
+    // 这些渠道初始化包含本机 CLI 路径判断，必须在窗口创建前完成，
+    // 避免窗口已显示后主进程被同步 where/spawn 卡住。
     syncKsccChannelAvailability()
-    syncCodexChannelAvailability()
-    // 网关新上的默认模型追加进已有 kscc-internal（seed 不覆盖存量渠道）
     syncKsccDefaultModels()
     migrateModelWindows()
   } catch (err) {
     // 渠道迁移失败不能阻断后续 IPC 注册；用户仍应能打开设置并修复配置。
     console.error('[渠道存储] 启动初始化失败，已跳过本轮迁移:', err)
   }
+  createWindow()
 
   // Phase 2：全局记忆 L5 服务启动 wiring
   try {
@@ -480,14 +477,7 @@ app.whenReady().then(async () => {
     else focusMainWindow()
   })
 
-  // CLI 工人启动对账：后台探测本机已安装 coding CLI + 对账落盘（不阻塞启动，失败仅 warn）
-  setImmediate(() => {
-    try {
-      discoverAndReconcileCliWorkers()
-    } catch (err) {
-      console.warn('[cli-workers] 启动对账失败：', err)
-    }
-  })
+  // CLI 工人探测改为设置页显式触发；避免启动后同步 where/--version 扫描占用主进程。
 })
 
 // 托盘常驻：所有窗口关了也不退出（真正退出走托盘菜单）
