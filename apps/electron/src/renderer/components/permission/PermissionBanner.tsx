@@ -22,6 +22,22 @@ import {
 } from '../../atoms/permission-atoms'
 
 function summarizePermissionInput(req: PermissionReq): string {
+  if (req.toolName === 'CodexPermissions') {
+    const details: string[] = []
+    if (typeof req.input.network === 'string') details.push(req.input.network)
+    const writePaths = Array.isArray(req.input.writePaths)
+      ? req.input.writePaths.filter((value): value is string => typeof value === 'string')
+      : []
+    const readPaths = Array.isArray(req.input.readPaths)
+      ? req.input.readPaths.filter((value): value is string => typeof value === 'string')
+      : []
+    if (writePaths.length > 0) details.push(`写入 ${writePaths.join(', ')}`)
+    if (readPaths.length > 0) details.push(`读取 ${readPaths.join(', ')}`)
+    if (typeof req.input.reason === 'string' && req.input.reason) {
+      details.push(req.input.reason)
+    }
+    return details.join(' · ')
+  }
   if (req.toolName === 'Bash') {
     return (req.input.command as string) ?? (req.input.cmd as string) ?? ''
   }
@@ -34,6 +50,10 @@ function summarizePermissionInput(req: PermissionReq): string {
     )
   }
   return JSON.stringify(req.input ?? {}).slice(0, 80)
+}
+
+function permissionTitle(req: PermissionReq): string {
+  return req.toolName === 'CodexPermissions' ? '扩展运行权限' : req.toolName
 }
 
 export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Element {
@@ -98,7 +118,7 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
             />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 text-xs">
-                <span className="font-semibold text-foreground">{req.toolName}</span>
+                <span className="font-semibold text-foreground">{permissionTitle(req)}</span>
                 {req.dangerous && (
                   <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] font-medium text-red-500">
                     危险
@@ -139,23 +159,25 @@ export function PermissionBanner({ sessionId }: { sessionId: string }): JSX.Elem
               >
                 <X size={16} weight="regular" />
               </button>
-              <AppTooltip
-                label={
-                  req.toolName === 'Bash'
-                    ? '本会话始终允许 Bash（危险命令仍会询问）'
-                    : `本会话始终允许 ${req.toolName}`
-                }
-                side="top"
-                multiline
-              >
-                <button
-                  type="button"
-                  onClick={() => respond('allow', true)}
-                  className="rounded-lg px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              {req.allowRemember !== false ? (
+                <AppTooltip
+                  label={
+                    req.toolName === 'Bash'
+                      ? '本会话始终允许 Bash（危险命令仍会询问）'
+                      : `本会话始终允许 ${req.toolName}`
+                  }
+                  side="top"
+                  multiline
                 >
-                  始终
-                </button>
-              </AppTooltip>
+                  <button
+                    type="button"
+                    onClick={() => respond('allow', true)}
+                    className="rounded-lg px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                  >
+                    始终
+                  </button>
+                </AppTooltip>
+              ) : null}
               <button
                 type="button"
                 onClick={() => respond('allow')}

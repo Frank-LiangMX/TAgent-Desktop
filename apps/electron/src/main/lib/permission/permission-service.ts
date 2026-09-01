@@ -40,6 +40,8 @@ export interface PermissionRequest {
   input: Record<string, unknown>
   /** 是否危险命令（renderer 红色警示） */
   dangerous: boolean
+  /** 是否展示/接受“本会话始终允许”；扩权请求必须保持单次授权 */
+  allowRemember?: boolean
   /** 主进程发出请求的时间戳（renderer 倒计时对齐） */
   requestedAt: number
 }
@@ -83,6 +85,7 @@ interface Pending {
   sessionId: string
   toolName: string
   input: Record<string, unknown>
+  allowRemember: boolean
 }
 
 /** pending 请求 Map：reqId → Pending */
@@ -133,6 +136,7 @@ function askRenderer(
       sessionId: req.sessionId,
       toolName: req.toolName,
       input: req.input,
+      allowRemember: req.allowRemember !== false,
     })
     win?.webContents.send(AGENT_IPC_CHANNELS.PERMISSION_REQUEST, req)
     // 超时自动 deny + 通知渲染清横幅
@@ -324,7 +328,7 @@ export class PermissionService {
         if (!p) return
         pending.delete(args.reqId)
         // 始终允许 → 会话级工具白名单（Bash 整类，非单条 command）
-        if (args.behavior === 'allow' && args.remember) {
+        if (args.behavior === 'allow' && args.remember && p.allowRemember) {
           addToSessionWhitelist(p.sessionId, p.toolName, p.input)
         }
         emitPermissionResolved(this.getWindow(), {
@@ -467,6 +471,77 @@ export class PermissionService {
         executionMode: getExecutionMode?.() ?? migrateExecutionMode(undefined),
       })
       return allow ? undefined : { block: true, reason: reason ?? '权限拒绝' }
+    }
+  }
+
+  /**
+   * Codex request_permissions 扩权审批。
+   *
+   * 这不是一个普通工具调用：授权内容可能同时包含网络和多个目录，且 Codex
+   * 原生响应只适合按 turn/session 授权。因此复用现有横幅，但禁用“始终允许”，
+   * 由调用方固定返回 turn scope。
+   */
+  async requestAdditionalPermissions(args: {
+    sessionId: string
+    getMode: () => TAgentPermissionMode
+    getExecutionMode?: () => ExecutionMode
+    input: Record<string, unknown>
+    hasNetwork: boolean
+    hasFileRead: boolean
+    hasFileWrite: boolean
+  }): Promise<{ allow: boolean; reason?: string; interrupt?: boolean }> {
+    const {
+      sessionId,
+      getMode,
+      getExecutionMode,
+      input,
+      hasNetwork,
+      hasFileRead,
+      hasFileWrite,
+    } = args
+    if (!hasNetwork && !hasFileRead && !hasFileWrite) {
+      return { allow: true }
+    }
+
+    const executionMode = migrateExecutionMode(getExecutionMode?.())
+    const mutating = hasNetwork || hasFileWrite
+    if (executionMode === 'chat' && mutating) {
+      chatModeBlockHandler?.(sessionId, 'CodexPermissions')
+      emitWorkSwitchSuggestion(this.getWindow(), sessionId, 'CodexPermissions')
+      return {
+        allow: false,
+        reason: CHAT_MODE_BLOCK_REASON,
+        interrupt: true,
+      }
+    }
+
+    const permissionMode = getMode()
+    if (permissionMode === 'plan') {
+      return {
+        allow: false,
+        reason: '计划模式下不允许扩展网络或文件系统权限',
+      }
+    }
+    if (
+      permissionMode === 'bypassPermissions' &&
+      executionMode === 'work'
+    ) {
+      return { allow: true }
+    }
+
+    const req: PermissionRequest = {
+      id: nextId(),
+      sessionId,
+      toolName: 'CodexPermissions',
+      input,
+      dangerous: mutating,
+      allowRemember: false,
+      requestedAt: Date.now(),
+    }
+    const behavior = await askRenderer(this.getWindow(), req)
+    return {
+      allow: behavior === 'allow',
+      reason: behavior === 'deny' ? '用户拒绝' : undefined,
     }
   }
 

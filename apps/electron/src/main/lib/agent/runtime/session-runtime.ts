@@ -502,7 +502,14 @@ export class SessionRuntime {
   ): Parameters<AgentProviderAdapter['query']>[0] | undefined {
     if (this.userClosing || this.userStopping) return undefined
     if (this.recoveryAttempts >= MAX_AUTO_RECOVERY) return undefined
-    const resumeId = this.lastSdkSessionId ?? (queryOptions as { resumeSessionId?: string }).resumeSessionId
+    const nativeResume = queryOptions as {
+      resumeSessionId?: string
+      resumeThreadId?: string
+    }
+    const resumeId =
+      this.lastSdkSessionId ??
+      nativeResume.resumeSessionId ??
+      nativeResume.resumeThreadId
     if (!resumeId || !this.lastInFlightPrompt) return undefined
 
     this.recoveryAttempts++
@@ -515,9 +522,13 @@ export class SessionRuntime {
     console.warn(
       `[会话 ${this.sessionId}] 进程异常退出，自动恢复 #${this.recoveryAttempts}（resume=${resumeId}）`,
     )
+    const resumePatch =
+      nativeResume.resumeThreadId !== undefined
+        ? { resumeThreadId: resumeId }
+        : { resumeSessionId: resumeId }
     return {
       ...queryOptions,
-      resumeSessionId: resumeId,
+      ...resumePatch,
       prompt: this.lastInFlightPrompt,
     } as Parameters<AgentProviderAdapter['query']>[0]
   }
@@ -557,7 +568,8 @@ export class SessionRuntime {
    */
   async steerMessage(message: string): Promise<'live' | 'noop'> {
     if (!this.hasLiveProcess()) return 'noop'
-    if (!this.adapter.sendQueuedMessage) return 'noop'
+    const steer = this.adapter.steerMessage ?? this.adapter.sendQueuedMessage
+    if (!steer) return 'noop'
     // 必须是完整 SDKUserMessage：缺 type/session_id 时 SDK 会丢弃，引导永远不生效。
     const steerInput: SDKUserMessageInput = {
       type: 'user',
@@ -565,7 +577,7 @@ export class SessionRuntime {
       parent_tool_use_id: null,
       message: { role: 'user', content: message },
     }
-    await this.adapter.sendQueuedMessage(this.sessionId, steerInput)
+    await steer.call(this.adapter, this.sessionId, steerInput)
     return 'live'
   }
 

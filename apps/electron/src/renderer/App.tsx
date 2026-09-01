@@ -410,6 +410,8 @@ declare global {
           subagentEagerness?:
             "never" | "conservative" | "balanced" | "aggressive";
           reasoningEffort?: "low" | "medium" | "high" | "max";
+          /** Internal Core 主会话后端。 */
+          internalBackend?: "codex-app-server" | "kscc";
           /** 会话偏好 CLI 工人 id（未设置/空 = 跟随全局启用池优先级；主进程 normalize 空串→undefined） */
           cliWorkerId?: string;
           /** 会话加入的 Bot 配置引用；1 个 Bot 为单 Bot 直连，多个 Bot 由融合路由承接 */
@@ -422,6 +424,12 @@ declare global {
           knowledgeBaseMode?: "off" | "preferred" | "strict";
         },
       ) => Promise<unknown>;
+      getCodexRuntimeStatus: () => Promise<{
+        available: boolean;
+        source?: "explicit" | "environment" | "system" | "managed";
+        version?: string;
+        reason?: string;
+      }>;
       togglePin: (id: string) => Promise<unknown>;
       toggleArchive: (id: string) => Promise<unknown>;
       /** 清除 Chat @ 对话跟随（activeSpeaker 回默认总助） */

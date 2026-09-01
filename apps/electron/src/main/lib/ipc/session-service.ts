@@ -44,7 +44,30 @@ import {
 import { askUserService } from "../agent/agent-ask-user-service";
 import { exitPlanService } from "../agent/agent-exit-plan-service";
 import { kbProposeSaveService } from "../kb/kb-propose-save-service";
-import { getAdapter, PiAgentAdapter, type ChannelKind } from "../adapters";
+import {
+  getAdapter,
+  PiAgentAdapter,
+  type ChannelKind,
+  type CodexQueryOptions,
+  type CodexAppServerIncomingRequest,
+} from "../adapters";
+import {
+  buildCodexAskUserInput,
+  buildCodexRequestUserInputResponse,
+  parseCodexRequestUserInputParams,
+} from "../adapters/codex/codex-request-user-input";
+import {
+  buildCodexPermissionsRequestApprovalResponse,
+  parseCodexPermissionsRequestApprovalParams,
+  summarizeCodexPermissionRequest,
+} from "../adapters/codex/codex-permission-request";
+import { buildCodexMcpThreadConfig } from "../adapters/codex/codex-mcp-config";
+import {
+  CodexDynamicToolRegistry,
+  dispatchCodexDynamicToolCall,
+  resolveCodexDynamicToolPermission,
+} from "../adapters/codex/codex-dynamic-tools";
+import { resolveCodexRuntime } from "../adapters/codex/codex-runtime-resolver";
 import { resolveKsccPath } from "../adapters/claude/kscc-path";
 import {
   buildOutputStylePrompt,
@@ -274,6 +297,11 @@ interface SendMessageInput {
   channelId?: string;
   /** 模型 ID */
   model?: string;
+  /**
+   * Internal Core 主会话后端。草稿会话首条时渲染层传入，
+   * 已物化会话以后以 meta.internalBackend 为准。
+   */
+  internalBackend?: AgentSessionMeta["internalBackend"];
   /** 工作区 ID（= sanitizePath(projectPath)，用于 JSONL 按项目存储） */
   workspaceId?: string;
   /** 附件（已持久化到磁盘的 FileAttachment） */
@@ -310,6 +338,31 @@ interface SendMessageInput {
   fusionAdvisorContext?: string;
   /** 融合执行或独立旁路执行：跳过已升级协作室的父会话路由。 */
   skipFusionRouting?: boolean;
+}
+
+function resolveInternalAdapterKind(
+  meta: AgentSessionMeta | undefined,
+  requestedBackend?: AgentSessionMeta["internalBackend"],
+): Extract<ChannelKind, "kscc" | "codex"> {
+  if (meta?.internalBackend === "codex-app-server") return "codex";
+  if (meta?.internalBackend === "kscc") return "kscc";
+  if (meta?.codexThreadId) return "codex";
+  if (meta?.sdkSessionId) return "kscc";
+  if (requestedBackend === "codex-app-server") return "codex";
+  if (requestedBackend === "kscc") return "kscc";
+  return process.env.TAGENT_INTERNAL_BACKEND?.trim().toLowerCase() === "codex"
+    ? "codex"
+    : "kscc";
+}
+
+function persistedInternalBackend(
+  kind: ChannelKind,
+): AgentSessionMeta["internalBackend"] {
+  return kind === "codex"
+    ? "codex-app-server"
+    : kind === "kscc"
+      ? "kscc"
+      : undefined;
 }
 
 /** 模型侧注入的 [用户附件] 附录，不应再当第二条用户气泡展示。 */
@@ -730,6 +783,25 @@ export class SessionService {
           });
           return { ok: false, error: msg };
         }
+      },
+    );
+
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.GET_CODEX_RUNTIME_STATUS,
+      async () => {
+        const result = resolveCodexRuntime();
+        return {
+          available: result.available,
+          source: result.source,
+          version: result.version,
+          reason: result.available
+            ? undefined
+            : result.diagnostics
+                .map((item) => item.reason)
+                .filter(Boolean)
+                .slice(0, 3)
+                .join("；"),
+        };
       },
     );
 
@@ -1929,6 +2001,7 @@ export class SessionService {
             | "subagentEagerness"
             | "reasoningEffort"
             | "cliWorkerId"
+            | "internalBackend"
             | "botProfileIds"
             | "turnDurations"
             | "kbRoots"
@@ -1949,6 +2022,13 @@ export class SessionService {
           const v = patch.cliWorkerId;
           patch.cliWorkerId =
             typeof v === "string" && v.trim() ? v.trim() : undefined;
+        }
+        if (
+          patch.internalBackend !== undefined &&
+          patch.internalBackend !== "codex-app-server" &&
+          patch.internalBackend !== "kscc"
+        ) {
+          patch.internalBackend = undefined;
         }
         if (patch.knowledgeBaseIds !== undefined) {
           patch.knowledgeBaseIds = Array.isArray(patch.knowledgeBaseIds)
@@ -2017,6 +2097,13 @@ export class SessionService {
         }
         const previous = getSessionMeta(args.id);
         const updated = updateSessionMeta(args.id, patch);
+        if (
+          patch.internalBackend !== undefined &&
+          previous?.internalBackend !== updated?.internalBackend
+        ) {
+          this.runtimes.get(args.id)?.destroy();
+          this.runtimes.delete(args.id);
+        }
         if (
           (patch.kbRoots !== undefined &&
             JSON.stringify(previous?.kbRoots ?? []) !==
@@ -2287,7 +2374,9 @@ export class SessionService {
 
     const meta = getSessionMeta(input.sessionId);
     const adapterKind: ChannelKind =
-      channel.provider === "kscc-internal" ? "kscc" : "external";
+      channel.provider === "kscc-internal"
+        ? resolveInternalAdapterKind(meta, input.internalBackend)
+        : "external";
 
     // Phase 2.5：每轮 turn 开始统一跑 Nudge（双核共用，读面板消息）
     this.runNudgeOnTurnStart(input.sessionId, meta);
@@ -2300,7 +2389,9 @@ export class SessionService {
         throw new Error("该会话原绑定渠道已不存在，无法确认运行内核");
       }
       const boundKind: ChannelKind =
-        boundChannel.provider === "kscc-internal" ? "kscc" : "external";
+        boundChannel.provider === "kscc-internal"
+          ? resolveInternalAdapterKind(meta)
+          : "external";
       if (boundKind !== adapterKind) {
         throw new Error(
           `该会话已锁定${boundKind === "kscc" ? "KSCC 内网" : "外部"}运行时，不能跨运行内核切换`,
@@ -2536,7 +2627,11 @@ export class SessionService {
           `[会话 ${input.sessionId}] T7 RESTART 注入：面板含 MoA，忽略 resumeSessionId 走注入路径（${moaCtx.historyText.length} 字历史）`,
         );
       }
-    } else if (isFirst && !meta?.sdkSessionId && !hasActiveChannel) {
+    } else if (
+      isFirst &&
+      !(adapterKind === "codex" ? meta?.codexThreadId : meta?.sdkSessionId) &&
+      !hasActiveChannel
+    ) {
       // 无 MoA → 保持现状（原 P0 #1）：首条 spawn 且无 sdkSessionId/无内存 Agent → 拼面板历史补上下文
       if (moaCtx.historyText) {
         normalizedInput.prompt = composeMoaPrompt(
@@ -2566,6 +2661,7 @@ export class SessionService {
           title: input.prompt.slice(0, 20) || "新会话",
           channelId,
           modelId,
+          internalBackend: persistedInternalBackend(adapterKind),
           workspaceId,
           turnCount: 1,
           executionMode: input.executionMode,
@@ -2577,6 +2673,7 @@ export class SessionService {
         updateSessionMeta(input.sessionId, {
           channelId,
           modelId,
+          internalBackend: persistedInternalBackend(adapterKind),
           workspaceId,
           turnCount: (meta.turnCount ?? 0) + 1,
         });
@@ -2615,7 +2712,7 @@ export class SessionService {
           this.recordSessionToMemory(input.sessionId, input.prompt);
           // kscc 长驻：result 后 loop 不退，pending（live 失败降级）须在此 flush。
           // Pi：不可在此 flush——仍在 for-await 内，会把 turnInFlight 再置真 → 旧 loop 误判崩溃。
-          if (adapterKind === "kscc") {
+          if (adapterKind !== "external") {
             this.flushPendingSteer(input.sessionId);
           }
           this.resolveNextTurnEndWaiters(input.sessionId);
@@ -2655,6 +2752,7 @@ export class SessionService {
       updateSessionMeta(input.sessionId, {
         channelId,
         modelId,
+        internalBackend: persistedInternalBackend(adapterKind),
         turnCount: (meta?.turnCount ?? 0) + 1,
       });
       // 长驻会话的后续轮次只 enqueue userMessage，不会重新构建 system prompt。
@@ -2803,6 +2901,10 @@ export class SessionService {
         workspaceId,
         turnCount: 1,
         executionMode: input.executionMode,
+        internalBackend:
+          channel.provider === "kscc-internal"
+            ? input.internalBackend
+            : undefined,
       });
     } else {
       const patch = decideMoaMetaPatch({
@@ -2973,6 +3075,10 @@ export class SessionService {
         workspaceId,
         turnCount: 1,
         executionMode: input.executionMode,
+        internalBackend:
+          channel.provider === "kscc-internal"
+            ? input.internalBackend
+            : undefined,
       });
     } else {
       const patch = decideMoaMetaPatch({
@@ -3160,6 +3266,244 @@ export class SessionService {
       ? getEnabledMcpServers(sanitizedPath)
       : {};
     const mcpConfig = { servers: enabledMcpServers };
+
+    if (
+      channel.provider === "kscc-internal" &&
+      resolveInternalAdapterKind(metaForMode) === "codex"
+    ) {
+      const executionMode = this.getExecutionMode(input.sessionId);
+      const reasoningEffort = migrateReasoningEffort(
+        metaForMode?.reasoningEffort,
+      );
+      const readOnly =
+        executionMode === "chat" || permissionMode === "plan";
+      const fullyAutomatic =
+        executionMode === "work" &&
+        permissionMode === "bypassPermissions";
+      const sandbox = readOnly
+        ? ("read-only" as const)
+        : fullyAutomatic
+          ? ("danger-full-access" as const)
+          : ("workspace-write" as const);
+      const approvalPolicy = fullyAutomatic
+        ? ("never" as const)
+        : readOnly
+          ? ("never" as const)
+          : ("on-request" as const);
+      const permissionHandler = this.permissionService?.createCanUseTool(
+        input.sessionId,
+        () => this.getPermissionMode(input.sessionId),
+        cwd,
+        () => this.getExecutionMode(input.sessionId),
+      );
+      const codexMcpProjection =
+        buildCodexMcpThreadConfig(enabledMcpServers);
+      for (const skipped of codexMcpProjection.skipped) {
+        console.warn(
+          `[codex MCP] 已跳过 ${skipped.name}: ${skipped.reason}`,
+        );
+      }
+      const codexBrowserTools = buildPiBrowserTools({
+        sessionId: input.sessionId,
+      });
+      const codexKbTools = buildPiKbTools({
+        sessionId: input.sessionId,
+        knowledgeBaseWritesEnabled: areKnowledgeBaseWritesEnabled(),
+        sendToRenderer: (request) => {
+          this.getWindow()?.webContents.send(
+            AGENT_IPC_CHANNELS.KB_PROPOSE_SAVE_REQUEST,
+            request,
+          );
+        },
+      });
+      const codexKanbanTools = buildPiKanbanTools({
+        sessionId: input.sessionId,
+        channelId: channel.id,
+        agentCwd: cwd,
+        workspaceId: workspace?.slug,
+        toolMode: "full",
+      });
+      const dynamicToolRegistry = new CodexDynamicToolRegistry(
+        [...codexBrowserTools, ...codexKbTools, ...codexKanbanTools].map(
+          (tool) => ({
+            tool,
+            permission: resolveCodexDynamicToolPermission(tool.name),
+          }),
+        ),
+      );
+      const onServerRequest = async (
+        request: CodexAppServerIncomingRequest,
+      ): Promise<unknown> => {
+        const params =
+          request.params &&
+          typeof request.params === "object" &&
+          !Array.isArray(request.params)
+            ? (request.params as Record<string, unknown>)
+            : {};
+        if (request.method === "item/tool/requestUserInput") {
+          const requestUserInput = parseCodexRequestUserInputParams(params);
+          if (!requestUserInput) {
+            throw new Error("Codex requestUserInput 参数无效");
+          }
+          if (!requestUserInput.isBlocking) {
+            return { answers: {} };
+          }
+          const result = await askUserService.handleAskUserQuestion(
+            input.sessionId,
+            buildCodexAskUserInput(requestUserInput),
+            new AbortController().signal,
+            (askUserRequest) => {
+              this.getWindow()?.webContents.send(
+                AGENT_IPC_CHANNELS.ASK_USER_REQUEST,
+                askUserRequest,
+              );
+            },
+          );
+          return buildCodexRequestUserInputResponse(
+            requestUserInput,
+            result.behavior === "allow"
+              ? result.updatedInput.answers
+              : undefined,
+          );
+        }
+        if (request.method === "item/permissions/requestApproval") {
+          const permissionRequest =
+            parseCodexPermissionsRequestApprovalParams(params);
+          if (!permissionRequest) {
+            throw new Error("Codex permissions requestApproval 参数无效");
+          }
+          if (!this.permissionService) {
+            throw new Error("TAgent 权限服务尚未初始化");
+          }
+          const summary =
+            summarizeCodexPermissionRequest(permissionRequest);
+          const decision =
+            await this.permissionService.requestAdditionalPermissions({
+              sessionId: input.sessionId,
+              getMode: () => this.getPermissionMode(input.sessionId),
+              getExecutionMode: () =>
+                this.getExecutionMode(input.sessionId),
+              input: summary.input,
+              hasNetwork: summary.hasNetwork,
+              hasFileRead: summary.hasFileRead,
+              hasFileWrite: summary.hasFileWrite,
+            });
+          return buildCodexPermissionsRequestApprovalResponse(
+            permissionRequest,
+            decision.allow,
+          );
+        }
+        if (request.method === "item/tool/call") {
+          return dispatchCodexDynamicToolCall({
+            registry: dynamicToolRegistry,
+            params,
+            executionMode: this.getExecutionMode(input.sessionId),
+            permissionMode: this.getPermissionMode(input.sessionId),
+            requestPermission: permissionHandler,
+          });
+        }
+        if (!permissionHandler) {
+          throw new Error("TAgent 权限服务尚未初始化");
+        }
+        if (request.method === "item/commandExecution/requestApproval") {
+          const command =
+            typeof params.command === "string" ? params.command : "";
+          const decision = await permissionHandler("Bash", {
+            command,
+            ...(typeof params.cwd === "string" ? { cwd: params.cwd } : {}),
+          });
+          return {
+            decision:
+              decision.behavior === "allow" ? "accept" : "decline",
+          };
+        }
+        if (request.method === "item/fileChange/requestApproval") {
+          const decision = await permissionHandler("ApplyPatch", {
+            ...(typeof params.reason === "string"
+              ? { reason: params.reason }
+              : {}),
+            ...(typeof params.grantRoot === "string"
+              ? { grantRoot: params.grantRoot }
+              : {}),
+          });
+          return {
+            decision:
+              decision.behavior === "allow" ? "accept" : "decline",
+          };
+        }
+        throw new Error(`Codex 服务端请求尚未接入：${request.method}`);
+      };
+      const developerInstructions = [
+        buildExecutionModePrompt(executionMode),
+        contextPromptAppend,
+        executionMode === "chat" ? buildUserSystemPromptAppend() : "",
+        BROWSER_SYSTEM_PROMPT,
+        "## 身份与自我介绍\n你是 TAgent 的 Codex 主会话执行后端。不要提及 CLI、App Server 或出品方品牌；直接完成用户任务。",
+        buildOutputStylePrompt(),
+        executionMode === "work"
+          ? "## 看板派工工具\nWork 模式可用：kanban_create_board、kanban_add_task、kanban_list_boards、kanban_list_tasks、kanban_complete、kanban_block。长任务应拆成可验收的看板任务并指定 roleId；调度器会派发执行。"
+          : "",
+        this.buildMentionPromptAppend(input.sessionId, executionMode),
+        buildBotSessionPromptAppend(
+          metaForMode?.botProfileIds,
+          input.prompt,
+          metaForMode?.fusionCoordinatorBotProfileId,
+        ),
+        buildRichContentSystemPrompt(),
+        buildKbPromptAppend({
+          kbRoots: resolveKnowledgeBaseRootsForSession(metaForMode ?? {}),
+          knowledgeBaseIds: metaForMode?.knowledgeBaseIds,
+          mode: metaForMode?.knowledgeBaseMode,
+          knowledgeBaseWritesEnabled: areKnowledgeBaseWritesEnabled(),
+          available: resolveAvailableKnowledgeBases(input.sessionId)
+            .available,
+        }),
+        readOnly
+          ? "当前会话为只读边界：可以分析、检索和运行只读检查，不得修改文件。"
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const codexModel = process.env.TAGENT_CODEX_MODEL?.trim() || undefined;
+      const opts: CodexQueryOptions = {
+        sessionId: input.sessionId,
+        prompt: input.prompt,
+        attachments: input.attachments,
+        cwd,
+        executionMode,
+        ...(codexModel ? { model: codexModel } : {}),
+        effort: reasoningEffort,
+        approvalPolicy,
+        sandbox,
+        config: codexMcpProjection.config,
+        developerInstructions,
+        dynamicTools: dynamicToolRegistry.specs,
+        resumeThreadId: buildOpts?.suppressResume
+          ? undefined
+          : metaForMode?.codexThreadId,
+        onThreadId: (threadId: string) => {
+          opts.resumeThreadId = threadId;
+          if (
+            threadId &&
+            threadId !== getSessionMeta(input.sessionId)?.codexThreadId
+          ) {
+            updateSessionMeta(input.sessionId, {
+              codexThreadId: threadId,
+              internalBackend: "codex-app-server",
+            });
+            console.log(
+              `[会话 ${input.sessionId}] 已保存 codexThreadId: ${threadId}`,
+            );
+          }
+        },
+        onServerRequest,
+        onStderr: (data: string) => {
+          console.error(`[codex stderr] ${data}`);
+          this.runtimes.get(input.sessionId)?.reportStderr(data);
+        },
+      };
+      return opts as unknown as Parameters<AgentProviderAdapter["query"]>[0];
+    }
 
     if (channel.provider === "kscc-internal") {
       const ksccPath = resolveKsccPath();

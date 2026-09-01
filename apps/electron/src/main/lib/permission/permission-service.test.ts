@@ -134,6 +134,103 @@ describe('createCanUseTool — Chat 写工具硬拦（REGRESS-A）', () => {
       vi.useRealTimers()
     }
   })
+
+  it('Codex 扩权：Work bypass 自动允许，plan 自动拒绝', async () => {
+    await expect(
+      svc.requestAdditionalPermissions({
+        sessionId: 'sess-codex-bypass',
+        getMode: () => BYPASS,
+        getExecutionMode: () => WORK,
+        input: { network: '允许访问网络' },
+        hasNetwork: true,
+        hasFileRead: false,
+        hasFileWrite: false,
+      }),
+    ).resolves.toEqual({ allow: true })
+
+    await expect(
+      svc.requestAdditionalPermissions({
+        sessionId: 'sess-codex-plan',
+        getMode: () => 'plan',
+        getExecutionMode: () => WORK,
+        input: { readPaths: ['C:\\shared'] },
+        hasNetwork: false,
+        hasFileRead: true,
+        hasFileWrite: false,
+      }),
+    ).resolves.toEqual({
+      allow: false,
+      reason: '计划模式下不允许扩展网络或文件系统权限',
+    })
+    expect(
+      sends.some((s) => s.channel === AGENT_IPC_CHANNELS.PERMISSION_REQUEST),
+    ).toBe(false)
+  })
+
+  it('Codex 扩权：Chat 网络/写入硬拒绝并触发切 Work 建议', async () => {
+    const result = await svc.requestAdditionalPermissions({
+      sessionId: 'sess-codex-chat',
+      getMode: () => BYPASS,
+      getExecutionMode: () => CHAT,
+      input: { writePaths: ['F:\\repo\\dist'] },
+      hasNetwork: false,
+      hasFileRead: false,
+      hasFileWrite: true,
+    })
+
+    expect(result).toEqual({
+      allow: false,
+      reason: CHAT_MODE_BLOCK_REASON,
+      interrupt: true,
+    })
+    expect(blockCalls).toContainEqual({
+      sessionId: 'sess-codex-chat',
+      toolName: 'CodexPermissions',
+    })
+    expect(
+      sends.some((s) => s.channel === AGENT_IPC_CHANNELS.PERMISSION_REQUEST),
+    ).toBe(false)
+  })
+
+  it('Codex 扩权：auto 复用权限横幅且不允许记住', async () => {
+    vi.useFakeTimers()
+    try {
+      const resultP = svc.requestAdditionalPermissions({
+        sessionId: 'sess-codex-auto',
+        getMode: () => AUTO,
+        getExecutionMode: () => WORK,
+        input: {
+          network: '允许访问网络',
+          reason: '安装依赖',
+        },
+        hasNetwork: true,
+        hasFileRead: false,
+        hasFileWrite: false,
+      })
+      const request = sends.find(
+        (entry) =>
+          entry.channel === AGENT_IPC_CHANNELS.PERMISSION_REQUEST,
+      )?.payload as
+        | {
+            toolName?: string
+            dangerous?: boolean
+            allowRemember?: boolean
+          }
+        | undefined
+      expect(request).toMatchObject({
+        toolName: 'CodexPermissions',
+        dangerous: true,
+        allowRemember: false,
+      })
+      await vi.advanceTimersByTimeAsync(120_000)
+      await expect(resultP).resolves.toEqual({
+        allow: false,
+        reason: '用户拒绝',
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('createCanUseTool — AskUserQuestion 拦截（REGRESS-H）', () => {

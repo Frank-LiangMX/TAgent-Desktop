@@ -170,10 +170,17 @@ export class AgentAskUserService {
         : []
 
       return {
+        ...(typeof raw.answerKey === 'string' && raw.answerKey
+          ? { answerKey: raw.answerKey }
+          : {}),
         question: typeof raw.question === 'string' ? raw.question : '',
         header: typeof raw.header === 'string' ? raw.header : undefined,
         options,
         multiSelect: raw.multiSelect === true,
+        ...(typeof raw.allowOther === 'boolean'
+          ? { allowOther: raw.allowOther }
+          : {}),
+        ...(raw.secret === true ? { secret: true } : {}),
       }
     })
   }

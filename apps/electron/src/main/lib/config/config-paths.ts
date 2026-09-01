@@ -177,6 +177,30 @@ export function getCliWorkersPath(): string {
   return join(getConfigDir(), 'cli-workers.json')
 }
 
+/** TAgent 托管运行时根目录：~/.tagent[-dev]/runtimes/ */
+export function getManagedRuntimesDir(): string {
+  const dir = join(getConfigDir(), 'runtimes')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** TAgent 托管 Codex CLI 根目录：~/.tagent[-dev]/runtimes/codex/ */
+export function getManagedCodexRuntimeDir(): string {
+  const dir = join(getManagedRuntimesDir(), 'codex')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/**
+ * 当前启用的托管 Codex Runtime 清单。
+ *
+ * 下载器把版本、平台、哈希和相对可执行路径写在这里；解析器只接受仍位于
+ * getManagedCodexRuntimeDir() 内的路径，避免清单被改成任意外部程序。
+ */
+export function getManagedCodexRuntimeManifestPath(): string {
+  return join(getManagedCodexRuntimeDir(), 'active.json')
+}
+
 /** 圆桌（agent-discuss）偏好文件：~/.tagent[-dev]/agent-discuss-prefs.json */
 export function getAgentDiscussPrefsPath(): string {
   return join(getConfigDir(), 'agent-discuss-prefs.json')

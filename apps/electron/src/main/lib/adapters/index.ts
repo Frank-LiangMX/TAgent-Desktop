@@ -17,10 +17,11 @@
  */
 import type { AgentProviderAdapter } from '@tagent/shared'
 import { ClaudeAgentAdapter } from './claude/claude-agent-adapter'
+import { CodexAppServerAdapter } from './codex/codex-app-server-adapter'
 import { PiAgentAdapter } from './pi/pi-agent-adapter'
 
 /** 渠道类型 */
-export type ChannelKind = 'kscc' | 'external'
+export type ChannelKind = 'kscc' | 'codex' | 'external'
 
 /** 按渠道选适配器（单例，按渠道缓存） */
 const adapters = new Map<ChannelKind, AgentProviderAdapter>()
@@ -28,7 +29,12 @@ const adapters = new Map<ChannelKind, AgentProviderAdapter>()
 export function getAdapter(kind: ChannelKind): AgentProviderAdapter {
   let adapter = adapters.get(kind)
   if (!adapter) {
-    adapter = kind === 'kscc' ? new ClaudeAgentAdapter() : new PiAgentAdapter()
+    adapter =
+      kind === 'kscc'
+        ? new ClaudeAgentAdapter()
+        : kind === 'codex'
+          ? new CodexAppServerAdapter()
+          : new PiAgentAdapter()
     adapters.set(kind, adapter)
   }
   return adapter
@@ -47,3 +53,58 @@ export function disposeAllAdapters(): void {
 }
 
 export { ClaudeAgentAdapter, PiAgentAdapter }
+export {
+  probeCodexRuntime,
+  resolveCodexRuntime,
+  type CodexRuntimeResolution,
+  type CodexRuntimeSource,
+  type ManagedCodexRuntimeManifest,
+} from './codex/codex-runtime-resolver'
+export {
+  CodexAppServerClient,
+  CodexAppServerRpcError,
+  type CodexAppServerClientOptions,
+  type CodexAppServerIncomingRequest,
+  type CodexAppServerInitializeResponse,
+  type CodexAppServerNotification,
+} from './codex/codex-app-server-client'
+export {
+  CodexAppServerSessionManager,
+  type CodexAccount,
+  type CodexAccountStatus,
+  type CodexAppServerSessionManagerOptions,
+  type CodexApprovalPolicy,
+  type CodexSandboxMode,
+  type CodexSandboxPolicy,
+  type CodexSessionBinding,
+  type CodexThread,
+  type CodexThreadResumeOptions,
+  type CodexThreadStartOptions,
+  type CodexTurn,
+  type CodexTurnStartOptions,
+  type CodexTurnSteerOptions,
+  type RoutedCodexNotification,
+} from './codex/codex-app-server-session-manager'
+export {
+  CodexEventNormalizer,
+} from './codex/codex-event-normalizer'
+export {
+  CodexAppServerAdapter,
+  type CodexAppServerAdapterOptions,
+  type CodexQueryOptions,
+} from './codex/codex-app-server-adapter'
+export {
+  CodexDynamicToolRegistry,
+  dispatchCodexDynamicToolCall,
+  parseCodexDynamicToolCallParams,
+  resolveCodexDynamicToolPermission,
+  type CodexDynamicToolCallParams,
+  type CodexDynamicToolCallResponse,
+  type CodexDynamicToolContentItem,
+  type CodexDynamicToolPermission,
+  type CodexDynamicToolPermissionDecision,
+  type CodexDynamicToolRegistration,
+  type CodexDynamicToolSpec,
+  type DispatchCodexDynamicToolCallOptions,
+  type ResolvedCodexDynamicTool,
+} from './codex/codex-dynamic-tools'

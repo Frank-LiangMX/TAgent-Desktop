@@ -1281,8 +1281,20 @@ export interface AgentSessionMeta {
   channelId?: string;
   /** 使用的模型 ID（持久化，重启后恢复） */
   modelId?: string;
+  /**
+   * Internal Core 的原生主会话后端。旧会话按 native id 推断：
+   * codexThreadId -> codex-app-server，sdkSessionId -> kscc。
+   */
+  internalBackend?: "codex-app-server" | "kscc";
   /** SDK 内部会话 ID（用于 resume 衔接上下文） */
   sdkSessionId?: string;
+  /**
+   * Codex App Server 原生 thread ID。
+   *
+   * 与 sdkSessionId 分开持久化：前者属于 Codex thread/resume，后者属于
+   * Claude Agent SDK/KSCC 会话，禁止跨后端复用同一原生 ID 字段。
+   */
+  codexThreadId?: string;
   /** 所属工作区 ID */
   workspaceId?: string;
   /**
@@ -2016,6 +2028,8 @@ export interface AskUserQuestionOption {
 
 /** AskUserQuestion 工具的问题定义 */
 export interface AskUserQuestion {
+  /** 回答映射使用的稳定 key；缺省沿用 question 文本（Claude SDK 兼容）。 */
+  answerKey?: string;
   /** 问题内容 */
   question: string;
   /** 短标签（chip 显示） */
@@ -2024,6 +2038,10 @@ export interface AskUserQuestion {
   options: AskUserQuestionOption[];
   /** 是否支持多选 */
   multiSelect?: boolean;
+  /** 是否显示“其他 / 自定义输入”；缺省 true（Claude SDK 兼容）。 */
+  allowOther?: boolean;
+  /** 自定义答案是否使用密码输入框。 */
+  secret?: boolean;
 }
 
 /** AskUser 请求（主进程 → 渲染进程） */
@@ -2042,7 +2060,7 @@ export interface AskUserRequest {
 export interface AskUserResponse {
   /** 请求 ID */
   requestId: string;
-  /** 用户答案（问题文本 → 答案文本，与 SDK 约定一致） */
+  /** 用户答案（answerKey/问题文本 → 答案文本） */
   answers: Record<string, string>;
 }
 
@@ -2577,6 +2595,8 @@ export const AGENT_IPC_CHANNELS = {
    * 仅接受 source=user | user-confirm-suggestion（ADR-0005）。
    */
   UPDATE_SESSION_EXECUTION_MODE: "agent:update-session-execution-mode",
+  /** 探测本机或 TAgent 托管的 Codex App Server Runtime。 */
+  GET_CODEX_RUNTIME_STATUS: "agent:get-codex-runtime-status",
   /**
    * 主进程 → 渲染：建议切换 Chat|Work（不改变 mode，等用户确认条）
    * @see docs/plans/multi-runtime/02-chat-work-and-permissions.md §3.4

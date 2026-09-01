@@ -80,6 +80,11 @@ export interface AgentProviderAdapter {
   dispose(): void
   /** 向活跃查询注入队列消息（可选，仅支持队列的 Provider 实现） */
   sendQueuedMessage?(sessionId: string, message: SDKUserMessageInput): Promise<void>
+  /**
+   * 向当前 active turn 注入引导消息。支持原生 steer 的 Provider 应实现；
+   * 未实现时 SessionRuntime 兼容回退到 sendQueuedMessage。
+   */
+  steerMessage?(sessionId: string, message: SDKUserMessageInput): Promise<void>
   /** 查询某会话是否有活跃的长驻 channel（可选，长驻复用判断用） */
   hasActiveChannel?(sessionId: string): boolean
   /** 取消队列中的待发送消息（可选） */

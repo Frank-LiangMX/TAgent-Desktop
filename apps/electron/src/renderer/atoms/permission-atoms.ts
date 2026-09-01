@@ -19,6 +19,8 @@ export interface PermissionReq {
   toolName: string
   input: Record<string, unknown>
   dangerous: boolean
+  /** false 时隐藏“始终允许”，仅允许本次请求 */
+  allowRemember?: boolean
   /** 主进程发出请求的时间戳；缺省按入队时刻（兼容旧 payload） */
   requestedAt?: number
 }

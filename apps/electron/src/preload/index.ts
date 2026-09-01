@@ -147,6 +147,8 @@ export interface SendMessageInput {
   channelId?: string;
   /** 模型 ID */
   model?: string;
+  /** Internal Core 主会话后端；草稿首发时用于创建会话 meta。 */
+  internalBackend?: "codex-app-server" | "kscc";
   /** 工作区 ID（= sanitizePath(projectPath)，用于 JSONL 按项目存储） */
   workspaceId?: string;
   /**
@@ -595,6 +597,8 @@ const electronAPI = {
       archived?: boolean;
       subagentEagerness?: "never" | "conservative" | "balanced" | "aggressive";
       reasoningEffort?: "low" | "medium" | "high" | "max";
+      /** Internal Core 主会话后端。 */
+      internalBackend?: "codex-app-server" | "kscc";
       /** 会话偏好 CLI 工人 id（未设置/空 = 跟随全局启用池优先级；主进程 normalize 空串→undefined） */
       cliWorkerId?: string;
       /** 会话加入的 Bot 配置引用；1 个 Bot 为单 Bot 直连，多个 Bot 由融合路由承接 */
@@ -609,6 +613,14 @@ const electronAPI = {
       id,
       patch,
     }) as Promise<unknown>,
+  /** 探测 Codex App Server Runtime（系统安装 / TAgent 托管版本）。 */
+  getCodexRuntimeStatus: () =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_CODEX_RUNTIME_STATUS) as Promise<{
+      available: boolean;
+      source?: "explicit" | "environment" | "system" | "managed";
+      version?: string;
+      reason?: string;
+    }>,
   /** 切换会话置顶 */
   togglePin: (id: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.TOGGLE_PIN, id) as Promise<unknown>,

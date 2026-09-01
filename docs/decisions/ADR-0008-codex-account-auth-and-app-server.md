@@ -1,7 +1,7 @@
 # ADR-0008：Codex 账号认证与 App Server 主核
 
 **日期：** 2026-08-31  
-**状态：** 方向确认，待分阶段实施  
+**状态：** 实施中
 **关联：** [ADR-0007：双核边界与内部 Native Agent 后端](./ADR-0007-dual-core-internal-codex-external-pi.md)
 
 ## 1. 背景
@@ -288,6 +288,61 @@ SDK 版本、App Server 版本和协议 schema 必须纳入兼容性检查。TAg
 应该优先保证“实际启动的 Codex binary 与公司授权环境一致”，再决定
 是否用 SDK 替代部分 JSON-RPC 管理代码。
 
+### 6.3 官方 Runtime 的解析与按需托管
+
+**2026-09-01 补充决策：** Codex Desktop 的私有安装目录和内部进程不是
+TAgent 的正式集成接口。只安装 Desktop 的用户不保证系统 `PATH` 中存在
+可调用的 `codex`，因此主核不能把“已安装 Desktop”等同于“App Server
+Runtime 可用”。
+
+TAgent 按以下优先级解析 Codex Runtime：
+
+```text
+用户显式指定的 codexPath
+  -> TAGENT_CODEX_PATH
+  -> 系统 PATH 中的 codex
+  -> TAgent 按需托管的官方 Codex Runtime
+```
+
+每个候选都必须通过：
+
+```text
+codex --version
+codex app-server --help
+codex features list
+```
+
+仅找到同名命令但不支持 App Server 时，继续尝试下一候选，不把旧版或
+非官方同名程序误判为主核。特性列表还必须包含：
+
+```text
+default_mode_request_user_input
+exec_permission_approvals
+request_permissions_tool
+```
+
+避免旧版 Runtime 在 UI 中显示可用、真正启动 App Server 时才因未知
+feature 参数失败。
+
+托管 Runtime 的发行原则：
+
+- 默认直接下载 OpenAI 官方发布的对应平台 Codex CLI 包。
+- TAgent 固定受支持版本，不直接追随 `latest`。
+- 下载清单记录版本、平台、架构、SHA-256 和官方来源。
+- 公司内网可以缓存官方原包，但必须使用相同哈希校验。
+- 不复制 Codex Desktop 私有 runtime，不依赖其内部目录结构。
+- 不读取或迁移 Codex token；启动后的账号认证仍由 Codex Runtime 持有。
+
+Windows x64 的 `codex-cli 0.151.0` 本地实测基线：
+
+```text
+完整 Runtime 落盘约 395 MiB
+完整平台包压缩后约 142 MiB
+```
+
+因此标准发行版采用按需下载；需要离线部署的公司内部版本可以预装同一
+官方 Runtime。
+
 ## 7. 当前实现的迁移边界
 
 ### 保留
@@ -318,6 +373,139 @@ SDK 版本、App Server 版本和协议 schema 必须纳入兼容性检查。TAg
 - 将 Codex 永久限制为 `--ephemeral` 和 `read-only` 的主核路径。
 
 ## 8. 分阶段实施
+
+### 2026-09-01 实施进度
+
+当前已完成 Phase 0，并形成 Phase 1 的主链路骨架：
+
+- Runtime 解析与 App Server 能力探针。
+- stdio JSON-RPC 握手、请求关联、反向请求 fail-closed 和进程回收。
+- `thread/start`、`thread/resume`、`turn/start`、`turn/steer`、
+  `turn/interrupt`。
+- `sessionId <-> codexThreadId <-> active turnId` 映射和持久化。
+- 文本、reasoning、命令、文件变更、MCP、usage、错误事件到 TAgent IR。
+- Codex 原生审批请求接入 TAgent 权限服务的命令/文件变更入口。
+- Internal 会话输入区已提供 Codex / Claude Code 会话级选择；运行中禁止
+  拆换后端，新会话首发会把选择写入 session meta。
+- 输入区会探测本机或 TAgent 托管的 Codex Runtime，显示版本与来源；
+  Runtime 不可用时禁用 Codex 选择。
+- `item/tool/requestUserInput` 已映射到现有 AskUserQuestion 横幅，支持
+  选项、自定义输入、Codex question id 回传和 secret 输入。
+- `item/permissions/requestApproval` 已映射到现有 PermissionService：
+  Work 完全自动按请求授权，Plan 拒绝，Chat 对网络/写入扩权硬拒绝，
+  自动模式进入原有权限横幅。
+- Codex 扩权固定使用 `scope: turn`；横幅不展示“始终允许”，避免一次
+  网络或目录授权退化为会话级通配。
+- 工作区启用的外部 `stdio` / Streamable HTTP MCP 已投影到
+  `thread/start.config.mcp_servers` 和 `thread/resume.config.mcp_servers`。
+  `command`、`args`、`env`、`startup_timeout_sec`、`url` 和
+  `http_headers` 均按 Codex 配置字段转换。
+- TAgent legacy SSE MCP 暂不投影；TAgent 内置 browser、KB、kanban
+  不启动额外 MCP 子进程，而是复用现有 Pi `AgentTool` handler，通过
+  App Server `thread/start.dynamicTools` 注册到 Codex thread。
+- Dynamic Tool 注册集合不按 Chat / Work 裁剪。新 thread 始终注册完整
+  browser、KB、kanban 集合，调用时再读取当前执行形态和权限模式门控，
+  因此同一会话可无痛切换 Chat / Work，不需要重建工具定义。
+- Dynamic Tool 权限分为三类：
+  - `read-only`：browser 打开、导航、观察、滚动、截图、接管/恢复，
+    KB 列表、检索、读取、附件解析，以及看板列表，直接执行。
+  - `permission`：browser 点击/输入与看板创建、追加、完成、阻塞，
+    复用 TAgent PermissionService；Chat 拒绝，Work 按 Plan / 自动 /
+    完全自动策略处理。
+  - `self-authorized`：`kb_propose_save` 在 Work 自动/完全自动下直接进入
+    自身知识入库确认横幅，避免重复 PermissionBanner；Chat 或 Plan
+    仍先由 PermissionService 拒绝。
+- Codex developer instructions 已注入受管浏览器、知识库和 Work 看板
+  使用规则；Dynamic Tool started/completed 事件归一化为现有
+  `tool_use` / `tool_result`，失败结果带 `isError: true`。
+- App Server 异常退出后向 `SessionRuntime` 暴露 EOF，并使用
+  `resumeThreadId` 尝试一次恢复。
+
+本机 `codex-cli 0.151.0` 已完成真实临时只读 turn：
+
+```text
+prompt: 仅回复 CODEX_APP_SERVER_OK，不调用任何工具。
+result: CODEX_APP_SERVER_OK
+events: text delta -> final assistant -> completed result + usage
+```
+
+`requestUserInput` 在 `codex-cli 0.151.0` 中仍属于 experimental API。
+TAgent 启动 App Server 时显式启用：
+
+```text
+codex app-server --stdio
+  --enable default_mode_request_user_input
+  --enable exec_permission_approvals
+  --enable request_permissions_tool
+initialize.capabilities.experimentalApi = true
+```
+
+真实反向请求烟测：
+
+```text
+model -> item/tool/requestUserInput
+TAgent -> answers: { <questionId>: { answers: ["Beta"] } }
+model -> USER_INPUT_OK:Beta
+```
+
+MCP 真实线程烟测：
+
+```text
+thread/start.config.mcp_servers.tagent_smoke_missing
+  -> mcpServerStatus/list
+  -> name = tagent_smoke_missing
+  -> runtimeStatus = failed（预期：故意使用不存在的可执行文件）
+```
+
+这证明会话级 MCP 配置已被 App Server 接收并进入目标 thread 的 MCP
+运行时，而不是只在 TAgent 内部完成了对象转换。
+
+Dynamic Tool thread 持久化真实烟测：
+
+```text
+1. thread/start 注册 tagent_echo
+2. 第一轮收到 item/tool/call，返回 ECHO:first
+3. 关闭 App Server
+4. 新 App Server 仅调用 thread/resume，不重复传 dynamicTools
+5. 第二轮仍收到 item/tool/call，返回 ECHO:resumed
+```
+
+本机 `codex-cli 0.151.0` 结果表明 Dynamic Tool 定义随原生 thread
+持久化，恢复会话时无需也不能向 `thread/resume` 注入未声明字段。
+
+真实内置工具烟测：
+
+```text
+2026-09-01 / codex-cli 0.151.0
+  kb_list_available -> item/tool/call -> 返回实际知识库元数据
+  kanban_list_boards -> item/tool/call -> 返回 { count: 0, boards: [] }
+```
+
+两次调用均经过 `CodexDynamicToolRegistry` 和统一权限分派，随后由
+Codex 正常生成最终文本。说明内置 KB / 看板 handler 已经跨过
+“协议注册成功”阶段，能够在真实主会话中被模型调用并返回结果。
+受管浏览器仍需在 Electron BrowserController 已初始化的桌面进程中
+进行端到端验证，命令行 smoke 不替代该验证。
+
+`item/permissions/requestApproval` 的客户端反向 RPC、参数解析、TAgent
+权限策略和响应结构已由聚焦测试覆盖。模型自然触发烟测在当前 Windows
+环境遇到 Codex 沙箱 `CreateProcessWithLogonW failed: 1385`，未形成可
+复现的真实扩权请求，因此不把该次尝试记录为通过；后续应在可正常创建
+Codex 沙箱进程的 Windows 环境再补一次端到端确认。
+
+开发阶段仍可用环境变量指定新建 internal 会话的缺省后端和模型；产品
+界面现已支持逐会话选择：
+
+```text
+TAGENT_INTERNAL_BACKEND=codex
+TAGENT_CODEX_MODEL=<可选，缺省使用 Codex Runtime 默认模型>
+```
+
+会话一旦写入 `internalBackend` / `codexThreadId` 就按会话绑定，不跟随
+后续环境变量漂移。Codex 与 KSCC 分别保留自己的 native thread/session
+id，切回对应后端时恢复各自上下文。默认值暂时仍为 KSCC，等真实
+Electron 端到端、模型列表、Windows 权限烟测和主会话长期回归完成后
+再切默认。
 
 ### Phase 0：账号认证与协议探针
 

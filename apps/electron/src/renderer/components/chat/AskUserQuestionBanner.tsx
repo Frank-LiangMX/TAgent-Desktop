@@ -86,7 +86,8 @@ export function AskUserQuestionBanner({
       const curFocusIdx = focusedOptIdxRef.current
       const q = qs[curTab]
       if (!q) return
-      const itemCount = q.options.length + 1
+      const itemCount = q.options.length + (q.allowOther === false ? 0 : 1)
+      if (itemCount === 0) return
       const lastTab = curTab >= qs.length - 1
 
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
@@ -112,7 +113,7 @@ export function AskUserQuestionBanner({
         if (nextIdx < q.options.length) {
           const opt = q.options[nextIdx]
           if (opt) toggleOptionByState(curTab, q, opt.label)
-        } else {
+        } else if (q.allowOther !== false) {
           toggleCustomByState(curTab)
         }
       } else if (e.key === 'Enter' && !e.isComposing) {
@@ -235,7 +236,7 @@ export function AskUserQuestionBanner({
         const q = questions[i]
         if (!q) continue
         const answer = getAnswer(i)
-        const key = q.question || String(i)
+        const key = q.answerKey || q.question || String(i)
         if (answer.showCustom && answer.customText.trim()) {
           answersRecord[key] = answer.customText.trim()
         } else if (answer.selected.length > 0) {
@@ -535,37 +536,39 @@ function QuestionCard({
           )
         })}
 
-        <button
-          type="button"
-          role="option"
-          aria-selected={answer.showCustom}
-          className={cn(
-            'ask-user-opt',
-            answer.showCustom && 'is-selected',
-            focusedIndex === optionCount && 'is-focused',
-          )}
-          onClick={onToggleCustom}
-        >
-          <span className="ask-user-opt__mark" aria-hidden>
-            {question.multiSelect ? (
-              answer.showCustom ? (
-                <Check size={11} weight="bold" />
-              ) : null
-            ) : (
-              <span className={cn('ask-user-opt__radio', answer.showCustom && 'is-on')} />
+        {question.allowOther !== false ? (
+          <button
+            type="button"
+            role="option"
+            aria-selected={answer.showCustom}
+            className={cn(
+              'ask-user-opt',
+              answer.showCustom && 'is-selected',
+              focusedIndex === optionCount && 'is-focused',
             )}
-          </span>
-          <span className="ask-user-opt__idx">{optionCount + 1}</span>
-          <span className="ask-user-opt__body">
-            <span className="ask-user-opt__label">其他</span>
-            <span className="ask-user-opt__desc">自定义输入</span>
-          </span>
-        </button>
+            onClick={onToggleCustom}
+          >
+            <span className="ask-user-opt__mark" aria-hidden>
+              {question.multiSelect ? (
+                answer.showCustom ? (
+                  <Check size={11} weight="bold" />
+                ) : null
+              ) : (
+                <span className={cn('ask-user-opt__radio', answer.showCustom && 'is-on')} />
+              )}
+            </span>
+            <span className="ask-user-opt__idx">{optionCount + 1}</span>
+            <span className="ask-user-opt__body">
+              <span className="ask-user-opt__label">其他</span>
+              <span className="ask-user-opt__desc">自定义输入</span>
+            </span>
+          </button>
+        ) : null}
       </div>
 
       {answer.showCustom ? (
         <input
-          type="text"
+          type={question.secret ? 'password' : 'text'}
           className="ask-user-q__custom"
           placeholder="输入你的答案…"
           value={answer.customText}

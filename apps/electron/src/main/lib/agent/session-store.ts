@@ -109,6 +109,7 @@ export function createSession(input: {
   title?: string
   channelId?: string
   modelId?: string
+  internalBackend?: AgentSessionMeta['internalBackend']
   /** 工作区 ID（= sanitizePath(projectPath)，如 'F--TAgent-General'） */
   workspaceId?: string
   mode?: 'general' | 'ta'
@@ -129,6 +130,7 @@ export function createSession(input: {
     permissionMode: input.permissionMode ?? TAGENT_DEFAULT_PERMISSION_MODE,
     channelId: input.channelId,
     modelId: input.modelId,
+    internalBackend: input.internalBackend,
     workspaceId: input.workspaceId,
     turnCount: input.turnCount,
     createdAt: Date.now(),

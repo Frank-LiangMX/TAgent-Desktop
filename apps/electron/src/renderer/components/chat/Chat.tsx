@@ -260,6 +260,7 @@ export interface SessionMeta {
   workspaceId?: string;
   modelId?: string;
   channelId?: string;
+  internalBackend?: "codex-app-server" | "kscc";
   botProfileIds?: string[];
   fusionRoomId?: string;
   kbRoots?: string[];
@@ -730,6 +731,16 @@ export function Chat({
   const [permissionMode, setPermissionMode] = useState<TAgentPermissionMode>(
     TAGENT_DEFAULT_PERMISSION_MODE,
   );
+  /** Internal Core 主会话后端；外部渠道不显示也不消费。 */
+  const [internalBackend, setInternalBackend] = useState<
+    NonNullable<AgentSessionMeta["internalBackend"]>
+  >(session.internalBackend ?? "kscc");
+  const [codexRuntimeStatus, setCodexRuntimeStatus] = useState<{
+    available: boolean;
+    source?: "explicit" | "environment" | "system" | "managed";
+    version?: string;
+    reason?: string;
+  } | null>(null);
   /**
    * 协作形态 Chat|Work（默认 work；旧会话无字段回显 work）
    * 仅用户可切换（含点确认建议）
@@ -1159,6 +1170,50 @@ export function Chat({
       : sentCoreKind;
   /** 已绑定渠道即显示 token 栏；kscc 仅隐藏占用圆环（占用不可信），累计统计照常 */
   const showTokenBar = lockedKind !== null;
+  const showInternalBackend =
+    selectionChannel?.provider === "kscc-internal" ||
+    sessionChannel?.provider === "kscc-internal";
+  const internalBackendSwitchDisabled = running || runStartedAt != null;
+  useEffect(() => {
+    if (!showInternalBackend) return;
+    let cancelled = false;
+    void window.electronAPI
+      .getCodexRuntimeStatus()
+      .then((status) => {
+        if (!cancelled) setCodexRuntimeStatus(status);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setCodexRuntimeStatus({
+            available: false,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showInternalBackend]);
+  const changeInternalBackend = (
+    next: NonNullable<AgentSessionMeta["internalBackend"]>,
+  ): void => {
+    if (internalBackendSwitchDisabled || next === internalBackend) return;
+    const previous = internalBackend;
+    setInternalBackend(next);
+    if (onDraftWorkspaceChange) return;
+    void window.electronAPI
+      .updateSessionMeta(sessionId, { internalBackend: next })
+      .then(() => {
+        metaRef.current = {
+          ...(metaRef.current ?? {}),
+          internalBackend: next,
+        };
+      })
+      .catch((error) => {
+        setInternalBackend(previous);
+        console.error("[Chat] 切换主 Agent 失败:", error);
+      });
+  };
 
   // 滚动位置恢复交给 ScrollPositionManager（Conversation 内部）：
   // 钉底在 scrollReady + 尾部窗口就绪后即可；中间位才拉满历史再还原。
@@ -1289,6 +1344,9 @@ export function Chat({
           reasoningEffort?: ReasoningEffort;
           executionMode?: ExecutionMode;
           permissionMode?: TAgentPermissionMode;
+          internalBackend?: AgentSessionMeta["internalBackend"];
+          codexThreadId?: string;
+          sdkSessionId?: string;
           pendingExecutionModeSuggestion?:
             import("@tagent/shared").ExecutionModeSuggestion | null;
           boardId?: string;
@@ -1329,6 +1387,10 @@ export function Chat({
               ? migratePermissionMode(persisted.permissionMode)
               : TAGENT_DEFAULT_PERMISSION_MODE,
           );
+          setInternalBackend(
+            persisted.internalBackend ??
+              (persisted.codexThreadId ? "codex-app-server" : "kscc"),
+          );
           setPendingModeSuggestion(
             persisted.pendingExecutionModeSuggestion ?? null,
           );
@@ -1340,6 +1402,7 @@ export function Chat({
               : [],
           );
         } else {
+          setInternalBackend(session.internalBackend ?? "kscc");
           setPendingModeSuggestion(null);
           setSessionBoardId(null);
           setActiveMentionRoleIds([]);
@@ -2795,6 +2858,7 @@ export function Chat({
         ...(savedAttachments.length ? { attachments: savedAttachments } : {}),
         ...(moaOneShotPresetId ? { moaOneShotPresetId } : {}),
         ...(moaDiscussionPresetId ? { moaDiscussionPresetId } : {}),
+        ...(channel.provider === "kscc-internal" ? { internalBackend } : {}),
         mentionRoleIds:
           executionMode === "chat" && roleMentionOptions.length > 0
             ? parseMentions(text, roleMentionOptions).map((h) => h.roleId)
@@ -3243,6 +3307,11 @@ export function Chat({
             });
           }
         }}
+        showInternalBackend={showInternalBackend}
+        internalBackend={internalBackend}
+        codexRuntimeStatus={codexRuntimeStatus}
+        internalBackendDisabled={internalBackendSwitchDisabled}
+        onInternalBackendChange={changeInternalBackend}
       />
       <ModelSelector
         selection={effectiveSelection}
@@ -4104,6 +4173,15 @@ export function Chat({
                                         },
                                       );
                                     }}
+                                    showInternalBackend={showInternalBackend}
+                                    internalBackend={internalBackend}
+                                    codexRuntimeStatus={codexRuntimeStatus}
+                                    internalBackendDisabled={
+                                      internalBackendSwitchDisabled
+                                    }
+                                    onInternalBackendChange={
+                                      changeInternalBackend
+                                    }
                                   />
                                 </div>
                                 <div className="composer-footer-bar__right flex h-7 min-w-0 shrink items-center gap-0.5">
