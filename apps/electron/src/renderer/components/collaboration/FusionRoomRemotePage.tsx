@@ -23,7 +23,6 @@ function isConfirmableResumeKind(kind: FusionContinuationKind): boolean {
 
 function continuationReadonlyHint(kind: FusionContinuationKind): string {
   if (kind === 'pending_approval') return '请用上方审批区处理'
-  if (kind === 'depth_stop') return '深度停止续跑待支持'
   if (kind === 'approved_awaiting_resume') return '已批准，待执行桥自动续跑'
   return ''
 }
@@ -48,6 +47,7 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
   const [retryPendingId, setRetryPendingId] = useState<string | null>(null)
   const [retrySeatByRun, setRetrySeatByRun] = useState<Record<string, string>>({})
   const [cancelPendingId, setCancelPendingId] = useState<string | null>(null)
+  const [depthStopPendingId, setDepthStopPendingId] = useState<string | null>(null)
   /** P2-2：标题/目标内联编辑弹层（owner-only，由 view.canEditMetadata 闸门）。 */
   const [editing, setEditing] = useState<'title' | 'goal' | null>(null)
   const [metadataPending, setMetadataPending] = useState(false)
@@ -170,6 +170,23 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setCancelPendingId(null)
+    }
+  }
+
+  const continueDepthStop = async (item: FusionContinuationItem): Promise<void> => {
+    if (depthStopPendingId || item.kind !== 'depth_stop' || !view) return
+    setDepthStopPendingId(item.id)
+    setError(null)
+    try {
+      await actions.continueDepthStop({
+        roomId: view.roomId,
+        envelopeId: item.id,
+        idempotencyKey: `continue-depth-stop:${item.id}`,
+      })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setDepthStopPendingId(null)
     }
   }
 
@@ -388,7 +405,18 @@ export function FusionRoomRemotePage({ session, onClose }: FusionRoomRemotePageP
                         <span className="truncate font-mono text-[10px] text-muted-foreground">#{tail}</span>
                       </div>
                       <div className="mt-1 truncate text-foreground/85">{item.summary}</div>
-                      {confirmable ? (
+                      {item.kind === 'depth_stop' ? (
+                        <div className="mt-1 flex justify-end">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={depthStopPendingId !== null}
+                            onClick={() => void continueDepthStop(item)}
+                          >
+                            {depthStopPendingId === item.id ? '继续中…' : '继续一次'}
+                          </Button>
+                        </div>
+                      ) : confirmable ? (
                         <div className="mt-1 flex justify-end">
                           <Button
                             variant="ghost"

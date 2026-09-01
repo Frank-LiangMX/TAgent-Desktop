@@ -62,6 +62,26 @@ export interface ConfirmFusionResumeContinuationInput {
   idempotencyKey?: string
 }
 
+/** Host 用户显式继续一次 A2A 深度停止的入参。 */
+export interface ContinueFusionDepthStopInput {
+  roomId: string
+  actorUserId: string
+  envelopeId: string
+  idempotencyKey?: string
+}
+
+export type ContinueFusionDepthStopStatus = "continued" | "already_continued"
+
+/** 深度停止继续结果：旧停止信封保留审计，新信封/新 run 负责后续执行。 */
+export interface ContinueFusionDepthStopResult {
+  roomId: string
+  envelopeId: string
+  newEnvelopeId: string
+  runId: string
+  status: ContinueFusionDepthStopStatus
+  event: CollaborationRoomEvent
+}
+
 /** confirm-resume 结果状态。 */
 export type FusionResumeContinuationStatus = "confirmed" | "already_confirmed"
 

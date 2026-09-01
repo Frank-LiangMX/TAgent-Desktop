@@ -25,7 +25,10 @@ import {
   type PublishFusionArtifactInput,
   type RequestFusionUserApprovalInput, type ResolveFusionUserApprovalInput, type SendFusionMailboxInput, type ReplyFusionMailboxInput, type AwaitFusionRunInput,
 } from './fusion-room-authority'
-import type { ConfirmFusionResumeContinuationInput } from './fusion-room-continuation'
+import type {
+  ConfirmFusionResumeContinuationInput,
+  ContinueFusionDepthStopInput,
+} from './fusion-room-continuation'
 import {
   FusionRoomHost,
   type FusionRoomAction,
@@ -83,6 +86,10 @@ export type FusionRoomGatewayAction =
   | {
       type: 'retry-run'
       input: Omit<RetryFusionRunInput, 'actorUserId'>
+    }
+  | {
+      type: 'continue-depth-stop'
+      input: Omit<ContinueFusionDepthStopInput, 'actorUserId'>
     }
   | {
       type: 'finish-run'
@@ -380,6 +387,11 @@ export class FusionRoomGateway {
       case 'retry-run':
         return {
           type: 'retry-run',
+          input: withScopedIdempotency(action.type, actorUserId, { ...action.input, actorUserId }),
+        }
+      case 'continue-depth-stop':
+        return {
+          type: 'continue-depth-stop',
           input: withScopedIdempotency(action.type, actorUserId, { ...action.input, actorUserId }),
         }
       case 'finish-run':

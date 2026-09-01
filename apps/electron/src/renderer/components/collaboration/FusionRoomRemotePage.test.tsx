@@ -336,4 +336,37 @@ describe("FusionRoomRemotePage metadata edit (P2-2)", () => {
     });
     m.unmount();
   });
+
+  test("远程 depth_stop 显示继续一次并派发 continue-depth-stop", async () => {
+    const { session, dispatch } = mkSession(
+      mkView({
+        continuations: [{
+          id: "env-stop",
+          roomId: "room-remote",
+          kind: "depth_stop",
+          requiresUserConfirm: true,
+          sideEffectRisk: "unknown",
+          summary: "A2A 深度停止信封",
+          refs: { envelopeId: "env-stop" },
+        }],
+      }),
+    );
+    const m = mount(<FusionRoomRemotePage session={session} onClose={vi.fn()} />);
+    await act(async () => {});
+
+    const continueButton = findButton(m.container, "继续一次");
+    await act(async () => {
+      continueButton.click();
+      await Promise.resolve();
+    });
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "continue-depth-stop",
+      input: {
+        roomId: "room-remote",
+        envelopeId: "env-stop",
+        idempotencyKey: "continue-depth-stop:env-stop",
+      },
+    });
+    m.unmount();
+  });
 });

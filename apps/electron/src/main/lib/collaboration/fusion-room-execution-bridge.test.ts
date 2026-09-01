@@ -451,6 +451,62 @@ const adapter: MemberBackendAdapter = {
     bridge.dispose()
   })
 
+  test('continue-depth-stop：执行新目标成员 run，旧停止信封只保留审计状态', async () => {
+    const host = new FusionRoomHost()
+    host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })
+    host.dispatch('execution-room', { type: 'add-bot', input: { actorUserId: 'owner', seat } })
+    host.dispatch('execution-room', { type: 'add-bot', input: { actorUserId: 'owner', seat: secondSeat } })
+    const message = host.dispatch('execution-room', {
+      type: 'message',
+      input: { actorUserId: 'owner', content: '深度停止后继续' },
+    })
+    const messageId = message && 'id' in message ? message.id : ''
+    const resumedHost = new FusionRoomHost()
+    resumedHost.restoreRoom({
+      ...host.getSnapshot('execution-room'),
+      mailbox: [{
+        id: 'env-depth-stop',
+        roomId: 'execution-room',
+        fromMemberId: seat.id,
+        toMemberId: secondSeat.id,
+        type: 'question',
+        payload: '请继续审阅',
+        rootMessageId: messageId,
+        causationId: 'run-old',
+        depth: 4,
+        state: 'cancelled',
+        attemptId: '550e8400-e29b-41d4-a716-446655440000',
+        delivery: 'failed',
+        stopReason: 'max_depth',
+        continueUsed: false,
+        sourceMessageId: messageId,
+        createdAt: 2,
+      }],
+    })
+
+    const bridge = new FusionRoomExecutionBridge({ host: resumedHost, adapter })
+    const result = resumedHost.dispatch('execution-room', {
+      type: 'continue-depth-stop',
+      input: {
+        roomId: 'execution-room',
+        actorUserId: 'owner',
+        envelopeId: 'env-depth-stop',
+        idempotencyKey: 'depth-bridge-once',
+      },
+    })
+    bridge.handleAction('execution-room', { type: 'continue-depth-stop' }, result)
+    await bridge.waitForIdle()
+
+    const snapshot = resumedHost.getSnapshot('execution-room')
+    expect(snapshot.mailbox.find((item) => item.id === 'env-depth-stop')?.continueUsed).toBe(true)
+    expect(snapshot.mailbox).toHaveLength(2)
+    expect(snapshot.runs).toHaveLength(1)
+    expect(snapshot.runs[0]?.seatId).toBe(secondSeat.id)
+    expect(snapshot.runs[0]?.status).toBe('completed')
+    expect(snapshot.messages.filter((item) => item.authorType === 'member')).toHaveLength(1)
+    bridge.dispose()
+  })
+
   test('finish-run(cancelled) 会中断远程执行中的后端 turn', async () => {
     const host = new FusionRoomHost()
     host.createRoom({ roomId: 'execution-room', ownerUserId: 'owner', workspace, now: 1 })

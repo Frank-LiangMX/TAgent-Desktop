@@ -3,6 +3,7 @@ import type {
   FusionRoomHost,
   FusionRoomRun,
   FusionResumeContinuationResult,
+  ContinueFusionDepthStopResult,
 } from '@tagent/core'
 import type {
   CollaborationHostToolHandler,
@@ -123,6 +124,29 @@ export class FusionRoomExecutionBridge {
           result,
           'retry:' + result.id,
           '用户请求重试此前失败或取消的工作。',
+        )
+      }
+      return
+    }
+    if (action.type === 'continue-depth-stop' && isDepthStopContinuationResult(result)) {
+      let snapshot: FusionRoomAuthoritySnapshot
+      try { snapshot = this.options.host.getSnapshot(roomId) } catch { return }
+      const continuedEnvelope = snapshot.mailbox.find((item) => item.id === result.newEnvelopeId)
+      const run = snapshot.runs.find((item) => item.id === result.runId)
+      const seat = run
+        ? snapshot.botSeats.find((item) => item.id === run.seatId && item.status !== 'removed')
+        : undefined
+      const message = continuedEnvelope?.sourceMessageId
+        ? snapshot.messages.find((item) => item.id === continuedEnvelope.sourceMessageId)
+        : undefined
+      if (continuedEnvelope && run && seat && message) {
+        this.scheduleExisting(
+          snapshot,
+          message,
+          seat,
+          run,
+          'depth-stop:' + continuedEnvelope.id,
+          '用户已确认继续一次此前达到 A2A 深度上限的交接：' + continuedEnvelope.payload,
         )
       }
       return
@@ -503,4 +527,14 @@ function finishRun(
 
 function isRun(value: unknown): value is FusionRoomRun {
   return Boolean(asRun(value))
+}
+
+function isDepthStopContinuationResult(value: unknown): value is ContinueFusionDepthStopResult {
+  if (!value || typeof value !== 'object') return false
+  const result = value as Partial<ContinueFusionDepthStopResult>
+  return typeof result.roomId === 'string' &&
+    typeof result.envelopeId === 'string' &&
+    typeof result.newEnvelopeId === 'string' &&
+    typeof result.runId === 'string' &&
+    (result.status === 'continued' || result.status === 'already_continued')
 }

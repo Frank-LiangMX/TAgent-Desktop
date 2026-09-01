@@ -19,6 +19,7 @@ import type {
   RetryFusionRunInput,
 } from '@tagent/core'
 import type { CollaborationHumanMemberStatus } from '@tagent/shared'
+import type { ContinueFusionDepthStopInput } from '@tagent/core'
 import {
   FusionRoomViewModelController,
   type FusionRoomViewModel,
@@ -119,6 +120,12 @@ export class FusionRoomActionAdapter {
 
   async retryRun(input: Omit<RetryFusionRunInput, 'actorUserId'>): Promise<FusionRoomViewModel> {
     return this.dispatch({ type: 'retry-run', input })
+  }
+
+  async continueDepthStop(
+    input: Omit<ContinueFusionDepthStopInput, 'actorUserId'>,
+  ): Promise<FusionRoomViewModel> {
+    return this.dispatch({ type: 'continue-depth-stop', input })
   }
 
   async finishRun(

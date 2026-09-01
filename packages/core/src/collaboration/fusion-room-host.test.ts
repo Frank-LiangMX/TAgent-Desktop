@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest"
-import type { RoomBotSeat, RoomWorkspace } from "@tagent/shared"
+import type { CollaborationMailboxEnvelope, RoomBotSeat, RoomWorkspace } from "@tagent/shared"
 import { FusionRoomHost } from "./fusion-room-host"
 import { FusionRoomAuthorityError } from "./fusion-room-authority"
 
@@ -346,6 +346,75 @@ describe("FusionRoomHost", () => {
     })
     expect(again && "id" in again ? again.id : "").toBe(retried && "id" in retried ? retried.id : "")
     expect(host.getSnapshot(roomId).runs).toHaveLength(2)
+  })
+
+  test("continue-depth-stop 保留旧停止证据并创建新信封/新 run，且幂等", () => {
+    const host = new FusionRoomHost()
+    const roomId = "depth-continue-room"
+    host.createRoom({ roomId, ownerUserId: "owner", workspace: { ...workspace, id: "rws_depth", roomId, storageKey: roomId }, now: 1 })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat-a", roomId, "bot-a") } })
+    host.dispatch(roomId, { type: "add-bot", input: { actorUserId: "owner", seat: mkSeat("seat-b", roomId, "bot-b") } })
+    const message = host.dispatch(roomId, {
+      type: "message",
+      input: { actorUserId: "owner", content: "深度停止源消息" },
+    })
+    const messageId = message && "id" in message ? message.id : ""
+    const stopped: CollaborationMailboxEnvelope = {
+      id: "env-stop",
+      roomId,
+      fromMemberId: "seat-a",
+      toMemberId: "seat-b",
+      type: "question",
+      payload: "请继续审阅",
+      rootMessageId: messageId,
+      causationId: "run-old",
+      depth: 4,
+      state: "cancelled",
+      attemptId: "550e8400-e29b-41d4-a716-446655440000",
+      delivery: "failed",
+      stopReason: "max_depth",
+      continueUsed: false,
+      sourceMessageId: messageId,
+      createdAt: 2,
+    }
+    const resumedHost = new FusionRoomHost()
+    resumedHost.restoreRoom({ ...host.getSnapshot(roomId), mailbox: [stopped] })
+
+    const result = resumedHost.dispatch(roomId, {
+      type: "continue-depth-stop",
+      input: {
+        roomId,
+        actorUserId: "owner",
+        envelopeId: stopped.id,
+        idempotencyKey: "depth-continue-once",
+      },
+    })
+    expect(result && "status" in result ? result.status : "").toBe("continued")
+    expect(result && "newEnvelopeId" in result ? result.newEnvelopeId : "").not.toBe(stopped.id)
+    expect(result && "runId" in result ? result.runId : "").toBeTruthy()
+
+    const snapshot = resumedHost.getSnapshot(roomId)
+    expect(snapshot.mailbox.find((item) => item.id === stopped.id)?.continueUsed).toBe(true)
+    const nextEnvelope = snapshot.mailbox.find((item) => item.id !== stopped.id)!
+    expect(nextEnvelope.depth).toBe(stopped.depth + 1)
+    expect(nextEnvelope.delivery).toBe("dispatched")
+    expect(nextEnvelope.deliveryRunId).toBe(result && "runId" in result ? result.runId : "")
+    expect(snapshot.runs).toHaveLength(1)
+    expect(snapshot.runs[0]?.seatId).toBe("seat-b")
+    expect(snapshot.runs[0]?.status).toBe("running")
+
+    const again = resumedHost.dispatch(roomId, {
+      type: "continue-depth-stop",
+      input: {
+        roomId,
+        actorUserId: "owner",
+        envelopeId: stopped.id,
+        idempotencyKey: "depth-continue-once",
+      },
+    })
+    expect(again && "newEnvelopeId" in again ? again.newEnvelopeId : "").toBe(nextEnvelope.id)
+    expect(resumedHost.getSnapshot(roomId).mailbox).toHaveLength(2)
+    expect(resumedHost.getSnapshot(roomId).runs).toHaveLength(1)
   })
 
   test("confirmResumeContinuation 对 outbox 信封 delivery 合法前进到 dispatched，幂等", () => {

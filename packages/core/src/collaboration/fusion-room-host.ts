@@ -38,6 +38,8 @@ import type {
   ConfirmFusionResumeContinuationInput,
   FusionContinuationItem,
   FusionResumeContinuationResult,
+  ContinueFusionDepthStopInput,
+  ContinueFusionDepthStopResult,
 } from "./fusion-room-continuation"
 import { listFusionContinuations } from "./fusion-room-continuation"
 
@@ -60,6 +62,7 @@ export type FusionRoomAction =
   | { type: "usage"; input: RecordFusionUsageInput }
   | { type: "start-run"; input: StartFusionRunInput }
   | { type: "retry-run"; input: RetryFusionRunInput }
+  | { type: "continue-depth-stop"; input: ContinueFusionDepthStopInput }
   | { type: "finish-run"; input: FinishFusionRunInput }
   | { type: "await-run"; input: AwaitFusionRunInput }
   | { type: "update-metadata"; input: UpdateFusionRoomMetadataInput }
@@ -90,6 +93,7 @@ export type FusionRoomActionResult =
   | FusionUsageLedgerEntry
   | FusionRoomRun
   | FusionResumeContinuationResult
+  | ContinueFusionDepthStopResult
   | void
 
 export interface FusionRoomEventNotification {
@@ -372,6 +376,9 @@ export class FusionRoomHost {
         break
       case "retry-run":
         result = room.retryRun(action.input)
+        break
+      case "continue-depth-stop":
+        result = room.continueDepthStop(action.input)
         break
       case "finish-run":
         result = room.finishRun(action.input)

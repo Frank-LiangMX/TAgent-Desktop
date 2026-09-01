@@ -6,8 +6,19 @@ import type {
   CollaborationUserApprovalRequest, CollaborationUserApprovalStatus, CollaborationMailboxEnvelope,
   FusionHumanMember, RoomBotSeat, RoomWorkspace,
 } from "@tagent/shared"
-import { validateRoomWorkspace, transitionCollaborationRoomTaskStatus, canTransitionCollaborationDelivery } from "@tagent/shared"
-import type { ConfirmFusionResumeContinuationInput, FusionResumeContinuationResult } from "./fusion-room-continuation"
+import {
+  validateRoomWorkspace,
+  transitionCollaborationRoomTaskStatus,
+  canTransitionCollaborationDelivery,
+  canContinueCollaborationDepthStop,
+  isCollaborationAttemptId,
+} from "@tagent/shared"
+import type {
+  ConfirmFusionResumeContinuationInput,
+  FusionResumeContinuationResult,
+  ContinueFusionDepthStopInput,
+  ContinueFusionDepthStopResult,
+} from "./fusion-room-continuation"
 
 export type FusionAuthorityRoomStatus = "active" | "paused" | "archived"
 export type FusionAuthorityErrorCode =
@@ -1281,6 +1292,125 @@ export class FusionRoomAuthority {
       retryOfRunId: oldRun.id,
     }, input.idempotencyKey)
     return copy(run)
+  }
+
+  continueDepthStop(input: ContinueFusionDepthStopInput): ContinueFusionDepthStopResult {
+    this.activeRoom(); this.active(input.actorUserId)
+    if (input.roomId !== this.state.roomId) {
+      throw new FusionRoomAuthorityError("FORBIDDEN", "RoomSession mismatch")
+    }
+    const stopped = this.state.mailbox.find((item) => item.id === input.envelopeId)
+    if (!stopped) {
+      throw new FusionRoomAuthorityError("NOT_FOUND", "深度停止信封不存在")
+    }
+    if (input.idempotencyKey) {
+      const oldEvent = this.state.events.find((event) =>
+        event.type === "mailbox.changed" &&
+        event.idempotencyKey === input.idempotencyKey &&
+        event.payload.mailboxAction === "depth_continue" &&
+        event.payload.previousEnvelopeId === stopped.id)
+      const existingEnvelopeId = typeof oldEvent?.payload.newEnvelopeId === "string"
+        ? oldEvent.payload.newEnvelopeId
+        : undefined
+      const existingRunId = typeof oldEvent?.payload.runId === "string"
+        ? oldEvent.payload.runId
+        : undefined
+      const existingEnvelope = existingEnvelopeId
+        ? this.state.mailbox.find((item) => item.id === existingEnvelopeId)
+        : undefined
+      const existingRun = existingRunId
+        ? this.state.runs.find((item) => item.id === existingRunId)
+        : undefined
+      if (oldEvent && existingEnvelope && existingRun) {
+        return {
+          roomId: this.state.roomId,
+          envelopeId: stopped.id,
+          newEnvelopeId: existingEnvelope.id,
+          runId: existingRun.id,
+          status: "already_continued",
+          event: copy(oldEvent),
+        }
+      }
+    }
+    if (!canContinueCollaborationDepthStop(stopped)) {
+      throw new FusionRoomAuthorityError("INVALID_STATE", "该深度停止不可继续或已使用过继续机会")
+    }
+    if (!isCollaborationAttemptId(stopped.attemptId) || stopped.depth >= 10) {
+      throw new FusionRoomAuthorityError("INVALID_STATE", "继续条件不满足或已达硬深度上限")
+    }
+    const sourceMessageId = stopped.sourceMessageId
+    const source = sourceMessageId
+      ? this.state.messages.find((item) => item.id === sourceMessageId)
+      : undefined
+    if (!source) {
+      throw new FusionRoomAuthorityError("NOT_FOUND", "继续所需的源消息不存在")
+    }
+    const seat = this.seat(stopped.toMemberId)
+    this.canRun(seat)
+    if (seat.status === "running") {
+      throw new FusionRoomAuthorityError("CONFLICT", "目标 Bot 当前仍在运行")
+    }
+    const now = nowOf(this.clock)
+    const newEnvelope: CollaborationMailboxEnvelope = {
+      ...stopped,
+      id: "env_" + uniqueId(),
+      depth: stopped.depth + 1,
+      state: "pending",
+      attemptId: "attempt_" + uniqueId(),
+      delivery: "dispatched",
+      stopReason: undefined,
+      continueUsed: undefined,
+      sourceMessageId,
+      createdAt: now,
+    }
+    const fence = Math.max(
+      0,
+      ...this.state.runs.filter((item) => item.seatId === seat.id).map((item) => item.fence),
+    ) + 1
+    const run: FusionRoomRun = {
+      id: "run_" + uniqueId(),
+      roomId: this.state.roomId,
+      seatId: seat.id,
+      initiatedByUserId: input.actorUserId,
+      backend: seat.backend,
+      fence,
+      triggerMessageId: sourceMessageId,
+      status: "running",
+      createdAt: now,
+      updatedAt: now,
+    }
+    newEnvelope.deliveryRunId = run.id
+    this.state.mailbox = this.state.mailbox
+      .map((item) => item.id === stopped.id ? { ...item, continueUsed: true } : item)
+      .concat(newEnvelope)
+    this.state.runs.push(run)
+    this.state.botSeats = this.state.botSeats.map((item) =>
+      item.id === seat.id ? { ...item, status: "running" as const, updatedAt: now } : item)
+    const event = this.event("mailbox.changed", input.actorUserId, newEnvelope.id, {
+      mailboxAction: "depth_continue",
+      previousEnvelopeId: stopped.id,
+      newEnvelopeId: newEnvelope.id,
+      envelope: copy(newEnvelope),
+      runId: run.id,
+      depth: newEnvelope.depth,
+    }, input.idempotencyKey)
+    this.event("run.changed", input.actorUserId, run.id, {
+      runId: run.id,
+      seatId: run.seatId,
+      status: run.status,
+      fence,
+      backend: run.backend,
+      triggerMessageId: sourceMessageId,
+      depthContinueFromEnvelopeId: stopped.id,
+    }, input.idempotencyKey ? input.idempotencyKey + ":run" : undefined)
+    return {
+      roomId: this.state.roomId,
+      envelopeId: stopped.id,
+      newEnvelopeId: newEnvelope.id,
+      runId: run.id,
+      status: "continued",
+      event,
+    }
   }
 
   awaitRun(input: AwaitFusionRunInput): FusionRoomRun {
