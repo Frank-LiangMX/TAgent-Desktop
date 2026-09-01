@@ -165,6 +165,7 @@ import {
   channelSupportsRoomToolBridge,
   ChannelBackendAdapter,
   MemberBackendResolveError,
+  resetCodexRoomThreadCacheForTests,
 } from './member-backend-adapter'
 import { ChannelMemberSessionLifecycleAdapter } from './member-session-lifecycle'
 
@@ -486,6 +487,8 @@ describe('ChannelBackendAdapter.runTurn', () => {
     })
     expect(codexMemberState.member?.backendResumeToken).toBe('codex-thread-1')
 
+    // 模拟应用重启：进程内 Map 消失，但成员落盘的 backendResumeToken 仍在。
+    resetCodexRoomThreadCacheForTests()
     const second = await adapter.runTurn({
       roomId: 'cr_codex',
       memberId: 'cm_codex',
@@ -525,6 +528,30 @@ describe('ChannelBackendAdapter.runTurn', () => {
     abortCodexRoomSession('codex-cancel-session')
     await expect(promise).rejects.toThrow('native aborted')
     expect(codexState.aborts).toContain('codex-cancel-session')
+  })
+
+  test('Codex 重启后从成员 backendResumeToken 恢复 native thread', async () => {
+    const adapter = new ChannelBackendAdapter()
+    codexMemberState.member = {
+      ...codexMemberState.member,
+      backendResumeToken: 'persisted-thread-9',
+    }
+    resetCodexRoomThreadCacheForTests()
+
+    await adapter.runTurn({
+      roomId: 'cr_codex',
+      memberId: 'cm_codex',
+      runId: 'run_codex_restart',
+      triggerMessageId: 'msg_codex_restart',
+      logicalSessionId: 'codex-member-session',
+      backend: 'codex',
+      systemPrompt: '你是 Codex 成员',
+      prompt: '重启后继续',
+      signal: new AbortController().signal,
+    })
+
+    expect(codexState.resumeThreadIds).toEqual(['persisted-thread-9'])
+    expect(codexState.lastInput?.resumeThreadId).toBe('persisted-thread-9')
   })
 
   test('capabilities：S2 全 false（无 resume/工具/实时输入）', () => {

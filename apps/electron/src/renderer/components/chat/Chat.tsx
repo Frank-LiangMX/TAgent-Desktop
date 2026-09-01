@@ -734,7 +734,11 @@ export function Chat({
   /** Internal Core 主会话后端；外部渠道不显示也不消费。 */
   const [internalBackend, setInternalBackend] = useState<
     NonNullable<AgentSessionMeta["internalBackend"]>
-  >(session.internalBackend ?? "kscc");
+  >(
+    session.internalBackend ??
+      (onDraftWorkspaceChange ? "codex-app-server" : "kscc"),
+  );
+  const internalBackendTouchedRef = useRef(false);
   const [codexRuntimeStatus, setCodexRuntimeStatus] = useState<{
     available: boolean;
     source?: "explicit" | "environment" | "system" | "managed";
@@ -1173,6 +1177,7 @@ export function Chat({
   const showInternalBackend =
     selectionChannel?.provider === "kscc-internal" ||
     sessionChannel?.provider === "kscc-internal";
+  const isDraftSession = Boolean(onDraftWorkspaceChange);
   const internalBackendSwitchDisabled = running || runStartedAt != null;
   useEffect(() => {
     if (!showInternalBackend) return;
@@ -1180,24 +1185,44 @@ export function Chat({
     void window.electronAPI
       .getCodexRuntimeStatus()
       .then((status) => {
-        if (!cancelled) setCodexRuntimeStatus(status);
+        if (cancelled) return;
+        setCodexRuntimeStatus(status);
+        // 新草稿优先 Codex；若本机没有可用 App Server，自动回退到 KSCC。
+        // 已物化会话不在这里改写，避免旧会话在打开时悄然换核。
+        if (
+          isDraftSession &&
+          !session.internalBackend &&
+          !internalBackendTouchedRef.current
+        ) {
+          setInternalBackend(
+            status.available ? "codex-app-server" : "kscc",
+          );
+        }
       })
       .catch((error) => {
-        if (!cancelled) {
-          setCodexRuntimeStatus({
-            available: false,
-            reason: error instanceof Error ? error.message : String(error),
-          });
+        if (cancelled) return;
+        const fallbackStatus = {
+          available: false,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+        setCodexRuntimeStatus(fallbackStatus);
+        if (
+          isDraftSession &&
+          !session.internalBackend &&
+          !internalBackendTouchedRef.current
+        ) {
+          setInternalBackend("kscc");
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [showInternalBackend]);
+  }, [showInternalBackend, isDraftSession, session.internalBackend]);
   const changeInternalBackend = (
     next: NonNullable<AgentSessionMeta["internalBackend"]>,
   ): void => {
     if (internalBackendSwitchDisabled || next === internalBackend) return;
+    internalBackendTouchedRef.current = true;
     const previous = internalBackend;
     setInternalBackend(next);
     if (onDraftWorkspaceChange) return;
@@ -1240,6 +1265,7 @@ export function Chat({
     setReasoningEffort(DEFAULT_REASONING_EFFORT); // 切会话重置，下面异步回显持久化值
     setExecutionMode(DEFAULT_EXECUTION_MODE); // 切会话重置，下面异步回显持久化值
     setPermissionMode(TAGENT_DEFAULT_PERMISSION_MODE); // 切会话重置，下面异步回显持久化值
+    internalBackendTouchedRef.current = false;
     setBackgroundCrewBanner(null); // 切会话清掉后台班组提示
     // welcome 形态点提示词时暂存的文本：草稿态挂载后预填输入框并清空。
     // 只有刚 newSession 的草稿会带 pending；切到已有会话时它已被清空，不误填。
@@ -1389,7 +1415,11 @@ export function Chat({
           );
           setInternalBackend(
             persisted.internalBackend ??
-              (persisted.codexThreadId ? "codex-app-server" : "kscc"),
+              (persisted.codexThreadId
+                ? "codex-app-server"
+                : onDraftWorkspaceChange
+                  ? "codex-app-server"
+                  : "kscc"),
           );
           setPendingModeSuggestion(
             persisted.pendingExecutionModeSuggestion ?? null,
@@ -1402,7 +1432,10 @@ export function Chat({
               : [],
           );
         } else {
-          setInternalBackend(session.internalBackend ?? "kscc");
+          setInternalBackend(
+            session.internalBackend ??
+              (onDraftWorkspaceChange ? "codex-app-server" : "kscc"),
+          );
           setPendingModeSuggestion(null);
           setSessionBoardId(null);
           setActiveMentionRoleIds([]);

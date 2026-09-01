@@ -87,7 +87,7 @@ export function RunModeSelector({
   subagentEagerness,
   onSubagentEagernessChange,
   showInternalBackend,
-  internalBackend = 'kscc',
+  internalBackend = 'codex-app-server',
   onInternalBackendChange,
   codexRuntimeStatus,
   internalBackendDisabled,
@@ -166,7 +166,7 @@ export function RunModeSelector({
               }
               selected={internalBackend === 'codex-app-server'}
               disabled={
-                internalBackendDisabled || codexRuntimeStatus?.available !== true
+                internalBackendDisabled || codexRuntimeStatus?.available === false
               }
               trailing={
                 internalBackend === 'codex-app-server' ? (

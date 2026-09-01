@@ -361,6 +361,11 @@ const CHANNEL_BACKEND_CAPABILITIES: CollaborationMemberCapabilities = {
 const codexRoomAdapter = new CodexAppServerAdapter();
 const codexRoomThreadIds = new Map<string, string>();
 
+/** 测试用：模拟应用重启，清掉进程内 thread 快取但保留成员落盘记录。 */
+export function resetCodexRoomThreadCacheForTests(): void {
+  codexRoomThreadIds.clear();
+}
+
 /** 供协作室 service 的取消路径中断对应 Codex native turn。 */
 export function abortCodexRoomSession(logicalSessionId: string): void {
   codexRoomAdapter.abort(logicalSessionId);

@@ -350,9 +350,30 @@ function resolveInternalAdapterKind(
   if (meta?.sdkSessionId) return "kscc";
   if (requestedBackend === "codex-app-server") return "codex";
   if (requestedBackend === "kscc") return "kscc";
-  return process.env.TAGENT_INTERNAL_BACKEND?.trim().toLowerCase() === "codex"
+  const configured = process.env.TAGENT_INTERNAL_BACKEND?.trim().toLowerCase();
+  if (configured === "codex") return "codex";
+  if (configured === "kscc") return "kscc";
+  // 无显式选择时，以可用的 Codex App Server 为主核；没有 Runtime 才回退 KSCC。
+  // 这个探测只发生在没有会话元数据/没有请求覆盖的兼容路径，已物化会话仍由上面的
+  // internalBackend、codexThreadId、sdkSessionId 决定，不会被运行时探测悄然改核。
+  return resolveDetectedDefaultInternalAdapterKind();
+}
+
+let detectedDefaultInternalAdapterKind:
+  | Extract<ChannelKind, "kscc" | "codex">
+  | undefined;
+
+function resolveDetectedDefaultInternalAdapterKind(): Extract<
+  ChannelKind,
+  "kscc" | "codex"
+> {
+  if (detectedDefaultInternalAdapterKind) {
+    return detectedDefaultInternalAdapterKind;
+  }
+  detectedDefaultInternalAdapterKind = resolveCodexRuntime().available
     ? "codex"
     : "kscc";
+  return detectedDefaultInternalAdapterKind;
 }
 
 function persistedInternalBackend(
