@@ -104,6 +104,7 @@ const MODEL_LOGO_MAP: Record<string, string> = {
   'gpt-5-nano': GPT5NanoLogo,
   'gpt-5-chat': GPT5ChatLogo,
   'gpt-5-codex': GPT5CodexLogo,
+  'gpt-5\\.6': GPT5CodexLogo,
   'gpt-5\\.1-codex-mini': GPT51CodexMiniLogo,
   'gpt-5\\.1-codex': GPT51CodexLogo,
   'gpt-5\\.1-chat': GPT51ChatLogo,

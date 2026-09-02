@@ -121,7 +121,7 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
     this.closeSession(input.sessionId)
     const entry: SessionEntry = {
       queue: new AsyncPayloadQueue(),
-      normalizer: new CodexEventNormalizer(),
+      normalizer: new CodexEventNormalizer(input.model),
       onServerRequest: input.onServerRequest,
     }
     this.sessions.set(input.sessionId, entry)

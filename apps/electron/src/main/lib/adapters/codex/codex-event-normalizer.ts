@@ -44,6 +44,11 @@ interface TokenUsageBreakdown {
 
 export class CodexEventNormalizer {
   private readonly usageByTurn = new Map<string, TAgentUsage>()
+  private readonly modelId?: string
+
+  constructor(modelId?: string) {
+    this.modelId = modelId?.trim() || undefined
+  }
 
   feed(notification: RoutedCodexNotification): TAgentDesktopStreamPayload[] {
     const params = this.asRecord(notification.params)
@@ -103,6 +108,7 @@ export class CodexEventNormalizer {
           type: 'assistant',
           uuid: item.id,
           createdAt: this.timestamp(params.startedAtMs),
+          ...(this.modelId ? { modelId: this.modelId } : {}),
           content: [tool],
           _partial: true,
         },
@@ -335,6 +341,12 @@ export class CodexEventNormalizer {
   }
 
   private messagePayload(message: TAgentMessage): TAgentDesktopStreamPayload {
+    if (message.type === 'assistant' && this.modelId && !message.modelId) {
+      return {
+        kind: 'sdk_message',
+        message: { ...message, modelId: this.modelId },
+      }
+    }
     return { kind: 'sdk_message', message }
   }
 

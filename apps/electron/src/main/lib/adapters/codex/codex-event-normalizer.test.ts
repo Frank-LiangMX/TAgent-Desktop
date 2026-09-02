@@ -15,6 +15,34 @@ function notification(
 }
 
 describe('CodexEventNormalizer', () => {
+  it('给落盘的 assistant 消息附上本轮实际模型 ID', () => {
+    const normalizer = new CodexEventNormalizer('gpt-5.6-sol')
+    expect(
+      normalizer.feed(
+        notification('item/completed', {
+          turnId: 'turn_1',
+          completedAtMs: 200,
+          item: {
+            type: 'agentMessage',
+            id: 'msg_1',
+            text: '完成',
+          },
+        }),
+      ),
+    ).toEqual([
+      {
+        kind: 'sdk_message',
+        message: {
+          type: 'assistant',
+          uuid: 'msg_1',
+          createdAt: 200,
+          modelId: 'gpt-5.6-sol',
+          content: [{ type: 'text', text: '完成' }],
+        },
+      },
+    ])
+  })
+
   it('把 agent/reasoning delta 映射到统一流式事件', () => {
     const normalizer = new CodexEventNormalizer()
     expect(
