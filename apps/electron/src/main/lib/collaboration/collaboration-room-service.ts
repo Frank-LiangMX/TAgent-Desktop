@@ -62,6 +62,7 @@ import {
   COLLABORATION_ARTIFACT_MAX_CONTENT_BYTES,
   COLLABORATION_ARTIFACT_SUMMARY_MAX_LENGTH,
   collaborationRunIdempotencyKey,
+  type CollaborationMessage,
   collaborationContinuationIdempotencyKey,
   collaborationEnvelopeIdempotencyKey,
   canContinueCollaborationDepthStop,
@@ -91,7 +92,6 @@ import {
   type CollaborationMailboxEnvelope,
   type CollaborationMember,
   type CollaborationMemberCapabilities,
-  type CollaborationMessage,
   type CollaborationRoom,
   type CollaborationHumanMember,
   type CollaborationRoomChangedPayload,
@@ -185,6 +185,7 @@ import {
   upsertUserApprovalRequest,
   saveRoomTaskIfCurrent,
   findRunByIdempotencyKey,
+  findMessageByIdempotencyKey,
 } from "./collaboration-room-repository";
 import {
   abortCodexRoomSession,
@@ -454,11 +455,20 @@ export class CollaborationRoomService {
         );
       },
       start: (entry: RoomSchedulerEntry) => {
+        // queued run 可能经历了成员配置/房间预算/目标消息变化；启动时重新读取
+        // 权威快照，不能把入队时的旧对象直接带进执行层。
+        const latestRoom = getRoom(entry.roomId) ?? entry.room;
+        const latestMember = getMember(entry.memberId) ?? entry.member;
+        const latestTrigger =
+          listMessagesByRoom(entry.roomId).find(
+            (message) => message.id === entry.run.triggerMessageId,
+          ) ?? entry.triggerMessage;
+        const latestRun = getRun(entry.runId) ?? entry.run;
         const exec = this.executeRun(
-          entry.room,
-          entry.member,
-          entry.run,
-          entry.triggerMessage,
+          latestRoom,
+          latestMember,
+          latestRun,
+          latestTrigger,
         ).catch((err) => {
           // executeRun 内部已处理所有终态；此处兜底防止 unhandledRejection
           console.error(
@@ -1126,6 +1136,16 @@ export class CollaborationRoomService {
     if (!text && !(input.attachments?.length ?? 0)) {
       throw new Error("消息内容不能为空");
     }
+    const idempotencyKey = input.idempotencyKey?.trim();
+    if (idempotencyKey) {
+      const existing = findMessageByIdempotencyKey(idempotencyKey);
+      if (existing) {
+        if (existing.roomId !== room.id) {
+          throw new Error("幂等键已被其他房间使用");
+        }
+        return existing;
+      }
+    }
     const actorUserId = resolveHumanActorUserId(input.actorUserId);
     const actor = this.listHumanMembers(room.id).find(
       (human) => human.userId === actorUserId && human.status === "active",
@@ -1162,6 +1182,7 @@ export class CollaborationRoomService {
       roomId: input.roomId,
       authorType: "user",
       authorId: actorUserId,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
       kind: "chat",
       content: text,
       ...(savedAttachments.length > 0 ? { attachments: savedAttachments } : {}),
@@ -3240,6 +3261,17 @@ export class CollaborationRoomService {
   async awaitAllRuns(): Promise<void> {
     while (true) {
       const snapshot = [...this.inflight.values()];
+      if (snapshot.length === 0) return;
+      await Promise.allSettled(snapshot);
+    }
+  }
+
+  /** 仅等待指定房间当前在途的 run，供退出/关闭单个房间时收口使用。 */
+  async awaitRunsForRoom(roomId: string): Promise<void> {
+    while (true) {
+      const snapshot = [...this.inflight.entries()]
+        .filter(([runId]) => getRun(runId)?.roomId === roomId)
+        .map(([, promise]) => promise);
       if (snapshot.length === 0) return;
       await Promise.allSettled(snapshot);
     }

@@ -95,7 +95,7 @@ export function ModelSelector({
   )
   // 历史版本可能遗留多个 kscc-internal 记录。它们属于同一个内网运行时，
   // 选择器只展示一组；旧会话优先沿用自己记录的 channelId，避免兼容数据重复露出。
-  const activeInternalGroup = activeChannel && isLocalRuntimeProvider(activeChannel.provider)
+  const activeInternalGroup = lockedKind && activeChannel && isLocalRuntimeProvider(activeChannel.provider)
     ? uniqueInternalGroups.find(({ channel }) => channel.id === activeChannel.id)
     : undefined
   const internalGroups = activeInternalGroup
@@ -200,7 +200,7 @@ export function ModelSelector({
         side="top"
         sideOffset={8}
         collisionPadding={12}
-        className="w-[320px] overflow-hidden p-0"
+        className="max-h-[var(--radix-popover-content-available-height)] w-[320px] overflow-y-auto overflow-x-hidden p-0"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         {/* 当前模型 header：大头图 + 名称 + 渠道 + 可用数 chip */}

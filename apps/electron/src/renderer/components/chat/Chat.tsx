@@ -387,7 +387,7 @@ export function Chat({
   /**
    * 草稿态发送首条消息物化为正式 tab 后通知 App 清草稿态。
    * 已有 tab（SessionRouter）不传；调用方负责 setDraftSession(null)。
-   * 不清的话切到其他 tab 时草稿 overlay 条件会复活，覆盖带 TabBar 的会话页。
+   * 不清的话切到其他 tab 时草稿页会继续占据主区，遮住带 TabBar 的会话页。
    */
   onMaterialized?: () => void;
   /** 草稿首发前由 App 统一检查顶部标签容量；false 时不发送，避免后台孤儿会话。 */
@@ -3004,8 +3004,8 @@ export function Chat({
           setTabs(result.tabs);
           setActiveTabId(result.activeTabId);
           if (result.evictedTab) onTabEvicted?.(result.evictedTab);
-          // 草稿转正：通知 App 清 draftSession，否则切到其他 tab 时
-          // 草稿 overlay 条件（draftSession.id !== activeTab.sessionId）会复活，覆盖带 TabBar 的会话页
+          // 草稿转正：通知 App 清 draftSession，否则新会话页会继续占据主区，
+          // 导致正式会话页无法恢复。
           onMaterialized?.();
         } else {
           setTabs((prev) =>
@@ -3769,6 +3769,33 @@ export function Chat({
     [setRichPreviewRequest, setSplitDockMode, splitDockMode],
   );
 
+  const recoverStaleCollaborationLink = useCallback(async (): Promise<void> => {
+    try {
+      await (window.electronAPI as any).updateSessionMeta(sessionId, {
+        fusionRoomId: undefined,
+        fusionMode:
+          (session.botProfileIds?.length ?? 0) >= 2
+            ? "multi-bot"
+            : (session.botProfileIds?.length ?? 0) === 1
+              ? "single-bot"
+              : "ordinary",
+        fusionCoordinatorBotProfileId: undefined,
+      });
+      window.dispatchEvent(
+        new CustomEvent("tagent:session-meta-changed", {
+          detail: { sessionId },
+        }),
+      );
+      toast.success("已解除失效的协作室关联", {
+        description: "原会话已恢复，可以继续按普通会话使用。",
+      });
+    } catch (error) {
+      toast.error("解除协作室关联失败", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [session.botProfileIds, sessionId]);
+
   return (
     <MessageRichPreviewProvider value={richPreviewProviderValue}>
       <MessageFilePathProvider value={filePathProviderValue}>
@@ -3781,7 +3808,12 @@ export function Chat({
               onRoomsChanged={() =>
                 setFusionRoomRefreshKey((value) => value + 1)
               }
-              onNewRoom={() => undefined}
+              onNewRoom={() => void recoverStaleCollaborationLink()}
+              onOpenSettings={(tab) =>
+                window.dispatchEvent(
+                  new CustomEvent("tagent:open-settings", { detail: { tab } }),
+                )
+              }
               onCollaborationExited={() =>
                 setFusionRoomRefreshKey((value) => value + 1)
               }

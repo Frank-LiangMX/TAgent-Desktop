@@ -929,6 +929,11 @@ declare global {
       listCollaborationMembers: (
         roomId: string,
       ) => Promise<CollaborationMember[]>;
+      getCollaborationMemberBackendStatuses: (
+        roomId: string,
+      ) => Promise<
+        import("@tagent/shared").CollaborationMemberBackendStatus[]
+      >;
       // 协作室（Stage 2：run 状态机 + 取消 + CHANGED 广播；Stage 3：多成员并行 + 添加成员）
       listCollaborationRuns: (
         input: ListCollaborationRunsInput,
@@ -1224,18 +1229,25 @@ export function App(): JSX.Element {
   };
 
   useEffect(() => {
+    const openSettingsFromChild = (event: Event): void => {
+      const tab = (event as CustomEvent<{ tab?: SettingsTab }>).detail?.tab;
+      openSettings(tab ?? "general");
+    };
+    window.addEventListener("tagent:open-settings", openSettingsFromChild);
     const openKnowledgeBases = () => {
       setShowSettings(false);
       setActiveRail("knowledge");
       setSidebarOpen(false);
     };
     window.addEventListener("tagent:open-knowledge-bases", openKnowledgeBases);
-    return () =>
+    return () => {
+      window.removeEventListener("tagent:open-settings", openSettingsFromChild);
       window.removeEventListener(
         "tagent:open-knowledge-bases",
         openKnowledgeBases,
       );
-  }, []);
+    };
+  }, [openSettings]);
 
   // 知识库来源芯片点击：切到知识库 rail，再派发选中目标库 + 文档。
   // 事件监听都在 useEffect 里注册（paint 之后），不能用 rAF（会在监听注册前派发而丢失），
@@ -1530,7 +1542,7 @@ export function App(): JSX.Element {
       return;
     }
     // 已在草稿页（未发送）→ 复用，不另开（避免丢弃已输入内容）
-    if (draftSession && !activeTab) return;
+    if (draftSession) return;
     // 默认绑定最近真正激活过的工作区。工作区列表本身不保证按活跃时间排序，
     // 因此不能把 workspaces[0] 当作“最近”。当前 tab 是持久化值尚未回填时的兜底。
     const preferredWorkspaceId =
@@ -1542,7 +1554,7 @@ export function App(): JSX.Element {
     if (!workspace) return;
     setLastActiveWorkspaceId(workspace.id);
     // 进入草稿（无 tab）：发送首条消息时主进程建持久 meta + 绑定渠道 + 绑定 workspace
-    // 草稿以 overlay 覆盖当前页（tab 激活态保持），返回键关掉蒙版回原页
+    // 草稿直接接管主区；已有 tab 的激活状态保持，返回后恢复原会话
     setDraftSession({
       id: "session-" + Date.now(),
       title: "新会话",
@@ -1585,7 +1597,7 @@ export function App(): JSX.Element {
 
   /**
    * 标签栏显隐：只要存在正式 active tab 就显示。
-   * 草稿态没有 activeTab，仍不显示；Bot 与摘要入口共享右侧动作区。
+   * 草稿态直接接管主区，因此不显示正式会话标签栏；Bot 与摘要入口共享右侧动作区。
    */
   const showTabBar = Boolean(activeTab);
 
@@ -1664,7 +1676,7 @@ export function App(): JSX.Element {
             )
           }
         >
-          {/* main：插件页 | 会话页/欢迎页（底层）+ 新会话草稿 overlay（覆盖层）。
+          {/* main：插件页 | 新会话页 | 正式会话页 | 欢迎页。
             欢迎页 / 新会话页的入场动画由 NewConversationLanding 内各元素自行承担
             （标题逐词模糊渐现、输入框上滑淡入、提示词错落淡入），非整页位移；
             故此处不做整页过渡，直接切换，新页元素各自重新入场。 */}
@@ -1703,91 +1715,95 @@ export function App(): JSX.Element {
             >
               <RolesPage />
             </div>
+          ) : draftSession ? (
+            <div className="relative h-full min-h-0">
+              <AnimatePresence initial={false} mode="sync">
+                <motion.div
+                  key={draftSession.id}
+                  className="absolute inset-0"
+                  initial={
+                    reducedMotion ? false : { opacity: 0, y: 12, scale: 0.99 }
+                  }
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={
+                    reducedMotion
+                      ? { opacity: 0 }
+                      : { opacity: 0, y: 8, scale: 0.99 }
+                  }
+                  transition={
+                    reducedMotion
+                      ? { duration: 0 }
+                      : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }
+                  }
+                >
+                  <Chat
+                    session={draftSession}
+                    onDraftWorkspaceChange={(id) => {
+                      setLastActiveWorkspaceId(id);
+                      setDraftSession((prev) =>
+                        prev ? { ...prev, workspaceId: id } : prev,
+                      );
+                    }}
+                    onBack={() => setDraftSession(null)}
+                    onMaterialized={() => setDraftSession(null)}
+                    canMaterializeTab={canMaterializeTab}
+                    onTabEvicted={(tab) => {
+                      queueMicrotask(() =>
+                        dockApi?.getPanel(tab.sessionId)?.api.close(),
+                      );
+                    }}
+                  />
+                </motion.div>
+              </AnimatePresence>
+            </div>
           ) : activeTab ? (
-            splitDockMode ? (
-              <WorkspaceDock />
-            ) : (
-              <div className="flex h-full flex-col">
-                {showTabBar && <TabBar />}
-                <div className="min-h-0 flex-1">
-                  <SessionRouter />
+            <div className="relative h-full min-h-0">
+              {splitDockMode ? (
+                <WorkspaceDock />
+              ) : (
+                <div className="flex h-full flex-col">
+                  {showTabBar && <TabBar />}
+                  <div className="min-h-0 flex-1">
+                    <SessionRouter />
+                  </div>
                 </div>
-              </div>
-            )
+              )}
+            </div>
           ) : workspaces.length === 0 ? (
             <ProjectOnboarding onOpenProject={() => void handleOpenProject()} />
           ) : (
-            // 欢迎页和草稿会话共享同一舞台，保证它们在切换时可以交叉过渡。
+            // 欢迎页单独占据主区；有草稿时由上面的 draftSession 分支接管主区。
             <div className="relative h-full min-h-0">
               <AnimatePresence initial={false} mode="sync">
-                {draftSession ? (
-                  <motion.div
-                    key={draftSession.id}
-                    className="absolute inset-0"
-                    initial={
-                      reducedMotion ? false : { opacity: 0, y: 12, scale: 0.99 }
+                <motion.div
+                  key="new-session-welcome"
+                  className="absolute inset-0"
+                  initial={false}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={
+                    reducedMotion
+                      ? { opacity: 0 }
+                      : { opacity: 0, y: -10, scale: 0.985 }
+                  }
+                  transition={
+                    reducedMotion
+                      ? { duration: 0 }
+                      : { duration: 0.18, ease: [0.4, 0, 1, 1] }
+                  }
+                >
+                  <NewConversationLanding
+                    composer={
+                      <WelcomeStart
+                        onNewSession={() => newSession()}
+                        onOpenProject={() => void handleOpenProject()}
+                      />
                     }
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={
-                      reducedMotion
-                        ? { opacity: 0 }
-                        : { opacity: 0, y: 8, scale: 0.99 }
-                    }
-                    transition={
-                      reducedMotion
-                        ? { duration: 0 }
-                        : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }
-                    }
-                  >
-                    <Chat
-                      session={draftSession}
-                      onDraftWorkspaceChange={(id) => {
-                        setLastActiveWorkspaceId(id);
-                        setDraftSession((prev) =>
-                          prev ? { ...prev, workspaceId: id } : prev,
-                        );
-                      }}
-                      onBack={() => setDraftSession(null)}
-                      onMaterialized={() => setDraftSession(null)}
-                      canMaterializeTab={canMaterializeTab}
-                      onTabEvicted={(tab) => {
-                        queueMicrotask(() =>
-                          dockApi?.getPanel(tab.sessionId)?.api.close(),
-                        );
-                      }}
-                    />
-                  </motion.div>
-                ) : (
-                  <motion.div
-                    key="new-session-welcome"
-                    className="absolute inset-0"
-                    initial={false}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={
-                      reducedMotion
-                        ? { opacity: 0 }
-                        : { opacity: 0, y: -10, scale: 0.985 }
-                    }
-                    transition={
-                      reducedMotion
-                        ? { duration: 0 }
-                        : { duration: 0.18, ease: [0.4, 0, 1, 1] }
-                    }
-                  >
-                    <NewConversationLanding
-                      composer={
-                        <WelcomeStart
-                          onNewSession={() => newSession()}
-                          onOpenProject={() => void handleOpenProject()}
-                        />
-                      }
-                      onPickSuggestion={(text) => {
-                        setPendingSuggestion(text);
-                        newSession();
-                      }}
-                    />
-                  </motion.div>
-                )}
+                    onPickSuggestion={(text) => {
+                      setPendingSuggestion(text);
+                      newSession();
+                    }}
+                  />
+                </motion.div>
               </AnimatePresence>
             </div>
           )}

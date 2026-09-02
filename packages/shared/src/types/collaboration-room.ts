@@ -589,6 +589,13 @@ export interface CollaborationMember {
   removedAt?: number;
 }
 
+/** 主进程按真实运行条件解析出的成员后端状态。 */
+export interface CollaborationMemberBackendStatus {
+  memberId: string;
+  available: boolean;
+  reason?: string;
+}
+
 // ===== 实体：Message =====
 
 /**
@@ -606,6 +613,8 @@ export interface CollaborationMessage {
   authorType: CollaborationMessageAuthorType;
   /** 作者 ID（user 类型为用户标识，member 类型为成员 ID，system 为 'system'） */
   authorId: string;
+  /** 用户发送操作的幂等键；旧消息缺省。 */
+  idempotencyKey?: string;
   /** 消息种类 */
   kind: CollaborationMessageKind;
   /** 文本内容 */
@@ -1859,6 +1868,8 @@ export interface UpdateCollaborationRoomInput {
 export interface AppendCollaborationUserMessageInput {
   /** 房间 ID */
   roomId: string;
+  /** 客户端为一次发送操作生成的稳定幂等键；重复调用复用同一消息。 */
+  idempotencyKey?: string;
   /** 消息文本；允许为空，但必须至少携带一个附件 */
   content: string;
   /** 待发送附件（renderer 传 base64，service 负责持久化） */

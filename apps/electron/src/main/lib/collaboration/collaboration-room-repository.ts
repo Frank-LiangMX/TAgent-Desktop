@@ -297,6 +297,15 @@ export function listMessagesByRoom(roomId: string): CollaborationMessage[] {
     .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
 }
 
+/** 按用户发送幂等键查消息；旧消息没有幂等键时自然跳过。 */
+export function findMessageByIdempotencyKey(
+  idempotencyKey: string,
+): CollaborationMessage | undefined {
+  return readMessagesConfig().messages.find(
+    (message) => message.idempotencyKey === idempotencyKey,
+  )
+}
+
 /** 按游标读取某房间较早的消息，避免 renderer 首次加载完整历史。 */
 export function listMessagesByRoomPage(
   roomId: string,

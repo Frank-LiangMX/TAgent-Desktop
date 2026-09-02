@@ -33,6 +33,7 @@ import {
   type CollaborationArtifact,
   type CollaborationMailboxEnvelope,
   type CollaborationMember,
+  type CollaborationMemberBackendStatus,
   type CollaborationHumanMember,
   type CollaborationMemberPreset,
   type CollaborationMessage,
@@ -97,6 +98,9 @@ import { onKanbanTaskStatusChanged } from "../kanban/kanban-bootstrap";
 import { getSessionMeta, updateSessionMeta } from "../agent/session-store";
 import { getBotProfileRecord } from "../bot/bot-profile-service";
 import { setRegisteredCollaborationRoomService } from "./collaboration-runtime";
+import { resolveChannelBackendConfig } from "./member-backend-adapter";
+import { resolveTaskSubagentBackend } from "../agent/cli-workers/resolve-backend";
+import { resolveCodexRuntimeAsync } from "../adapters/codex/codex-runtime-resolver";
 
 /**
  * S4.5 IPC 守卫：委托 service.continueDepthStop 前校验信封属于该房间且仍可继续一次。
@@ -119,6 +123,62 @@ export function resolveCollaborationDepthStopContinue(
     return { ok: false, reason: "该深度停止不可继续或已使用过继续机会" };
   }
   return { ok: true, envelope };
+}
+
+/** 按成员实际运行路径解析后端可用性；不把凭据或本机路径返回 renderer。 */
+export async function getCollaborationMemberBackendStatuses(
+  service: CollaborationRoomService,
+  roomId: string,
+): Promise<CollaborationMemberBackendStatus[]> {
+  const room = service.getRoomById(roomId);
+  if (!room) throw new Error("房间不存在");
+  const members = service.listMembers(roomId);
+  const needsCodex = members.some(
+    (member) => member.status !== "removed" && member.backend === "codex",
+  );
+  const codexStatus = needsCodex ? await resolveCodexRuntimeAsync() : null;
+
+  return Promise.all(
+    members.map(async (member) => {
+      if (member.status === "removed") {
+        return { memberId: member.id, available: false, reason: "成员已移除" };
+      }
+      try {
+        if (member.backend === "codex") {
+          return codexStatus?.available
+            ? { memberId: member.id, available: true }
+            : {
+                memberId: member.id,
+                available: false,
+                reason: "未检测到可用的 Codex Runtime",
+              };
+        }
+        if (member.backend === "cli") {
+          const resolved = resolveTaskSubagentBackend({
+            preferredCliId: member.cliWorkerId,
+          });
+          return resolved.kind === "cli"
+            ? { memberId: member.id, available: true }
+            : {
+                memberId: member.id,
+                available: false,
+                reason: "指定的 CLI worker 未启用或本机不可用",
+              };
+        }
+        resolveChannelBackendConfig({
+          channelId: member.channelId,
+          modelId: member.modelId,
+        });
+        return { memberId: member.id, available: true };
+      } catch (error) {
+        return {
+          memberId: member.id,
+          available: false,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }),
+  );
 }
 
 /**
@@ -146,11 +206,15 @@ export function syncSourceSessionAfterRoomMemberChange(
   const botProfileIds = activeMembers
     .map((member) => member.botProfileId)
     .filter((id): id is string => Boolean(id));
+  const activeMemberCount = activeMembers.length;
   const coordinatorBotProfileId = activeMembers.find(
     (member) => member.isCoordinator && member.botProfileId,
   )?.botProfileId;
 
-  if (botProfileIds.length >= 2) {
+  // 来源会话的 botProfileIds 只能表达 Bot 身份，不能拿它代替房间成员总数。
+  // 手动 Codex/CLI/外部成员没有 botProfileId；只要房间仍有至少两名活跃成员，
+  // 就必须保留当前 fusionRoomId，否则移除一个 Bot 会误把仍在运行的房间拆掉。
+  if (activeMemberCount >= 2) {
     updateSessionMeta(sourceSessionId, {
       botProfileIds,
       fusionMode: "multi-bot",
@@ -323,6 +387,14 @@ export function registerCollaborationRoomIpc(
     ): Promise<CollaborationMember[]> => {
       return service.listMembers(input.roomId);
     },
+  );
+  ipcMain.handle(
+    COLLABORATION_ROOM_IPC_CHANNELS.GET_MEMBER_BACKEND_STATUS,
+    async (
+      _e,
+      input: { roomId: string },
+    ): Promise<CollaborationMemberBackendStatus[]> =>
+      getCollaborationMemberBackendStatuses(service, input.roomId),
   );
 
   ipcMain.handle(

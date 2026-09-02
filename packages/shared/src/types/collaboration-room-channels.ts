@@ -20,6 +20,7 @@ import type {
   CollaborationArtifact,
   CollaborationRoom,
   CollaborationMember,
+  CollaborationMemberBackendStatus,
   CollaborationMemberPreset,
   CollaborationMessage,
   CollaborationRoomTask,
@@ -71,6 +72,8 @@ export const COLLABORATION_ROOM_IPC_CHANNELS = {
   APPEND_USER_MESSAGE: "collaboration-room:append-user-message",
   /** 列出某房间全部成员（静态身份 + 运行状态） */
   LIST_MEMBERS: "collaboration-room:list-members",
+  /** 获取某房间成员后端的主进程权威可用性 */
+  GET_MEMBER_BACKEND_STATUS: "collaboration-room:get-member-backend-status",
   /** 列出房间内真实用户成员 */
   LIST_HUMAN_MEMBERS: "collaboration-room:list-human-members",
   /** 列出按用户标注的工作区绑定视图 */
@@ -516,6 +519,7 @@ export interface CollaborationRoomChangedPayload {
 //   - LIST_MESSAGES     → CollaborationMessage[]
 //   - APPEND_USER_MESSAGE → CollaborationMessage
 //   - LIST_MEMBERS      → CollaborationMember[]
+//   - GET_MEMBER_BACKEND_STATUS → CollaborationMemberBackendStatus[]
 //   - ADD_MEMBER        → CollaborationMember
 //   - LIST_RUNS         → CollaborationRunsPage
 //   - GET_RUN_SUMMARY   → CollaborationRunSummary

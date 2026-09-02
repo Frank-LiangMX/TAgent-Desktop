@@ -39,6 +39,7 @@ import type {
   CollaborationRoleSnapshot,
   CollaborationMailboxEnvelope,
   CollaborationMember,
+  CollaborationMemberBackendStatus,
   CollaborationMemberBackend,
   CollaborationHistoryCursor,
   CollaborationMessage,
@@ -295,6 +296,9 @@ function LocalCollaborationRoomsPage({
   const [loadingOlderHistory, setLoadingOlderHistory] = useState(false);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [cliWorkers, setCliWorkers] = useState<CliWorkersConfig | null>(null);
+  const [backendStatuses, setBackendStatuses] = useState<
+    CollaborationMemberBackendStatus[]
+  >([]);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [stoppingRuns, setStoppingRuns] = useState(false);
@@ -352,6 +356,10 @@ function LocalCollaborationRoomsPage({
   >({});
   const inputRef = useRef<ChatInputHandle>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sendingRef = useRef(false);
+  const sendIdempotencyKeyRef = useRef<string | null>(null);
+  const activeRoomIdRef = useRef(roomId);
+  activeRoomIdRef.current = roomId;
 
   // 切房间时清空深度停止与续跑的前端态（dismissed / loading / error）。
   // 仅依赖 roomId：刷新（refreshKey 变化）时保留 dismissed，避免广播刷新后已关闭的卡片复活。
@@ -369,73 +377,67 @@ function LocalCollaborationRoomsPage({
     setMessageCursor(null);
     setRunCursor(null);
     setLoadingOlderHistory(false);
+    sendIdempotencyKeyRef.current = null;
   }, [roomId]);
 
   // 选中房间 / 外部变更 → 重新拉取
   useEffect(() => {
     let cancelled = false;
+    // 切换房间后立即撤掉旧投影，异步读取完成前不允许继续操作旧房间。
+    setRoom(null);
+    setMessages([]);
+    setMembers([]);
+    setHumanMembers([]);
+    setWorkspaceBindings([]);
+    setRuns([]);
+    setRunSummary(null);
+    setMessageCursor(null);
+    setRunCursor(null);
+    setMailbox([]);
+    setTasks([]);
+    setArtifacts([]);
+    setBoardTasks([]);
+    setBoardSummary(null);
+    setApprovals([]);
+    setContinuations([]);
+    setBackendStatuses([]);
+    setStreamByRun({});
     void (async (): Promise<void> => {
       if (!roomId) {
-        setRoom(null);
-        setMessages([]);
-        setMembers([]);
-        setWorkspaceBindings([]);
-        setRuns([]);
-        setRunSummary(null);
-        setMessageCursor(null);
-        setRunCursor(null);
-        setMailbox([]);
-        setTasks([]);
-        setArtifacts([]);
-        setBoardTasks([]);
-        setBoardSummary(null);
-        setApprovals([]);
-        setContinuations([]);
-        setStreamByRun({});
         return;
       }
       try {
         const [
-          r,
-          msgsPage,
-          mems,
-          humans,
+          roomResult,
+          messagesResult,
+          membersResult,
+          humanMembersResult,
           workspaceBindingsResult,
-          runsPage,
-          runSummaryResult,
-          box,
-          tks,
-          arts,
-          aps,
-          conts,
+          runsResult,
         ] = await Promise.all([
-            window.electronAPI.getCollaborationRoom(roomId),
-            window.electronAPI.listCollaborationMessages({
-              roomId,
-              limit: COLLABORATION_HISTORY_PAGE_SIZE,
-            }),
-            window.electronAPI.listCollaborationMembers(roomId),
-            window.electronAPI.listCollaborationHumanMembers(roomId),
-            window.electronAPI.listCollaborationWorkspaceBindings(roomId),
-            window.electronAPI.listCollaborationRuns({
-              roomId,
-              limit: COLLABORATION_HISTORY_PAGE_SIZE,
-            }),
-            window.electronAPI.getCollaborationRunSummary(roomId),
-            window.electronAPI.listCollaborationMailbox(roomId),
-            window.electronAPI.listCollaborationRoomTasks(roomId),
-            window.electronAPI.listCollaborationArtifacts(roomId),
-            window.electronAPI.listCollaborationUserApprovals(roomId),
-            window.electronAPI.listCollaborationContinuations(roomId),
-          ]);
+          window.electronAPI.getCollaborationRoom(roomId),
+          window.electronAPI.listCollaborationMessages({
+            roomId,
+            limit: COLLABORATION_HISTORY_PAGE_SIZE,
+          }),
+          window.electronAPI.listCollaborationMembers(roomId),
+          window.electronAPI.listCollaborationHumanMembers(roomId),
+          window.electronAPI.listCollaborationWorkspaceBindings(roomId),
+          window.electronAPI.listCollaborationRuns({
+            roomId,
+            limit: COLLABORATION_HISTORY_PAGE_SIZE,
+          }),
+        ]);
         if (cancelled) return;
-        const messagesPage = msgsPage as CollaborationMessagesPage;
-        const loadedRunsPage = runsPage as CollaborationRunsPage;
-        setRoom(r ?? null);
+        const messagesPage = messagesResult as CollaborationMessagesPage;
+        const loadedRunsPage = runsResult as CollaborationRunsPage;
+        setRoom(roomResult ?? null);
         setMessages(Array.isArray(messagesPage?.items) ? messagesPage.items : []);
         setMessageCursor(messagesPage?.nextCursor ?? null);
-        setMembers(Array.isArray(mems) ? mems : []);
-        setHumanMembers(Array.isArray(humans) ? humans : []);
+        setMembers(Array.isArray(membersResult) ? membersResult : []);
+        setHumanMembers(
+          Array.isArray(humanMembersResult) ? humanMembersResult : [],
+        );
         setWorkspaceBindings(
           Array.isArray(workspaceBindingsResult)
             ? workspaceBindingsResult
@@ -445,16 +447,6 @@ function LocalCollaborationRoomsPage({
           Array.isArray(loadedRunsPage?.items) ? loadedRunsPage.items : [],
         );
         setRunCursor(loadedRunsPage?.nextCursor ?? null);
-        setRunSummary(
-          runSummaryResult && typeof runSummaryResult === "object"
-            ? (runSummaryResult as CollaborationRunSummary)
-            : null,
-        );
-        setMailbox(Array.isArray(box) ? box : []);
-        setTasks(Array.isArray(tks) ? tks : []);
-        setArtifacts(Array.isArray(arts) ? arts : []);
-        setApprovals(Array.isArray(aps) ? aps : []);
-        setContinuations(Array.isArray(conts) ? conts : []);
         const live = new Set(
           (Array.isArray(loadedRunsPage?.items)
             ? loadedRunsPage.items
@@ -469,6 +461,89 @@ function LocalCollaborationRoomsPage({
           }
           return next;
         });
+
+        // 增强数据不应阻断核心房间。单项失败时保留该区域的空态，同时记录诊断，
+        // 其他摘要/任务/审批仍然可以正常显示。
+        const enhancedResults = await Promise.allSettled([
+          window.electronAPI.getCollaborationRunSummary(roomId),
+          window.electronAPI.listCollaborationMailbox(roomId),
+          window.electronAPI.listCollaborationRoomTasks(roomId),
+          window.electronAPI.listCollaborationArtifacts(roomId),
+          window.electronAPI.listCollaborationUserApprovals(roomId),
+          window.electronAPI.listCollaborationContinuations(roomId),
+          window.electronAPI.getCollaborationMemberBackendStatuses(roomId),
+        ]);
+        if (cancelled) return;
+        const [
+          runSummaryResult,
+          mailboxResult,
+          tasksResult,
+          artifactsResult,
+          approvalsResult,
+          continuationsResult,
+          backendStatusesResult,
+        ] = enhancedResults;
+        if (runSummaryResult.status === "fulfilled") {
+          setRunSummary(
+            runSummaryResult.value && typeof runSummaryResult.value === "object"
+              ? (runSummaryResult.value as CollaborationRunSummary)
+              : null,
+          );
+        } else {
+          console.error("[协作室主区] 加载运行摘要失败:", runSummaryResult.reason);
+        }
+        if (mailboxResult.status === "fulfilled") {
+          setMailbox(
+            Array.isArray(mailboxResult.value) ? mailboxResult.value : [],
+          );
+        } else {
+          console.error("[协作室主区] 加载信箱失败:", mailboxResult.reason);
+        }
+        if (tasksResult.status === "fulfilled") {
+          setTasks(Array.isArray(tasksResult.value) ? tasksResult.value : []);
+        } else {
+          console.error("[协作室主区] 加载房间任务失败:", tasksResult.reason);
+        }
+        if (artifactsResult.status === "fulfilled") {
+          setArtifacts(
+            Array.isArray(artifactsResult.value) ? artifactsResult.value : [],
+          );
+        } else {
+          console.error("[协作室主区] 加载产物失败:", artifactsResult.reason);
+        }
+        if (approvalsResult.status === "fulfilled") {
+          setApprovals(
+            Array.isArray(approvalsResult.value)
+              ? approvalsResult.value
+              : [],
+          );
+        } else {
+          console.error("[协作室主区] 加载用户审批失败:", approvalsResult.reason);
+        }
+        if (continuationsResult.status === "fulfilled") {
+          setContinuations(
+            Array.isArray(continuationsResult.value)
+              ? continuationsResult.value
+              : [],
+          );
+        } else {
+          console.error(
+            "[协作室主区] 加载续跑状态失败:",
+            continuationsResult.reason,
+          );
+        }
+        if (backendStatusesResult.status === "fulfilled") {
+          setBackendStatuses(
+            Array.isArray(backendStatusesResult.value)
+              ? backendStatusesResult.value
+              : [],
+          );
+        } else {
+          console.error(
+            "[协作室主区] 加载成员后端状态失败:",
+            backendStatusesResult.reason,
+          );
+        }
       } catch (err) {
         if (cancelled) return;
         console.error("[协作室主区] 加载失败:", err);
@@ -486,6 +561,7 @@ function LocalCollaborationRoomsPage({
         setBoardSummary(null);
         setApprovals([]);
         setContinuations([]);
+        setBackendStatuses([]);
       }
     })();
     return () => {
@@ -629,11 +705,12 @@ function LocalCollaborationRoomsPage({
 
   // 成员是否具备可执行后端：channel 后端需绑定渠道；cli 后端需 cliWorkerId
   const memberHasExecutableBackend = (m: CollaborationMember): boolean =>
-    m.backend === "codex"
+    backendStatuses.find((status) => status.memberId === m.id)?.available ??
+    (m.backend === "codex"
       ? true
       : m.backend === "cli"
         ? Boolean(m.cliWorkerId)
-        : Boolean(m.channelId);
+        : Boolean(m.channelId));
 
   // 渠道显示名（未找到则回退 channelId）
   const channelLabel = (m: CollaborationMember): string => {
@@ -685,11 +762,21 @@ function LocalCollaborationRoomsPage({
 
   const send = useCallback(async (): Promise<void> => {
     if (!room || room.status === "archived") return;
+    if (sendingRef.current) return;
     const text = inputRef.current?.getText().trim() ?? "";
     if (!text && pendingAttachments.length === 0) return;
+    sendingRef.current = true;
+    const idempotencyKey =
+      sendIdempotencyKeyRef.current ??
+      `collab-message:${Date.now().toString(36)}-${Math.random()
+        .toString(36)
+        .slice(2, 10)}`;
+    sendIdempotencyKeyRef.current = idempotencyKey;
+    const sendingRoomId = room.id;
     try {
       await window.electronAPI.appendCollaborationUserMessage({
         roomId: room.id,
+        idempotencyKey,
         content: text,
         attachments:
           pendingAttachments.length > 0
@@ -708,14 +795,19 @@ function LocalCollaborationRoomsPage({
               )
             : undefined,
       });
-      inputRef.current?.clear();
-      setComposerMentionIds([]);
-      setPendingAttachments([]);
+      if (activeRoomIdRef.current === sendingRoomId) {
+        inputRef.current?.clear();
+        setComposerMentionIds([]);
+        setPendingAttachments([]);
+      }
+      sendIdempotencyKeyRef.current = null;
       onRoomsChanged();
     } catch (err) {
       toast.error("发送失败", {
         description: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      sendingRef.current = false;
     }
   }, [room, composerMentionIds, onRoomsChanged, pendingAttachments]);
 
@@ -1525,6 +1617,9 @@ function LocalCollaborationRoomsPage({
                 {members.map((m) => {
                   const st = memberDisplayStatus(m, runs);
                   const hasBackend = memberHasExecutableBackend(m);
+                  const backendStatus = backendStatuses.find(
+                    (status) => status.memberId === m.id,
+                  );
                   return (
                     <CollaborationMemberSettings
                       key={m.id}
@@ -1547,7 +1642,11 @@ function LocalCollaborationRoomsPage({
                           st === "removed" && "is-removed",
                         )}
                         aria-label={`编辑成员 ${m.displayName}`}
-                        title={`${m.displayName} · ${memberStatusLabel(st)} · ${channelLabel(m)}`}
+                        title={`${m.displayName} · ${memberStatusLabel(st)} · ${channelLabel(m)}${
+                          !hasBackend && backendStatus?.reason
+                            ? ` · ${backendStatus.reason}`
+                            : ""
+                        }`}
                       >
                         <MemberAvatar
                           member={m}
@@ -1562,7 +1661,7 @@ function LocalCollaborationRoomsPage({
                         ) : null}
                         {!hasBackend && st !== "removed" ? (
                           <span className="collab-room-person-chip__warning">
-                            无渠道
+                            不可用
                           </span>
                         ) : null}
                         <span
@@ -1761,8 +1860,7 @@ function LocalCollaborationRoomsPage({
               ) : allMembersMissingBackend ? (
                 <div className="flex flex-col items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-3 text-center">
                   <p className="text-xs text-amber-700 dark:text-amber-300">
-                    所有成员都未绑定可用渠道（kscc /
-                    外部渠道），发送后无法跑起任何回复。
+                    所有成员当前都没有可用后端，发送后无法跑起任何回复。
                   </p>
                   <button
                     type="button"
@@ -1774,7 +1872,7 @@ function LocalCollaborationRoomsPage({
                 </div>
               ) : anyMemberMissingBackend ? (
                 <div className="mb-2 flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                  <span>部分成员未绑定渠道（@ 到他们时不会回复）。</span>
+                  <span>部分成员当前不可用（@ 到他们时不会回复）。</span>
                   <button
                     type="button"
                     className="rounded-full bg-primary px-2.5 py-0.5 font-medium text-primary-foreground hover:bg-primary/90"

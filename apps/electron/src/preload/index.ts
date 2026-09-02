@@ -1374,6 +1374,11 @@ const electronAPI = {
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_MEMBERS, {
       roomId,
     }) as Promise<CollaborationMember[]>,
+  getCollaborationMemberBackendStatuses: (roomId: string) =>
+    ipcRenderer.invoke(
+      COLLABORATION_ROOM_IPC_CHANNELS.GET_MEMBER_BACKEND_STATUS,
+      { roomId },
+    ) as Promise<import("@tagent/shared").CollaborationMemberBackendStatus[]>,
   /** 列出房间内真实用户成员 */
   listCollaborationHumanMembers: (roomId: string) =>
     ipcRenderer.invoke(COLLABORATION_ROOM_IPC_CHANNELS.LIST_HUMAN_MEMBERS, {

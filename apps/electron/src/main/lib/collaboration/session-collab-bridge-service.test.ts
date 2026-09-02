@@ -113,7 +113,6 @@ function mkSession(): string {
   return id;
 }
 
-
 test("历史 room 不会反向把已退出的普通多 Bot 会话重新绑定", () => {
   const sessionId = mkSession();
   const room = service.createRoom({
@@ -132,6 +131,25 @@ test("历史 room 不会反向把已退出的普通多 Bot 会话重新绑定", 
 
   expect(getSessionMeta(sessionId)?.fusionRoomId).toBeUndefined();
   expect(getSessionMeta(sessionId)?.fusionMode).toBe("multi-bot");
+});
+
+test("来源会话投影按真实成员数保留手动 Codex/CLI 成员", () => {
+  const sessionId = mkSession();
+  const room = service.createRoom({
+    title: "混合成员投影",
+    sourceSessionId: sessionId,
+    members: [
+      { displayName: "桥接 Bot A", botProfileId: BOT_A, isCoordinator: true },
+      { displayName: "手动 Codex", backend: "codex", modelId: "gpt-5.6-sol" },
+    ],
+  });
+  updateSessionMeta(sessionId, { fusionRoomId: room.id });
+
+  syncSourceSessionAfterRoomMemberChange(service, room.id);
+
+  expect(getSessionMeta(sessionId)?.fusionRoomId).toBe(room.id);
+  expect(getSessionMeta(sessionId)?.fusionMode).toBe("multi-bot");
+  expect(getSessionMeta(sessionId)?.botProfileIds).toEqual([BOT_A]);
 });
 
 function userMsg(text: string): unknown {
@@ -275,6 +293,35 @@ describe("SessionCollabBridgeService（P2-UX 桥接服务层）", () => {
     expect(calls).toBe(1);
   });
 
+  test("4b. 进房摘要 abort → 清理 fusionRoomId 并暂停半成品房间", async () => {
+    const sessionId = mkSession();
+    seedPanel(sessionId, [{ role: "user", text: "可取消的协作目标" }]);
+    const controller = new AbortController();
+    const bridge = new SessionCollabBridgeService({
+      roomService: service,
+      modelCaller: async () => {
+        controller.abort();
+        throw new Error("aborted");
+      },
+    });
+
+    await expect(
+      bridge.enterCollaborationWithBridge({
+        sessionId,
+        userConfirmed: true,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("aborted");
+
+    expect(getSessionMeta(sessionId)?.fusionRoomId).toBeUndefined();
+    const room = service
+      .listRooms(true)
+      .filter((item) => item.sourceSessionId === sessionId)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    expect(room).toBeDefined();
+    expect(room?.status).toBe("paused");
+  });
+
   test("5a. exit 缺确认 → 抛 BridgeConfirmRequiredError", async () => {
     const bridge = new SessionCollabBridgeService({
       roomService: service,
@@ -353,11 +400,34 @@ describe("SessionCollabBridgeService（P2-UX 桥接服务层）", () => {
         text: `第${i}条内容，包含关键词 secret-${i}。`,
       })),
     );
+    const room = service.createRoom({
+      title: "来源摘录绑定校验",
+      sourceSessionId: sessionId,
+      members: [
+        { displayName: "桥接 Bot A", botProfileId: BOT_A, isCoordinator: true },
+        { displayName: "桥接 Bot B", botProfileId: BOT_B },
+      ],
+    });
     const bridge = new SessionCollabBridgeService({
       roomService: service,
       modelCaller: async () => "",
     });
-    const req = { sourceSessionId: sessionId, roomId: "r_x" };
+    const req = { sourceSessionId: sessionId, roomId: room.id };
+    const otherSessionId = mkSession();
+    const otherRoom = service.createRoom({
+      title: "其他来源房间",
+      sourceSessionId: otherSessionId,
+      members: [
+        { displayName: "桥接 Bot A", botProfileId: BOT_A, isCoordinator: true },
+        { displayName: "桥接 Bot B", botProfileId: BOT_B },
+      ],
+    });
+    expect(() =>
+      bridge.readSourceSessionExcerpt(
+        { ...req, roomId: otherRoom.id },
+        0,
+      ),
+    ).toThrow("来源会话与协作室不匹配");
     // 超单轮预算 → 抛 BridgeExcerptBudgetError
     expect(() =>
       bridge.readSourceSessionExcerpt(req, SOURCE_EXCERPT_PER_TURN_HARD_MAX_TOKENS),

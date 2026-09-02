@@ -146,6 +146,11 @@ export class SessionCollabBridgeService {
   private readonly roomService: CollaborationRoomService;
   private readonly modelCaller: BridgeModelCaller;
   private readonly notifySessionMetaChanged: (sessionId: string) => void;
+  /** 同一来源会话只允许一个退出事务在途，避免重复 handoff/清链。 */
+  private readonly exitInFlight = new Map<
+    string,
+    Promise<ExitCollaborationWithBridgeResult>
+  >();
 
   constructor(opts: SessionCollabBridgeServiceOptions) {
     if (!opts?.roomService) throw new Error("roomService 不能为空");
@@ -201,63 +206,88 @@ export class SessionCollabBridgeService {
       goal: input.goalHint,
     });
 
-    // 读 panel → transcript（最近有效发言，字符硬顶，头尾保留）
-    const lines = extractTranscriptLines(
-      readPanelMessages(meta.workspaceId, sessionId),
-    );
-    const transcript = joinTranscript(lines, BRIEF_TRANSCRIPT_CHAR_BUDGET);
+    try {
+      // 读 panel → transcript（最近有效发言，字符硬顶，头尾保留）
+      const lines = extractTranscriptLines(
+        readPanelMessages(meta.workspaceId, sessionId),
+      );
+      const transcript = joinTranscript(lines, BRIEF_TRANSCRIPT_CHAR_BUDGET);
 
-    // modelCaller → JSON；失败 fail-closed 启发式
-    let briefSource: "llm" | "heuristic" = "heuristic";
-    let fields: {
-      goal: string;
-      decisions: string[];
-      openQuestions: string[];
-      todos: string[];
-      artifacts: string[];
-      narrative?: string;
-    };
-    const parsed = await this.callBriefModel(transcript, input.signal);
-    if (parsed) {
-      fields = {
-        goal: parsed.goal,
-        decisions: parsed.decisions,
-        openQuestions: parsed.openQuestions,
-        todos: parsed.todos,
-        artifacts: parsed.artifacts,
+      // modelCaller → JSON；失败 fail-closed 启发式
+      let briefSource: "llm" | "heuristic" = "heuristic";
+      let fields: {
+        goal: string;
+        decisions: string[];
+        openQuestions: string[];
+        todos: string[];
+        artifacts: string[];
+        narrative?: string;
       };
-      briefSource = "llm";
-    } else {
-      fields = heuristicBriefFields(lines, input.goalHint);
+      const parsed = await this.callBriefModel(transcript, input.signal);
+      if (parsed) {
+        fields = {
+          goal: parsed.goal,
+          decisions: parsed.decisions,
+          openQuestions: parsed.openQuestions,
+          todos: parsed.todos,
+          artifacts: parsed.artifacts,
+        };
+        briefSource = "llm";
+      } else {
+        fields = heuristicBriefFields(lines, input.goalHint);
+      }
+
+      const brief = buildSessionToRoomBrief({
+        goal: fields.goal,
+        decisions: fields.decisions,
+        openQuestions: fields.openQuestions,
+        todos: fields.todos,
+        artifacts: fields.artifacts,
+        narrative: fields.narrative,
+        sourceSessionId: sessionId,
+        budgetTokens: SESSION_TO_ROOM_BRIEF_DEFAULT_TOKENS,
+      });
+
+      // 写房间 goal（短）+ 系统消息（完整 formatted brief）
+      const goalForRoom = brief.goal.trim() || room.goal;
+      this.roomService.updateRoom({ roomId: room.id, goal: goalForRoom });
+      this.roomService.appendRoomSystemMessage(
+        room.id,
+        "【单会话前情提要】\n" + formatSessionToRoomBriefForPrompt(brief),
+      );
+      this.notifySessionMetaChanged(sessionId);
+
+      return {
+        roomId: room.id,
+        sourceSessionId: sessionId,
+        brief,
+        briefSource,
+        reusedExistingRoom: false,
+      };
+    } catch (error) {
+      // 建房已完成但摘要提交未完成时，撤销本次绑定并暂停半成品房间；
+      // 否则用户会被卡在融合壳里，却没有正常的重试入口。
+      try {
+        const currentMeta = getSessionMeta(sessionId);
+        if (currentMeta?.fusionRoomId === room.id) {
+          updateSessionMeta(sessionId, {
+            fusionRoomId: undefined,
+            fusionMode:
+              (currentMeta.botProfileIds?.length ?? 0) >= 2
+                ? "multi-bot"
+                : (currentMeta.botProfileIds?.length ?? 0) === 1
+                  ? "single-bot"
+                  : "ordinary",
+            fusionCoordinatorBotProfileId: undefined,
+          });
+        }
+        this.roomService.updateRoom({ roomId: room.id, status: "paused" });
+        this.notifySessionMetaChanged(sessionId);
+      } catch (cleanupError) {
+        console.error("[桥接] 进房失败后的清理也失败:", cleanupError);
+      }
+      throw error;
     }
-
-    const brief = buildSessionToRoomBrief({
-      goal: fields.goal,
-      decisions: fields.decisions,
-      openQuestions: fields.openQuestions,
-      todos: fields.todos,
-      artifacts: fields.artifacts,
-      narrative: fields.narrative,
-      sourceSessionId: sessionId,
-      budgetTokens: SESSION_TO_ROOM_BRIEF_DEFAULT_TOKENS,
-    });
-
-    // 写房间 goal（短）+ 系统消息（完整 formatted brief）
-    const goalForRoom = brief.goal.trim() || room.goal;
-    this.roomService.updateRoom({ roomId: room.id, goal: goalForRoom });
-    this.roomService.appendRoomSystemMessage(
-      room.id,
-      "【单会话前情提要】\n" + formatSessionToRoomBriefForPrompt(brief),
-    );
-    this.notifySessionMetaChanged(sessionId);
-
-    return {
-      roomId: room.id,
-      sourceSessionId: sessionId,
-      brief,
-      briefSource,
-      reusedExistingRoom: false,
-    };
   }
 
   /**
@@ -302,11 +332,39 @@ export class SessionCollabBridgeService {
     if (input.userConfirmed !== true) throw new BridgeConfirmRequiredError();
     const sessionId = input.sessionId?.trim();
     if (!sessionId) throw new Error("sessionId 不能为空");
+    const existing = this.exitInFlight.get(sessionId);
+    if (existing) return existing;
+
+    const operation = this.performExitCollaborationWithBridge({
+      ...input,
+      sessionId,
+    });
+    this.exitInFlight.set(sessionId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.exitInFlight.get(sessionId) === operation) {
+        this.exitInFlight.delete(sessionId);
+      }
+    }
+  }
+
+  private async performExitCollaborationWithBridge(
+    input: ExitCollaborationWithBridgeServiceInput,
+  ): Promise<ExitCollaborationWithBridgeResult> {
+    const sessionId = input.sessionId.trim();
     const meta = getSessionMeta(sessionId);
     if (!meta) throw new Error("会话不存在");
     if (!meta.fusionRoomId) throw new Error("该会话未开启协作，无法退出");
     const room = this.roomService.getRoomById(meta.fusionRoomId);
     if (!room) throw new Error("关联的协作室不存在，无法退出");
+
+    // 退出是一次边界切换：先取消该房间所有 queued/running run，并等待正在执行的
+    // turn 收口，避免退出后旧 run 继续向暂停房间追加成员消息。
+    const cancelledRuns = this.roomService.cancelAllRuns(room.id);
+    if (cancelledRuns > 0) {
+      await this.roomService.awaitRunsForRoom(room.id);
+    }
 
     // 收集房间消息/任务/现有摘要
     const messages = this.roomService.listMessages(room.id);
@@ -364,6 +422,10 @@ export class SessionCollabBridgeService {
       appendPanelMessages(meta.workspaceId, sessionId, [notice]);
     } catch (err) {
       console.error("[桥接] 回写面板消息落盘失败:", err);
+      throw new Error(
+        "协作结论无法写回原会话，已保留协作室绑定；请稍后重试",
+        { cause: err },
+      );
     }
 
     // 降档 meta：清 fusionRoomId，fusionMode 按当前 botProfileIds.length 重算
@@ -432,6 +494,13 @@ export class SessionCollabBridgeService {
 
     const sourceSessionId = req.sourceSessionId?.trim();
     if (!sourceSessionId) throw new Error("sourceSessionId 不能为空");
+    const roomId = req.roomId?.trim();
+    if (!roomId) throw new Error("roomId 不能为空");
+    const room = this.roomService.getRoomById(roomId);
+    if (!room) throw new Error("协作室不存在");
+    if (room.sourceSessionId !== sourceSessionId) {
+      throw new Error("来源会话与协作室不匹配");
+    }
     const meta = getSessionMeta(sourceSessionId);
     if (!meta) throw new Error("来源会话不存在");
     const lines = extractTranscriptLines(

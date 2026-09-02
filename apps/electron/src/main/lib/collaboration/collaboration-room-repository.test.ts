@@ -107,6 +107,44 @@ describe('CollaborationRoomService（Stage 1 持久化）', () => {
     expect(m2.createdAt).toBeGreaterThanOrEqual(m1.createdAt)
   })
 
+  test('appendUserMessage：同一幂等键复用原消息，不重复触发或保存附件', () => {
+    const svc = CollaborationRoomService.create()
+    const room = svc.createRoom({ title: '消息幂等' })
+    const first = svc.appendUserMessage({
+      roomId: room.id,
+      content: '只发送一次',
+      idempotencyKey: 'send-once',
+    })
+    const second = svc.appendUserMessage({
+      roomId: room.id,
+      content: '只发送一次',
+      idempotencyKey: 'send-once',
+    })
+
+    expect(second).toEqual(first)
+    expect(svc.listMessages(room.id)).toHaveLength(1)
+    expect(first.idempotencyKey).toBe('send-once')
+  })
+
+  test('appendUserMessage：幂等键跨房间复用时拒绝', () => {
+    const svc = CollaborationRoomService.create()
+    const firstRoom = svc.createRoom({ title: '幂等房间 A' })
+    const secondRoom = svc.createRoom({ title: '幂等房间 B' })
+    svc.appendUserMessage({
+      roomId: firstRoom.id,
+      content: '原消息',
+      idempotencyKey: 'cross-room-key',
+    })
+
+    expect(() =>
+      svc.appendUserMessage({
+        roomId: secondRoom.id,
+        content: '不应写入',
+        idempotencyKey: 'cross-room-key',
+      }),
+    ).toThrow(/其他房间/)
+  })
+
   test('历史分页：首屏取最新记录，before 游标向前翻页且不重复', () => {
     const svc = CollaborationRoomService.create()
     const room = svc.createRoom({ title: '历史分页' })
