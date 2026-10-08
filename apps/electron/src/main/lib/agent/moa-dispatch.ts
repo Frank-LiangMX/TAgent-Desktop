@@ -30,7 +30,45 @@ function findEnabledModel(channel: Channel, modelId: string): { name: string } |
  * kscc 预置的 modelId 不在外部渠 → 这里返回「未启用」错误；反之亦然。
  * 预置结构已由 isValidMoAPreset 保证；此处只做运行时可用性校验。返回中文错误或 null。
  */
-export function validateMoAPresetForChannel(preset: MoAPreset, channel: Channel): string | null {
+function resolveSeatChannel(
+  modelId: string,
+  requestedChannelId: string | undefined,
+  currentChannel: Channel,
+  availableChannels: Channel[],
+): Channel | null {
+  if (requestedChannelId) {
+    const channel = availableChannels.find((c) => c.id === requestedChannelId)
+    return channel?.enabled && findEnabledModel(channel, modelId) ? channel : null
+  }
+  if (currentChannel.enabled && findEnabledModel(currentChannel, modelId)) return currentChannel
+  const matches = availableChannels.filter(
+    (channel) => channel.enabled && findEnabledModel(channel, modelId),
+  )
+  // 无显式渠道时只接受唯一候选，避免同 modelId 在多个渠道上产生隐式错配。
+  return matches.length === 1 ? matches[0]! : null
+}
+
+export interface ResolvedMoASeatChannel {
+  modelId: string
+  channel: Channel
+}
+
+/** 解析一个 MoA 席位实际使用的已配置渠道。API Key 仍只由调用方在主进程读取。 */
+export function resolveMoASeatChannel(
+  modelId: string,
+  requestedChannelId: string | undefined,
+  currentChannel: Channel,
+  availableChannels: Channel[],
+): ResolvedMoASeatChannel | null {
+  const channel = resolveSeatChannel(modelId, requestedChannelId, currentChannel, availableChannels)
+  return channel ? { modelId, channel } : null
+}
+
+export function validateMoAPresetForChannel(
+  preset: MoAPreset,
+  channel: Channel,
+  availableChannels: Channel[] = [channel],
+): string | null {
   if (!preset.enabled) {
     return `会诊预置「${preset.name}」已停用`
   }
@@ -38,12 +76,23 @@ export function validateMoAPresetForChannel(preset: MoAPreset, channel: Channel)
     return `会诊预置「${preset.name}」参考席不足 2 个，无法会诊`
   }
   for (const ref of preset.references) {
-    if (!findEnabledModel(channel, ref.modelId)) {
-      return `会诊参考席模型「${ref.modelId}」在当前渠道「${channel.name}」未启用，请在渠道管理中启用或更换预置`
+    const resolved = resolveSeatChannel(ref.modelId, ref.channelId, channel, availableChannels)
+    if (!resolved) {
+      const where = ref.channelId ? `指定渠道「${ref.channelId}」` : `当前渠道「${channel.name}」或其它唯一匹配渠道`
+      return `会诊参考席模型「${ref.modelId}」在${where}未启用，请在渠道管理中启用或更换预置`
     }
   }
-  if (!findEnabledModel(channel, preset.aggregatorModelId)) {
-    return `会诊汇总模型「${preset.aggregatorModelId}」在当前渠道「${channel.name}」未启用，请在渠道管理中启用或更换预置`
+  const aggregator = resolveSeatChannel(
+    preset.aggregatorModelId,
+    preset.aggregatorChannelId,
+    channel,
+    availableChannels,
+  )
+  if (!aggregator) {
+    const where = preset.aggregatorChannelId
+      ? `指定渠道「${preset.aggregatorChannelId}」`
+      : `当前渠道「${channel.name}」或其它唯一匹配渠道`
+    return `会诊汇总模型「${preset.aggregatorModelId}」在${where}未启用，请在渠道管理中启用或更换预置`
   }
   return null
 }
@@ -63,8 +112,9 @@ export function resolveOneShotMoADispatch(
   presetId: string,
   channel: Channel,
   presets: MoAPreset[],
+  availableChannels: Channel[] = [channel],
 ): MoADispatch {
-  return resolveMoADispatch(moaModelId(presetId), channel, presets)
+  return resolveMoADispatch(moaModelId(presetId), channel, presets, availableChannels)
 }
 
 /**
@@ -121,6 +171,7 @@ export function resolveMoADispatch(
   modelId: string | null | undefined,
   channel: Channel,
   presets: MoAPreset[],
+  availableChannels: Channel[] = [channel],
 ): MoADispatch {
   if (!isMoaModelId(modelId)) {
     return { kind: 'normal', modelId: modelId ?? '' }
@@ -137,7 +188,7 @@ export function resolveMoADispatch(
       message: `会诊预置「${presetId ?? modelId}」不存在，请重新选择会诊预置`,
     }
   }
-  const validateErr = validateMoAPresetForChannel(preset, channel)
+  const validateErr = validateMoAPresetForChannel(preset, channel, availableChannels)
   if (validateErr) {
     return { kind: 'error', message: validateErr }
   }

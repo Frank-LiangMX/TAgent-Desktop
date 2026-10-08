@@ -22,6 +22,7 @@ import {
   type ReferenceModelConfig,
   type ReferenceOutput,
   type MoASeatRunner,
+  type MoASeatRunnerFactory,
 } from '@tagent/pi-core'
 import {
   type Channel,
@@ -40,7 +41,7 @@ import {
   type MoARoundtablePanel,
 } from '@tagent/shared'
 import { appendPanelMessages, appendSdkMessages, readPanelMessages } from './session-store'
-import { validateMoAPresetForChannel } from './moa-dispatch'
+import { resolveMoASeatChannel, validateMoAPresetForChannel } from './moa-dispatch'
 
 /** 用户附件（与 SendMessageInput.attachments 同形态，落盘用） */
 interface MoAAttachment {
@@ -65,6 +66,10 @@ export interface MoATurnContext {
    * 同场不混核：一轮全程只用一种 runner。
    */
   seatRunner: MoASeatRunner
+  /** 跨渠道时按席位选择 runner；旧调用方仍可只传 seatRunner。 */
+  seatRunnerFor?: MoASeatRunnerFactory
+  /** 用于校验显式席位渠道及无 channelId 时的唯一匹配。 */
+  availableChannels?: Channel[]
   /** 取消信号：由 session-service 在 STOP/销毁时 abort */
   signal: AbortSignal
   /** 推渲染层流式事件（session-service.sendPayload 绑定 sessionId） */
@@ -161,7 +166,12 @@ function buildHistoryForTurn(ctx: MoATurnContext): string {
     const panel = readPanelMessages(ctx.workspaceId, ctx.sessionId)
     const irs: TAgentMessage[] = []
     for (const raw of panel) {
-      const { message } = sdkMessageToIR(raw as never)
+      const topLevelIr = raw && typeof raw === 'object' &&
+        ((raw as { type?: unknown }).type === 'user' || (raw as { type?: unknown }).type === 'assistant') &&
+        Array.isArray((raw as { content?: unknown }).content)
+      const { message } = topLevelIr
+        ? { message: raw as unknown as TAgentMessage }
+        : sdkMessageToIR(raw as never)
       if (message) irs.push(message)
     }
     return buildMoAHistoryFromMessages(irs, { excludeTrailingTurn: true })
@@ -178,7 +188,7 @@ export async function runMoaTurn(ctx: MoATurnContext): Promise<MoATurnResult> {
   const { channel, preset, signal, sendPayload } = ctx
 
   // 1. 运行时校验
-  const validateErr = validateMoAPresetForChannel(preset, channel)
+  const validateErr = validateMoAPresetForChannel(preset, channel, ctx.availableChannels ?? [channel])
   if (validateErr) {
     sendPayload({
       kind: 'tagent_event',
@@ -200,9 +210,17 @@ export async function runMoaTurn(ctx: MoATurnContext): Promise<MoATurnResult> {
   const refSeats: ReferenceModelConfig[] = preset.references.map((r, i) => ({
     name: r.name,
     modelId: r.modelId,
+    ...(r.channelId ? { channelId: r.channelId } : {}),
+    ...(r.systemPrompt ? { systemPrompt: r.systemPrompt } : {}),
     seatId: `ref-${i}`,
   }))
-  const aggModel = findEnabledModel(channel, preset.aggregatorModelId)!
+  const aggChannel = resolveMoASeatChannel(
+    preset.aggregatorModelId,
+    preset.aggregatorChannelId,
+    channel,
+    ctx.availableChannels ?? [channel],
+  )?.channel ?? channel
+  const aggModel = findEnabledModel(aggChannel, preset.aggregatorModelId) ?? { name: preset.aggregatorModelId }
   let panel = createMoARoundtablePanel({
     roundtableId,
     presetId: preset.id,
@@ -217,6 +235,7 @@ export async function runMoaTurn(ctx: MoATurnContext): Promise<MoATurnResult> {
   const refOutputs: ReferenceOutput[] = await runReferenceModels(ctx.prompt, refSeats, {
     timeoutMs: preset.timeoutMsPerSeat ?? 120_000,
     seatRunner: ctx.seatRunner,
+    seatRunnerFor: ctx.seatRunnerFor,
     signal,
     historyText,
     onSeatUpdate: (seat) => {
@@ -257,6 +276,8 @@ export async function runMoaTurn(ctx: MoATurnContext): Promise<MoATurnResult> {
   const agg = await runAggregatorModel(ctx.prompt, refOutputs, preset.aggregatorModelId, {
     timeoutMs: preset.timeoutMsPerSeat ?? 120_000,
     seatRunner: ctx.seatRunner,
+    seatRunnerFor: ctx.seatRunnerFor,
+    seatChannelId: preset.aggregatorChannelId,
     signal,
     historyText,
     onTextDelta: (delta) => {

@@ -4,6 +4,7 @@ import {
   decideMoaMetaPatch,
   resolveMoADispatch,
   resolveOneShotMoADispatch,
+  resolveMoASeatChannel,
   validateMoAPresetForChannel,
 } from './moa-dispatch'
 
@@ -62,6 +63,46 @@ const deepseekChannel: Channel = {
 const presets: MoAPreset[] = MOA_DEFAULT_PRESETS.map((p) => ({ ...p, references: p.references.map((r) => ({ ...r })) }))
 
 describe('resolveMoADispatch', () => {
+  it('允许参考席与汇总席分别绑定不同的已配置渠道', () => {
+    const grokChannel: Channel = {
+      ...deepseekChannel,
+      id: 'ext-grok',
+      name: '公司 Grok 网关',
+      models: [{ id: 'grok-4.6', name: 'Grok 4.6', enabled: true, contextWindow: 500_000 }],
+      defaultModelId: 'grok-4.6',
+    } as unknown as Channel
+    const crossPreset: MoAPreset = {
+      id: 'cross-channel',
+      name: '跨渠道会诊',
+      enabled: true,
+      channelId: 'external',
+      references: [
+        { name: 'DeepSeek', modelId: 'deepseek-chat', channelId: 'ext-ds' },
+        { name: 'Grok', modelId: 'grok-4.6', channelId: 'ext-grok' },
+      ],
+      aggregatorModelId: 'grok-4.6',
+      aggregatorChannelId: 'ext-grok',
+    }
+    const d = resolveMoADispatch('moa:cross-channel', deepseekChannel, [crossPreset], [deepseekChannel, grokChannel])
+    expect(d.kind).toBe('moa')
+    expect(resolveMoASeatChannel('grok-4.6', 'ext-grok', deepseekChannel, [deepseekChannel, grokChannel])?.channel.id).toBe('ext-grok')
+  })
+
+  it('无 channelId 且模型在多个渠道存在时拒绝隐式歧义', () => {
+    const duplicate = { ...externalChannel, id: 'ext-2' } as unknown as Channel
+    const preset: MoAPreset = {
+      id: 'ambiguous', name: '歧义', enabled: true,
+      references: [
+        { name: '甲', modelId: 'glm-5.2' },
+        { name: '乙', modelId: 'kimi-k2.6' },
+      ],
+      aggregatorModelId: 'glm-5.2',
+    }
+    const d = resolveMoADispatch('moa:ambiguous', deepseekChannel, [preset], [deepseekChannel, externalChannel, duplicate])
+    expect(d.kind).toBe('error')
+    if (d.kind === 'error') expect(d.message).toContain('glm-5.2')
+  })
+
   it('routes real modelId to normal (safe to setModel; never moa:*)', () => {
     const d = resolveMoADispatch('glm-5.2', makeChannel(), presets)
     expect(d.kind).toBe('normal')

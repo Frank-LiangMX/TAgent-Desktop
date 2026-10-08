@@ -22,7 +22,7 @@
  * 不在本模块做：选核/绑核/权限/记忆 —— 历史注入复用 run-moa-turn 的 buildHistoryForTurn 风格（见下）。
  * 与 run-moa-turn 同款落盘/推送小工具在此复制为私有等价实现（不改 run-moa-turn 既有行为）。
  */
-import type { MoASeatRunner } from '@tagent/pi-core'
+import type { MoASeatRunner, MoASeatRunnerFactory } from '@tagent/pi-core'
 import {
   type Channel,
   type MoAPreset,
@@ -73,6 +73,9 @@ export interface MoADiscussionContext {
    * 同场不混核：一场讨论全程只用一种 runner。
    */
   seatRunner: MoASeatRunner
+  /** 跨渠道时按席位选择 runner；旧调用方仍可只传 seatRunner。 */
+  seatRunnerFor?: MoASeatRunnerFactory
+  availableChannels?: Channel[]
   /** 取消信号：由 session-service 在 STOP/销毁时 abort */
   signal: AbortSignal
   /** 推渲染层流式事件（session-service.sendPayload 绑定 sessionId） */
@@ -223,7 +226,12 @@ function buildHistoryForTurn(ctx: MoADiscussionContext): string {
     const panel = readPanelMessages(ctx.workspaceId, ctx.sessionId)
     const irs: TAgentMessage[] = []
     for (const raw of panel) {
-      const { message } = sdkMessageToIR(raw as never)
+      const topLevelIr = raw && typeof raw === 'object' &&
+        ((raw as { type?: unknown }).type === 'user' || (raw as { type?: unknown }).type === 'assistant') &&
+        Array.isArray((raw as { content?: unknown }).content)
+      const { message } = topLevelIr
+        ? { message: raw as unknown as TAgentMessage }
+        : sdkMessageToIR(raw as never)
       if (message) irs.push(message)
     }
     return buildMoAHistoryFromMessages(irs, { excludeTrailingTurn: true })
@@ -406,7 +414,11 @@ async function runDiscussionSummary(
   const prompt = buildDiscussionSummaryPrompt(panel, nameOf, sinceTurn)
   let text: string
   try {
-    text = await ctx.seatRunner.runSeat({
+      const runner = ctx.seatRunnerFor?.({
+        modelId: ctx.preset.aggregatorModelId,
+        channelId: ctx.preset.aggregatorChannelId,
+      }) ?? ctx.seatRunner
+      text = await runner.runSeat({
       modelId: ctx.preset.aggregatorModelId,
       prompt,
       signal: ctx.signal,
@@ -441,7 +453,7 @@ export async function runMoADiscussion(ctx: MoADiscussionContext): Promise<MoADi
   const { channel, preset, signal, sendPayload } = ctx
 
   // 1. 运行时校验
-  const validateErr = validateMoAPresetForChannel(preset, channel)
+  const validateErr = validateMoAPresetForChannel(preset, channel, ctx.availableChannels ?? [channel])
   if (validateErr) {
     sendPayload({
       kind: 'tagent_event',
@@ -477,9 +489,14 @@ export async function runMoADiscussion(ctx: MoADiscussionContext): Promise<MoADi
   emitDiscussionCard(ctx, panel)
 
   // participant 席位元数据（speakerId → {modelId, name, systemPrompt?}），用于 runSeat
-  const seatMeta = new Map<string, { name: string; modelId: string; systemPrompt?: string }>()
+  const seatMeta = new Map<string, { name: string; modelId: string; channelId?: string; systemPrompt?: string }>()
   preset.references.forEach((r, i) => {
-    seatMeta.set(`ref-${i}`, { name: r.name, modelId: r.modelId, systemPrompt: r.systemPrompt })
+    seatMeta.set(`ref-${i}`, {
+      name: r.name,
+      modelId: r.modelId,
+      ...(r.channelId ? { channelId: r.channelId } : {}),
+      ...(r.systemPrompt ? { systemPrompt: r.systemPrompt } : {}),
+    })
   })
   const participantSpeakerIds = participants.map((p) => p.speakerId)
 
@@ -533,7 +550,8 @@ export async function runMoADiscussion(ctx: MoADiscussionContext): Promise<MoADi
         // 先把在途席位推给渲染层：串行圆桌在模型首包前可能等待很久，不能只停在上一席发言上。
         panel = setMoADiscussionActiveSpeaker(panel, speakerId)
         emitDiscussionCard(ctx, panel)
-        text = await ctx.seatRunner.runSeat({
+        const runner = ctx.seatRunnerFor?.({ modelId: seat.modelId, channelId: seat.channelId }) ?? ctx.seatRunner
+        text = await runner.runSeat({
           modelId: seat.modelId,
           prompt,
           systemPrompt: seat.systemPrompt,
@@ -635,7 +653,11 @@ export async function runMoADiscussion(ctx: MoADiscussionContext): Promise<MoADi
   try {
     panel = setMoADiscussionActiveSpeaker(panel, MOA_DISCUSSION_MODERATOR_SPEAKER_ID)
     emitDiscussionCard(ctx, panel)
-    summary = await ctx.seatRunner.runSeat({
+    const runner = ctx.seatRunnerFor?.({
+      modelId: preset.aggregatorModelId,
+      channelId: preset.aggregatorChannelId,
+    }) ?? ctx.seatRunner
+    summary = await runner.runSeat({
       modelId: preset.aggregatorModelId,
       prompt: summaryPrompt,
       signal,

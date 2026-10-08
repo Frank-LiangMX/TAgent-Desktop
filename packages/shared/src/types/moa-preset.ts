@@ -68,6 +68,11 @@ export interface MoAReferenceSeat {
   /** 当前渠道下已启用的真实 modelId（kscc-internal / 外部渠均同此口径） */
   modelId: string
   /**
+   * 可选的已配置渠道 id。缺省时按运行时当前渠道解析，兼容旧预置；填写后该席位
+   * 可以与其它席位使用不同渠道（外部渠道直接走 Pi HTTP）。
+   */
+  channelId?: string
+  /**
    * 可选 system 角色提示（同模多角色预置用：怀疑者 / 实操者 各自不同 system）。
    * kscc bare 走 appendSystemPrompt；Pi HTTP 直连走 Context.systemPrompt。
    * 普通多模预置不填 → 走模型默认 system。
@@ -102,6 +107,8 @@ export interface MoAPreset {
   references: MoAReferenceSeat[]
   /** 汇总席 modelId（须属于当前渠道且 enabled） */
   aggregatorModelId: string
+  /** 汇总/主持席使用的已配置渠道 id；缺省时按当前渠道解析。 */
+  aggregatorChannelId?: string
   /** 单席超时（ms），默认 120_000 */
   timeoutMsPerSeat?: number
   /**
@@ -172,11 +179,16 @@ export function isValidMoAPreset(preset: unknown): preset is MoAPreset {
     if (typeof r.name !== 'string' || r.name.length === 0) return false
     if (typeof r.modelId !== 'string' || r.modelId.length === 0) return false
     if (r.modelId.startsWith(MOA_MODEL_ID_PREFIX)) return false // 禁止嵌套
+    if (r.channelId != null && (typeof r.channelId !== 'string' || r.channelId.length === 0)) return false
     // systemPrompt 可选；存在则须为字符串（同模多角色预置用）
     if (r.systemPrompt != null && typeof r.systemPrompt !== 'string') return false
   }
   if (typeof p.aggregatorModelId !== 'string' || p.aggregatorModelId.length === 0) return false
   if (p.aggregatorModelId.startsWith(MOA_MODEL_ID_PREFIX)) return false
+  if (
+    p.aggregatorChannelId != null &&
+    (typeof p.aggregatorChannelId !== 'string' || p.aggregatorChannelId.length === 0)
+  ) return false
   if (p.timeoutMsPerSeat != null) {
     if (typeof p.timeoutMsPerSeat !== 'number' || p.timeoutMsPerSeat <= 0) return false
   }
@@ -252,11 +264,43 @@ function isModelEnabledInChannel(channel: Channel, modelId: string): boolean {
  * 预置的全部席位（参考 ≥2 + 汇总）是否都属于当前渠道且 enabled。
  * 这是「同场不混核 / 跨渠禁席」的天然门禁：kscc 预置的 modelId 不在外部渠 → 这里 false。
  */
-function presetSeatsUsableInChannel(preset: MoAPreset, channel: Channel): boolean {
+function resolveSeatChannel(
+  modelId: string,
+  requestedChannelId: string | undefined,
+  currentChannel: Channel,
+  availableChannels: Channel[],
+): Channel | null {
+  if (requestedChannelId) {
+    const channel = availableChannels.find((c) => c.id === requestedChannelId)
+    return channel && channel.enabled && isModelEnabledInChannel(channel, modelId) ? channel : null
+  }
+  if (currentChannel.enabled && isModelEnabledInChannel(currentChannel, modelId)) return currentChannel
+  const matches = availableChannels.filter(
+    (channel) => channel.enabled && isModelEnabledInChannel(channel, modelId),
+  )
+  return matches.length === 1 ? matches[0]! : null
+}
+
+function presetSeatsUsableInChannel(
+  preset: MoAPreset,
+  channel: Channel,
+  availableChannels: Channel[] = [channel],
+): boolean {
   if (!preset.enabled) return false
   if (preset.references.length < 2) return false
-  if (!preset.references.every((r) => isModelEnabledInChannel(channel, r.modelId))) return false
-  if (!isModelEnabledInChannel(channel, preset.aggregatorModelId)) return false
+  if (
+    !preset.references.every((r) =>
+      resolveSeatChannel(r.modelId, r.channelId, channel, availableChannels),
+    )
+  ) return false
+  if (
+    !resolveSeatChannel(
+      preset.aggregatorModelId,
+      preset.aggregatorChannelId,
+      channel,
+      availableChannels,
+    )
+  ) return false
   return true
 }
 
@@ -414,15 +458,17 @@ function presetBelongsToChannel(preset: MoAPreset, channel: Channel): boolean {
 export function resolveConsultPresetsForChannel(
   channel: Channel | null | undefined,
   storedPresets: MoAPreset[],
+  availableChannels?: Channel[],
 ): MoAPreset[] {
   if (!channel || !channel.enabled) return []
+  const channels = availableChannels?.length ? availableChannels : [channel]
   const enabledModels = channel.models.filter((m) => m.enabled)
   const channelPresets = storedPresets.filter((p) => presetBelongsToChannel(p, channel))
   if (channel.provider === 'kscc-internal') {
-    return channelPresets.filter((p) => presetSeatsUsableInChannel(p, channel))
+    return channelPresets.filter((p) => presetSeatsUsableInChannel(p, channel, channels))
   }
   // 外部渠道档：取 external 班底，按当前会话渠校验席位；不可用则过滤；空 → 合成兜底
-  const matched = channelPresets.filter((p) => presetSeatsUsableInChannel(p, channel))
+  const matched = channelPresets.filter((p) => presetSeatsUsableInChannel(p, channel, channels))
   if (enabledModels.length >= 2) {
     return matched.length > 0 ? matched : [synthesizeDefaultPreset(channel, enabledModels)]
   }
