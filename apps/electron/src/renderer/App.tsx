@@ -88,7 +88,10 @@ import type {
   SystemPromptUpdateInput,
   WorkspaceMcpConfig,
   WorkspacePluginBundleRecord,
+  AgentSessionMeta,
+  AgentRuntimeKind,
 } from "@tagent/shared";
+import { CREW_ORCHESTRATION_ENABLED } from "@tagent/shared";
 import {
   Button,
   Dialog,
@@ -173,17 +176,32 @@ declare global {
       sendMessage: (input: {
         sessionId: string;
         prompt: string;
+        /** 用户显式恢复失败后的会话；主进程以固定继续指令新开一轮。 */
+        recovery?: boolean;
         /** 旁路 Bot 的前情提要：注入 system prompt，不显示为 user 消息。 */
         contextPrompt?: string;
         /** 独立旁路 Bot 不参与父会话的协作室路由。 */
         skipFusionRouting?: boolean;
         channelId?: string;
         model?: string;
+        agentRuntime?: AgentRuntimeKind;
         workspaceId?: string;
         /** MoA 会诊本条（one-shot）：本轮走 runMoATurn，不改 meta.modelId。SPEC §3 */
         moaOneShotPresetId?: string;
+        /** 发送旁「用看板派工」：本轮强制走看板分流。 */
+        forceKanbanDispatch?: boolean;
       }) => Promise<{ ok: boolean; error?: string }>;
       stopAgent: (sessionId: string) => Promise<{ ok: boolean }>;
+      /**
+       * 显式切换会话运行内核（ADR-0011 §5：Pi / Codex / Claude Code(KSCC)）。
+       * 事务性：主进程要求会话静默（调用方须先 stopAgent），失败 reject 且绑定不变。
+       */
+      switchSessionRuntime: (input: {
+        sessionId: string;
+        channelId: string;
+        modelId: string;
+        runtime: AgentRuntimeKind;
+      }) => Promise<AgentSessionMeta>;
       recallUnsentTurn: (sessionId: string) => Promise<{
         ok: boolean;
         text?: string;
@@ -256,6 +274,18 @@ declare global {
       saveCliWorkersConfig: (
         cfg: CliWorkersConfig,
       ) => Promise<CliWorkersConfig>;
+      /** 列出 Agent 目录 Profile（不包含 API Key） */
+      listAgentProfiles: () => Promise<
+        Array<{
+          id: string;
+          name: string;
+          runtime: string;
+          enabled: boolean;
+          [key: string]: unknown;
+        }>
+      >;
+      /** 覆盖保存整份 Agent 目录 Profile 配置 */
+      saveAgentProfiles: (profiles: unknown[]) => Promise<unknown[]>;
       /** 本机探测 CLI 工人是否可用 */
       probeCliWorkers: (
         cfg?: CliWorkersConfig,
@@ -417,7 +447,8 @@ declare global {
             "never" | "conservative" | "balanced" | "aggressive";
           reasoningEffort?: "low" | "medium" | "high" | "max";
           /** Internal Core 主会话后端。 */
-          internalBackend?: "codex-app-server" | "kscc";
+          internalBackend?: AgentSessionMeta["internalBackend"];
+          agentRuntime?: AgentRuntimeKind;
           /** 会话偏好 CLI 工人 id（未设置/空 = 跟随全局启用池优先级；主进程 normalize 空串→undefined） */
           cliWorkerId?: string;
           /** 会话加入的 Bot 配置引用；1 个 Bot 为单 Bot 直连，多个 Bot 由融合路由承接 */
@@ -1449,6 +1480,7 @@ export function App(): JSX.Element {
 
   // 班组状态 → 顶栏 ticker（若开启）；点击通知会直接打开对应班组。
   useEffect(() => {
+    if (!CREW_ORCHESTRATION_ENABLED) return;
     const action = (input: {
       taskId?: string;
       boardId?: string;

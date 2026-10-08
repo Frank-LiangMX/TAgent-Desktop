@@ -124,6 +124,7 @@ import type {
   AgentCrewPrefs,
   CodexRuntimeStatus,
   InstallCodexRuntimeResult,
+  SessionRuntimeSwitchInput,
 } from "@tagent/shared";
 
 import type {
@@ -143,16 +144,19 @@ import type {
 export interface SendMessageInput {
   sessionId: string;
   prompt: string;
+  /** 用户显式恢复失败后的会话；主进程会以固定继续指令覆盖 prompt。 */
+  recovery?: boolean;
   /** 仅供旁路 Bot 使用：本轮前情提要注入 system prompt，不落盘为 user 消息。 */
   contextPrompt?: string;
   /** 独立旁路 Bot 不参与父会话的协作室路由。 */
   skipFusionRouting?: boolean;
-  /** 渠道 ID（决定选哪个 adapter + 绑核，kscc↔external 互斥） */
+  /** API 渠道 ID；显式 agentRuntime 独立决定内核。 */
   channelId?: string;
   /** 模型 ID */
   model?: string;
   /** Internal Core 主会话后端；草稿首发时用于创建会话 meta。 */
-  internalBackend?: "codex-app-server" | "kscc";
+  internalBackend?: import("@tagent/shared").AgentSessionMeta["internalBackend"];
+  agentRuntime?: import("@tagent/shared").AgentRuntimeKind;
   /** 工作区 ID（= sanitizePath(projectPath)，用于 JSONL 按项目存储） */
   workspaceId?: string;
   /**
@@ -166,6 +170,8 @@ export interface SendMessageInput {
    * 见 docs/dev/moa-roundtable/02-SESSION-UX-SPEC.md §3。
    */
   moaDiscussionPresetId?: string;
+  /** 用户从发送旁选择「用看板派工」：本轮强制走看板分流。 */
+  forceKanbanDispatch?: boolean;
 }
 
 /**
@@ -203,6 +209,19 @@ const electronAPI = {
   /** 停止当前轮（软中断；主进程另推 turn_end 清 running） */
   stopAgent: (sessionId: string) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.STOP_AGENT, sessionId),
+  /**
+   * 显式切换会话运行内核（ADR-0011 §5 首期手动切换：Pi / Codex / Claude Code(KSCC)）。
+   *
+   * 事务性接口：主进程会校验目标渠道/模型与内核兼容、要求会话静默
+   * （running / stopping / 审批在途 / 其它切换在途一律 reject），
+   * 真正停掉旧内核活进程，并把交接资料标记为「下次发送投递」。
+   * **调用方必须先走 stopAgent 停稳当前回合**；失败时 reject，会话绑定保持不变。
+   */
+  switchSessionRuntime: (input: SessionRuntimeSwitchInput) =>
+    ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.SWITCH_SESSION_RUNTIME,
+      input,
+    ) as Promise<import("@tagent/shared").AgentSessionMeta>,
   /** 撤回尚未开始 Agent 处理的最后一轮 user 输入（双写 panel + SDK） */
   recallUnsentTurn: (sessionId: string) =>
     ipcRenderer.invoke(
@@ -429,6 +448,23 @@ const electronAPI = {
       AGENT_IPC_CHANNELS.SAVE_CLI_WORKERS,
       cfg,
     ) as Promise<CliWorkersConfig>,
+  /** 列出 Agent 目录 Profile（不包含 API Key） */
+  listAgentProfiles: () =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_AGENT_PROFILES) as Promise<
+      Array<{
+        id: string;
+        name: string;
+        runtime: string;
+        enabled: boolean;
+        [key: string]: unknown;
+      }>
+    >,
+  /** 覆盖保存整份 Agent 目录 Profile 配置 */
+  saveAgentProfiles: (profiles: unknown[]) =>
+    ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.SAVE_AGENT_PROFILES,
+      profiles,
+    ) as Promise<unknown[]>,
   /** 本机探测各 CLI 工人是否在 PATH / 配置路径可用（每台机器环境不同） */
   probeCliWorkers: (cfg?: CliWorkersConfig) =>
     ipcRenderer.invoke(
@@ -602,7 +638,8 @@ const electronAPI = {
       subagentEagerness?: "never" | "conservative" | "balanced" | "aggressive";
       reasoningEffort?: "low" | "medium" | "high" | "max";
       /** Internal Core 主会话后端。 */
-      internalBackend?: "codex-app-server" | "kscc";
+      internalBackend?: import("@tagent/shared").AgentSessionMeta["internalBackend"];
+      agentRuntime?: import("@tagent/shared").AgentRuntimeKind;
       /** 会话偏好 CLI 工人 id（未设置/空 = 跟随全局启用池优先级；主进程 normalize 空串→undefined） */
       cliWorkerId?: string;
       /** 会话加入的 Bot 配置引用；1 个 Bot 为单 Bot 直连，多个 Bot 由融合路由承接 */

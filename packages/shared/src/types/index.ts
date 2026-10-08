@@ -33,6 +33,9 @@ export * from './ask'
 // Agent Provider 适配器接口
 export * from './agent-provider'
 
+// 外部 Agent 统一运行契约与配置快照
+export * from './agent-run'
+
 // TAgentMessage 中间表示（双核统一渲染层消息格式）
 export * from './tagent-message'
 
