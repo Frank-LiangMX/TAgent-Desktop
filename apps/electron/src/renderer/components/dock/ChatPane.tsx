@@ -13,6 +13,7 @@ import type { IDockviewPanelProps } from "dockview";
 import { Chat, type SessionMeta } from "../chat/Chat";
 import { tabsAtom, type TabItem } from "../../atoms/tabs";
 import { usePersistedSessionMeta } from "../../hooks/usePersistedSessionMeta";
+import { CREW_ORCHESTRATION_ENABLED } from "@tagent/shared";
 
 /** 本面板的 params（addPanel 时传入） */
 interface ChatPaneParams {
@@ -30,7 +31,7 @@ export function ChatPane(
 
   // 点 chat 内部班组按钮 → 开/聚焦绑定本会话的 crew pane（containerApi 同 WorkspaceDock 的 api）
   const onOpenCrew = useCallback((): void => {
-    if (!sessionId) return;
+    if (!sessionId || !CREW_ORCHESTRATION_ENABLED) return;
     const crewId = `crew:${sessionId}`;
     const existing = containerApi.getPanel(crewId);
     if (existing) {
@@ -64,6 +65,8 @@ export function ChatPane(
     workspaceId: tab.workspaceId,
     modelId: tab.modelId,
     channelId: tab.channelId,
+    agentRuntime: persistedMeta?.agentRuntime,
+    internalBackend: persistedMeta?.internalBackend,
     botProfileIds: persistedMeta?.botProfileIds,
     fusionRoomId: persistedMeta?.fusionRoomId,
     kbRoots: persistedMeta?.kbRoots,

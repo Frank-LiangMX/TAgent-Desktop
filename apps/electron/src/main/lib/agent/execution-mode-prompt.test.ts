@@ -20,19 +20,22 @@ describe('buildExecutionModePrompt', () => {
     expect(p).toMatch(/禁止.*会诊|声称.*会诊/)
   })
 
-  it('work：含调度、看板、能力地图与短答约束', () => {
+  it('work：含子代理调度、能力地图与短答约束，班组暂停', () => {
     const p = buildExecutionModePrompt('work')
     expect(p).toMatch(/Work/)
-    expect(p).toMatch(/kanban_create_board/)
     expect(p).toMatch(/短答/)
     expect(p).toMatch(/SubAgent/)
-    expect(p).toMatch(/班组|看板/)
+    expect(p).toMatch(/班组.*暂停|班组功能已暂停/)
     expect(p).toMatch(/会诊/)
     expect(p).toMatch(/圆桌/)
     expect(p).toMatch(/发送.*▾|发送键旁/)
     expect(p).toMatch(/不能自己发起|没有.*会诊工具/)
     // 动态触发：多轮未决时主动建议会诊/圆桌（回归守护）
     expect(p).toMatch(/多轮/)
+    expect(p).not.toContain('kanban_create_board')
+    expect(p).not.toContain('cli=<id>')
+    expect(p).not.toContain('cli、require、prefer')
+    expect(p).toContain('宿主 task')
   })
 
   it('work：含「接着干 / 自动规划 / Task / AskUser 边界」调度策略', () => {
@@ -41,7 +44,7 @@ describe('buildExecutionModePrompt', () => {
     expect(p).toMatch(/多阶段任务自动进入 Plan/)
     expect(p).toMatch(/EnterPlanMode/)
     expect(p).toMatch(/3–8 个短步骤/)
-    expect(p).toMatch(/Task \/ Agent 自动拆分/)
+    expect(p).toMatch(/宿主 task 自动拆分/)
     expect(p).toMatch(/已批准计划|多阶段任务/)
     // ExitPlanMode 须审批 UI，禁止贴完计划即动手
     expect(p).toMatch(/ExitPlanMode/)

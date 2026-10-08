@@ -30,6 +30,7 @@ import { FilePreviewPane } from "./FilePreviewPane";
 import { RichPreviewPane } from "./RichPreviewPane";
 import { BrowserPane } from "./BrowserPane";
 import { DockTab } from "./DockTab";
+import { CREW_ORCHESTRATION_ENABLED } from "@tagent/shared";
 import { DockSummaryActions } from "./DockSummaryActions";
 import { SessionSummaryTabButton } from "../chat/SessionSummaryTabButton";
 import { usePersistedSessionMeta } from "../../hooks/usePersistedSessionMeta";
@@ -351,7 +352,7 @@ export function WorkspaceDock(): JSX.Element {
   useEffect(() => {
     const api = apiRef.current;
     const request = crewOpenRequest;
-    if (!api || !apiReady || !request) return;
+    if (!api || !apiReady || !request || !CREW_ORCHESTRATION_ENABLED) return;
 
     const open = (): void => {
       const crewId = `crew:${request.sessionId}`;

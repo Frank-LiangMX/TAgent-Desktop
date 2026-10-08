@@ -21,6 +21,7 @@ import {
 import { getConfigDir } from '../config/config-paths'
 import { writeJsonAtomic } from '../atomic-json'
 import { resolveForWorker } from './resolve-for-worker'
+import { readAgentCrewPrefs } from '../agent/agent-crew-prefs'
 
 interface KanbanStoreFile {
   boards: KanbanBoard[]
@@ -74,7 +75,10 @@ export function createBoard(input: CreateKanbanBoardInput): KanbanBoard {
     originChatId: input.originChatId,
     originBridge: input.originBridge,
     status: 'active',
-    maxConcurrent: input.maxConcurrent ?? KANBAN_DEFAULT_MAX_CONCURRENT,
+    maxConcurrent:
+      input.maxConcurrent ??
+      readAgentCrewPrefs().maxParallelWorkers ??
+      KANBAN_DEFAULT_MAX_CONCURRENT,
     paused: false,
     requireSummary: input.requireSummary === true,
     cwd: input.cwd,

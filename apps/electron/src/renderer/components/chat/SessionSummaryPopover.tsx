@@ -194,7 +194,7 @@ export function SessionSummaryPopover({
             <div className="text-[12px] font-semibold tracking-tight">本场摘要</div>
             <div className="truncate text-[10.5px] text-muted-foreground">
               {total === 0
-                ? '会诊、圆桌、班组会汇总在这里'
+                ? '会诊、圆桌与子代理会汇总在这里'
                 : runningCount > 0
                   ? `${runningCount} 项进行中 · 共 ${total} 项`
                   : `共 ${total} 项协作`}
@@ -231,7 +231,7 @@ export function SessionSummaryPopover({
         <div className="session-summary-body">
           {outline.items.length === 0 && groups.length === 0 ? (
             <div className="px-3 py-6 text-center text-[11.5px] text-muted-foreground">
-              本场还没有会诊、圆桌或班组
+              本场还没有协作记录
             </div>
           ) : (
             <>

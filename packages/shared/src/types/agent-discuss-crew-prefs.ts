@@ -104,15 +104,96 @@ export function sanitizeAgentDiscussPrefs(v: AgentDiscussPrefs): AgentDiscussPre
 // ===== 班组（agent-crew）=====
 
 /**
+ * 用户显式维护的子代理/班组模型能力资料。
+ * 这是偏好元数据，不包含或推导任何渠道凭据、地址或供应商能力。
+ */
+export interface DelegationModelProfile {
+  channelId: string
+  modelId: string
+  enabled: boolean
+  strength: 'unknown' | 'standard' | 'strong'
+  speed: 'unknown' | 'fast' | 'balanced' | 'slow'
+  cost: 'unknown' | 'low' | 'medium' | 'high'
+  goodFor: string[]
+}
+
+export const DELEGATION_MODEL_PROFILE_MAX = 200
+export const DELEGATION_MODEL_GOOD_FOR_MAX = 8
+export const DELEGATION_MODEL_GOOD_FOR_LABEL_MAX_LENGTH = 80
+
+const DELEGATION_STRENGTHS = new Set<DelegationModelProfile['strength']>([
+  'unknown',
+  'standard',
+  'strong',
+])
+const DELEGATION_SPEEDS = new Set<DelegationModelProfile['speed']>([
+  'unknown',
+  'fast',
+  'balanced',
+  'slow',
+])
+const DELEGATION_COSTS = new Set<DelegationModelProfile['cost']>([
+  'unknown',
+  'low',
+  'medium',
+  'high',
+])
+
+function validateDelegationModelProfiles(value: unknown): string | null {
+  if (value === undefined) return null // old preference files remain valid
+  if (!Array.isArray(value)) return '子代理模型资料须为数组'
+  if (value.length > DELEGATION_MODEL_PROFILE_MAX) {
+    return `子代理模型资料最多 ${DELEGATION_MODEL_PROFILE_MAX} 条`
+  }
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return '子代理模型资料条目须为对象'
+    }
+    const profile = item as Record<string, unknown>
+    const channelId = profile.channelId
+    const modelId = profile.modelId
+    if (typeof channelId !== 'string' || !channelId.trim()) {
+      return '子代理模型资料须包含非空 channelId'
+    }
+    if (typeof modelId !== 'string' || !modelId.trim()) {
+      return '子代理模型资料须包含非空 modelId'
+    }
+    const key = `${channelId.trim()}\u0000${modelId.trim()}`
+    if (seen.has(key)) return '子代理模型资料不能重复同一渠道和模型'
+    seen.add(key)
+    if (typeof profile.enabled !== 'boolean') return '子代理模型启用状态须为布尔值'
+    if (typeof profile.strength !== 'string' || !DELEGATION_STRENGTHS.has(profile.strength as DelegationModelProfile['strength'])) {
+      return '子代理模型能力等级不合法'
+    }
+    if (typeof profile.speed !== 'string' || !DELEGATION_SPEEDS.has(profile.speed as DelegationModelProfile['speed'])) {
+      return '子代理模型速度等级不合法'
+    }
+    if (typeof profile.cost !== 'string' || !DELEGATION_COSTS.has(profile.cost as DelegationModelProfile['cost'])) {
+      return '子代理模型成本等级不合法'
+    }
+    if (!Array.isArray(profile.goodFor) || profile.goodFor.length > DELEGATION_MODEL_GOOD_FOR_MAX) {
+      return `子代理模型适用标签须为最多 ${DELEGATION_MODEL_GOOD_FOR_MAX} 项的数组`
+    }
+    for (const label of profile.goodFor) {
+      if (typeof label !== 'string' || !label.trim() || label.length > DELEGATION_MODEL_GOOD_FOR_LABEL_MAX_LENGTH) {
+        return `子代理模型适用标签须为非空且不超过 ${DELEGATION_MODEL_GOOD_FOR_LABEL_MAX_LENGTH} 字符的文本`
+      }
+    }
+  }
+  return null
+}
+
+/**
  * 班组（长任务派工）偏好。
- * 本期：落盘 + UI；`maxParallelWorkers` 调度未接、`showFlowAsGraph` 为阶段3预留。
+ * `maxParallelWorkers` 由调度器读取；`showFlowAsGraph` 为阶段3预留。
  */
 export interface AgentCrewPrefs {
   /** Work 派工后自动打开班组面板 */
   autoOpenPanelOnDispatch: boolean
   /**
    * 并行 worker 上限（1–8 整数）。
-   * **本期落盘 + UI**；调度器尚未接此上限（见 FINDINGS）。
+   * 调度器按此与看板自身 maxConcurrent 取较小值限流。
    */
   maxParallelWorkers: number
   /**
@@ -120,6 +201,11 @@ export interface AgentCrewPrefs {
    * 本期开关预留，无图时仅文案提示。
    */
   showFlowAsGraph: boolean
+  /**
+   * 可选的子代理模型白名单及用户维护的能力资料。
+   * 缺省等同于尚未选择任何可派工模型，兼容既有偏好文件。
+   */
+  modelProfiles?: DelegationModelProfile[]
 }
 
 /** 班组偏好默认值（文件不存在 / 损坏 / 结构非法时的兜底） */
@@ -151,7 +237,7 @@ export function validateAgentCrewPrefs(v: unknown): string | null {
   if (typeof p.showFlowAsGraph !== 'boolean') {
     return '依赖用图开关须为布尔值'
   }
-  return null
+  return validateDelegationModelProfiles(p.modelProfiles)
 }
 
 /** 班组偏好合法性断言（read 兜底用） */
@@ -161,9 +247,21 @@ export function isValidAgentCrewPrefs(v: unknown): v is AgentCrewPrefs {
 
 /** 把合法班组偏好剥离为已知字段（read 用；丢弃未知字段） */
 export function sanitizeAgentCrewPrefs(v: AgentCrewPrefs): AgentCrewPrefs {
-  return {
+  const clean: AgentCrewPrefs = {
     autoOpenPanelOnDispatch: v.autoOpenPanelOnDispatch,
     maxParallelWorkers: v.maxParallelWorkers,
     showFlowAsGraph: v.showFlowAsGraph,
   }
+  if (v.modelProfiles !== undefined) {
+    clean.modelProfiles = v.modelProfiles.map((profile) => ({
+      channelId: profile.channelId.trim(),
+      modelId: profile.modelId.trim(),
+      enabled: profile.enabled,
+      strength: profile.strength,
+      speed: profile.speed,
+      cost: profile.cost,
+      goodFor: profile.goodFor.map((label) => label.trim()),
+    }))
+  }
+  return clean
 }

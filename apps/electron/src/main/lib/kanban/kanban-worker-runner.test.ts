@@ -4,6 +4,7 @@ import {
   extractToolName,
   isBlockedWorkerTool,
   mergeAssistantTextChunks,
+  resolveWorkerTerminal,
 } from './kanban-worker-runner'
 
 describe('kanban-worker-runner helpers', () => {
@@ -73,6 +74,13 @@ describe('isBlockedWorkerTool', () => {
     expect(isBlockedWorkerTool('kanban_add_task')).toMatch(/禁止/)
   })
 
+  test('禁止 Task / Agent 递归派工（含 MCP 前缀）', () => {
+    expect(isBlockedWorkerTool('Task')).toMatch(/递归/)
+    expect(isBlockedWorkerTool('Agent')).toMatch(/递归/)
+    expect(isBlockedWorkerTool('mcp__delegation__Task')).toMatch(/递归/)
+    expect(isBlockedWorkerTool('subagent_spawn')).toMatch(/递归/)
+  })
+
   test('禁止交互式工具', () => {
     expect(isBlockedWorkerTool('AskUserQuestion')).toMatch(/无人值守/)
     expect(isBlockedWorkerTool('ExitPlanMode')).toMatch(/无人值守/)
@@ -90,5 +98,35 @@ describe('isBlockedWorkerTool', () => {
     expect(isBlockedWorkerTool('Write')).toBeNull()
     expect(isBlockedWorkerTool('Bash')).toBeNull()
     expect(isBlockedWorkerTool('kanban_list_boards')).toBeNull()
+  })
+})
+
+describe('resolveWorkerTerminal', () => {
+  test('只把显式 success/completed 视为成功', () => {
+    expect(resolveWorkerTerminal({ subtype: 'success' })).toEqual({ finalStatus: 'done' })
+    expect(resolveWorkerTerminal({ subtype: 'completed' })).toEqual({ finalStatus: 'done' })
+    expect(resolveWorkerTerminal({ subtype: 'error_max_turns' }).finalStatus).toBe('failed')
+    expect(resolveWorkerTerminal(undefined).finalStatus).toBe('failed')
+  })
+
+  test('保留终态错误而不合成成功摘要', () => {
+    expect(resolveWorkerTerminal({ subtype: 'error_during_execution', errors: ['API failed'] })).toEqual({
+      finalStatus: 'failed',
+      error: 'API failed',
+    })
+  })
+
+  test('错误证据优先于 success/completed subtype', () => {
+    expect(resolveWorkerTerminal({ subtype: 'success', is_error: true })).toMatchObject({
+      finalStatus: 'failed',
+    })
+    expect(resolveWorkerTerminal({ subtype: 'completed', isError: true, error: 'transport failed' })).toEqual({
+      finalStatus: 'failed',
+      error: 'transport failed',
+    })
+    expect(resolveWorkerTerminal({ subtype: 'success', errors: ['provider failed'] })).toEqual({
+      finalStatus: 'failed',
+      error: 'provider failed',
+    })
   })
 })

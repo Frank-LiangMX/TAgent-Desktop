@@ -3,25 +3,50 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
+vi.mock('@tagent/shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tagent/shared')>()),
+  CREW_ORCHESTRATION_ENABLED: true,
+}))
+
 let tmpDir = ''
 let rolesPath = ''
 let configDir = ''
-const metas = new Map<string, { id: string; executionMode?: string }>()
+const metas = new Map<string, { id: string; executionMode?: string; channelId?: string; modelId?: string }>()
 
 vi.mock('../config/config-paths', () => ({
   getAgentRolesPath: () => rolesPath,
   getConfigDir: () => configDir,
+  getAgentCrewPrefsPath: () => join(configDir, 'agent-crew-prefs.json'),
 }))
 
 vi.mock('../atomic-json', () => ({
   writeJsonAtomic: (path: string, data: unknown) => {
     writeFileSync(path, JSON.stringify(data, null, 2), 'utf-8')
   },
+  readJsonSafe: () => null,
 }))
 
 vi.mock('../agent/session-store', () => ({
   getSessionMeta: (id: string) => metas.get(id),
 }))
+
+vi.mock('../channel/channel-store', () => {
+  const channel = {
+    id: 'ch1',
+    name: 'Test API',
+    provider: 'custom',
+    baseUrl: 'https://test.example/v1',
+    apiKey: 'test-key',
+    enabled: true,
+    models: [{ id: 'm1', name: 'Test model', enabled: true }],
+    createdAt: 0,
+    updatedAt: 0,
+  }
+  return {
+    getChannel: (id: string) => id === channel.id ? channel : undefined,
+    listChannels: () => [channel],
+  }
+})
 
 // avoid starting real timer from kick
 vi.mock('./kanban-dispatcher', async (importOriginal) => {
@@ -60,7 +85,7 @@ describe('kanban-agent-tools', () => {
   })
 
   test('Work 下 create + add + list', async () => {
-    metas.set('s-work', { id: 's-work', executionMode: 'work' })
+    metas.set('s-work', { id: 's-work', executionMode: 'work', channelId: 'ch1', modelId: 'm1' })
     const created = await tools.handleCreateBoard(
       { rootGoal: '实现 API' },
       { sessionId: 's-work', channelId: 'ch1' },

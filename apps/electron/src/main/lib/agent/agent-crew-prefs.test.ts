@@ -107,6 +107,37 @@ describe('writeAgentCrewPrefs', () => {
     expect(raw).toEqual(written)
   })
 
+  it('模型资料合法 → 落盘时剥离凭据和未知字段，旧字段仍原样保留', async () => {
+    const { writeAgentCrewPrefs, readAgentCrewPrefs } = await loadService()
+    const written = writeAgentCrewPrefs({
+      autoOpenPanelOnDispatch: true,
+      maxParallelWorkers: 3,
+      showFlowAsGraph: false,
+      modelProfiles: [{
+        channelId: 'channel-a',
+        modelId: 'model-a',
+        enabled: true,
+        strength: 'standard',
+        speed: 'balanced',
+        cost: 'low',
+        goodFor: ['review'],
+        apiKey: 'must-not-persist',
+        baseUrl: 'must-not-persist',
+      }],
+    })
+    expect(written.modelProfiles).toEqual([{
+      channelId: 'channel-a',
+      modelId: 'model-a',
+      enabled: true,
+      strength: 'standard',
+      speed: 'balanced',
+      cost: 'low',
+      goodFor: ['review'],
+    }])
+    expect(readFileSync(PREFS_PATH(), 'utf8')).not.toContain('must-not-persist')
+    expect(readAgentCrewPrefs()).toEqual(written)
+  })
+
   it('非法并行上限（0 / 9）→ 抛中文错且不写盘', async () => {
     const { writeAgentCrewPrefs } = await loadService()
     expect(() =>
@@ -164,6 +195,21 @@ describe('validateAgentCrewPrefs / isValidAgentCrewPrefs（纯函数边界）', 
   it('布尔字段非法 / 缺字段', () => {
     expect(validateAgentCrewPrefs({ maxParallelWorkers: 3, showFlowAsGraph: false })).toMatch(/布尔|面板/)
     expect(validateAgentCrewPrefs({ autoOpenPanelOnDispatch: true, maxParallelWorkers: 3 })).toMatch(/布尔|图/)
+  })
+
+  it('模型资料重复绑定或超限标签非法', () => {
+    const profile = {
+      channelId: 'c', modelId: 'm', enabled: true,
+      strength: 'strong', speed: 'fast', cost: 'low', goodFor: ['code'],
+    }
+    expect(validateAgentCrewPrefs({
+      ...AGENT_CREW_PREFS_DEFAULT,
+      modelProfiles: [profile, { ...profile }],
+    })).toMatch(/重复/)
+    expect(validateAgentCrewPrefs({
+      ...AGENT_CREW_PREFS_DEFAULT,
+      modelProfiles: [{ ...profile, goodFor: Array.from({ length: 9 }, () => 'tag') }],
+    })).toMatch(/最多 8/)
   })
 
   it('isValid 断言与 validate 一致', () => {

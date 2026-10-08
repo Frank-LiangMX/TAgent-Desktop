@@ -5,7 +5,12 @@
  * @see docs/plans/multi-runtime/02-chat-work-and-permissions.md
  * @see docs/plans/multi-runtime/07-implementation-phases.md Phase D
  */
-import { migrateExecutionMode, type ExecutionMode } from '@tagent/shared'
+import {
+  CREW_ORCHESTRATION_ENABLED,
+  CREW_PAUSED_MESSAGE,
+  migrateExecutionMode,
+  type ExecutionMode,
+} from '@tagent/shared'
 import { getSessionMeta } from '../agent/session-store'
 
 export const KANBAN_CHAT_BLOCK_REASON =
@@ -18,10 +23,23 @@ export function getSessionExecutionMode(sessionId: string | undefined | null): E
 }
 
 export function isKanbanWriteAllowed(sessionId: string | undefined | null): boolean {
+  if (!CREW_ORCHESTRATION_ENABLED) return false
   return getSessionExecutionMode(sessionId) === 'work'
 }
 
 export function assertKanbanWriteAllowed(
+  sessionId: string | undefined | null,
+): { ok: true } | { ok: false; error: string; executionMode: ExecutionMode } {
+  const mode = getSessionExecutionMode(sessionId)
+  if (!CREW_ORCHESTRATION_ENABLED) {
+    return { ok: false, error: CREW_PAUSED_MESSAGE, executionMode: mode }
+  }
+  if (mode === 'work') return { ok: true }
+  return { ok: false, error: KANBAN_CHAT_BLOCK_REASON, executionMode: mode }
+}
+
+/** Stop/pause remains available while orchestration is product-paused. */
+export function assertKanbanStopAllowed(
   sessionId: string | undefined | null,
 ): { ok: true } | { ok: false; error: string; executionMode: ExecutionMode } {
   const mode = getSessionExecutionMode(sessionId)

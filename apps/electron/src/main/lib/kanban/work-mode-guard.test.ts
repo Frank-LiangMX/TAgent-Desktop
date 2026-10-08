@@ -1,5 +1,10 @@
 import { describe, expect, test, beforeEach, vi } from 'vitest'
 
+vi.mock('@tagent/shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tagent/shared')>()),
+  CREW_ORCHESTRATION_ENABLED: true,
+}))
+
 const metas = new Map<string, { id: string; executionMode?: string }>()
 
 vi.mock('../agent/session-store', () => ({

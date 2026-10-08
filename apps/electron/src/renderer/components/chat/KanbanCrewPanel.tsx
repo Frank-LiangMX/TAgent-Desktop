@@ -16,6 +16,7 @@ import {
 } from '@phosphor-icons/react'
 import { cn } from '../../lib/utils'
 import { formatMessageTime } from '../../lib/time-utils'
+import { CREW_ORCHESTRATION_ENABLED, CREW_PAUSED_MESSAGE } from '@tagent/shared'
 
 interface BoardRow {
   id: string
@@ -472,6 +473,12 @@ export function KanbanCrewPanel({
         )}
       </header>
 
+      {!CREW_ORCHESTRATION_ENABLED ? (
+        <div className="mx-3 mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs" role="status">
+          {CREW_PAUSED_MESSAGE} 当前面板仅供查看，不能新建、恢复或重试任务。
+        </div>
+      ) : null}
+
       {/* 进行中 / 历史 */}
       {!detailTask ? (
         <div className="kanban-crew-panel__tabs">
@@ -561,7 +568,9 @@ export function KanbanCrewPanel({
             <div className="kanban-crew-panel__empty">
               {isHistoryScope ? '本会话暂无已完成班组' : '暂无进行中的班组'}
               <p className="kanban-crew-panel__empty-hint">
-                在 Work 模式下让助手建板并添加任务后，进度会出现在这里。
+                {CREW_ORCHESTRATION_ENABLED
+                  ? '在 Work 模式下让助手建板并添加任务后，进度会出现在这里。'
+                  : '班组编排已暂停；请使用子代理完成委派。已有看板数据仍可查看。'}
               </p>
             </div>
           ) : tasks.length === 0 ? (
@@ -757,7 +766,7 @@ export function KanbanCrewPanel({
               </section>
             ) : null}
 
-            {!isHistoryScope && (detailTask.status === 'blocked' || detailTask.status === 'failed') ? (
+            {CREW_ORCHESTRATION_ENABLED && !isHistoryScope && (detailTask.status === 'blocked' || detailTask.status === 'failed') ? (
               <div className="flex flex-wrap gap-1.5 pt-1">
                 {detailTask.status === 'blocked' ? (
                   <button

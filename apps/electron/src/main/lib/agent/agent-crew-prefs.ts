@@ -7,8 +7,7 @@
  * 写：整单校验（`validateAgentCrewPrefs`），非法即抛中文错、不脏写盘
  * （与 cli-workers-service 同口径，SPEC 04 §2.2）。
  *
- * 本期：仅落盘 + UI；`maxParallelWorkers` 调度未接、`showFlowAsGraph` 为阶段3预留
- * （见 docs/dev/moa-roundtable/IMPLEMENT-AGENT-DISCUSS-CREW-SETTINGS-FINDINGS.md）。
+ * `maxParallelWorkers` 由看板调度器读取；`showFlowAsGraph` 仍为阶段3预留。
  */
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import { getAgentCrewPrefsPath } from '../config/config-paths'

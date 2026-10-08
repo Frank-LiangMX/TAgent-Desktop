@@ -4,6 +4,8 @@
  */
 import { ipcMain } from 'electron'
 import {
+  CREW_ORCHESTRATION_ENABLED,
+  CREW_PAUSED_MESSAGE,
   KANBAN_IPC_CHANNELS,
   type CommentKanbanTaskInput,
   type CreateKanbanBoardIpcInput,
@@ -11,10 +13,14 @@ import {
   type ListKanbanBoardsInput,
   type UnblockKanbanTaskInput,
 } from '@tagent/shared'
-import { assertKanbanWriteAllowed } from './work-mode-guard'
+import { assertKanbanStopAllowed, assertKanbanWriteAllowed } from './work-mode-guard'
 import * as store from './kanban-store'
 import { kickKanbanDispatcher } from './kanban-dispatcher'
 import { handleComment } from './kanban-agent-tools'
+
+function pausedMutation(): { ok: false; error: string } {
+  return { ok: false, error: CREW_PAUSED_MESSAGE }
+}
 
 export function registerKanbanIpc(): void {
   ipcMain.handle(KANBAN_IPC_CHANNELS.LIST_BOARDS, async (_e, input?: ListKanbanBoardsInput) => {
@@ -44,6 +50,7 @@ export function registerKanbanIpc(): void {
   ipcMain.handle(
     KANBAN_IPC_CHANNELS.CREATE_BOARD,
     async (_e, input: CreateKanbanBoardIpcInput & { sessionId?: string }) => {
+      if (!CREW_ORCHESTRATION_ENABLED) return pausedMutation()
       // 有 parentSessionId / sessionId 时校验该会话为 Work
       const sessionId = input?.sessionId ?? input?.parentSessionId
       const gate = assertKanbanWriteAllowed(sessionId)
@@ -73,6 +80,7 @@ export function registerKanbanIpc(): void {
       _e,
       input: CreateKanbanTaskIpcInput & { sessionId?: string; availableModels?: string[] },
     ) => {
+      if (!CREW_ORCHESTRATION_ENABLED) return pausedMutation()
       const gate = assertKanbanWriteAllowed(input?.sessionId)
       if (!gate.ok) {
         return { ok: false as const, error: gate.error }
@@ -112,7 +120,8 @@ export function registerKanbanIpc(): void {
   ipcMain.handle(
     KANBAN_IPC_CHANNELS.PAUSE_BOARD,
     async (_e, args: { boardId: string; sessionId?: string }) => {
-      const gate = assertKanbanWriteAllowed(args?.sessionId)
+      // Pausing is the emergency/stop path and remains available while crews are paused.
+      const gate = assertKanbanStopAllowed(args?.sessionId)
       if (!gate.ok) return { ok: false as const, error: gate.error }
       const board = store.setBoardPaused(args.boardId, true)
       if (!board) return { ok: false as const, error: '看板不存在' }
@@ -123,6 +132,7 @@ export function registerKanbanIpc(): void {
   ipcMain.handle(
     KANBAN_IPC_CHANNELS.RESUME_BOARD,
     async (_e, args: { boardId: string; sessionId?: string }) => {
+      if (!CREW_ORCHESTRATION_ENABLED) return pausedMutation()
       const gate = assertKanbanWriteAllowed(args?.sessionId)
       if (!gate.ok) return { ok: false as const, error: gate.error }
       const board = store.setBoardPaused(args.boardId, false)
@@ -136,6 +146,7 @@ export function registerKanbanIpc(): void {
   ipcMain.handle(
     KANBAN_IPC_CHANNELS.UNBLOCK_TASK,
     async (_e, args: UnblockKanbanTaskInput | string) => {
+      if (!CREW_ORCHESTRATION_ENABLED) return pausedMutation()
       const taskId = typeof args === 'string' ? args : args?.taskId
       const reason = typeof args === 'string' ? undefined : args?.reason
       if (!taskId) return { ok: false as const, error: 'taskId 必填' }
@@ -149,6 +160,7 @@ export function registerKanbanIpc(): void {
   ipcMain.handle(
     KANBAN_IPC_CHANNELS.RETRY_TASK,
     async (_e, args: { taskId: string } | string) => {
+      if (!CREW_ORCHESTRATION_ENABLED) return pausedMutation()
       const taskId = typeof args === 'string' ? args : args?.taskId
       if (!taskId) return { ok: false as const, error: 'taskId 必填' }
       const task = store.retryTask(taskId)
@@ -161,6 +173,7 @@ export function registerKanbanIpc(): void {
   ipcMain.handle(
     KANBAN_IPC_CHANNELS.COMMENT_TASK,
     async (_e, args: CommentKanbanTaskInput & { sessionId?: string }) => {
+      if (!CREW_ORCHESTRATION_ENABLED) return pausedMutation()
       // 评论可在 Chat 写 blackboard；不强制 Work（主会话交接常用）
       if (!args?.taskId || !args?.comment?.trim()) {
         return { ok: false as const, error: 'taskId 与 comment 必填' }

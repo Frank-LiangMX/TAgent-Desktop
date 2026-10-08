@@ -10,12 +10,14 @@ let configDir = ''
 vi.mock('../config/config-paths', () => ({
   getAgentRolesPath: () => rolesPath,
   getConfigDir: () => configDir,
+  getAgentCrewPrefsPath: () => join(configDir, 'agent-crew-prefs.json'),
 }))
 
 vi.mock('../atomic-json', () => ({
   writeJsonAtomic: (path: string, data: unknown) => {
     writeFileSync(path, JSON.stringify(data, null, 2), 'utf-8')
   },
+  readJsonSafe: () => null,
 }))
 
 const store = await import('./kanban-store')

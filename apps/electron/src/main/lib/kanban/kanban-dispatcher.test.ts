@@ -3,6 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
+vi.mock('@tagent/shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tagent/shared')>()),
+  CREW_ORCHESTRATION_ENABLED: true,
+}))
+
 let tmpDir = ''
 let rolesPath = ''
 let configDir = ''
@@ -10,16 +15,34 @@ let configDir = ''
 vi.mock('../config/config-paths', () => ({
   getAgentRolesPath: () => rolesPath,
   getConfigDir: () => configDir,
+  getAgentCrewPrefsPath: () => join(configDir, 'agent-crew-prefs.json'),
 }))
 
 vi.mock('../atomic-json', () => ({
   writeJsonAtomic: (path: string, data: unknown) => {
     writeFileSync(path, JSON.stringify(data, null, 2), 'utf-8')
   },
+  readJsonSafe: () => null,
+}))
+
+vi.mock('../channel/channel-store', () => ({
+  getChannel: (id: string) => id === 'ch1'
+    ? {
+        id: 'ch1', name: 'Test API', provider: 'custom', baseUrl: '', apiKey: '', enabled: true,
+        models: [{ id: 'm1', name: 'Model', enabled: true }], createdAt: 0, updatedAt: 0,
+      }
+    : undefined,
+}))
+
+vi.mock('../agent/session-store', () => ({
+  getSessionMeta: (id: string) => id === 'parent-stop'
+    ? { id, channelId: 'ch1', modelId: 'm1', executionMode: 'work', permissionMode: 'bypassPermissions' }
+    : undefined,
 }))
 
 const store = await import('./kanban-store')
 const dispatcher = await import('./kanban-dispatcher')
+const { countDelegationSlots } = await import('../agent/delegation-capacity')
 const { DEFAULT_ROLES } = await import('@tagent/shared')
 
 describe('kanban-dispatcher', () => {
@@ -170,5 +193,62 @@ describe('kanban-dispatcher', () => {
     expect(store.getTask(a.id)!.status).toBe('done')
     expect(store.getTask(b.id)!.status).toBe('done')
     expect(runOrder).toEqual(['任务A', '任务B'])
+  })
+
+  test('父会话 STOP 暂停绑定看板，中止后 reservation 保持至 runner settle', async () => {
+    const board = store.createBoard({ rootGoal: '停止委派', parentSessionId: 'parent-stop' })
+    const task = store.createTask({
+      boardId: board.id,
+      title: '可中止任务',
+      channelId: 'ch1',
+      modelId: 'm1',
+    })
+    let settle!: () => void
+    const gate = new Promise<void>((resolve) => { settle = resolve })
+    const statuses: string[] = []
+
+    dispatcher.configureKanbanDispatcher({
+      runner: async () => {
+        await gate
+        return { finalStatus: 'done', summary: '不会在 STOP 后算完成' }
+      },
+      getAvailableModels: () => ['m1'],
+      onTaskStatusChanged: (_id, status) => statuses.push(status),
+    })
+
+    dispatcher.dispatchKanbanTick()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(store.getTask(task.id)!.status).toBe('running')
+    expect(countDelegationSlots('parent-stop')).toBe(1)
+
+    dispatcher.stopKanbanDelegationForSession('parent-stop')
+    expect(store.getBoard(board.id)!.paused).toBe(true)
+    expect(countDelegationSlots('parent-stop')).toBe(1)
+
+    settle()
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(store.getTask(task.id)!.status).toBe('blocked')
+    expect(statuses).toContain('blocked')
+    expect(countDelegationSlots('parent-stop')).toBe(0)
+  })
+
+  test('状态观察回调抛错不会泄漏已 claim 的 reservation', async () => {
+    const board = store.createBoard({ rootGoal: '观察回调异常' })
+    const task = store.createTask({
+      boardId: board.id,
+      title: '回调异常任务',
+      channelId: 'ch1',
+      modelId: 'm1',
+    })
+    dispatcher.configureKanbanDispatcher({
+      runner: async () => ({ finalStatus: 'done', summary: 'done' }),
+      getAvailableModels: () => ['m1'],
+      onTaskStatusChanged: () => { throw new Error('observer failed') },
+    })
+
+    dispatcher.dispatchKanbanTick()
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(store.getTask(task.id)!.status).toBe('done')
+    expect(countDelegationSlots(board.id)).toBe(0)
   })
 })

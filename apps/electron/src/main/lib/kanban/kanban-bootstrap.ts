@@ -2,8 +2,8 @@
  * 看板子系统启动：调度器 + headless 工人 + 桌面通知 + 完成回流
  */
 import { BrowserWindow } from 'electron'
-import { KANBAN_IPC_CHANNELS } from '@tagent/shared'
-import { configureKanbanDispatcher, startKanbanDispatcher } from './kanban-dispatcher'
+import { CREW_ORCHESTRATION_ENABLED, KANBAN_IPC_CHANNELS } from '@tagent/shared'
+import { configureKanbanDispatcher, startKanbanDispatcher, stopKanbanDispatcher } from './kanban-dispatcher'
 import { runKanbanWorkerHeadless } from './kanban-worker-runner'
 import { getChannel } from '../channel/channel-store'
 import { notifyBoardComplete, notifyTaskTerminal } from './kanban-notify'
@@ -20,6 +20,11 @@ export function onKanbanTaskStatusChanged(handler: KanbanTaskStatusChangedHandle
 }
 
 export function bootstrapKanban(getWindow: () => BrowserWindow | null): void {
+  if (!CREW_ORCHESTRATION_ENABLED) {
+    // Keep persisted boards/tasks readable, but never restart their workers.
+    stopKanbanDispatcher()
+    return
+  }
   configureKanbanDispatcher({
     runner: runKanbanWorkerHeadless,
     getAvailableModels: (channelId) => {

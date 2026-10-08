@@ -9,11 +9,18 @@
  */
 import { Type } from '@earendil-works/pi-ai'
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core'
-import type { KanbanTask } from '@tagent/shared'
+import { CREW_ORCHESTRATION_ENABLED, CREW_PAUSED_MESSAGE, type KanbanTask } from '@tagent/shared'
 import { assertKanbanWriteAllowed, KANBAN_CHAT_BLOCK_REASON } from './work-mode-guard'
 import * as store from './kanban-store'
 import { kickKanbanDispatcher } from './kanban-dispatcher'
 import { updateTask } from './kanban-store'
+import { getChannel } from '../channel/channel-store'
+import { getSessionMeta } from '../agent/session-store'
+import {
+  buildDelegationModelPrompt,
+  listDelegationModelCandidates,
+  validateDelegationModelSelection,
+} from '../agent/delegation-model-policy'
 
 export type KanbanToolMode = 'full' | 'worker'
 
@@ -33,12 +40,17 @@ function piText(text: string): AgentToolResult<Record<string, unknown>> {
   return { content: [{ type: 'text', text }], details: {} }
 }
 
+function pausedResult(): { content: Array<{ type: 'text'; text: string }> } {
+  return textResult(`错误：${CREW_PAUSED_MESSAGE}`)
+}
+
 // ── handlers ──────────────────────────────────────────
 
 export async function handleCreateBoard(
   args: Record<string, unknown>,
   ctx: KanbanToolContext,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  if (!CREW_ORCHESTRATION_ENABLED) return pausedResult()
   const gate = assertKanbanWriteAllowed(ctx.sessionId)
   if (!gate.ok) return textResult(`错误：${gate.error}`)
 
@@ -81,6 +93,7 @@ export async function handleAddTask(
   args: Record<string, unknown>,
   ctx: KanbanToolContext,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  if (!CREW_ORCHESTRATION_ENABLED) return pausedResult()
   const gate = assertKanbanWriteAllowed(ctx.sessionId)
   if (!gate.ok) return textResult(`错误：${gate.error}`)
 
@@ -89,6 +102,49 @@ export async function handleAddTask(
   const channelId = String(args.channelId ?? ctx.channelId ?? '').trim()
   if (!boardId || !title) return textResult('错误：boardId 与 title 必填')
   if (!channelId) return textResult('错误：channelId 缺失（请传 channelId 或绑定会话渠道）')
+
+  const explicitModelId = args.modelId != null ? String(args.modelId).trim() : ''
+  const selectionReason = typeof args.selectionReason === 'string'
+    ? args.selectionReason.trim()
+    : typeof args.reason === 'string'
+      ? args.reason.trim()
+      : ''
+  const complexity = args.complexity === 'simple' || args.complexity === 'complex'
+    ? args.complexity
+    : 'standard'
+
+  // The parent model owns delegation. An explicit model is an opt-in policy
+  // decision and must carry a reason; otherwise inherit the parent's real,
+  // enabled model only when the task stays on the same channel.
+  let modelId = explicitModelId || undefined
+  if (modelId) {
+    try {
+      validateDelegationModelSelection({
+        channelId,
+        modelId,
+        reason: selectionReason,
+        complexity,
+      })
+    } catch (error) {
+      return textResult(`错误：${error instanceof Error ? error.message : String(error)}`)
+    }
+  } else {
+    const parent = getSessionMeta(ctx.sessionId)
+    const inherited = parent?.channelId === channelId ? parent.modelId?.trim() : undefined
+    const channel = getChannel(channelId)
+    const inheritedIsEnabled = Boolean(
+      inherited && channel?.enabled && channel.models.some(
+        (candidate) => candidate.id === inherited && candidate.enabled,
+      ),
+    )
+    if (inheritedIsEnabled) {
+      modelId = inherited
+    } else {
+      return textResult(
+        '错误：未指定有效 modelId，且无法从来源主会话继承同渠道的已启用模型；请调用 kanban_list_models 后显式选择 modelId，并说明 selectionReason。',
+      )
+    }
+  }
 
   const dependsOnTaskIds = Array.isArray(args.dependsOnTaskIds)
     ? (args.dependsOnTaskIds as unknown[]).map((x) => String(x)).filter(Boolean)
@@ -104,7 +160,7 @@ export async function handleAddTask(
         body: args.body != null ? String(args.body) : undefined,
         roleId: args.roleId != null ? String(args.roleId) : undefined,
         channelId,
-        modelId: args.modelId != null ? String(args.modelId) : undefined,
+        modelId,
         priority: typeof args.priority === 'number' ? args.priority : undefined,
         parentTaskId: args.parentTaskId != null ? String(args.parentTaskId) : undefined,
         dependsOnTaskIds,
@@ -112,6 +168,12 @@ export async function handleAddTask(
         acceptanceCriteria:
           args.acceptanceCriteria != null ? String(args.acceptanceCriteria) : undefined,
         goalMaxTurns: typeof args.goalMaxTurns === 'number' ? args.goalMaxTurns : undefined,
+        metadata: {
+          ...(args.metadata && typeof args.metadata === 'object' ? args.metadata as Record<string, unknown> : {}),
+          ...(selectionReason ? { selectionReason } : {}),
+          selectionSource: explicitModelId ? 'explicit' : 'inherited',
+          complexity,
+        },
       },
       { availableModels: [] },
     )
@@ -125,6 +187,8 @@ export async function handleAddTask(
           status: task.status,
           roleId: task.roleId,
           modelId: task.modelId,
+          selectionReason: task.metadata?.selectionReason,
+          complexity: task.metadata?.complexity,
           dependsOnTaskIds: dependsOnTaskIds ?? [],
           message: `任务已入队（${queued}）。`,
         },
@@ -196,9 +260,15 @@ export async function handleListTasks(
   )
 }
 
+export function handleListModels(): { content: Array<{ type: 'text'; text: string }> } {
+  const candidates = listDelegationModelCandidates()
+  return textResult(JSON.stringify({ candidates }, null, 2))
+}
+
 export async function handleComplete(
   args: Record<string, unknown>,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  if (!CREW_ORCHESTRATION_ENABLED) return pausedResult()
   const taskId = String(args.taskId ?? '').trim()
   if (!taskId) return textResult('错误：taskId 必填')
   const summary = String(args.summary ?? args.result ?? args.evidence ?? '').trim()
@@ -248,6 +318,7 @@ export async function handleComplete(
 export async function handleBlock(
   args: Record<string, unknown>,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  if (!CREW_ORCHESTRATION_ENABLED) return pausedResult()
   const taskId = String(args.taskId ?? '').trim()
   const reason = String(args.reason ?? '').trim()
   if (!taskId || !reason) return textResult('错误：taskId 与 reason 必填')
@@ -265,6 +336,7 @@ export async function handleComment(
   args: Record<string, unknown>,
   author = 'main',
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  if (!CREW_ORCHESTRATION_ENABLED) return pausedResult()
   const taskId = String(args.taskId ?? '').trim()
   const comment = String(args.comment ?? '').trim()
   if (!taskId || !comment) return textResult('错误：taskId 与 comment 必填')
@@ -282,6 +354,7 @@ export async function handleComment(
 // ── Pi tools ──────────────────────────────────────────
 
 export function buildPiKanbanTools(ctx: KanbanToolContext): AgentTool[] {
+  if (!CREW_ORCHESTRATION_ENABLED) return []
   const mode = ctx.toolMode ?? 'full'
   const tools: AgentTool[] = []
 
@@ -304,7 +377,7 @@ export function buildPiKanbanTools(ctx: KanbanToolContext): AgentTool[] {
         name: 'kanban_add_task',
         label: 'kanban_add_task',
         description:
-          '向看板追加任务并入队派工。roleId 推荐：generalist/coder/analyst/reviewer/writer 等。',
+          `向看板追加任务并入队派工。由主会话模型判断任务所需能力与速度；默认继承来源主会话同渠道模型。跨渠道或换模型必须显式传 modelId + selectionReason。工人不会递归创建看板。${buildDelegationModelPrompt()}`,
         parameters: Type.Object({
           boardId: Type.String(),
           title: Type.String(),
@@ -312,6 +385,12 @@ export function buildPiKanbanTools(ctx: KanbanToolContext): AgentTool[] {
           roleId: Type.Optional(Type.String()),
           channelId: Type.Optional(Type.String()),
           modelId: Type.Optional(Type.String()),
+          selectionReason: Type.Optional(Type.String({ description: '显式选择模型的理由；传 modelId 时必填' })),
+          complexity: Type.Optional(Type.Union([
+            Type.Literal('simple'),
+            Type.Literal('standard'),
+            Type.Literal('complex'),
+          ])),
           priority: Type.Optional(Type.Number()),
           dependsOnTaskIds: Type.Optional(Type.Array(Type.String())),
           goalMode: Type.Optional(Type.Boolean()),
@@ -319,6 +398,13 @@ export function buildPiKanbanTools(ctx: KanbanToolContext): AgentTool[] {
         }),
         execute: async (_id, params) =>
           piText((await handleAddTask(params as Record<string, unknown>, ctx)).content[0]!.text),
+      },
+      {
+        name: 'kanban_list_models',
+        label: 'kanban_list_models',
+        description: `列出当前已启用外部渠道的班组模型候选（未标注画像为 unknown）。主会话模型根据任务能力、速度与成本选择；不得让工人递归建任务。${buildDelegationModelPrompt()}`,
+        parameters: Type.Object({}),
+        execute: async () => piText(JSON.stringify({ candidates: listDelegationModelCandidates() }, null, 2)),
       },
       {
         name: 'kanban_list_boards',
@@ -384,6 +470,7 @@ export async function injectKanbanMcpServer(
   mcpServers: Record<string, unknown>,
   ctx: KanbanToolContext,
 ): Promise<void> {
+  if (!CREW_ORCHESTRATION_ENABLED) return
   const sdk = await import('@anthropic-ai/claude-agent-sdk')
   const { z } = await import('zod')
   const mode: KanbanToolMode = ctx.toolMode ?? 'full'
@@ -412,16 +499,26 @@ export async function injectKanbanMcpServer(
           roleId: z.string().optional(),
           channelId: z.string().optional(),
           modelId: z.string().optional(),
+          selectionReason: z.string().optional(),
+          complexity: z.enum(['simple', 'standard', 'complex']).optional(),
           priority: z.number().optional(),
           dependsOnTaskIds: z.array(z.string()).optional(),
           goalMode: z.boolean().optional(),
           acceptanceCriteria: z.string().optional(),
+          metadata: z.record(z.string(), z.unknown()).optional(),
         },
         async (args: Record<string, unknown>) =>
           handleAddTask(
             { ...args, channelId: args.channelId ?? ctx.channelId },
             ctx,
           ),
+      ),
+      sdk.tool(
+        'kanban_list_models',
+        `列出用户明确启用的班组模型候选，供主会话按能力、速度与成本选择；工人不得递归建任务。${buildDelegationModelPrompt()}`,
+        {},
+        async () => handleListModels(),
+        { annotations: { readOnlyHint: true } },
       ),
       sdk.tool(
         'kanban_list_boards',

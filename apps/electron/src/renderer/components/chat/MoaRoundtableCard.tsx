@@ -20,6 +20,7 @@ import {
 } from '@tagent/ui'
 import { type MoARoundtablePanel, type MoASeatPanel, type MoASeatStatus } from '@tagent/shared'
 import { cn } from '../../lib/utils'
+import { CREW_ORCHESTRATION_ENABLED } from '@tagent/shared'
 
 interface MoaRoundtableCardProps {
   panel: MoARoundtablePanel
@@ -140,7 +141,7 @@ export function MoaRoundtableCard({ panel, sessionId }: MoaRoundtableCardProps):
             {copied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
             {copied ? '已复制' : '复制结论'}
           </button>
-          <button
+          {CREW_ORCHESTRATION_ENABLED ? <button
             type="button"
             onClick={() => void handleCreateBoard()}
             disabled={creatingBoard || !sessionId}
@@ -148,7 +149,7 @@ export function MoaRoundtableCard({ panel, sessionId }: MoaRoundtableCardProps):
           >
             <Plus className="size-3.5" />
             {creatingBoard ? '建看板…' : '建看板'}
-          </button>
+          </button> : null}
         </div>
       ) : null}
 
