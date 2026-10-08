@@ -213,7 +213,7 @@ export function ModelSelector({
         side="top"
         sideOffset={8}
         collisionPadding={12}
-        className="max-h-[var(--radix-popover-content-available-height)] w-[320px] overflow-y-auto overflow-x-hidden p-0"
+        className="flex max-h-[var(--radix-popover-content-available-height)] w-[320px] flex-col overflow-hidden p-0"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         {/* 当前模型 header：大头图 + 名称 + 渠道 + 可用数 chip */}
@@ -322,8 +322,9 @@ export function ModelSelector({
           )}
         </div>
 
-        {/* 分组列表 */}
-        <div className="scrollbar-thin max-h-[280px] overflow-y-auto px-2 pb-2">
+        {/* 分组列表：唯一的滚动容器。外层只负责布局不滚，避免「列表滚到底
+            再被外层接管」的双层滚动；min-h-0 是 flex 子项能真正滚动的前提。 */}
+        <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2">
           {totalAvailable === 0 ? (
             <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">
               {runtime === null
