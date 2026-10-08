@@ -1,0 +1,142 @@
+[
+  {
+    "name": "window-state",
+    "time": "2026-09-17T02:04:32.280Z",
+    "windows": [
+      {
+        "visible": true,
+        "title": "TAgent — isolated acceptance",
+        "url": "http://localhost:5174/"
+      }
+    ]
+  },
+  {
+    "name": "ready",
+    "time": "2026-09-17T02:04:32.284Z",
+    "phase": "checks",
+    "isolated": true,
+    "realAdapters": true
+  },
+  {
+    "name": "pi-select-configured-grok",
+    "time": "2026-09-17T02:04:32.294Z",
+    "ok": true,
+    "runtime": "pi",
+    "historyUnchanged": true,
+    "revision": 4,
+    "handoffChars": 710,
+    "handoffIncludesSentinel": true,
+    "hasCodexThread": false,
+    "hasSdkSession": false
+  },
+  {
+    "name": "pi-grok-recall",
+    "time": "2026-09-17T02:04:38.727Z",
+    "ack": {
+      "ok": true
+    },
+    "ended": true,
+    "elapsedMs": 6430,
+    "output": "项目代号 ORBIT-731；禁止事项：不得修改任何文件。",
+    "terminals": [
+      {
+        "kind": "result",
+        "subtype": "success"
+      }
+    ],
+    "channelId": "73251553-c53b-436d-8972-8790fa1df761",
+    "hasCodexThread": false,
+    "hasSdkSession": false,
+    "handoff": {
+      "attempts": 1,
+      "outcome": "ambiguous"
+    },
+    "messageCount": 13
+  },
+  {
+    "name": "invalid-target",
+    "time": "2026-09-17T02:04:39.660Z",
+    "rejected": true,
+    "error": "模型「acceptance-nonexistent-model」不属于渠道「Codex App Server」",
+    "bindingUnchanged": true
+  },
+  {
+    "name": "pi-read-tool",
+    "time": "2026-09-17T02:04:45.271Z",
+    "ack": {
+      "ok": true
+    },
+    "ended": true,
+    "elapsedMs": 5608,
+    "output": "先读指定文件，只取 fixture-value。\nCOBALT-842",
+    "terminals": [
+      {
+        "kind": "result",
+        "subtype": "success"
+      }
+    ],
+    "channelId": "73251553-c53b-436d-8972-8790fa1df761",
+    "hasCodexThread": false,
+    "hasSdkSession": false,
+    "handoff": {
+      "attempts": 1,
+      "outcome": "ambiguous"
+    },
+    "messageCount": 17
+  },
+  {
+    "name": "read-tool-check",
+    "time": "2026-09-17T02:04:45.272Z",
+    "correct": true
+  },
+  {
+    "name": "stop-test-start",
+    "time": "2026-09-17T02:04:45.289Z",
+    "ack": {
+      "ok": true
+    }
+  },
+  {
+    "name": "busy-switch-must-reject",
+    "time": "2026-09-17T02:04:45.296Z",
+    "ok": false,
+    "error": "当前回合仍在执行，请先停止本轮再切换运行内核"
+  },
+  {
+    "name": "stop-ack",
+    "time": "2026-09-17T02:04:45.299Z",
+    "stopped": {
+      "ok": true
+    },
+    "eventCount": 2
+  },
+  {
+    "name": "switch-after-stop",
+    "time": "2026-09-17T02:04:45.310Z",
+    "ok": true,
+    "runtime": "codex",
+    "historyUnchanged": true,
+    "revision": 5,
+    "handoffChars": 1143,
+    "handoffIncludesSentinel": true,
+    "hasCodexThread": false,
+    "hasSdkSession": false
+  },
+  {
+    "name": "return-pi-after-stop-test",
+    "time": "2026-09-17T02:04:45.319Z",
+    "ok": true,
+    "runtime": "pi",
+    "historyUnchanged": true,
+    "revision": 6,
+    "handoffChars": 1146,
+    "handoffIncludesSentinel": true,
+    "hasCodexThread": false,
+    "hasSdkSession": false
+  },
+  {
+    "name": "finished",
+    "time": "2026-09-17T02:04:45.320Z",
+    "phase": "checks"
+  }
+]

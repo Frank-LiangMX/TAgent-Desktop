@@ -1,5 +1,9 @@
 # 多运行时协作模块 — 文档索引
 
+> **当前派发实现（2026-09-17）**：[主会话所属的子代理（班组暂停）](../../dev/three-runtime/parent-owned-delegation.md)。当前只启用子代理，保留模型画像、跨渠道选型理由与并发预算；班组入口和后台调度暂停，历史数据及实现保留，待有编排需求再改造。下方旧看板实施状态仅作历史记录。官方内核/API 渠道边界以 [ADR-0012](../../decisions/ADR-0012-official-runtimes-api-channels.md) 为准。
+
+> **当前产品方向（2026-09-16）**：[ADR-0011：三内核工作台](../../decisions/ADR-0011-three-runtime-agent-workbench.md)。Pi 默认但不唯一；先手动切换，后扩展并行。本文原有实施状态是历史记录，新方案阶段与验收以 ADR-0011 为准。
+
 > **模块代号**：multi-runtime  
 > **状态**：Implementing（A 完成；B 基础；C 完成；D 主路径可演示；E/F 未开）  
 > **日期**：2026-08-03  
@@ -57,6 +61,7 @@ TAgent-Desktop 2.0 不只是「单会话 Agent」，还要：
 | [ADR-0006](../../decisions/ADR-0006-role-vs-soul.md) | 角色库 vs SOUL | 岗位契约 vs 全局身份；主会话默认不绑岗 |
 | [ADR-0007](../../decisions/ADR-0007-agent-collaboration-room.md) | Agent 协作室运行时边界 | 房间真值、独立成员和结构化 A2A |
 | [ADR-0009](../../decisions/ADR-0009-fusion-session-bridge-and-orchestration.md) | 融合会话桥接 | 普通会话内显式升级/回退，复用同一会话壳 |
+| [ADR-0011](../../decisions/ADR-0011-three-runtime-agent-workbench.md) | 三内核工作台 | Pi 默认，Codex、Claude Code/KSCC 并列可选；先切换后并行 |
 
 相关但不属于本模块：
 
@@ -82,7 +87,7 @@ TAgent-Desktop 2.0 不只是「单会话 Agent」，还要：
 | D11 | Work 默认不做多角色乱 @ | 02, 03 |
 | D12 | 过程可见：主会话简报 + 点进子运行详情 | 06 |
 | D13 | 看板主路径=会话右栏；独立大页非必须 | 06 |
-| D14 | kscc 一渠多模=默认会诊池 | 05 |
+| D14 | MoA 使用已配置 API 模型，可跨渠道；不再绑定 KSCC 一渠多模 | ADR-0011 §7（取代 05 的默认池策略） |
 | D15 | 布局先可拖分栏；mosaic 仅可选工作台 | 06 |
 | D16 | 持久多 Agent 协作使用独立 room runtime；来源普通会话可显式升级为同一会话壳内的融合协作 | ADR-0007 + ADR-0009 + Agent 协作室文档族 |
 

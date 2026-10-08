@@ -1,0 +1,15 @@
+# Grok implementation assignment — three-runtime chat switching
+
+You implement renderer only in F:/TAgent-Desktop using grok-4.6. Another KSCC agent owns main/shared/preload. Read ADR-0011-three-runtime-agent-workbench.md. Preserve all existing dirty work. Never reset/checkout/commit or rewrite unrelated files. Use apply_patch where available. Do not read credentials, change account configuration, install dependencies, publish or send messages. No nested agents.
+
+Deliver clear manual runtime switching among Pi, Codex, Claude Code (KSCC) in existing Chat input controls. Reuse existing UI design and components. Avoid redesign. Current Chat.tsx locks model menu to core after first send, handleModelSelection only updates local selection, internalBackend change uses updateSessionMeta. Fix so established sessions can explicitly switch via backend API, with rollback on errors and visible toast/message. Keep Agent choice separate from model choice: can add compact Agent selector Pi/Codex/Claude Code (KSCC), filtering models for selected runtime. Do not expose unverified standard Claude Code support. Never pretend arbitrary HTTP model can run on Codex/KSCC; runtime-specific channel model choices only.
+
+Fixed backend interface (KSCC implementing):
+window.electronAPI.switchSessionRuntime(input: { sessionId: string; channelId: string; modelId: string; runtime: 'pi' | 'codex' | 'kscc' }): Promise<AgentSessionMeta>
+Shared type export SessionRuntimeSwitchInput. It rejects busy execution: UI must use existing stop flow then wait for actual idle before attempting switch, or clearly require user stop first for this slice. Disable send and concurrent switch while switch promise pending. Failed switch must leave selected runtime/model and history unchanged. Restore persisted binding after reload, avoid stale props undoing local success. On return, adopt channelId/modelId/internalBackend in local state and metaRef and existing parent update paths. Existing session must not silently select another available runtime when missing channels. Draft sessions need no persisted switch API: select runtime/channel coherently and materialize on first send.
+
+Pi is new-session default IF configured API model exists; if none show configuration/select-other prompt, do not silently fallback to KSCC. Preserve explicit old choices and saved sessions. Inspect atoms/model-selection helpers and other consumers before adjusting defaults.
+
+Own apps/electron/src/renderer/** only, plus final report docs/dev/three-runtime/grok-frontend-result.md. No main/preload/packages/shared edits even to fix temporary missing types (other worker supplies). Add focused selection/runtime tests and run them, targeted renderer typecheck when available. Avoid cosmetic screenshot/mockup or unrelated code cleanup. No need new settings pages or parallel agents UI now.
+
+Finish integrated implementation. Report concise changed files/tests/limitations. If API not yet visible, continue using agreed shape and report; don't stop at a plan. Keep user-facing prose short, e.g. switched plus context goes on next send. Don't claim seamless full native state migration.

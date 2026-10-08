@@ -1,0 +1,60 @@
+[
+  {
+    "name": "window-state",
+    "time": "2026-09-17T02:02:42.906Z",
+    "windows": [
+      {
+        "visible": false,
+        "title": "TAgent-Desktop",
+        "url": "http://localhost:5174/"
+      }
+    ]
+  },
+  {
+    "name": "ready",
+    "time": "2026-09-17T02:02:42.909Z",
+    "phase": "reopen",
+    "isolated": true,
+    "realAdapters": true
+  },
+  {
+    "name": "reopen-state",
+    "time": "2026-09-17T02:02:42.911Z",
+    "exists": true,
+    "channelId": "73251553-c53b-436d-8972-8790fa1df761",
+    "pendingHandoff": true,
+    "revision": 3
+  },
+  {
+    "name": "pi-after-app-restart",
+    "time": "2026-09-17T02:03:07.988Z",
+    "ack": {
+      "ok": true
+    },
+    "ended": true,
+    "elapsedMs": 25075,
+    "output": "[请求失败] 500 status code (no body)",
+    "terminals": [
+      {
+        "kind": "result",
+        "subtype": "error_during_execution",
+        "errors": [
+          "500 status code (no body)"
+        ]
+      }
+    ],
+    "channelId": "73251553-c53b-436d-8972-8790fa1df761",
+    "hasCodexThread": false,
+    "hasSdkSession": false,
+    "handoff": {
+      "attempts": 1,
+      "outcome": "ambiguous"
+    },
+    "messageCount": 11
+  },
+  {
+    "name": "finished",
+    "time": "2026-09-17T02:03:07.989Z",
+    "phase": "reopen"
+  }
+]

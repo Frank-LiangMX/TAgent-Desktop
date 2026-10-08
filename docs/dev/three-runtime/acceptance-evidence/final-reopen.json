@@ -1,0 +1,54 @@
+[
+  {
+    "name": "window-state",
+    "time": "2026-09-17T02:09:35.829Z",
+    "windows": [
+      {
+        "visible": false,
+        "title": "TAgent-Desktop",
+        "url": "http://localhost:5174/"
+      }
+    ]
+  },
+  {
+    "name": "ready",
+    "time": "2026-09-17T02:09:35.831Z",
+    "phase": "final-reopen",
+    "isolated": true,
+    "realAdapters": true
+  },
+  {
+    "name": "reopen-state",
+    "time": "2026-09-17T02:09:35.833Z",
+    "exists": true,
+    "channelId": "73251553-c53b-436d-8972-8790fa1df761",
+    "pendingHandoff": true,
+    "revision": 6
+  },
+  {
+    "name": "pi-after-app-restart",
+    "time": "2026-09-17T02:09:41.814Z",
+    "ack": {
+      "ok": true
+    },
+    "ended": true,
+    "elapsedMs": 5979,
+    "output": "项目代号 ORBIT-731；禁止事项：不得修改任何文件。",
+    "terminals": [
+      {
+        "kind": "result",
+        "subtype": "success"
+      }
+    ],
+    "channelId": "73251553-c53b-436d-8972-8790fa1df761",
+    "hasCodexThread": false,
+    "hasSdkSession": false,
+    "handoff": null,
+    "messageCount": 20
+  },
+  {
+    "name": "finished",
+    "time": "2026-09-17T02:09:41.815Z",
+    "phase": "final-reopen"
+  }
+]
