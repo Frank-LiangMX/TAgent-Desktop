@@ -18,10 +18,12 @@ vi.mock('../atomic-json', () => ({
   },
 }))
 
-// 本地 CLI 编排段注入依赖：默认返回空串（未启用），个别用例覆盖覆盖
-let mockCliCards = ''
-vi.mock('../agent/cli-workers/resolve-backend', () => ({
-  listEnabledCliWorkerCards: () => mockCliCards,
+vi.mock('./agent-crew-prefs', () => ({
+  readAgentCrewPrefs: () => ({ maxParallelWorkers: 3 }),
+}))
+
+vi.mock('./delegation-model-policy', () => ({
+  buildDelegationModelPrompt: () => 'MODEL_POLICY_TEST_PROMPT',
 }))
 
 const { buildBuiltinSubagentDefinitions, resolveSubagentDefinition, buildSubagentDelegationPrompt } =
@@ -76,22 +78,23 @@ describe('subagent-definitions 角色投影', () => {
     expect(text).toContain('code-reviewer')
     expect(text).toContain('analyst')
     expect(text).toMatch(/角色库/)
+    expect(text).toContain('MODEL_POLICY_TEST_PROMPT')
+    expect(text).toContain('子代理并行上限：**3** 个 worker')
+    expect(text).toContain('班组编排已暂停')
+    expect(text).toContain('小任务由主模型自己完成')
+    expect(text).toContain('选型理由、任务范围和验收标准')
+    expect(text).toContain('后台回传后由主模型验收')
+    expect(text).not.toContain('并行默认 ≤4')
+    expect(text).not.toContain('haiku（Claude 渠道）')
   })
 
-  test('未启用 CLI 工人 → 委派策略含禁用提示段', () => {
-    mockCliCards = ''
+  test('CLI 段仅说明历史配置 fail closed 与官方派发入口', () => {
     const text = buildSubagentDelegationPrompt('conservative')
-    expect(text).toContain('本地 CLI 编排')
-    expect(text).toContain('未启用本机 CLI 工人')
-  })
-
-  test('启用 CLI 工人 → 委派策略注入能力卡 + Bash spawn 用法', () => {
-    mockCliCards = 'CLI 工人能力卡（按优先级）：\n  codex — cost 3 · reasoning high · text'
-    const text = buildSubagentDelegationPrompt('conservative')
-    expect(text).toContain('本地 CLI 编排')
-    expect(text).toContain('codex — cost 3 · reasoning high · text')
-    expect(text).toContain('Bash 工具')
-    expect(text).toContain('按特长选 CLI')
+    expect(text).toContain('fail closed')
+    expect(text).toContain('mcp__tagent-delegation__task')
+    expect(text).toContain('Codex 与 Pi 使用普通 task')
+    expect(text).toContain('不得使用原生 Task/Agent 或 Bash spawn')
+    expect(text).not.toContain('本地 CLI 编排')
   })
 
   test('claudeAvailable:false → 内置角色均无 model（继承父会话模型）', () => {
@@ -110,10 +113,11 @@ describe('subagent-definitions 角色投影', () => {
     expect(agents.generalist!.model).toBeUndefined()
   })
 
-  test('claudeAvailable:true → 操作型钉 haiku（对照组）', () => {
-    const agents = buildBuiltinSubagentDefinitions(true)
-    expect(agents.explorer!.model).toBe('haiku')
-    expect(agents.researcher!.model).toBe('haiku')
-    expect(agents['code-reviewer']!.model).toBe('haiku')
+  test('委派策略目录不固定角色模型，未选型时继承主会话', () => {
+    const text = buildSubagentDelegationPrompt('balanced')
+    expect(text).toContain('角色只决定职责与工具')
+    expect(text).toContain('继承主会话实际模型')
+    expect(text).not.toContain('角色默认')
+    expect(text).not.toContain('haiku（Claude 渠道）')
   })
 })

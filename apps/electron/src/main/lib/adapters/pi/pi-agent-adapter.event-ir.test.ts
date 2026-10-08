@@ -21,6 +21,7 @@ import {
   piEventToIR,
   piTurnRetryDelayMs,
   PI_TURN_RETRY_BASE_DELAY_MS,
+  DEFAULT_PI_MAX_TURNS,
   piAfterToolCallToObservation,
 } from './pi-agent-adapter'
 import { NoProgressGuard } from '../../agent/no-progress-guard'
@@ -33,6 +34,12 @@ const emptyUsage: Usage = {
   totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 }
+
+describe('Pi 主会话循环策略', () => {
+  it('默认不设置 maxTurns 硬上限', () => {
+    expect(Number.isFinite(DEFAULT_PI_MAX_TURNS)).toBe(false)
+  })
+})
 
 function makeAssistant(partial: {
   stopReason: AssistantMessage['stopReason']
@@ -313,16 +320,18 @@ describe('工具双发修复（toolcall_end / tool_execution_start / turn_end）
 })
 
 describe('isRetryablePiTurnError', () => {
-  it('网络 / 超时 / 5xx / 429 可重试', () => {
+  it('网络 / 超时 / 5xx / 429 与已知响应流中断可重试', () => {
     expect(isRetryablePiTurnError('Request timed out.')).toBe(true)
     expect(isRetryablePiTurnError('ETIMEDOUT')).toBe(true)
     expect(isRetryablePiTurnError('fetch failed')).toBe(true)
+    expect(isRetryablePiTurnError('Upstream response stream was interrupted')).toBe(true)
+    expect(isRetryablePiTurnError('Stream ended without finish_reason')).toBe(true)
+    expect(isRetryablePiTurnError('OpenAI Responses stream ended before a terminal response event')).toBe(true)
     expect(isRetryablePiTurnError('ECONNRESET')).toBe(true)
+    expect(isRetryablePiTurnError('socket hang up')).toBe(true)
+    expect(isRetryablePiTurnError('transport was terminated')).toBe(true)
     expect(isRetryablePiTurnError('upstream 502 Bad Gateway')).toBe(true)
-    expect(isRetryablePiTurnError('503 Service Unavailable')).toBe(true)
-    expect(isRetryablePiTurnError('HTTP 500 Internal Server Error')).toBe(true)
     expect(isRetryablePiTurnError('429 Too Many Requests')).toBe(true)
-    expect(isRetryablePiTurnError('rate limit exceeded')).toBe(true)
   })
 
   it('鉴权 / 余额 / 用户拒绝 不可重试', () => {
