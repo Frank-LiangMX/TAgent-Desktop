@@ -1,7 +1,9 @@
 # ADR-0008：Codex 账号认证与 App Server 主核
 
+> **后续决策（2026-09-16）**：新会话默认 Pi、三内核并列可选的方向见 [ADR-0011](./ADR-0011-three-runtime-agent-workbench.md)。本文冲突的默认核策略作为历史保留；App Server、原生认证与协议适配设计继续适用。历史实施记录不代表新切换方案已验收。
+
 **日期：** 2026-08-31  
-**状态：** 实施中
+**状态：** 实施中（2026-09 修订：新会话默认核改回 KSCC；App Server 保留为可选 Internal Backend / Fusion 成员后端）
 **关联：** [ADR-0007：双核边界与内部 Native Agent 后端](./ADR-0007-dual-core-internal-codex-external-pi.md)
 
 ## 1. 背景
@@ -35,14 +37,16 @@ TAgent 仍然保持双核产品架构：
 ```text
 TAgent Host
 ├── Internal Core
-│   ├── Codex App Server Backend    默认主后端
-│   └── KSCC Native Backend         备用主后端
+│   ├── KSCC Native Backend         新会话默认主后端
+│   └── Codex App Server Backend    可选主后端 / Fusion 成员后端
 └── External Core
-    └── Pi + HTTP API
+    └── Pi + HTTP API（公司 API Key 走这条，不经 App Server）
 ```
 
-这里的“默认主后端”是可配置和可回退的产品策略，不代表删除 KSCC。
-KSCC 保留作为成熟备用核、兼容核和特定内部任务后端。
+产品策略：有公司 API Key 时，新会话默认走 KSCC；Codex App Server
+不再抢默认核。用户仍可显式选 `codex-internal` 渠道，或把 Codex 作为
+Fusion 协作室成员。已物化的 Codex 会话按 `internalBackend` /
+`codexThreadId` 继续跑，不静默换核。
 
 ### 2.2 Codex 主会话使用 App Server，不使用一次性 exec worker
 
@@ -550,8 +554,8 @@ id，切回对应后端时恢复各自上下文。新建 Internal 会话在 Code
 
 验收：
 
-- Codex 可设置为默认 Internal Backend。
-- KSCC 可作为会话级或任务级备用 Backend。
+- Codex 可作为可选 Internal Backend，由用户显式选择；新会话默认仍为 KSCC。
+- KSCC 是新会话默认 Backend，也可作为会话级或任务级备用。
 - 协作室支持 Codex 正式成员。
 - 看板支持 Codex 长任务。
 - Codex 与 KSCC 共享 session、workspace、权限和交付证据契约。
@@ -566,7 +570,7 @@ id，切回对应后端时恢复各自上下文。新建 Internal 会话在 Code
 4. TAgent 能处理 Codex 的流式消息、工具、审批、文件变更和错误。
 5. Codex 支持停止、引导、恢复和应用重启后的继续。
 6. Chat、Work、协作室、看板和历史记录不依赖 KSCC 特殊分支。
-7. KSCC 仍然可以作为备用 Internal Backend 使用。
+7. KSCC 是新会话默认 Internal Backend；Codex 仍可被显式选择。
 8. Codex 认证信息不会进入 TAgent 渠道配置、日志、JSONL 或外部请求。
 
 ## 10. 非目标
@@ -593,16 +597,16 @@ TAgent：
   持有会话、任务、工作区、权限、协作和交付状态
 ```
 
-因此，Codex 最适合通过本机 `codex app-server` 成为 Internal Core
-的默认主后端。TAgent 不需要拥有 Codex API Key，也不需要复制账号
-认证；只需要在授权边界内接管 Codex 的正式 Agent 协议。
+因此，本机 `codex app-server` 仍是 Internal Core 的正式 Codex 后端，
+但不再是新会话默认核。TAgent 不需要拥有 Codex 账号登录态；公司 API Key
+走 External Core / KSCC，不经 App Server。
 
 最终目标：
 
 ```text
 Internal Core
-  = Codex App Server Backend（默认）
-  + KSCC Native Backend（备用）
+  = KSCC Native Backend（默认）
+  + Codex App Server Backend（可选）
 
 External Core
   = Pi + HTTP API

@@ -30,6 +30,16 @@ const call = {
 }
 
 describe('CodexDynamicToolRegistry', () => {
+  it('model discovery is read-only but dispatch remains permission-gated', async () => {
+    expect(resolveCodexDynamicToolPermission('list_delegation_models')).toBe('read-only')
+    expect(resolveCodexDynamicToolPermission('kanban_list_models')).toBe('read-only')
+    expect(resolveCodexDynamicToolPermission('task')).toBe('permission')
+    const execute = vi.fn()
+    const registry = new CodexDynamicToolRegistry([{ tool: { ...tool(execute), name: 'task' }, permission: resolveCodexDynamicToolPermission('task') }])
+    const result = await dispatchCodexDynamicToolCall({ registry, params: { ...call, tool: 'task' }, executionMode: 'work', permissionMode: 'auto', requestPermission: async () => ({ behavior: 'deny', message: 'blocked' }) })
+    expect(result.success).toBe(false)
+    expect(execute).not.toHaveBeenCalled()
+  })
   it('把 Pi AgentTool 转为 App Server dynamicTools spec', () => {
     const registry = new CodexDynamicToolRegistry([
       { tool: tool(), permission: 'read-only' },

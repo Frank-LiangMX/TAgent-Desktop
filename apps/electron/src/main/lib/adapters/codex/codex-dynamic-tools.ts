@@ -77,6 +77,8 @@ const READ_ONLY_TOOL_NAMES = new Set([
   'kb_read_attachment',
   'kanban_list_boards',
   'kanban_list_tasks',
+  'kanban_list_models',
+  'list_delegation_models',
 ])
 
 const PERMISSION_TOOL_NAMES = new Set([
@@ -86,6 +88,7 @@ const PERMISSION_TOOL_NAMES = new Set([
   'kanban_add_task',
   'kanban_complete',
   'kanban_block',
+  'task',
 ])
 
 const SELF_AUTHORIZED_TOOL_NAMES = new Set(['kb_propose_save'])

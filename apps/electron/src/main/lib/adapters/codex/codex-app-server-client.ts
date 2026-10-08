@@ -7,6 +7,7 @@
  */
 import {
   spawn,
+  spawnSync,
   type ChildProcess,
   type ChildProcessWithoutNullStreams,
 } from 'node:child_process'
@@ -63,6 +64,11 @@ export interface CodexAppServerClientOptions {
   spawnProcess?: () => CodexAppServerProcess
 }
 
+export interface CodexAppServerCloseOptions {
+  /** Synchronously terminate the Windows process tree for disposable homes. */
+  force?: boolean
+}
+
 interface PendingRequest {
   method: string
   resolve: (value: unknown) => void
@@ -88,6 +94,8 @@ export class CodexAppServerRpcError extends Error {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000
 const GRACEFUL_CLOSE_TIMEOUT_MS = 500
+const FORCE_CLOSE_SETTLE_MS = 100
+const forceCloseWaiter = new Int32Array(new SharedArrayBuffer(4))
 
 export class CodexAppServerClient {
   private readonly options: CodexAppServerClientOptions
@@ -237,7 +245,7 @@ export class CodexAppServerClient {
   }
 
   /** 结束 stdio 并回收整棵 App Server 进程树。 */
-  close(): void {
+  close(options: CodexAppServerCloseOptions = {}): void {
     const child = this.process
     if (!child) return
     this.closing = true
@@ -250,6 +258,14 @@ export class CodexAppServerClient {
     } catch {
       // stdin 可能已随进程退出而关闭。
     }
+    if (options.force) {
+      // Official API runtimes own a private CODEX_HOME that may contain SQLite
+      // files.  Windows keeps those locked until the whole cmd/node tree has
+      // exited, so a caller about to replace/delete that home needs a
+      // synchronous tree stop rather than the normal graceful timer.
+      this.forceCloseNow(child)
+      return
+    }
     // App Server 收到 stdin EOF 通常会自行退出；Windows 上立即 taskkill 容易与正常退出
     // 抢跑并留下“未找到进程”的假告警。给它一个很短的优雅窗口，仍存活再杀整棵树。
     const forceKillTimer = setTimeout(() => {
@@ -258,6 +274,26 @@ export class CodexAppServerClient {
       }
     }, GRACEFUL_CLOSE_TIMEOUT_MS)
     forceKillTimer.unref?.()
+  }
+
+  private forceCloseNow(child: CodexAppServerProcess): void {
+    if (process.platform === 'win32' && child.pid && child.pid > 0) {
+      const result = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+        timeout: 8_000,
+      })
+      if (!result.error && result.status === 0) {
+        // taskkill /T waits for the root and all descendants.
+        Atomics.wait(forceCloseWaiter, 0, 0, FORCE_CLOSE_SETTLE_MS)
+        return
+      }
+    }
+    try {
+      child.kill()
+    } catch {
+      /* The process may have exited while stdin was closed. */
+    }
   }
 
   private spawnDefaultProcess(): ChildProcessWithoutNullStreams {
