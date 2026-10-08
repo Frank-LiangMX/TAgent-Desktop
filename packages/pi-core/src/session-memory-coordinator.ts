@@ -11,6 +11,7 @@ import type { AgentMessage, CompactionSettings, StreamFn } from '@earendil-works
 import type { Api, Model, Models } from '@earendil-works/pi-ai'
 import { estimateContextTokens } from '@earendil-works/pi-agent-core'
 import { maybeCompactMessages, type MaybeCompactResult } from './pi-context-compaction.ts'
+import { TAGENT_PI_COMPACTION_THRESHOLD_RATIO } from './pi-context-settings.ts'
 
 export interface LayerBudgets {
   lrag: number
@@ -41,19 +42,32 @@ export interface ReconcileOptions {
   model: Model<Api>
   signal?: AbortSignal
   force?: boolean
-  /** 自动路径：先返回原消息并后台压；force 时同步压 */
+  /**
+   * @deprecated 保留兼容字段；自动压缩现在始终在发送前同步完成，绝不后台放行。
+   */
   asyncAuto?: boolean
+  /**
+   * 没有上一轮 provider usage 时，用于补足 system prompt + tools 的估算。
+   * 有上一轮 usage 时，provider usage 已经包含静态上下文，不能重复相加。
+   */
+  staticContextTokens?: number
   /** L-rag 检索回调（主进程注入 memoryLayerService.searchSessions 等） */
   retrieveRag?: (query: string) => Promise<RagHit[]> | RagHit[]
   onCompacted?: (result: MaybeCompactResult) => void
 }
 
 export interface ReconcileResult {
+  /** 本轮请求视图，允许包含临时 RAG/摘要上下文。 */
   messages: AgentMessage[]
+  /** 应写回 Agent state 的持久消息；不包含本轮临时注入。 */
+  stateMessages: AgentMessage[]
   compacted: boolean
   tokensBefore?: number
   summary?: string
   reason?: string
+  /** 本次请求已达到自动压缩线，但压缩没有完成。调用方必须阻止发送。 */
+  compactionRequired?: boolean
+  compactionError?: string
   layerBudgets: LayerBudgets
   ragHits: RagHit[]
 }
@@ -105,38 +119,30 @@ function extractLastUserText(messages: AgentMessage[]): string {
   return ''
 }
 
-function injectPrefixMessages(
+function mergeContextIntoFirstUser(
   messages: AgentMessage[],
-  prefixBlocks: Array<{ role: 'user' | 'assistant'; text: string }>,
+  contextText: string,
 ): AgentMessage[] {
-  if (prefixBlocks.length === 0) return messages
-  const prefix = prefixBlocks.map((b): AgentMessage => {
-    if (b.role === 'assistant') {
-      return {
-        role: 'assistant',
-        content: [{ type: 'text', text: b.text }],
-        api: 'openai-completions',
-        provider: 'tagent-memory',
-        model: 'memory-prefix',
-        stopReason: 'stop',
-        usage: {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 0,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-        },
-        timestamp: Date.now(),
-      }
-    }
-    return {
-      role: 'user',
-      content: b.text,
-      timestamp: Date.now(),
-    }
-  })
-  return [...prefix, ...messages]
+  if (!contextText.trim()) return messages
+  const firstUserIndex = messages.findIndex((message) => message.role === 'user')
+  if (firstUserIndex < 0) {
+    return [
+      { role: 'user', content: contextText, timestamp: Date.now() } as AgentMessage,
+      ...messages,
+    ]
+  }
+
+  const firstUser = messages[firstUserIndex]!
+  if (firstUser.role !== 'user') return messages
+  const prefix = { type: 'text', text: `${contextText}\n\n` }
+  const content =
+    typeof firstUser.content === 'string'
+      ? [prefix, { type: 'text', text: firstUser.content }]
+      : [prefix, ...firstUser.content]
+  const merged = { ...firstUser, content } as AgentMessage
+  const result = [...messages]
+  result[firstUserIndex] = merged
+  return result
 }
 
 /**
@@ -154,7 +160,10 @@ export class SessionMemoryCoordinator {
   async reconcile(opts: ReconcileOptions): Promise<ReconcileResult> {
     const budgets = allocateLayerBudgets(opts.contextWindow)
     const estimate = estimateContextTokens(opts.messages)
-    const tokens = estimate.tokens
+    // Pi 的 estimateContextTokens 会优先使用上一轮 provider usage，并把本轮
+    // 新增消息估算后缀加回去。只有没有 provider usage 的首轮，才需要补 system/tools。
+    const staticTokens = estimate.lastUsageIndex === null ? opts.staticContextTokens ?? 0 : 0
+    const tokens = estimate.tokens + staticTokens
 
     // L-rag：取末条 user 作 query
     let ragHits = this.state.lastRagHits
@@ -174,12 +183,17 @@ export class SessionMemoryCoordinator {
     }
 
     // 未达阈值且非 force：只注入 L-rag/L-mid 前缀
-    const shortBudget = budgets.lshort
-    const needCompact = opts.force || tokens > shortBudget
+    // 触发线必须和 UI/配置保持一致：contextWindow * 80%。
+    // lshort 是 L-short 的内容预算，不是自动压缩阈值；对 500k 窗口使用它会
+    // 把实际阈值错误地降到约 288k。
+    const triggerTokens = Math.ceil(opts.contextWindow * TAGENT_PI_COMPACTION_THRESHOLD_RATIO)
+    const needCompact =
+      opts.force || (opts.settings.enabled && tokens >= triggerTokens)
 
     if (!needCompact) {
       return {
         messages: this.assembleWithLayers(opts.messages, ragHits),
+        stateMessages: opts.messages,
         compacted: false,
         tokensBefore: tokens,
         reason: 'below threshold',
@@ -188,47 +202,26 @@ export class SessionMemoryCoordinator {
       }
     }
 
-    // 异步自动压缩：本轮先返回原消息（可带 L-rag），后台跑
-    if (opts.asyncAuto && !opts.force) {
-      if (!this.state.compressInFlight) {
-        this.state.compressInFlight = true
-        void this.runCompact(opts)
-          .then((r) => {
-            this.state.compressInFlight = false
-            if (r.compacted && r.summary) {
-              this.state.lmidChain.push(r.summary)
-              // 链过长：保留最近 5 条
-              if (this.state.lmidChain.length > 5) {
-                this.state.lmidChain = this.state.lmidChain.slice(-5)
-              }
-            }
-            opts.onCompacted?.(r)
-          })
-          .catch(() => {
-            this.state.compressInFlight = false
-          })
-      }
+    // 发送前同步压缩。达到边界时 force 传给执行器，是为了覆盖 Pi 内部
+    // 严格 `>` 的边界判断，使 TAgent 的 `>= 80%` 语义真正生效。
+    const result = await this.runCompact(opts, true)
+    const assembled = this.assembleWithLayers(result.messages, ragHits)
+    if (!result.compacted) {
       return {
-        messages: this.assembleWithLayers(opts.messages, ragHits),
+        messages: assembled,
+        stateMessages: opts.messages,
         compacted: false,
         tokensBefore: tokens,
-        reason: 'async pending',
+        reason: result.reason,
+        compactionRequired: true,
+        compactionError: result.reason ?? 'context compaction did not complete',
         layerBudgets: budgets,
         ragHits,
       }
     }
-
-    // 同步压缩（force / 非 async）
-    const result = await this.runCompact(opts)
-    if (result.compacted && result.summary) {
-      this.state.lmidChain.push(result.summary)
-      if (this.state.lmidChain.length > 5) {
-        this.state.lmidChain = this.state.lmidChain.slice(-5)
-      }
-    }
-    const assembled = this.assembleWithLayers(result.messages, ragHits)
     return {
       messages: assembled,
+      stateMessages: result.messages,
       compacted: result.compacted,
       tokensBefore: result.tokensBefore,
       summary: result.summary,
@@ -238,7 +231,7 @@ export class SessionMemoryCoordinator {
     }
   }
 
-  private async runCompact(opts: ReconcileOptions): Promise<MaybeCompactResult> {
+  private async runCompact(opts: ReconcileOptions, forceOverride = false): Promise<MaybeCompactResult> {
     return maybeCompactMessages({
       messages: opts.messages,
       contextWindow: opts.contextWindow,
@@ -246,40 +239,26 @@ export class SessionMemoryCoordinator {
       models: opts.models,
       model: opts.model,
       signal: opts.signal,
-      force: opts.force,
+      force: forceOverride || opts.force,
       customInstructions:
         '请产出简洁逻辑骨架摘要；保留用户偏好、项目约定、关键决策；模糊无关细节。',
     })
   }
 
   private assembleWithLayers(messages: AgentMessage[], ragHits: RagHit[]): AgentMessage[] {
-    const prefixes: Array<{ role: 'user' | 'assistant'; text: string }> = []
+    const sections: string[] = []
     if (ragHits.length > 0) {
       const body = ragHits
         .slice(0, 5)
         .map((h, i) => `${i + 1}. [${h.source}] ${h.text.slice(0, 400)}`)
         .join('\n')
-      prefixes.push({
-        role: 'user',
-        text: `## 相关记忆（按需检索）\n\n${body}\n\n（以上为系统检索注入，请结合当前问题使用）`,
-      })
-      prefixes.push({
-        role: 'assistant',
-        text: '已收到相关记忆，将结合其回答。',
-      })
+      sections.push(`## 相关记忆（按需检索）\n\n${body}\n\n（以上为系统检索注入，请结合当前问题使用）`)
     }
     if (this.state.lmidChain.length > 0) {
       const mid = this.state.lmidChain.slice(-3).join('\n---\n')
-      prefixes.push({
-        role: 'user',
-        text: `## 会话滚动摘要（L-mid）\n\n${mid}`,
-      })
-      prefixes.push({
-        role: 'assistant',
-        text: '已接收滚动摘要。',
-      })
+      sections.push(`## 会话滚动摘要（L-mid）\n\n${mid}`)
     }
-    return injectPrefixMessages(messages, prefixes)
+    return mergeContextIntoFirstUser(messages, sections.join('\n\n'))
   }
 }
 

@@ -27,6 +27,21 @@ describe('resolveModelContextWindow', () => {
     expect(resolveModelContextWindow(ch, 'glm-5.2')).toBe(1_000_000)
   })
 
+  it('upgrades a stale 200k entry for a known 500k model', () => {
+    const ch = makeChannel([{ id: 'grok-4.6', name: 'Grok 4.6', enabled: true, contextWindow: 200_000 }])
+    expect(resolveModelContextWindow(ch, 'grok-4.6')).toBe(500_000)
+  })
+
+  it('infers the known window when the channel entry is missing', () => {
+    const ch = makeChannel([{ id: 'grok-4.6-latest', name: 'Grok 4.6', enabled: true }])
+    expect(resolveModelContextWindow(ch, 'grok-4.6-latest')).toBe(500_000)
+  })
+
+  it('preserves a non-default explicitly configured window', () => {
+    const ch = makeChannel([{ id: 'grok-4.6', name: 'Grok 4.6', enabled: true, contextWindow: 300_000 }])
+    expect(resolveModelContextWindow(ch, 'grok-4.6')).toBe(300_000)
+  })
+
   it('falls back to FALLBACK_CONTEXT_WINDOW when missing', () => {
     const ch = makeChannel([{ id: 'x', name: 'X', enabled: true }])
     expect(resolveModelContextWindow(ch, 'x')).toBe(FALLBACK_CONTEXT_WINDOW)

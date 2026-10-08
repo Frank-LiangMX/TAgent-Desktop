@@ -12,6 +12,7 @@
  *
  * 见 docs（.context/memory-phase1-data-foundation.md §1.1）。
  */
+import { DEFAULT_CONTEXT_WINDOW, inferContextWindow } from '@tagent/shared'
 import type { Channel, ChannelModel } from '@tagent/shared'
 
 /** 窗口兜底（与 pi-context-settings TAGENT_PI_COMPACTION_FALLBACK_CONTEXT_WINDOW 对齐） */
@@ -33,11 +34,23 @@ export function findChannelModel(channel: Channel, modelId: string): ChannelMode
  * 缺失走 FALLBACK_CONTEXT_WINDOW（200k）。
  */
 export function resolveModelContextWindow(channel: Channel | undefined, modelId: string | undefined): number {
+  const inferred = inferContextWindow(modelId)
   if (channel && modelId) {
     const m = findChannelModel(channel, modelId)
-    if (m?.contextWindow && m.contextWindow > 0) return m.contextWindow
+    if (m?.contextWindow && m.contextWindow > 0) {
+      // 已有渠道可能在模型能力录入前被写成默认 200k。已知模型的更大
+      // 标称窗口优先，安全上限仍由 safeContextLimit 单独控制。
+      if (
+        m.contextWindow === DEFAULT_CONTEXT_WINDOW &&
+        inferred &&
+        inferred > DEFAULT_CONTEXT_WINDOW
+      ) {
+        return inferred
+      }
+      return m.contextWindow
+    }
   }
-  return FALLBACK_CONTEXT_WINDOW
+  return inferred ?? FALLBACK_CONTEXT_WINDOW
 }
 
 /**

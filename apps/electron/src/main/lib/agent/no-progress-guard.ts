@@ -914,8 +914,8 @@ export class NoProgressGuard {
       return this.handleProgress(batch.observedAt, hasProgressingEdit)
     }
     // 非进展批次（含 noProgress 与 neutral）：统一走阶段推进；
-    // 仅 noProgress 才计入 noProgressBatchCount（7.1.3 / 7.3.2），neutral（Read）不计入，
-    // 但 neutral 仍可能触发 7.1.2（同文件 5 次编辑）与 batchesSinceReflection 推进。
+    // 仅 noProgress 才计入 noProgressBatchCount（7.1.3 / 7.3.2），neutral（Read）不计入。
+    // reflection_required 宽限也只吃 noProgress，避免调查批次被当成连续无进展。
     return this.handleNoProgress(batch.observedAt, hasNoProgress)
   }
 
@@ -1043,8 +1043,9 @@ export class NoProgressGuard {
     }
 
     if (this.phase === 'reflection_required') {
-      // 任意非进展批次（含 neutral 编辑）都推进复盘宽限计数（§7.2）
-      this.batchesSinceReflection += 1
+      // 只有真正的无进展批次才推进复盘宽限。Read/Grep/Glob 和尚未重复的
+      // 不同 Edit 是调查或推进，不能因为刚进过软提醒就被判成「连续无进展」。
+      if (hasNoProgress) this.batchesSinceReflection += 1
       if (this.batchesSinceReflection >= this.thresholds.batchesAfterReflection) {
         this.phase = 'final_response_only'
         return this.buildDecision('require_reflection', ['no_new_evidence'], 'reflection', {

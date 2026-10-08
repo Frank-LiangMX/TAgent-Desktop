@@ -57,10 +57,13 @@ export interface TAgentUserMessage {
 }
 
 export interface TAgentUsage {
+  /** provider 原始 input token（不含 cache 分项） */
   inputTokens: number
   outputTokens?: number
   cacheReadTokens?: number
   cacheCreationTokens?: number
+  /** 当前请求上下文总量：input + cacheRead + cacheCreation，不重复使用 totalTokens。 */
+  contextTokens?: number
   costUsd?: number
 }
 

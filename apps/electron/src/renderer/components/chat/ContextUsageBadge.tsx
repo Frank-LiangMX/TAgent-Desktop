@@ -22,6 +22,8 @@ export interface ContextUsageSnapshotView {
   outputTokens?: number
   cacheReadTokens?: number
   cacheCreationTokens?: number
+  /** input + cacheRead + cacheCreation；新协议优先使用，旧消息回退求和。 */
+  contextTokens?: number
   contextWindow: number
 }
 
@@ -56,15 +58,17 @@ export function ContextUsageBadge({
   const [open, setOpen] = useState(false)
 
   const stats = useMemo(() => {
-    if (!usage || usage.inputTokens <= 0 || usage.contextWindow <= 0) return null
-    // 主进程已把「当前上下文占用」写入 inputTokens（含 totalTokens 优先）；
-    // 环用 max(input, input+cache) 避免双计，也兼容只回 cache 的端点。
+    if (!usage || usage.contextWindow <= 0) return null
     const summed = sumContextUsedTokens({
       input_tokens: usage.inputTokens,
       cache_read_input_tokens: usage.cacheReadTokens,
       cache_creation_input_tokens: usage.cacheCreationTokens,
     })
-    const used = Math.max(usage.inputTokens, summed)
+    const used =
+      typeof usage.contextTokens === 'number' && Number.isFinite(usage.contextTokens)
+        ? usage.contextTokens
+        : summed
+    if (used <= 0) return null
     const ratio = calculateContextUsageRatio(used, usage.contextWindow) ?? 0
     const percent = Math.min(100, Math.round(ratio * 100))
     return { used, ratio, percent, window: usage.contextWindow }
@@ -128,7 +132,7 @@ export function ContextUsageBadge({
         <div className="border-b border-border/60 px-3 py-2.5">
           <div className="text-[12px] font-medium">Context 占用</div>
           <p className="mt-0.5 text-[11px] text-muted-foreground leading-snug">
-            基于最近一轮 API usage（input + cache）。Pi 无 Claude SDK 级分项明细。
+            基于最近一轮 API usage（input + cache）。缓存分项只计入一次。
           </p>
         </div>
 

@@ -138,6 +138,7 @@ describe('isSubagentRuntimeTaskType / canCreateSubagentTaskCard', () => {
   it('白名单放行 local_agent / agent', () => {
     expect(isSubagentRuntimeTaskType('local_agent')).toBe(true)
     expect(isSubagentRuntimeTaskType('agent')).toBe(true)
+    expect(isSubagentRuntimeTaskType('explorer')).toBe(true)
     expect(canCreateSubagentTaskCard({ taskType: 'local_agent' })).toBe(true)
   })
 

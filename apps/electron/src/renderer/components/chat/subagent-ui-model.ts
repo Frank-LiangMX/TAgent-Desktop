@@ -162,6 +162,18 @@ export function isSubagentRuntimeTaskType(taskType: string | null | undefined): 
   if (t === 'local_agent' || t === 'agent') return true
   // 保守：`*_agent` 且不含 bash/shell/command（防 local_bash_agent 之类臆造）
   if (t.endsWith('_agent') && !/(bash|shell|command|cmd)/.test(t)) return true
+  // Pi 角色投影：explorer / researcher / reviewer / coder 等
+  if (
+    t === 'explorer' ||
+    t === 'researcher' ||
+    t === 'reviewer' ||
+    t === 'coder' ||
+    t === 'analyst' ||
+    t === 'generalist' ||
+    t === 'code_reviewer'
+  ) {
+    return true
+  }
   return false
 }
 

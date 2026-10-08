@@ -66,11 +66,15 @@ function sdkBlockToIR(block: Record<string, unknown>): TAgentContentBlock | TAge
 }
 
 function sdkUsageToIR(u: Record<string, unknown>): TAgentUsage {
+  const inputTokens = Number(u.input_tokens ?? 0)
+  const cacheReadTokens = Number(u.cache_read_input_tokens ?? 0)
+  const cacheCreationTokens = Number(u.cache_creation_input_tokens ?? 0)
   return {
-    inputTokens: Number(u.input_tokens ?? 0),
+    inputTokens,
     outputTokens: Number(u.output_tokens ?? 0),
-    cacheReadTokens: Number(u.cache_read_input_tokens ?? 0),
-    cacheCreationTokens: Number(u.cache_creation_input_tokens ?? 0),
+    cacheReadTokens,
+    cacheCreationTokens,
+    contextTokens: inputTokens + cacheReadTokens + cacheCreationTokens,
   }
 }
 

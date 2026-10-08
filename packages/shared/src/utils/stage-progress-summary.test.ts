@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { compactStageProgress, STAGE_PROGRESS_MAX_CHARS } from './stage-progress-summary'
+import {
+  compactStageProgress,
+  isNearDuplicateStageProgress,
+  STAGE_PROGRESS_MAX_CHARS,
+} from './stage-progress-summary'
 
 describe('compactStageProgress', () => {
   it('保留短阶段进度', () => {
@@ -18,5 +22,32 @@ describe('compactStageProgress', () => {
 
   it('处理空内容', () => {
     expect(compactStageProgress('  \n  ')).toBeNull()
+  })
+
+  it('识别同一根因的改写，但不吞掉不同文件/不同证据', () => {
+    expect(
+      isNearDuplicateStageProgress(
+        '根因很像：读文件/搜索被当成没进展，软提醒后再读几次就会强制复盘。',
+        '根因很清楚：软提醒后，读文件/搜索也被算进还没进展，满 3 批就强制复盘。',
+      ),
+    ).toBe(true)
+    expect(
+      isNearDuplicateStageProgress('读取 a.ts，准备检查入口。', '读取 b.ts，准备检查入口。'),
+    ).toBe(false)
+  })
+
+  it('识别视口未打通的中文同义改写', () => {
+    expect(
+      isNearDuplicateStageProgress(
+        '已有 Actor 标签查阅，但还没确认视口里能不能看见。',
+        '查询链路有了，视口显示还没有。',
+      ),
+    ).toBe(true)
+    expect(
+      isNearDuplicateStageProgress(
+        '场景 Actor 已能解析网格上的标签，只是视口没通。',
+        '场景 Actor 已能解析网格上的标签，视口已经正常显示。',
+      ),
+    ).toBe(false)
   })
 })

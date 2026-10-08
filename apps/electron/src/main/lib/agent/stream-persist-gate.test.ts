@@ -112,10 +112,30 @@ describe('stream-persist-gate（REGRESS-G 落盘闸口）', () => {
       assistantText('u-progress-2', '已确认缓存路径，开始检查文件名。'),
       assistantToolUse('u-tool-2', 'call-2'),
     ])
-    expect(persisted.filter((msg) => (msg as { type?: string }).type === 'assistant')).toHaveLength(6)
+    // 同一轮相同根因只保留一条阶段摘要；thinking 仍各自保留原文。
+    expect(persisted.filter((msg) => (msg as { type?: string }).type === 'assistant')).toHaveLength(5)
     expect(persisted.filter((msg) => (msg as { uuid?: string }).uuid === 'u-think-1')).toHaveLength(1)
     expect(persisted.filter((msg) => (msg as { uuid?: string }).uuid === 'u-think-2')).toHaveLength(1)
+    expect(persisted.filter((msg) => (msg as { uuid?: string }).uuid === 'u-progress-2')).toHaveLength(0)
   })
+
+  it('视口未打通的阶段改写只落盘第一条', () => {
+    const persisted = runSequence([
+      assistantText('u-vp-1', '已有 Actor 标签查阅，但还没确认视口里能不能看见。'),
+      assistantToolUse('u-vp-tool-1', 'call-vp-1'),
+      assistantText('u-vp-2', '查询链路有了，视口显示还没有。'),
+      assistantToolUse('u-vp-tool-2', 'call-vp-2'),
+      assistantText('u-vp-3', '场景 Actor 已能解析网格上的标签，只是视口没通。'),
+      assistantToolUse('u-vp-tool-3', 'call-vp-3'),
+    ])
+    const progress = persisted.filter((msg) => {
+      const raw = msg as { type?: string; message?: { content?: Array<{ type?: string }> } }
+      return raw.type === 'assistant' && raw.message?.content?.every((block) => block.type === 'text')
+    })
+    expect(progress).toHaveLength(1)
+    expect((progress[0] as { uuid: string }).uuid).toBe('u-vp-1')
+  })
+
   it('tool_use-only 独立段（glm 块拆分）→ 落盘（工具/阶段/Files Changed 历史）', () => {
     const persisted = runSequence([assistantToolUse('u-tool', 'call_9')])
     expect(persisted).toHaveLength(1)

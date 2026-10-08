@@ -325,6 +325,32 @@ describe('NoProgressGuard 误判防护（SPEC §12 / §16.4）', () => {
     }
     expect(g.getState().phase).toBe('observing')
   })
+
+  it('软提醒后读文件/新编辑不推进强制复盘', () => {
+    const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
+    g.resetForNewTurn(0)
+    const cmd = 'node tools/a0-kscc-resume-crash.js'
+    g.observe(bashFail(cmd, { error: 'Exit code 1', output: 'err', at: 100 }))
+    g.observe(bashFail(cmd, { error: 'Exit code 1', output: 'err', at: 200 }))
+    const warned = g.observe(bashFail(cmd, { error: 'Exit code 1', output: 'err', at: 300 }))
+    expect(warned.kind).toBe('warn')
+    expect(g.getState().phase).toBe('reflection_required')
+
+    const afterReadA = g.observe(readCall('src/a.ts', 400))
+    const afterReadB = g.observe(readCall('src/b.ts', 500))
+    const afterEdit = g.observe(editCall('src/c.ts', { oldStr: 'old', newStr: 'new', at: 600 }))
+    expect(afterReadA.kind).toBe('continue')
+    expect(afterReadB.kind).toBe('continue')
+    expect(afterEdit.kind).toBe('continue')
+    expect(afterEdit.kind).not.toBe('require_reflection')
+    expect(g.getState().phase).toBe('reflection_required')
+    expect(g.getState().batchesSinceReflection).toBe(0)
+
+    const stillRepeat = g.observe(bashFail(cmd, { error: 'Exit code 1', output: 'err', at: 700 }))
+    expect(stillRepeat.kind).toBe('continue')
+    expect(g.getState().batchesSinceReflection).toBe(1)
+    expect(g.getState().phase).toBe('reflection_required')
+  })
 })
 
 describe('NoProgressGuard 三级暂停硬上限（SPEC §7.3）', () => {
@@ -631,26 +657,16 @@ describe('NoProgressGuard 策略未实质变化检测（brief 2026-08-19 §2）'
   })
 })
 
-describe('resolveNoProgressGuardMode（§23.1 白名单归一）', () => {
-  it('合法值直传', () => {
-    expect(resolveNoProgressGuardMode({ TAGENT_NO_PROGRESS_GUARD_MODE: 'off' })).toBe('off')
-    expect(resolveNoProgressGuardMode({ TAGENT_NO_PROGRESS_GUARD_MODE: 'shadow' })).toBe('shadow')
-    expect(resolveNoProgressGuardMode({ TAGENT_NO_PROGRESS_GUARD_MODE: 'enforce' })).toBe('enforce')
+describe('resolveNoProgressGuardMode（无进展拦截已停用）', () => {
+  it('旧的 env 值、落盘偏好和非法值都不能重新启用守卫', () => {
+    expect(resolveNoProgressGuardMode({ TAGENT_NO_PROGRESS_GUARD_MODE: 'off' }, 'off')).toBe('off')
+    expect(resolveNoProgressGuardMode({ TAGENT_NO_PROGRESS_GUARD_MODE: 'shadow' }, 'shadow')).toBe('off')
+    expect(resolveNoProgressGuardMode({ TAGENT_NO_PROGRESS_GUARD_MODE: 'enforce' }, 'enforce')).toBe('off')
+    expect(resolveNoProgressGuardMode({ TAGENT_NO_PROGRESS_GUARD_MODE: 'bogus' }, 'enforce')).toBe('off')
+    expect(resolveNoProgressGuardMode(undefined, undefined)).toBe('off')
   })
-  it('非法 / 缺省回落默认 enforce', () => {
-    expect(resolveNoProgressGuardMode({ TAGENT_NO_PROGRESS_GUARD_MODE: 'bogus' })).toBe(NO_PROGRESS_GUARD_DEFAULT_MODE)
-    expect(resolveNoProgressGuardMode({})).toBe(NO_PROGRESS_GUARD_DEFAULT_MODE)
-    expect(resolveNoProgressGuardMode(undefined)).toBe(NO_PROGRESS_GUARD_DEFAULT_MODE)
-  })
-  it('落盘偏好在无 env 时生效；env 仍优先', () => {
-    expect(resolveNoProgressGuardMode({}, 'shadow')).toBe('shadow')
-    expect(resolveNoProgressGuardMode({}, 'off')).toBe('off')
-    expect(
-      resolveNoProgressGuardMode({ TAGENT_NO_PROGRESS_GUARD_MODE: 'enforce' }, 'shadow'),
-    ).toBe('enforce')
-  })
-  it('默认模式为 enforce（产品默认真正防死循环）', () => {
-    expect(NO_PROGRESS_GUARD_DEFAULT_MODE).toBe('enforce')
+  it('默认模式为 off（仅保留 maxTurns 作为循环上限）', () => {
+    expect(NO_PROGRESS_GUARD_DEFAULT_MODE).toBe('off')
   })
   it('默认阈值与 SPEC §7 一致', () => {
     expect(DEFAULT_NO_PROGRESS_THRESHOLDS.sameFailureRepeat).toBe(3)

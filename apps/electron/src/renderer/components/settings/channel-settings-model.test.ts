@@ -78,6 +78,24 @@ describe('channel settings model', () => {
     expect(buildUpdateInput(draft).apiKey).toBeUndefined()
   })
 
+  it('persists an explicit protocol and sends null when reset to automatic', () => {
+    const draft = channelToDraft({
+      id: 'channel-protocol',
+      name: 'OpenAI Responses',
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'encrypted',
+      apiProtocol: 'openai-responses',
+      models: [{ id: 'gpt-5', name: 'GPT-5', enabled: true }],
+      defaultModelId: 'gpt-5',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    expect(buildUpdateInput(draft).apiProtocol).toBe('openai-responses')
+    expect(buildUpdateInput({ ...draft, apiProtocol: undefined }).apiProtocol).toBeNull()
+  })
+
   it('normalizeModels 保留 contextWindow / safeContextLimit', () => {
     const result = normalizeModels(
       [

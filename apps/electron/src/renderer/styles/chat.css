@@ -70,6 +70,14 @@
   pointer-events: none;
 }
 
+/* 队列卡片出现时，给最后一条会话再留一个 8px 呼吸位，避免贴住底栏控制带。 */
+.session-conversation-bottom-spacer--with-queue {
+  --session-bottom-reserve: max(
+    11rem,
+    calc(var(--session-composer-top, 11rem) + 20px)
+  );
+}
+
 /*
  * 用户气泡：中性玻璃板 + 右下尖角 + 顶高光 + 向下柔影
  * 对齐 TAgent_General agent-thread.css:420-438（.tagent-agent-thread .agent-user-bubble）。
@@ -2195,7 +2203,7 @@
  * 滚动到底部按钮：浮在 composer / 班组条 / 横幅 整条 bottom-stack 上方。
  * --session-composer-top = Conversation 底 → bottom-stack 顶（含班组条、队列、建议条）。
  * 班组条出现时 gap 略加大，避免与 strip 视觉贴死/重叠。
- * z-index 须高于 .session-bottom-stack(20)。
+ * 与 .session-bottom-stack(30) 同层，由 DOM 顺序和控制带内避让决定前后关系。
  */
 .conversation-scroll-btn,
 [data-conversation-scroll-btn] {
@@ -2971,10 +2979,40 @@
   margin: 0;
 }
 .session-composer-cluster
+  .composer-float-row
+  > .composer-activity-island {
+  /* 收起态也必须离开中列；中列留给下箭头。 */
+  grid-column: 3;
+  justify-self: end;
+}
+.session-composer-cluster
   .composer-float-row:has(.session-plan-progress)
   > .composer-activity-island {
   grid-column: 3;
   justify-self: end;
+}
+
+/*
+ * 终端展开时与下箭头共享同一条控制带：
+ * - 没有计划卡时，面板从中间列开始，绝不侵入左侧运行计时；
+ * - 右侧固定留出箭头的安全区，避免面板底边/箭头互相盖住。
+ * 有计划卡时仍保持右列，计划卡继续拥有中间列。
+ */
+.session-composer-cluster
+  .composer-float-row:not(:has(.session-plan-progress))
+  > .composer-activity-island.is-open {
+  grid-column: 2 / 4;
+  width: min(680px, calc(100% - 48px));
+  max-width: calc(100% - 48px);
+  margin-right: 48px;
+  justify-self: end;
+}
+.session-composer-cluster
+  .composer-float-row:has(.session-plan-progress)
+  > .composer-activity-island.is-open {
+  width: min(680px, calc(100% - 48px));
+  max-width: calc(100% - 48px);
+  margin-right: 48px;
 }
 
 /*
@@ -3117,10 +3155,8 @@
   max-width: 100%;
 }
 .composer-activity-island.is-open {
-  /* 展开仍是浮层行内的一块，不再独占整行把运行胶囊换到上方。 */
-  flex: 1 1 0;
-  width: min(680px, 100%);
-  max-width: min(680px, calc(100% - 132px));
+  /* 展开仍是浮层行内的一块；具体列由上面的避让规则控制。 */
+  min-width: 0;
 }
 
 /* 任务面板展开后，下箭头移到右侧空位，保持与运行胶囊同一底线，不被面板盖住。 */

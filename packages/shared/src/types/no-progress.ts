@@ -15,16 +15,16 @@
  *
  * - `off`：完全不计算，紧急回滚使用；
  * - `shadow`：计算、记录、发送诊断事件，但不改变模型行为；
- * - `enforce`：启用提醒、强制复盘和安全暂停（产品默认，避免空转撞 maxTurns）。
- * 可用 `TAGENT_NO_PROGRESS_GUARD_MODE=shadow|off` 临时回退。
+ * - `enforce`：历史模式，保留类型兼容；当前产品运行时不再启用拦截。
+ * - `off`：完全不计算，不改变模型行为。
  */
 export type NoProgressGuardMode = 'off' | 'shadow' | 'enforce'
 
 /**
- * 默认运行模式：`enforce`（产品要真正防死循环）。
- * 紧急回退：环境变量 `TAGENT_NO_PROGRESS_GUARD_MODE=shadow|off`。
+ * 默认运行模式：`off`。
+ * 无进展拦截已停用，旧的落盘偏好和环境变量不能重新开启它。
  */
-export const NO_PROGRESS_GUARD_DEFAULT_MODE: NoProgressGuardMode = 'enforce'
+export const NO_PROGRESS_GUARD_DEFAULT_MODE: NoProgressGuardMode = 'off'
 
 /** 守卫运行模式的合法白名单（非法环境变量值回落默认值，§23.1） */
 export const NO_PROGRESS_GUARD_MODES: readonly NoProgressGuardMode[] = ['off', 'shadow', 'enforce']
@@ -35,16 +35,15 @@ export const TAGENT_NO_PROGRESS_GUARD_MODE_ENV = 'TAGENT_NO_PROGRESS_GUARD_MODE'
 /**
  * 规范化运行模式。
  *
- * 优先级：`env` 显式值 > 落盘偏好（stored）> {@link NO_PROGRESS_GUARD_DEFAULT_MODE}。
- * 纯函数、不依赖 Node 全局：主进程传入 `process.env`，单测传 plain Record。
+ * 运行时固定返回 `off`。参数保留是为了兼容已有 IPC、落盘配置和调用方，
+ * 防止旧的 `enforce` 环境变量或偏好在升级后重新启用误判拦截。
  */
 export function resolveNoProgressGuardMode(
   env?: Record<string, string | undefined> | null,
   stored?: NoProgressGuardMode | null,
 ): NoProgressGuardMode {
-  const raw = env?.[TAGENT_NO_PROGRESS_GUARD_MODE_ENV]
-  if (raw === 'off' || raw === 'shadow' || raw === 'enforce') return raw
-  if (stored === 'off' || stored === 'shadow' || stored === 'enforce') return stored
+  void env
+  void stored
   return NO_PROGRESS_GUARD_DEFAULT_MODE
 }
 

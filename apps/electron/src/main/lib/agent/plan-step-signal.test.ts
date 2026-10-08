@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { extractPlanStepSignals, parsePlanStepSignals } from './plan-step-signal'
+import {
+  extractPlanStepSignals,
+  parsePlanStepSignals,
+  stripPlanStepMarkersFromAssistantMessage,
+  stripPlanStepMarkersFromText,
+} from './plan-step-signal'
 
 describe('plan step signals', () => {
   it('parses hidden running/completed/failed/paused markers in order', () => {
@@ -40,5 +45,24 @@ describe('plan step signals', () => {
     expect(parsePlanStepSignals('Step 1 running — collecting context')).toEqual([
       { step: 1, status: 'running' },
     ])
+  })
+
+  it('removes internal markers before assistant text is displayed or persisted', () => {
+    expect(stripPlanStepMarkersFromText('<!-- tagent-plan-step: 1 completed -->脚本已完成')).toBe('脚本已完成')
+    expect(
+      stripPlanStepMarkersFromAssistantMessage({
+        type: 'assistant',
+        content: [
+          { type: 'text', text: '<!-- tagent-plan-step: 1 completed -->\n脚本已完成' },
+          { type: 'tool_use', id: 'tool-1' },
+        ],
+      }),
+    ).toEqual({
+      type: 'assistant',
+      content: [
+        { type: 'text', text: '\n脚本已完成' },
+        { type: 'tool_use', id: 'tool-1' },
+      ],
+    })
   })
 })

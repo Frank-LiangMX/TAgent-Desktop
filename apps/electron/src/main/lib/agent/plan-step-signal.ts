@@ -9,6 +9,10 @@ export interface PlanStepSignal {
 const PLAN_STEP_HTML_RE =
   /<!--\s*tagent-plan-step:\s*(\d+)\s+(running|completed|failed|paused)\s*-->/gi
 
+/** 只移除 TAgent 内部协议标记，不清理普通 HTML/Markdown 内容。 */
+const PLAN_STEP_MARKER_RE =
+  /<!--\s*tagent-plan-step:\s*\d+\s+(?:running|completed|failed|paused)\s*-->|\[?\s*tagent-plan-step\s*:\s*\d+\s+(?:running|completed|failed|paused)\s*\]?/gi
+
 /**
  * 明文兜底：模型常丢掉 HTML 注释，但仍会写
  * `[tagent-plan-step: 2 completed]` / `tagent-plan-step: 2 running`
@@ -107,4 +111,40 @@ export function extractAssistantPlainText(message: unknown): string {
       return item?.type === 'text' && typeof item.text === 'string' ? item.text : ''
     })
     .join('\n')
+}
+
+/** 阶段标记是内部控制协议，必须在落盘和发送 renderer 前从正文移除。 */
+export function stripPlanStepMarkersFromText(text: string): string {
+  return text.replace(PLAN_STEP_MARKER_RE, '')
+}
+
+/** 清理 assistant 消息中的内部阶段标记，保留原消息结构和其他 content block。 */
+export function stripPlanStepMarkersFromAssistantMessage<T>(message: T): T {
+  const value = message as {
+    type?: string
+    content?: unknown
+    message?: { content?: unknown }
+  }
+  if (value?.type !== 'assistant') return message
+
+  const cleanContent = (content: unknown): unknown => {
+    if (typeof content === 'string') return stripPlanStepMarkersFromText(content)
+    if (!Array.isArray(content)) return content
+    return content.map((block) => {
+      if (!block || typeof block !== 'object') return block
+      const item = block as { type?: string; text?: unknown }
+      if (item.type !== 'text' || typeof item.text !== 'string') return block
+      return { ...item, text: stripPlanStepMarkersFromText(item.text) }
+    })
+  }
+
+  const next = { ...(value as Record<string, unknown>) } as Record<string, unknown>
+  if ('content' in value) next.content = cleanContent(value.content)
+  if (value.message && typeof value.message === 'object') {
+    next.message = {
+      ...value.message,
+      content: cleanContent(value.message.content),
+    }
+  }
+  return next as T
 }

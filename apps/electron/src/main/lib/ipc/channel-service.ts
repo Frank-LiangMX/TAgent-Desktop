@@ -16,6 +16,9 @@ import {
   type FetchModelsInput,
   type FetchModelsForChannelInput,
   type FetchModelsResult,
+  type ChannelModelValidateInput,
+  type SpeedTestInput,
+  type SpeedTestBatchResult,
   type ProviderType,
 } from '@tagent/shared'
 import {
@@ -27,7 +30,12 @@ import {
   getChannel,
 } from '../channel/channel-store'
 import { getDefaultModelsForProvider } from '../channel/default-models'
-import { testChannelConnection, fetchModelsFromProvider } from '../channel/channel-tester'
+import {
+  testChannelConnection,
+  fetchModelsFromProvider,
+  validateChannelModel,
+  speedTestChannel,
+} from '../channel/channel-tester'
 
 export class ChannelService {
   private constructor() {}
@@ -118,10 +126,47 @@ export class ChannelService {
         }
         return fetchModelsWithFallback({
           provider: channel.provider,
+          apiProtocol: channel.apiProtocol,
           baseUrl: channel.baseUrl,
           apiKey,
         })
       }
+    )
+
+    ipcMain.handle(
+      CHANNEL_IPC_CHANNELS.TEST_DIRECT,
+      async (_e, input: ChannelModelValidateInput): Promise<ChannelTestResult> => {
+        return validateChannelModel(input)
+      },
+    )
+
+    ipcMain.handle(
+      CHANNEL_IPC_CHANNELS.VALIDATE_MODEL,
+      async (_e, input: ChannelModelValidateInput): Promise<ChannelTestResult> => {
+        return validateChannelModel(input)
+      },
+    )
+
+    ipcMain.handle(
+      CHANNEL_IPC_CHANNELS.SPEED_TEST,
+      async (_e, input: SpeedTestInput): Promise<SpeedTestBatchResult> => {
+        const results: SpeedTestBatchResult['results'] = {}
+        await Promise.all(input.items.map(async ({ channelId, modelId }) => {
+          const channel = getChannel(channelId)
+          const key = `${channelId}:${modelId}`
+          results[key] = channel
+            ? await speedTestChannel(channel, getDecryptedApiKey(channelId), modelId)
+            : {
+                channelId,
+                modelId,
+                success: false,
+                ttfbMs: null,
+                totalTimeMs: null,
+                message: '渠道不存在',
+              }
+        }))
+        return { results }
+      },
     )
   }
 

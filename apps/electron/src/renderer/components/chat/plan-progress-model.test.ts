@@ -65,6 +65,24 @@ describe("plan incompleteness helpers", () => {
     );
     expect(isPlanIncomplete(done)).toBe(false);
   });
+
+  it("pauses the next pending step when a turn ends after completing the prior step", () => {
+    const plan = applyPlanStepSignal(samplePlan(), {
+      step: 1,
+      status: "completed",
+    });
+    const paused = pauseActivePlanSteps(plan);
+    expect(paused.steps.map((step) => step.status)).toEqual([
+      "completed",
+      "paused",
+      "pending",
+    ]);
+    expect(resumePausedPlanStep(paused).steps.map((step) => step.status)).toEqual([
+      "completed",
+      "running",
+      "pending",
+    ]);
+  });
 });
 
 describe("resumePausedPlanStep", () => {

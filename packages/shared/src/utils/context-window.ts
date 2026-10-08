@@ -6,6 +6,7 @@
  */
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000
+export const GROK_4_6_CONTEXT_WINDOW = 500_000
 export const ONE_MILLION_CONTEXT_WINDOW = 1_000_000
 
 /**
@@ -37,6 +38,10 @@ export function supports1MContext(modelId: string): boolean {
 export function inferContextWindow(model?: string): number | undefined {
   if (!model) return undefined
   const m = model.toLowerCase()
+
+  // Grok 4.6 系列的内部 API 标称窗口为 500k。
+  // 需要放在通用默认值之前，避免旧渠道配置中的 200k fallback 把 Pi 压缩分母夹小。
+  if (m.includes('grok-4.6') || m.includes('grok4.6')) return GROK_4_6_CONTEXT_WINDOW
 
   // 10M
   if (m.includes('llama-4-scout') || m.includes('llama4-scout') || m.includes('scout'))
@@ -113,11 +118,11 @@ export function resolveDisplayContextWindow(
   const isCompatUnderreport =
     sdkWindow === DEFAULT_CONTEXT_WINDOW &&
     modelId != null &&
-    supports1MContext(modelId) &&
+    inferred > DEFAULT_CONTEXT_WINDOW &&
     !model.includes('claude')
 
   if (isCompatUnderreport) {
-    return ONE_MILLION_CONTEXT_WINDOW
+    return inferred
   }
 
   return sdkWindow

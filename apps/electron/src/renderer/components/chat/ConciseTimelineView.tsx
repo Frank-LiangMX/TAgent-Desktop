@@ -136,7 +136,10 @@ export function ConciseTimelineView({
               )
             }
             if (seg.kind === 'work_stage') {
-              const stageLive = isLive && seg.tools.some((t) => !t.result)
+              // Only the latest work stage may remain live. Older stages can receive
+              // late tool results, but must not keep their shimmer animation running.
+              const stageLive =
+                isLive && idx === lastWorkStageIdx && seg.tools.some((t) => !t.result)
               // 末阶段在回合 live 且其后无 narrative 时保持 live 底栏（不只「有未完成 tool」）
               const keepWhileActive =
                 isLive && idx === lastWorkStageIdx && !hasNarrativeAfterLastStage
@@ -618,7 +621,9 @@ const WorkStageFold = memo(function WorkStageFold({
         <div
           className={cn('agent-concise-live-status', fading && 'is-fading')}
         >
-          <span className="agent-concise-shimmer">{liveStatus}</span>
+          <span className={cn(stageActive && !fading && 'agent-concise-shimmer')}>
+            {liveStatus}
+          </span>
         </div>
       ) : null}
 
@@ -650,7 +655,9 @@ const WorkStageFold = memo(function WorkStageFold({
                     fading && 'is-fading',
                   )}
                 >
-                  <span className="agent-concise-shimmer">{liveStatus}</span>
+                  <span className={cn(stageActive && !fading && 'agent-concise-shimmer')}>
+                    {liveStatus}
+                  </span>
                 </div>
               ) : null}
             </div>

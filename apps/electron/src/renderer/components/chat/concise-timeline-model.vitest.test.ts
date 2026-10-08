@@ -477,6 +477,79 @@ describe('buildConciseTimeline', () => {
     )
   })
 
+  it('同一根因的阶段旁白只保留一次，且不额外切断工具阶段', () => {
+    const repeatedA = '根因很像：读文件/搜索被当成没进展，软提醒后再读几次就会强制复盘。'
+    const repeatedB = '根因很清楚：软提醒后，读文件/搜索也被算进还没进展，满 3 批就强制复盘。'
+    const process: ProcessEntry[] = [
+      tool('Read', 'r1', { file_path: 'a.ts' }),
+      { type: 'text', key: 'p1', text: repeatedA },
+      tool('Read', 'r2', { file_path: 'b.ts' }),
+      { type: 'text', key: 'p2', text: repeatedB },
+      tool('Edit', 'e1', { file_path: 'guard.ts' }),
+      { type: 'text', key: 'f1', text: '已修正分类规则并补上回归测试。' },
+    ]
+
+    const segments = buildConciseTimeline(process)
+    const progress = segments.filter(
+      (s) => s.kind === 'narrative' && s.tone === 'progress',
+    )
+    expect(progress).toHaveLength(1)
+    expect(progress[0]).toMatchObject({ text: repeatedA })
+    const stages = segments.filter((s) => s.kind === 'work_stage')
+    expect(stages).toHaveLength(2)
+    if (stages[1]?.kind === 'work_stage') {
+      expect(stages[1].tools.map((t) => t.tool.name)).toEqual(['Read', 'Edit'])
+    }
+  })
+
+  it('视口未打通的阶段旁白改写只保留一次', () => {
+    const process: ProcessEntry[] = [
+      tool('Read', 'r1', { file_path: 'scene.ts' }),
+      { type: 'text', key: 'p1', text: '已有 Actor 标签查阅，但还没确认视口里能不能看见。' },
+      tool('Read', 'r2', { file_path: 'viewport.ts' }),
+      { type: 'text', key: 'p2', text: '查询链路有了，视口显示还没有。' },
+      tool('Edit', 'e1', { file_path: 'viewport.ts' }),
+      { type: 'text', key: 'f1', text: '场景 Actor 已能解析网格上的标签，只是视口没通。' },
+    ]
+
+    const progress = buildConciseTimeline(process).filter(
+      (segment) => segment.kind === 'narrative' && segment.tone === 'progress',
+    )
+    expect(progress).toHaveLength(1)
+    expect(progress[0]).toMatchObject({ text: '已有 Actor 标签查阅，但还没确认视口里能不能看见。' })
+  })
+
+  it('工具间的多个短 thinking 合并到下一阶段，不刷多行「思考了片刻」', () => {
+    const process: ProcessEntry[] = [
+      { type: 'thinking', key: 't0', thinking: '先确认问题入口' },
+      tool('Read', 'r1', { file_path: 'a.ts' }),
+      { type: 'text', key: 'p1', text: '先确认入口文件，再检查进展判定。' },
+      { type: 'thinking', key: 't1', thinking: '接着核对分类逻辑' },
+      tool('Read', 'r2', { file_path: 'b.ts' }),
+      { type: 'thinking', key: 't2', thinking: '再看一下升级条件' },
+      tool('Edit', 'e1', { file_path: 'guard.ts' }),
+    ]
+
+    const segments = buildConciseTimeline(process)
+    expect(segments.map((s) => s.kind)).toEqual([
+      'thinking',
+      'work_stage',
+      'narrative',
+      'work_stage',
+    ])
+    const thinkingFolds = segments.filter((s) => s.kind === 'thinking')
+    expect(thinkingFolds).toHaveLength(1)
+    const secondStage = segments[3]!
+    if (secondStage.kind === 'work_stage') {
+      expect(secondStage.steps.map((s) => s.kind)).toEqual([
+        'thinking',
+        'tool',
+        'thinking',
+        'tool',
+      ])
+    }
+  })
+
   it('较长的实质叙述仍作为阶段边界：work_stage | narrative | work_stage（不吞掉进度叙述）', () => {
     const substantive = '目录摸清了：问题在投影层，下一步改 concise 模型。'
     expect(isShortProgressText(substantive)).toBe(false)

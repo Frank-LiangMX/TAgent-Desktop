@@ -67,11 +67,23 @@ export function isPlanIncomplete(progress: PlanProgress | null | undefined): boo
 /** 运行结束但计划未做完时，把当前 running 收成 paused，避免卡片假装还在跑。 */
 export function pauseActivePlanSteps(progress: PlanProgress): PlanProgress {
   let changed = false;
+  let hasRunning = false;
   const steps = progress.steps.map((step) => {
     if (step.status !== "running") return step;
+    hasRunning = true;
     changed = true;
     return { ...step, status: "paused" as const };
   });
+  // A normal result may arrive after the model completed step N without
+  // emitting a running marker for N+1. Preserve the handoff point so the next
+  // user turn resumes at the first pending step.
+  if (!hasRunning) {
+    const nextIndex = steps.findIndex((step) => step.status === "pending");
+    if (nextIndex >= 0) {
+      steps[nextIndex] = { ...steps[nextIndex]!, status: "paused" };
+      changed = true;
+    }
+  }
   return changed ? { ...progress, steps } : progress;
 }
 

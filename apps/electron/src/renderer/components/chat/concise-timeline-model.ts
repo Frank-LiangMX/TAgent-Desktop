@@ -12,6 +12,7 @@
 import {
   cleanFilePathInput,
   compactStageProgress,
+  isNearDuplicateStageProgress,
   isToolCallArtifactText,
   sanitizeAssistantTextForDisplay,
 } from '@tagent/shared'
@@ -632,6 +633,7 @@ export function buildConciseTimeline(
   let stageStartKey = ''
   let sawTool = false
   const seenThinking = new Set<string>()
+  const progressNarratives: string[] = []
 
   const flushLeadingThink = (): void => {
     if (leadingThink.length === 0) return
@@ -648,15 +650,45 @@ export function buildConciseTimeline(
     })
   }
 
+  /**
+   * 工具阶段之间的 thinking 先暂存在 stageSteps，等下一条工具到来再归属。
+   * 如果回合已经结束仍没有下一条工具，才单独落成一个 fold；多个孤立短思考
+   * 合成一个 fold，正文完整保留，但不连续刷出多个「思考了片刻」。
+   */
+  const flushPendingThinking = (): void => {
+    if (stageSteps.some((step) => step.kind === 'tool')) return
+    const pending = stageSteps.filter(
+      (step): step is Extract<WorkStageStep, { kind: 'thinking' }> =>
+        step.kind === 'thinking',
+    )
+    if (pending.length === 0) return
+    const thinking = pending.map((step) => step.thinking).join('\n\n')
+    const durationSec = pending.reduce(
+      (sum, step) => sum + (step.durationSec ?? 0),
+      0,
+    )
+    segments.push({
+      kind: 'thinking',
+      key: `think-${pending[0]!.key}`,
+      thinking,
+      durationSec: durationSec > 0 ? durationSec : undefined,
+      summary: formatThinkingSummary(durationSec > 0 ? durationSec : undefined),
+    })
+    stageSteps = []
+  }
+
   const flushStage = (): void => {
     const tools = stageSteps
       .filter((s): s is Extract<WorkStageStep, { kind: 'tool' }> => s.kind === 'tool')
       .map((s) => s.tool)
     if (tools.length === 0) {
-      for (const s of stageSteps) {
-        if (s.kind === 'thinking' && !sawTool) leadingThink.push(s.thinking)
+      if (!sawTool) {
+        for (const s of stageSteps) {
+          if (s.kind === 'thinking') leadingThink.push(s.thinking)
+        }
+        stageSteps = []
       }
-      stageSteps = []
+      // sawTool=true 时保留 pending thinking，下一条工具会把它纳入新的 stage。
       return
     }
     const diff = aggregateDiff(tools)
@@ -681,6 +713,7 @@ export function buildConciseTimeline(
       // 引导是当前执行链的用户输入：保序插入，且作为阶段边界，避免和前后工具揉成一块。
       flushLeadingThink()
       flushStage()
+      flushPendingThinking()
       segments.push({ kind: 'guidance', key: cur.key, text: cur.text })
       continue
     }
@@ -715,16 +748,14 @@ export function buildConciseTimeline(
         })
         continue
       }
-      // 阶段之外（跨阶段边界的收尾思考）：一律独立 ThinkingFold（含 trivial），保证执行链可回看。
-      flushLeadingThink()
-      flushStage()
+      // 已经有过工具但当前 stage 为空：这是“上一阶段结束、下一阶段开始前”的
+      // 思考。先挂到待开的 stage，避免每个独立思考块都变成一行顶层 fold。
       const durationSec = resolveThinkingDurationSec(t, cur.durationSec)
-      segments.push({
+      stageSteps.push({
         kind: 'thinking',
         key: `think-${cur.key}`,
         thinking: t,
         durationSec,
-        summary: formatThinkingSummary(durationSec),
       })
       continue
     }
@@ -761,15 +792,30 @@ export function buildConciseTimeline(
       // 工具调用前的 call / antml 尾段 / function_call 标记 → 不单独占 narrative 行
       const isArtifact = !isRoundFinal && isToolCallArtifactText(displayText)
       if (isFiller || isArtifact) continue
-      flushStage()
       // live 时尾部正文先当 progress（运行队列打字机），避免 final 卡片闪现；
       // 回合结束后再升为 final。
       const tone: 'progress' | 'final' = i < lastToolIdx || isLive ? 'progress' : 'final'
+      // 阶段旁白是导航，不是逐字转录。模型在一次无进展复盘里经常只换
+      // “很像/很清楚/接着”等连接词重复同一根因；live 路径也要在落盘前
+      // 做同样的抑制，否则会出现“在线少一条、重开又回来”的双轨差异。
+      if (
+        !isRoundFinal &&
+        tone === 'progress' &&
+        progressNarratives.some((previous) =>
+          isNearDuplicateStageProgress(previous, displayText),
+        )
+      ) {
+        continue
+      }
+      if (isRoundFinal) flushPendingThinking()
+      flushStage()
+      if (!isRoundFinal && tone === 'progress') progressNarratives.push(displayText)
       pushNarrative(segments, cur.key, displayText, tone)
     }
   }
 
   flushLeadingThink()
   flushStage()
+  flushPendingThinking()
   return segments
 }

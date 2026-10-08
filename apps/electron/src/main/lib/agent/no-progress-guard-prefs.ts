@@ -1,7 +1,7 @@
 /**
  * No-Progress Guard 用户偏好（主进程落盘）
  *
- * 优先级：环境变量 TAGENT_NO_PROGRESS_GUARD_MODE > 本文件 > 默认 enforce。
+ * 旧版偏好仍可读取，运行时解析已固定为 off，不再启用拦截。
  * 路径：~/.tagent[-dev]/no-progress-guard.json（与其它 tagent 配置同根）。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'

@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import type { Channel, ProviderType } from '@tagent/shared'
 
-import { fetchModelsFromProvider, testChannelConnection } from './channel-tester'
+import {
+  fetchModelsFromProvider,
+  speedTestChannel,
+  testChannelConnection,
+  validateChannelModel,
+} from './channel-tester'
 
 function channel(provider: ProviderType, overrides: Partial<Channel> = {}): Channel {
   return {
@@ -33,6 +38,43 @@ afterEach(() => {
 })
 
 describe('testChannelConnection protocol requests', () => {
+  test('explicit Responses protocol wins over an OpenAI legacy provider mapping', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await testChannelConnection(
+      channel('openai', { apiProtocol: 'openai-responses' }),
+      'secret-key',
+    )
+
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('https://provider.example/v1/responses')
+    expect(init?.headers).toMatchObject({ Authorization: 'Bearer secret-key' })
+    expect(JSON.parse(String(init?.body))).toEqual({
+      model: 'preferred-model',
+      max_output_tokens: 64,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
+      stream: false,
+    })
+  })
+
+  test('explicit Messages protocol wins over a provider that normally uses chat', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await testChannelConnection(
+      channel('custom', { apiProtocol: 'anthropic-messages' }),
+      'secret-key',
+    )
+
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('https://provider.example/v1/messages')
+    expect(init?.headers).toMatchObject({
+      'x-api-key': 'secret-key',
+      'anthropic-version': '2023-06-01',
+    })
+  })
+
   test('uses the Anthropic messages protocol and authentication headers', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}))
     vi.stubGlobal('fetch', fetchMock)
@@ -209,6 +251,23 @@ describe('testChannelConnection responses', () => {
 })
 
 describe('fetchModelsFromProvider response parsing', () => {
+  test('explicit Responses protocol uses the native models endpoint', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ data: [{ id: 'response-model' }] }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await fetchModelsFromProvider({
+      provider: 'custom',
+      apiProtocol: 'openai-responses',
+      baseUrl: 'https://provider.example/v1/',
+      apiKey: 'secret-key',
+    })
+
+    expect(result.success).toBe(true)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://provider.example/v1/models')
+  })
+
   test('parses OpenAI-compatible model data', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
@@ -307,5 +366,61 @@ describe('fetchModelsFromProvider response parsing', () => {
 
     expect(result.success).toBe(false)
     expect(result.models).toEqual([])
+  })
+})
+
+describe('validateChannelModel / speedTestChannel', () => {
+  test('validation uses the explicit protocol and mocked fetch only', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await validateChannelModel({
+      provider: 'custom',
+      apiProtocol: 'openai-responses',
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret-key',
+      model: 'chosen-model',
+    })
+
+    expect(result.success).toBe(true)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://provider.example/v1/responses')
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).model).toBe('chosen-model')
+  })
+
+  test('validation rejects a model rejected by the protocol endpoint', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('unknown model', { status: 404 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await validateChannelModel({
+      provider: 'openai',
+      apiProtocol: 'openai-responses',
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret-key',
+      model: 'missing-model',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('404')
+  })
+
+  test('speed test reports mocked request timing and protocol body', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await speedTestChannel(
+      channel('openai', { apiProtocol: 'openai-responses' }),
+      'secret-key',
+      'speed-model',
+    )
+
+    expect(result).toMatchObject({
+      channelId: 'channel-1',
+      modelId: 'speed-model',
+      success: true,
+    })
+    expect(result.ttfbMs).toEqual(expect.any(Number))
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://provider.example/v1/responses')
   })
 })

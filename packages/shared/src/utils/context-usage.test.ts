@@ -62,6 +62,11 @@ describe('inferContextWindow', () => {
   test('recognizes minimax-m3 as 1M', () => {
     expect(inferContextWindow('MiniMax-M3')).toBe(1_000_000)
   })
+
+  test('recognizes Grok 4.6 as 500k', () => {
+    expect(inferContextWindow('grok-4.6')).toBe(500_000)
+    expect(inferContextWindow('grok-4.6-latest')).toBe(500_000)
+  })
 })
 
 describe('resolveDisplayContextWindow', () => {
@@ -99,5 +104,14 @@ describe('resolveUiContextWindow', () => {
         configuredWindow: 200_000,
       }),
     ).toBe(1_000_000)
+  })
+
+  test('upgrades stale configured 200k for Grok 4.6', () => {
+    expect(
+      resolveUiContextWindow({
+        modelId: 'grok-4.6',
+        configuredWindow: 200_000,
+      }),
+    ).toBe(500_000)
   })
 })

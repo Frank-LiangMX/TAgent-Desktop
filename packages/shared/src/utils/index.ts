@@ -20,6 +20,7 @@ export {
 export { normalizeContextUsageSnapshot } from './context-usage-snapshot'
 export {
   DEFAULT_CONTEXT_WINDOW,
+  GROK_4_6_CONTEXT_WINDOW,
   ONE_MILLION_CONTEXT_WINDOW,
   AUTO_COMPACT_THRESHOLD_RATIO,
   inferContextWindow,
@@ -89,7 +90,13 @@ export type { RichOutputIssue } from './rich-output-validate'
 
 // 主会话输出风格（kscc / Pi 双核共用沟通红线）
 export { buildOutputStylePrompt } from './output-style-prompt'
-export { compactStageProgress, STAGE_PROGRESS_MAX_CHARS } from './stage-progress-summary'
+export { resolveChannelApiProtocol, isChannelCompatibleWithRuntime } from './runtime-channel'
+
+export {
+  compactStageProgress,
+  isNearDuplicateStageProgress,
+  STAGE_PROGRESS_MAX_CHARS,
+} from './stage-progress-summary'
 export { stripStructuralEmojiFromMarkdown } from './markdown-strip-emoji'
 export {
   extractPersistedUserText,

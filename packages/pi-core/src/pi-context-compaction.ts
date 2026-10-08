@@ -151,7 +151,13 @@ export function findCompactionCutIndex(messages: AgentMessage[], keepRecentToken
       for (let j = i; j < messages.length; j++) {
         if (messages[j]!.role === 'user') return j
       }
-      // 该 turn 内没有 user 边界 → 无法安全切
+      // keepRecentTokens 落在当前 turn 的 assistant/tool 片段内时，
+      // 正向扫描找不到 user。回退到该片段所属 turn 的起点，保留整个
+      // 当前 turn，避免把 tool_call 与 tool_result 拆开；若它已经是
+      // 第一轮，则没有可压缩的旧历史。
+      for (let j = i - 1; j >= 0; j--) {
+        if (messages[j]!.role === 'user') return j > 0 ? j : -1
+      }
       return -1
     }
   }

@@ -17,11 +17,13 @@
  * 详见 docs/dev/core-loop/REGRESS-G-FINDINGS.md、REGRESS-G-implement-brief.md。
  */
 
-import { compactStageProgress } from '@tagent/shared'
+import { compactStageProgress, isNearDuplicateStageProgress } from '@tagent/shared'
 
 /** 闸口状态：当前同 uuid 流式替换链里「最新」的一条待提交消息（未落盘）。 */
 export interface StreamPersistGateState {
   pending: { uuid: string; raw: unknown; persist: boolean } | null
+  /** 本轮最近一次已落盘的阶段摘要，用于抑制模型对同一根因的改写复述。 */
+  lastProgressSummary?: string
 }
 
 /** 新建闸口状态。 */
@@ -62,6 +64,12 @@ function isToolBoundary(msg: unknown): boolean {
   return contentBlocks(msg).some((block) => block.type === 'tool_use')
 }
 
+function isToolResultMessage(msg: unknown): boolean {
+  const raw = msg as { type?: string; message?: { content?: unknown[] } }
+  return raw.type === 'user' && Array.isArray(raw.message?.content)
+    && raw.message.content.some((block) => (block as { type?: string })?.type === 'tool_result')
+}
+
 function compactProgressMessage(msg: unknown): unknown | null {
   const blocks = contentBlocks(msg)
   const text = blocks.map((block) => String(block.text ?? '')).join('\n')
@@ -84,8 +92,20 @@ function resolvePending(state: StreamPersistGateState, next: unknown | null): un
   if (next && isTextOnlyAssistant(pending.raw) && isToolBoundary(next)) {
     const compacted = compactProgressMessage(pending.raw)
     if (!compacted) return []
-    // 只能按 uuid 去重，不能按全文在整回合去重：两个阶段可能合法地产生相同摘要。
-    // 旧逻辑用 lastStageSummary 全局吞掉第二个相同摘要，导致实时内容在落盘重投影时消失。
+    const summary = String(
+      (compacted as { message?: { content?: Array<{ text?: unknown }> } })
+        .message?.content?.[0]?.text ?? '',
+    ).trim()
+    // 同一轮里模型经常把同一条“根因”换几个连接词再说一遍。阶段摘要是
+    // 导航信息，不是逐字转录；近似重复时保留第一次，避免 reload 后再次刷屏。
+    if (
+      summary &&
+      state.lastProgressSummary &&
+      isNearDuplicateStageProgress(state.lastProgressSummary, summary)
+    ) {
+      return []
+    }
+    if (summary) state.lastProgressSummary = summary
     return [compacted]
   }
   return [pending.raw]
@@ -131,7 +151,12 @@ export function feedStreamPersistGate(
   if (state.pending) {
     out.push(...resolvePending(state, msg))
   }
-  if (type === 'user') out.push(msg)
+  if (type === 'user') {
+    out.push(msg)
+    // 工具结果仍在同一轮；真正的新用户消息开始下一轮，清掉上一轮的
+    // 摘要比较基线，避免跨轮误吞内容。
+    if (!isToolResultMessage(msg)) state.lastProgressSummary = undefined
+  }
   return out
 }
 
@@ -140,5 +165,7 @@ export function feedStreamPersistGate(
  * 幂等：pending 已提交或不存在时返回空。
  */
 export function flushStreamPersistGate(state: StreamPersistGateState): unknown[] {
-  return resolvePending(state, null)
+  const out = resolvePending(state, null)
+  state.lastProgressSummary = undefined
+  return out
 }

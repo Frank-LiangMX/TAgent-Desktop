@@ -144,6 +144,17 @@ describe('findCompactionCutIndex', () => {
     expect(findCompactionCutIndex(msgs, 1)).toBe(-1)
   })
 
+  it('预算落在当前 turn 内时回退到当前 turn 起点', () => {
+    const msgs = [
+      userMsg('old question'),
+      assistantMsg('old answer'),
+      userMsg('current question'),
+      assistantMsg('a very large current answer'),
+    ]
+    // 预算命中最后一条 assistant；保留当前完整 turn，从 index 2 开始压缩旧历史。
+    expect(findCompactionCutIndex(msgs, 1)).toBe(2)
+  })
+
   it('在 user turn 边界切，保留从该 user 起的尾', () => {
     // estimateTokens: 'q1'=1, 'a1'=1, 'q2'=1, 'a2'=1, 'recent prompt'=4
     const msgs = [
