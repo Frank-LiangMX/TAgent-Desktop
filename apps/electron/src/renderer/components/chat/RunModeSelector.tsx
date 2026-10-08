@@ -1,8 +1,11 @@
 /**
- * RunModeSelector — 输入区唯一的「运行模式」入口
+ * RunModeSelector — 输入区「运行模式」入口
  *
- * 收编了原先分散的三处控件：Chat|Work 文本开关、Work 权限角标、功能栏滑块里的
- * 权限/子代理两格。触发器常态只占一个 pill，细项进弹层。
+ * 收编了两处控件：Chat|Work 文本开关 + 权限/子代理细项。触发器常态只占一个
+ * pill，细项进弹层。
+ *
+ * 主 Agent（Pi / Codex / Claude Code）**不在这里**：它是事务性切换，
+ * 已拆到输入区独立的 AgentRuntimeSelector。
  *
  * CLI 工人池在设置页配置（全局优先级 / 启用），不在此弹层逐会话挑选。
  *
@@ -11,21 +14,16 @@
  */
 import { useState } from 'react'
 import {
-  Braces,
   Check,
   ChevronDown,
   Compass,
-  Download,
-  LoaderCircle,
   MessageCircle,
   ShieldCheck,
-  SquareTerminal,
   Unlock,
 } from 'lucide-react'
 import { AppTooltip, MenuPopoverItem, Popover, PopoverContent, PopoverTrigger } from '@tagent/ui'
 import type {
   ExecutionMode,
-  CodexRuntimeStatus,
   SubagentEagerness,
   TAgentPermissionMode,
 } from '@tagent/shared'
@@ -65,15 +63,6 @@ export interface RunModeSelectorProps {
   onPermissionModeChange: (mode: TAgentPermissionMode) => void
   subagentEagerness: SubagentEagerness
   onSubagentEagernessChange: (level: SubagentEagerness) => void
-  /** Internal Core 会话才显示主 Agent 选择。 */
-  showInternalBackend?: boolean
-  internalBackend?: 'codex-app-server' | 'kscc'
-  onInternalBackendChange?: (backend: 'codex-app-server' | 'kscc') => void
-  codexRuntimeStatus?: CodexRuntimeStatus | null
-  codexRuntimeInstalling?: boolean
-  onInstallCodexRuntime?: () => void | Promise<void>
-  /** 当前轮运行中禁止拆换主 Agent runtime。 */
-  internalBackendDisabled?: boolean
   /** 窄栏：隐藏文字只留图标 */
   compact?: boolean
   disabled?: boolean
@@ -86,13 +75,6 @@ export function RunModeSelector({
   onPermissionModeChange,
   subagentEagerness,
   onSubagentEagernessChange,
-  showInternalBackend,
-  internalBackend = 'codex-app-server',
-  onInternalBackendChange,
-  codexRuntimeStatus,
-  codexRuntimeInstalling,
-  onInstallCodexRuntime,
-  internalBackendDisabled,
   compact,
   disabled,
 }: RunModeSelectorProps): JSX.Element {
@@ -149,78 +131,6 @@ export function RunModeSelector({
         className="w-[248px] p-1.5"
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
-        {showInternalBackend ? (
-          <>
-            <div className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-              主 Agent
-            </div>
-            <MenuPopoverItem
-              icon={<Braces className="size-3.5" />}
-              label="Codex"
-              description={
-                codexRuntimeStatus?.available
-                  ? `App Server ${codexRuntimeStatus.version ?? ''} · ${
-                      codexRuntimeStatus.source === 'managed' ? 'TAgent 托管' : '本机安装'
-                    }`
-                  : codexRuntimeStatus
-                    ? codexRuntimeStatus.reason || '未检测到可用的 Codex App Server'
-                    : '正在检测 App Server Runtime'
-              }
-              selected={internalBackend === 'codex-app-server'}
-              disabled={
-                internalBackendDisabled || codexRuntimeStatus?.available === false
-              }
-              trailing={
-                internalBackend === 'codex-app-server' ? (
-                  <Check className="size-3.5 text-primary" strokeWidth={2.5} />
-                ) : null
-              }
-              onClick={() => onInternalBackendChange?.('codex-app-server')}
-            />
-            {codexRuntimeStatus &&
-            !codexRuntimeStatus.available &&
-            codexRuntimeStatus.managedInstallSupported ? (
-              <MenuPopoverItem
-                icon={
-                  codexRuntimeInstalling ? (
-                    <LoaderCircle className="size-3.5 animate-spin" />
-                  ) : (
-                    <Download className="size-3.5" />
-                  )
-                }
-                label={
-                  codexRuntimeInstalling
-                    ? '正在安装 Codex Runtime'
-                    : '安装 Codex Runtime'
-                }
-                description={`官方 ${codexRuntimeStatus.managedVersion ?? ''} · 约 ${Math.ceil(
-                  (codexRuntimeStatus.managedDownloadBytes ?? 0) /
-                    1024 /
-                    1024,
-                )} MB`}
-                disabled={codexRuntimeInstalling}
-                onClick={() => {
-                  void onInstallCodexRuntime?.()
-                }}
-              />
-            ) : null}
-            <MenuPopoverItem
-              icon={<SquareTerminal className="size-3.5" />}
-              label="Claude Code"
-              description="KSCC 内部运行时，保留原生会话上下文"
-              selected={internalBackend === 'kscc'}
-              disabled={internalBackendDisabled}
-              trailing={
-                internalBackend === 'kscc' ? (
-                  <Check className="size-3.5 text-primary" strokeWidth={2.5} />
-                ) : null
-              }
-              onClick={() => onInternalBackendChange?.('kscc')}
-            />
-            <div className="mx-1 my-1 h-px bg-border/40" />
-          </>
-        ) : null}
-
         <MenuPopoverItem
           icon={<MessageCircle className="size-3.5" />}
           label={EXECUTION_MODE_CONFIG.chat.label}

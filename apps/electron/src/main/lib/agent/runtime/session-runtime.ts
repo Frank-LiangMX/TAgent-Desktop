@@ -30,6 +30,56 @@ import {
 
 export type SessionState = 'idle' | 'running' | 'closed'
 
+/**
+ * 本轮终态性质（`onTurnEnd` 携带）。
+ *
+ * **不是所有 `onTurnEnd` 都是成功**：`result` 的 `error_max_turns` / `error_during_execution` /
+ * `paused_no_progress` / `max_tokens`、以及上下文溢出软重置后的收尾都会走到 onTurnEnd。
+ * 需要「成功才动作」的调用方（如跨内核交接消费）必须读本字段，不能把 onTurnEnd 当成功。
+ */
+export type TurnTerminalOutcome = 'success' | 'error' | 'unknown'
+
+export interface TurnTerminalInfo {
+  outcome: TurnTerminalOutcome
+}
+
+/**
+ * 从终态消息判定本轮结局。明确成功的 result（通用 SDK 的 `subtype==='success'`，或 Codex
+ * 形状的 `kind==='result' && subtype==='completed'`）且无 is_error / errors 才算 success；带
+ * subtype 的其它值（error_max_turns / error_during_execution / paused_no_progress / max_tokens…）
+ * 一律 error；形状无法判定 → unknown（调用方按「非成功」处理）。错误标志优先于 success/completed。
+ */
+export function classifyTurnTerminal(msg: unknown): TurnTerminalOutcome {
+  if (!msg || typeof msg !== 'object') return 'unknown'
+  const m = msg as {
+    type?: string
+    kind?: string
+    subtype?: unknown
+    is_error?: unknown
+    isError?: unknown
+    errors?: unknown
+  }
+  if (m.type !== 'result' && m.kind !== 'result') return 'unknown'
+  const flagError = m.is_error === true || m.isError === true
+  const hasErrors = Array.isArray(m.errors) && m.errors.length > 0
+  if (typeof m.subtype === 'string') {
+    if (!flagError && !hasErrors && (m.subtype === 'success' || (m.kind === 'result' && m.subtype === 'completed'))) {
+      return 'success'
+    }
+    return 'error'
+  }
+  if (flagError || hasErrors) return 'error'
+  return 'unknown'
+}
+
+/** 等待「停止受理后原生终态」的上限（毫秒）；超时即 fail-closed */
+export const TURN_SETTLE_TIMEOUT_MS = 15_000
+
+export interface SessionRuntimeOptions {
+  /** 由具体后端注入的上下文溢出恢复能力。 */
+  onContextOverflow?: () => Promise<boolean>
+}
+
 /** 自动崩溃恢复次数上限（避免无限重试；再失败即上报 session_error） */
 const MAX_AUTO_RECOVERY = 1
 
@@ -39,6 +89,7 @@ const STDERR_BUFFER_CAP = 4096
 export class SessionRuntime {
   readonly sessionId: string
   private readonly adapter: AgentProviderAdapter
+  private readonly onContextOverflow?: () => Promise<boolean>
   private state: SessionState = 'idle'
   /** 当前轮是否在跑 */
   private turnInFlight = false
@@ -46,7 +97,8 @@ export class SessionRuntime {
   private loopRunning = false
   /** 流式事件回调（orchestrator 注册，推 IPC 给 UI） */
   private onMessage?: (msg: SDKMessage) => void
-  private onTurnEnd?: () => void
+  /** 本轮终态回调（**非**成功专属；info.outcome 由 classifyTurnTerminal 判定） */
+  private onTurnEnd?: (info?: TurnTerminalInfo) => void
   /**
    * loop 真正停稳（Pi 每轮 generator done / 软停回 idle）后回调。
    * 用于 pending steer flush：不可在 onTurnEnd（仍在 for-await 内）立刻 handleSend，
@@ -59,6 +111,14 @@ export class SessionRuntime {
    * 不得再改 loopRunning/state，也不得走崩溃恢复。
    */
   private loopEpoch = 0
+  /**
+   * 因配置/工具形态变更而被退役的长驻 loop。
+   *
+   * 与普通 STOP 不同，配置换核不能在收到 result 时就认为旧进程已静默：kscc/Codex
+   * 仍可能保持 generator，直到 native session 真正关闭。该 fence 只允许该 loop 的
+   * `runLoop` finally 解除，避免新 spawn 与旧进程尾声并行。
+   */
+  private retiringLoopEpoch: number | undefined
 
   /** 用户主动 destroy（关标签页 / 被顶 / 退出）→ 永久关闭，不恢复、不报错 */
   private userClosing = false
@@ -69,6 +129,18 @@ export class SessionRuntime {
    * 用户若立刻发送下一条，必须先等这次中断完成，不能直接撞 `turnInFlight`。
    */
   private interruptInFlight: Promise<void> | undefined
+  /**
+   * 「已受理停止但尚未观察到本轮原生终态」闩锁（ADR-0011 §5 静默前提）。
+   *
+   * `interrupt()` 返回只表示**适配器受理了中断请求**（Claude SDK 控制请求受理 / Pi `agent.abort()`
+   * 置标志 / Codex `turn/interrupt` 应答），**不**表示工具与子进程已停。跨内核切换若以此为静默
+   * 依据，会出现旧内核工具在新内核开跑后继续写同一 workspace 的窗口。
+   *
+   * 因此：发起中断时置位，只有 runLoop 真正观察到本轮终态（result / generator 结束 / 抛错收尾）
+   * 才复位；观察不到则保持置位，由 `waitForTurnSettled` 超时返回 false（调用方 fail-closed）。
+   */
+  private stopSettlementPending = false
+  private settlementWaiters: Array<() => void> = []
   /** 已执行的自动恢复次数（≤ MAX_AUTO_RECOVERY） */
   private recoveryAttempts = 0
   /** 从流式消息捕获的最新 SDK session id（恢复时作为 resumeSessionId） */
@@ -85,9 +157,14 @@ export class SessionRuntime {
    */
   private spawnToolingFingerprint: string | undefined
 
-  constructor(sessionId: string, adapter: AgentProviderAdapter) {
+  constructor(
+    sessionId: string,
+    adapter: AgentProviderAdapter,
+    options: SessionRuntimeOptions = {},
+  ) {
     this.sessionId = sessionId
     this.adapter = adapter
+    this.onContextOverflow = options.onContextOverflow
   }
 
   /** 是否已有常驻进程（首条 vs 后续判断） */
@@ -133,7 +210,13 @@ export class SessionRuntime {
       return
     }
     console.log(`[会话 ${this.sessionId}] 丢弃长驻进程（${reason}），下次消息按新配置 spawn`)
-    // 标记用户主动停止，避免 runLoop 把 abort 当成崩溃恢复
+    // 先立退役 fence，再调用 abort。abort 仅表示请求已受理；即使它同步吐出 result，
+    // 也必须等旧 generator 的 finally 才能让下一个 query spawn。
+    const retiringEpoch = this.loopEpoch
+    this.retiringLoopEpoch = retiringEpoch
+    this.stopSettlementPending = true
+    // 标记用户主动停止，避免 runLoop 把 abort 当成崩溃恢复。不要在 microtask 清掉：
+    // 旧 loop 仍可能在 drain，只有其退出路径才能安全复用 runtime。
     this.userStopping = true
     try {
       this.adapter.abort(this.sessionId)
@@ -144,15 +227,12 @@ export class SessionRuntime {
     this.turnInFlight = false
     // 保持 runtime 可复用：不要 userClosing
     this.state = 'idle'
-    queueMicrotask(() => {
-      if (!this.loopRunning) this.userStopping = false
-    })
   }
 
   /** 注册流式回调 */
   setCallbacks(cb: {
     onMessage?: (msg: SDKMessage) => void
-    onTurnEnd?: () => void
+    onTurnEnd?: (info?: TurnTerminalInfo) => void
     onLoopIdle?: () => void
     onError?: (err: Error) => void
   }): void {
@@ -185,6 +265,11 @@ export class SessionRuntime {
     const pendingInterrupt = this.interruptInFlight
     if (pendingInterrupt) await pendingInterrupt
 
+    // 停止**受理**不等于旧回合已停稳：旧内核可能仍有工具在收尾。
+    // 在旧回合收尾前开新回合会让两轮并行（同 workspace 写入竞态），故有界等待原生终态，
+    // 超时则 fail-closed 拒绝本轮发送（不静默并行）。
+    if (this.stopSettlementPending) await this.awaitStopSettlement()
+
     if (this.state === 'closed') {
       throw new Error(`[session ${this.sessionId}] 会话已关闭`)
     }
@@ -209,6 +294,9 @@ export class SessionRuntime {
         `[会话 ${this.sessionId}] 执行形态/工具集变更 ${this.spawnToolingFingerprint} → ${nextFp}，re-spawn`,
       )
       this.dropLiveProcessForConfigChange('executionMode-or-tools')
+      // 本次 SEND 自己触发了 retirement，入口处的闸门已经检查过，必须在这里
+      // 再等一次；否则会直接 startLoop，与仍在 finally 中的旧 native loop 重叠。
+      if (this.stopSettlementPending) await this.awaitStopSettlement()
       // 把本轮用户文本并入新 spawn 的 prompt
       let prompt = queryOptions.prompt
       if (userMessage) {
@@ -259,6 +347,22 @@ export class SessionRuntime {
     await this.adapter.sendQueuedMessage?.(this.sessionId, userMessage)
   }
 
+  /** 有待结算停止时，统一有界等待；超时一律拒绝，绝不静默并行。 */
+  private async awaitStopSettlement(): Promise<void> {
+    if (!this.stopSettlementPending) return
+    const settled = await this.waitForTurnSettled(TURN_SETTLE_TIMEOUT_MS)
+    if (!settled) {
+      throw new Error(
+        `[session ${this.sessionId}] 上一轮尚未确认停稳（可能仍有工具在收尾），请稍候再发送`,
+      )
+    }
+    // 等待期间用户可能已关闭会话。特别是配置换核分支会在此后直接 startLoop，
+    // 因而必须在 settlement 后重新检查，不能让已销毁 runtime 复活。
+    if (this.userClosing || this.state === 'closed') {
+      throw new Error(`[session ${this.sessionId}] 会话已关闭`)
+    }
+  }
+
   /** 起持续事件循环（首次 / 恢复重建） */
   private async startLoop(
     queryOptions: Parameters<AgentProviderAdapter['query']>[0]
@@ -283,6 +387,22 @@ export class SessionRuntime {
    * 外层 while 仅在「可恢复的崩溃」时再转一圈（re-spawn + resume）。
    */
   private async runLoop(
+    initialQueryOptions: Parameters<AgentProviderAdapter['query']>[0],
+    epoch: number,
+  ): Promise<void> {
+    try {
+      await this.runLoopInner(initialQueryOptions, epoch)
+    } finally {
+      // 任何退出路径（generator 结束 / 抛错 / 过长降级 return / 用户停止）都意味着
+      // 本轮原生终态已被观察到 → 解除「已受理停止但未观察终态」闩锁。
+      // 长驻内核（kscc）正常 result 后 loop 不退出，故 result 分支另有显式调用。
+      // **带 epoch**：被 startLoop 接替的旧圈不得结算新回合的停止闩锁（否则会把
+      // 「新回合已受理停止但尚未收尾」误判为已静默）。
+      this.markTurnSettled(epoch, 'loop-finally')
+    }
+  }
+
+  private async runLoopInner(
     initialQueryOptions: Parameters<AgentProviderAdapter['query']>[0],
     epoch: number,
   ): Promise<void> {
@@ -337,10 +457,11 @@ export class SessionRuntime {
               this.lastInFlightPrompt = undefined
               this.loopRunning = false
               // Phase 4：先尝试软重置爆了兜底，失败再 closed + 报错
-              void this.trySoftResetOnBurst().then((recovered) => {
+              void this.tryContextOverflowRecovery().then((recovered) => {
                 if (recovered) {
                   this.state = 'closed' // 进程需重建；下次 send 会 re-spawn
-                  this.onTurnEnd?.()
+                  // 软重置收尾：本轮并未成功完成，不得当作成功终态
+                  this.onTurnEnd?.({ outcome: 'error' })
                   this.onMessage?.({
                     type: 'system',
                     subtype: 'tagent_soft_reset',
@@ -362,7 +483,11 @@ export class SessionRuntime {
             this.turnInFlight = false
             this.lastInFlightPrompt = undefined
             sawCleanResult = true
-            if (wasInFlight) this.onTurnEnd?.()
+            // 本轮原生终态已观察到（长驻内核 result 后 loop 不退出，必须在此解除闩锁）
+            this.markTurnSettled(epoch, 'result')
+            // onTurnEnd **不是**成功专属：error_max_turns / error_during_execution /
+            // paused_no_progress / max_tokens 等终态同样走到这里，故带上判定结果。
+            if (wasInFlight) this.onTurnEnd?.({ outcome: classifyTurnTerminal(msg) })
           }
         }
         // 已被更新的 startLoop 接替：旧圈不得改共享状态 / 不得报崩溃
@@ -394,10 +519,11 @@ export class SessionRuntime {
           if (isPromptTooLongMessage(this.stderrBuffer)) {
             this.turnInFlight = false
             this.lastInFlightPrompt = undefined
-            void this.trySoftResetOnBurst().then((recovered) => {
+            void this.tryContextOverflowRecovery().then((recovered) => {
               this.state = 'closed'
               if (!recovered) this.onError?.(new Error(formatPromptTooLongError()))
-              else this.onTurnEnd?.()
+              // 软重置收尾：本轮未成功完成
+              else this.onTurnEnd?.({ outcome: 'error' })
             })
             return
           }
@@ -427,10 +553,11 @@ export class SessionRuntime {
         if (isPromptTooLongMessage(error.message, this.stderrBuffer)) {
           this.turnInFlight = false
           this.lastInFlightPrompt = undefined
-          void this.trySoftResetOnBurst().then((recovered) => {
+          void this.tryContextOverflowRecovery().then((recovered) => {
             this.state = 'closed'
             if (!recovered) this.onError?.(new Error(formatPromptTooLongError()))
-            else this.onTurnEnd?.()
+            // 软重置收尾：本轮未成功完成
+            else this.onTurnEnd?.({ outcome: 'error' })
           })
           return
         }
@@ -474,7 +601,10 @@ export class SessionRuntime {
    * 计算崩溃恢复的 re-spawn 选项。返回新的 queryOptions 表示可恢复，undefined 表示放弃。
    *
    * 策略（MVP，后续可加重试退避 / fork 重放等）：
-   * - 仅当非用户停止、未超过 MAX_AUTO_RECOVERY、且有 resumeSessionId + 在飞消息时恢复
+   * - Official API connections never auto-replay: upstream delivery is ambiguous after a crash,
+   *   so recovery must wait for an explicit user continuation / host handoff.
+   * - Legacy local runtimes recover only when non-user-stop, below MAX_AUTO_RECOVERY, and a
+   *   resumeSessionId plus in-flight message are available.
    * - 恢复 = 复用原 queryOptions 配置（canUseTool / mcpServers / systemPrompt 等），
    *   仅覆盖 resumeSessionId + prompt（重注入在飞消息）
    * - 重注入在飞消息可能造成「重复用户气泡」（SDK transcript 是否已落盘该消息不确定）；
@@ -484,15 +614,12 @@ export class SessionRuntime {
    * Phase 4：prompt_too_long 时尝试 kscc 软重置兜底（廉价清理 + 影子压缩切换）。
    * 动态 import 避免 runtime ↔ soft-reset 循环依赖启动成本。
    */
-  private async trySoftResetOnBurst(): Promise<boolean> {
+  private async tryContextOverflowRecovery(): Promise<boolean> {
+    if (!this.onContextOverflow) return false
     try {
-      const { ksccSoftReset } = await import('../kscc-soft-reset')
-      return await ksccSoftReset.onBurst({
-        sessionId: this.sessionId,
-        burstTokens: undefined,
-      })
+      return await this.onContextOverflow()
     } catch (e) {
-      console.warn(`[会话 ${this.sessionId}] soft-reset onBurst failed:`, e)
+      console.warn(`[会话 ${this.sessionId}] context overflow recovery failed:`, e)
       return false
     }
   }
@@ -503,9 +630,13 @@ export class SessionRuntime {
     if (this.userClosing || this.userStopping) return undefined
     if (this.recoveryAttempts >= MAX_AUTO_RECOVERY) return undefined
     const nativeResume = queryOptions as {
+      apiConnection?: unknown
       resumeSessionId?: string
       resumeThreadId?: string
     }
+    // ADR-0012: do not silently replay the prior prompt through an official API connection.
+    // A disconnect leaves upstream acceptance unknown; only an explicit later user send may resume.
+    if (nativeResume.apiConnection) return undefined
     const resumeId =
       this.lastSdkSessionId ??
       nativeResume.resumeSessionId ??
@@ -548,6 +679,9 @@ export class SessionRuntime {
       return
     }
     this.userStopping = true
+    // 在调适配器**之前**置位：适配器可能在 interruptQuery 内同步/即时推出终态，
+    // 若先调用后置位会漏掉那次终态，导致闩锁永远挂着（假 fail-closed）。
+    if (this.turnInFlight) this.stopSettlementPending = true
     const operation = Promise.resolve()
       .then(() => this.adapter.interruptQuery?.(this.sessionId))
       .then(() => undefined)
@@ -557,6 +691,55 @@ export class SessionRuntime {
       })
     this.interruptInFlight = operation
     await operation
+  }
+
+  /**
+   * 本轮原生终态是否已观察不到（停止请求已被受理但 runLoop 还没看到终态）。
+   * 供跨内核切换的静默判定使用：true = 旧内核可能仍有工具在收尾，必须 fail-closed。
+   */
+  hasUnsettledStop(): boolean {
+    return this.stopSettlementPending
+  }
+
+  /**
+   * 等待本轮原生终态（result / generator 结束 / 抛错收尾）被观察到。
+   * @returns true = 已停稳；false = 超时（未能确认静默，调用方必须 fail-closed）
+   */
+  waitForTurnSettled(timeoutMs = 15_000): Promise<boolean> {
+    if (!this.stopSettlementPending) return Promise.resolve(true)
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        const index = this.settlementWaiters.indexOf(waiter)
+        if (index >= 0) this.settlementWaiters.splice(index, 1)
+        resolve(!this.stopSettlementPending)
+      }, Math.max(0, timeoutMs))
+      const waiter = () => {
+        clearTimeout(timer)
+        resolve(true)
+      }
+      this.settlementWaiters.push(waiter)
+    })
+  }
+
+  /**
+   * runLoop 观察到本轮原生终态时调用（幂等）。
+   * 覆盖：收到 result；generator 结束退出；抛错收尾。
+   *
+   * @param epoch 调用方所属 loop 代数；与当前 loopEpoch 不一致（已被接替的旧圈）时
+   *   不得清除闩锁，避免旧圈把**新回合**「已受理停止但未收尾」误判为已静默。
+   */
+  private markTurnSettled(epoch?: number, source: 'result' | 'loop-finally' = 'result'): void {
+    if (epoch !== undefined && epoch !== this.loopEpoch) return
+    // 配置换核时 result 不是充分条件：长驻 SDK 可能在 result 后继续保持 native
+    // session/子进程。只有该退役 loop 真正退出（runLoop finally）才能放开下一轮。
+    if (this.retiringLoopEpoch !== undefined && this.retiringLoopEpoch === epoch) {
+      if (source !== 'loop-finally') return
+      this.retiringLoopEpoch = undefined
+    }
+    if (!this.stopSettlementPending) return
+    this.stopSettlementPending = false
+    const waiters = this.settlementWaiters.splice(0, this.settlementWaiters.length)
+    for (const waiter of waiters) waiter()
   }
 
   /**
@@ -612,5 +795,13 @@ export class SessionRuntime {
 
   isTurnInFlight(): boolean {
     return this.turnInFlight
+  }
+
+  /**
+   * 软中断是否仍在途（renderer 已把 UI 切到 stopped，主进程仍在等 adapter 收尾）。
+   * 供运行内核切换等需要「真正静默」的判定使用（见 runtime-switch.ts）。
+   */
+  isInterrupting(): boolean {
+    return this.interruptInFlight !== undefined
   }
 }

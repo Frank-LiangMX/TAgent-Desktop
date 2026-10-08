@@ -37,9 +37,6 @@ function mount(
           onPermissionModeChange={() => undefined}
           subagentEagerness="conservative"
           onSubagentEagernessChange={() => undefined}
-          showInternalBackend
-          internalBackend="kscc"
-          onInternalBackendChange={() => undefined}
           {...overrides}
         />
       </TooltipProvider>,
@@ -55,41 +52,35 @@ function openMenu(): void {
   act(() => trigger?.click())
 }
 
-describe('RunModeSelector Codex Runtime install action', () => {
-  test('Runtime 不可用且当前平台受支持时展示官方安装动作', () => {
-    mount({
-      codexRuntimeStatus: {
-        available: false,
-        reason: '系统 PATH 中未找到 codex',
-        managedInstallSupported: true,
-        managedVersion: '0.151.0',
-        managedDownloadBytes: 147_584_554,
-      },
-    })
+function clickItem(label: string): void {
+  const button = Array.from(
+    document.querySelectorAll<HTMLButtonElement>('button'),
+  ).find((item) => item.textContent?.includes(label))
+  expect(button).toBeDefined()
+  act(() => button?.click())
+}
+
+describe('RunModeSelector', () => {
+  test('主 Agent 不再出现在运行模式弹层（已迁到 AgentRuntimeSelector）', () => {
+    mount()
     openMenu()
 
-    expect(document.body.textContent).toContain('安装 Codex Runtime')
-    expect(document.body.textContent).toContain('官方 0.151.0')
-    expect(document.body.textContent).toContain('约 141 MB')
+    expect(document.body.textContent).not.toContain('主 Agent')
+    expect(document.body.textContent).not.toContain('Codex')
   })
 
-  test('点击安装动作调用主会话安装回调', () => {
-    const onInstallCodexRuntime = vi.fn()
+  test('选权限档即进 Work 并回调权限模式', () => {
+    const onExecutionModeChange = vi.fn()
+    const onPermissionModeChange = vi.fn()
     mount({
-      codexRuntimeStatus: {
-        available: false,
-        managedInstallSupported: true,
-        managedVersion: '0.151.0',
-        managedDownloadBytes: 147_584_554,
-      },
-      onInstallCodexRuntime,
+      executionMode: 'chat',
+      onExecutionModeChange,
+      onPermissionModeChange,
     })
     openMenu()
-    const installButton = Array.from(
-      document.querySelectorAll<HTMLButtonElement>('button'),
-    ).find((button) => button.textContent?.includes('安装 Codex Runtime'))
-    expect(installButton).toBeDefined()
-    act(() => installButton?.click())
-    expect(onInstallCodexRuntime).toHaveBeenCalledTimes(1)
+    clickItem('计划')
+
+    expect(onExecutionModeChange).toHaveBeenCalledWith('work')
+    expect(onPermissionModeChange).toHaveBeenCalledWith('plan')
   })
 })

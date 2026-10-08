@@ -107,6 +107,8 @@ export function createSession(input: {
   /** 会话 ID（不传则随机生成） */
   id?: string
   title?: string
+  /** Explicit engine binding; independent of channel provider (ADR-0012). */
+  agentRuntime?: AgentSessionMeta['agentRuntime']
   channelId?: string
   modelId?: string
   internalBackend?: AgentSessionMeta['internalBackend']
@@ -128,6 +130,7 @@ export function createSession(input: {
     executionMode: input.executionMode ?? DEFAULT_EXECUTION_MODE,
     /** 新建会话默认完全自动（对齐 Proma） */
     permissionMode: input.permissionMode ?? TAGENT_DEFAULT_PERMISSION_MODE,
+    agentRuntime: input.agentRuntime,
     channelId: input.channelId,
     modelId: input.modelId,
     internalBackend: input.internalBackend,

@@ -48,6 +48,7 @@ describe('session-store persistence smoke', () => {
     const created = store.createSession({
       id: 'session-smoke',
       title: '持久化冒烟',
+      agentRuntime: 'claude-code',
       channelId: 'channel-1',
       modelId: 'model-1',
       workspaceId: 'F--project-smoke',
@@ -66,6 +67,7 @@ describe('session-store persistence smoke', () => {
     expect(meta).toMatchObject({
       id: 'session-smoke',
       title: '持久化冒烟',
+      agentRuntime: 'claude-code',
       channelId: 'channel-1',
       modelId: 'model-1',
       workspaceId: 'F--project-smoke',

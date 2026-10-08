@@ -91,6 +91,17 @@ interface Pending {
 /** pending 请求 Map：reqId → Pending */
 const pending = new Map<string, Pending>()
 
+/**
+ * 该会话是否有等待用户响应的**工具权限**请求（ADR-0011 §5 静默判定用）。
+ * 只读探针：不改动任何 pending 状态；渲染层尚未响应时返回 true，切换运行内核须 fail-closed。
+ */
+export function hasPendingPermissionRequest(sessionId: string): boolean {
+  for (const item of pending.values()) {
+    if (item.sessionId === sessionId) return true
+  }
+  return false
+}
+
 let counter = 0
 function nextId(): string {
   counter += 1

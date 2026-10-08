@@ -23,6 +23,8 @@ export function SessionRouter(): JSX.Element | null {
     channelId: activeTab.channelId,
     modelId: activeTab.modelId,
     botProfileIds: persistedMeta?.botProfileIds,
+    agentRuntime: persistedMeta?.agentRuntime,
+    internalBackend: persistedMeta?.internalBackend,
     fusionRoomId: persistedMeta?.fusionRoomId,
     kbRoots: persistedMeta?.kbRoots,
     knowledgeBaseIds: persistedMeta?.knowledgeBaseIds,

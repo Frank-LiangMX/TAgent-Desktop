@@ -15,6 +15,7 @@ import {
   UserRound,
   Users,
   ScrollText,
+  Bot,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import {
@@ -61,7 +62,7 @@ import { loaderAnimationEnabledAtom, splitDockModeAtom } from '../../atoms/featu
 import { ChannelsSettings } from './ChannelsSettings'
 import { MoaSettings } from './MoaSettings'
 import { CliWorkersSettingsSection } from './CliWorkersSettingsSection'
-import { NoProgressGuardSettings } from './NoProgressGuardSettings'
+import { AgentCatalogSettings } from './AgentCatalogSettings'
 import { AgentCrewSettings } from './AgentCrewSettings'
 import { PromptSettings } from './PromptSettings'
 import { UpdateChecker } from './UpdateChecker'
@@ -75,13 +76,13 @@ const APP_VERSION =
 
 /**
  * 设置页 tab。
- * Agent 行为下挂：MOA（会诊 + 圆桌合并）/ 子代理 / 班组。
+ * Agent 行为下挂：MOA（会诊 + 圆桌合并）/ 子代理 / 子代理调度。
  * 兼容旧 id `agent` / `agent-discuss` → 归一为 `agent-roundtable`（MOA）。
  *
  * 用户可见命名约定：
  * - MOA = 会诊（各答各的再汇总）+ 圆桌（多角色互相讨论出共识）共用班底；id 仍为 agent-roundtable
  * - 子代理 = 内置进程内 + 可选本机 CLI（id 仍为 agent-cli）
- * - 班组 = 长任务派工与工人编排（id 仍为 agent-crew）
+ * - 子代理调度 = 模型画像与并行上限（兼容旧 id：agent-crew；班组暂停）
  */
 export type SettingsTab =
   | 'general'
@@ -90,6 +91,7 @@ export type SettingsTab =
   | 'prompts'
   | 'agent-roundtable'
   | 'agent-cli'
+  | 'agent-catalog'
   | 'agent-crew'
   /** @deprecated 已并入 agent-roundtable（MOA）；normalizeSettingsTab 归一 */
   | 'agent-discuss'
@@ -107,6 +109,7 @@ export function normalizeSettingsTab(tab: SettingsTab | string | undefined): Set
     'prompts',
     'agent-roundtable',
     'agent-cli',
+    'agent-catalog',
     'agent-crew',
     'about',
   ]
@@ -151,6 +154,13 @@ const ALL_TABS: TabItem[] = [
     group: 'core',
   },
   {
+    id: 'agent-catalog',
+    label: 'Agent 接入',
+    description: 'Pi、Codex 与 Claude Code / KSCC 的接入状态',
+    icon: <Bot size={14} strokeWidth={1.75} />,
+    group: 'core',
+  },
+  {
     id: 'prompts',
     label: '提示词',
     description: 'Chat 系统提示与模板',
@@ -173,7 +183,7 @@ const ALL_TABS: TabItem[] = [
   },
   {
     id: 'agent-crew',
-    label: '班组',
+    label: '子代理调度',
     description: '长任务派工与工人编排',
     icon: <Boxes size={14} strokeWidth={1.75} />,
     group: 'agent',
@@ -381,7 +391,7 @@ function StyleCard({
   )
 }
 
-function renderTabContent(tab: SettingsTab): JSX.Element {
+function renderTabContent(tab: SettingsTab, onNavigate: (tab: SettingsTab) => void): JSX.Element {
   const t = normalizeSettingsTab(tab)
   switch (t) {
     case 'general':
@@ -401,10 +411,11 @@ function renderTabContent(tab: SettingsTab): JSX.Element {
             title="子代理"
             description="委派积极性、内置子代理与可选本机 CLI。默认走内置；切到本机 CLI 后再配置工人与探测。"
           />
-          <NoProgressGuardSettings />
           <CliWorkersSettingsSection />
         </div>
       )
+    case 'agent-catalog':
+      return <AgentCatalogSettings onNavigate={onNavigate} />
     case 'agent-crew':
       return <AgentCrewSettings />
     case 'about':
@@ -510,12 +521,13 @@ export function SettingsDialog({
                       activeTab === 'channels' ||
                       activeTab === 'prompts' ||
                       activeTab === 'agent-roundtable' ||
-                      activeTab === 'agent-cli'
+                      activeTab === 'agent-cli' ||
+                      activeTab === 'agent-catalog'
                         ? 'settings-shell-content--wide'
                         : ''
                     }`}
                   >
-                    {renderTabContent(activeTab)}
+                    {renderTabContent(activeTab, handleTabChange)}
                   </div>
                 </div>
               </section>

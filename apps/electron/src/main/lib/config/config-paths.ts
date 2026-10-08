@@ -177,6 +177,11 @@ export function getCliWorkersPath(): string {
   return join(getConfigDir(), 'cli-workers.json')
 }
 
+/** 可配置执行 Agent 目录：~/.tagent[-dev]/agent-catalog.json */
+export function getAgentCatalogPath(): string {
+  return join(getConfigDir(), 'agent-catalog.json')
+}
+
 /** TAgent 托管运行时根目录：~/.tagent[-dev]/runtimes/ */
 export function getManagedRuntimesDir(): string {
   const dir = join(getConfigDir(), 'runtimes')

@@ -6,6 +6,8 @@ export interface PersistedSessionMeta {
   workspaceId?: string;
   channelId?: string;
   modelId?: string;
+  agentRuntime?: import('@tagent/shared').AgentRuntimeKind;
+  internalBackend?: import('@tagent/shared').AgentSessionMeta['internalBackend'];
   botProfileIds?: string[];
   fusionRoomId?: string;
   kbRoots?: string[];
