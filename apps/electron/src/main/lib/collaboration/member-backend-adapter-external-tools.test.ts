@@ -27,7 +27,6 @@ const channelState = vi.hoisted(() => ({
   channels: [] as Channel[],
   decrypted: {} as Record<string, string>,
 }))
-const ksccState = vi.hoisted(() => ({ path: undefined as string | undefined }))
 
 /** createHttpDirectStreamFn 工厂捕获 + 每次 streamFn 调用的 context/options + 可脚本化事件流 */
 const httpState = vi.hoisted(() => ({
@@ -58,10 +57,6 @@ vi.mock('../channel/channel-store', () => ({
   listChannels: () => channelState.channels,
   getChannel: (id: string) => channelState.channels.find((c) => c.id === id),
   getDecryptedApiKey: (id: string) => channelState.decrypted[id] ?? '',
-}))
-
-vi.mock('../adapters/claude/kscc-path', () => ({
-  resolveKsccPath: () => ksccState.path,
 }))
 
 vi.mock('@tagent/pi-core', () => ({
@@ -268,7 +263,6 @@ function baseInput(over: Partial<MemberTurnInput>): MemberTurnInput {
 beforeEach(() => {
   channelState.channels = [anthropicChannel()]
   channelState.decrypted = { 'ch-anth': 'sk-anth' }
-  ksccState.path = undefined
   httpState.factoryOpts = null
   httpState.streamFnCalls = []
   httpState.scripts = []
@@ -621,6 +615,22 @@ describe('buildRoomBridgeTools — tool-call 转发到宿主 hostToolHandler', (
 // ===== runTurn：unsupported fail-closed 路由 =====
 
 describe('ChannelBackendAdapter.runTurn — unsupported fail-closed', () => {
+  test('显式 Responses 覆盖 Anthropic provider 时不错误启用 Messages 工具桥', async () => {
+    channelState.channels = [fakeChannel({ id: 'ch-responses', provider: 'anthropic', apiProtocol: 'openai-responses' })]
+    channelState.decrypted = { 'ch-responses': 'test-key' }
+    const handler = vi.fn(async () => ({ output: 'x' })) as unknown as CollaborationHostToolHandler
+    const res = await new ChannelBackendAdapter().runTurn(baseInput({ channelId: 'ch-responses', hostToolHandler: handler }))
+    expect(res.text).toBe('pi-seat-text')
+    expect(httpState.factoryOpts).toBeNull()
+    expect(handler).not.toHaveBeenCalled()
+    expect(channelSupportsRoomToolBridge('ch-responses')).toBe(false)
+  })
+
+  test('显式 Messages 覆盖 custom provider 时按协议声明工具桥', () => {
+    channelState.channels = [fakeChannel({ id: 'ch-messages', provider: 'custom', apiProtocol: 'anthropic-messages' })]
+    expect(channelSupportsRoomToolBridge('ch-messages')).toBe(true)
+  })
+
   test('OpenAI-completions 外部渠道（无原生工具能力）：走纯文本 runner，不接桥', async () => {
     channelState.channels = [
       fakeChannel({ id: 'ch-openai', provider: 'openai', baseUrl: 'https://api.openai.com/v1' }),

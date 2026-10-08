@@ -33,7 +33,7 @@ export type TaskSubagentBackend =
   | { kind: 'cli'; worker: CliWorkerEntry }
 
 export interface ResolveTaskSubagentBackendOptions {
-  /** 主 Agent 在 task 参数里指定的 CLI id（kscc / grok / …） */
+  /** 主 Agent 在 task 参数里指定的 CLI id（grok / codex / …） */
   preferredCliId?: string | null
   /** 硬性能力要求：vision / reasoningMin（不满足者剔除，含显式 cli 不满足也回落） */
   require?: CliCapabilityRequire | null
@@ -130,7 +130,7 @@ export function listEnabledCliWorkerIds(): string[] {
  * 复用 listCliWorkersConfig + resolveWorkerCapability；关闭 / 未启用时返回空串。
  * 格式（每启用工人一行）：
  *   CLI 工人能力卡（按优先级）：
- *     kscc — cost 3 · reasoning high · text · 跨层接线 / 编排 / 复杂实现
+ *     grok — cost 2 · reasoning medium · text · 擅长: 前端开发,调研 / 探索 / 对照 / 草稿实现
  *     ...
  *   可用参数：cli 指定其一；require 硬性（vision / reasoningMin）；prefer 软性（costMax / goodFor）。
  */

@@ -21,7 +21,8 @@ import { PermissionService } from './lib/permission/permission-service'
 import {
   seedBuiltinChannels,
   migrateModelWindows,
-  syncKsccChannelAvailability,
+  dedupeLegacyKsccChannels,
+  syncGatewayChannelAvailability,
   syncKsccDefaultModels,
   syncCodexDefaultModels,
 } from './lib/channel/channel-store'
@@ -41,6 +42,7 @@ import {
 } from './lib/memory'
 // type-only：esbuild 去类型不引入运行时模块；仅用于持有 transport bootstrap 句柄类型。
 import type { FusionRoomTransportBootstrapResult } from './lib/collaboration/fusion-room-transport-bootstrap'
+import { runtimeProtocolBridge } from './lib/adapters/shared/protocol-bridge/runtime-protocol-bridge'
 
 // cjs 打包格式下 __dirname 是全局可用，无需 fileURLToPath
 
@@ -295,9 +297,10 @@ app.whenReady().then(async () => {
 
   try {
     seedBuiltinChannels()
-    // 这些渠道初始化包含本机 CLI 路径判断，必须在窗口创建前完成，
-    // 避免窗口已显示后主进程被同步 where/spawn 卡住。
-    syncKsccChannelAvailability()
+    // 凭据判断是同步读盘（~/.claude/settings.json / kcwork 凭证），无 spawn，
+    // 但仍放在窗口创建前，保证首屏渠道状态已就绪。
+    syncGatewayChannelAvailability()
+    dedupeLegacyKsccChannels()
     syncKsccDefaultModels()
     syncCodexDefaultModels()
     migrateModelWindows()
@@ -504,6 +507,7 @@ app.on('before-quit', () => {
   }
   // P0-3c：关闭 FusionRoom transport runtime（若有）
   closeFusionTransportOnQuit()
+  runtimeProtocolBridge.close()
   cleanupUpdater()
   browserService?.dispose()
   sessionService?.disposeAll()

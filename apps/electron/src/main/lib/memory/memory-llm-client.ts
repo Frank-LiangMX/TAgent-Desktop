@@ -1,7 +1,8 @@
 /**
  * 记忆子系统通用 LLM 客户端
  *
- * - completeMemoryLlm：优先外部渠道 chat；无外部渠道时回退 kscc 内网 Flash
+ * - completeMemoryLlm：优先外部渠道 chat；显式协议走 Pi 原生流 runner
+ *   （历史 kscc 内网 Flash 回退通路已移除）
  * - embedTexts：兼容 OpenAI /embeddings 与 Anthropic 协议渠道的常见网关形态
  *
  * 说明：官方 Anthropic Messages API 本身没有 embedding 端点；
@@ -11,7 +12,7 @@
  */
 import type { Channel, ProviderType } from '@tagent/shared'
 import { listChannels, getDecryptedApiKey } from '../channel/channel-store'
-import { resolveChannelDefaultModelId } from '@tagent/shared'
+import { resolveChannelRequestHeaders, resolveChannelDefaultModelId, isLegacyCliProvider } from '@tagent/shared'
 
 export class MemoryLlmError extends Error {
   constructor(
@@ -29,8 +30,6 @@ export interface MemoryLlmChannel {
   modelId: string
 }
 
-const KSCC_MEMORY_MODEL_ID = 'deepseek-v4-flash'
-
 /** Anthropic 协议族（chat 走 anthropic-messages，embedding 需另探 OpenAI 兼容口） */
 const ANTHROPIC_PROTOCOL_PROVIDERS = new Set<string>([
   'anthropic',
@@ -47,7 +46,7 @@ const ANTHROPIC_PROTOCOL_PROVIDERS = new Set<string>([
 
 /** 选一个可用外部渠道；无则抛 MemoryLlmError */
 export function resolveMemoryLlmChannel(): MemoryLlmChannel {
-  const channels = listChannels().filter((c) => c.enabled && c.provider !== 'kscc-internal')
+  const channels = listChannels().filter((c) => c.enabled && !isLegacyCliProvider(c.provider))
   for (const channel of channels) {
     const apiKey = getDecryptedApiKey(channel.id)
     if (!apiKey) continue
@@ -58,48 +57,7 @@ export function resolveMemoryLlmChannel(): MemoryLlmChannel {
     if (!modelId) continue
     return { channel, apiKey, modelId }
   }
-  throw new MemoryLlmError('NO_CHANNEL', '无可用外部渠道（需 enabled + apiKey，非 kscc）')
-}
-
-/**
- * 内网渠道不需要 API Key。自动记忆不能因为用户只配置了 kscc 而完全失效，
- * 因此在没有可用外部渠道时，用已启用的 kscc 渠道跑轻量 Flash 整理。
- */
-async function completeWithKsccMemoryLlm(opts: {
-  systemPrompt: string
-  userPrompt: string
-  signal?: AbortSignal
-}): Promise<string> {
-  const channel = listChannels().find((candidate) =>
-    candidate.enabled && candidate.provider === 'kscc-internal',
-  )
-  if (!channel) {
-    throw new MemoryLlmError('NO_CHANNEL', '无可用记忆模型（请启用外部渠道或 kscc 内网渠道）')
-  }
-
-  const { resolveKsccPath } = await import('../adapters/claude/kscc-path')
-  const ksccPath = resolveKsccPath()
-  if (!ksccPath) {
-    throw new MemoryLlmError('KSCC_UNAVAILABLE', '未检测到 kscc 命令，无法执行自动记忆整理')
-  }
-
-  const modelId = channel.models.some((model) => model.id === KSCC_MEMORY_MODEL_ID && model.enabled)
-    ? KSCC_MEMORY_MODEL_ID
-    : resolveChannelDefaultModelId(channel) || channel.models.find((model) => model.enabled)?.id
-  if (!modelId) {
-    throw new MemoryLlmError('NO_MODEL', 'kscc 内网渠道没有可用模型，无法执行自动记忆整理')
-  }
-
-  const { createKsccSeatRunner } = await import('@tagent/pi-core')
-  const result = await createKsccSeatRunner({ ksccPath }).runSeat({
-    modelId,
-    prompt: opts.userPrompt,
-    systemPrompt: opts.systemPrompt,
-    signal: opts.signal,
-    timeoutMs: 120_000,
-  })
-  console.log(`[memory-llm] completed via kscc model=${modelId}`)
-  return result
+  throw new MemoryLlmError('NO_CHANNEL', '无可用外部渠道（需 enabled + apiKey）')
 }
 
 /**
@@ -111,16 +69,31 @@ export async function completeMemoryLlm(opts: {
   userPrompt: string
   signal?: AbortSignal
 }): Promise<string> {
-  let resolved: MemoryLlmChannel
-  try {
-    resolved = resolveMemoryLlmChannel()
-  } catch (error) {
-    if (error instanceof MemoryLlmError && error.code === 'NO_CHANNEL') {
-      return completeWithKsccMemoryLlm(opts)
-    }
-    throw error
+  // 无可用外部渠道 → 直接抛出（历史 kscc 内网 Flash 回退通路已移除）
+  const { channel, apiKey, modelId } = resolveMemoryLlmChannel()
+
+  // 显式协议不能经过 provider-keyed getAdapter，否则 custom/openai 等渠道
+  // 会被静默改回 provider 的旧 wire format。Pi runner 接收协议并原生流式
+  // 读取文本；协议存在时也不做模型或协议 fallback。
+  if (channel.apiProtocol) {
+    const { createPiHttpSeatRunner } = await import('@tagent/pi-core')
+    const runner = createPiHttpSeatRunner({
+      apiProtocol: channel.apiProtocol,
+      provider: channel.provider,
+      apiKey,
+      baseUrl: channel.baseUrl,
+      headers: resolveChannelRequestHeaders(channel.provider as ProviderType, apiKey),
+    })
+    const result = await runner.runSeat({
+      modelId,
+      systemPrompt: opts.systemPrompt,
+      prompt: opts.userPrompt,
+      signal: opts.signal,
+      timeoutMs: 120_000,
+    })
+    return result.trim()
   }
-  const { channel, apiKey, modelId } = resolved
+
   const { getAdapter, streamSSE, getTAgentUserAgent } = await import('@tagent/core')
 
   let adapter
@@ -138,6 +111,7 @@ export async function completeMemoryLlm(opts: {
     userMessage: opts.userPrompt,
     systemMessage: opts.systemPrompt,
     readImageAttachments: () => [],
+    extraHeaders: resolveChannelRequestHeaders(channel.provider as ProviderType, apiKey),
   })
   request.headers['User-Agent'] = getTAgentUserAgent()
 

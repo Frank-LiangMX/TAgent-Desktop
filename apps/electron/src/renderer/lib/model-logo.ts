@@ -215,6 +215,7 @@ const PROVIDER_LOGO_MAP: Record<ProviderType, string> = {
   xiaomi: XiaomiLogo,
   'xiaomi-token-plan': XiaomiLogo,
   'kscc-internal': KsccLogo,
+  'kscc-gateway': KsccLogo,
   'codex-internal': OpenAILogo,
   custom: OpenAILogo,
 }

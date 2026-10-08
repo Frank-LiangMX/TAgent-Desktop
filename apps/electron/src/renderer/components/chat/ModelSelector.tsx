@@ -1,7 +1,7 @@
 /**
  * 输入框尾部的渠道 / 模型组合选择器。
  *
- * KSCC 内网与外部渠道是两套运行内核。首条消息发送后只锁定运行内核，
+ * 运行时与外部 API 渠道是独立概念。首条消息发送后只锁定运行内核，
  * 同一内核内的渠道和模型仍可在后续轮次自由切换。
  *
  * 布局对齐 TAgent_General AgentModelSelector：当前模型头图 header +
@@ -23,19 +23,20 @@ import {
   SegmentedTabsItem,
 } from '@tagent/ui'
 import {
+  type AgentRuntimeKind,
   type Channel,
   type ReasoningEffort,
   PROVIDER_LABELS,
-  isLocalRuntimeProvider,
   isMoaModelId,
 } from '@tagent/shared'
 import { cn } from '../../lib/utils'
 import { channelsAtom } from '../../atoms/channel-atoms'
+import { type ModelSelection } from '../../atoms/model-selection'
 import {
-  getChannelCoreKind,
-  type ChannelCoreKind,
-  type ModelSelection,
-} from '../../atoms/model-selection'
+  AGENT_RUNTIME_LABELS,
+  channelAcceptsRuntime,
+  isLegacyChannelForRuntime,
+} from '../../atoms/agent-runtime'
 import { getModelLogo, getChannelLogo } from '../../lib/model-logo'
 import {
   chatProcessDisplayModeAtom,
@@ -48,10 +49,16 @@ const REASONING_DEFAULT: ReasoningEffort = 'medium'
 
 interface ModelSelectorProps {
   selection: ModelSelection | null
-  lockedKind: ChannelCoreKind | null
+  /**
+   * 当前生效的运行内核：只列出该内核**实际承载**的渠道模型。
+   * 换内核必须走独立的 AgentRuntimeSelector（事务性切换），不在这里混选。
+   */
+  runtime?: AgentRuntimeKind | null
   onSelect: (selection: ModelSelection) => void
   reasoningEffort?: ReasoningEffort
   onReasoningEffortChange?: (effort: ReasoningEffort) => void
+  /** 运行内核切换在途：锁住模型选择，避免并发改动绑定 */
+  disabled?: boolean
 }
 
 interface ChannelGroup {
@@ -61,10 +68,11 @@ interface ChannelGroup {
 
 export function ModelSelector({
   selection,
-  lockedKind,
+  runtime,
   onSelect,
   reasoningEffort,
   onReasoningEffortChange,
+  disabled,
 }: ModelSelectorProps): JSX.Element {
   const channels = useAtomValue(channelsAtom)
   const [processDisplayMode, setProcessDisplayMode] = useAtom(chatProcessDisplayModeAtom)
@@ -79,33 +87,36 @@ export function ModelSelector({
   const groups = channels
     .filter((channel) => (
       channel.enabled
-      && (!lockedKind || getChannelCoreKind(channel) === lockedKind)
+      // runtime === null：会话还没有生效内核 → 不给任何模型，
+      // 先让用户在 Agent 选择器里做一次显式选择（否则等于绕过内核事务）
+      && runtime !== null
+      && (runtime === undefined
+        || channelAcceptsRuntime(channel, runtime)
+        || (channel.id === selection?.channelId && isLegacyChannelForRuntime(channel, runtime)))
     ))
     .map((channel) => ({
       channel,
       models: channel.models.filter((model) => model.enabled),
     }))
     .filter((group) => group.models.length > 0)
-  const allInternalGroups = groups.filter(({ channel }) => getChannelCoreKind(channel) === 'kscc')
-  // 同一台机器可能遗留多个 kscc-internal 记录，但 Codex 是独立的一等渠道；
-  // 每种本机 Runtime 保留一组，避免历史重复记录把 Codex 藏掉。
-  const uniqueInternalGroups = allInternalGroups.filter(
-    ({ channel }, index, list) =>
-      list.findIndex(({ channel: candidate }) => candidate.provider === channel.provider) === index,
+  // Official runtimes only expose API channels. A legacy session may still
+  // display its already-bound local channel, but it is never offered as a new
+  // choice and is kept in its own compatibility section. This matters for old
+  // Codex sessions, whose channel is `codex-internal` but whose runtime is no
+  // longer represented by the old KSCC core region.
+  const legacyGroups = groups.filter(({ channel }) =>
+    channel.id === selection?.channelId &&
+    (channel.provider === 'kscc-internal' || channel.provider === 'codex-internal'),
   )
-  // 历史版本可能遗留多个 kscc-internal 记录。它们属于同一个内网运行时，
-  // 选择器只展示一组；旧会话优先沿用自己记录的 channelId，避免兼容数据重复露出。
-  const activeInternalGroup = lockedKind && activeChannel && isLocalRuntimeProvider(activeChannel.provider)
-    ? uniqueInternalGroups.find(({ channel }) => channel.id === activeChannel.id)
-    : undefined
-  const internalGroups = activeInternalGroup
-    ? [activeInternalGroup]
-    : uniqueInternalGroups
-  const externalGroups = groups.filter(({ channel }) => getChannelCoreKind(channel) === 'external')
+  // 历史本机 kscc 渠道已停用：不再作为可选内核分组（仅 legacySection 中的已绑定渠道回显）。
+  const internalGroups: typeof groups = []
+  const externalGroups = groups.filter(({ channel }) =>
+    channel.provider !== 'kscc-internal' && channel.provider !== 'codex-internal',
+  )
 
   const totalAvailable = useMemo(
-    () => internalGroups.concat(externalGroups).reduce((sum, g) => sum + g.models.length, 0),
-    [internalGroups, externalGroups],
+    () => legacyGroups.concat(internalGroups, externalGroups).reduce((sum, g) => sum + g.models.length, 0),
+    [legacyGroups, internalGroups, externalGroups],
   )
 
   const renderGroups = (items: ChannelGroup[]): JSX.Element[] => items.map(({ channel, models }) => (
@@ -119,7 +130,7 @@ export function ModelSelector({
             className="size-5 shrink-0 rounded-md object-cover"
           />
           <span className="truncate text-[11px] font-medium text-foreground/70">
-            {lockedKind ? channel.name : `${channel.name} · ${PROVIDER_LABELS[channel.provider]}`}
+            {runtime ? channel.name : `${channel.name} · ${PROVIDER_LABELS[channel.provider]}`}
           </span>
         </>
       }
@@ -159,10 +170,12 @@ export function ModelSelector({
       <PopoverTrigger asChild>
         <button
           type="button"
+          disabled={disabled}
           className={cn(
             'flex min-w-0 max-w-[176px] items-center gap-1.5 rounded-full px-2 py-1 text-xs transition-colors',
             'text-muted-foreground hover:bg-foreground/10 hover:text-foreground',
             !activeAvailable && selection && 'text-destructive',
+            disabled && 'pointer-events-none opacity-60',
           )}
           aria-label="选择模型"
         >
@@ -292,11 +305,9 @@ export function ModelSelector({
         <div className="flex items-center gap-1 px-3.5 pb-1 pt-2">
           <span className="text-[11px] font-medium text-muted-foreground">可选模型</span>
           {/* 锁定提示收成问号：这段解释一次读懂即可，常驻一整块太占弹层高度 */}
-          {lockedKind && (
+          {runtime && (
             <AppTooltip
-              label={`已锁定${lockedKind === 'kscc' ? '内网' : '外部'}运行时，此区域内的模型${
-                lockedKind === 'external' ? '和渠道' : ''
-              }仍可随时切换。`}
+              label={`已锁定 ${AGENT_RUNTIME_LABELS[runtime]} 运行时的渠道模型，此区域内仍可随时切换模型。换主 Agent 请用输入区左侧的 Agent 选择器。`}
               side="top"
               multiline
             >
@@ -315,10 +326,25 @@ export function ModelSelector({
         <div className="scrollbar-thin max-h-[280px] overflow-y-auto px-2 pb-2">
           {totalAvailable === 0 ? (
             <div className="px-2 py-3 text-center text-[11px] text-muted-foreground">
-              此运行区域没有已启用的模型
+              {runtime === null
+                ? '还没有选定主 Agent：请先用左侧 Agent 选择器显式选择 Pi / Codex / Claude Code'
+                : '该 Agent 下没有已启用的模型'}
             </div>
           ) : (
             <>
+              {legacyGroups.length > 0 && (
+                <div>
+                  <MenuPopoverSectionLabel icon={<ShieldCheck className="size-3" />}>
+                    历史绑定
+                  </MenuPopoverSectionLabel>
+                  {renderGroups(legacyGroups)}
+                </div>
+              )}
+
+              {legacyGroups.length > 0 && (internalGroups.length > 0 || externalGroups.length > 0) && (
+                <div className="mx-2 my-1.5 h-px bg-border/40" />
+              )}
+
               {internalGroups.length > 0 && (
                 <div>
                   <MenuPopoverSectionLabel icon={<ShieldCheck className="size-3" />}>

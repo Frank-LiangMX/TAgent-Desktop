@@ -208,12 +208,18 @@ export class OpenAIAdapter implements ProviderAdapter {
       appendContinuationMessages(messages, input.continuationMessages)
     }
 
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${input.apiKey}`,
+      'content-type': 'application/json',
+    }
+    // 渠道自定义头最后并入（如内网网关的客户端标识）
+    if (input.extraHeaders && Object.keys(input.extraHeaders).length > 0) {
+      Object.assign(headers, input.extraHeaders)
+    }
+
     return {
       url: `${url}/chat/completions`,
-      headers: {
-        Authorization: `Bearer ${input.apiKey}`,
-        'content-type': 'application/json',
-      },
+      headers,
       body: JSON.stringify(bodyObj),
     }
   }
@@ -270,12 +276,17 @@ export class OpenAIAdapter implements ProviderAdapter {
   buildTitleRequest(input: TitleRequestInput): ProviderRequest {
     const url = normalizeBaseUrl(input.baseUrl)
 
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${input.apiKey}`,
+      'content-type': 'application/json',
+    }
+    if (input.extraHeaders && Object.keys(input.extraHeaders).length > 0) {
+      Object.assign(headers, input.extraHeaders)
+    }
+
     return {
       url: `${url}/chat/completions`,
-      headers: {
-        Authorization: `Bearer ${input.apiKey}`,
-        'content-type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         model: input.modelId,
         messages: [{ role: 'user', content: input.prompt }],

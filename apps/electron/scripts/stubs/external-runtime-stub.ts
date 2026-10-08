@@ -4,14 +4,15 @@
  * build-main.mjs 在对外构建时把 adapters/claude/* 与
  * @anthropic-ai/claude-agent-sdk 解析到本文件，避免：
  * 1) main.cjs 内留下 require('@anthropic-ai/claude-agent-sdk')
- * 2) 把 kscc 核实现打进对外 bundle
+ * 2) 把官方 Claude Code 实现打进对外 bundle
  *
  * 源码 adapters/claude/ 仍保留，内网 / dev 默认路径不受影响。
+ * （历史 kscc.exe CLI 通路已移除：本 stub 不再导出 resolveKsccPath / spawnKscc。）
  */
 const EXTERNAL_MSG =
-  '此为对外发行版：kscc 内网核与 Claude Agent SDK 未打包。请使用外部 API 渠道（Pi 核）。'
+  '此为对外发行版：官方 Claude Code 内核与 Claude Agent SDK 未打包。请使用外部 API 渠道（Pi 核）。'
 
-/** 与真实 ClaudeAgentAdapter 同名，供 getAdapter('kscc') 实例化后在首用时报错 */
+/** 与真实 ClaudeAgentAdapter 同名，供 getAdapter('claude-code') 实例化后在首用时报错 */
 export class ClaudeAgentAdapter {
   hasActiveChannel(_sessionId: string): boolean {
     return false
@@ -40,15 +41,6 @@ export class ClaudeAgentAdapter {
   }
 }
 
-/** channel-tester / session-service 等调用：对外版恒为未安装 */
-export function resolveKsccPath(): string | undefined {
-  return undefined
-}
-
-export function spawnKscc(..._args: unknown[]): never {
-  throw new Error(EXTERNAL_MSG)
-}
-
 // ── @anthropic-ai/claude-agent-sdk 表面（kanban inject 等动态 import）──
 
 export function query(..._args: unknown[]): never {
@@ -63,11 +55,18 @@ export function createSdkMcpServer(..._args: unknown[]): never {
   throw new Error(EXTERNAL_MSG)
 }
 
+/** 与真实模块同名的辅助导出（对外版未被引用，保留表面以防动态 import）。 */
+export function buildOfficialClaudeRuntimeEnv(..._args: unknown[]): never {
+  throw new Error(EXTERNAL_MSG)
+}
+
+export function resolveOfficialClaudeCodeExecutable(..._args: unknown[]): never {
+  throw new Error(EXTERNAL_MSG)
+}
+
 export default {
   query,
   tool,
   createSdkMcpServer,
   ClaudeAgentAdapter,
-  resolveKsccPath,
-  spawnKscc,
 }

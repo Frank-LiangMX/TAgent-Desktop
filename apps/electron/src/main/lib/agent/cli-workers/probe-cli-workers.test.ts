@@ -5,7 +5,6 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   resolveBinOnPath: vi.fn(),
-  resolveKsccPath: vi.fn(),
   listCliWorkersConfig: vi.fn(),
   existsSync: vi.fn(),
   execFileSync: vi.fn(),
@@ -17,10 +16,6 @@ vi.mock('./resolve-bin-on-path', () => ({
 
 vi.mock('../cli-workers-service', () => ({
   listCliWorkersConfig: mocks.listCliWorkersConfig,
-}))
-
-vi.mock('../../adapters/claude/kscc-path', () => ({
-  resolveKsccPath: mocks.resolveKsccPath,
 }))
 
 vi.mock('node:fs', async () => {
@@ -40,16 +35,15 @@ const cfg: CliWorkersConfig = {
   version: 1,
   enabled: true,
   defaultBackend: 'cli',
-  defaultCliId: 'kscc',
+  defaultCliId: 'grok',
   workers: [
-    { id: 'kscc', enabled: true, bin: 'kscc', defaultModel: 'glm-5.2' },
     { id: 'grok', enabled: true, bin: 'grok' },
+    { id: 'claude', enabled: true, bin: 'claude' },
   ],
 }
 
 beforeEach(() => {
   mocks.resolveBinOnPath.mockReset()
-  mocks.resolveKsccPath.mockReset()
   mocks.listCliWorkersConfig.mockReset()
   mocks.existsSync.mockReset()
   mocks.execFileSync.mockReset()
@@ -60,17 +54,17 @@ describe('resolveWorkerBin', () => {
   it('Windows bare 名走 resolveBinOnPath', () => {
     const prev = process.platform
     Object.defineProperty(process, 'platform', { value: 'win32' })
-    mocks.resolveBinOnPath.mockReturnValue('C:\\npm\\kscc.cmd')
-    expect(resolveWorkerBin('kscc')).toBe('C:\\npm\\kscc.cmd')
+    mocks.resolveBinOnPath.mockReturnValue('C:\\npm\\grok.cmd')
+    expect(resolveWorkerBin('grok')).toBe('C:\\npm\\grok.cmd')
     Object.defineProperty(process, 'platform', { value: prev })
   })
 
-  it('macOS kscc 使用 GUI 进程可用的专用路径解析器', () => {
+  it('非 Windows 走通用 unix 解析（command -v）', () => {
     const prev = process.platform
     Object.defineProperty(process, 'platform', { value: 'darwin' })
-    mocks.resolveKsccPath.mockReturnValue('/opt/homebrew/bin/kscc')
-    expect(resolveWorkerBin('kscc')).toBe('/opt/homebrew/bin/kscc')
-    expect(mocks.resolveKsccPath).toHaveBeenCalledTimes(1)
+    mocks.execFileSync.mockReturnValue('/opt/homebrew/bin/grok\n')
+    mocks.existsSync.mockReturnValue(true)
+    expect(resolveWorkerBin('grok')).toBe('/opt/homebrew/bin/grok')
     Object.defineProperty(process, 'platform', { value: prev })
   })
 })
@@ -80,18 +74,18 @@ describe('probeCliWorkers', () => {
     const prev = process.platform
     Object.defineProperty(process, 'platform', { value: 'win32' })
     mocks.resolveBinOnPath.mockImplementation((b: string) =>
-      b === 'kscc' ? 'C:\\kscc.exe' : null,
+      b === 'grok' ? 'C:\\grok.exe' : null,
     )
-    mocks.execFileSync.mockReturnValue('kscc 1.1.28\n')
+    mocks.execFileSync.mockReturnValue('grok 1.1.28\n')
     const r = probeCliWorkers(cfg)
     expect(r.workers).toHaveLength(2)
-    const k = r.workers.find((w) => w.id === 'kscc')
     const g = r.workers.find((w) => w.id === 'grok')
-    expect(k?.available).toBe(true)
-    expect(k?.resolvedPath).toBe('C:\\kscc.exe')
-    expect(k?.version).toContain('1.1.28')
-    expect(g?.available).toBe(false)
-    expect(g?.error).toMatch(/未找到/)
+    const c = r.workers.find((w) => w.id === 'claude')
+    expect(g?.available).toBe(true)
+    expect(g?.resolvedPath).toBe('C:\\grok.exe')
+    expect(g?.version).toContain('1.1.28')
+    expect(c?.available).toBe(false)
+    expect(c?.error).toMatch(/未找到/)
     Object.defineProperty(process, 'platform', { value: prev })
   })
 

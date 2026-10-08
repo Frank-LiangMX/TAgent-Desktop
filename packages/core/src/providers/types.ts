@@ -218,6 +218,11 @@ export interface StreamRequestInput {
   tools?: ToolDefinition[]
   /** 工具续接消息（tool use 循环中，前一轮的 tool_use + tool_result） */
   continuationMessages?: ContinuationMessage[]
+  /**
+   * 渠道自定义请求头（如内网网关的客户端标识），由 Electron 层按渠道 provider 注入。
+   * 适配器把它并入最终请求头；同名的自定义头覆盖默认值。
+   */
+  extraHeaders?: Record<string, string>
 }
 
 /** 标题生成请求的输入参数 */
@@ -230,6 +235,8 @@ export interface TitleRequestInput {
   modelId: string
   /** 标题生成 prompt（已包含用户消息） */
   prompt: string
+  /** 渠道自定义请求头（同 StreamRequestInput.extraHeaders） */
+  extraHeaders?: Record<string, string>
 }
 
 // ===== 适配器接口 =====

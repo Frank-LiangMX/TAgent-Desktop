@@ -33,25 +33,19 @@ function seed(): CliWorkersConfig {
 }
 
 describe('CLI_WORKERS_DEFAULT_SEED', () => {
-  it('ships disabled with 4 workers and defaultCliId=kscc (zero behavior change)', () => {
+  it('ships disabled with 3 workers and defaultCliId=grok (zero behavior change)', () => {
     expect(CLI_WORKERS_DEFAULT_SEED.version).toBe(1)
     expect(CLI_WORKERS_DEFAULT_SEED.enabled).toBe(false)
     expect(CLI_WORKERS_DEFAULT_SEED.defaultBackend).toBe('in-process')
-    expect(CLI_WORKERS_DEFAULT_SEED.defaultCliId).toBe('kscc')
-    expect(CLI_WORKERS_DEFAULT_SEED.workers).toHaveLength(4)
+    expect(CLI_WORKERS_DEFAULT_SEED.defaultCliId).toBe('grok')
+    expect(CLI_WORKERS_DEFAULT_SEED.workers).toHaveLength(3)
     expect(CLI_WORKERS_DEFAULT_SEED.workers.map((w) => w.id)).toEqual([
-      'kscc',
       'grok',
       'codex',
       'mimo',
     ])
-    const kscc = CLI_WORKERS_DEFAULT_SEED.workers[0]!
-    expect(kscc.id).toBe('kscc')
-    expect(kscc.enabled).toBe(true)
-    expect(kscc.bin).toBe('kscc')
-    expect(kscc.defaultModel).toBe('glm-5.2')
-    // 其余三个工人 enabled、bin 与 id 同名、无默认模型（用各自 CLI 默认）
-    for (const w of CLI_WORKERS_DEFAULT_SEED.workers.slice(1)) {
+    // 三工人 enabled、bin 与 id 同名、无默认模型（用各自 CLI 默认）
+    for (const w of CLI_WORKERS_DEFAULT_SEED.workers) {
       expect(w.enabled).toBe(true)
       expect(w.bin).toBe(w.id)
       expect(w.defaultModel).toBeUndefined()
@@ -75,8 +69,8 @@ describe('isDeniedCliName', () => {
   })
 
   it('does not match allowed names', () => {
-    expect(isDeniedCliName('kscc')).toBe(false)
-    expect(isDeniedCliName('/usr/local/bin/kscc')).toBe(false)
+    expect(isDeniedCliName('grok')).toBe(false)
+    expect(isDeniedCliName('/usr/local/bin/grok')).toBe(false)
     expect(isDeniedCliName('hermes-cli')).toBe(false) // 非精确 basename
     expect(isDeniedCliName('')).toBe(false)
   })
@@ -103,28 +97,28 @@ describe('isValidCliWorkersConfig', () => {
 
   it('rejects workers not array / bad entry fields', () => {
     expect(isValidCliWorkersConfig({ ...seed(), workers: 'x' })).toBe(false)
-    expect(isValidCliWorkersConfig({ ...seed(), workers: [{ id: '', enabled: true, bin: 'kscc' }] })).toBe(false)
-    expect(isValidCliWorkersConfig({ ...seed(), workers: [{ id: 'kscc', enabled: 'yes', bin: 'kscc' }] })).toBe(false)
-    expect(isValidCliWorkersConfig({ ...seed(), workers: [{ id: 'kscc', enabled: true, bin: '' }] })).toBe(false)
+    expect(isValidCliWorkersConfig({ ...seed(), workers: [{ id: '', enabled: true, bin: 'grok' }] })).toBe(false)
+    expect(isValidCliWorkersConfig({ ...seed(), workers: [{ id: 'grok', enabled: 'yes', bin: 'grok' }] })).toBe(false)
+    expect(isValidCliWorkersConfig({ ...seed(), workers: [{ id: 'grok', enabled: true, bin: '' }] })).toBe(false)
     expect(
       isValidCliWorkersConfig({
         ...seed(),
-        workers: [{ id: 'kscc', enabled: true, bin: 'kscc', defaultModel: 5 }],
+        workers: [{ id: 'grok', enabled: true, bin: 'grok', defaultModel: 5 }],
       }),
     ).toBe(false)
   })
 
   it('rejects deny-list id / bin basename (hermes / openclaw, case-insensitive)', () => {
     expect(
-      isValidCliWorkersConfig({ ...seed(), workers: [{ id: 'hermes', enabled: true, bin: 'kscc' }] }),
+      isValidCliWorkersConfig({ ...seed(), workers: [{ id: 'hermes', enabled: true, bin: 'grok' }] }),
     ).toBe(false)
     expect(
-      isValidCliWorkersConfig({ ...seed(), workers: [{ id: 'kscc', enabled: true, bin: 'openclaw' }] }),
+      isValidCliWorkersConfig({ ...seed(), workers: [{ id: 'grok', enabled: true, bin: 'openclaw' }] }),
     ).toBe(false)
     expect(
       isValidCliWorkersConfig({
         ...seed(),
-        workers: [{ id: 'kscc', enabled: true, bin: '/usr/local/bin/HERMES' }],
+        workers: [{ id: 'grok', enabled: true, bin: '/usr/local/bin/HERMES' }],
       }),
     ).toBe(false)
   })
@@ -133,7 +127,7 @@ describe('isValidCliWorkersConfig', () => {
     expect(
       isValidCliWorkersConfig({
         ...seed(),
-        workers: [{ id: 'kscc', enabled: true, bin: '/usr/local/bin/kscc', defaultModel: 'glm-5.2' }],
+        workers: [{ id: 'grok', enabled: true, bin: '/usr/local/bin/grok' }],
       }),
     ).toBe(true)
   })
@@ -143,11 +137,32 @@ describe('isValidCliWorkersConfig', () => {
       isValidCliWorkersConfig({
         ...seed(),
         workers: [
-          { id: 'kscc', enabled: true, bin: 'kscc', defaultModel: 'glm-5.2' },
-          { id: 'kscc2', enabled: false, bin: '/opt/kscc' },
+          { id: 'grok', enabled: true, bin: 'grok' },
+          { id: 'grok2', enabled: false, bin: '/opt/grok' },
         ],
       }),
     ).toBe(true)
+  })
+
+  it('accepts a legacy config that still carries a kscc worker (unknown id is not rejected)', () => {
+    // 旧配置迁移：id 不在目录 = 用户自定义 id，校验不得因未知 id 拒绝
+    expect(
+      isValidCliWorkersConfig({
+        ...seed(),
+        defaultCliId: 'kscc',
+        workers: [
+          { id: 'kscc', enabled: true, bin: 'kscc', defaultModel: 'glm-5.2' },
+          { id: 'grok', enabled: true, bin: 'grok' },
+        ],
+      }),
+    ).toBe(true)
+    expect(
+      validateCliWorkersConfig({
+        ...seed(),
+        defaultCliId: 'kscc',
+        workers: [{ id: 'kscc', enabled: true, bin: 'kscc' }],
+      }),
+    ).toBeNull()
   })
 })
 
@@ -177,13 +192,13 @@ describe('validateCliWorkersConfig', () => {
   it('returns Chinese error for workers not array / bad entry', () => {
     expect(validateCliWorkersConfig({ ...seed(), workers: 'x' })).toContain('workers')
     expect(
-      validateCliWorkersConfig({ ...seed(), workers: [{ id: '', enabled: true, bin: 'kscc' }] }),
+      validateCliWorkersConfig({ ...seed(), workers: [{ id: '', enabled: true, bin: 'grok' }] }),
     ).toContain('id')
     expect(
-      validateCliWorkersConfig({ ...seed(), workers: [{ id: 'kscc', enabled: true, bin: '' }] }),
+      validateCliWorkersConfig({ ...seed(), workers: [{ id: 'grok', enabled: true, bin: '' }] }),
     ).toContain('bin')
     expect(
-      validateCliWorkersConfig({ ...seed(), workers: [{ id: 'kscc', enabled: 'yes', bin: 'kscc' }] }),
+      validateCliWorkersConfig({ ...seed(), workers: [{ id: 'grok', enabled: 'yes', bin: 'grok' }] }),
     ).toContain('enabled')
   })
 
@@ -197,10 +212,10 @@ describe('validateCliWorkersConfig', () => {
 
     const byBin = validateCliWorkersConfig({
       ...seed(),
-      workers: [{ id: 'kscc', enabled: true, bin: '/usr/local/bin/openclaw' }],
+      workers: [{ id: 'grok', enabled: true, bin: '/usr/local/bin/openclaw' }],
     })
     expect(byBin).toContain('黑名单')
-    expect(byBin).toContain('kscc') // label = 工人 id
+    expect(byBin).toContain('grok') // label = 工人 id
   })
 })
 
@@ -209,7 +224,7 @@ describe('listEnabledWorkersByPriority / resolveWorkerByPreference', () => {
     const cfg = seed()
     cfg.workers = [
       { id: 'grok', enabled: true, bin: 'grok' },
-      { id: 'kscc', enabled: false, bin: 'kscc' },
+      { id: 'mimo', enabled: false, bin: 'mimo' },
       { id: 'codex', enabled: true, bin: 'codex' },
     ]
     expect(listEnabledWorkersByPriority(cfg).map((w) => w.id)).toEqual(['grok', 'codex'])
@@ -223,11 +238,11 @@ describe('listEnabledWorkersByPriority / resolveWorkerByPreference', () => {
   it('falls back to first enabled when preferred disabled/missing', () => {
     const cfg = seed()
     cfg.workers = [
-      { id: 'kscc', enabled: true, bin: 'kscc' },
+      { id: 'grok', enabled: true, bin: 'grok' },
       { id: 'codex', enabled: false, bin: 'codex' },
     ]
-    expect(resolveWorkerByPreference(cfg, 'codex')?.id).toBe('kscc')
-    expect(resolveWorkerByPreference(cfg, 'nope')?.id).toBe('kscc')
+    expect(resolveWorkerByPreference(cfg, 'codex')?.id).toBe('grok')
+    expect(resolveWorkerByPreference(cfg, 'nope')?.id).toBe('grok')
   })
 
   it('resolveDefaultWorker is first enabled by priority (ignores stale defaultCliId)', () => {
@@ -236,7 +251,7 @@ describe('listEnabledWorkersByPriority / resolveWorkerByPreference', () => {
       defaultCliId: 'missing',
       workers: [
         { id: 'grok', enabled: true, bin: 'grok' },
-        { id: 'kscc', enabled: true, bin: 'kscc' },
+        { id: 'mimo', enabled: true, bin: 'mimo' },
       ],
     }
     expect(resolveDefaultWorker(cfg)?.id).toBe('grok')
@@ -245,10 +260,10 @@ describe('listEnabledWorkersByPriority / resolveWorkerByPreference', () => {
   it('returns null when pool empty', () => {
     const cfg: CliWorkersConfig = {
       ...seed(),
-      workers: [{ id: 'kscc', enabled: false, bin: 'kscc' }],
+      workers: [{ id: 'grok', enabled: false, bin: 'grok' }],
     }
     expect(resolveDefaultWorker(cfg)).toBeNull()
-    expect(resolveWorkerByPreference(cfg, 'kscc')).toBeNull()
+    expect(resolveWorkerByPreference(cfg, 'grok')).toBeNull()
   })
 })
 
@@ -256,22 +271,22 @@ describe('syncDefaultCliId / moveWorkerPriority', () => {
   it('syncs defaultCliId to first enabled', () => {
     const cfg: CliWorkersConfig = {
       ...seed(),
-      defaultCliId: 'kscc',
+      defaultCliId: 'mimo',
       workers: [
         { id: 'codex', enabled: true, bin: 'codex' },
-        { id: 'kscc', enabled: true, bin: 'kscc' },
+        { id: 'mimo', enabled: true, bin: 'mimo' },
       ],
     }
     expect(syncDefaultCliId(cfg).defaultCliId).toBe('codex')
   })
 
   it('moves worker up/down and syncs defaultCliId', () => {
-    const cfg = seed()
-    const up = moveWorkerPriority(cfg, 'grok', 'up')
-    expect(up.workers.map((w) => w.id)[0]).toBe('grok')
-    expect(up.defaultCliId).toBe('grok')
-    const down = moveWorkerPriority(up, 'grok', 'down')
-    expect(down.workers.map((w) => w.id)[0]).toBe('kscc')
+    const cfg = seed() // seed 顺序：grok / codex / mimo
+    const up = moveWorkerPriority(cfg, 'codex', 'up')
+    expect(up.workers.map((w) => w.id)[0]).toBe('codex')
+    expect(up.defaultCliId).toBe('codex')
+    const down = moveWorkerPriority(up, 'codex', 'down')
+    expect(down.workers.map((w) => w.id)[0]).toBe('grok')
   })
 })
 
@@ -300,9 +315,9 @@ describe('shouldUseCliWorker', () => {
       ...seed(),
       enabled: true,
       defaultBackend: 'cli',
-      defaultCliId: 'kscc',
+      defaultCliId: 'mimo',
       workers: [
-        { id: 'kscc', enabled: false, bin: 'kscc' },
+        { id: 'mimo', enabled: false, bin: 'mimo' },
         { id: 'grok', enabled: true, bin: 'grok' },
       ],
     }
@@ -315,7 +330,7 @@ describe('shouldUseCliWorker', () => {
       ...seed(),
       enabled: true,
       defaultBackend: 'cli',
-      workers: [{ id: 'kscc', enabled: false, bin: 'kscc', defaultModel: 'glm-5.2' }],
+      workers: [{ id: 'grok', enabled: false, bin: 'grok' }],
     }
     expect(shouldUseCliWorker(cfg)).toBe(false)
   })
@@ -323,7 +338,7 @@ describe('shouldUseCliWorker', () => {
 
 describe('ensureSeedWorkers', () => {
   it('returns cfg unchanged when all seed ids already present', () => {
-    const cfg = seed() // seed() 已含 4 个工人
+    const cfg = seed() // seed() 已含全部 3 个 seed 工人（grok / codex / mimo）
     expect(ensureSeedWorkers(cfg)).toBe(cfg)
   })
 
@@ -404,18 +419,17 @@ function capWorker(id: string, cap: CliWorkerCapability): CliWorkerEntry {
   return { id, enabled: true, bin: id, capability: cap }
 }
 
-/** 造一份 seed 形态、唯一工人 kscc 携给定 capability（capability 未知形状交给校验器判断） */
+/** 造一份 seed 形态、唯一工人 grok 携给定 capability（capability 未知形状交给校验器判断） */
 function cfgWithCapability(cap: unknown): unknown {
   return {
     ...seed(),
-    workers: [{ id: 'kscc', enabled: true, bin: 'kscc', capability: cap }],
+    workers: [{ id: 'grok', enabled: true, bin: 'grok', capability: cap }],
   }
 }
 
 describe('CLI_WORKERS_DEFAULT_SEED · 能力画像默认', () => {
-  it('四工人各带 cost / reasoning / goodFor（modalities 缺省 = text-only）', () => {
+  it('三工人各带 cost / reasoning / goodFor（modalities 缺省 = text-only）', () => {
     const byId = (id: string) => CLI_WORKERS_DEFAULT_SEED.workers.find((w) => w.id === id)
-    expect(byId('kscc')?.capability).toEqual({ cost: 3, reasoning: 'high', tags: ['backend', 'reasoning', 'refactor'], goodFor: '跨层接线 / 编排 / 复杂实现' })
     expect(byId('grok')?.capability).toEqual({ cost: 2, reasoning: 'medium', tags: ['frontend', 'research'], goodFor: '探索 / 对照 / 草稿实现' })
     expect(byId('codex')?.capability).toEqual({ cost: 4, reasoning: 'high', tags: ['reasoning', 'refactor', 'backend'], goodFor: '长任务 / 深改造' })
     expect(byId('mimo')?.capability).toEqual({ cost: 1, reasoning: 'low', tags: ['test', 'scaffold', 'command'], goodFor: '单测 / 机械改动 / 小包' })
@@ -437,7 +451,7 @@ describe('capability 校验', () => {
     expect(
       isValidCliWorkersConfig({
         ...seed(),
-        workers: [{ id: 'kscc', enabled: true, bin: 'kscc' }],
+        workers: [{ id: 'grok', enabled: true, bin: 'grok' }],
       }),
     ).toBe(true)
   })
@@ -470,7 +484,7 @@ describe('capability 校验', () => {
 
 describe('resolveWorkerCapability', () => {
   it('有 capability 直接返回', () => {
-    const w = capWorker('kscc', { cost: 2, reasoning: 'low', modalities: ['text', 'vision'] })
+    const w = capWorker('grok', { cost: 2, reasoning: 'low', modalities: ['text', 'vision'] })
     expect(resolveWorkerCapability(w)).toEqual({ cost: 2, reasoning: 'low', modalities: ['text', 'vision'] })
   })
 
@@ -480,7 +494,7 @@ describe('resolveWorkerCapability', () => {
   })
 
   it('有 capability 但无 modalities → modalities 保持 undefined（不强行补 text）', () => {
-    const w = capWorker('kscc', { cost: 3, reasoning: 'high', goodFor: '编排' })
+    const w = capWorker('grok', { cost: 3, reasoning: 'high', goodFor: '编排' })
     expect(resolveWorkerCapability(w).modalities).toBeUndefined()
   })
 })
@@ -645,9 +659,8 @@ describe('CLI_WORKER_DISCOVERY_CATALOG', () => {
     }
   })
 
-  it('按目录顺序含 kscc / grok / codex / mimo / opencode / claude', () => {
+  it('按目录顺序含 grok / codex / mimo / opencode / claude', () => {
     expect(CLI_WORKER_DISCOVERY_CATALOG.map((e) => e.id)).toEqual([
-      'kscc',
       'grok',
       'codex',
       'mimo',
@@ -656,9 +669,8 @@ describe('CLI_WORKER_DISCOVERY_CATALOG', () => {
     ])
   })
 
-  it('opencode supported=true（SLICE-9 转正）；claude supported=true（SLICE-10 转正）；六项均 supported=true', () => {
+  it('五项均 supported=true', () => {
     const byId = (id: string) => CLI_WORKER_DISCOVERY_CATALOG.find((e) => e.id === id)
-    expect(byId('kscc')?.supported).toBe(true)
     expect(byId('grok')?.supported).toBe(true)
     expect(byId('codex')?.supported).toBe(true)
     expect(byId('mimo')?.supported).toBe(true)
@@ -672,7 +684,7 @@ describe('CLI_WORKER_DISCOVERY_CATALOG', () => {
         version: 1,
         enabled: false,
         defaultBackend: 'in-process',
-        defaultCliId: 'kscc',
+        defaultCliId: 'grok',
         workers: [
           {
             id: e.id,
@@ -689,13 +701,13 @@ describe('CLI_WORKER_DISCOVERY_CATALOG', () => {
 })
 
 describe('SUPPORTED_CLI_WORKER_IDS', () => {
-  it('=== [kscc, grok, codex, mimo, opencode, claude]（SLICE-10 含 claude）', () => {
-    expect([...SUPPORTED_CLI_WORKER_IDS]).toEqual(['kscc', 'grok', 'codex', 'mimo', 'opencode', 'claude'])
+  it('=== [grok, codex, mimo, opencode, claude]', () => {
+    expect([...SUPPORTED_CLI_WORKER_IDS]).toEqual(['grok', 'codex', 'mimo', 'opencode', 'claude'])
   })
 
   it('是 readonly 数组（不可 push）', () => {
     // readonly 语义：类型层面禁写；运行时仍是数组，仅做存在性断言
     expect(Array.isArray(SUPPORTED_CLI_WORKER_IDS)).toBe(true)
-    expect(SUPPORTED_CLI_WORKER_IDS.length).toBe(6)
+    expect(SUPPORTED_CLI_WORKER_IDS.length).toBe(5)
   })
 })

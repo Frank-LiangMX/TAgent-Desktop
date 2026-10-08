@@ -1,12 +1,12 @@
 /**
- * Pi 核适配器（外部渠道 + kscc bare 双模式）
+ * Pi 核适配器（外部 API 渠道）
  *
  * 2.0 双核之一。见 docs/plans/2026-07-25-2.0-architecture-decision-dual-core.md §7.1。
  *
- * 跟 kscc 核的区别：
+ * 跟官方 Claude Code 核的区别：
  * - 不 spawn 子进程（Pi Agent 在主进程内存）
  * - **Agent 对象**可跨轮保留在 `sessions` Map（state.messages 自管）；**但**
- *   SessionRuntime 的事件 loop 每轮 result 后关闭（非 kscc 式长驻 query）
+ *   SessionRuntime 的事件 loop 每轮 result 后关闭（非长驻 query 形态）
  * - 多轮 = 下一轮重新 `query()` 复用 entry，不是 channel.enqueue 续跑
  * - 上下文 Pi 自管（state.messages），无 SDK resume cache
  * - Xfast/MoA 全活（Pi 管工具循环，可并行）
@@ -14,9 +14,9 @@
  * 架构：
  * - PiAgentAdapter 单例管理 Map<sessionId, SessionEntry>，每个会话一个 Agent 实例
  * - query() 创建/复用 Agent，subscribe 监听 AgentEvent，转译成 IR 推给调用方
- * - 外部渠道用 createHttpDirectStreamFn，kscc bare 用 createKsccBareStreamFn
+ * - 外部渠道用 createHttpDirectStreamFn
  *
- * 可拔插：内网版可排除本文件（只用 kscc 核）。
+ * 可拔插：内网版可排除本文件。
  */
 
 import type {
@@ -37,7 +37,6 @@ import {
   buildOutputStylePrompt,
   buildRichContentSystemPrompt,
   isPromptTooLongMessage,
-  NO_PROGRESS_GUARD_DEFAULT_MODE,
   sanitizeAssistantTextForDisplay,
 } from '@tagent/shared'
 import {
@@ -91,7 +90,8 @@ async function loadPiAgentCore(): Promise<PiAgentCoreModule> {
   return _piAgentCore
 }
 
-import { createTaskTool } from './subagent-task-tool'
+import { createTaskTool, createDelegationModelsTool } from './subagent-task-tool'
+import { bindWorkspaceFileTool } from './workspace-file-tool'
 import { getSessionMeta } from '../../agent/session-store'
 import { NoProgressGuard, buildNoProgressEventFromDecision, buildNoProgressAskUserInput } from '../../agent/no-progress-guard'
 import { bashHooksForSession } from '../../agent/session-process-registry'
@@ -100,6 +100,7 @@ import { bashHooksForSession } from '../../agent/session-process-registry'
 
 /** Pi 核适配器配置（外部渠道模式） */
 export interface PiExternalChannelConfig {
+  apiProtocol?: 'anthropic-messages' | 'openai-responses' | 'openai-chat'
   type: 'external'
   /** API provider 类型（anthropic/deepseek/openai/google 等） */
   provider: 'anthropic' | 'deepseek' | 'openai' | 'google' | string
@@ -118,21 +119,14 @@ export interface PiExternalChannelConfig {
    * buildPlaceholderModel 用它替代旧的 128k 硬编码；缺失走 fallback(200k)。
    */
   contextWindow?: number
+  /**
+   * 渠道自定义请求头（如内网网关客户端标识）。由 session-service 按渠道 provider 注入。
+   */
+  headers?: Record<string, string>
 }
 
-/** Pi 核适配器配置（kscc bare 模式） */
-export interface PiKsccChannelConfig {
-  type: 'kscc'
-  /** kscc 可执行文件路径 */
-  ksccPath?: string
-  /** 默认模型 ID */
-  defaultModelId?: string
-  /** 模型标称上下文窗口（token），同 PiExternalChannelConfig.contextWindow */
-  contextWindow?: number
-}
-
-/** Pi 核适配器总配置 */
-export type PiAgentAdapterConfig = PiExternalChannelConfig | PiKsccChannelConfig
+/** Pi 核适配器总配置：只服务外部 API 渠道（历史 kscc bare 通路已移除）。 */
+export type PiAgentAdapterConfig = PiExternalChannelConfig
 
 /** Pi 核查询选项（扩展 AgentQueryInput） */
 export interface PiQueryOptions extends AgentQueryInput {
@@ -145,6 +139,7 @@ export interface PiQueryOptions extends AgentQueryInput {
    * 用于 executionMode 策略等短段落
    */
   systemPromptAppend?: string
+  requestDelegationApproval?: (profileName: string, signal?: AbortSignal) => Promise<boolean>
   /**
    * 执行形态（Chat|Work）。SessionRuntime 用其判断是否需 re-spawn；
    * Pi 核内还用 extraTools/systemPromptAppend 指纹热重建 Agent。
@@ -163,8 +158,8 @@ export interface PiQueryOptions extends AgentQueryInput {
   /** 记忆模式（Phase 2.2 Frozen 快照 / Phase 3 L-rag） */
   sessionMode?: MemoryMode
   /**
-   * 单轮工具循环上限（assistant 响应次数）。默认 {@link DEFAULT_PI_MAX_TURNS}。
-   * 超限产 error_max_turns 并结束本轮，防止死循环。
+   * 单轮工具循环上限（assistant 响应次数）。仅调用方明确传入时启用；
+   * 主会话默认允许自有 Agent loop 自行收敛。
    */
   maxTurns?: number
   /**
@@ -188,11 +183,11 @@ export interface PiQueryOptions extends AgentQueryInput {
 
 // ===== 稳定性常量（turn 重试 / maxTurns）=====
 
-/** 单轮工具循环默认上限（与 kscc 核 session-service maxTurns:50 对齐） */
-export const DEFAULT_PI_MAX_TURNS = 50
-/** agent.prompt / 本轮执行失败时可重试次数（不含首次） */
-export const PI_TURN_MAX_RETRIES = 3
-/** 指数退避基数（ms）：1s → 2s → 4s */
+/** 主会话默认不设置工具循环上限；用户停止和进程级错误仍可结束回合。 */
+export const DEFAULT_PI_MAX_TURNS = Number.POSITIVE_INFINITY
+/** 单个用户 turn 的 transient stream reconnect 次数（不含首次）。绝不重放 prompt。 */
+export const PI_TURN_MAX_RETRIES = 5
+/** 指数退避基数（ms）：1s → 2s → 4s → 8s → 16s */
 export const PI_TURN_RETRY_BASE_DELAY_MS = 1000
 
 /**
@@ -208,7 +203,7 @@ export function isUserAbortMessage(raw: string): boolean {
 
 /**
  * 判断错误文案是否适合 turn 级重试。
- * 可重试：网络、5xx、超时、429 限流类。
+ * 可重试：网络、5xx、超时、429 限流与已知的响应流中断。
  * 不可重试：鉴权、余额/配额、用户中止/拒绝。
  */
 export function isRetryablePiTurnError(raw: string): boolean {
@@ -226,20 +221,15 @@ export function isRetryablePiTurnError(raw: string): boolean {
     return false
   }
 
-  // 可重试：超时 / 网络 / 5xx / 限流
-  if (
-    /timeout|timed out|etimedout|econnreset|econnrefused|enotfound|network|fetch failed|socket|eai_again/.test(
-      msg,
-    ) ||
-    /\b50[0234]\b|bad gateway|service unavailable|gateway timeout|overloaded|temporarily unavailable|internal server error/.test(
-      msg,
-    ) ||
-    /\b429\b|rate limit|too many requests/.test(msg)
-  ) {
-    return true
-  }
-
-  return false
+  return (
+    /timeout|timed out|etimedout|econnreset|econnrefused|enotfound|network|fetch failed|socket|eai_again/.test(msg) ||
+    /\b50[0234]\b|bad gateway|service unavailable|gateway timeout|overloaded|temporarily unavailable|internal server error/.test(msg) ||
+    /\b429\b|rate limit|too many requests/.test(msg) ||
+    msg === 'upstream response stream was interrupted' ||
+    msg === 'stream ended without finish_reason' ||
+    msg === 'openai responses stream ended before a terminal response event' ||
+    /\b(econnaborted|connection reset|connection (?:was )?terminated|transport (?:was )?terminated|stream (?:was )?(?:interrupted|terminated)|peer closed connection)\b/.test(msg)
+  )
 }
 
 /** 指数退避延迟（attempt 从 0 起）：base * 2^attempt */
@@ -302,6 +292,10 @@ interface SessionEntry {
   agent: AgentType
   /** 中止控制器 */
   controller: AbortController
+  /** 当前用户 turn 的 retry/backoff 取消器；soft stop 只中止它，不废弃 session controller。 */
+  retryController?: AbortController
+  /** 当前用户 turn 是否被 STOP/abort 主动取消（终态只发 interrupted，不泄露原始 stream 错误）。 */
+  userInterrupted?: boolean
   /** 是否正在流式输出 */
   isStreaming: boolean
   /** 当前 Agent 使用的渠道 / 模型配置 */
@@ -311,7 +305,7 @@ interface SessionEntry {
    * Chat↔Work 切换后不同 → 须重建 Agent（否则看板工具永远不进上下文）。
    */
   toolingKey: string
-  /** 外部渠道压缩资源；kscc bare 为 undefined */
+  /** 外部渠道压缩资源 */
   compaction?: SessionCompactionBundle
   /** transformContext 自动压缩时暂存的 system 事件，下一轮 query 流开头排出 */
   pendingSystemMessages: TAgentDesktopStreamPayload[]
@@ -350,12 +344,22 @@ interface NoProgressCtx {
 }
 
 /** 计算工具/执行形态指纹，供 Chat↔Work 热切换判断 */
+function hashToolingText(value: string): string {
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16)
+}
+
 function computeToolingKey(
   systemPromptAppend: string | undefined,
   extraTools: AgentTool[] | undefined,
+  mcpConfig?: { servers: Record<string, unknown> },
 ): string {
   const tools = (extraTools ?? [])
-    .map((t) => t.name)
+    .map((t) => JSON.stringify({ name: t.name, description: t.description, parameters: t.parameters }))
     .sort()
     .join(',')
   // append 可能较长，取稳定摘要即可
@@ -366,7 +370,8 @@ function computeToolingKey(
       : /协作模式：Chat|Chat（只读/.test(append)
         ? 'chat'
         : 'unknown'
-  return `${mode}|tools=${tools}|appendLen=${append.length}`
+  const mcp = JSON.stringify(mcpConfig ?? {})
+  return `mode=${mode}|tools=${hashToolingText(tools)}|mcp=${hashToolingText(mcp)}|append=${hashToolingText(append)}`
 }
 
 // ===== 主类 =====
@@ -404,12 +409,13 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       noProgressGuardMode,
       onNoProgressEvent,
       onNoProgressPauseAskUser,
+      requestDelegationApproval,
     } = input
 
     // 创建或复用 Agent 实例。
     // 渠道/模型变化，或 Chat↔Work 导致 extraTools/systemPromptAppend 变化时：
     // 保留消息历史并重建 Agent（否则看板工具 / Work 文案永远停留在首轮状态）。
-    const toolingKey = computeToolingKey(systemPromptAppend, extraTools)
+    const toolingKey = computeToolingKey(systemPromptAppend, extraTools, mcpConfig)
     let entry = this.sessions.get(sessionId)
     if (!entry) {
       entry = await this.createSession(
@@ -426,6 +432,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         noProgressGuardMode,
         onNoProgressEvent,
         onNoProgressPauseAskUser,
+        requestDelegationApproval,
       )
       this.sessions.set(sessionId, entry)
     } else {
@@ -453,6 +460,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           noProgressGuardMode,
           onNoProgressEvent,
           onNoProgressPauseAskUser,
+          requestDelegationApproval,
         )
         ;(entry.agent.state as { messages: typeof previousMessages }).messages = previousMessages
         previousEntry.agent.abort()
@@ -467,6 +475,10 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     }
 
     const { agent, controller } = entry
+    // 每个 query 是一个用户 turn：retry 预算和取消器都不得跨 turn 继承。
+    const retryController = new AbortController()
+    entry.retryController = retryController
+    entry.userInterrupted = false
     // 每轮 query 重置 maxTurns 计数（不跨用户回合累计）
     entry.maxTurns =
       typeof maxTurnsOpt === 'number' && maxTurnsOpt > 0 ? Math.floor(maxTurnsOpt) : DEFAULT_PI_MAX_TURNS
@@ -487,9 +499,18 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     }
 
     // 如果外部有 AbortSignal，联动到内部 controller
+    let removeExternalAbort: (() => void) | undefined
     if (abortSignal) {
-      const onAbort = () => controller.abort()
-      abortSignal.addEventListener('abort', onAbort, { once: true })
+      const onAbort = () => {
+        entry.userInterrupted = true
+        retryController.abort()
+        controller.abort()
+      }
+      if (abortSignal.aborted) onAbort()
+      else {
+        abortSignal.addEventListener('abort', onAbort, { once: true })
+        removeExternalAbort = () => abortSignal.removeEventListener('abort', onAbort)
+      }
     }
 
     // 创建事件队列：AgentEvent 回调往里推，generator 从里取
@@ -530,6 +551,30 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       }
     }
 
+    // A prior terminal error/abort leaves Pi's failed assistant at the transcript tail.
+    // The renderer sends a short explicit continuation as a *new* prompt, never a replay of
+    // the original task. Drop only those failed tail assistants before that prompt while
+    // preserving the user message and every completed tool result that precedes them.
+    const tailMessage = entry.agent.state.messages.at(-1)
+    if (
+      !entry.isStreaming &&
+      tailMessage?.role === 'assistant' &&
+      ((tailMessage as AssistantMessage).stopReason === 'error' ||
+        (tailMessage as AssistantMessage).stopReason === 'aborted')
+    ) {
+      const discardedAssistantUuid = piAssistantToIR(
+        tailMessage as AssistantMessage,
+        sessionId,
+      ).uuid
+      entry.agent.state.messages = dropTrailingFailedAssistants([...entry.agent.state.messages])
+      pushMessage({
+        kind: 'tagent_event',
+        // Distinct from automatic reconnect: UI may remove only this failed assistant/partial
+        // without showing a retry status or touching previously completed tool cards.
+        event: { type: 'model_manual_recovery', discardedAssistantUuid },
+      } as TAgentDesktopStreamPayload)
+    }
+
     // turn 级 retry gate：可重试错误暂扣终态，耗尽后再 flush（避免 UI 先报错再恢复）
     // 用对象承载跨 subscribe / await 的可变状态，避免 TS 把 let 窄化成 never
     const retryGate = {
@@ -537,11 +582,85 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       heldErrorAssistant: null as TAgentDesktopStreamPayload | null,
       heldResult: null as TAgentControlEvent | null,
       lastEndRetryableError: null as string | null,
+      reconnecting: false,
+      reconnectCleared: false,
+      interruptedTerminalEmitted: false,
+      failedPartialAssistantUuid: undefined as string | undefined,
+      exhaustedTerminalEmitted: false,
     }
 
-    const isAborted = () => controller.signal.aborted || !!abortSignal?.aborted
+    const isAborted = () =>
+      entry.userInterrupted === true ||
+      retryController.signal.aborted ||
+      controller.signal.aborted ||
+      !!abortSignal?.aborted
+
+    const clearReconnect = () => {
+      if (!retryGate.reconnecting || retryGate.reconnectCleared) return
+      retryGate.reconnectCleared = true
+      pushMessage({
+        kind: 'tagent_event',
+        event: { type: 'model_reconnect_cleared' },
+      } as TAgentDesktopStreamPayload)
+    }
+
+    const emitInterruptedTerminal = () => {
+      if (retryGate.interruptedTerminalEmitted) return
+      retryGate.interruptedTerminalEmitted = true
+      retryGate.heldErrorAssistant = null
+      retryGate.heldResult = null
+      retryGate.lastEndRetryableError = null
+      pushMessage({
+        kind: 'result',
+        subtype: 'interrupted',
+        usage: { inputTokens: 0, outputTokens: 0 },
+      } as TAgentControlEvent)
+    }
+
+    const beginReconnect = (attempt: number) => {
+      const delayMs = piTurnRetryDelayMs(attempt - 1)
+      retryGate.reconnecting = true
+      retryGate.reconnectCleared = false
+      pushMessage({
+        kind: 'tagent_event',
+        event: {
+          type: 'model_reconnecting',
+          attempt,
+          maxAttempts: PI_TURN_MAX_RETRIES,
+          delayMs,
+          // Only this failed partial may be pruned by UI. Completed tool/result IR from
+          // earlier turns must remain visible and in transcript history.
+          ...(retryGate.failedPartialAssistantUuid
+            ? { discardedAssistantUuid: retryGate.failedPartialAssistantUuid }
+            : {}),
+        },
+      } as TAgentDesktopStreamPayload)
+      return delayMs
+    }
+
+    const emitReconnectExhaustedTerminal = () => {
+      if (retryGate.exhaustedTerminalEmitted) return
+      retryGate.exhaustedTerminalEmitted = true
+      retryGate.heldErrorAssistant = null
+      retryGate.heldResult = null
+      retryGate.lastEndRetryableError = null
+      clearReconnect()
+      pushMessage({
+        kind: 'result',
+        subtype: 'error_during_execution',
+        usage: { inputTokens: 0, outputTokens: 0 },
+        errors: [
+          `自动重连 ${PI_TURN_MAX_RETRIES} 次仍未恢复；已保留已完成操作。可稍后继续或切换模型。`,
+        ],
+      } as TAgentControlEvent)
+    }
 
     const flushHeldTerminal = () => {
+      if (isAborted()) {
+        clearReconnect()
+        emitInterruptedTerminal()
+        return
+      }
       if (retryGate.heldErrorAssistant) {
         pushMessage(retryGate.heldErrorAssistant)
         retryGate.heldErrorAssistant = null
@@ -598,6 +717,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       if (!msg) return
       const ir = piAssistantToIR(msg, sessionId, { partial: true })
       if (ir.type === 'assistant') {
+        retryGate.failedPartialAssistantUuid = ir.uuid
         pushMessage({ kind: 'sdk_message', message: ir })
       }
     }
@@ -636,10 +756,10 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
       if (generatorDone) return
 
-      // maxTurns：计数 turn_start；超限软中止，禁止继续工具循环
+      // 只有调用方明确给出有限 maxTurns 时才执行硬上限；默认允许 Agent loop 自行收敛。
       if (event.type === 'turn_start') {
         entry.turnCount += 1
-        if (entry.turnCount > entry.maxTurns) {
+        if (Number.isFinite(entry.maxTurns) && entry.turnCount > entry.maxTurns) {
           entry.maxTurnsHit = true
           console.warn(
             `[Pi 适配器 ${sessionId}] maxTurns=${entry.maxTurns} 超限（turn #${entry.turnCount}），abort`,
@@ -684,11 +804,36 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           flushPartial()
         }
 
+        // A completed model turn (including a tool turn) is the earliest reliable
+        // evidence that continue() recovered. Do not clear merely because a retry started.
+        if (retryGate.reconnecting && event.type === 'turn_end') {
+          const terminal = (event as { message?: AssistantMessage }).message
+          // A retry attempt may itself end in error. Only a non-error completed model
+          // turn proves recovery; a new attempt or tool start is not enough.
+          if (terminal?.stopReason !== 'error' && terminal?.stopReason !== 'aborted') {
+            clearReconnect()
+            retryGate.failedPartialAssistantUuid = undefined
+          }
+        }
+
         const payloads = piEventToIR(event, sessionId)
         for (const p of payloads) {
+          // STOP 可以在 Agent 仍排出 error message_end 时到达。completed tool/message
+          // 已经先前推过，保留；仅抑制这类迟到错误终态，统一由 interrupted result 收束。
+          if (
+            isAborted() &&
+            (event.type === 'message_end' || event.type === 'turn_end') &&
+            p.kind === 'sdk_message' &&
+            p.message.type === 'assistant' &&
+            p.message.error
+          ) {
+            clearReconnect()
+            emitInterruptedTerminal()
+            continue
+          }
           // message_end 错误气泡：可重试时暂扣，避免 retry 中途闪错误
           if (
-            event.type === 'message_end' &&
+            (event.type === 'message_end' || event.type === 'turn_end') &&
             p.kind === 'sdk_message' &&
             p.message.type === 'assistant' &&
             p.message.error
@@ -697,7 +842,6 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             if (
               !isAborted() &&
               !entry.maxTurnsHit &&
-              retryGate.retriesLeft > 0 &&
               isRetryablePiTurnError(errText)
             ) {
               retryGate.heldErrorAssistant = p
@@ -707,6 +851,11 @@ export class PiAgentAdapter implements AgentProviderAdapter {
 
           // agent_end result：终态归一化（paused_no_progress / maxTurns 覆盖）；可重试错误暂扣
           if (event.type === 'agent_end' && p.kind === 'result') {
+            if (isAborted()) {
+              clearReconnect()
+              emitInterruptedTerminal()
+              continue
+            }
             const remapped = remapTerminal(p)
             // 暂停 / maxTurns：终态已归一，直接推，不走重试
             if (entry.pausedNoProgressHit || entry.maxTurnsHit) {
@@ -729,7 +878,6 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             if (
               lastAssistant?.stopReason === 'error' &&
               !isAborted() &&
-              retryGate.retriesLeft > 0 &&
               isRetryablePiTurnError(errText)
             ) {
               retryGate.lastEndRetryableError = errText || 'stream error'
@@ -759,7 +907,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     }
 
     // 启动对话（fire-and-forget，与 generator 并发）
-    // - turn 级 retry：可重试错误指数退避最多 PI_TURN_MAX_RETRIES 次，保留 state.messages
+    // - 单用户 turn reconnect：仅已知 response stream termination，最多 5 次；continue()
+    //   保留完成的工具结果，不重新 prompt 用户任务。
     // - 过长：force compact 后再试一次
     entry.isStreaming = true
     entry.emitLive = pushMessage
@@ -779,7 +928,18 @@ export class PiAgentAdapter implements AgentProviderAdapter {
 
       try {
         let attempt = 0
+        if (isAborted()) {
+          emitInterruptedTerminal()
+          return
+        }
         while (true) {
+          // A timer may fire in the same turn as STOP/external abort. Check again
+          // before every prompt/continue so a cancelled retry never starts work.
+          if (isAborted()) {
+            clearReconnect()
+            emitInterruptedTerminal()
+            return
+          }
           retryGate.lastEndRetryableError = null
           retryGate.heldErrorAssistant = null
           retryGate.heldResult = null
@@ -796,9 +956,10 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             console.error(`[Pi 适配器 ${sessionId}] agent.prompt/continue 抛错:`, err)
             const errorMsg = err instanceof Error ? err.message : String(err)
 
-            // 用户中止 / maxTurns abort：agent_end 通常已推 result，勿再叠 error result
-            if (isAborted() || /aborted/i.test(errorMsg)) {
-              flushHeldTerminal()
+            // STOP/backoff 取消：产唯一 interrupted 终态，不能把原始 transport 错误泄漏给 UI。
+            if (isAborted() || isUserAbortMessage(errorMsg)) {
+              clearReconnect()
+              emitInterruptedTerminal()
               return
             }
 
@@ -837,21 +998,25 @@ export class PiAgentAdapter implements AgentProviderAdapter {
               attempt < PI_TURN_MAX_RETRIES &&
               isRetryablePiTurnError(errorMsg)
             ) {
-              const delay = piTurnRetryDelayMs(attempt)
-              console.log(
-                `[Pi 适配器 ${sessionId}] prompt 可重试错误，${delay}ms 后第 ${attempt + 1}/${PI_TURN_MAX_RETRIES} 次重试: ${errorMsg.slice(0, 120)}`,
-              )
+              const delay = beginReconnect(attempt + 1)
+              retryGate.failedPartialAssistantUuid = undefined
+              console.log(`[Pi 适配器 ${sessionId}] transient stream reconnect ${attempt + 1}/${PI_TURN_MAX_RETRIES}`)
               retryGate.retriesLeft = Math.max(0, retryGate.retriesLeft - 1)
               attempt++
               try {
-                await sleepMs(delay, controller.signal)
+                await sleepMs(delay, retryController.signal)
               } catch {
-                pushExecError(errorMsg)
+                clearReconnect()
+                emitInterruptedTerminal()
                 return
               }
               stripFailedAssistants()
               continue
             } else {
+              if (isRetryablePiTurnError(errorMsg)) {
+                emitReconnectExhaustedTerminal()
+                return
+              }
               pushExecError(errorMsg)
               return
             }
@@ -868,21 +1033,26 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             attempt < PI_TURN_MAX_RETRIES &&
             isRetryablePiTurnError(streamErr)
           ) {
-            const delay = piTurnRetryDelayMs(attempt)
-            console.log(
-              `[Pi 适配器 ${sessionId}] 流式错误可重试，${delay}ms 后第 ${attempt + 1}/${PI_TURN_MAX_RETRIES} 次续跑: ${streamErr.slice(0, 120)}`,
-            )
+            const delay = beginReconnect(attempt + 1)
+            retryGate.failedPartialAssistantUuid = undefined
+            console.log(`[Pi 适配器 ${sessionId}] transient stream reconnect ${attempt + 1}/${PI_TURN_MAX_RETRIES}`)
             retryGate.retriesLeft = Math.max(0, retryGate.retriesLeft - 1)
             attempt++
             retryGate.heldErrorAssistant = null
             retryGate.heldResult = null
             try {
-              await sleepMs(delay, controller.signal)
+              await sleepMs(delay, retryController.signal)
             } catch {
-              pushExecError(streamErr)
+              clearReconnect()
+              emitInterruptedTerminal()
               return
             }
             continue
+          }
+
+          if (streamErr != null && streamErr.length > 0 && isRetryablePiTurnError(streamErr)) {
+            emitReconnectExhaustedTerminal()
+            return
           }
 
           // 不再重试：释放暂扣终态（若有）
@@ -890,8 +1060,10 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           break
         }
       } finally {
+        clearReconnect()
         entry.isStreaming = false
         entry.emitLive = undefined
+        if (entry.retryController === retryController) entry.retryController = undefined
         generatorDone = true
         wakeGenerator()
       }
@@ -920,6 +1092,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     } finally {
       unsubscribe()
       disposePartialCoalescer()
+      removeExternalAbort?.()
     }
   }
 
@@ -958,7 +1131,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       return { ok: false, compacted: false, reason: 'session is streaming' }
     }
     if (!entry.compaction) {
-      return { ok: false, compacted: false, reason: 'compaction not available (kscc bare or missing)' }
+      return { ok: false, compacted: false, reason: 'compaction not available (missing session)' }
     }
     const trigger = options?.trigger ?? 'manual'
     const force = options?.force ?? trigger === 'manual'
@@ -1053,6 +1226,39 @@ export class PiAgentAdapter implements AgentProviderAdapter {
   }
 
   /**
+   * 派出后台子代理时冻结当前 messages。深拷贝，后续 live 轮次改写不影响 fork。
+   */
+  snapshotMessages(sessionId: string): unknown[] {
+    const entry = this.sessions.get(sessionId)
+    if (!entry) return []
+    try {
+      return JSON.parse(JSON.stringify(entry.agent.state.messages)) as unknown[]
+    } catch {
+      return [...entry.agent.state.messages]
+    }
+  }
+
+  /**
+   * 后台回投前把父 Agent 历史换成派出时的分叉，避免后来的 live 对话污染回投。
+   * busy：父轮仍在跑，稍后再试；missing：没有 Agent，按 live 发送。
+   */
+  restoreMessages(
+    sessionId: string,
+    messages: unknown[],
+  ): 'ok' | 'busy' | 'missing' {
+    const entry = this.sessions.get(sessionId)
+    if (!entry) return 'missing'
+    if (entry.isStreaming) return 'busy'
+    try {
+      const cloned = JSON.parse(JSON.stringify(messages)) as typeof entry.agent.state.messages
+      entry.agent.state.messages = cloned
+      return 'ok'
+    } catch {
+      return 'missing'
+    }
+  }
+
+  /**
    * 软中断当前 turn（`agent.abort`，**保留** Agent 实例与 state.messages）。
    * 终态 turn_end / 清 running 由 session-service STOP_AGENT 显式推送兜底，
    * 不依赖 abort 后 prompt 是否抛错。
@@ -1060,6 +1266,10 @@ export class PiAgentAdapter implements AgentProviderAdapter {
   async interruptQuery(sessionId: string): Promise<void> {
     const entry = this.sessions.get(sessionId)
     if (!entry) return
+    // 只取消当前 user turn 的 retry/backoff；不能 abort session controller，后续 SEND
+    // 仍要复用这一个 Agent 与已完成的工具 transcript。
+    entry.userInterrupted = true
+    entry.retryController?.abort()
     entry.agent.abort()
   }
 
@@ -1067,6 +1277,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
   abort(sessionId: string): void {
     const entry = this.sessions.get(sessionId)
     if (!entry) return
+    entry.userInterrupted = true
+    entry.retryController?.abort()
     entry.agent.abort()
     entry.controller.abort()
     this.sessions.delete(sessionId)
@@ -1083,6 +1295,8 @@ export class PiAgentAdapter implements AgentProviderAdapter {
   dispose(): void {
     for (const [sessionId, entry] of this.sessions) {
       try {
+        entry.userInterrupted = true
+        entry.retryController?.abort()
         entry.agent.abort()
         entry.controller.abort()
       } catch {
@@ -1109,11 +1323,12 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     noProgressGuardMode?: NoProgressGuardMode,
     onNoProgressEvent?: (event: NoProgressEvent) => void,
     onNoProgressPauseAskUser?: (input: Record<string, unknown>) => void,
+    requestDelegationApproval?: (profileName: string, signal?: AbortSignal) => Promise<boolean>,
   ): Promise<SessionEntry> {
     const controller = new AbortController()
 
-    // 无进展守卫上下文（per-session；query() 起每轮 reset）
-    const npMode = noProgressGuardMode ?? NO_PROGRESS_GUARD_DEFAULT_MODE
+    // 无进展拦截已停用。忽略旧调用方传入的 enforce，避免恢复误判暂停。
+    const npMode: NoProgressGuardMode = 'off'
     const np: NoProgressCtx = {
       guard: new NoProgressGuard({ mode: npMode }),
       mode: npMode,
@@ -1126,37 +1341,29 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     // 动态加载 ESM-only 包
     const [piCore, piAgentCore] = await Promise.all([loadPiCore(), loadPiAgentCore()])
 
-    // 合并 MCP 工具（buildMcpTools 真执行）+ descriptors（kscc bare 用）
+    // 合并 MCP 工具（buildMcpTools 真执行）
     let mcpTools: AgentTool[] = []
-    let mcpDescriptors: unknown[] = []
     if (mcpConfig && Object.keys(mcpConfig.servers).length > 0) {
       try {
         const mcpResult = await piCore.buildMcpTools(mcpConfig as never)
         mcpTools = mcpResult.tools
-        mcpDescriptors = mcpResult.descriptors
       } catch (err) {
         console.error(`[Pi 适配器 ${sessionId}] MCP 工具加载失败:`, err)
       }
     }
 
-    // 工具描述符（kscc bare 模式注入 system prompt，让模型知有工具）
-    const descriptors = [...piCore.defaultToolDescriptors, ...(mcpDescriptors as typeof piCore.defaultToolDescriptors)]
-
-    // 根据渠道配置创建 streamFn（kscc bare 传 descriptors 让模型知道工具）
-    const streamFn = channelConfig.type === 'external'
-      ? piCore.createHttpDirectStreamFn({
-          provider: channelConfig.provider,
-          apiKey: channelConfig.apiKey,
-          baseUrl: channelConfig.baseUrl,
-          modelId: channelConfig.modelId,
-          thinkingEnabled: channelConfig.thinkingEnabled ?? false,
-          thinkingLevel: channelConfig.thinkingLevel,
-        })
-      : piCore.createKsccBareStreamFn({
-          ksccPath: channelConfig.ksccPath,
-          defaultModelId: channelConfig.defaultModelId,
-          tools: descriptors,
-        } as never)
+    // 外部 API 渠道的 streamFn
+    const streamFn = piCore.createHttpDirectStreamFn({
+      apiProtocol: channelConfig.apiProtocol,
+      provider: channelConfig.provider,
+      apiKey: channelConfig.apiKey,
+      baseUrl: channelConfig.baseUrl,
+      modelId: channelConfig.modelId,
+      contextWindow: channelConfig.contextWindow,
+      thinkingEnabled: channelConfig.thinkingEnabled ?? false,
+      thinkingLevel: channelConfig.thinkingLevel,
+      headers: channelConfig.headers,
+    })
 
     // 构造初始 model
     const model = buildPlaceholderModel(channelConfig)
@@ -1169,7 +1376,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         ? baseTools.map((t) =>
             t.name === 'Bash'
               ? piCore.createBashTool(cwd ?? process.cwd(), bashHooksForSession(sessionId))
-              : t,
+              : bindWorkspaceFileTool(t, cwd ?? process.cwd()),
           )
         : baseTools
 
@@ -1198,10 +1405,13 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       // 会话偏好 CLI 工人（meta.cliWorkerId）：task 未显式传 cli 时注入路由；显式 cli 仍最高优先。
       // 已禁用/已删除的 id 由 resolve 层回落池内，不报错。Agent 重建时重读，设置变更后下轮生效。
       getSessionMeta(sessionId)?.cliWorkerId ?? null,
+      () => this.snapshotMessages(sessionId),
+      getSessionMeta(sessionId)?.channelId ?? null,
+      requestDelegationApproval,
     )
-    const agentTools = [...finalBaseTools, ...mcpTools, taskTool, ...(extraTools ?? [])]
+    const agentTools = [...finalBaseTools, ...mcpTools, taskTool, createDelegationModelsTool(), ...(extraTools ?? [])]
 
-    // 上下文自动压缩接线（TAgent 自研，仅外部渠道；kscc bare 暂不接线，见 plan §4.2）。
+    // 上下文自动压缩接线（TAgent 自研，外部渠道）。
     // 算法用 Pi（estimateContextTokens/shouldCompact/generateSummary），编排/写回用 TAgent。
     // transformContext 仅影响本轮请求视图，故压缩后需显式写回 state.messages（plan §4.3），
     // 并原地替换本轮视图避免同一 run 内重复压缩。
@@ -1209,6 +1419,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     let entryRef: SessionEntry | null = null
     let transformContext: ((messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>) | undefined
     let compactionBundle: SessionCompactionBundle | undefined
+    // 首轮还没有 provider usage 时，补足 system prompt + tools 的估算；
+    // 一旦有上一轮 usage，Pi 的估算已经包含静态上下文，协调器会避免重复相加。
+    let staticContextTokens = 0
     if (channelConfig.type === 'external') {
       const compactionSettings = piCore.buildTagentCompactionSettings(model.contextWindow)
       const piCompactionSettings = piCore.toPiCompactionSettings(compactionSettings)
@@ -1220,7 +1433,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
         models: compactionModels,
         model,
       }
-      // Phase 3：8k 四层协调器（L-rag + L-mid 链 + 异步自动压缩）
+      // Phase 3：四层协调器（L-rag + L-mid 链 + 发送前同步自动压缩）
       const coordinator = piCore.getSessionMemoryCoordinator(sessionId)
       transformContext = async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
         try {
@@ -1231,7 +1444,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             models: compactionModels,
             model,
             signal,
-            asyncAuto: true,
+            staticContextTokens,
             retrieveRag: async (query: string) => {
               const out: Array<{ source: string; text: string; score?: number }> = []
               for (const hit of searchLongTermMemory(sessionMode, query, 3)) {
@@ -1273,39 +1486,13 @@ export class PiAgentAdapter implements AgentProviderAdapter {
               }
               return out
             },
-            onCompacted: (r) => {
-              if (!r.compacted) return
-              if (agentRef) agentRef.state.messages = r.messages
-              entryRef?.pendingSystemMessages.push(
-                makeCompactingEvent(),
-                makeCompactBoundaryEvent({
-                  trigger: 'auto',
-                  tokensBefore: r.tokensBefore,
-                  summary: r.summary,
-                }),
-              )
-              // 被压出窗口的摘要段进本会话向量库（异步）
-              if (r.summary) {
-                void import('../../memory/session-vector-store')
-                  .then(({ indexSessionChunks }) =>
-                    indexSessionChunks({
-                      sessionId,
-                      chunks: [
-                        {
-                          id: `compact-${Date.now()}`,
-                          text: r.summary ?? '',
-                          turnHint: 'mid',
-                        },
-                      ],
-                    }),
-                  )
-                  .catch(() => {
-                    /* ignore */
-                  })
-              }
-            },
           })
           if (!result.compacted) {
+            if (result.compactionRequired) {
+              throw new Error(
+                `上下文已达到自动压缩阈值，但压缩未完成：${result.compactionError ?? result.reason ?? '未知原因'}。请重试或手动压缩后继续。`,
+              )
+            }
             if (
               result.reason &&
               result.reason !== 'below threshold' &&
@@ -1315,18 +1502,20 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             ) {
               console.log(`[pi-compaction] ${sessionId} 跳过压缩: ${result.reason}`)
             }
-            // 仍可能注入了 L-rag / L-mid 前缀
-            if (result.messages !== messages) {
-              messages.length = 0
-              messages.push(...result.messages)
-            }
-            return messages
+            // result.messages 是本轮临时请求视图；不能原地改写 Agent history，
+            // 否则 RAG/滚动摘要会在每一轮再次叠加。
+            return result.messages
           }
           console.log(
             `[pi-compaction] ${sessionId} 已压缩 tokensBefore=${result.tokensBefore} ` +
               `summaryLen=${result.summary?.length ?? 0} 压后消息数=${result.messages.length}`,
           )
-          if (agentRef) agentRef.state.messages = result.messages
+          if (agentRef) agentRef.state.messages = result.stateMessages
+          // Pi 的 transformContext 接收的是当前 run 的 messages 数组副本；只写
+          // agent.state 不会更新同一 run 后续 tool turn 的 currentContext，导致
+          // 下一次 transform 又拿旧历史重复压缩。原地替换，保证本轮后续 turn
+          // 继续使用压缩后的持久历史；RAG/临时摘要仍只留在返回视图中。
+          messages.splice(0, messages.length, ...result.stateMessages)
           entryRef?.pendingSystemMessages.push(
             makeCompactingEvent(),
             makeCompactBoundaryEvent({
@@ -1335,18 +1524,37 @@ export class PiAgentAdapter implements AgentProviderAdapter {
               summary: result.summary,
             }),
           )
+          // 被压出窗口的摘要段进本会话向量库（异步），与手动压缩保持同一记忆链路。
+          if (result.summary) {
+            void import('../../memory/session-vector-store')
+              .then(({ indexSessionChunks }) =>
+                indexSessionChunks({
+                  sessionId,
+                  chunks: [
+                    {
+                      id: `compact-${Date.now()}`,
+                      text: result.summary ?? '',
+                      turnHint: 'mid',
+                    },
+                  ],
+                }),
+              )
+              .catch(() => {
+                /* ignore */
+              })
+          }
           if (result.ragHits.length > 0) {
             entryRef?.pendingSystemMessages.push({
               kind: 'tagent_event',
               event: { type: 'rag_hit', hits: result.ragHits },
             } as TAgentDesktopStreamPayload)
           }
-          messages.length = 0
-          messages.push(...result.messages)
-          return messages
+          return result.messages
         } catch (err) {
-          console.error(`[pi-compaction] ${sessionId} 压缩异常，回退原消息:`, err)
-          return messages
+          // 不能在压缩失败时把原始超长消息继续交给 provider；抛出后由 Pi
+          // 统一生成 error assistant/result，用户可以重试或手动压缩。
+          console.error(`[pi-compaction] ${sessionId} 发送前压缩失败，阻止本次请求:`, err)
+          throw err
         }
       }
     }
@@ -1360,7 +1568,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     const baseSystem = systemPrompt ?? DEFAULT_SYSTEM_PROMPT
     const fullSystemPrompt = [
       baseSystem,
-      // W8：输出风格沟通红线（与 kscc append 中 buildOutputStylePrompt 同文）
+      // W8：输出风格沟通红线（与官方 Claude Code append 中 buildOutputStylePrompt 同文）
       buildOutputStylePrompt(),
       systemPromptAppend,
       buildRichContentSystemPrompt(),
@@ -1370,8 +1578,18 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       .filter(Boolean)
       .join('\n\n')
 
+    // 这是首轮没有 provider usage 时的保守估算。不要把它无条件加到后续轮次，
+    // 否则上一轮 usage 已含 system/tools 时会重复计算。
+    let serializedTools = ''
+    try {
+      serializedTools = JSON.stringify(agentTools) ?? ''
+    } catch {
+      serializedTools = ''
+    }
+    staticContextTokens = Math.ceil((fullSystemPrompt.length + serializedTools.length) / 4)
+
     // 创建 Agent（挂 beforeToolCall 权限钩子 + maxTurns afterToolCall + 外部渠道 transformContext）
-    const toolingKey = computeToolingKey(systemPromptAppend, extraTools)
+    const toolingKey = computeToolingKey(systemPromptAppend, extraTools, mcpConfig)
     /**
      * 无进展暂停时触发 AskUserQuestion（brief 2026-08-19 §3）。
      * 复用现有 ask-user 管线：经 {@link NoProgressCtx.onNoProgressPauseAskUser} 回调交
@@ -1430,8 +1648,12 @@ export class PiAgentAdapter implements AgentProviderAdapter {
             return { terminate: true }
           }
         }
-        // maxTurns 兜底（§7.4 最终保险）：本轮工具批结束后若已达上限则 terminate，避免再开一轮 LLM
-        if (entryRef && entryRef.turnCount >= entryRef.maxTurns) {
+        // 仅对显式有限 maxTurns 做兜底；默认不因轮数主动终止模型。
+        if (
+          entryRef &&
+          Number.isFinite(entryRef.maxTurns) &&
+          entryRef.turnCount >= entryRef.maxTurns
+        ) {
           entryRef.maxTurnsHit = true
           return { terminate: true }
         }
@@ -1490,11 +1712,15 @@ function makeCompactBoundaryEvent(opts: {
 
 /** Pi Usage → IR TAgentUsage（字段名映射） */
 function piUsageToIR(u?: Usage): TAgentUsage {
+  const inputTokens = Number(u?.input ?? 0)
+  const cacheReadTokens = Number(u?.cacheRead ?? 0)
+  const cacheCreationTokens = Number(u?.cacheWrite ?? 0)
   return {
-    inputTokens: Number(u?.input ?? 0),
+    inputTokens,
     outputTokens: Number(u?.output ?? 0),
-    cacheReadTokens: Number(u?.cacheRead ?? 0),
-    cacheCreationTokens: Number(u?.cacheWrite ?? 0),
+    cacheReadTokens,
+    cacheCreationTokens,
+    contextTokens: inputTokens + cacheReadTokens + cacheCreationTokens,
     costUsd: typeof u?.cost?.total === 'number' ? u.cost.total : undefined,
   }
 }
@@ -1728,14 +1954,14 @@ export function piEventToIR(event: AgentEvent, sessionId: string): TAgentDesktop
           const inTok = ir.inputTokens ?? 0
           const cacheRead = ir.cacheReadTokens ?? 0
           const cacheWrite = ir.cacheCreationTokens ?? 0
-          // 占用口径：优先 provider totalTokens；否则 input+cache（与 statusline 一致）
-          const contextUsed =
-            typeof u?.totalTokens === 'number' && u.totalTokens > 0 ? u.totalTokens : inTok + cacheRead + cacheWrite
           usage = {
-            inputTokens: contextUsed,
+            // inputTokens 保持 provider 原始分项；上下文总量单独放 contextTokens，
+            // 避免 renderer 再把已经含 cache 的 totalTokens 与 cache 分项相加。
+            inputTokens: inTok,
             outputTokens: ir.outputTokens,
             cacheReadTokens: cacheRead,
             cacheCreationTokens: cacheWrite,
+            contextTokens: inTok + cacheRead + cacheWrite,
             costUsd: ir.costUsd,
           }
           totalCostUsd = ir.costUsd
@@ -1881,32 +2107,17 @@ const ZERO_COST: ModelCost = {
 
 /** 根据渠道配置构造占位 Model 对象（streamFn 内部有预构造的，这里仅给 Agent initialState 用） */
 function buildPlaceholderModel(config: PiAgentAdapterConfig): Model<Api> {
-  if (config.type === 'external') {
-    return {
-      id: config.modelId,
-      name: config.modelId,
-      api: resolveApiForProvider(config.provider) as Api,
-      provider: config.provider,
-      baseUrl: config.baseUrl ?? '',
-      reasoning: config.thinkingEnabled ?? false,
-      input: ['text'],
-      cost: ZERO_COST,
-      // 优先用注入的真实窗口（session-service 从 ChannelModel.contextWindow 解析），
-      // 缺失走 fallback(200k)。替代旧的 128k 硬编码（Phase 1.1）。
-      contextWindow: config.contextWindow && config.contextWindow > 0 ? config.contextWindow : 200_000,
-      maxTokens: 8_192,
-    }
-  }
-  // kscc bare 模式
   return {
-    id: config.defaultModelId ?? 'glm-5.2',
-    name: config.defaultModelId ?? 'glm-5.2',
-    api: 'openai-completions' as Api,
-    provider: 'kscc',
-    baseUrl: '',
-    reasoning: false,
+    id: config.modelId,
+    name: config.modelId,
+    api: (config.apiProtocol === 'openai-chat' ? 'openai-completions' : config.apiProtocol ?? resolveApiForProvider(config.provider)) as Api,
+    provider: config.provider,
+    baseUrl: config.baseUrl ?? '',
+    reasoning: config.thinkingEnabled ?? false,
     input: ['text'],
     cost: ZERO_COST,
+    // 优先用注入的真实窗口（session-service 从 ChannelModel.contextWindow 解析），
+    // 缺失走 fallback(200k)。替代旧的 128k 硬编码（Phase 1.1）。
     contextWindow: config.contextWindow && config.contextWindow > 0 ? config.contextWindow : 200_000,
     maxTokens: 8_192,
   }
@@ -1917,20 +2128,14 @@ function isSameChannelConfig(
   left: PiAgentAdapterConfig,
   right: PiAgentAdapterConfig,
 ): boolean {
-  if (left.type !== right.type) return false
-  if (left.type === 'external' && right.type === 'external') {
-    return left.provider === right.provider
-      && left.apiKey === right.apiKey
-      && left.baseUrl === right.baseUrl
-      && left.modelId === right.modelId
-      && left.thinkingEnabled === right.thinkingEnabled
-      && left.thinkingLevel === right.thinkingLevel
-  }
-  if (left.type === 'kscc' && right.type === 'kscc') {
-    return left.ksccPath === right.ksccPath
-      && left.defaultModelId === right.defaultModelId
-  }
-  return false
+  return left.provider === right.provider
+    && left.apiProtocol === right.apiProtocol
+    && left.apiKey === right.apiKey
+    && left.baseUrl === right.baseUrl
+    && left.modelId === right.modelId
+    && left.contextWindow === right.contextWindow
+    && left.thinkingEnabled === right.thinkingEnabled
+    && left.thinkingLevel === right.thinkingLevel
 }
 
 /** provider 类型名 → pi-ai api 标识 */

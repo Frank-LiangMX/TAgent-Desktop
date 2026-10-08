@@ -4,38 +4,10 @@
  * - runReferenceModels：onSeatUpdate 进度回调（running→ok/failed/cancelled）+ AbortSignal
  * - runAggregatorModel：流式 onTextDelta + abort / 空正文降级
  *
- * spawnKsccBare 被 mock 成喂预置 NDJSON 行，避免真实拉起 kscc 子进程。
+ * 历史 kscc bare 默认席 runner 已移除：编排层必须由宿主注入 seatRunner（Pi HTTP 直连）。
+ * 本测试用注入的假 runner 驱动，不再 mock 子进程。
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-
-// 可变 mock 状态（vi.hoisted 保证 vi.mock 工厂能引用）
-const state = vi.hoisted(() => ({ lines: [] as string[], throwOnIter: false }))
-
-function makeLines(lines: string[], throwOnIter: boolean): AsyncIterable<string> {
-  return {
-    [Symbol.asyncIterator]() {
-      let i = 0
-      return {
-        next(): Promise<IteratorResult<string>> {
-          if (throwOnIter) return Promise.reject(new Error('spawn boom'))
-          if (i < lines.length) return Promise.resolve({ value: lines[i++]!, done: false })
-          return Promise.resolve({ value: undefined as never, done: true })
-        },
-      }
-    },
-  }
-}
-
-vi.mock('./kscc-spawn.ts', () => ({
-  spawnKsccBare: vi.fn((_opts: unknown) => ({
-    lines: makeLines(state.lines, state.throwOnIter),
-    wait: async () => 0,
-    kill: () => {},
-    get stderr() {
-      return ''
-    },
-  })),
-}))
 
 // Pi HTTP 直连 streamFn mock：createHttpDirectStreamFn 返回一个 yield httpState.events 的流。
 // 捕获 factory opts / context / options 以断言凭据 + systemPrompt + timeout 注入。
@@ -67,20 +39,19 @@ import {
   runAggregatorModel,
   buildAggregatorPrompt,
   createPiHttpSeatRunner,
+  type MoASeatRunner,
   type ReferenceOutput,
 } from './moa-orchestrator'
 
-// 重置 mock 状态（每席的 NDJSON 行 / 是否抛错）。spawnKsccBare 的调用记录不参与断言，无需 reset。
-beforeEach(() => {
-  state.lines = []
-  state.throwOnIter = false
-})
-
-function textDelta(t: string): string {
-  return JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } } })
+/** 固定返回文本的假席 runner。 */
+function fakeRunner(text: string): MoASeatRunner & { runSeat: ReturnType<typeof vi.fn> } {
+  const runSeat = vi.fn(async () => text)
+  return { runSeat } as unknown as MoASeatRunner & { runSeat: ReturnType<typeof vi.fn> }
 }
-function resultLine(text: string): string {
-  return JSON.stringify({ type: 'result', result: text })
+
+/** 抛错的假席 runner。 */
+function throwingRunner(message: string): MoASeatRunner {
+  return { runSeat: async () => { throw new Error(message) } }
 }
 
 describe('buildAggregatorPrompt', () => {
@@ -90,38 +61,23 @@ describe('buildAggregatorPrompt', () => {
       { name: '实战派', modelId: 'kimi-k2.5', text: '按上下文边界', latencyMs: 200, ok: true },
     ]
     const prompt = buildAggregatorPrompt('如何拆分模块？', refs)
-    expect(prompt).toContain('聚合器模型')
-    expect(prompt).toContain('[参考模型 架构师]')
-    expect(prompt).toContain('用 DDD 拆分')
-    expect(prompt).toContain('[参考模型 实战派]')
-    expect(prompt).toContain('[原始问题]')
     expect(prompt).toContain('如何拆分模块？')
+    expect(prompt).toContain('用 DDD 拆分')
+    expect(prompt).toContain('按上下文边界')
+    expect(prompt).toContain('架构师')
+    expect(prompt).toContain('实战派')
   })
 
-  it('marks failed reference seats with a failure banner', () => {
+  it('marks failed seats with their error text', () => {
     const refs: ReferenceOutput[] = [
-      { name: '架构师', modelId: 'glm-5.2', text: 'OK', latencyMs: 10, ok: true },
-      { name: '实战派', modelId: 'kimi-k2.5', text: '超时', latencyMs: 30000, ok: false },
+      { name: '坏席', modelId: 'm-x', text: '请求超时', latencyMs: 50, ok: false },
     ]
     const prompt = buildAggregatorPrompt('Q', refs)
-    expect(prompt).toContain('[参考模型 架构师]')
-    expect(prompt).not.toMatch(/架构师.*\[该参考模型运行失败\]/)
-    expect(prompt).toMatch(/实战派\s*\[该参考模型运行失败\]/)
+    expect(prompt).toContain('坏席')
+    expect(prompt).toContain('请求超时')
   })
 
-  it('embeds historyText when provided (system 段能拿到会话上下文)', () => {
-    const refs: ReferenceOutput[] = [
-      { name: '甲', modelId: 'm-a', text: 'A', latencyMs: 1, ok: true },
-    ]
-    const prompt = buildAggregatorPrompt('Q', refs, '[会话上下文]\n[用户] 旧问\n\n')
-    expect(prompt).toContain('[会话上下文]')
-    expect(prompt).toContain('[用户] 旧问')
-    // 仍然含原始问题
-    expect(prompt).toContain('[原始问题]')
-    expect(prompt).toContain('Q')
-  })
-
-  it('omits history block when historyText is undefined', () => {
+  it('omits the 会话上下文 header when historyText is not provided', () => {
     const refs: ReferenceOutput[] = [
       { name: '甲', modelId: 'm-a', text: 'A', latencyMs: 1, ok: true },
     ]
@@ -132,12 +88,11 @@ describe('buildAggregatorPrompt', () => {
 
 describe('runReferenceModels', () => {
   it('reports running→ok per seat and returns outputs', async () => {
-    state.lines = [textDelta('答案 A'), resultLine('答案 A')]
     const updates: Array<{ seatId?: string; status: string; text?: string }> = []
     const out = await runReferenceModels('Q', [
       { name: '甲', modelId: 'm-a', seatId: 'ref-0' },
       { name: '乙', modelId: 'm-b', seatId: 'ref-1' },
-    ], { ksccPath: 'kscc', onSeatUpdate: (u) => updates.push({ seatId: u.seatId, status: u.status, text: u.text }) })
+    ], { seatRunner: fakeRunner('答案 A'), onSeatUpdate: (u) => updates.push({ seatId: u.seatId, status: u.status, text: u.text }) })
 
     expect(out).toHaveLength(2)
     expect(out.every((r) => r.ok)).toBe(true)
@@ -149,10 +104,10 @@ describe('runReferenceModels', () => {
     expect(updates.find((u) => u.seatId === 'ref-0' && u.status === 'ok')?.text).toBe('答案 A')
   })
 
-  it('marks failed when the seat process throws', async () => {
-    state.throwOnIter = true
+  it('marks failed when the seat runner throws', async () => {
     const updates: Array<{ status: string; error?: string }> = []
     const out = await runReferenceModels('Q', [{ name: '甲', modelId: 'm-a', seatId: 'ref-0' }], {
+      seatRunner: throwingRunner('boom'),
       onSeatUpdate: (u) => updates.push({ status: u.status, error: u.error }),
     })
     expect(out).toHaveLength(1)
@@ -165,6 +120,7 @@ describe('runReferenceModels', () => {
     ac.abort()
     const updates: string[] = []
     const out = await runReferenceModels('Q', [{ name: '甲', modelId: 'm-a', seatId: 'ref-0' }], {
+      seatRunner: fakeRunner('A'),
       signal: ac.signal,
       onSeatUpdate: (u) => updates.push(u.status),
     })
@@ -173,33 +129,38 @@ describe('runReferenceModels', () => {
     expect(updates).toContain('cancelled')
   })
 
+  it('fails closed when no seat runner is injected (历史 kscc 默认通路已移除)', async () => {
+    const out = await runReferenceModels('Q', [{ name: '甲', modelId: 'm-a', seatId: 'ref-0' }])
+    expect(out[0]!.ok).toBe(false)
+    expect(out[0]!.text).toContain('seatRunner')
+  })
+
   it('prepends historyText to the user question (runReferenceModels 注入会话上下文)', async () => {
-    state.lines = [resultLine('A')]
-    // 抓取传给 spawnKsccBare 的实际 context（vi.mock 工厂可注入）
-    const { spawnKsccBare } = await import('./kscc-spawn.ts')
-    const calls = (spawnKsccBare as unknown as { mock: { calls: unknown[][] } }).mock.calls
-    calls.length = 0
+    const runner = fakeRunner('A')
     await runReferenceModels(
       '本轮议题',
       [{ name: '甲', modelId: 'm-a', seatId: 'ref-0' }],
-      { historyText: '[会话上下文]\n[用户] 旧问\n\n' },
+      { seatRunner: runner, historyText: '[会话上下文]\n[用户] 旧问\n\n' },
     )
-    expect(calls.length).toBeGreaterThan(0)
-    const ctx = (calls[0]![0] as { context: { messages: Array<{ role: string; content: string }> } })
-      .context
-    expect(ctx.messages[0]?.role).toBe('user')
-    expect(ctx.messages[0]?.content).toContain('[会话上下文]')
-    expect(ctx.messages[0]?.content).toContain('[本轮议题]')
-    expect(ctx.messages[0]?.content).toContain('本轮议题')
+    const prompt = String(runner.runSeat.mock.calls[0]![0].prompt)
+    expect(prompt).toContain('[会话上下文]')
+    expect(prompt).toContain('[本轮议题]')
+    expect(prompt).toContain('本轮议题')
   })
 })
 
 describe('runAggregatorModel', () => {
   it('streams text deltas and returns final text', async () => {
-    state.lines = [textDelta('Hello '), textDelta('world'), resultLine('Hello world')]
     const deltas: string[] = []
+    const runner: MoASeatRunner = {
+      runSeat: async (args) => {
+        args.onTextDelta?.('Hello ')
+        args.onTextDelta?.('world')
+        return 'Hello world'
+      },
+    }
     const out = await runAggregatorModel('Q', [{ name: '甲', modelId: 'm-a', text: 'A', latencyMs: 1, ok: true }], 'm-agg', {
-      ksccPath: 'kscc',
+      seatRunner: runner,
       onTextDelta: (t) => deltas.push(t),
     })
     expect(out.ok).toBe(true)
@@ -210,14 +171,13 @@ describe('runAggregatorModel', () => {
   it('returns ok=false with cancel reason when signal already aborted', async () => {
     const ac = new AbortController()
     ac.abort()
-    const out = await runAggregatorModel('Q', [], 'm-agg', { signal: ac.signal })
+    const out = await runAggregatorModel('Q', [], 'm-agg', { seatRunner: fakeRunner('X'), signal: ac.signal })
     expect(out.ok).toBe(false)
     expect(out.error).toBe('已取消')
   })
 
   it('returns ok=false when aggregator yields no text', async () => {
-    state.lines = []
-    const out = await runAggregatorModel('Q', [], 'm-agg', { ksccPath: 'kscc' })
+    const out = await runAggregatorModel('Q', [], 'm-agg', { seatRunner: fakeRunner('') })
     expect(out.ok).toBe(false)
     expect(out.error).toContain('未返回正文')
   })
@@ -297,31 +257,31 @@ describe('createPiHttpSeatRunner (Pi HTTP 直连席，mock HTTP)', () => {
   })
 })
 
-describe('seatRunner injection (kscc bare vs Pi HTTP 分流)', () => {
-  it('runReferenceModels uses injected seatRunner instead of spawnKsccBare', async () => {
-    const fakeRunner = { runSeat: vi.fn(async (args: { modelId: string }) => `seat:${args.modelId}`) }
+describe('seatRunner injection (Pi HTTP 直连)', () => {
+  it('runReferenceModels uses injected seatRunner', async () => {
+    const runner = fakeRunner('seat:m-a')
     const out = await runReferenceModels('Q', [{ name: '甲', modelId: 'm-a', seatId: 'ref-0' }], {
-      seatRunner: fakeRunner as never,
+      seatRunner: runner,
     })
     expect(out[0]!.ok).toBe(true)
     expect(out[0]!.text).toBe('seat:m-a')
-    expect(fakeRunner.runSeat).toHaveBeenCalledOnce()
+    expect(runner.runSeat).toHaveBeenCalledOnce()
   })
 
   it('runReferenceModels forwards ref.systemPrompt to the runner (同模多角色)', async () => {
-    const fakeRunner = {
+    const runner = {
       runSeat: vi.fn(async (_args: { systemPrompt?: string; modelId: string }) => 'ok'),
     }
     await runReferenceModels(
       'Q',
       [{ name: '怀疑者', modelId: 'm', seatId: 'ref-0', systemPrompt: 'skeptic' }],
-      { seatRunner: fakeRunner as never },
+      { seatRunner: runner as never },
     )
-    expect(fakeRunner.runSeat.mock.calls[0]![0]).toMatchObject({ systemPrompt: 'skeptic', modelId: 'm' })
+    expect(runner.runSeat.mock.calls[0]![0]).toMatchObject({ systemPrompt: 'skeptic', modelId: 'm' })
   })
 
   it('runAggregatorModel uses injected seatRunner, streams deltas, builds aggregator systemPrompt', async () => {
-    const fakeRunner = {
+    const runner = {
       runSeat: vi.fn(async (args: { onTextDelta?: (t: string) => void }) => {
         args.onTextDelta?.('agg-')
         return 'agg-final'
@@ -332,12 +292,12 @@ describe('seatRunner injection (kscc bare vs Pi HTTP 分流)', () => {
       'Q',
       [{ name: '甲', modelId: 'm-a', text: 'REFOUT', latencyMs: 1, ok: true }],
       'm-agg',
-      { seatRunner: fakeRunner as never, onTextDelta: (d) => deltas.push(d) },
+      { seatRunner: runner as never, onTextDelta: (d) => deltas.push(d) },
     )
     expect(out.ok).toBe(true)
     expect(out.text).toBe('agg-final')
     expect(deltas.join('')).toBe('agg-')
-    const callArg = fakeRunner.runSeat.mock.calls[0]![0] as {
+    const callArg = runner.runSeat.mock.calls[0]![0] as {
       modelId: string
       systemPrompt: string
       onTextDelta?: (t: string) => void

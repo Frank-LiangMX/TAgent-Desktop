@@ -1,5 +1,5 @@
 /**
- * kscc 核适配器（Claude Agent SDK + kscc 渠道）
+ * 官方 Claude Code 核适配器（Claude Agent SDK + 外部 API 渠道 apiConnection）
  *
  * 2.0 长驻改造：会话 = 进程，常驻直到退出。
  * 见 docs/plans/2026-07-25-longlived-event-loop-rewrite-design.md。
@@ -9,9 +9,13 @@
  * - 不继承旧"一圈一结"：query 的 for-await 持续跑，由 orchestrator 决定何时 close
  * - 精简：暂不带 prompt-suggestion/cache 错误映射等，功能搬齐后再加
  *
+ * 历史 kscc.exe CLI 通路已移除：本适配器只服务官方 Claude Code（apiConnection 必需）。
+ *
  * 可拔插：对外版编译时排除本文件（claude/ 目录整体可拔插）。
  */
 import { spawn as spawnChild, execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import type {
   AgentProviderAdapter,
   AgentQueryInput,
@@ -25,7 +29,7 @@ import type {
   ToolBatchObservation,
   NoProgressDecision,
 } from '@tagent/shared'
-import { reasoningEffortToSdkEffort, NO_PROGRESS_GUARD_DEFAULT_MODE } from '@tagent/shared'
+import { isGatewayProvider, reasoningEffortToSdkEffort, type ProviderType } from '@tagent/shared'
 import type {
   Options as SdkOptions,
   SDKUserMessage,
@@ -33,20 +37,30 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk'
 
 import { createMessageChannel, type MessageChannel } from '../shared/message-channel'
+import {
+  assertRuntimeApiConnection,
+  buildIsolatedRuntimeEnv,
+  createRuntimeApiKeyRedactor,
+  openDurableRuntimeHome,
+  type RuntimeApiConnection,
+} from '../shared/runtime-api-connection'
+import { registerRuntimeProtocolBridgeTarget } from '../shared/protocol-bridge/runtime-protocol-bridge'
 import { getDiscardedMemoryDir } from '../../memory/discarded-memory'
-import { spawnKscc } from './spawn-kscc'
 import { NoProgressGuard, buildNoProgressEventFromDecision, buildNoProgressAskUserInput } from '../../agent/no-progress-guard'
 import {
   attachImageBlocksToText,
 } from '../../agent/build-user-content-with-attachments'
 import type { KnowledgeBaseToolGate } from '../../kb/kb-tool-policy'
 
-/** kscc 核查询选项（扩展 AgentQueryInput） */
+/** 官方 Claude Code 核查询选项（扩展 AgentQueryInput） */
 export interface KsccQueryOptions extends AgentQueryInput {
-  /** kscc CLI 路径 */
-  sdkCliPath: string
-  /** 环境变量 */
-  env: Record<string, string | undefined>
+  /** Official Anthropic Messages connection. Required: the official path is the only path. */
+  apiConnection?: RuntimeApiConnection
+  /**
+   * 环境变量快照：作为官方 runtime 隔离 env 的**来源白名单**基座
+   * （buildOfficialClaudeRuntimeEnv 只保留其中的 OS 变量）。省略时回落 process.env。
+   */
+  env?: Record<string, string | undefined>
   /** 最大轮次 */
   maxTurns?: number
   /** SDK 权限模式 */
@@ -86,6 +100,8 @@ export interface KsccQueryOptions extends AgentQueryInput {
   persistSession?: boolean
   /** 子代理定义（SDK agents 选项，主 Agent 可调用 Agent/Task 工具派发） */
   agents?: Record<string, AgentDefinition>
+  /** Host-owned delegation must not bypass the shared budget through native Agent/Task. */
+  disallowedTools?: string[]
   /**
    * 思考强度（来自会话 meta.reasoningEffort，已归一化）。映射为 Claude Agent SDK
    * `effort` query option（low/medium/high/max），配合 adaptive thinking 引导思考深度。
@@ -121,10 +137,13 @@ interface ActiveSession {
   query: AsyncIterable<SDKMessage>
   /** 子进程 pid（force-kill 兜底用） */
   pid?: number
+  /** private official host state directory; never contains the API key */
+  officialHostConfigDir?: string
   /** 无进展守卫上下文（per-session，per-turn reset） */
   np?: NoProgressCtx
   /** 知识库网页工具门控（per-turn reset） */
   knowledgeBaseToolGate?: KnowledgeBaseToolGate
+  releaseProtocolBridge?: () => void
 }
 
 /**
@@ -148,18 +167,164 @@ interface NoProgressCtx {
   interrupt?: () => void
 }
 
-const activeSessions = new Map<string, ActiveSession>()
+/** 官方 Claude Code 路径的唯一判据：必须有 apiConnection（历史 kscc CLI 通路已移除）。 */
+function isOfficialClaudeApi(input: KsccQueryOptions): boolean {
+  if (!input.apiConnection) {
+    throw new Error('Claude Code 官方 runtime 缺少 apiConnection')
+  }
+  return true
+}
+
+/**
+ * The official SDK defaults the main binary when no executable path is passed.
+ * Its child environment must be constructed from a small OS allowlist so a
+ * globally logged-in Claude/KSCC profile cannot bleed into this channel.
+ */
+export function buildOfficialClaudeRuntimeEnv(
+  input: Pick<KsccQueryOptions, 'apiConnection' | 'env' | 'model'>,
+  hostConfigDir: string,
+): Record<string, string | undefined> {
+  if (!input.apiConnection) throw new Error('官方 Claude runtime 缺少 apiConnection')
+  const connection = assertRuntimeApiConnection(input.apiConnection)
+  const model = input.model?.trim() || 'claude-sonnet-4-6'
+  // Main normally supplies an env snapshot. Headless callers may omit it;
+  // use process.env only as the source for the helper's OS-variable allowlist.
+  return buildIsolatedRuntimeEnv(input.env ?? process.env, {
+    CLAUDE_CONFIG_DIR: hostConfigDir,
+    // Anthropic SDK 的请求路径固定为 /v1/messages，baseURL 里不能再带版本段，
+    // 否则会拼成 /v1/v1/messages 被上游 404。
+    ANTHROPIC_BASE_URL: connection.baseUrl.replace(/\/v1\/?$/i, '').replace(/\/+$/, ''),
+    // 内置网关只认 Bearer（ANTHROPIC_AUTH_TOKEN 语义）；ANTHROPIC_API_KEY 会发
+    // x-api-key 而被拒为 ApiKeyForbidden。官方 anthropic 系渠道仍走 API_KEY。
+    ...(isGatewayProvider(connection.provider as ProviderType)
+      ? { ANTHROPIC_AUTH_TOKEN: connection.apiKey }
+      : { ANTHROPIC_API_KEY: connection.apiKey }),
+    ANTHROPIC_MODEL: model,
+    // Explicitly make Task/Agent children use the selected API model instead
+    // of an SDK alias that can resolve against a different upstream provider.
+    CLAUDE_CODE_SUBAGENT_MODEL: model,
+    ...(connection.contextWindow !== undefined
+      ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(connection.contextWindow) }
+      : {}),
+    // 网关客户端标识等自定义头：官方 Claude Code 按「每行 Name: Value」解析该 env。
+    ...(connection.headers && Object.keys(connection.headers).length > 0
+      ? {
+          ANTHROPIC_CUSTOM_HEADERS: Object.entries(connection.headers)
+            .map(([name, value]) => `${name}: ${value}`)
+            .join('\n'),
+        }
+      : {}),
+  })
+}
+
+function officialAgents(
+  agents: Record<string, AgentDefinition> | undefined,
+): Record<string, AgentDefinition> | undefined {
+  if (!agents) return undefined
+  return Object.fromEntries(
+    Object.entries(agents).map(([name, definition]) => [
+      name,
+      { ...definition, model: 'inherit' },
+    ]),
+  )
+}
+
+/**
+ * Electron keeps the SDK package metadata in app.asar, but a native CLI must
+ * be launched from app.asar.unpacked.  The SDK's default resolver returns the
+ * virtual asar path in a packaged app, which makes the Claude Code binary
+ * fail before it can even reach the configured API endpoint.
+ *
+ * In development there is no app.asar.unpacked directory, so returning
+ * undefined deliberately preserves the SDK's normal platform resolver.
+ */
+export function resolveOfficialClaudeCodeExecutable(
+  resourcesPath: string | undefined = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath,
+  fileExists: (path: string) => boolean = existsSync,
+): string | undefined {
+  if (process.platform !== 'win32' || !resourcesPath) return undefined
+  const candidate = join(
+    resourcesPath,
+    'app.asar.unpacked',
+    'node_modules',
+    '@anthropic-ai',
+    'claude-agent-sdk-win32-x64',
+    'claude.exe',
+  )
+  return fileExists(candidate) ? candidate : undefined
+}
+
+/** Spawn the command selected by the SDK's bundled-executable resolver. */
+function spawnOfficialClaudeCode(
+  spawnOpts: SpawnOptions,
+) {
+  const child = spawnChild(spawnOpts.command, spawnOpts.args, {
+    cwd: spawnOpts.cwd,
+    env: spawnOpts.env,
+    signal: spawnOpts.signal,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+  // The SDK owns stderr consumption and invokes its `stderr` option.  Do not
+  // add a second listener here: it would duplicate output and bypass the
+  // single redacted SDK callback below.
+  return child
+}
 
 export class ClaudeAgentAdapter implements AgentProviderAdapter {
+  /** Runtime instances must never abort each other's long-lived sessions. */
+  private readonly activeSessions = new Map<string, ActiveSession>()
+
+  constructor() {}
+
   /** 是否有活跃长驻 channel（orchestrator 判断复用 vs 新建） */
   hasActiveChannel(sessionId: string): boolean {
-    return activeSessions.has(sessionId)
+    return this.activeSessions.has(sessionId)
   }
 
   /** 发起查询，返回 SDKMessage 流（长驻：result 后不 close，持续等下条） */
   async *query(input: KsccQueryOptions): AsyncIterable<SDKMessage> {
+    // A new native query for the same host session must never replace the map
+    // entry underneath a still-running query.  This is also the rebuild fence
+    // for an API key/endpoint/model change on the same session.
+    if (this.activeSessions.has(input.sessionId)) this.abort(input.sessionId)
     const controller = new AbortController()
     const channel = createMessageChannel(controller.signal)
+    isOfficialClaudeApi(input)
+    const upstreamConnection = assertRuntimeApiConnection(input.apiConnection!)
+    const officialRuntimeHome = openDurableRuntimeHome(
+      'claude',
+      input.sessionId,
+      input.apiConnection!,
+      input.model,
+      'anthropic-messages',
+      undefined,
+      Boolean(input.resumeSessionId),
+    )
+    const bridge = upstreamConnection.apiProtocol && upstreamConnection.apiProtocol !== 'anthropic-messages'
+      ? await registerRuntimeProtocolBridgeTarget({
+          runtime: 'claude-code',
+          provider: input.model ?? 'channel',
+          model: input.model ?? '',
+          baseUrl: upstreamConnection.baseUrl,
+          apiKey: upstreamConnection.apiKey,
+          apiProtocol: upstreamConnection.apiProtocol,
+          reasoningEffort: input.reasoningEffort,
+          headers: upstreamConnection.headers,
+        })
+      : undefined
+    const runtimeInput = bridge
+      ? {
+          ...input,
+          apiConnection: {
+            ...upstreamConnection,
+            baseUrl: bridge.baseUrl,
+            apiKey: bridge.apiKey,
+            apiProtocol: 'anthropic-messages' as const,
+          },
+        }
+      : input
+    const officialHostConfigDir = officialRuntimeHome?.path
 
     // 入队首条 user message（有图则多模态 content；prompt 侧已含路径附录）
     const firstContent = attachImageBlocksToText(input.prompt, input.attachments)
@@ -172,8 +337,9 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
 
     const sdk = await import('@anthropic-ai/claude-agent-sdk')
 
-    // 无进展守卫（per-session；首 turn reset；后续 turn 由 sendQueuedMessage reset）
-    const npMode = input.noProgressGuardMode ?? NO_PROGRESS_GUARD_DEFAULT_MODE
+    // 无进展拦截已停用。保留上下文结构是为了兼容旧会话与诊断类型，
+    // 但不能让旧的 session 参数、环境变量或落盘偏好重新打开暂停/deny 链路。
+    const npMode: NoProgressGuardMode = 'off'
     input.knowledgeBaseToolGate?.resetForNewTurn()
     const np: NoProgressCtx = {
       guard: new NoProgressGuard({ mode: npMode }),
@@ -186,7 +352,13 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
     }
     np.guard.resetForNewTurn() // fresh guard = observing，首 turn 无 cleared 事件
 
-    const sdkOptions = this.buildSdkOptions(input, controller, channel, np)
+    const sdkOptions = this.buildSdkOptions(
+      runtimeInput,
+      controller,
+      channel,
+      np,
+      officialHostConfigDir,
+    )
 
     const queryIterable = sdk.query({ prompt: channel.generator, options: sdkOptions })
     const queryIterator = queryIterable[Symbol.asyncIterator]()
@@ -200,13 +372,16 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       }
     }
 
-    activeSessions.set(input.sessionId, {
+    const activeSession: ActiveSession = {
       controller,
       channel,
       query: queryIterable,
       np,
       knowledgeBaseToolGate: input.knowledgeBaseToolGate,
-    })
+      ...(officialHostConfigDir ? { officialHostConfigDir } : {}),
+      ...(bridge ? { releaseProtocolBridge: bridge.release } : {}),
+    }
+    this.activeSessions.set(input.sessionId, activeSession)
 
     try {
       while (true) {
@@ -243,8 +418,9 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
         }
       }
     } finally {
-      // 只有进程退出（iterResult.done）或 abort 才到这里
-      activeSessions.delete(input.sessionId)
+      // Consumer `break` also enters here.  Tear down the specific query we
+      // created, but never delete a replacement session for the same id.
+      this.cleanupActiveSession(input.sessionId, activeSession)
     }
   }
 
@@ -253,11 +429,29 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
     input: KsccQueryOptions,
     controller: AbortController,
     channel: MessageChannel,
-    np: NoProgressCtx
+    np: NoProgressCtx,
+    officialHostConfigDir?: string,
   ): SdkOptions {
     const options = input
+    isOfficialClaudeApi(options)
+    if (!officialHostConfigDir) {
+      throw new Error('官方 Claude runtime 缺少私有 host config 目录')
+    }
+    const connection = assertRuntimeApiConnection(options.apiConnection!)
+    const redactedStderr = options.onStderr
+      ? createRuntimeApiKeyRedactor(connection.apiKey, (text) => {
+          try {
+            options.onStderr?.(text)
+          } catch {
+            /* Reporting must not disrupt the SDK stream. */
+          }
+        })
+      : undefined
     return {
-      pathToClaudeCodeExecutable: options.sdkCliPath,
+      // Packaged Electron builds must launch the native binary from
+      // app.asar.unpacked.  In development this is undefined and the SDK
+      // keeps its normal bundled-executable resolver.
+      pathToClaudeCodeExecutable: resolveOfficialClaudeCodeExecutable(),
       model: options.model || 'claude-sonnet-4-6',
       ...(options.maxTurns != null && { maxTurns: options.maxTurns }),
       permissionMode: options.sdkPermissionMode as SdkOptions['permissionMode'],
@@ -266,9 +460,13 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       promptSuggestions: false,
       cwd: options.cwd,
       abortController: controller,
-      env: options.env,
+      env: buildOfficialClaudeRuntimeEnv(options, officialHostConfigDir),
       systemPrompt: options.systemPrompt,
+      // Do not consult user/project/local Claude settings in API mode.  The
+      // caller-provided permission handler below remains the authority.
+      settingSources: [],
       ...(options.canUseTool && { canUseTool: options.canUseTool as SdkOptions['canUseTool'] }),
+      ...(options.disallowedTools && { disallowedTools: options.disallowedTools }),
       ...(options.resumeSessionId && { resume: options.resumeSessionId }),
       ...(options.mcpServers &&
         Object.keys(options.mcpServers).length > 0 && {
@@ -276,11 +474,15 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
         }),
       // 子代理：传 agents 定义 + 开启嵌套对话转发 + 进度摘要
       ...(options.agents && Object.keys(options.agents).length > 0 && {
-        agents: options.agents as SdkOptions['agents'],
+        agents: officialAgents(options.agents) as SdkOptions['agents'],
         forwardSubagentText: true,
         agentProgressSummaries: true,
       }),
-      ...(options.onStderr && { stderr: options.onStderr }),
+      ...(options.onStderr && {
+        // Agent SDK is the sole stderr consumer; its callback carries the
+        // stateful redactor for chunks split through the API key.
+        stderr: redactedStderr,
+      }),
       ...(options.persistSession != null && { persistSession: options.persistSession }),
       // 思考强度：reasoningEffort → SDK effort（low/medium/high/max）。
       // 配合 adaptive thinking 引导深度；session-service 已 migrateReasoningEffort 归一化（默认 medium）。
@@ -299,20 +501,17 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
       autoMemoryDirectory: getDiscardedMemoryDir(),
       toolUseConcurrency: 1,
       spawnClaudeCodeProcess: (spawnOpts: SpawnOptions) => {
-        const { child, command, args } = spawnKscc(
-          options.sdkCliPath,
-          spawnOpts,
-          options.onStderr
-        )
-        const sess = activeSessions.get(options.sessionId)
+        // The SDK already resolved its bundled executable in spawnOpts.
+        // We only observe the PID; no secret argv is involved in this launch.
+        const child = spawnOfficialClaudeCode(spawnOpts)
+        const sess = this.activeSessions.get(options.sessionId)
         if (sess && child.pid) {
           sess.pid = child.pid
           child.once('exit', () => {
-            const s = activeSessions.get(options.sessionId)
+            const s = this.activeSessions.get(options.sessionId)
             if (s && s.pid === child.pid) s.pid = undefined
           })
         }
-        console.log(`[kscc adapter] spawn: ${command} ${args.join(' ')}`)
         return child as unknown as import('@anthropic-ai/claude-agent-sdk').SpawnedProcess
       },
     } as SdkOptions
@@ -320,9 +519,9 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
 
   /** 向活跃长驻会话注入消息（复用进程，不重新 spawn） */
   async sendQueuedMessage(sessionId: string, message: SDKUserMessageInput): Promise<void> {
-    const sess = activeSessions.get(sessionId)
+    const sess = this.activeSessions.get(sessionId)
     if (!sess) {
-      throw new Error(`[kscc adapter] 无活跃会话可注入: ${sessionId}`)
+      throw new Error(`[claude-code adapter] 无活跃会话可注入: ${sessionId}`)
     }
     // 新一轮用户消息 → 守卫重置为 observing（§8）；上一轮非 observing 则发 cleared 清 UI 提示
     if (sess.np) {
@@ -336,7 +535,7 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
 
   /** 软中断当前 turn（保进程，下条消息续） */
   async interruptQuery(sessionId: string): Promise<void> {
-    const sess = activeSessions.get(sessionId)
+    const sess = this.activeSessions.get(sessionId)
     if (!sess) return
     // SDK Query 的 interrupt 方法（保留进程）
     const query = sess.query as unknown as { interrupt?: () => Promise<void> }
@@ -351,53 +550,57 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
 
   /** 热切换 SDK 权限模式（运行中会话，下次工具调用生效） */
   async setPermissionMode(sessionId: string, mode: string): Promise<void> {
-    const sess = activeSessions.get(sessionId)
+    const sess = this.activeSessions.get(sessionId)
     if (!sess) {
-      throw new Error(`[kscc adapter] 无活跃会话可切权限模式: ${sessionId}`)
+      throw new Error(`[claude-code adapter] 无活跃会话可切权限模式: ${sessionId}`)
     }
     const query = sess.query as unknown as { setPermissionMode?: (mode: string) => Promise<void> }
     if (!query.setPermissionMode) {
-      throw new Error('[kscc adapter] SDK Query 不支持 setPermissionMode')
+      throw new Error('[claude-code adapter] SDK Query 不支持 setPermissionMode')
     }
     await query.setPermissionMode(mode)
   }
 
-  /** 热切换 kscc 长驻 Query 的模型，下一轮请求生效 */
+  /** 热切换 Claude Code 长驻 Query 的模型，下一轮请求生效 */
   async setModel(sessionId: string, model: string): Promise<void> {
-    const sess = activeSessions.get(sessionId)
+    const sess = this.activeSessions.get(sessionId)
     if (!sess) {
-      throw new Error(`[kscc adapter] 无活跃会话可切模型: ${sessionId}`)
+      throw new Error(`[claude-code adapter] 无活跃会话可切模型: ${sessionId}`)
     }
     const query = sess.query as unknown as { setModel?: (model?: string) => Promise<void> }
     if (!query.setModel) {
-      throw new Error('[kscc adapter] SDK Query 不支持 setModel')
+      throw new Error('[claude-code adapter] SDK Query 不支持 setModel')
     }
     await query.setModel(model)
   }
 
   /** 中止会话：杀进程（destroySession / abort 用） */
   abort(sessionId: string): void {
-    const sess = activeSessions.get(sessionId)
+    const sess = this.activeSessions.get(sessionId)
     if (!sess) return
-    sess.channel.close()
-    sess.controller.abort()
-    activeSessions.delete(sessionId)
-    // force-kill 兜底（进程可能残留）
-    if (sess.pid) {
-      scheduleForceKill(sessionId, sess.pid)
-    }
+    this.cleanupActiveSession(sessionId, sess)
   }
 
   dispose(): void {
-    for (const sess of activeSessions.values()) {
-      try {
-        sess.channel.close()
-        sess.controller.abort()
-      } catch {
-        /* 忽略 */
-      }
+    for (const [sessionId, sess] of this.activeSessions) {
+      this.cleanupActiveSession(sessionId, sess)
     }
-    activeSessions.clear()
+  }
+
+  /** Stop only the map entry owned by this particular query instance. */
+  private cleanupActiveSession(sessionId: string, expected: ActiveSession): void {
+    if (this.activeSessions.get(sessionId) !== expected) return
+    this.activeSessions.delete(sessionId)
+    try {
+      expected.channel.close()
+      expected.controller.abort()
+      const query = expected.query as unknown as { close?: () => void | Promise<void> }
+      void query.close?.()
+    } catch {
+      /* Cleanup must not mask the query result/abort reason. */
+    }
+    if (expected.pid) scheduleForceKill(sessionId, expected.pid)
+    expected.releaseProtocolBridge?.()
   }
 }
 
@@ -431,7 +634,7 @@ export interface PreToolUseHookInputLike {
  * 把 SDK PostToolBatch hook 输入翻成统一观察（§20.2）。
  * 纯函数，导出供单测：证明 hook 输入 → ToolBatchObservation 翻译正确。
  */
-export function ksccPostToolBatchToObservation(
+export function postToolBatchToObservation(
   hookInput: PostToolBatchHookInputLike,
   sessionId: string,
   turnId: string,
@@ -515,7 +718,7 @@ function buildNoProgressHooks(
     const webFallbackContext = await onPostToolBatch?.(hookInput)
     const decision = np.mode === 'off'
       ? undefined
-      : np.guard.observe(ksccPostToolBatchToObservation(hookInput, sessionId, np.turnId, Date.now()))
+      : np.guard.observe(postToolBatchToObservation(hookInput, sessionId, np.turnId, Date.now()))
     if (decision) emitNoProgressFromDecision(np, decision)
     if (np.mode === 'enforce' && decision) {
       if (decision.kind === 'pause') {
@@ -588,9 +791,9 @@ function scheduleForceKill(sessionId: string, pid: number): void {
       } else {
         process.kill(pid, 'SIGKILL')
       }
-      console.warn(`[kscc adapter] force-killed residual pid=${pid}`)
+      console.warn(`[claude-code adapter] force-killed residual pid=${pid}`)
     } catch {
       /* 忽略 */
     }
-  }, 10_000).unref?.()
+  }, 1_000).unref?.()
 }

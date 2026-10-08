@@ -1263,7 +1263,93 @@ export interface TurnDuration {
   endedBy: TurnEndKind;
 }
 
+/**
+ * 三种可显式选择的 Agent 运行内核（ADR-0011 §1）。
+ * - `pi`：定制 Pi（外部 API 渠道，承载多模型）
+ * - `codex`：Codex App Server 本机渠道
+ * - `claude-code`：官方 Claude Code CLI（外部 API 渠道经 apiConnection 适配）
+ *
+ * 注意：历史本机 kscc CLI 通路已移除；旧 `kscc` 会话记录保留但不再可运行。
+ */
+export type AgentRuntimeKind = "pi" | "codex" | "claude-code";
+
+/**
+ * 单个内核的原生上下文绑定（ADR-0011 §4「原生绑定集合」）。
+ *
+ * 各内核原生会话 / 版本 / 最近同步位置按内核分开保存，互不覆盖；
+ * `sdkSessionId`、`codexThreadId` 仍是**当前生效**绑定的原生 id。
+ */
+export interface RuntimeNativeBinding {
+  /** 该内核下最近使用的渠道 ID（切回时恢复选择，不靠渠道猜内核） */
+  channelId?: string;
+  /** 该内核下最近使用的模型 ID */
+  modelId?: string;
+  /**
+   * 该内核最近的原生会话 id：
+   * - kscc → `sdkSessionId`
+   * - codex → `codexThreadId`
+   * - pi → 无（Pi 自管内存 state.messages，不落原生 id）
+   */
+  nativeSessionId?: string;
+  /** 该绑定最近一次成功同步（原生上下文已含可见历史截止点）的时间戳 */
+  lastSyncedAt?: number;
+  /** 该绑定原生上下文中已包含的 TAgent 可见面板消息条数（同步游标） */
+  syncedPanelMessageCount?: number;
+}
+
+/**
+ * 跨内核交接资料（ADR-0011 §5.2）。
+ *
+ * 在**切换时**按固定历史截止位置生成并落盘；下一次用户发送时一次性注入目标内核 prompt，
+ * 投递成功即从 meta 清除。内容只来自宿主持久化的**可见**记录（用户指令 / 助手回复 /
+ * 工具结果摘要），不含隐藏思考、阶段说明或任何凭据。
+ */
+export interface RuntimeHandoff {
+  /** 来源内核 */
+  from: AgentRuntimeKind;
+  /** 目标内核 */
+  to: AgentRuntimeKind;
+  /** 交接正文（已按预算裁剪，含目标/约束/近期可见对话/工作区成果路径） */
+  content: string;
+  /** 生成时间戳 */
+  createdAt: number;
+  /** 交接资料对应的面板消息截止条数（截止位置，用于声明省略范围） */
+  sourcePanelMessageCount: number;
+  /**
+   * 已投递尝试次数（每次真正把交接正文注入目标内核 prompt 记 1）。
+   * 仅在「目标内核产出任何原生输出之前就失败/被停」时归零（允许用户下一次发送重投）；
+   * 一旦目标内核产出过原生输出，失败/停止不重置 → 不自动重复注入整段上下文。
+   */
+  attempts?: number;
+  /** 最近一次尝试注入时间戳 */
+  lastAttemptAt?: number;
+  /**
+   * 最近一次尝试的结局（诚实标记模糊尝试，供 UI / 排查展示）：
+   * - `pending`：注入后尚未观察到目标内核终态
+   * - `ambiguous`：目标内核已产出输出但未确认成功终态（不自动重投）
+   * - `retryable`：目标内核产出任何输出前就失败/被停（允许下次发送重投）
+   */
+  lastOutcome?: "pending" | "ambiguous" | "retryable";
+}
+
+/**
+ * 显式切换会话运行内核的请求（IPC 契约，renderer 与 main 共用）。
+ *
+ * 调用方**必须先**用既有停止接口（STOP_AGENT）停稳当前回合；主进程会在
+ * running / stopping / 审批在途 / 其它切换在途时拒绝本次切换。
+ */
+export interface SessionRuntimeSwitchInput {
+  sessionId: string;
+  /** 目标内核兼容的渠道 ID；显式运行时按 API 协议校验，旧本机渠道仅历史兼容。 */
+  channelId: string;
+  /** 目标渠道内已启用的模型 ID；不接受 MoA 虚拟模型 `moa:*` */
+  modelId: string;
+  runtime: AgentRuntimeKind;
+}
+
 export interface AgentSessionMeta {
+  /** Explicit engine binding, independent of the model channel (ADR-0012). */
+  agentRuntime?: AgentRuntimeKind;
   /** 会话唯一标识 */
   id: string;
   /** 会话标题 */
@@ -1283,9 +1369,10 @@ export interface AgentSessionMeta {
   modelId?: string;
   /**
    * Internal Core 的原生主会话后端。旧会话按 native id 推断：
-   * codexThreadId -> codex-app-server，sdkSessionId -> kscc。
+   * codexThreadId -> codex-app-server，sdkSessionId -> claude-code（历史 kscc 亦用 sdkSessionId，
+   * 但该通路已移除，属不可运行的遗留记录）。
    */
-  internalBackend?: "codex-app-server" | "kscc";
+  internalBackend?: "codex-app-server" | "claude-code";
   /** SDK 内部会话 ID（用于 resume 衔接上下文） */
   sdkSessionId?: string;
   /**
@@ -1295,6 +1382,26 @@ export interface AgentSessionMeta {
    * Claude Agent SDK/KSCC 会话，禁止跨后端复用同一原生 ID 字段。
    */
   codexThreadId?: string;
+  /**
+   * 按内核维度保存的原生绑定集合（ADR-0011 §4）。
+   *
+   * 与上面的 `sdkSessionId` / `codexThreadId` 分层：后者是**当前生效**绑定的原生 id，
+   * 本字段保存各内核**历史**原生会话与最近同步位置，供切回时恢复选择 / 声明省略范围。
+   * 切换跨内核时当前原生 id 会归档到这里并清空生效字段（避免 resume 过期原生上下文）。
+   */
+  runtimeBindings?: Partial<Record<AgentRuntimeKind, RuntimeNativeBinding>>;
+  /**
+   * 待投递的跨内核交接资料（ADR-0011 §5.1 步骤 4）。
+   *
+   * 存在即「待投递」：下一次用户发送时一次性注入目标内核 prompt，投递成功（send 未抛错）
+   * 后立即从 meta 清除；投递失败保留，由用户下一次发送重投（**不**自动重发可能执行操作的请求）。
+   */
+  runtimeHandoff?: RuntimeHandoff;
+  /**
+   * 运行内核切换代数（每次成功切换 +1）。
+   * 供宿主判定迟到事件 / 原生进程归属，不参与业务规则。
+   */
+  runtimeSwitchRevision?: number;
   /** 所属工作区 ID */
   workspaceId?: string;
   /**
@@ -1737,6 +1844,8 @@ export interface WorkspaceCapabilities {
  * Agent 发送消息的输入参数
  */
 export interface AgentSendInput {
+  /** Required for selecting a non-default engine on the first turn. */
+  agentRuntime?: AgentRuntimeKind;
   /** 会话 ID */
   sessionId: string;
   /** 用户消息内容 */
@@ -2320,6 +2429,15 @@ export const AGENT_IPC_CHANNELS = {
   UPDATE_TITLE: "agent:update-title",
   /** 更新会话元数据（channelId, modelId 等） */
   UPDATE_SESSION_META: "agent:update-session-meta",
+  /**
+   * 显式切换会话运行内核（ADR-0011 §5 首期手动切换）。
+   *
+   * 与 UPDATE_SESSION_META 的区别：本通道是**事务性**的切换入口——
+   * 校验渠道/模型与目标内核兼容、要求会话静默（无 running/stopping/审批在途）、
+   * 真正停掉旧内核活进程、归档原生绑定并生成待投递交接资料。
+   * UPDATE_SESSION_META 只改字段，不做上述任何一件事。
+   */
+  SWITCH_SESSION_RUNTIME: "agent:switch-session-runtime",
   /** 列出全局知识库 */
   LIST_KNOWLEDGE_BASES: "agent:list-knowledge-bases",
   /** 创建全局知识库 */
@@ -2686,6 +2804,10 @@ export const AGENT_IPC_CHANNELS = {
    * 非法则 reject 中文错、不写盘；合法则 `writeCliWorkersConfig` 后再 `list` 回传。
    */
   SAVE_CLI_WORKERS: "agent:save-cli-workers",
+  /** 列出可配置 Agent Profile（Agent 目录设置） */
+  LIST_AGENT_PROFILES: "agent:list-agent-profiles",
+  /** 覆盖保存整份 Agent Profile 配置（Agent 目录设置） */
+  SAVE_AGENT_PROFILES: "agent:save-agent-profiles",
   /**
    * 本机探测 CLI 工人是否在 PATH / 配置路径可用（每台机器环境不同）。
    * 入参可选 `CliWorkersConfig`（缺省则用当前落盘配置）；返回 `CliWorkersProbeResult`。

@@ -108,8 +108,7 @@ export class ChannelMemberSessionLifecycleAdapter
       channelId: input.channelId,
       modelId: input.modelId,
     });
-    const backend: MemberSessionBackend =
-      cfg.kind === "kscc" ? "kscc" : "channel";
+    const backend: MemberSessionBackend = "channel";
     // channel 后端无 provider 原生 session id；用稳定逻辑键作 sessionId 占位，便于
     // interrupt/heartbeat 协作（多个成员各自 logicalSessionId 不同，不会碰撞）。
     const sessionId = input.logicalSessionId;

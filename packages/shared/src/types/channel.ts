@@ -26,7 +26,11 @@ export type ProviderType =
   | 'xiaomi-token-plan'
   | 'kscc-internal'
   | 'codex-internal'
+  | 'kscc-gateway'
   | 'custom'
+
+/** Explicit wire format; unset preserves the legacy provider mapping. */
+export type ChannelApiProtocol = 'anthropic-messages' | 'openai-responses' | 'openai-chat'
 
 /**
  * 各供应商的默认 Base URL
@@ -49,6 +53,9 @@ export const PROVIDER_DEFAULT_URLS: Record<ProviderType, string> = {
   'xiaomi-token-plan': 'https://token-plan-cn.xiaomimimo.com/anthropic',
   'kscc-internal': '', // 内置默认值，无需配置
   'codex-internal': '', // 本机 App Server，无需 API Key
+  // 公司内网 kscc 网关（HTTP）。**不要带 /v1**：Anthropic SDK 的请求路径固定为
+  // /v1/messages，baseURL 里再带版本段会被拼成 /v1/v1/messages 而 404。
+  'kscc-gateway': 'http://120.92.138.34',
   custom: '',
 }
 
@@ -73,6 +80,7 @@ export const PROVIDER_LABELS: Record<ProviderType, string> = {
   'xiaomi-token-plan': '小米 MiMo Token Plan',
   'kscc-internal': '金山云',
   'codex-internal': 'Codex App Server',
+  'kscc-gateway': '金山云网关',
   custom: 'OpenAI 兼容格式',
 }
 
@@ -94,9 +102,15 @@ export const AGENT_COMPATIBLE_PROVIDERS: ReadonlySet<ProviderType> = new Set<Pro
   'xiaomi-token-plan',
   'qwen-anthropic',
   'kscc-internal',
+  'kscc-gateway',
 ])
 
-/** 不经外部 API 渠道，直接使用本机已授权 Runtime 的 Provider。 */
+/**
+ * 本机原生 Runtime 凭据不自持的 Provider（无 apiKey、无外部 HTTP 协议）。
+ *
+ * 注意：这个集合**只**表示「不出本机、无 apiKey」这一条语义。
+ * 「渠道页是否显示为内置卡片 / 能否新建删除」见 {@link BUILTIN_CHANNEL_PROVIDERS}。
+ */
 export const LOCAL_RUNTIME_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
   'kscc-internal',
   'codex-internal',
@@ -104,6 +118,73 @@ export const LOCAL_RUNTIME_PROVIDERS: ReadonlySet<ProviderType> = new Set<Provid
 
 export function isLocalRuntimeProvider(provider: ProviderType): boolean {
   return LOCAL_RUNTIME_PROVIDERS.has(provider)
+}
+
+/**
+ * 内置渠道：随应用预置、在渠道管理页显示为内置卡片、不可新建/删除/改连接配置。
+ *
+ * 与 {@link LOCAL_RUNTIME_PROVIDERS} 的区别：内置渠道**可以**自带凭据、**可以**进官方内核
+ * （例如 kscc-gateway 的 sk 从本机 kscc 配置读取）。
+ */
+export const BUILTIN_CHANNEL_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
+  'kscc-internal',
+  'codex-internal',
+  'kscc-gateway',
+])
+
+export function isBuiltinChannelProvider(provider: ProviderType): boolean {
+  return BUILTIN_CHANNEL_PROVIDERS.has(provider)
+}
+
+/** 已废弃的本机 CLI 通路 Provider；历史记录保留，但不再可运行。 */
+export const LEGACY_CLI_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
+  'kscc-internal',
+])
+
+export function isLegacyCliProvider(provider: ProviderType): boolean {
+  return LEGACY_CLI_PROVIDERS.has(provider)
+}
+
+/** 内置 HTTP 网关渠道；需要注入客户端标识头，凭据取自本机 kscc 配置。 */
+export const GATEWAY_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
+  'kscc-gateway',
+])
+
+export function isGatewayProvider(provider: ProviderType): boolean {
+  return GATEWAY_PROVIDERS.has(provider)
+}
+
+/**
+ * 内置网关渠道必须携带的客户端标识头。
+ *
+ * 公司 kscc 网关按 `ksyun-code-type` 做客户端准入：不带该头一律 403 ClientForbidden，
+ * 但**不校验值**（实测 `code` 与任意值均可通过）。`code` 取自公司内部 Zoo Code 分发的配置。
+ */
+export const GATEWAY_CLIENT_HEADERS: Readonly<Record<string, string>> = {
+  'ksyun-code-type': 'code',
+}
+
+/** 取某渠道需要附带的自定义请求头；非网关渠道返回空对象。 */
+export function resolveChannelCustomHeaders(provider: ProviderType): Record<string, string> {
+  return isGatewayProvider(provider) ? { ...GATEWAY_CLIENT_HEADERS } : {}
+}
+
+/**
+ * 内置网关渠道的完整请求头。
+ *
+ * 网关实测只认 `authorization: Bearer`——单独发 `x-api-key`（Anthropic SDK 的默认行为、
+ * 官方 Claude Code 的 `ANTHROPIC_API_KEY` 路径）会得到 403 `ApiKeyForbidden`。
+ * 因此凡是可能走 Anthropic 协议 SDK 的路径，都要显式带上 Bearer。
+ */
+export function resolveChannelRequestHeaders(
+  provider: ProviderType,
+  apiKey: string,
+): Record<string, string> {
+  if (!isGatewayProvider(provider)) return {}
+  return {
+    ...GATEWAY_CLIENT_HEADERS,
+    ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+  }
 }
 
 /**
@@ -142,6 +223,7 @@ export interface ChannelModel {
  * 存储在 ~/.tagent/channels.json 中，apiKey 字段为加密后的 base64 字符串
  */
 export interface Channel {
+  apiProtocol?: ChannelApiProtocol
   /** 渠道唯一标识 */
   id: string
   /** 渠道名称（用户自定义） */
@@ -168,6 +250,7 @@ export interface Channel {
  * 创建渠道时的输入数据（apiKey 为明文）
  */
 export interface ChannelCreateInput {
+  apiProtocol?: ChannelApiProtocol
   name: string
   provider: ProviderType
   baseUrl: string
@@ -183,6 +266,7 @@ export interface ChannelCreateInput {
  * 更新渠道时的输入数据（所有字段可选）
  */
 export interface ChannelUpdateInput {
+  apiProtocol?: ChannelApiProtocol | null
   name?: string
   provider?: ProviderType
   baseUrl?: string
@@ -218,6 +302,7 @@ export interface ChannelTestResult {
  * P0-2: 验证指定 model 名（防止 9120caac 那类 model 名误配导致 400 (2013)）
  */
 export interface ChannelModelValidateInput {
+  apiProtocol?: ChannelApiProtocol
   baseUrl: string
   apiKey: string
   model: string
@@ -229,6 +314,7 @@ export interface ChannelModelValidateInput {
  * 拉取模型的输入参数（无需已保存的渠道，直接传入凭证）
  */
 export interface FetchModelsInput {
+  apiProtocol?: ChannelApiProtocol
   provider: ProviderType
   baseUrl: string
   /** 明文 API Key */

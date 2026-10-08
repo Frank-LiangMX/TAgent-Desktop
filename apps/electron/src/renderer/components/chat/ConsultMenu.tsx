@@ -6,7 +6,7 @@
  * 必须是模块级组件（勿写进 Chat 函数体，否则 Popover 因重挂载点不开）。
  */
 import { useState } from 'react'
-import { ArrowUp, ChevronDown, Users, MessagesSquare } from 'lucide-react'
+import { ArrowUp, ChevronDown, Users, MessagesSquare, LayoutDashboard } from 'lucide-react'
 import {
   AppTooltip,
   Button,
@@ -19,6 +19,7 @@ import {
   MenuPopoverSeparator,
 } from '@tagent/ui'
 import type { MoAPreset, Channel } from '@tagent/shared'
+import { CREW_ORCHESTRATION_ENABLED } from '@tagent/shared'
 import { cn } from '../../lib/utils'
 
 export interface SendSplitButtonProps {
@@ -33,6 +34,8 @@ export interface SendSplitButtonProps {
    * 不传时菜单完全隐藏「用圆桌讨论发送」分组，向后兼容旧调用方。
    */
   onDiscussionPreset?: (presetId: string) => void
+  /** Work 下「用看板派工」发送本条；Chat 不传则隐藏。 */
+  onKanbanDispatch?: () => void
   className?: string
   /**
    * 当前渠道：决定是否为外部渠（外部菜单加计费提示；同模预置标「同模」）。
@@ -50,13 +53,15 @@ export function SendSplitButton({
   onSend,
   onConsultPreset,
   onDiscussionPreset,
+  onKanbanDispatch,
   className,
   channel,
 }: SendSplitButtonProps): JSX.Element {
   const [open, setOpen] = useState(false)
   const enabled = presets.filter((p) => p.enabled)
-  const isExternal = channel != null && channel.provider !== 'kscc-internal'
+  const isExternal = channel != null
   const showDiscussionGroup = typeof onDiscussionPreset === 'function' && enabled.length > 0
+  const showKanbanDispatch = CREW_ORCHESTRATION_ENABLED && typeof onKanbanDispatch === 'function'
 
   const sendButton = (
     <AppTooltip
@@ -82,7 +87,7 @@ export function SendSplitButton({
   )
 
   // 无会诊预置且无圆桌讨论组：退回单发送键（保持向后兼容）
-  if (enabled.length === 0 && !showDiscussionGroup) {
+  if (enabled.length === 0 && !showDiscussionGroup && !showKanbanDispatch) {
     return <div className={cn('inline-flex', className)}>{sendButton}</div>
   }
 
@@ -94,8 +99,8 @@ export function SendSplitButton({
         <AppTooltip
           label={
             hasDraft
-              ? '更多发送方式：用会诊 / 圆桌班底发送本条'
-              : '先输入内容，再用会诊或圆桌方式发送'
+              ? '更多发送方式：会诊 / 圆桌'
+              : '先输入内容，再选发送方式'
           }
           side="top"
           disabled={open}
@@ -143,6 +148,22 @@ export function SendSplitButton({
           />
 
           <MenuPopoverSeparator />
+
+          {showKanbanDispatch ? (
+            <MenuPopoverItem
+              disabled={!hasDraft}
+              icon={<LayoutDashboard className="size-4 text-primary/70" />}
+              label="用看板派工"
+              description="交给班组排队，主会话可离开"
+              onClick={() => {
+                if (!hasDraft) return
+                setOpen(false)
+                onKanbanDispatch()
+              }}
+            />
+          ) : null}
+
+          {showKanbanDispatch ? <MenuPopoverSeparator /> : null}
 
           <MenuPopoverGroup
             heading={

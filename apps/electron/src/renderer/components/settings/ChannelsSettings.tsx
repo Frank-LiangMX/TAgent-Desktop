@@ -5,9 +5,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   CloudDownload,
-  Download,
   KeyRound,
-  LoaderCircle,
   Pencil,
   Plus,
   RefreshCw,
@@ -30,21 +28,20 @@ import {
 } from '@tagent/ui'
 import {
   PROVIDER_DEFAULT_URLS,
+  isBuiltinChannelProvider,
   PROVIDER_LABELS,
   type Channel,
   type ChannelModel,
-  type CodexRuntimeStatus,
+  type ChannelApiProtocol,
   type ProviderType,
 } from '@tagent/shared'
 import {
   channelsAtom,
-  codexChannelAtom,
   externalChannelsAtom,
-  ksccChannelAtom,
   loadChannelsAtom,
+  builtinChannelsAtom,
 } from '../../atoms/channel-atoms'
 import {
-  KSCC_PROVIDER,
   buildCreateInput,
   buildUpdateInput,
   channelToDraft,
@@ -61,13 +58,12 @@ type EditorMode = 'add' | 'edit'
 type Operation = { kind: 'testing' | 'success' | 'error'; message: string }
 
 const PROVIDERS = Object.entries(PROVIDER_LABELS)
-  .filter(([provider]) => provider !== KSCC_PROVIDER && provider !== 'codex-internal') as Array<[ProviderType, string]>
+  .filter(([provider]) => !isBuiltinProvider(provider as ProviderType)) as Array<[ProviderType, string]>
 
 export function ChannelsSettings(): JSX.Element {
   const channels = useAtomValue(channelsAtom)
-  const builtin = useAtomValue(ksccChannelAtom)
-  const codex = useAtomValue(codexChannelAtom)
   const externals = useAtomValue(externalChannelsAtom)
+  const builtins = useAtomValue(builtinChannelsAtom)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const [loading, setLoading] = useState(channels.length === 0)
   const [loadError, setLoadError] = useState('')
@@ -75,9 +71,6 @@ export function ChannelsSettings(): JSX.Element {
   const [operations, setOperations] = useState<Record<string, Operation>>({})
   const [busyIds, setBusyIds] = useState<Set<string>>(new Set())
   const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null)
-  const [codexRuntimeStatus, setCodexRuntimeStatus] =
-    useState<CodexRuntimeStatus | null>(null)
-  const [codexRuntimeInstalling, setCodexRuntimeInstalling] = useState(false)
 
   const reload = async (): Promise<void> => {
     setLoadError('')
@@ -93,27 +86,6 @@ export function ChannelsSettings(): JSX.Element {
   useEffect(() => {
     void reload()
   }, [loadChannels])
-
-  useEffect(() => {
-    let cancelled = false
-    void window.electronAPI
-      .getCodexRuntimeStatus()
-      .then((status) => {
-        if (!cancelled) setCodexRuntimeStatus(status)
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setCodexRuntimeStatus({
-            available: false,
-            managedInstallSupported: false,
-            reason: error instanceof Error ? error.message : String(error),
-          })
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   const setBusy = (id: string, busy: boolean): void => {
     setBusyIds((current) => {
@@ -201,42 +173,6 @@ export function ChannelsSettings(): JSX.Element {
     }
   }
 
-  const installCodexRuntime = async (): Promise<void> => {
-    if (codexRuntimeInstalling) return
-    setCodexRuntimeInstalling(true)
-    try {
-      const result = await window.electronAPI.installCodexRuntime()
-      setCodexRuntimeStatus(result.status)
-      await reload()
-      if (!result.ok) {
-        setOperations((current) => ({
-          ...current,
-          ['codex-internal']: { kind: 'error', message: result.error },
-        }))
-      } else {
-        setOperations((current) => ({
-          ...current,
-          ['codex-internal']: {
-            kind: 'success',
-            message: result.reusedExistingInstall
-              ? 'Codex Runtime 已恢复可用'
-              : 'Codex Runtime 安装完成',
-          },
-        }))
-      }
-    } catch (error) {
-      setOperations((current) => ({
-        ...current,
-        ['codex-internal']: {
-          kind: 'error',
-          message: error instanceof Error ? error.message : 'Codex Runtime 安装失败',
-        },
-      }))
-    } finally {
-      setCodexRuntimeInstalling(false)
-    }
-  }
-
   if (editor) {
     return (
       <ChannelEditor
@@ -251,7 +187,9 @@ export function ChannelsSettings(): JSX.Element {
     )
   }
 
-  const enabledCount = channels.filter((channel) => channel.enabled).length
+  // Built-in channels stay anchored to the top of the page as fixed cards
+  // (no create/delete entry); the external list below is user-managed.
+  const enabledCount = externals.filter((channel) => channel.enabled).length
   return (
     <div className="settings-page">
       <SettingsPageIntro
@@ -266,9 +204,9 @@ export function ChannelsSettings(): JSX.Element {
       />
 
       <div className="channel-settings-summary" aria-live="polite">
-        <span>{channels.length} 个渠道</span>
+        <span>{externals.length + builtins.length} 个渠道</span>
         <span aria-hidden>·</span>
-        <span>{enabledCount} 个已启用</span>
+        <span>{enabledCount + builtins.filter((channel) => channel.enabled).length} 个已启用</span>
       </div>
 
       {loadError && (
@@ -286,41 +224,20 @@ export function ChannelsSettings(): JSX.Element {
         </div>
       ) : (
         <>
-          {codex && (
-            <SettingsSection
-              title="本机 Agent"
-              description="使用本机已授权的 Codex Runtime，不需要填写 API Key"
-            >
-              <SettingsCard>
-                <ChannelRow
-                  channel={codex}
-                  builtin
-                  runtimeKind="codex"
-                  codexRuntimeStatus={codexRuntimeStatus}
-                  codexRuntimeInstalling={codexRuntimeInstalling}
-                  operation={operations[codex.id]}
-                  busy={busyIds.has(codex.id)}
-                  onEdit={() => setEditor({ mode: 'edit', channel: codex })}
-                  onTest={() => void testChannel(codex)}
-                  onToggle={() => void toggleChannel(codex)}
-                  onInstall={installCodexRuntime}
-                />
-              </SettingsCard>
-            </SettingsSection>
-          )}
-
-          {builtin && (
-            <SettingsSection title="内置服务" description="由 TAgent 提供，无需配置 API Key">
-              <SettingsCard>
-                <ChannelRow
-                  channel={builtin}
-                  builtin
-                  operation={operations[builtin.id]}
-                  busy={busyIds.has(builtin.id)}
-                  onEdit={() => setEditor({ mode: 'edit', channel: builtin })}
-                  onTest={() => void testChannel(builtin)}
-                  onToggle={() => void toggleChannel(builtin)}
-                />
+          {builtins.length > 0 && (
+            <SettingsSection title="内置服务" description="随应用预置的公司内网渠道，连接配置不可修改">
+              <SettingsCard divided>
+                {builtins.map((channel) => (
+                  <ChannelRow
+                    key={channel.id}
+                    channel={channel}
+                    operation={operations[channel.id]}
+                    busy={busyIds.has(channel.id)}
+                    onEdit={() => setEditor({ mode: 'edit', channel })}
+                    onTest={() => void testChannel(channel)}
+                    onToggle={() => void toggleChannel(channel)}
+                  />
+                ))}
               </SettingsCard>
             </SettingsSection>
           )}
@@ -372,64 +289,41 @@ export function ChannelsSettings(): JSX.Element {
 
 function ChannelRow({
   channel,
-  builtin = false,
   operation,
   busy,
-  runtimeKind,
-  codexRuntimeStatus,
-  codexRuntimeInstalling = false,
   onEdit,
   onDelete,
   onTest,
   onToggle,
-  onInstall,
 }: {
   channel: Channel
-  builtin?: boolean
-  runtimeKind?: 'kscc' | 'codex'
-  codexRuntimeStatus?: CodexRuntimeStatus | null
-  codexRuntimeInstalling?: boolean
   operation?: Operation
   busy: boolean
   onEdit: () => void
   onDelete?: () => void
   onTest: () => void
   onToggle: () => void
-  onInstall?: () => void | Promise<void>
 }): JSX.Element {
   const enabledModels = channel.models.filter((model) => model.enabled)
-  const isCodex = runtimeKind === 'codex'
+  // 内置渠道的地址与凭据都是预置/从本机读取的，不在卡片上展示——尤其「凭据」
+  // 恒为空（key 不落渠道记录），显示「缺少凭据」会误导。
+  const builtin = isBuiltinChannelProvider(channel.provider)
   return (
     <article className="channel-shell-row">
       <div className="channel-shell-main min-w-0 flex-1">
         <div className="channel-shell-title">
           <strong className="channel-shell-name">{channel.name}</strong>
-          {builtin && <span className="channel-shell-tag">内置</span>}
           <span className={`channel-shell-status${channel.enabled ? ' channel-shell-status--on' : ''}`}>
           {channel.enabled ? '已启用' : '已停用'}
           </span>
         </div>
-        <AppTooltip
-          label={
-            isCodex
-              ? '使用本机 Codex App Server；账号认证由 Codex Runtime 自己管理。'
-              : builtin
-                ? '依赖本机 kscc 命令；未安装时不可启用。点「测试」可检测环境。'
-              : channel.baseUrl || '外部渠道'
-          }
-          multiline
-        >
-          <p className="channel-shell-url">
-            {PROVIDER_LABELS[channel.provider]} ·{' '}
-            {isCodex
-              ? codexRuntimeStatus?.available
-                ? `App Server ${codexRuntimeStatus.version ?? ''}`
-                : 'Runtime 未就绪'
-              : builtin
-                ? '需本机安装 kscc'
-                : channel.baseUrl || '外部网关'}
-          </p>
-        </AppTooltip>
+        {!builtin && (
+          <AppTooltip label={channel.baseUrl || '外部渠道'} multiline>
+            <p className="channel-shell-url">
+              {PROVIDER_LABELS[channel.provider]} · {channel.baseUrl || '外部网关'}
+            </p>
+          </AppTooltip>
+        )}
         <div className="channel-shell-details">
           <span>{enabledModels.length} 个可用模型</span>
           <span aria-hidden>·</span>
@@ -459,23 +353,6 @@ function ChannelRow({
           onCheckedChange={onToggle}
         />
         <div className="channel-shell-actions">
-          {isCodex &&
-            !codexRuntimeStatus?.available &&
-            codexRuntimeStatus?.managedInstallSupported ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={codexRuntimeInstalling}
-              onClick={() => void onInstall?.()}
-            >
-              {codexRuntimeInstalling ? (
-                <LoaderCircle size={13} className="animate-spin" />
-              ) : (
-                <Download size={13} />
-              )}
-              {codexRuntimeInstalling ? '正在安装…' : '安装 Runtime'}
-            </Button>
-          ) : null}
           <Button
             variant="ghost"
             size="sm"
@@ -494,9 +371,8 @@ function ChannelRow({
             size="icon-sm"
             className="text-muted-foreground hover:text-destructive"
             aria-label={
-              onDelete ? `删除 ${channel.name}` : `${channel.name} 为内置渠道，不可删除`
+              `删除 ${channel.name}`
             }
-            title={onDelete ? undefined : '内置渠道不可删除'}
             disabled={busy || !onDelete}
             onClick={onDelete}
           >
@@ -576,6 +452,7 @@ function ChannelEditor({
             provider: draft.provider,
             baseUrl: draft.baseUrl.trim(),
             apiKey: draft.apiKey.trim(),
+            apiProtocol: draft.apiProtocol,
           })
       if (requestId !== syncRequest.current) return
       setDraft((current) => {
@@ -654,46 +531,64 @@ function ChannelEditor({
         </div>
       )}
 
-      <SettingsSection title="基本信息" description="用于在会话模型选择器中识别该连接">
-        <SettingsCard divided={false} className="channel-form-card">
-          <div className="channel-form-grid">
-            <Field label="渠道名称" error={errors.name}>
-              <input
-                className="channel-input"
-                value={draft.name}
-                placeholder="例如：团队 OpenAI"
-                aria-invalid={Boolean(errors.name)}
-                onChange={(event) => update({ name: event.target.value })}
-              />
-            </Field>
-            <Field label="供应商">
+      {/* 内置渠道的名称/供应商/连接配置都是预置的，不该被改——只留模型与启用状态。 */}
+      {!builtin && (
+        <SettingsSection title="基本信息" description="用于在会话模型选择器中识别该连接">
+          <SettingsCard divided={false} className="channel-form-card">
+            <div className="channel-form-grid">
+              <Field label="渠道名称" error={errors.name}>
+                <input
+                  className="channel-input"
+                  value={draft.name}
+                  placeholder="例如：团队 OpenAI"
+                  aria-invalid={Boolean(errors.name)}
+                  onChange={(event) => update({ name: event.target.value })}
+                />
+              </Field>
+              <Field label="供应商">
+                <Select
+                  value={draft.provider}
+                  onValueChange={(provider) => changeProvider(provider as ProviderType)}
+                >
+                  <SelectTrigger className="channel-input channel-provider-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="scrollbar-thin !z-[130]">
+                    {PROVIDERS.map(([provider, label]) => (
+                      <SelectItem key={provider} value={provider}>{label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+          </SettingsCard>
+        </SettingsSection>
+      )}
+
+      {!builtin && (
+        <SettingsSection title="连接配置" description="凭据仅加密保存在本机">
+          <SettingsCard divided={false} className="channel-form-card">
+            <Field
+              label="API 协议（可选）"
+              hint="留空时沿用旧的供应商默认协议；明确选择后用于运行时兼容过滤。"
+            >
               <Select
-                value={draft.provider}
-                disabled={builtin}
-                onValueChange={(provider) => changeProvider(provider as ProviderType)}
+                value={draft.apiProtocol ?? '__auto__'}
+                onValueChange={(value) => update({
+                  apiProtocol: value === '__auto__' ? undefined : value as ChannelApiProtocol,
+                })}
               >
                 <SelectTrigger className="channel-input channel-provider-select">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="scrollbar-thin !z-[130]">
-                {builtin && (
-                  <SelectItem value={draft.provider}>
-                    {PROVIDER_LABELS[draft.provider]}
-                  </SelectItem>
-                )}
-                {!builtin && PROVIDERS.map(([provider, label]) => (
-                  <SelectItem key={provider} value={provider}>{label}</SelectItem>
-                ))}
+                  <SelectItem value="__auto__">自动（供应商默认）</SelectItem>
+                  <SelectItem value="anthropic-messages">Anthropic Messages</SelectItem>
+                  <SelectItem value="openai-responses">OpenAI Responses</SelectItem>
+                  <SelectItem value="openai-chat">OpenAI Chat</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
-          </div>
-        </SettingsCard>
-      </SettingsSection>
-
-      {!builtin && (
-        <SettingsSection title="连接配置" description="凭据仅加密保存在本机">
-          <SettingsCard divided={false} className="channel-form-card">
             <Field label="服务地址" error={errors.baseUrl}>
               <input
                 className="channel-input channel-input--mono"

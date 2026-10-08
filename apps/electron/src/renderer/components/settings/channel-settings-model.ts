@@ -5,6 +5,7 @@ import {
   type ChannelCreateInput,
   type ChannelModel,
   type ChannelUpdateInput,
+  type ChannelApiProtocol,
   type ProviderType,
 } from '@tagent/shared'
 
@@ -16,6 +17,7 @@ export interface ChannelDraft {
   models: ChannelModel[]
   defaultModelId: string
   enabled: boolean
+  apiProtocol?: ChannelApiProtocol
 }
 
 export interface ChannelDraftValidation {
@@ -23,7 +25,6 @@ export interface ChannelDraftValidation {
   errors: Partial<Record<'name' | 'baseUrl' | 'apiKey' | 'models', string>>
 }
 
-export const KSCC_PROVIDER: ProviderType = 'kscc-internal'
 export const CODEX_PROVIDER: ProviderType = 'codex-internal'
 
 export function isBuiltinProvider(provider: ProviderType): boolean {
@@ -39,6 +40,7 @@ export function createChannelDraft(): ChannelDraft {
     models: [],
     defaultModelId: '',
     enabled: true,
+    apiProtocol: undefined,
   }
 }
 
@@ -51,6 +53,7 @@ export function channelToDraft(channel: Channel): ChannelDraft {
     models: channel.models.map((model) => ({ ...model })),
     defaultModelId: channel.defaultModelId ?? '',
     enabled: channel.enabled,
+    apiProtocol: channel.apiProtocol,
   }
 }
 
@@ -152,6 +155,7 @@ export function buildCreateInput(draft: ChannelDraft): ChannelCreateInput {
     models: normalized.models,
     defaultModelId: normalized.defaultModelId || undefined,
     enabled: draft.enabled,
+    ...(draft.apiProtocol ? { apiProtocol: draft.apiProtocol } : {}),
   }
 }
 
@@ -166,5 +170,6 @@ export function buildUpdateInput(draft: ChannelDraft): ChannelUpdateInput {
     models: normalized.models,
     defaultModelId: normalized.defaultModelId || undefined,
     enabled: draft.enabled,
+    apiProtocol: draft.apiProtocol ?? null,
   }
 }

@@ -1,7 +1,7 @@
 /**
  * MoA (Mixture-of-Agents) 编排器
  *
- * 参考 Hermes Agent 的 MoA 实现，适配 Pi + kscc bare。
+ * 参考 Hermes Agent 的 MoA 实现，适配 Pi + 外部 API 渠道。
  *
  * 架构：
  *   1. 参考模型层 (References)：多个模型并行跑同一问题，纯文本推理，无工具调用
@@ -17,15 +17,16 @@ import type {
   Model,
   TextContent,
 } from "@earendil-works/pi-ai";
-import { spawnKsccBare } from "./kscc-spawn.ts";
 import { createHttpDirectStreamFn } from "./http-direct-stream-fn.ts";
 
 /** 参考模型配置 */
 export interface ReferenceModelConfig {
   /** 标识名（如 "glm-5.2-lite"） */
   name: string;
-  /** kscc --model 参数 */
+  /** 模型 id（--model 参数语义） */
   modelId: string;
+  /** 已配置渠道 id；缺省由宿主按当前渠道解析。 */
+  channelId?: string;
   /** 可选：覆盖 system prompt */
   systemPrompt?: string;
   /** 席位稳定标识（透传给 onSeatUpdate，供主进程对位 panel 席位） */
@@ -57,7 +58,7 @@ export interface ReferenceSeatUpdate {
   latencyMs?: number;
 }
 
-// ============ 单席 runner：kscc bare vs Pi HTTP 直连 ============
+// ============ 单席 runner：Pi HTTP 直连（外部 API 渠道） ============
 
 /**
  * 单席运行参数（参考席 / 汇总席共用）。
@@ -84,7 +85,7 @@ export interface MoASeatRunArgs {
  * - 抛错 = 失败（调用方按 `signal.aborted` 区分 failed / cancelled）。
  * - 成功返回纯文本（已 trim）。
  *
- * 唯一可替换点：kscc 渠用 `createKsccSeatRunner`，外部渠用 `createPiHttpSeatRunner`。
+ * 唯一实现：外部渠用 `createPiHttpSeatRunner`（历史 kscc bare 席 runner 已随 CLI 通路移除）。
  * 同场不混核：一个 runMoaTurn 全程只用一种 runner（由主进程按 channel 选定注入）。
  */
 export interface MoASeatUsage {
@@ -108,114 +109,11 @@ export interface MoASeatRunner {
   runSeatWithUsage?(args: MoASeatRunArgs): Promise<MoASeatRunResult>;
 }
 
-/**
- * kscc bare 席 runner：复用既有 `spawnKsccBare`，收集 NDJSON 中的 text_delta / result。
- * 与历史行为一致：`appendSystemPrompt` 仅在 `systemPrompt` 非空时注入。
- */
-export function createKsccSeatRunner(opts: { ksccPath?: string }): MoASeatRunner {
-  const runSeatWithUsage = async (args: MoASeatRunArgs): Promise<MoASeatRunResult> => {
-    const context: Context = {
-      messages: [{ role: "user", content: args.prompt, timestamp: Date.now() }],
-    };
-    const proc = spawnKsccBare({
-      ksccPath: opts.ksccPath,
-      modelId: args.modelId,
-      context: context as any,
-      tools: [],
-      ...(args.systemPrompt ? { appendSystemPrompt: args.systemPrompt } : {}),
-      ...(args.signal ? { signal: args.signal } : {}),
-    });
-
-    let fullText = "";
-    let usage: MoASeatUsage | undefined;
-    let timedOut = false;
-    const timeoutMs = args.timeoutMs ?? 120_000;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      proc.kill();
-    }, timeoutMs);
-    const onAbort = () => proc.kill();
-    if (args.signal) {
-      if (args.signal.aborted) proc.kill();
-      else args.signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    try {
-      for await (const line of proc.lines) {
-        if (args.signal?.aborted) break;
-        try {
-          const obj = JSON.parse(line) as {
-            type?: string;
-            event?: { type?: string; delta?: { type?: string; text?: string } };
-            result?: string;
-            usage?: {
-              input_tokens?: number;
-              output_tokens?: number;
-              cache_read_input_tokens?: number;
-              cache_creation_input_tokens?: number;
-            };
-            total_cost_usd?: number;
-          };
-          if (
-            obj.type === "stream_event" &&
-            obj.event?.type === "content_block_delta" &&
-            obj.event.delta?.type === "text_delta"
-          ) {
-            const delta = obj.event.delta.text ?? "";
-            if (delta) {
-              fullText += delta;
-              args.onTextDelta?.(delta);
-            }
-          }
-          if (obj.type === "result") {
-            if (typeof obj.result === "string") fullText = obj.result;
-            if (obj.usage) {
-              const inputTokens = obj.usage.input_tokens;
-              const outputTokens = obj.usage.output_tokens;
-              usage = {
-                ...(inputTokens !== undefined ? { inputTokens } : {}),
-                ...(outputTokens !== undefined ? { outputTokens } : {}),
-                ...(inputTokens !== undefined && outputTokens !== undefined
-                  ? { totalTokens: inputTokens + outputTokens }
-                  : {}),
-                ...(obj.usage.cache_read_input_tokens !== undefined
-                  ? { cacheReadTokens: obj.usage.cache_read_input_tokens }
-                  : {}),
-                ...(obj.usage.cache_creation_input_tokens !== undefined
-                  ? { cacheWriteTokens: obj.usage.cache_creation_input_tokens }
-                  : {}),
-                ...(obj.total_cost_usd !== undefined ? { costUsd: obj.total_cost_usd } : {}),
-              };
-            }
-          }
-        } catch {
-          // 非 JSON 行忽略
-        }
-      }
-    } finally {
-      clearTimeout(timer);
-      if (args.signal) args.signal.removeEventListener("abort", onAbort);
-      proc.kill();
-    }
-
-    const exitCode = await proc.wait();
-    if (args.signal?.aborted) return { text: "", ...(usage ? { usage } : {}) };
-    if (timedOut) {
-      throw new Error(`单席请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`);
-    }
-    if (exitCode !== 0) {
-      const detail = typeof proc.stderr === "string" ? proc.stderr.trim() : "";
-      throw new Error(detail || `kscc 进程异常退出（退出码 ${exitCode}）`);
-    }
-    const text = fullText.trim();
-    if (!text) throw new Error("模型未返回正文");
-    return { text, ...(usage ? { usage } : {}) };
-  };
-  return {
-    runSeat: async (args) => (await runSeatWithUsage(args)).text,
-    runSeatWithUsage,
-  };
-}
+/** 按席位解析 runner，允许同一场 MoA 跨多个已配置渠道。 */
+export type MoASeatRunnerFactory = (args: {
+  modelId: string
+  channelId?: string
+}) => MoASeatRunner
 /** 从 AssistantMessage 抽取纯文本（拼接所有 text 块，跳过 thinking / toolCall） */
 function extractAssistantText(msg: AssistantMessage): string {
   return msg.content
@@ -233,16 +131,22 @@ function extractAssistantText(msg: AssistantMessage): string {
  * - 文本：迭代 `AssistantMessageEvent`，text_delta 流式推 `onTextDelta`，done.message 为权威终值。
  */
 export function createPiHttpSeatRunner(opts: {
+  apiProtocol?: 'anthropic-messages' | 'openai-responses' | 'openai-chat';
   provider: string;
   apiKey: string;
   baseUrl?: string;
+  contextWindow?: number;
+  headers?: Record<string, string>;
 }): MoASeatRunner {
   const runSeatWithUsage = async (args: MoASeatRunArgs): Promise<MoASeatRunResult> => {
     const streamFn = createHttpDirectStreamFn({
+      apiProtocol: opts.apiProtocol,
       provider: opts.provider,
       apiKey: opts.apiKey,
       baseUrl: opts.baseUrl,
       modelId: args.modelId,
+      contextWindow: opts.contextWindow,
+      headers: opts.headers,
     });
     const context: Context = {
       ...(args.systemPrompt ? { systemPrompt: args.systemPrompt } : {}),
@@ -300,8 +204,6 @@ export async function runReferenceModels(
   opts: {
     /** 单个参考模型超时（默认 30s） */
     timeoutMs?: number;
-    /** kscc 路径（仅默认 kscc runner 用；注入 seatRunner 时忽略） */
-    ksccPath?: string;
     /** 取消信号：abort 后未完成席位被 kill，标 cancelled */
     signal?: AbortSignal;
     /** 每席状态变更回调（running → ok/failed/cancelled） */
@@ -313,15 +215,17 @@ export async function runReferenceModels(
      */
     historyText?: string;
     /**
-     * 单席 runner（kscc bare / Pi HTTP 直连）。不传 → 默认 kscc bare（兼容旧行为）。
-     * 主进程按渠道 provider 选定注入；同场不混核。
+     * 单席 runner（Pi HTTP 直连）。主进程按渠道 provider 选定注入；同场不混核。
+     * 必填：历史 kscc bare 默认通路已移除。
      */
     seatRunner?: MoASeatRunner;
+    /** 按参考/汇总席位独立选择 runner；优先于 seatRunner。 */
+    seatRunnerFor?: MoASeatRunnerFactory;
   } = {},
 ): Promise<ReferenceOutput[]> {
   const timeoutMs = opts.timeoutMs ?? 30000;
-  // runner 分流：注入则用（外部渠 Pi HTTP）；否则默认 kscc bare（兼容旧调用 / 单测）
-  const runner = opts.seatRunner ?? createKsccSeatRunner({ ksccPath: opts.ksccPath });
+  // runner：主进程按渠道 provider 注入（Pi HTTP 直连）；未注入即失败，不静默回落。
+  const fallbackRunner = opts.seatRunner;
   // 拼装最终 user 消息：历史 + 本轮议题（来自 composeMoaPrompt，纯函数做）
   const composedQuestion = opts.historyText
     ? `${opts.historyText}[本轮议题]\n${userQuestion}`
@@ -332,6 +236,8 @@ export async function runReferenceModels(
     const start = Date.now();
     opts.onSeatUpdate?.({ seatId: ref.seatId, name: ref.name, modelId: ref.modelId, status: "running" });
     try {
+      const runner = opts.seatRunnerFor?.({ modelId: ref.modelId, channelId: ref.channelId }) ?? fallbackRunner
+      if (!runner) throw new Error('MoA 缺少席 runner（历史 kscc bare 默认通路已移除，请注入 seatRunner）')
       const text = await runner.runSeat({
         modelId: ref.modelId,
         prompt: composedQuestion,
@@ -383,19 +289,21 @@ export async function runAggregatorModel(
   aggregatorModelId: string,
   opts: {
     timeoutMs?: number;
-    /** kscc 路径（仅默认 kscc runner 用；注入 seatRunner 时忽略） */
-    ksccPath?: string;
     signal?: AbortSignal;
     /** 流式正文增量回调（每段 text_delta 一次） */
     onTextDelta?: (text: string) => void;
     /** MoA 会话上下文（已含 header/footer），拼到 userQuestion 前。 */
     historyText?: string;
-    /** 单席 runner（kscc bare / Pi HTTP 直连）。不传 → 默认 kscc bare。 */
+    /** 单席 runner（Pi HTTP 直连）。必填：历史 kscc bare 默认通路已移除。 */
     seatRunner?: MoASeatRunner;
+    /** 按汇总席独立选择 runner；优先于 seatRunner。 */
+    seatRunnerFor?: MoASeatRunnerFactory;
+    /** 汇总席绑定的已配置渠道 id。 */
+    seatChannelId?: string;
   } = {},
 ): Promise<AggregatorOutput> {
   const timeoutMs = opts.timeoutMs ?? 120000;
-  const runner = opts.seatRunner ?? createKsccSeatRunner({ ksccPath: opts.ksccPath });
+  const fallbackRunner = opts.seatRunner;
   const start = Date.now();
   const composedQuestion = opts.historyText
     ? `${opts.historyText}[本轮议题]\n${userQuestion}`
@@ -404,6 +312,8 @@ export async function runAggregatorModel(
   const systemPrompt = buildAggregatorPrompt(userQuestion, refOutputs, opts.historyText);
 
   try {
+    const runner = opts.seatRunnerFor?.({ modelId: aggregatorModelId, channelId: opts.seatChannelId }) ?? fallbackRunner
+    if (!runner) throw new Error('MoA 缺少席 runner（历史 kscc bare 默认通路已移除，请注入 seatRunner）')
     const text = await runner.runSeat({
       modelId: aggregatorModelId,
       prompt: composedQuestion,

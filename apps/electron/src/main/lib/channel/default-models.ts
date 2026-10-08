@@ -12,14 +12,19 @@ import type { Channel, ChannelModel, ProviderType } from '@tagent/shared'
 
 /** kscc 内网渠道默认模型（与 TAgent kscc-config.ts 保持一致） */
 export const KSCC_DEFAULT_MODELS: ChannelModel[] = [
+  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash (1M)', enabled: true, contextWindow: 1_000_000 },
+  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (1M)', enabled: true, contextWindow: 1_000_000 },
+  { id: 'deepseek-v4-pro-0813', name: 'DeepSeek V4 Pro', enabled: true, contextWindow: 1_000_000 },
+  { id: 'glm-5', name: 'GLM-5', enabled: true, contextWindow: 200_000 },
   { id: 'glm-5.1', name: 'GLM-5.1', enabled: true, contextWindow: 200_000 },
   { id: 'glm-5.2', name: 'GLM-5.2 (1M)', enabled: true, contextWindow: 1_000_000 },
+  { id: 'glm-5.3', name: 'GLM-5.3 (1M)', enabled: true, contextWindow: 1_000_000 },
+  { id: 'glm-5.3-flash', name: 'GLM-5.3 Flash (1M)', enabled: true, contextWindow: 1_000_000 },
   { id: 'kimi-k2.5', name: 'Kimi K2.5', enabled: true, contextWindow: 200_000 },
   { id: 'kimi-k2.6', name: 'Kimi K2.6', enabled: true, contextWindow: 200_000 },
-  { id: 'kimi-k3', name: 'Kimi K3', enabled: true, contextWindow: 200_000 },
+  { id: 'kimi-k3', name: 'Kimi K3 (1M)', enabled: true, contextWindow: 1_000_000 },
   { id: 'mimo-v2.5', name: 'MiMo V2.5 (1M)', enabled: true, contextWindow: 1_000_000 },
   { id: 'mimo-v2.5-pro', name: 'MiMo V2.5 Pro (1M)', enabled: true, contextWindow: 1_000_000 },
-  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash (1M)', enabled: true, contextWindow: 1_000_000 },
 ]
 
 /** kscc 内置渠道默认模型 ID */

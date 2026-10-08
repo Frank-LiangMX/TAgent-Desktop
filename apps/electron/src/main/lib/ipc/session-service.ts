@@ -16,7 +16,7 @@
  *   本轮 onTurnEnd 后 auto handleSend，避免静默无操作
  */
 import { ipcMain, type BrowserWindow } from "electron";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
@@ -32,23 +32,51 @@ import type {
   ExitPlanModeResponse,
   InstallCodexRuntimeResult,
   KbProposeSaveResponse,
+  SessionRuntimeSwitchInput,
+  AgentRuntimeKind,
 } from "@tagent/shared";
 import {
   AGENT_IPC_CHANNELS,
+  CREW_ORCHESTRATION_ENABLED,
   MEMORY_IPC_CHANNELS,
   msysPathToWindowsDrivePath,
   isLocalRuntimeProvider,
+  isChannelCompatibleWithRuntime,
+  resolveChannelApiProtocol,
+  resolveChannelRequestHeaders,
 } from "@tagent/shared";
 import { SessionRuntime } from "../agent/runtime/session-runtime";
+import {
+  RUNTIME_SWITCH_SETTLE_TIMEOUT_MS,
+  activeNativeSessionId,
+  applyRuntimeHandoffToPrompt,
+  buildRuntimeHandoffContent,
+  createKeyedSerialQueue,
+  extractRuntimeHandoffMaterial,
+  inferRuntimeFromMeta,
+  planHandoffAttempt,
+  planHandoffAttemptOutcome,
+  planRuntimeSwitch,
+  resolveBoundRuntime,
+  shouldInjectHandoff,
+  validateRuntimeSwitchQuiescence,
+  validateRuntimeSwitchTarget,
+  type HandoffAttemptOutcome,
+  type RuntimeSwitchQuiescence,
+} from "../agent/runtime/runtime-switch";
 import {
   appendAttachmentPathsToPrompt,
   attachImageBlocksToText,
 } from "../agent/build-user-content-with-attachments";
 import { askUserService } from "../agent/agent-ask-user-service";
+import { stopKanbanDelegationForSession } from "../kanban/kanban-dispatcher";
+import { buildDelegationHostTools, injectDelegationMcpServer } from "../agent/delegation-host-tools";
+import type { PiAgentAdapterConfig } from "../adapters/pi/pi-agent-adapter";
 import { exitPlanService } from "../agent/agent-exit-plan-service";
 import { kbProposeSaveService } from "../kb/kb-propose-save-service";
 import {
   getAdapter,
+  getPiAdapterIfPresent,
   PiAgentAdapter,
   type ChannelKind,
   type CodexQueryOptions,
@@ -79,7 +107,6 @@ import {
   installManagedCodexRuntime,
 } from "../adapters/codex/codex-runtime-installer";
 import { syncCodexChannelAvailability } from "../channel/channel-store";
-import { resolveKsccPath } from "../adapters/claude/kscc-path";
 import {
   buildOutputStylePrompt,
   buildRichContentSystemPrompt,
@@ -115,15 +142,15 @@ import {
 } from "../agent/stream-persist-gate";
 import {
   getChannel,
+  listChannels,
+  getDefaultExternalChannelId,
   getDecryptedApiKey,
   getCodexChannelId,
-  getKsccChannelId,
 } from "../channel/channel-store";
 import {
   CODEX_DEFAULT_MODEL_ID,
   CODEX_LEGACY_MODEL_ID,
   KSCC_DEFAULT_MODEL_ID,
-  isClaudeAvailableForChannel,
 } from "../channel/default-models";
 import { buildBotSessionPromptAppend } from "../bot/bot-session-prompt";
 import { getRegisteredCollaborationRoomService } from "../collaboration/collaboration-runtime";
@@ -137,7 +164,6 @@ import {
   normalizeToTextMessages,
   type MemoryMode,
 } from "../memory";
-import { ksccSoftReset } from "../agent/kscc-soft-reset";
 import { resolveWorkspaceForSession } from "../workspace/workspace-manager";
 import {
   killSessionProcess,
@@ -156,13 +182,23 @@ import {
   writeCliWorkersConfig,
   discoverAndReconcileCliWorkers,
 } from "../agent/cli-workers-service";
+import {
+  listAgentProfiles,
+  writeAgentProfiles,
+  validateAgentProfiles,
+  type AgentProfile,
+} from "../agent/agent-catalog-service";
 import { probeCliWorkers } from "../agent/cli-workers/probe-cli-workers";
 import { runMoaTurn } from "../agent/run-moa-turn";
 import {
   runMoADiscussion,
   nextMoADiscussionId,
 } from "../agent/run-moa-discussion";
-import { resolveMoADispatch, decideMoaMetaPatch } from "../agent/moa-dispatch";
+import {
+  resolveMoADispatch,
+  decideMoaMetaPatch,
+  resolveMoASeatChannel,
+} from "../agent/moa-dispatch";
 import {
   isMoaModelId,
   moaModelId,
@@ -176,19 +212,19 @@ import {
   type CliWorkersConfig,
 } from "@tagent/shared";
 import {
-  createKsccSeatRunner,
   createPiHttpSeatRunner,
   type MoASeatRunner,
+  type MoASeatRunnerFactory,
 } from "@tagent/pi-core";
 import {
   PermissionService,
   dismissModeSuggestion,
   clearModeSuggestionDismissal,
+  hasPendingPermissionRequest,
   setOnChatModeBlock,
   setPermissionModeSwitcher,
 } from "../permission/permission-service";
 import {
-  buildBuiltinSubagentDefinitions,
   buildSubagentDelegationPrompt,
 } from "../agent/subagent-definitions";
 import { buildExecutionModePrompt } from "../agent/execution-mode-prompt";
@@ -196,7 +232,10 @@ import {
   buildAutoKanbanPrompt,
   buildAutoPlanPrompt,
 } from "../agent/auto-plan-router";
-import { extractPlanStepSignals } from "../agent/plan-step-signal";
+import {
+  extractPlanStepSignals,
+  stripPlanStepMarkersFromAssistantMessage,
+} from "../agent/plan-step-signal";
 import { buildUserSystemPromptAppend } from "../system-prompt-manager";
 import {
   buildPiKanbanTools,
@@ -297,10 +336,27 @@ import {
   isSteerPromptEcho,
   wrapSteerPromptForModel,
 } from "../agent/steer-prompt";
+import {
+  enqueueBackgroundCallback,
+  wrapBackgroundCallbackPrompt,
+  type BackgroundCallbackPayload,
+} from "../agent/background-delegation";
+import {
+  abortAllBackgroundTasks,
+  abortBackgroundTasksForSession,
+  setBackgroundDelegationHooks,
+} from "../agent/background-delegation-service";
 
 interface SendMessageInput {
+  /** Explicit engine for a draft session's first turn; persisted meta wins thereafter. */
+  agentRuntime?: AgentRuntimeKind;
   sessionId: string;
   prompt: string;
+  /**
+   * 用户显式恢复失败后的会话。主进程只接受 sessionId，并以固定短指令开启一个新回合；
+   * 不重放旧任务，也不接受渲染层随请求附带的 prompt / 运行时配置。
+   */
+  recovery?: boolean;
   /** 仅供旁路 Bot 使用：本轮前情提要注入 system prompt，不落盘为 user 消息。 */
   contextPrompt?: string;
   /** 运行中引导的后续自动发送：在消息列表内并入前一执行回合。 */
@@ -352,52 +408,70 @@ interface SendMessageInput {
   fusionAdvisorContext?: string;
   /** 融合执行或独立旁路执行：跳过已升级协作室的父会话路由。 */
   skipFusionRouting?: boolean;
+  /** 用户从发送旁选择「用看板派工」：本轮强制走看板分流，不改会话模式。 */
+  forceKanbanDispatch?: boolean;
 }
 
-function resolveInternalAdapterKind(
-  meta: AgentSessionMeta | undefined,
-  requestedBackend?: AgentSessionMeta["internalBackend"],
-): Extract<ChannelKind, "kscc" | "codex"> {
-  if (meta?.internalBackend === "codex-app-server") return "codex";
-  if (meta?.internalBackend === "kscc") return "kscc";
-  if (meta?.codexThreadId) return "codex";
-  if (meta?.sdkSessionId) return "kscc";
-  if (requestedBackend === "codex-app-server") return "codex";
-  if (requestedBackend === "kscc") return "kscc";
-  const configured = process.env.TAGENT_INTERNAL_BACKEND?.trim().toLowerCase();
-  if (configured === "codex") return "codex";
-  if (configured === "kscc") return "kscc";
-  // 无显式选择时，以可用的 Codex App Server 为主核；没有 Runtime 才回退 KSCC。
-  // 这个探测只发生在没有会话元数据/没有请求覆盖的兼容路径，已物化会话仍由上面的
-  // internalBackend、codexThreadId、sdkSessionId 决定，不会被运行时探测悄然改核。
-  return resolveDetectedDefaultInternalAdapterKind();
-}
+/**
+ * Explicit recovery is a new user turn, not a transport retry. Keep this text in sync with the
+ * renderer recovery action; main remains authoritative and never trusts the renderer's prompt.
+ */
+export const RECOVERY_CONTINUE_PROMPT =
+  "请从刚才中断的位置继续原任务。先核对已有进度和工具结果，只做尚未完成的部分；不要重复已完成的操作。对结果不明、可能产生外部影响的操作，先核实，无法核实则询问我。";
 
-let detectedDefaultInternalAdapterKind:
-  | Extract<ChannelKind, "kscc" | "codex">
-  | undefined;
-
-function resolveDetectedDefaultInternalAdapterKind(): Extract<
-  ChannelKind,
-  "kscc" | "codex"
-> {
-  if (detectedDefaultInternalAdapterKind) {
-    return detectedDefaultInternalAdapterKind;
-  }
-  // 这里必须保持同步且无 I/O：真正的新会话默认已由 codex-internal 渠道
-  // 选择；这个兼容分支只服务于旧的 kscc-internal 元数据。
-  detectedDefaultInternalAdapterKind = "kscc";
-  return detectedDefaultInternalAdapterKind;
-}
+/** A rejected recovery is local UI feedback, not a new session/runtime failure event. */
+class RecoveryGuardError extends Error {}
 
 function persistedInternalBackend(
   kind: ChannelKind,
 ): AgentSessionMeta["internalBackend"] {
   return kind === "codex"
     ? "codex-app-server"
-    : kind === "kscc"
-      ? "kscc"
+    : kind === "claude-code"
+      ? "claude-code"
       : undefined;
+}
+
+/**
+ * In-memory only identity for a live engine connection. Includes a one-way key digest so a
+ * same-channel credential rotation cannot enqueue into the old process, but never persists or
+ * logs the credential (or its digest).
+ */
+export function createRuntimeConnectionFingerprint(
+  runtime: AgentRuntimeKind,
+  channel: Channel,
+  modelId: string,
+  apiKey: string | undefined,
+): string {
+  const protocol = resolveChannelApiProtocol(channel);
+  return createHash("sha256")
+    .update(JSON.stringify({
+      runtime,
+      channelId: channel.id,
+      provider: channel.provider,
+      protocol,
+      baseUrl: channel.baseUrl,
+      modelId,
+      contextWindow: resolveModelContextWindow(channel, modelId),
+      apiKey,
+    }))
+    .digest("hex");
+}
+
+function runtimeConnectionFingerprint(
+  runtime: AgentRuntimeKind,
+  channel: Channel,
+  modelId: string,
+): string {
+  const apiKey = isLocalRuntimeProvider(channel.provider)
+    ? undefined
+    : getDecryptedApiKey(channel.id);
+  if (!isLocalRuntimeProvider(channel.provider) && !apiKey) {
+    throw new Error(
+      `渠道「${channel.name}」的 apiKey 未设置或解密失败，请在「渠道管理」中重新输入 apiKey`,
+    );
+  }
+  return createRuntimeConnectionFingerprint(runtime, channel, modelId, apiKey);
 }
 
 /** 模型侧注入的 [用户附件] 附录，不应再当第二条用户气泡展示。 */
@@ -467,8 +541,54 @@ async function getCodexRuntimeStatus(): Promise<CodexRuntimeStatus> {
   };
 }
 
+/** 为每个 MoA 席位独立解析已配置渠道；外部渠道走 Pi HTTP，KSCC 仅保留兼容 runner。 */
+function createMoaSeatRunnerFactory(
+  currentChannel: Channel,
+  availableChannels: Channel[],
+): { factory: MoASeatRunnerFactory; fallback: MoASeatRunner } {
+  const cache = new Map<string, MoASeatRunner>()
+  const build = (modelId: string, requestedChannelId?: string): MoASeatRunner => {
+    const resolved = resolveMoASeatChannel(modelId, requestedChannelId, currentChannel, availableChannels)
+    if (!resolved) throw new Error(`模型「${modelId}」无法解析到已启用的渠道`)
+    const { channel } = resolved
+    const model = channel.models.find((item) => item.id === modelId && item.enabled)
+    const cacheKey = `${channel.id}\u0000${channel.provider}\u0000${modelId}`
+    const cached = cache.get(cacheKey)
+    if (cached) return cached
+    let runner: MoASeatRunner
+    if (channel.provider === "kscc-internal") {
+      throw new Error("该渠道已停用（历史 kscc CLI 通路已移除），不能作为 MoA 席位")
+    } else if (channel.provider === "codex-internal") {
+      throw new Error("Codex App Server 暂不支持作为 MoA 席位，请选择已配置 API Key 的渠道")
+    } else {
+      const apiKey = getDecryptedApiKey(channel.id)
+      if (!apiKey) throw new Error(`渠道「${channel.name}」未配置 API Key，无法调用该 MoA 席位`)
+      runner = createPiHttpSeatRunner({
+        provider: channel.provider,
+        apiProtocol: channel.apiProtocol,
+        apiKey,
+        baseUrl: channel.baseUrl,
+        contextWindow: model?.contextWindow,
+        headers: resolveChannelRequestHeaders(channel.provider, apiKey),
+      })
+    }
+    cache.set(cacheKey, runner)
+    return runner
+  }
+  const defaultModelId = currentChannel.defaultModelId ?? currentChannel.models.find((m) => m.enabled)?.id ?? ""
+  const fallback: MoASeatRunner = {
+    runSeat: (args) => build(defaultModelId).runSeat(args),
+  }
+  return {
+    factory: ({ modelId, channelId }) => build(modelId, channelId),
+    fallback,
+  }
+}
+
 export class SessionService {
   private runtimes = new Map<string, SessionRuntime>();
+  /** Runtime/channel binding of each in-memory instance; prevents API clients from being reused across credentials. */
+  private runtimeBindingBySession = new Map<string, string>();
   /** 托管 Codex Runtime 安装是进程级单例任务，重复点击共享同一个 Promise。 */
   private codexRuntimeInstallPromise:
     | Promise<InstallCodexRuntimeResult>
@@ -485,6 +605,18 @@ export class SessionService {
   private planStepSignalsSeenBySession = new Map<string, Set<string>>();
   /** 等待隐藏 Bot 顾问下一轮完成；只用于内部融合调度，不向 renderer 暴露。 */
   private nextTurnEndWaiters = new Map<string, Set<() => void>>();
+  /** 后台子代理完成回投：父轮忙时排队，空闲后按派出时的冻结分叉发送。 */
+  private pendingBackgroundCallbacks = new Map<
+    string,
+    BackgroundCallbackPayload[]
+  >();
+  /**
+   * 回投时临时换成冻结分叉；本轮结束后把 live 历史接回，并保留回投这一轮。
+   */
+  private liveRestoreBySession = new Map<
+    string,
+    { live: unknown[]; forkLength: number }
+  >();
 
   /**
    * kscc 流式落盘闸口状态（REGRESS-G）：按会话维护「同 uuid 去重 + 内容放行」的待提交 assistant。
@@ -517,6 +649,26 @@ export class SessionService {
    * 防止用户手动发消息后旧 AskUser 回调再触发一次续跑。
    */
   private noProgressAskUserAbortBySession = new Map<string, AbortController>();
+
+  /**
+   * ADR-0011 §5 首期手动切换运行内核：
+   * - pendingSendBySession：本轮 send 仍在 handleSend 内（含 MoA 编排）尚未走完 → 切换 fail-closed 拒绝
+   * - runtimeSwitchInFlight：本会话有切换事务在途 → 拒绝并发 send / 其它切换
+   * - runtimeSwitchChain：按会话串行化切换事务（后到者等前一个落盘完再重新校验静默）
+   */
+  private pendingSendBySession = new Map<string, number>();
+  private runtimeSwitchInFlight = new Set<string>();
+  private runtimeSwitchChain = createKeyedSerialQueue();
+  /**
+   * 待投递交接资料的**本轮尝试**观察点（内存，不落盘）：
+   * - revision：注入时快照的 runtimeSwitchRevision（期间再切换 → 结论作废）
+   * - sawNativeOutput：目标内核本轮是否已产出过任何原生输出（决定失败后可否重投）
+   * 落盘部分在 `runtimeHandoff.attempts / lastOutcome`，进程中途死掉也能看出「已尝试过」。
+   */
+  private handoffAttemptBySession = new Map<
+    string,
+    { revision: number; sawNativeOutput: boolean }
+  >();
 
   /**
    * 活跃圆桌讨论注册表（§5.3 用户插话/喊停）：按会话存当前讨论的 discussionId + 待注入插话队列 +
@@ -562,7 +714,7 @@ export class SessionService {
     const channel = getChannel(meta.channelId);
     if (!channel) return null;
     if (channel.provider === "codex-internal") return "codex";
-    return channel.provider === "kscc-internal" ? "kscc" : "external";
+    return channel.provider === "kscc-internal" ? null : "external";
   }
 
   /** 入队 steer 文本（Pi pending_next_turn） */
@@ -575,6 +727,116 @@ export class SessionService {
   /** 丢弃 pending steer（STOP / 删会话） */
   private clearPendingSteer(sessionId: string): void {
     this.pendingSteerBySession.delete(sessionId);
+  }
+
+  private enqueueBackgroundCallback(
+    sessionId: string,
+    payload: BackgroundCallbackPayload,
+  ): void {
+    const next = enqueueBackgroundCallback(
+      this.pendingBackgroundCallbacks.get(sessionId) ?? [],
+      payload,
+    );
+    this.pendingBackgroundCallbacks.set(sessionId, next);
+    this.flushBackgroundCallbacks(sessionId);
+  }
+
+  /**
+   * 父轮停稳后按冻结分叉回投后台子代理结论。
+   * 与 steer 分开：steer 是用户追加指令；这里是派出时上下文 + 子结论。
+   */
+  private flushBackgroundCallbacks(sessionId: string): void {
+    const pending = this.pendingBackgroundCallbacks.get(sessionId);
+    if (!pending?.length) return;
+    const rt = this.runtimes.get(sessionId);
+    if (rt && (rt.isTurnInFlight() || rt.isRunning())) return;
+
+    this.pendingBackgroundCallbacks.delete(sessionId);
+    const meta = getSessionMeta(sessionId);
+    if (!meta?.channelId) {
+      console.warn(
+        `[session-service] 后台子代理回投丢弃（无 meta）: ${sessionId}`,
+      );
+      return;
+    }
+
+    const payload = pending[0];
+    const rest = pending.slice(1);
+    if (!payload) return;
+    if (rest.length) this.pendingBackgroundCallbacks.set(sessionId, rest);
+
+    const adapterKind = this.resolveAdapterKindForSession(sessionId);
+    if (adapterKind === "external" && payload.fork.length > 0) {
+      const pi = getPiAdapterIfPresent();
+      const live = pi?.snapshotMessages(sessionId) ?? [];
+      const restored = pi?.restoreMessages(sessionId, payload.fork);
+      if (restored === "busy") {
+        const retry = [
+          payload,
+          ...(this.pendingBackgroundCallbacks.get(sessionId) ?? []),
+        ];
+        this.pendingBackgroundCallbacks.set(sessionId, retry);
+        return;
+      }
+      if (restored === "ok") {
+        this.liveRestoreBySession.set(sessionId, {
+          live,
+          forkLength: payload.fork.length,
+        });
+      }
+    }
+
+    const prompt = wrapBackgroundCallbackPrompt(payload);
+    console.log(
+      `[会话 ${sessionId}] 后台子代理回投 ${payload.taskId}（${payload.status}）`,
+    );
+    void this.handleSend({
+      sessionId,
+      prompt,
+      channelId: meta.channelId,
+      model: meta.modelId,
+      workspaceId: meta.workspaceId,
+      isSteer: true,
+      skipUserPersist: true,
+    }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[session-service] 后台子代理回投失败: ${msg}`);
+      const cur = this.pendingBackgroundCallbacks.get(sessionId) ?? [];
+      this.pendingBackgroundCallbacks.set(sessionId, [payload, ...cur]);
+    });
+  }
+
+  private emitBackgroundTaskEvent(
+    sessionId: string,
+    event: {
+      type: string;
+      taskId: string;
+      toolUseId?: string;
+      description?: string;
+      taskType?: string;
+      lastToolName?: string;
+      status?: "completed" | "failed" | "stopped";
+      summary?: string;
+    },
+  ): void {
+    this.sendPayload(sessionId, {
+      kind: "tagent_event",
+      event: event as { type: string; [key: string]: unknown },
+    });
+  }
+
+  /**
+   * 回投轮结束后：把派出之后用户继续聊的 live 历史接回来，并保留回投这一轮。
+   */
+  private restoreLiveAfterBackgroundCallback(sessionId: string): void {
+    const pending = this.liveRestoreBySession.get(sessionId);
+    if (!pending) return;
+    this.liveRestoreBySession.delete(sessionId);
+    const pi = getPiAdapterIfPresent();
+    if (!pi) return;
+    const current = pi.snapshotMessages(sessionId);
+    const tail = Array.isArray(current) ? current.slice(pending.forkLength) : [];
+    pi.restoreMessages(sessionId, [...pending.live, ...tail]);
   }
 
   /**
@@ -596,7 +858,7 @@ export class SessionService {
     this.lastSteerBySession.set(sessionId, { text, at: now });
     try {
       appendPanelMessages(workspaceId, sessionId, [userMsg]);
-      if (this.resolveAdapterKindForSession(sessionId) === "kscc") {
+      if (this.resolveAdapterKindForSession(sessionId) === "claude-code") {
         appendSdkMessages(workspaceId, sessionId, [userMsg]);
       }
       const { message: userIR } = sdkMessageToIR(userMsg);
@@ -716,7 +978,7 @@ export class SessionService {
       );
       return;
     }
-    const prompt = wrapSteerPromptForModel(pending.join("nn"));
+    const prompt = wrapSteerPromptForModel(pending.join("\n\n"));
     console.log(
       `[会话 ${sessionId}] pending steer → 自动下一轮（${pending.length} 条合并）`,
     );
@@ -780,6 +1042,12 @@ export class SessionService {
     permissionService: PermissionService | null = null,
   ): SessionService {
     const svc = new SessionService(getWindow, permissionService);
+    setBackgroundDelegationHooks({
+      enqueueCallback: (parentSessionId, payload) =>
+        svc.enqueueBackgroundCallback(parentSessionId, payload),
+      notifyParentEvent: (parentSessionId, event) =>
+        svc.emitBackgroundTaskEvent(parentSessionId, event),
+    });
     if (permissionService) {
       setOnChatModeBlock((sessionId, toolName) =>
         svc.handleChatModeBlock(sessionId, toolName),
@@ -790,35 +1058,6 @@ export class SessionService {
         svc.applyPermissionModeChange(sessionId, mode),
       );
     }
-    // Phase 4：软重置钩子
-    ksccSoftReset.setHooks({
-      abortSession: (sessionId) => {
-        const rt = svc.runtimes.get(sessionId);
-        rt?.destroy();
-        svc.runtimes.delete(sessionId);
-        try {
-          getAdapter("kscc").abort?.(sessionId);
-        } catch {
-          /* ignore */
-        }
-      },
-      onStatus: (sessionId, status) => {
-        const win = getWindow();
-        win?.webContents.send(AGENT_IPC_CHANNELS.STREAM_EVENT, {
-          sessionId,
-          payload: {
-            kind: "tagent_event",
-            event: {
-              type:
-                status === "switching" || status === "compacting"
-                  ? "memory_organizing"
-                  : "memory_status",
-              status,
-            },
-          },
-        });
-      },
-    });
     svc.registerIpc();
     return svc;
   }
@@ -833,14 +1072,19 @@ export class SessionService {
           return { ok: true };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          this.sendPayload(input.sessionId, {
-            kind: "tagent_event",
-            event: {
-              type: "session_error",
-              message: msg,
-              error: classifyUserFacingError(msg),
-            },
-          });
+          // Recovery guard rejections must not make the renderer's global stream synchronizer
+          // stop an already-running/interrupting turn. Native turn failures still arrive through
+          // SessionRuntime callbacks and retain their normal session_error behavior.
+          if (!(err instanceof RecoveryGuardError)) {
+            this.sendPayload(input.sessionId, {
+              kind: "tagent_event",
+              event: {
+                type: "session_error",
+                message: msg,
+                error: classifyUserFacingError(msg),
+              },
+            });
+          }
           return { ok: false, error: msg };
         }
       },
@@ -857,9 +1101,8 @@ export class SessionService {
         if (!this.codexRuntimeInstallPromise) {
           this.codexRuntimeInstallPromise = installManagedCodexRuntime()
             .then(async (result) => {
-              // 安装前可能已缓存 KSCC fallback；成功后让无显式选择的兼容路径
-              // 重新探测，使托管 Codex Runtime 立即成为默认 Internal Backend。
-              detectedDefaultInternalAdapterKind = undefined;
+              // 安装只让 Codex 渠道可用，不改写新会话默认核（仍为 KSCC）。
+              // 安装成功后不清默认核缓存，避免把 Codex 抢成新会话默认。
               clearCodexRuntimeAsyncCache();
               syncCodexChannelAvailability(true, true);
               return {
@@ -887,6 +1130,10 @@ export class SessionService {
         // 先丢 pending steer，再 interrupt：abort 可能同步触发 result→onTurnEnd，
         // 若先 interrupt 再 clear，会误 auto-send 用户刚想放弃的引导。
         this.clearPendingSteer(sessionId);
+        abortBackgroundTasksForSession(sessionId);
+        stopKanbanDelegationForSession(sessionId);
+        this.pendingBackgroundCallbacks.delete(sessionId);
+        this.liveRestoreBySession.delete(sessionId);
         // 清待处理 AskUser 请求（resolve deny「会话已结束」；abort signal 兜底已 deny，此处幂等）
         askUserService.clearSessionPending(sessionId);
         // 清无进展暂停 AskUser 的 abort controller（clearSessionPending 已 resolve deny，此处只清 Map）
@@ -915,6 +1162,9 @@ export class SessionService {
         if (moaCtrl) moaCtrl.abort();
         const rt = this.runtimes.get(sessionId);
         if (rt) await rt.interrupt();
+        // 交接尝试结算：停止没有原生终态，按「是否已产出原生输出」判定
+        // （未产出 → 可重投；已产出 → 标记模糊，不自动重投整段上下文）
+        this.finalizeHandoffAttempt(sessionId, "stopped");
         // REGRESS-G：中断也 flush 待提交 assistant（保已生成的段落盘 + 清 stale pending 不漏进下一轮）
         this.flushStreamPersistGateFor(sessionId);
         // 软停兜底：interrupt 不调 onTurnEnd，且 Pi abort 不保证再推 result。
@@ -1145,7 +1395,7 @@ export class SessionService {
 
           // kscc 长驻：注入同一场运行，当前工具结束后的下一次思考就会带上引导。
           // 这才和「排队」（整场运行结束再新开一轮）不是一回事。
-          if (kind === "kscc" && rt?.hasLiveProcess()) {
+          if (kind === "claude-code" && rt?.hasLiveProcess()) {
             const mode = await rt.steerMessage(modelText);
             if (mode === "live") {
               return { ok: true, mode: "live" };
@@ -1756,7 +2006,7 @@ export class SessionService {
 
         // Work→Chat（或切到 chat）时：检测会话看板 / parentSession 看板是否仍有在途任务
         const backgroundCrew =
-          next === "chat"
+          CREW_ORCHESTRATION_ENABLED && next === "chat"
             ? (() => {
                 try {
                   let boardId = meta.boardId;
@@ -1881,6 +2131,20 @@ export class SessionService {
         if (err) throw new Error(err);
         writeCliWorkersConfig(cfg);
         return listCliWorkersConfig();
+      },
+    );
+
+    // Agent 目录配置：读取/覆盖保存整份 Profile；具体校验与持久化由 catalog service 负责。
+    ipcMain.handle(AGENT_IPC_CHANNELS.LIST_AGENT_PROFILES, async () => {
+      return listAgentProfiles();
+    });
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.SAVE_AGENT_PROFILES,
+      async (_e, profiles: unknown[]) => {
+        const error = validateAgentProfiles(profiles);
+        if (error) throw new Error(error);
+        writeAgentProfiles(profiles as AgentProfile[]);
+        return listAgentProfiles();
       },
     );
 
@@ -2024,6 +2288,10 @@ export class SessionService {
           this.runtimes.delete(sessionId);
         }
         this.clearPendingSteer(sessionId);
+        abortBackgroundTasksForSession(sessionId);
+        stopKanbanDelegationForSession(sessionId);
+        this.pendingBackgroundCallbacks.delete(sessionId);
+        this.liveRestoreBySession.delete(sessionId);
         // 清会话权限白名单（「始终允许」状态）
         PermissionService.clearWhitelist(sessionId);
         // 清待处理 AskUser 请求（resolve deny「会话已结束」）
@@ -2077,6 +2345,7 @@ export class SessionService {
             | "subagentEagerness"
             | "reasoningEffort"
             | "cliWorkerId"
+            | "agentRuntime"
             | "internalBackend"
             | "botProfileIds"
             | "turnDurations"
@@ -2102,9 +2371,62 @@ export class SessionService {
         if (
           patch.internalBackend !== undefined &&
           patch.internalBackend !== "codex-app-server" &&
-          patch.internalBackend !== "kscc"
+          patch.internalBackend !== "claude-code"
         ) {
           patch.internalBackend = undefined;
+        }
+        // ADR-0011 §5：已持久化会话**跨运行内核**变更必须走 SWITCH_SESSION_RUNTIME
+        // （它会校验渠道/模型、要求静默、真停旧内核、生成交接资料）。
+        //
+        // 运行时 patch 是未类型化对象（IPC 只做类型标注），故不能只盯 typed internalBackend：
+        // 必须按「patch 生效后的实际 channelId + internalBackend 组合」算内核。同值写入
+        // （内部路径如 handleSend 记录本轮后端）与同内核换渠道/模型照常放行。
+        {
+          const beforeMeta = getSessionMeta(args.id);
+          if (beforeMeta) {
+            // 按存储层的真实合并语义比较；保留旧会话用于识别内核的原生 ID。
+            // 否则仅重命名一个靠 codexThreadId 识别的旧会话也会误判跨核。
+            const nextMeta = { ...beforeMeta, ...patch };
+            const nextChannelId = nextMeta.channelId;
+            const boundRuntime =
+              resolveBoundRuntime(
+                beforeMeta,
+                (channelId) => getChannel(channelId)?.provider,
+              ) ?? inferRuntimeFromMeta(beforeMeta);
+            if (
+              beforeMeta.agentRuntime &&
+              ((Object.prototype.hasOwnProperty.call(patch, "channelId") &&
+                nextMeta.channelId !== beforeMeta.channelId) ||
+                (Object.prototype.hasOwnProperty.call(patch, "modelId") &&
+                  nextMeta.modelId !== beforeMeta.modelId))
+            ) {
+              throw new Error(
+                "已绑定会话的渠道或模型变更请使用 switchSessionRuntime；不能用 updateSessionMeta 绕过原生上下文清理与交接",
+              );
+            }
+            // 渠道真的换了一个却查不到 → 直接拒绝（避免用「查不到」绕过内核比对）
+            if (
+              Object.prototype.hasOwnProperty.call(patch, "channelId") &&
+              nextChannelId !== beforeMeta.channelId
+            ) {
+              if (!nextChannelId || !getChannel(nextChannelId)) {
+                throw new Error(
+                  `渠道不存在：${String(nextChannelId ?? "")}（请在渠道管理中添加）`,
+                );
+              }
+            }
+            const nextRuntime =
+              resolveBoundRuntime(
+                nextMeta,
+                (channelId) => getChannel(channelId)?.provider,
+              ) ??
+              inferRuntimeFromMeta(nextMeta);
+            if (nextRuntime !== boundRuntime) {
+              throw new Error(
+                "跨运行内核切换请使用 switchSessionRuntime（会先停稳旧内核并生成交接资料），不能用 updateSessionMeta 改渠道/internalBackend",
+              );
+            }
+          }
         }
         if (patch.knowledgeBaseIds !== undefined) {
           patch.knowledgeBaseIds = Array.isArray(patch.knowledgeBaseIds)
@@ -2230,6 +2552,24 @@ export class SessionService {
       },
     );
 
+    /**
+     * 显式切换会话运行内核（ADR-0011 §5 首期手动切换）。
+     *
+     * 与 UPDATE_SESSION_META 的区别：本通道是**事务性**的——校验渠道/模型与目标内核兼容、
+     * 要求会话静默、真正停掉旧内核活进程、归档原生绑定并生成待投递交接资料。
+     * 调用方必须先走既有 STOP_AGENT 停稳本轮（本切片不做自动取消）。
+     * 失败一律 throw（renderer 收到 reject 后保持原选择）。
+     */
+    ipcMain.handle(
+      AGENT_IPC_CHANNELS.SWITCH_SESSION_RUNTIME,
+      async (
+        _e,
+        input: SessionRuntimeSwitchInput,
+      ): Promise<AgentSessionMeta> => {
+        return this.runSerializedRuntimeSwitch(input);
+      },
+    );
+
     // 清除 Chat @ 对话跟随（activeSpeaker；回默认总助）。pendingMentionRoleIds 置 undefined。
     ipcMain.handle(
       AGENT_IPC_CHANNELS.CLEAR_MENTION_FOLLOW,
@@ -2257,11 +2597,7 @@ export class SessionService {
         const channelId = meta?.channelId;
         const channel = channelId ? getChannel(channelId) : undefined;
         const kind: ChannelKind =
-          channel?.provider === "codex-internal"
-            ? "codex"
-            : channel?.provider === "kscc-internal"
-              ? "kscc"
-              : "external";
+          channel?.provider === "codex-internal" ? "codex" : "external";
         const adapter = getAdapter(kind);
         if (typeof adapter.compactSession !== "function") {
           return {
@@ -2331,6 +2667,270 @@ export class SessionService {
     if (meta?.status === "error")
       return { status: "error", archived: !!meta?.archived };
     return { status: "idle", archived: !!meta?.archived };
+  }
+
+  // ===== ADR-0011 §5：手动切换运行内核 =====
+
+  /**
+   * 按会话串行化切换事务：后到的切换等前一个落盘完，再**重新**校验静默。
+   * 串行化而非并发，避免两次切换交错写出半截绑定。
+   */
+  private runSerializedRuntimeSwitch(
+    input: SessionRuntimeSwitchInput,
+  ): Promise<AgentSessionMeta> {
+    const sessionId =
+      typeof input?.sessionId === "string" ? input.sessionId.trim() : "";
+    return this.runtimeSwitchChain.run(sessionId, () =>
+      this.handleSwitchSessionRuntime(input),
+    );
+  }
+
+  private async handleSwitchSessionRuntime(
+    input: SessionRuntimeSwitchInput,
+  ): Promise<AgentSessionMeta> {
+    const sessionId =
+      typeof input?.sessionId === "string" ? input.sessionId.trim() : "";
+    if (!sessionId) throw new Error("切换运行内核缺少会话 ID");
+    if (this.runtimeSwitchInFlight.has(sessionId)) {
+      throw new Error("该会话已有运行内核切换在处理中，请稍候");
+    }
+    this.runtimeSwitchInFlight.add(sessionId);
+    try {
+      return await this.performRuntimeSwitch(sessionId, input);
+    } finally {
+      this.runtimeSwitchInFlight.delete(sessionId);
+    }
+  }
+
+  /** 目标内核在本机是否可用；不可用 → 拒绝切换，绝不静默换到别的内核。 */
+  private async resolveRuntimeAvailability(
+    runtime: AgentRuntimeKind,
+  ): Promise<{ available: boolean; reason?: string }> {
+    if (runtime === "codex") {
+      const status = await getCodexRuntimeStatus();
+      return status.available
+        ? { available: true }
+        : {
+            available: false,
+            reason: status.reason
+              ? `Codex Runtime 不可用：${status.reason}`
+              : "Codex Runtime 当前不可用",
+          };
+    }
+    return { available: true };
+  }
+
+  /**
+   * 静默探针：running / stopping / 本轮 send 未走完 / 审批在等用户。
+   * 本切片要求用户先停止再切换，非静默一律 fail-closed。
+   */
+  private collectSwitchQuiescence(sessionId: string): RuntimeSwitchQuiescence {
+    const rt = this.runtimes.get(sessionId);
+    return {
+      turnInFlight: Boolean(rt?.isTurnInFlight()) || this.moaInFlight.has(sessionId),
+      interrupting: Boolean(rt?.isInterrupting()),
+      // 停止已受理但本轮原生终态尚未观察到（旧内核可能仍有工具在收尾）→ fail-closed
+      unsettledStop: Boolean(rt?.hasUnsettledStop()),
+      sendInFlight: (this.pendingSendBySession.get(sessionId) ?? 0) > 0,
+      approvalActive:
+        hasPendingPermissionRequest(sessionId) ||
+        askUserService
+          .getPendingRequests()
+          .some((r) => r.sessionId === sessionId) ||
+        exitPlanService
+          .getPendingRequests()
+          .some((r) => r.sessionId === sessionId) ||
+        kbProposeSaveService
+          .getPendingRequests()
+          .some((r) => r.sessionId === sessionId),
+    };
+  }
+
+  /**
+   * 切换前等待「停止请求已被受理但本轮原生终态未观察」闩锁解除。
+   * 超时 → false（调用方必须 fail-closed 拒绝切换，不能默认放行）。
+   */
+  private async awaitTurnSettled(sessionId: string): Promise<boolean> {
+    const rt = this.runtimes.get(sessionId);
+    if (!rt?.hasUnsettledStop()) return true;
+    return rt.waitForTurnSettled(RUNTIME_SWITCH_SETTLE_TIMEOUT_MS);
+  }
+
+  /**
+   * 静默校验（切换事务专用）：
+   * - 首轮校验发现「停止未确认停稳」→ 等待原生终态（有界超时）后**重新**校验；
+   * - 终态仍观察不到 → 返回原拒绝（fail-closed，不默认放行）；
+   * - 其它非静默原因（running / send 在途 / 审批在途）不等待，直接拒绝。
+   */
+  private async awaitQuiescenceForSwitch(
+    sessionId: string,
+  ): Promise<ReturnType<typeof validateRuntimeSwitchQuiescence>> {
+    const first = validateRuntimeSwitchQuiescence(
+      this.collectSwitchQuiescence(sessionId),
+    );
+    if (first.ok || first.code !== "stopping") return first;
+    const settled = await this.awaitTurnSettled(sessionId);
+    if (!settled) return first;
+    return validateRuntimeSwitchQuiescence(
+      this.collectSwitchQuiescence(sessionId),
+    );
+  }
+
+  /**
+   * 结算本轮交接尝试（成功消费 / 失败保留或标记可重投）。
+   * 由目标内核的原生终态、错误、停止三类钩子调用；纯逻辑在 runtime-switch.ts。
+   */
+  private finalizeHandoffAttempt(
+    sessionId: string,
+    outcome: HandoffAttemptOutcome,
+  ): void {
+    const attempt = this.handoffAttemptBySession.get(sessionId);
+    if (!attempt) return;
+    this.handoffAttemptBySession.delete(sessionId);
+    try {
+      const meta = getSessionMeta(sessionId);
+      if (!meta?.runtimeHandoff) return;
+      const patch = planHandoffAttemptOutcome({
+        meta,
+        attemptRevision: attempt.revision,
+        outcome,
+        sawNativeOutput: attempt.sawNativeOutput,
+        now: Date.now(),
+        nativeSessionId: activeNativeSessionId(meta, meta.runtimeHandoff.to),
+        syncedPanelMessageCount: this.countVisiblePanelMessages(meta, sessionId),
+      });
+      if (patch) {
+        updateSessionMeta(sessionId, patch);
+        console.log(
+          `[会话 ${sessionId}] 交接尝试结算：${outcome}（产出原生输出=${attempt.sawNativeOutput}）`,
+        );
+      }
+    } catch (err) {
+      console.warn("[session-service] 交接尝试结算落盘失败:", err);
+    }
+  }
+
+  /** 面板可见历史条数（同步游标用；读失败回落 0，不阻断结算）。 */
+  private countVisiblePanelMessages(
+    meta: AgentSessionMeta,
+    sessionId: string,
+  ): number {
+    try {
+      return readPanelMessages(meta.workspaceId, sessionId).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * 真正停掉旧内核的活进程 / Agent 实例，并清掉本会话的流式在途状态。
+   * 只删宿主包装对象不算停：`SessionRuntime.destroy()` 会走 adapter.abort（杀 kscc 进程 /
+   * 关闭 Codex 会话 / 释放 Pi Agent 与其内存 state.messages），否则切回时 Pi 会带着过期上下文。
+   */
+  private disposeRuntimeForSwitch(sessionId: string): void {
+    const rt = this.runtimes.get(sessionId);
+    if (rt) {
+      // 不吞 abort 失败：停不掉旧内核就必须让切换失败（renderer 保持原选择），
+      // 否则会出现「两个内核同时持有同一 workspace」而无人知晓。
+      rt.destroy();
+      this.runtimes.delete(sessionId);
+    }
+    this.runtimeBindingBySession.delete(sessionId);
+    // 旧内核的迟到事件不得污染新回合：清掉引导 / 回投 / 流式闸口等 in-flight 状态
+    this.clearPendingSteer(sessionId);
+    this.pendingBackgroundCallbacks.delete(sessionId);
+    this.liveRestoreBySession.delete(sessionId);
+    this.streamPersistGateBySession.delete(sessionId);
+    this.deltaTrackerBySession.delete(sessionId);
+    this.noProgressAskUserAbortBySession.delete(sessionId);
+    // 旧 revision 的交接尝试作废（新切换会生成新的待投递交接资料）
+    this.handoffAttemptBySession.delete(sessionId);
+  }
+
+  /** 切换事务主体：校验 → 静默 → 装配交接资料 → 停旧内核 → 原子落盘新绑定。 */
+  private async performRuntimeSwitch(
+    sessionId: string,
+    input: SessionRuntimeSwitchInput,
+  ): Promise<AgentSessionMeta> {
+    const meta = getSessionMeta(sessionId);
+    const channel = input?.channelId ? getChannel(input.channelId) : undefined;
+    const availability = await this.resolveRuntimeAvailability(input?.runtime);
+    const fromRuntime = resolveBoundRuntime(
+      meta,
+      (channelId) => getChannel(channelId)?.provider,
+    );
+    const target = validateRuntimeSwitchTarget(
+      {
+        channelId: input?.channelId ?? "",
+        modelId: input?.modelId ?? "",
+        runtime: input?.runtime,
+      },
+      {
+        meta,
+        channel,
+        fromRuntime,
+        runtimeAvailable: availability.available,
+        runtimeUnavailableReason: availability.reason,
+      },
+    );
+    if (!target.ok) throw new Error(target.message);
+    if (!meta) throw new Error("会话尚未持久化，无法切换运行内核");
+
+    const quiescence = await this.awaitQuiescenceForSwitch(sessionId);
+    if (!quiescence.ok) throw new Error(quiescence.message);
+
+    // 交接资料：仅跨内核时生成（同内核只换渠道/模型，原生上下文继续 resume）
+    let handoffContent = "";
+    let panelMessageCount = 0;
+    if (target.crossRuntime) {
+      // 来源内核未知（历史 kscc 记录）时无内核标签可写，跳过交接资料（仍照常清原生 id）。
+      const handoffFrom = target.fromRuntime ?? inferRuntimeFromMeta(meta);
+      if (handoffFrom) {
+        // 读不到源历史就不假装交接完成：直接失败，保留旧绑定
+        const rawPanel = readPanelMessages(meta.workspaceId, sessionId);
+        panelMessageCount = rawPanel.length;
+        const workspace = resolveWorkspaceForSession(sessionId);
+        handoffContent = buildRuntimeHandoffContent({
+          from: handoffFrom,
+          to: target.toRuntime,
+          material: extractRuntimeHandoffMaterial(rawPanel),
+          constraints: {
+            executionMode: migrateExecutionMode(meta.executionMode),
+            permissionMode:
+              meta.permissionMode ?? TAGENT_DEFAULT_PERMISSION_MODE,
+            workspacePath: workspace?.projectDirectory,
+            attachedDirectories: meta.attachedDirectories,
+            attachedFiles: meta.attachedFiles,
+          },
+        });
+      }
+    }
+
+    const plan = planRuntimeSwitch({
+      meta,
+      target,
+      channelId: input.channelId,
+      modelId: input.modelId,
+      now: Date.now(),
+      handoffContent,
+      sourcePanelMessageCount: panelMessageCount,
+    });
+
+    // 先停旧内核再落盘新绑定：宁可落盘失败也不留两个活实例
+    this.disposeRuntimeForSwitch(sessionId);
+    const updated = updateSessionMeta(sessionId, plan.patch);
+    if (!updated) throw new Error("切换运行内核失败：会话元数据写入失败");
+
+    this.sendPayload(sessionId, {
+      kind: "tagent_event",
+      event: { type: "session_meta_changed" },
+    });
+    console.log(
+      `[会话 ${sessionId}] 运行内核已切换 → ${target.toRuntime}` +
+        `${target.crossRuntime ? `（来自 ${plan.handoff?.from ?? fromRuntime ?? "未知"}）` : "（同内核换渠道/模型）"}` +
+        `${plan.handoff ? "，交接资料待下次发送投递" : ""}`,
+    );
+    return updated;
   }
 
   /**
@@ -2424,25 +3024,175 @@ export class SessionService {
     );
   }
 
-  /** 处理发消息：解析渠道→锁定运行内核→首次 spawn / 后续同内核切换模型 */
+  /**
+   * 处理发消息：解析渠道→锁定运行内核→首次 spawn / 后续同内核切换模型。
+   *
+   * 外层只做「运行内核切换互斥」：切换事务在途时 fail-closed 拒绝本轮发送，
+   * 避免两个内核同时参与同一会话（ADR-0011 §5「点击选择器不能产生两个同时工作的主执行者」）。
+   */
   private async handleSend(input: SendMessageInput): Promise<void> {
+    if (this.runtimeSwitchInFlight.has(input.sessionId)) {
+      throw input.recovery
+        ? new RecoveryGuardError("该会话正在切换运行内核，请稍候再恢复")
+        : new Error("该会话正在切换运行内核，请稍候再发送");
+    }
+    // Recovery is deliberately normalized before we account for this send. Otherwise the
+    // request would see its own pendingSend marker and reject every time.
+    const normalizedInput = input.recovery
+      ? this.normalizeRecoverySend(input)
+      : input;
+    const sendSessionId = normalizedInput.sessionId;
+    this.pendingSendBySession.set(
+      sendSessionId,
+      (this.pendingSendBySession.get(sendSessionId) ?? 0) + 1,
+    );
+    try {
+      await this.handleSendForRuntime(normalizedInput);
+    } finally {
+      const left = (this.pendingSendBySession.get(sendSessionId) ?? 1) - 1;
+      if (left > 0) this.pendingSendBySession.set(sendSessionId, left);
+      else this.pendingSendBySession.delete(sendSessionId);
+    }
+  }
+
+  /**
+   * Authoritative recovery boundary. It intentionally creates a plain, fresh user turn on the
+   * persisted binding. No caller-controlled prompt, attachment, sidecar, MoA, or routing hint
+   * can turn recovery into a replay or an alternate execution path.
+   */
+  private normalizeRecoverySend(input: SendMessageInput): SendMessageInput {
+    const meta = getSessionMeta(input.sessionId);
+    if (!meta) {
+      throw new RecoveryGuardError("恢复仅支持已存在且已绑定渠道与模型的普通主会话");
+    }
+    if (!meta.channelId || !meta.modelId) {
+      throw new RecoveryGuardError("该会话尚未绑定渠道或模型，无法恢复；请先选择渠道和模型后发送新消息");
+    }
+    // Renderer-provided binding fields are optimistic concurrency assertions, never overrides.
+    // This prevents a stale window from recovering into a channel/model/runtime just selected in
+    // another window while retaining the normal no-field recovery path for legacy callers.
+    if (input.channelId && input.channelId !== meta.channelId) {
+      throw new RecoveryGuardError("会话渠道已在其他窗口变更，请刷新后确认当前渠道再恢复");
+    }
+    if (input.model && input.model !== meta.modelId) {
+      throw new RecoveryGuardError("会话模型已在其他窗口变更，请刷新后确认当前模型再恢复");
+    }
+    const boundRuntime =
+      meta.agentRuntime ??
+      resolveBoundRuntime(meta, (channelId) => getChannel(channelId)?.provider) ??
+      inferRuntimeFromMeta(meta);
+    if (input.agentRuntime && input.agentRuntime !== boundRuntime) {
+      throw new RecoveryGuardError("会话运行内核已在其他窗口变更，请刷新后确认当前内核再恢复");
+    }
+    if (
+      meta.archived ||
+      meta.fusionRoomId ||
+      (meta.fusionMode && meta.fusionMode !== "ordinary") ||
+      (meta.botProfileIds?.length ?? 0) > 0 ||
+      isMoaModelId(meta.modelId)
+    ) {
+      throw new RecoveryGuardError("恢复仅支持未归档的普通主会话；协作室、Bot 融合和 MoA 会话请使用各自的继续入口");
+    }
+    if (
+      input.moaOneShotPresetId ||
+      input.moaDiscussionPresetId ||
+      input.fusionAdvisorContext ||
+      input.skipFusionRouting ||
+      input.contextPrompt ||
+      input.isSteer ||
+      input.forceKanbanDispatch
+    ) {
+      throw new RecoveryGuardError("恢复不能携带 MoA、融合、旁路或引导参数；请从普通主会话继续");
+    }
+    if ((this.pendingSendBySession.get(input.sessionId) ?? 0) > 0) {
+      throw new RecoveryGuardError("该会话已有发送正在处理，请等待结束后再恢复");
+    }
+    if (this.moaInFlight.has(input.sessionId)) {
+      throw new RecoveryGuardError("该会话的 MoA 回合仍在执行，不能恢复");
+    }
+    const rt = this.runtimes.get(input.sessionId);
+    if (rt?.isTurnInFlight()) {
+      throw new RecoveryGuardError("该会话当前回合仍在执行，不能恢复");
+    }
+    if (rt?.isInterrupting()) {
+      throw new RecoveryGuardError("该会话正在停止，请稍候再恢复");
+    }
+    if (rt?.hasUnsettledStop()) {
+      throw new RecoveryGuardError("该会话的停止尚未确认完成，请稍候再恢复");
+    }
+    if (
+      hasPendingPermissionRequest(input.sessionId) ||
+      askUserService.getPendingRequests().some((r) => r.sessionId === input.sessionId) ||
+      exitPlanService.getPendingRequests().some((r) => r.sessionId === input.sessionId) ||
+      kbProposeSaveService.getPendingRequests().some((r) => r.sessionId === input.sessionId)
+    ) {
+      throw new RecoveryGuardError("该会话仍在等待用户审批或回答，不能恢复");
+    }
+
+    return {
+      sessionId: input.sessionId,
+      recovery: true,
+      prompt: RECOVERY_CONTINUE_PROMPT,
+      channelId: meta.channelId,
+      model: meta.modelId,
+      ...(meta.agentRuntime ? { agentRuntime: meta.agentRuntime } : {}),
+      ...(meta.workspaceId ? { workspaceId: meta.workspaceId } : {}),
+    };
+  }
+
+  private async handleSendForRuntime(input: SendMessageInput): Promise<void> {
     // 用户手动新开一轮 → abort 旧的无进展 AskUser（若仍 pending），防止回答旧问题时再触发一次续跑
     this.noProgressAskUserAbortBySession.get(input.sessionId)?.abort();
     this.noProgressAskUserAbortBySession.delete(input.sessionId);
     const requestedMeta = getSessionMeta(input.sessionId);
+    if (
+      requestedMeta?.agentRuntime &&
+      input.agentRuntime &&
+      requestedMeta.agentRuntime !== input.agentRuntime
+    ) {
+      throw new Error(
+        `该会话已显式绑定 ${requestedMeta.agentRuntime}，不能用发送请求改为 ${input.agentRuntime}；请先执行运行内核切换`,
+      );
+    }
+    if (
+      requestedMeta?.agentRuntime &&
+      ((input.channelId && input.channelId !== requestedMeta.channelId) ||
+        (input.model &&
+          !isMoaModelId(input.model) &&
+          input.model !== requestedMeta.modelId))
+    ) {
+      throw new Error(
+        "已绑定会话的渠道或模型变更必须使用 switchSessionRuntime；该事务会停稳旧实例、清除旧原生 ID 并生成交接资料",
+      );
+    }
     if (
       requestedMeta &&
       this.handleLinkedCollaborationRoomSend(input, requestedMeta)
     )
       return;
 
+    // 渠道解析优先级（ADR-0011 §3）：
+    // 1. 渲染层显式选择（草稿首条 / 用户改选）
+    // 2. 会话既有绑定（meta.channelId）——**先于任何默认值**，避免「没传 channelId」被默认渠道
+    //    悄悄换成另一个内核，然后撞上「已锁定…不能跨运行内核切换」
+    // 3. 旧会话无 channelId 时，按 meta.internalBackend 补回对应本机渠道
+    // 4. 仅新会话（无 meta）才用默认：**默认是 Pi（外部 API 渠道）**；
+    //    没有可用 Pi 渠道时直接报错，**不**静默回落到 KSCC / Codex
+    const metaForChannel = getSessionMeta(input.sessionId);
     const requestedChannelId =
-      input.channelId ?? getCodexChannelId() ?? getKsccChannelId();
+      input.channelId ??
+      metaForChannel?.channelId ??
+      (metaForChannel?.internalBackend === "codex-app-server"
+        ? getCodexChannelId()
+        : undefined) ??
+      getDefaultExternalChannelId();
     // 会话参与的 Bot 只用于独立旁路窗口；主会话沿用自身渠道/模型。
     const channelId = requestedChannelId;
     if (!channelId) {
       throw new Error(
-        "未选择渠道，且未找到 kscc 内置渠道（请在渠道管理中添加）",
+        metaForChannel
+          ? "该会话未绑定渠道，且没有可用的 Pi 渠道：请在渠道管理中添加外部 API 渠道"
+          : "未选择渠道且没有可用的 Pi 渠道：请先在渠道管理中添加外部 API 渠道，或显式选择 Codex / Claude Code",
       );
     }
     const channel = getChannel(channelId);
@@ -2454,32 +3204,44 @@ export class SessionService {
     }
 
     const meta = getSessionMeta(input.sessionId);
+    // Explicit meta is authoritative after the first send. Drafts accept the renderer's explicit
+    // engine once, then persist it; legacy records retain their old native-id/provider inference.
+    const runtime: AgentRuntimeKind =
+      meta?.agentRuntime ??
+      input.agentRuntime ??
+      resolveBoundRuntime(meta, (id) => getChannel(id)?.provider) ??
+      (channel.provider === "codex-internal" ? "codex" : "pi");
+    if (!isChannelCompatibleWithRuntime(channel, runtime)) {
+      throw new Error(
+        `渠道「${channel.name}」不适用于${runtime === "claude-code" ? "Claude Code" : runtime === "codex" ? "Codex" : "Pi"}，请检查渠道协议和运行内核绑定`,
+      );
+    }
     const adapterKind: ChannelKind =
-      channel.provider === "codex-internal"
-        ? "codex"
-        : channel.provider === "kscc-internal"
-          ? resolveInternalAdapterKind(meta, input.internalBackend)
-          : "external";
+      runtime === "pi" ? "external" : runtime;
 
     // Phase 2.5：每轮 turn 开始统一跑 Nudge（双核共用，读面板消息）
     this.runNudgeOnTurnStart(input.sessionId, meta);
 
-    // 会话只锁定运行内核：KSCC 内网与外部运行时不可互切；
+    // 会话只锁定运行内核：外部与内置本机内核不可互切；
     // 同一内核里的渠道和模型都允许在后续轮次继续选择。
     if (meta?.channelId) {
       const boundChannel = getChannel(meta.channelId);
       if (!boundChannel) {
         throw new Error("该会话原绑定渠道已不存在，无法确认运行内核");
       }
-      const boundKind: ChannelKind =
-        boundChannel.provider === "codex-internal"
-          ? "codex"
-          : boundChannel.provider === "kscc-internal"
-            ? resolveInternalAdapterKind(meta)
-            : "external";
+      const boundRuntime = resolveBoundRuntime(
+        meta,
+        (id) => getChannel(id)?.provider,
+      ) ?? inferRuntimeFromMeta(meta);
+      const boundKind: ChannelKind | undefined =
+        boundRuntime === undefined
+          ? undefined
+          : boundRuntime === "pi"
+            ? "external"
+            : boundRuntime;
       if (boundKind !== adapterKind) {
         throw new Error(
-          `该会话已锁定${boundKind === "kscc" ? "KSCC 内网" : "外部"}运行时，不能跨运行内核切换`,
+          `该会话已绑定${boundKind ? `「${boundKind}」` : "历史（已停用）"}运行内核，不能跨运行内核切换`,
         );
       }
     }
@@ -2543,7 +3305,7 @@ export class SessionService {
     };
     if (input.fusionAdvisorContext) {
       normalizedInput.prompt =
-        input.fusionAdvisorContext + "nn" + normalizedInput.prompt;
+        input.fusionAdvisorContext + "\n\n" + normalizedInput.prompt;
     }
 
     // Chat @：解析提及并写入 pendingMentionRoleIds（Work 默认不启用多角色乱 @）
@@ -2580,15 +3342,41 @@ export class SessionService {
 
     const adapter = getAdapter(adapterKind);
     let rt = this.runtimes.get(input.sessionId);
+    const bindingKey = runtimeConnectionFingerprint(runtime, channel, modelId);
+    if (rt && this.runtimeBindingBySession.get(input.sessionId) !== bindingKey) {
+      if (rt.isTurnInFlight() || rt.hasUnsettledStop() || rt.isInterrupting()) {
+        throw new Error("当前运行实例尚未停稳，不能切换 API 渠道；请先停止本轮后再发送");
+      }
+      // A same-runtime channel change is still a credentials/base-url change. Never enqueue it
+      // into the old process/manager: dispose and make the next send create a fresh native context.
+      this.disposeRuntimeForSwitch(input.sessionId);
+      rt = undefined;
+    }
+    // Config changes may have retired the old native loop asynchronously.
+    // Do not replace its SessionRuntime (isFirst branch below) before that
+    // fence settles, otherwise the fresh wrapper loses the old stop latch.
+    const awaitPreviousRuntime = async () => {
+      const previous = rt;
+      if (!previous?.hasUnsettledStop()) return;
+      const settled = await previous.waitForTurnSettled(RUNTIME_SWITCH_SETTLE_TIMEOUT_MS);
+      if (!settled || previous.hasUnsettledStop()) {
+        throw new Error("旧运行实例尚未确认停稳，请稍候再发送；未启动新回合");
+      }
+      if (this.runtimes.get(input.sessionId) !== previous) {
+        throw new Error("等待停止期间运行实例发生变化，请重新发送；未启动新回合");
+      }
+    };
+    if (rt?.hasUnsettledStop()) await awaitPreviousRuntime();
     let isFirst = !rt || !rt.hasLiveProcess();
-    // KSCC 的长驻进程只在 spawn 时读取 system prompt；旁路 Bot 的主会话前情提要
+    // 官方 Claude Code 的长驻进程只在 spawn 时读取 system prompt；旁路 Bot 的主会话前情提要
     // 可能随父会话变化，因此带 contextPrompt 的后续回合需要按新前情提要重建。
     if (
       !isFirst &&
-      adapterKind === "kscc" &&
+      adapterKind === "claude-code" &&
       normalizedInput.contextPrompt?.trim()
     ) {
       rt!.dropLiveProcessForConfigChange("sidecar-context-refresh");
+      if (rt!.hasUnsettledStop()) await awaitPreviousRuntime();
       isFirst = true;
     }
 
@@ -2596,19 +3384,19 @@ export class SessionService {
       `[会话 ${input.sessionId}] ${isFirst ? "首次：spawn + 起循环" : "后续：复用长驻进程 enqueue"}（渠道=${channel.name} 核=${adapterKind} workspaceId=${workspaceId ?? "(无)"}）`,
     );
 
-    // KSCC 是真正的长驻 Query，同内核切模型时先调用 SDK 热切接口。
-    if (!isFirst && adapterKind === "kscc" && meta?.modelId !== modelId) {
+    // 官方 Claude Code 是真正的长驻 Query，同内核切模型时先调用 SDK 热切接口。
+    if (!isFirst && adapterKind === "claude-code" && meta?.modelId !== modelId) {
       await rt!.setModel(modelId);
       console.log(
-        `[会话 ${input.sessionId}] KSCC 热切模型：${meta?.modelId ?? "(未记录)"} → ${modelId}`,
+        `[会话 ${input.sessionId}] Claude Code 热切模型：${meta?.modelId ?? "(未记录)"} → ${modelId}`,
       );
     }
 
     // 持久化用户消息到 JSONL 并推渲染层。按核分流：
-    // - kscc：落盘 SDKMessage（resume 读 JSONL 要此格式）+ sdkMessageToIR 推 IR
+    // - claude-code：落盘 SDKMessage（resume 读 JSONL 要此格式）+ sdkMessageToIR 推 IR
     // - pi：直接落盘 IR（pi 自管上下文，不靠 SDK resume）+ 直推 IR
     if (!input.skipUserPersist) {
-      if (adapterKind === "kscc") {
+      if (adapterKind === "claude-code") {
         const now = Date.now();
         const userMsg: SDKMessage = {
           type: "user",
@@ -2693,6 +3481,11 @@ export class SessionService {
       input.sessionId,
     );
     const hasActiveChannel = !!adapter.hasActiveChannel?.(input.sessionId);
+    // ADR-0011 §5.1 步骤 5：跨内核切换后**一次性**投递交接资料。
+    // 交接资料本身已含「近期可见对话」，故本轮不再叠加面板历史注入（避免重复）。
+    const pendingHandoff = shouldInjectHandoff(meta)
+      ? meta?.runtimeHandoff
+      : undefined;
     let suppressResume = false;
     if (moaCtx.hasMoAConclusion) {
       if (hasActiveChannel) {
@@ -2701,7 +3494,7 @@ export class SessionService {
         console.log(
           `[会话 ${input.sessionId}] T7 LIVE 注入：活跃进程前置 ${moaCtx.conclusionText.length} 字 MoA 结论进本轮 prompt`,
         );
-      } else if (moaCtx.historyText) {
+      } else if (moaCtx.historyText && !pendingHandoff) {
         // RESTART/无进程：注入全量面板历史 + 抑制 resume（不读 kscc resume 文件，无双上下文）
         normalizedInput.prompt = composeMoaPrompt(
           normalizedInput.prompt,
@@ -2715,7 +3508,8 @@ export class SessionService {
     } else if (
       isFirst &&
       !(adapterKind === "codex" ? meta?.codexThreadId : meta?.sdkSessionId) &&
-      !hasActiveChannel
+      !hasActiveChannel &&
+      !pendingHandoff
     ) {
       // 无 MoA → 保持现状（原 P0 #1）：首条 spawn 且无 sdkSessionId/无内存 Agent → 拼面板历史补上下文
       if (moaCtx.historyText) {
@@ -2725,6 +3519,42 @@ export class SessionService {
         );
         console.log(
           `[会话 ${input.sessionId}] 续聊注入：无 sdkSessionId/无内存 Agent，拼 ${moaCtx.historyText.length} 字历史进本轮 prompt`,
+        );
+      }
+    }
+
+    // ADR-0011 §5.1 步骤 5：把待投递交接资料拼到本轮 prompt 末尾（在落盘 user 之后，
+    // 不会污染用户可见气泡）。
+    // 本切片**不**在此消费交接资料：`SessionRuntime.sendMessage` 走 `void runLoop(...)`，
+    // 同步返回只是「已交给事件循环」，不等于目标内核已受理/已产出。消费只发生在观察到原生终态时
+    // （成功 → 消费；出错/停止 → 保留或标记可重投，见 finalizeHandoffAttempt）。
+    let handoffInjected = false;
+    if (pendingHandoff) {
+      const composed = applyRuntimeHandoffToPrompt(
+        normalizedInput.prompt,
+        pendingHandoff,
+      );
+      if (composed) {
+        normalizedInput.prompt = composed;
+        handoffInjected = true;
+        // 先落盘「已尝试」标记：进程在投递中途死掉时状态依然诚实可查
+        const attemptPatch = planHandoffAttempt({
+          meta: { runtimeHandoff: pendingHandoff },
+          now: Date.now(),
+        });
+        if (attemptPatch) {
+          try {
+            updateSessionMeta(input.sessionId, attemptPatch);
+          } catch (err) {
+            console.warn("[session-service] 交接尝试标记落盘失败:", err);
+          }
+        }
+        this.handoffAttemptBySession.set(input.sessionId, {
+          revision: meta?.runtimeSwitchRevision ?? 0,
+          sawNativeOutput: false,
+        });
+        console.log(
+          `[会话 ${input.sessionId}] 交接资料投递（${pendingHandoff.from} → ${pendingHandoff.to}，${pendingHandoff.content.length} 字，第 ${(pendingHandoff.attempts ?? 0) + 1} 次尝试）`,
         );
       }
     }
@@ -2746,6 +3576,7 @@ export class SessionService {
           title: input.prompt.slice(0, 20) || "新会话",
           channelId,
           modelId,
+          agentRuntime: runtime,
           internalBackend: persistedInternalBackend(adapterKind),
           workspaceId,
           turnCount: 1,
@@ -2756,6 +3587,7 @@ export class SessionService {
         );
       } else {
         updateSessionMeta(input.sessionId, {
+          agentRuntime: runtime,
           channelId,
           modelId,
           internalBackend: persistedInternalBackend(adapterKind),
@@ -2764,12 +3596,23 @@ export class SessionService {
         });
       }
       // 建 SessionRuntime + 起循环
-      rt = new SessionRuntime(input.sessionId, adapter);
+      // 官方 Claude Code 由自身 SDK 管理上下文压缩；Pi 自管。
+      rt = new SessionRuntime(input.sessionId, adapter, {
+        onContextOverflow: undefined,
+      });
       this.runtimes.set(input.sessionId, rt);
+      this.runtimeBindingBySession.set(input.sessionId, bindingKey);
+      // ADR-0011 §5.1：被切换替换掉的旧内核实例可能仍有迟到事件/回调在飞。
+      // 只有「当前 runtimes 表里的实例」才允许写会话状态，旧实例一律丢弃。
+      const isStaleRuntime = () => this.runtimes.get(input.sessionId) !== rt;
       rt.setCallbacks({
         onMessage: (msg: SDKMessage) => {
-          // 按核分流：kscc 产 SDKMessage → sdkMessageToIR；pi 实际产 TAgentDesktopStreamPayload（经 as 适配契约）
-          if (adapterKind === "kscc") {
+          if (isStaleRuntime()) return;
+          // 目标内核本轮已产出原生输出 → 交接尝试不再是「没送达」
+          const attempt = this.handoffAttemptBySession.get(input.sessionId);
+          if (attempt && !attempt.sawNativeOutput) attempt.sawNativeOutput = true;
+          // 按核分流：claude-code 产 SDKMessage → sdkMessageToIR；pi 实际产 TAgentDesktopStreamPayload（经 as 适配契约）
+          if (adapterKind === "claude-code") {
             this.handleSdkStreamMessage(input.sessionId, workspaceId, msg);
           } else {
             this.handlePiStreamPayload(
@@ -2779,7 +3622,16 @@ export class SessionService {
             );
           }
         },
-        onTurnEnd: () => {
+        onTurnEnd: (info?: { outcome?: string }) => {
+          if (isStaleRuntime()) return;
+          // onTurnEnd **不是**成功专属：error_max_turns / error_during_execution /
+          // paused_no_progress / max_tokens / 上下文溢出软重置后的收尾同样会到这里。
+          // 只有明确的成功终态才算「交接已送达并完成」，其余一律按 error 结算
+          // （产出过原生输出 → ambiguous 保留；从未产出 → retryable 可重投）。
+          this.finalizeHandoffAttempt(
+            input.sessionId,
+            info?.outcome === "success" ? "success" : "error",
+          );
           // 轮成功结束 → 清除可能的 error，落盘 idle。
           // 注意：不再清空 pendingMentionRoleIds —— 它现在是持久的 activeSpeaker（followMode），
           // 连续追问同一角色时下一轮无 @ 仍由该角色接；用户在输入框 ✕ 清除走 CLEAR_MENTION_FOLLOW。
@@ -2798,16 +3650,24 @@ export class SessionService {
           // kscc 长驻：result 后 loop 不退，pending（live 失败降级）须在此 flush。
           // Pi：不可在此 flush——仍在 for-await 内，会把 turnInFlight 再置真 → 旧 loop 误判崩溃。
           if (adapterKind !== "external") {
+            this.restoreLiveAfterBackgroundCallback(input.sessionId);
             this.flushPendingSteer(input.sessionId);
+            this.flushBackgroundCallbacks(input.sessionId);
           }
           this.resolveNextTurnEndWaiters(input.sessionId);
           this.cleanupAgentBrowser(input.sessionId);
         },
         onLoopIdle: () => {
+          if (isStaleRuntime()) return;
           // Pi（及 kscc 进程退出）：loop 停稳后再开下一轮，避免假「自动恢复失败」
+          this.restoreLiveAfterBackgroundCallback(input.sessionId);
           this.flushPendingSteer(input.sessionId);
+          this.flushBackgroundCallbacks(input.sessionId);
         },
         onError: (err: Error) => {
+          if (isStaleRuntime()) return;
+          // 出错 → 交接尝试结算：产出过输出则标记模糊（不自动重投），从未产出则允许下次重投
+          this.finalizeHandoffAttempt(input.sessionId, "error");
           // 出错 → 落盘 error（重启保留，下轮成功回 idle）
           updateSessionMeta(input.sessionId, { status: "error" });
           this.planStepSignalsSeenBySession.delete(input.sessionId);
@@ -2825,16 +3685,26 @@ export class SessionService {
         },
       });
 
-      await rt.sendMessage(
-        await this.buildQueryOptions(
-          normalizedInput,
-          channel,
-          workspaceId,
-          suppressResume ? { suppressResume: true } : undefined,
-        ),
-      );
+      try {
+        await rt.sendMessage(
+          await this.buildQueryOptions(
+            normalizedInput,
+            channel,
+            runtime,
+            workspaceId,
+            suppressResume ? { suppressResume: true } : undefined,
+          ),
+        );
+      } catch (err) {
+        // 目标内核在产出任何原生输出前就没起来（构建 query / spawn 抛错）→ 交接资料从未送达
+        if (handoffInjected) {
+          this.finalizeHandoffAttempt(input.sessionId, "startup-failed");
+        }
+        throw err;
+      }
     } else {
       updateSessionMeta(input.sessionId, {
+        agentRuntime: runtime,
         channelId,
         modelId,
         internalBackend: persistedInternalBackend(adapterKind),
@@ -2848,6 +3718,7 @@ export class SessionService {
           normalizedInput.prompt,
           this.getExecutionMode(input.sessionId),
           input.isSteer,
+          input.forceKanbanDispatch === true,
         ) ||
         buildAutoPlanPrompt(
           normalizedInput.prompt,
@@ -2855,7 +3726,7 @@ export class SessionService {
           input.isSteer,
         );
       const liveModelPrompt = liveAutoPlanPrompt
-        ? liveAutoPlanPrompt + "nn" + normalizedInput.prompt
+        ? liveAutoPlanPrompt + "\n\n" + normalizedInput.prompt
         : normalizedInput.prompt;
       // 后续：enqueue。prompt 已含路径附录；图片再打成 image block。
       const userMessage: SDKUserMessageInput = {
@@ -2866,10 +3737,18 @@ export class SessionService {
         },
         parent_tool_use_id: null,
       } as unknown as SDKUserMessageInput;
-      await rt!.sendMessage(
-        await this.buildQueryOptions(normalizedInput, channel, workspaceId),
-        userMessage,
-      );
+      try {
+        await rt!.sendMessage(
+          await this.buildQueryOptions(normalizedInput, channel, runtime, workspaceId),
+          userMessage,
+        );
+      } catch (err) {
+        // 同上：enqueue 路径在产出任何原生输出前失败 → 交接资料从未送达
+        if (handoffInjected) {
+          this.finalizeHandoffAttempt(input.sessionId, "startup-failed");
+        }
+        throw err;
+      }
     }
   }
 
@@ -2891,52 +3770,19 @@ export class SessionService {
     workspaceId: string | undefined,
     sticky: boolean,
   ): Promise<void> {
-    // 1. 按 channel.provider 选 seat runner（kscc bare vs Pi HTTP 直连）+ 必要前置检查。
-    //    同场不混核：一轮全程只用一种 runner；凭据在主进程解密，不进预置/圆桌卡。
+    const availableChannels = listChannels();
     let seatRunner: MoASeatRunner;
-    if (channel.provider === "kscc-internal") {
-      const ksccPath = resolveKsccPath();
-      if (!ksccPath) {
-        const msg = "未检测到 kscc 命令，请先安装 kscc（内网渠道）";
-        this.sendPayload(input.sessionId, {
-          kind: "tagent_event",
-          event: {
-            type: "session_error",
-            message: msg,
-            error: classifyUserFacingError(msg),
-          },
-        });
-        this.sendPayload(input.sessionId, {
-          kind: "tagent_event",
-          event: { type: "turn_end" },
-        });
-        return;
-      }
-      seatRunner = createKsccSeatRunner({ ksccPath });
-    } else {
-      // 外部渠：主进程解密 apiKey（与 pi-adapter 同路）；缺失即报错，不发起会诊。
-      const apiKey = getDecryptedApiKey(channel.id);
-      if (!apiKey) {
-        const msg = `渠道「${channel.name}」未配置 API Key，无法发起外部会诊，请在渠道管理中填写`;
-        this.sendPayload(input.sessionId, {
-          kind: "tagent_event",
-          event: {
-            type: "session_error",
-            message: msg,
-            error: classifyUserFacingError(msg),
-          },
-        });
-        this.sendPayload(input.sessionId, {
-          kind: "tagent_event",
-          event: { type: "turn_end" },
-        });
-        return;
-      }
-      seatRunner = createPiHttpSeatRunner({
-        provider: channel.provider,
-        apiKey,
-        baseUrl: channel.baseUrl,
+    let seatRunnerFor: MoASeatRunnerFactory;
+    try {
+      ({ fallback: seatRunner, factory: seatRunnerFor } = createMoaSeatRunnerFactory(channel, availableChannels));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.sendPayload(input.sessionId, {
+        kind: "tagent_event",
+        event: { type: "session_error", message: msg, error: classifyUserFacingError(msg) },
       });
+      this.sendPayload(input.sessionId, { kind: "tagent_event", event: { type: "turn_end" } });
+      return;
     }
 
     // 2. 调度纯函数：预置解析 + 运行时可用性校验（早失败少占资源）。
@@ -2944,11 +3790,9 @@ export class SessionService {
     //    外部渠用 resolveConsultPresetsForChannel（合成 channel-default / channel-same-model，
     //    或命中本渠的 stored）。one-shot 选中的合成预置 id 即在此列表中命中。
     const storedPresets = listMoaPresets();
-    const dispatchPresets =
-      channel.provider === "kscc-internal"
-        ? storedPresets
-        : resolveConsultPresetsForChannel(channel, storedPresets);
-    const dispatch = resolveMoADispatch(moaModelId, channel, dispatchPresets);
+    const dynamicPresets = resolveConsultPresetsForChannel(channel, storedPresets, availableChannels);
+    const dispatchPresets = [...storedPresets, ...dynamicPresets.filter((p) => !storedPresets.some((s) => s.id === p.id))];
+    const dispatch = resolveMoADispatch(moaModelId, channel, dispatchPresets, availableChannels);
     if (dispatch.kind !== "moa") {
       const msg = dispatch.kind === "error" ? dispatch.message : "会诊调度异常";
       this.sendPayload(input.sessionId, {
@@ -3014,6 +3858,8 @@ export class SessionService {
         preset,
         workspaceId,
         seatRunner,
+        seatRunnerFor,
+        availableChannels,
         signal: controller.signal,
         sendPayload: (payload) => this.sendPayload(input.sessionId, payload),
         attachments: input.attachments,
@@ -3067,64 +3913,31 @@ export class SessionService {
     meta: AgentSessionMeta | undefined,
     workspaceId: string | undefined,
   ): Promise<void> {
-    // 1. 按 channel.provider 选 seat runner（与 runMoATurn 完全相同：同场不混核，凭据主进程解密）。
+    const availableChannels = listChannels();
     let seatRunner: MoASeatRunner;
-    if (channel.provider === "kscc-internal") {
-      const ksccPath = resolveKsccPath();
-      if (!ksccPath) {
-        const msg = "未检测到 kscc 命令，请先安装 kscc（内网渠道）";
-        this.sendPayload(input.sessionId, {
-          kind: "tagent_event",
-          event: {
-            type: "session_error",
-            message: msg,
-            error: classifyUserFacingError(msg),
-          },
-        });
-        this.sendPayload(input.sessionId, {
-          kind: "tagent_event",
-          event: { type: "turn_end" },
-        });
-        return;
-      }
-      seatRunner = createKsccSeatRunner({ ksccPath });
-    } else {
-      // 外部渠：主进程解密 apiKey（与 pi-adapter / runMoATurn 同路）；缺失即报错，不发起讨论。
-      const apiKey = getDecryptedApiKey(channel.id);
-      if (!apiKey) {
-        const msg = `渠道「${channel.name}」未配置 API Key，无法发起外部圆桌讨论，请在渠道管理中填写`;
-        this.sendPayload(input.sessionId, {
-          kind: "tagent_event",
-          event: {
-            type: "session_error",
-            message: msg,
-            error: classifyUserFacingError(msg),
-          },
-        });
-        this.sendPayload(input.sessionId, {
-          kind: "tagent_event",
-          event: { type: "turn_end" },
-        });
-        return;
-      }
-      seatRunner = createPiHttpSeatRunner({
-        provider: channel.provider,
-        apiKey,
-        baseUrl: channel.baseUrl,
+    let seatRunnerFor: MoASeatRunnerFactory;
+    try {
+      ({ fallback: seatRunner, factory: seatRunnerFor } = createMoaSeatRunnerFactory(channel, availableChannels));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.sendPayload(input.sessionId, {
+        kind: "tagent_event",
+        event: { type: "session_error", message: msg, error: classifyUserFacingError(msg) },
       });
+      this.sendPayload(input.sessionId, { kind: "tagent_event", event: { type: "turn_end" } });
+      return;
     }
 
     // 2. 预置解析 + 运行时校验（与会诊 one-shot 同源：moa:<presetId> 经 resolveMoADispatch，
     //    跨渠禁席/模型未启用/预置缺失均在此早失败并返回中文文案）。
     const storedPresets = listMoaPresets();
-    const dispatchPresets =
-      channel.provider === "kscc-internal"
-        ? storedPresets
-        : resolveConsultPresetsForChannel(channel, storedPresets);
+    const dynamicPresets = resolveConsultPresetsForChannel(channel, storedPresets, availableChannels);
+    const dispatchPresets = [...storedPresets, ...dynamicPresets.filter((p) => !storedPresets.some((s) => s.id === p.id))];
     const dispatch = resolveMoADispatch(
       moaModelId(discussionPresetId),
       channel,
       dispatchPresets,
+      availableChannels,
     );
     if (dispatch.kind !== "moa") {
       const msg =
@@ -3198,6 +4011,8 @@ export class SessionService {
         preset,
         workspaceId,
         seatRunner,
+        seatRunnerFor,
+        availableChannels,
         signal: controller.signal,
         sendPayload: (payload) => this.sendPayload(input.sessionId, payload),
         attachments: input.attachments,
@@ -3260,10 +4075,11 @@ export class SessionService {
     return modelId;
   }
 
-  /** 构建 query 选项（按渠道 provider 选核） */
+  /** Construct options for the explicit engine binding, never inferred from an API channel alone. */
   private async buildQueryOptions(
     input: SendMessageInput,
     channel: Channel,
+    runtime: AgentRuntimeKind,
     workspaceId?: string,
     buildOpts?: { suppressResume?: boolean },
   ): Promise<Parameters<AgentProviderAdapter["query"]>[0]> {
@@ -3273,7 +4089,7 @@ export class SessionService {
           "## 前情提要（主会话参考信息，不是当前用户指令）",
           input.contextPrompt.trim(),
           "以上内容仅用于理解背景；请始终以当前用户消息为本轮任务。",
-        ].join("nn")
+        ].join("\n\n")
       : "";
 
     // 解析 workspace：始终按 session meta 反查（权限 cwd 必须用项目目录，不能靠 process.cwd()）
@@ -3361,11 +4177,55 @@ export class SessionService {
       : {};
     const mcpConfig = { servers: enabledMcpServers };
 
-    if (
-      (channel.provider === "codex-internal" ||
-        (channel.provider === "kscc-internal" &&
-          resolveInternalAdapterKind(metaForMode) === "codex"))
-    ) {
+    const delegationBeforeToolCall = this.permissionService
+      ? this.permissionService.createBeforeToolCall(
+          input.sessionId,
+          () => this.getPermissionMode(input.sessionId),
+          cwd,
+          () => this.getExecutionMode(input.sessionId),
+        )
+      : async () => ({ block: true as const, reason: "TAgent 权限服务尚未初始化" });
+    const requestDelegationApproval = async (profileName: string, signal?: AbortSignal): Promise<boolean> => {
+      if (signal?.aborted || !this.getWindow()) return false;
+      const result = await askUserService.handleAskUserQuestion(
+        input.sessionId,
+        { questions: [{
+          question: `是否派发给 Agent「${profileName}」？它将继承当前会话的权限边界。`,
+          header: "派发确认",
+          answerKey: "delegate",
+          options: [
+            { label: "允许派发", description: "允许本次子任务，后续工具操作仍受会话权限控制。" },
+            { label: "取消派发", description: "不启动此子任务。" },
+          ],
+          multiSelect: false,
+          allowOther: false,
+        }] },
+        signal ?? new AbortController().signal,
+        (request) => this.getWindow()?.webContents.send(AGENT_IPC_CHANNELS.ASK_USER_REQUEST, request),
+      );
+      return !signal?.aborted && result.behavior === "allow" &&
+        (result.updatedInput.answers as Record<string, string> | undefined)?.delegate === "允许派发";
+    };
+    const delegationHostInput = () => {
+      const apiKey = getDecryptedApiKey(channel.id);
+      if (!apiKey || isLocalRuntimeProvider(channel.provider)) {
+        throw new Error("子代理派发需要已配置 API Key 的渠道");
+      }
+      const channelConfig: PiAgentAdapterConfig = {
+        type: "external", provider: channel.provider, apiProtocol: channel.apiProtocol,
+        apiKey, baseUrl: channel.baseUrl, modelId: model,
+        contextWindow: resolveModelContextWindow(channel, model),
+        headers: resolveChannelRequestHeaders(channel.provider, apiKey),
+      };
+      return {
+        sessionId: input.sessionId, channelConfig, cwd, channelId: channel.id,
+        beforeToolCall: delegationBeforeToolCall,
+        emitPayload: (payload: TAgentDesktopStreamPayload) => this.sendPayload(input.sessionId, payload),
+        requestApproval: requestDelegationApproval,
+      };
+    };
+
+    if (runtime === "codex") {
       const executionMode = this.getExecutionMode(input.sessionId);
       const reasoningEffort = migrateReasoningEffort(
         metaForMode?.reasoningEffort,
@@ -3411,15 +4271,18 @@ export class SessionService {
           );
         },
       });
-      const codexKanbanTools = buildPiKanbanTools({
+      const codexKanbanTools = CREW_ORCHESTRATION_ENABLED && executionMode === "work" ? buildPiKanbanTools({
         sessionId: input.sessionId,
         channelId: channel.id,
         agentCwd: cwd,
         workspaceId: workspace?.slug,
         toolMode: "full",
-      });
+      }) : [];
       const dynamicToolRegistry = new CodexDynamicToolRegistry(
-        [...codexBrowserTools, ...codexKbTools, ...codexKanbanTools].map(
+        [...codexBrowserTools, ...codexKbTools, ...codexKanbanTools,
+          ...(executionMode === "work" && channel.provider !== "codex-internal"
+            ? await buildDelegationHostTools(delegationHostInput()) : []),
+        ].map(
           (tool) => ({
             tool,
             permission: resolveCodexDynamicToolPermission(tool.name),
@@ -3530,12 +4393,13 @@ export class SessionService {
       };
       const developerInstructions = [
         buildExecutionModePrompt(executionMode),
+        executionMode === "work" ? buildSubagentDelegationPrompt(migrateSubagentEagerness(metaForMode?.subagentEagerness)) : "",
         contextPromptAppend,
         executionMode === "chat" ? buildUserSystemPromptAppend() : "",
         BROWSER_SYSTEM_PROMPT,
         "## 身份与自我介绍\n你是 TAgent 的 Codex 主会话执行后端。不要提及 CLI、App Server 或出品方品牌；直接完成用户任务。",
         buildOutputStylePrompt(),
-        executionMode === "work"
+        CREW_ORCHESTRATION_ENABLED && executionMode === "work"
           ? "## 看板派工工具\nWork 模式可用：kanban_create_board、kanban_add_task、kanban_list_boards、kanban_list_tasks、kanban_complete、kanban_block。长任务应拆成可验收的看板任务并指定 roleId；调度器会派发执行。"
           : "",
         this.buildMentionPromptAppend(input.sessionId, executionMode),
@@ -3562,6 +4426,27 @@ export class SessionService {
       // Codex 会话模型以渠道/会话选择为准；环境变量只作为无选择时的开发兜底。
       const codexModel =
         input.model?.trim() || process.env.TAGENT_CODEX_MODEL?.trim() || undefined;
+      const apiConnection = channel.provider === "codex-internal"
+        ? undefined
+        : (() => {
+            const apiProtocol = resolveChannelApiProtocol(channel);
+            if (apiProtocol !== "openai-responses" && apiProtocol !== "openai-chat" && apiProtocol !== "anthropic-messages") {
+              throw new Error(`渠道「${channel.name}」没有可适配的 API 协议`);
+            }
+            const apiKey = getDecryptedApiKey(channel.id);
+            if (!apiKey) {
+              throw new Error(`渠道「${channel.name}」的 apiKey 未设置或解密失败，无法启动 Codex API 会话`);
+            }
+            return {
+              channelId: channel.id,
+              provider: channel.provider,
+              baseUrl: channel.baseUrl,
+              apiKey,
+              apiProtocol: resolveChannelApiProtocol(channel) as "anthropic-messages" | "openai-responses" | "openai-chat",
+              contextWindow: resolveModelContextWindow(channel, model),
+              headers: resolveChannelRequestHeaders(channel.provider, apiKey),
+            };
+          })();
       const opts: CodexQueryOptions = {
         sessionId: input.sessionId,
         prompt: input.prompt,
@@ -3572,7 +4457,7 @@ export class SessionService {
         effort: reasoningEffort,
         approvalPolicy,
         sandbox,
-        config: codexMcpProjection.config,
+        config: { ...codexMcpProjection.config, "features.multi_agent": false },
         developerInstructions,
         dynamicTools: dynamicToolRegistry.specs,
         resumeThreadId: buildOpts?.suppressResume
@@ -3598,15 +4483,29 @@ export class SessionService {
           console.error(`[codex stderr] ${data}`);
           this.runtimes.get(input.sessionId)?.reportStderr(data);
         },
+        ...(apiConnection ? { apiConnection } : {}),
       };
       return opts as unknown as Parameters<AgentProviderAdapter["query"]>[0];
     }
 
-    if (channel.provider === "kscc-internal") {
-      const ksccPath = resolveKsccPath();
-      if (!ksccPath) {
-        throw new Error("未检测到 kscc 命令，请先安装 kscc（内网渠道）");
+    if (runtime === "claude-code") {
+      const apiProtocol = resolveChannelApiProtocol(channel);
+      if (apiProtocol !== "openai-responses" && apiProtocol !== "openai-chat" && apiProtocol !== "anthropic-messages") {
+        throw new Error(`渠道「${channel.name}」没有可适配的 API 协议`);
       }
+      const apiKey = getDecryptedApiKey(channel.id);
+      if (!apiKey) {
+        throw new Error(`渠道「${channel.name}」的 apiKey 未设置或解密失败，无法启动 Claude Code API 会话`);
+      }
+      const apiConnection = {
+        channelId: channel.id,
+        provider: channel.provider,
+        baseUrl: channel.baseUrl,
+        apiKey,
+        apiProtocol: resolveChannelApiProtocol(channel) as "anthropic-messages" | "openai-responses" | "openai-chat",
+        contextWindow: resolveModelContextWindow(channel, model),
+        headers: resolveChannelRequestHeaders(channel.provider, apiKey),
+      };
       const meta = getSessionMeta(input.sessionId);
       const knowledgeBaseIds = Array.isArray(meta?.knowledgeBaseIds)
         ? meta.knowledgeBaseIds.filter(
@@ -3668,7 +4567,12 @@ export class SessionService {
         : undefined;
       const executionMode = this.getExecutionMode(input.sessionId);
       const autoPlanPrompt =
-        buildAutoKanbanPrompt(input.prompt, executionMode, input.isSteer) ||
+        buildAutoKanbanPrompt(
+          input.prompt,
+          executionMode,
+          input.isSteer,
+          input.forceKanbanDispatch === true,
+        ) ||
         buildAutoPlanPrompt(input.prompt, executionMode, input.isSteer);
       // Work：注入看板 MCP（create/add/list）；Chat 不注入
       const mcpServers: Record<string, unknown> = {
@@ -3676,6 +4580,9 @@ export class SessionService {
           ? (enabledMcpServers as Record<string, unknown>)
           : {}),
       };
+      if (executionMode === "work") {
+        await injectDelegationMcpServer(mcpServers, delegationHostInput());
+      }
       try {
         await injectBrowserMcpServer(mcpServers, {
           sessionId: input.sessionId,
@@ -3697,7 +4604,7 @@ export class SessionService {
       } catch (err) {
         console.warn("[会话] 注入知识库 MCP 失败:", err);
       }
-      if (executionMode === "work") {
+      if (CREW_ORCHESTRATION_ENABLED && executionMode === "work") {
         try {
           await injectKanbanMcpServer(mcpServers, {
             sessionId: input.sessionId,
@@ -3719,9 +4626,8 @@ export class SessionService {
         model,
         cwd,
         executionMode,
-        sdkCliPath: ksccPath,
-        env: { ...process.env } as Record<string, string | undefined>,
-        maxTurns: 50,
+        ...(apiConnection ? { apiConnection } : {}),
+        // 主会话不再沿用旧的 50 轮硬上限；由 Agent loop 自行收敛，用户可随时停止。
         // 思考强度 → SDK effort（low/medium/high/max），ClaudeAgentAdapter.buildSdkOptions 注入
         reasoningEffort,
         // 接上 resolveSdkPermissionModeForTAgent：auto/bypassPermissions → 'default'，
@@ -3750,7 +4656,7 @@ export class SessionService {
             executionMode === "work"
               ? buildSubagentDelegationPrompt(eagerness)
               : "",
-            executionMode === "work"
+            CREW_ORCHESTRATION_ENABLED && executionMode === "work"
               ? "## 看板派工工具nWork 模式可用：kanban_create_board、kanban_add_task、kanban_list_boards、kanban_list_tasks。长任务拆成看板任务并指定 roleId；调度器会派 headless 工人。"
               : "",
             this.buildMentionPromptAppend(input.sessionId, executionMode),
@@ -3769,7 +4675,7 @@ export class SessionService {
             mem.memorySnapshotSection,
           ]
             .filter(Boolean)
-            .join("nn"),
+            .join("\n\n"),
         },
         persistSession: true,
         // 无进展守卫（KSCC：PostToolBatch 注入 / PreToolUse 拦截 / interrupt 暂停）
@@ -3789,12 +4695,8 @@ export class SessionService {
         // claudeAvailable 按渠道判定（isClaudeAvailableForChannel）：非 Anthropic 系（kscc-internal 等）
         // → false → 操作型角色不带 model → SDK 继承父会话模型（glm 等），避免钉 haiku 打到无 Claude
         // 的网关而子代理首轮 LLM 调用即失败。仅 Anthropic 系渠道才钉 haiku。见 SUBAGENT-FAIL-FINDINGS 根因 1。
-        agents:
-          executionMode === "work"
-            ? buildBuiltinSubagentDefinitions(
-                isClaudeAvailableForChannel(channel),
-              )
-            : undefined,
+        agents: undefined,
+        disallowedTools: ["Agent", "Task"],
         // 权限钩子（bypass 模式不挂）
         ...(canUseTool ? { canUseTool } : {}),
         // 长驻首次 spawn 带 resume 续历史（SDK 读 JSONL 一次），之后靠内存。
@@ -3823,9 +4725,7 @@ export class SessionService {
     // 外部渠道：Pi 核，构造 PiQueryOptions
     // PiAgentAdapter.query() 解构 channelConfig（嵌套对象），不是扁平字段。
     // 对应 PiExternalChannelConfig：type/provider/apiKey/baseUrl/modelId/thinking*
-    // 注：subagentEagerness 当前仅注入 kscc 核。Pi 核的 systemPrompt 是「整体替换」
-    // （systemPrompt ?? DEFAULT_SYSTEM_PROMPT）而非 append，且 DEFAULT_SYSTEM_PROMPT 未导出，
-    // 直接注入委派策略会覆盖默认 system prompt，故暂不接；如需支持需先给 Pi 核加 append 点。
+    // Pi 与官方内核共用宿主派发策略；通过 append 保留默认系统提示词。
     const apiKey = getDecryptedApiKey(channel.id);
     if (!apiKey) {
       // apiKey 解密失败（Windows DPAPI 跨实例不可互通）或未设置 → 早点报错，别让空 key 打到 HTTP
@@ -3834,32 +4734,29 @@ export class SessionService {
       );
     }
     // beforeToolCall：pi-agent-core 签名，包 PermissionService.createBeforeToolCall
-    const beforeToolCall = this.permissionService
-      ? this.permissionService.createBeforeToolCall(
-          input.sessionId,
-          () => this.getPermissionMode(input.sessionId),
-          cwd,
-          () => this.getExecutionMode(input.sessionId),
-        )
-      : undefined;
+    const beforeToolCall = delegationBeforeToolCall;
     const piMeta = getSessionMeta(input.sessionId);
     // Pi 核思考强度：reasoningEffort → thinkingLevel（thinkingEnabled=false 时为 no-op，不回归既有行为）。
     // 仅当渠道后续开启 thinking 时该档位才生效；当前默认关闭，思考强度实际生效在 kscc/ClaudeAgentAdapter。
     const piReasoningEffort = migrateReasoningEffort(piMeta?.reasoningEffort);
     // Pi 核 systemPrompt 为整体替换：注入执行形态段落（避免仅靠工具层无文案）
     const piExecutionMode = this.getExecutionMode(input.sessionId);
-    const autoPlanPrompt = buildAutoPlanPrompt(
-      input.prompt,
-      piExecutionMode,
-      input.isSteer,
-    );
+    const autoPlanPrompt =
+      buildAutoKanbanPrompt(
+        input.prompt,
+        piExecutionMode,
+        input.isSteer,
+        input.forceKanbanDispatch === true,
+      ) ||
+      buildAutoPlanPrompt(input.prompt, piExecutionMode, input.isSteer);
     const piExecutionPrompt = [
       buildExecutionModePrompt(piExecutionMode),
+      buildSubagentDelegationPrompt(migrateSubagentEagerness(piMeta?.subagentEagerness)),
       autoPlanPrompt,
       contextPromptAppend,
       piExecutionMode === "chat" ? buildUserSystemPromptAppend() : "",
       BROWSER_SYSTEM_PROMPT,
-      piExecutionMode === "work"
+      CREW_ORCHESTRATION_ENABLED && piExecutionMode === "work"
         ? "## 看板派工工具n可用 kanban_create_board / kanban_add_task / kanban_list_*。长任务拆任务并指定 roleId。"
         : "",
       this.buildMentionPromptAppend(input.sessionId, piExecutionMode),
@@ -3878,9 +4775,9 @@ export class SessionService {
       ),
     ]
       .filter(Boolean)
-      .join("nn");
+      .join("\n\n");
     const kanbanExtra =
-      piExecutionMode === "work"
+      CREW_ORCHESTRATION_ENABLED && piExecutionMode === "work"
         ? buildPiKanbanTools({
             sessionId: input.sessionId,
             channelId: channel.id,
@@ -3911,9 +4808,10 @@ export class SessionService {
       // MCP 配置（无 server 时 pi-core 跳过）
       mcpConfig,
       // 权限钩子（含 Chat 硬拦；始终挂上以便 Chat 下 bypass 也无法写）
-      ...(beforeToolCall ? { beforeToolCall } : {}),
+      beforeToolCall,
       // 执行形态 + Work 看板说明
       systemPromptAppend: piExecutionPrompt,
+      requestDelegationApproval,
       // 无进展守卫（Pi：afterToolCall observe / beforeToolCall 拦截 / abort 暂停）
       noProgressGuardMode,
       onNoProgressEvent,
@@ -3926,6 +4824,7 @@ export class SessionService {
       channelConfig: {
         type: "external" as const,
         provider: channel.provider,
+        apiProtocol: channel.apiProtocol,
         apiKey,
         baseUrl: channel.baseUrl,
         modelId: model,
@@ -3935,6 +4834,8 @@ export class SessionService {
           "minimal" | "low" | "medium" | "high",
         // Phase 1.1：注入真实 contextWindow（替代 buildPlaceholderModel 旧的 128k 硬编码）
         contextWindow: resolveModelContextWindow(channel, model),
+        // 渠道自定义头（内置网关的客户端标识）
+        headers: resolveChannelRequestHeaders(channel.provider, apiKey),
       },
     };
     void permissionMode;
@@ -4027,7 +4928,7 @@ export class SessionService {
         );
         blocks.push("");
       }
-      return blocks.join("n");
+      return blocks.join("\n");
     } catch (err) {
       console.warn("[会话] buildMentionPromptAppend 失败:", err);
       return "";
@@ -4062,7 +4963,8 @@ export class SessionService {
     (msg as any).createdAt = (msg as any).createdAt ?? Date.now();
     // 在 SDK 转译/展示清洗前提取隐藏阶段信号，避免未来的文本清洗把协议标记一起移除。
     this.emitPlanStepSignals(sessionId, msg);
-    const { message, event } = sdkMessageToIR(msg);
+    const displayMsg = stripPlanStepMarkersFromAssistantMessage(msg);
+    const { message, event } = sdkMessageToIR(displayMsg);
     const msgType = (msg as { type?: string }).type;
     // KSCC 单一流式来源：实时 text/thinking 只来自 SDK 原生 stream_event delta。
     // partial assistant 仅保留 block 结构，避免累计快照与原生 delta 双重追加；
@@ -4098,7 +5000,7 @@ export class SessionService {
       // REGRESS-G 落盘闸口：落盘走原始全量 msg（不受 delta/剥离影响）；同 uuid 去重留最新=final。
       const toPersist = feedStreamPersistGate(
         this.getStreamPersistGate(sessionId),
-        msg,
+        displayMsg,
       );
       this.persistStreamMessages(workspaceId, sessionId, toPersist);
       this.reconcilePersistedStreamMessages(sessionId, toPersist);
@@ -4121,24 +5023,6 @@ export class SessionService {
       }
       this.sendPayload(sessionId, event);
     }
-    // Phase 4：result 后跑软重置阈值（廉价清理 / 影子 / 切换）
-    if (msgType === "result") {
-      const meta = getSessionMeta(sessionId);
-      const usage = (
-        msg as { usage?: { input_tokens?: number; inputTokens?: number } }
-      ).usage;
-      const inputTokens = usage?.input_tokens ?? usage?.inputTokens;
-      void ksccSoftReset
-        .onTurnResult({
-          sessionId,
-          inputTokens,
-          modelId: meta?.modelId,
-          channelId: meta?.channelId,
-        })
-        .catch((e) =>
-          console.warn("[session-service] soft-reset onTurnResult failed:", e),
-        );
-    }
   }
 
   /** pi 路径：已是 IR（TAgentDesktopStreamPayload），落盘面板 IR + 推 IPC，不经 sdkMessageToIR。
@@ -4151,8 +5035,9 @@ export class SessionService {
     p: TAgentDesktopStreamPayload,
   ): void {
     if (p.kind === "sdk_message") {
-      const msg = p.message;
-      if (msg.type === "assistant") this.emitPlanStepSignals(sessionId, msg);
+      const rawMsg = p.message;
+      if (rawMsg.type === "assistant") this.emitPlanStepSignals(sessionId, rawMsg);
+      const msg = stripPlanStepMarkersFromAssistantMessage(rawMsg);
       if (
         msg.type === "user" &&
         userContentHasAttachmentAppendix(msg.content)
@@ -4173,7 +5058,7 @@ export class SessionService {
           );
         }
       }
-      this.sendPayload(sessionId, p);
+      this.sendPayload(sessionId, { ...p, message: msg });
     } else {
       this.sendPayload(sessionId, p);
     }
@@ -4456,6 +5341,10 @@ export class SessionService {
 
   /** 销毁所有会话（应用退出） */
   disposeAll(): void {
+    abortAllBackgroundTasks();
+    this.pendingBackgroundCallbacks.clear();
+    this.liveRestoreBySession.clear();
+    setBackgroundDelegationHooks(null);
     for (const [sessionId, rt] of this.runtimes) {
       rt.destroy();
       this.disposeBrowserSession(sessionId);

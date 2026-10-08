@@ -2,8 +2,8 @@
  * 设置 · Agent 行为 → MOA 班底（会诊 / 圆桌共用）— V3 双档 + 扁平名册
  *
  * 重设计（去「汇」流程图）：会诊列表改为名册行（轻分隔 hairline，无左竖条 / 无卡片渐变），
- * 顶部仅两档 pill（kscc 内网 | 外部渠道；选中描边+字重+浅 fill，非整颗纯黑/紫块）；
- * 外部渠道档合并所有已启用非 kscc 渠模型（按 id 去重），channelId 落盘 = 'external' 哨兵。
+ * 顶部仅两档 pill（内置网关 | 外部渠道；选中描边+字重+浅 fill，非整颗纯黑/紫块）；
+ * 外部渠道档合并所有已启用非内置渠模型（按 id 去重），channelId 落盘 = 'external' 哨兵。
  * 座位由「参考 chip → 汇圆 → 箭头 → 汇总 chip」改为单行 `名·模型 · … → 汇总 模型`。
  * 本页为 MOA 班底 CRUD（会诊 / 圆桌共用）；hideIntro 时内嵌于 MoaSettings，去独立 intro。子代理 / 班组在侧栏独立分页。
  * 逻辑 CRUD / IPC / 校验**不变**：list / add / edit / delete / toggle / 中文报错全部保留。
@@ -45,7 +45,7 @@ import {
 } from '@tagent/shared'
 import {
   externalChannelsAtom,
-  ksccChannelAtom,
+  gatewayChannelAtom,
   loadChannelsAtom,
 } from '../../atoms/channel-atoms'
 import { bumpMoaPresetsRevisionAtom } from '../../atoms/moa-presets'
@@ -68,7 +68,7 @@ type Notice = { kind: 'info' | 'error' | 'success'; message: string }
 // ── 主组件 ──
 
 export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boolean }): JSX.Element {
-  const ksccChannel = useAtomValue(ksccChannelAtom)
+  const gatewayChannel = useAtomValue(gatewayChannelAtom)
   const externalChannels = useAtomValue(externalChannelsAtom)
   const loadChannels = useSetAtom(loadChannelsAtom)
   const bumpMoaPresetsRevision = useSetAtom(bumpMoaPresetsRevisionAtom)
@@ -77,8 +77,8 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
   const [loadError, setLoadError] = useState('')
   const [editor, setEditor] = useState<{ mode: EditorMode; preset?: MoAPreset } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<MoAPreset | null>(null)
-  /** 会诊档：仅两档（kscc 内网 | 外部渠道） */
-  const [selectedScope, setSelectedScope] = useState<'kscc' | 'external'>('kscc')
+  /** 会诊档：仅两档（内置网关 | 外部渠道） */
+  const [selectedScope, setSelectedScope] = useState<'gateway' | 'external'>('gateway')
 
   const reload = useCallback(async (): Promise<void> => {
     setLoadError('')
@@ -101,7 +101,7 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
     void loadChannels()
   }, [loadChannels])
 
-  // 外部档合并模型：所有已启用非 kscc 渠的 enabled 模型按 id 去重合并（SPEC 05 V3 · 外部渠合并）
+  // 外部档合并模型：所有已启用非内置渠的 enabled 模型按 id 去重合并（SPEC 05 V3 · 外部渠合并）
   const externalEnabledModels = useMemo(() => {
     const map = new Map<string, ChannelModel>()
     for (const c of externalChannels) {
@@ -113,49 +113,66 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
     return Array.from(map.values())
   }, [externalChannels])
 
-  const hasKscc = Boolean(ksccChannel?.enabled)
-  const hasAnyChannel = hasKscc || externalChannels.some((c) => c.enabled)
+  const hasGateway = Boolean(gatewayChannel?.enabled)
+  const hasAnyChannel = hasGateway || externalChannels.some((c) => c.enabled)
 
-  // 当前档：kscc 不可用时回落 external（避免选中不可用档卡死）；用户显式选 external 时尊重
-  const scope: 'kscc' | 'external' =
-    selectedScope === 'kscc' && !hasKscc ? 'external' : selectedScope
-  const isKscc = scope === 'kscc'
+  // 当前档：内置网关不可用时回落 external（避免选中不可用档卡死）；用户显式选 external 时尊重
+  const scope: 'gateway' | 'external' =
+    selectedScope === 'gateway' && !hasGateway ? 'external' : selectedScope
+  const isGateway = scope === 'gateway'
   const isExternal = scope === 'external'
 
-  // 当前档已启用模型：kscc = 本渠 enabled；外部 = 合并模型列表
+  // 当前档已启用模型：内置网关 = 本渠 enabled；外部 = 合并模型列表
   const enabledModels = useMemo(
     () =>
-      scope === 'kscc'
-        ? (ksccChannel?.models.filter((m) => m.enabled) ?? [])
+      scope === 'gateway'
+        ? (gatewayChannel?.models.filter((m) => m.enabled) ?? [])
         : externalEnabledModels,
-    [scope, ksccChannel, externalEnabledModels],
+    [scope, gatewayChannel, externalEnabledModels],
   )
 
-  // 本档班底：kscc 取 channelId === kscc.id（及 v1 无字段兼容）；外部取 channelId === 'external' 哨兵
+  // 编辑预置时展示当前档可用的全部「渠道 + 模型」组合；跨渠道席位必须保留 channelId，
+  // 否则同一个 modelId 在多个 API 渠道上会产生歧义。
+  const editorModelOptions = useMemo(() => {
+    if (scope === 'gateway') {
+      return (gatewayChannel?.models.filter((m) => m.enabled) ?? []).map((m) => ({
+        ...m,
+        channelId: gatewayChannel!.id,
+        channelName: gatewayChannel!.name,
+      }))
+    }
+    return externalChannels
+      .filter((c) => c.enabled)
+      .flatMap((c) => c.models
+        .filter((m) => m.enabled)
+        .map((m) => ({ ...m, channelId: c.id, channelName: c.name })))
+  }, [scope, gatewayChannel, externalChannels])
+
+  // 本档班底：内置网关取 channelId === gateway.id（及 v1 无字段兼容）；外部取 channelId === 'external' 哨兵
   const channelPresets = useMemo(() => {
-    if (scope === 'kscc') {
-      const ksccId = ksccChannel?.id
-      if (!ksccId) return []
-      return presets.filter((p) => !p.channelId || p.channelId === ksccId)
+    if (scope === 'gateway') {
+      const gatewayId = gatewayChannel?.id
+      if (!gatewayId) return []
+      return presets.filter((p) => !p.channelId || p.channelId === gatewayId)
     }
     return presets.filter((p) => p.channelId === MOA_EXTERNAL_SCOPE_ID)
-  }, [presets, scope, ksccChannel])
+  }, [presets, scope, gatewayChannel])
   const channelEnabledCount = channelPresets.filter((p) => p.enabled).length
 
-  const canAddPreset = scope === 'kscc' ? hasKscc : externalEnabledModels.length > 0
+  const canAddPreset = scope === 'gateway' ? hasGateway : externalEnabledModels.length > 0
 
-  // 空态 CTA：kscc 基于本渠 enabled 合成 draft；外部基于合并模型列表合成（channelId=external）
+  // 空态 CTA：内置网关基于本渠 enabled 合成 draft；外部基于合并模型列表合成（channelId=external）
   const handleGenerateDraft = useCallback((): void => {
     const id = generatePresetId(new Set(presets.map((p) => p.id)))
     const draftPreset =
-      scope === 'kscc'
-        ? ksccChannel
-          ? buildChannelBasedDraftPreset(ksccChannel, id)
+      scope === 'gateway'
+        ? gatewayChannel
+          ? buildChannelBasedDraftPreset(gatewayChannel, id)
           : null
         : buildExternalScopeDraftPreset(externalEnabledModels, id)
     if (!draftPreset) return
     setEditor({ mode: 'add', preset: draftPreset })
-  }, [scope, ksccChannel, externalEnabledModels, presets])
+  }, [scope, gatewayChannel, externalEnabledModels, presets])
 
   const handleDelete = async (): Promise<void> => {
     if (!deleteTarget) return
@@ -196,8 +213,8 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
           description={
             !hasAnyChannel
               ? '会诊与圆桌共用下列班底。请先在「渠道」中启用至少一个渠道。'
-              : isKscc
-                ? '配置 kscc 内网班底。席位无工具，查仓库请用普通发送。'
+              : isGateway
+                ? '配置 内置网关班底。席位无工具，查仓库请用普通发送。'
                 : '配置外部渠道班底（合并已启用外渠模型）。席位无工具，查仓库请用普通发送。'
           }
         />
@@ -207,7 +224,7 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
       <SettingsSection
         title="共用班底"
         description={
-          isKscc
+          isGateway
             ? '会诊与圆桌共用下列预置：参考席、汇总/主持模型、超时；研讨轮数仅圆桌读取。'
             : '未自定义时发送旁可自动合成；有自定义则优先用下列预置（会诊与圆桌共用）。'
         }
@@ -255,12 +272,12 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
                 <SegmentedTabs
                   value={scope}
                   onValueChange={(v) => {
-                    if (!editor) setSelectedScope(v as 'kscc' | 'external')
+                    if (!editor) setSelectedScope(v as 'gateway' | 'external')
                   }}
                   className="settings-segmented"
                 >
-                  <SegmentedTabsItem value="kscc" disabled={!!editor || !hasKscc}>
-                    kscc 内网
+                  <SegmentedTabsItem value="gateway" disabled={!!editor || !hasGateway}>
+                    内置网关
                   </SegmentedTabsItem>
                   <SegmentedTabsItem value="external" disabled={!!editor}>
                     外部渠道
@@ -278,8 +295,8 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
               <PresetEditor
                 mode={editor.mode}
                 preset={editor.preset}
-                channelModels={enabledModels}
-                channelId={scope === 'kscc' ? (ksccChannel?.id ?? '') : MOA_EXTERNAL_SCOPE_ID}
+                channelModels={editorModelOptions}
+                channelId={scope === 'gateway' ? (gatewayChannel?.id ?? '') : MOA_EXTERNAL_SCOPE_ID}
                 existingIds={new Set(presets.map((p) => p.id))}
                 onCancel={() => setEditor(null)}
                 onSaved={async (updatedList) => {
@@ -434,6 +451,7 @@ interface PresetDraft {
   enabled: boolean
   references: MoAReferenceSeat[]
   aggregatorModelId: string
+  aggregatorChannelId?: string
   timeoutMsPerSeat: number
   /**
    * 圆桌研讨全场轮数上限（仅「圆桌」生效；会诊固定单轮，忽略此值）。
@@ -467,6 +485,7 @@ function presetToDraft(preset: MoAPreset): PresetDraft {
     enabled: preset.enabled,
     references: preset.references.map((r) => ({ ...r })),
     aggregatorModelId: preset.aggregatorModelId,
+    aggregatorChannelId: preset.aggregatorChannelId,
     timeoutMsPerSeat: preset.timeoutMsPerSeat ?? 120_000,
     roundLimit: preset.roundLimit,
     channelId: preset.channelId ?? '',
@@ -480,6 +499,7 @@ function draftToMoAPreset(draft: PresetDraft): MoAPreset {
     enabled: draft.enabled,
     references: draft.references,
     aggregatorModelId: draft.aggregatorModelId,
+    ...(draft.aggregatorChannelId ? { aggregatorChannelId: draft.aggregatorChannelId } : {}),
     timeoutMsPerSeat: draft.timeoutMsPerSeat,
     ...(draft.roundLimit !== undefined ? { roundLimit: draft.roundLimit } : {}),
     channelId: draft.channelId,
@@ -516,7 +536,7 @@ function PresetEditor({
 }: {
   mode: EditorMode
   preset?: MoAPreset
-  channelModels: Array<{ id: string; name: string }>
+  channelModels: Array<{ id: string; name: string; channelId: string; channelName: string }>
   channelId: string
   existingIds: Set<string>
   onCancel: () => void
@@ -665,8 +685,9 @@ function PresetEditor({
                   <ModelSelect
                     value={ref.modelId}
                     channelModels={channelModels}
+                    channelId={ref.channelId}
                     placeholder={hasChannelModels ? '选择模型' : '输入 modelId'}
-                    onChange={(modelId) => updateReference(index, { modelId })}
+                    onChange={(modelId, channelId) => updateReference(index, { modelId, channelId })}
                   />
                   <Button
                     variant="ghost"
@@ -692,8 +713,9 @@ function PresetEditor({
                 <ModelSelect
                   value={draft.aggregatorModelId}
                   channelModels={channelModels}
+                  channelId={draft.aggregatorChannelId}
                   placeholder={hasChannelModels ? '选择汇总/主持模型' : '输入 modelId'}
-                  onChange={(modelId) => update({ aggregatorModelId: modelId })}
+                  onChange={(modelId, channelId) => update({ aggregatorModelId: modelId, aggregatorChannelId: channelId })}
                 />
               </Field>
               <Field label="单席超时（ms）" hint="默认 120000（2 分钟）">
@@ -758,13 +780,15 @@ function PresetEditor({
 function ModelSelect({
   value,
   channelModels,
+  channelId,
   placeholder,
   onChange,
 }: {
   value: string
-  channelModels: Array<{ id: string; name: string }>
+  channelModels: Array<{ id: string; name: string; channelId: string; channelName: string }>
+  channelId?: string
   placeholder: string
-  onChange: (modelId: string) => void
+  onChange: (modelId: string, channelId?: string) => void
 }): JSX.Element {
   if (channelModels.length === 0) {
     // 该渠道无已启用模型：手动输入
@@ -779,18 +803,28 @@ function ModelSelect({
   }
   // 有已启用模型：下拉选择（含当前值兜底项）
   const items = [...channelModels]
-  if (value && !items.some((m) => m.id === value)) {
+  if (value && !items.some((m) => m.id === value && (!channelId || m.channelId === channelId))) {
     // 当前值不在列表中（手动输入遗留），作为兜底项显示
-    items.push({ id: value, name: value })
+    items.push({ id: value, name: value, channelId: channelId ?? 'legacy', channelName: '当前解析' })
   }
+  const keyOf = (m: { id: string; channelId: string }): string => `${m.channelId}\u0000${m.id}`
+  const selected = items.find((m) => m.id === value && (!channelId || m.channelId === channelId))
+    ?? items.find((m) => m.id === value)
   return (
-    <Select value={value || undefined} onValueChange={onChange}>
+    <Select value={selected ? keyOf(selected) : undefined} onValueChange={(key) => {
+      const separator = key.indexOf('\u0000')
+      const selectedChannelId = separator >= 0 ? key.slice(0, separator) : undefined
+      const selectedModelId = separator >= 0 ? key.slice(separator + 1) : key
+      onChange(selectedModelId, selectedChannelId === 'legacy' ? undefined : selectedChannelId)
+    }}>
       <SelectTrigger className="agent-behavior-input agent-behavior-select">
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent className="scrollbar-thin !z-[130]">
         {items.map((m) => (
-          <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+          <SelectItem key={keyOf(m)} value={keyOf(m)}>
+            {m.channelName} · {m.name}
+          </SelectItem>
         ))}
       </SelectContent>
     </Select>

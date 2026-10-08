@@ -1,7 +1,37 @@
-import { describe, expect, test } from 'vitest'
+import { EventEmitter } from 'node:events'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, describe, expect, test, vi } from 'vitest'
+
+/** 官方 runtime 会在 config dir 下建私有 host home；固定到临时目录避免污染真实 ~/.tagent。 */
+const CONFIG_ROOT = mkdtempSync(join(tmpdir(), 'tagent-claude-adapter-test-'))
+process.env.TAGENT_CONFIG_DIR = CONFIG_ROOT
+afterAll(() => {
+  try {
+    rmSync(CONFIG_ROOT, { recursive: true, force: true })
+  } catch {
+    /* 清理失败不影响结论 */
+  }
+})
+
+const mocks = vi.hoisted(() => ({
+  sdkQuery: vi.fn(),
+  spawnOfficial: vi.fn(),
+  execFileSync: vi.fn(),
+}))
+
+vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: mocks.sdkQuery }))
+vi.mock('node:child_process', () => ({
+  spawn: mocks.spawnOfficial,
+  execFileSync: mocks.execFileSync,
+}))
 import {
+  buildOfficialClaudeRuntimeEnv,
+  ClaudeAgentAdapter,
+  resolveOfficialClaudeCodeExecutable,
   resolveSdkEffort,
-  ksccPostToolBatchToObservation,
+  postToolBatchToObservation,
   normalizeResultToPausedNoProgress,
 } from './claude-agent-adapter'
 import {
@@ -13,6 +43,251 @@ import {
 } from '../../agent/no-progress-guard'
 import type { Options as SdkOptions } from '@anthropic-ai/claude-agent-sdk'
 import { REASONING_EFFORT_ORDER, type SDKMessage, type SDKResultMessage } from '@tagent/shared'
+
+describe('Claude official API runtime environment', () => {
+  test('resolves the unpacked Windows Claude binary for packaged Electron', () => {
+    expect(resolveOfficialClaudeCodeExecutable('D:\\Program Files\\TAgent\\resources', () => true)).toBe(
+      'D:\\Program Files\\TAgent\\resources\\app.asar.unpacked\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64\\claude.exe',
+    )
+    expect(resolveOfficialClaudeCodeExecutable('D:\\Program Files\\TAgent\\resources', () => false)).toBeUndefined()
+  })
+
+  test('uses only the selected API channel, an isolated host dir, and inherited subagent model', () => {
+    const env = buildOfficialClaudeRuntimeEnv(
+      {
+        model: 'gateway/claude-main',
+        env: {
+          PATH: 'C:\\Windows\\System32',
+          ANTHROPIC_API_KEY: 'global-key-must-not-leak',
+          CLAUDE_CONFIG_DIR: 'C:\\Users\\test\\.claude',
+          OPENAI_API_KEY: 'another-global-secret',
+        },
+        apiConnection: {
+          channelId: 'claude-channel-a',
+          baseUrl: 'https://messages.example.test',
+          apiKey: 'selected-key',
+          contextWindow: 250_000,
+        },
+      },
+      'C:\\temp\\tagent-claude-private',
+    )
+
+    expect(env).toMatchObject({
+      PATH: 'C:\\Windows\\System32',
+      CLAUDE_CONFIG_DIR: 'C:\\temp\\tagent-claude-private',
+      ANTHROPIC_BASE_URL: 'https://messages.example.test',
+      ANTHROPIC_API_KEY: 'selected-key',
+      ANTHROPIC_MODEL: 'gateway/claude-main',
+      CLAUDE_CODE_SUBAGENT_MODEL: 'gateway/claude-main',
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: '250000',
+    })
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    expect(env.ANTHROPIC_API_KEY).not.toBe('global-key-must-not-leak')
+  })
+
+  test('rejects incomplete official API connections before launch', () => {
+    expect(() =>
+      buildOfficialClaudeRuntimeEnv(
+        {
+          apiConnection: {
+            channelId: 'channel',
+            baseUrl: 'https://messages.example.test',
+            apiKey: '',
+          },
+        },
+        'C:\\temp\\private',
+      ),
+    ).toThrow(/apiKey/)
+  })
+
+  test('keeps PATH for headless launch while filtering inherited credentials', () => {
+    const originalPath = process.env.PATH
+    const originalKey = process.env.ANTHROPIC_API_KEY
+    process.env.PATH = 'C:\\Windows\\System32'
+    process.env.ANTHROPIC_API_KEY = 'global-key-must-not-leak'
+    try {
+      const env = buildOfficialClaudeRuntimeEnv(
+        {
+          model: 'gateway/claude-main',
+          apiConnection: {
+            channelId: 'claude-channel-a',
+            baseUrl: 'https://messages.example.test',
+            apiKey: 'selected-key',
+          },
+        },
+        'C:\\temp\\tagent-claude-private',
+      )
+      expect(env.PATH).toBe('C:\\Windows\\System32')
+      expect(env.ANTHROPIC_API_KEY).toBe('selected-key')
+      expect(env.OPENAI_API_KEY).toBeUndefined()
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH
+      else process.env.PATH = originalPath
+      if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = originalKey
+    }
+  })
+
+  test('accepts the factory object discriminator and fails closed without a connection', async () => {
+    const iterator = new ClaudeAgentAdapter()
+      .query({
+        sessionId: 'official-without-channel',
+        prompt: 'hello',
+        sdkPermissionMode: 'default',
+        allowDangerouslySkipPermissions: false,
+        systemPrompt: 'test',
+      })
+      [Symbol.asyncIterator]()
+    await expect(iterator.next()).rejects.toThrow(/缺少 apiConnection/)
+  })
+
+  test('wires official SDK launch, resume, and caller permission handler without KSCC', async () => {
+    const configRoot = mkdtempSync(join(tmpdir(), 'tagent-claude-sdk-test-'))
+    const oldConfigDir = process.env.TAGENT_CONFIG_DIR
+    process.env.TAGENT_CONFIG_DIR = configRoot
+    const captured: Array<Record<string, unknown>> = []
+    const permissionHandler = vi.fn()
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4321,
+      stderr: Object.assign(new EventEmitter(), { resume: vi.fn() }),
+    })
+    mocks.spawnOfficial.mockReturnValue(child)
+    mocks.sdkQuery.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      captured.push(options)
+      return (async function* () {
+        yield { type: 'result', subtype: 'success', usage: {} }
+      })()
+    })
+
+    try {
+      const input = {
+        sessionId: 'claude-resume-session',
+        prompt: 'implement',
+        model: 'gateway/claude-main',
+        sdkPermissionMode: 'default',
+        allowDangerouslySkipPermissions: false,
+        // 旧调用方即使显式传 enforce，也不能恢复无进展拦截。
+        noProgressGuardMode: 'enforce',
+        canUseTool: permissionHandler,
+        systemPrompt: 'test',
+        apiConnection: {
+          channelId: 'claude-channel-a',
+          baseUrl: 'https://messages.example.test',
+          apiKey: 'selected-key',
+        },
+        agents: {
+          reviewer: { description: 'review', prompt: 'review', model: 'haiku' },
+        },
+        disallowedTools: ['Agent', 'Task'] as string[],
+      } as const
+      const adapter = new ClaudeAgentAdapter()
+      const first = adapter.query(input)[Symbol.asyncIterator]()
+      await first.next()
+      await first.next()
+
+      const launched = captured[0]!
+      expect(launched.pathToClaudeCodeExecutable).toBeUndefined()
+      expect(launched.settingSources).toEqual([])
+      expect(launched.permissionMode).toBe('default')
+      expect(launched.canUseTool).toBe(permissionHandler)
+      expect(launched.disallowedTools).toEqual(['Agent', 'Task'])
+      expect(launched.hooks).toBeUndefined()
+      expect((launched.agents as { reviewer: { model: string } }).reviewer.model).toBe('inherit')
+      expect((launched.env as Record<string, string>).CLAUDE_CODE_SUBAGENT_MODEL).toBe('gateway/claude-main')
+
+      const reported = vi.fn()
+      // Replace the original callback only after launch capture, then verify
+      // the SDK-facing callback itself cannot forward the selected key.
+      const stderrInput = { ...input, onStderr: reported }
+      const stderrAdapter = new ClaudeAgentAdapter()
+      const stderrIterator = stderrAdapter.query(stderrInput)[Symbol.asyncIterator]()
+      await stderrIterator.next()
+      const stderrOptions = captured[1]!
+      const redactedStderr = stderrOptions.stderr as (data: string) => void
+      redactedStderr('rejected selec')
+      expect(reported.mock.calls.flat().join('')).not.toContain('selec')
+      redactedStderr('ted-key')
+      expect(reported.mock.calls.flat().join('')).toBe('rejected [REDACTED]')
+      stderrAdapter.dispose()
+
+      const spawnOfficial = launched.spawnClaudeCodeProcess as (options: {
+        command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; signal: AbortSignal
+      }) => unknown
+      spawnOfficial({
+        command: 'bundled-claude-code', args: ['--sdk'], cwd: 'F:\\repo',
+        env: launched.env as NodeJS.ProcessEnv, signal: new AbortController().signal,
+      })
+      expect(mocks.spawnOfficial).toHaveBeenCalledWith(
+        'bundled-claude-code', ['--sdk'], expect.objectContaining({ cwd: 'F:\\repo' }),
+      )
+
+      const resumed = new ClaudeAgentAdapter()
+        .query({ ...input, resumeSessionId: 'native-session-id' })
+        [Symbol.asyncIterator]()
+      await resumed.next()
+      expect(captured[2]!.resume).toBe('native-session-id')
+      expect(captured[2]!.canUseTool).toBe(permissionHandler)
+      await resumed.next()
+    } finally {
+      mocks.sdkQuery.mockReset()
+      mocks.spawnOfficial.mockReset()
+      if (oldConfigDir === undefined) delete process.env.TAGENT_CONFIG_DIR
+      else process.env.TAGENT_CONFIG_DIR = oldConfigDir
+      rmSync(configRoot, { recursive: true, force: true })
+    }
+  })
+
+  test('disposing one runtime adapter leaves another runtime session active', async () => {
+    mocks.sdkQuery.mockImplementation(() =>
+      (async function* () {
+        yield { type: 'result', subtype: 'success', usage: {} }
+        await new Promise<void>(() => {})
+      })(),
+    )
+    const a = new ClaudeAgentAdapter()
+    const b = new ClaudeAgentAdapter()
+    const conn = { channelId: 'channel-a', baseUrl: 'https://example.test', apiKey: 'key-a' }
+    const aIterator = a.query({
+      sessionId: 'session-a', prompt: 'a', model: 'model-a',
+      sdkPermissionMode: 'default', allowDangerouslySkipPermissions: false, systemPrompt: 'test',
+      apiConnection: conn,
+    })[Symbol.asyncIterator]()
+    const bIterator = b.query({
+      sessionId: 'session-b', prompt: 'b', model: 'model-a',
+      sdkPermissionMode: 'default', allowDangerouslySkipPermissions: false, systemPrompt: 'test',
+      apiConnection: conn,
+    })[Symbol.asyncIterator]()
+    await aIterator.next()
+    await bIterator.next()
+
+    a.dispose()
+
+    expect(a.hasActiveChannel('session-a')).toBe(false)
+    expect(b.hasActiveChannel('session-b')).toBe(true)
+    b.dispose()
+    mocks.sdkQuery.mockReset()
+  })
+
+  test('breaking a query cleans up only its own active session and closes the SDK query', async () => {
+    const close = vi.fn()
+    const iterable = Object.assign((async function* () {
+      yield { type: 'result', subtype: 'success', usage: {} }
+      await new Promise<void>(() => {})
+    })(), { close })
+    mocks.sdkQuery.mockReturnValue(iterable)
+    const adapter = new ClaudeAgentAdapter()
+    const iterator = adapter.query({
+      sessionId: 'cleanup-session', prompt: 'cleanup', model: 'model-a',
+      sdkPermissionMode: 'default', allowDangerouslySkipPermissions: false, systemPrompt: 'test',
+      apiConnection: { channelId: 'channel-a', baseUrl: 'https://example.test', apiKey: 'key-a' },
+    })[Symbol.asyncIterator]()
+    await iterator.next()
+    await iterator.return?.()
+    expect(close).toHaveBeenCalledOnce()
+    expect(adapter.hasActiveChannel('cleanup-session')).toBe(false)
+    mocks.sdkQuery.mockReset()
+  })
+})
 
 /**
  * 证明 session meta.reasoningEffort 真正落到 Claude Agent SDK query options.effort。
@@ -42,13 +317,13 @@ describe('resolveSdkEffort — reasoningEffort → SDK options.effort', () => {
 })
 
 /**
- * No-Progress Guard KSCC 接线（§10.2 / §14.2）。
+ * No-Progress Guard（Claude Code）接线（§10.2 / §14.2）。
  * 不 spawn SDK，直接验 hook 驱动的纯函数：观察翻译、终态归一化、事件构造、
  * 以及 PostToolBatch→observe→additionalContext（warn）的驱动链路。
  */
-describe('No-Progress Guard KSCC 接线', () => {
-  test('ksccPostToolBatchToObservation 翻译 hook 输入为统一观察', () => {
-    const obs = ksccPostToolBatchToObservation(
+describe('No-Progress Guard（Claude Code）接线', () => {
+  test('postToolBatchToObservation 翻译 hook 输入为统一观察', () => {
+    const obs = postToolBatchToObservation(
       {
         tool_calls: [
           { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 'tu-1', tool_response: '' },
@@ -110,7 +385,7 @@ describe('No-Progress Guard KSCC 接线', () => {
     const cmd = 'node tools/a0.js'
     const emptyTimeoutResponse = { exitCode: 124, stdout: '', stderr: '', interrupted: true }
     const drive = (hookInput: { tool_calls: any[] }, at: number) => {
-      const decision = g.observe(ksccPostToolBatchToObservation(hookInput, 's', 't', at))
+      const decision = g.observe(postToolBatchToObservation(hookInput, 's', 't', at))
       if (decision.kind === 'pause') return { paused: true }
       if (decision.modelContext) return { additionalContext: decision.modelContext }
       return {}
@@ -129,7 +404,7 @@ describe('No-Progress Guard KSCC 接线', () => {
     g.resetForNewTurn(0)
     const cmd = 'node tools/a0.js'
     const drive = (hookInput: { tool_calls: any[] }, at: number) => {
-      const decision = g.observe(ksccPostToolBatchToObservation(hookInput, 's', 't', at))
+      const decision = g.observe(postToolBatchToObservation(hookInput, 's', 't', at))
       if (decision.kind === 'pause') {
         return { paused: true, askInput: buildNoProgressAskUserInput(decision, g.getState()) }
       }
@@ -177,7 +452,7 @@ describe('verify-on-stop KSCC 终态收束接线（brief 2026-08-19 §4）', () 
     const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
     g.resetForNewTurn(0)
     // 本轮：1 次 Edit 成功，无 Bash
-    const editBatch = ksccPostToolBatchToObservation(
+    const editBatch = postToolBatchToObservation(
       { tool_calls: [{ tool_name: 'Edit', tool_input: { file_path: 'src/a.ts', old_string: 'x', new_string: 'y' }, tool_use_id: '1', tool_response: { ok: true } }] },
       's', 't', 100,
     )
@@ -205,11 +480,11 @@ describe('verify-on-stop KSCC 终态收束接线（brief 2026-08-19 §4）', () 
     const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
     g.resetForNewTurn(0)
     // Edit 成功 + Bash 验证
-    g.observe(ksccPostToolBatchToObservation(
+    g.observe(postToolBatchToObservation(
       { tool_calls: [{ tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' }, tool_use_id: '1', tool_response: { ok: true } }] },
       's', 't', 100,
     ))
-    g.observe(ksccPostToolBatchToObservation(
+    g.observe(postToolBatchToObservation(
       { tool_calls: [{ tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: '2', tool_response: { exitCode: 0, stdout: 'all passed' } }] },
       's', 't', 200,
     ))
@@ -220,7 +495,7 @@ describe('verify-on-stop KSCC 终态收束接线（brief 2026-08-19 §4）', () 
   test('终态收束前：已提示过 → 放行（防重复）', () => {
     const g = new NoProgressGuard({ mode: 'enforce', now: () => 0 })
     g.resetForNewTurn(0)
-    g.observe(ksccPostToolBatchToObservation(
+    g.observe(postToolBatchToObservation(
       { tool_calls: [{ tool_name: 'Write', tool_input: { file_path: 'src/new.ts', content: 'x' }, tool_use_id: '1', tool_response: { ok: true } }] },
       's', 't', 100,
     ))
@@ -235,7 +510,7 @@ describe('verify-on-stop KSCC 终态收束接线（brief 2026-08-19 §4）', () 
     // 适配层 query() 仅在 mode==='enforce' 时调用 checkVerifyOnStop（见 query 实现）。
     const g = new NoProgressGuard({ mode: 'shadow', now: () => 0 })
     g.resetForNewTurn(0)
-    g.observe(ksccPostToolBatchToObservation(
+    g.observe(postToolBatchToObservation(
       { tool_calls: [{ tool_name: 'Edit', tool_input: { file_path: 'src/a.ts' }, tool_use_id: '1', tool_response: { ok: true } }] },
       's', 't', 100,
     ))

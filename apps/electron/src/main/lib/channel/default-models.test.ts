@@ -3,6 +3,7 @@ import type { Channel, ProviderType } from '@tagent/shared'
 import {
   CODEX_DEFAULT_MODEL_ID,
   CODEX_DEFAULT_MODELS,
+  KSCC_DEFAULT_MODELS,
   isClaudeAvailableForChannel,
 } from './default-models'
 
@@ -54,6 +55,26 @@ describe('Codex default models', () => {
       'GPT-5.6 Sol',
       'GPT-5.6 Terra',
       'GPT-5.6 Luna',
+    ])
+  })
+})
+
+describe('KSCC default models', () => {
+  test('matches the current /cli/models gateway list', () => {
+    expect(KSCC_DEFAULT_MODELS.map((model) => model.id)).toEqual([
+      'deepseek-v4-flash',
+      'deepseek-v4.1-flash',
+      'deepseek-v4-pro-0813',
+      'glm-5',
+      'glm-5.1',
+      'glm-5.2',
+      'glm-5.3',
+      'glm-5.3-flash',
+      'kimi-k2.5',
+      'kimi-k2.6',
+      'kimi-k3',
+      'mimo-v2.5',
+      'mimo-v2.5-pro',
     ])
   })
 })

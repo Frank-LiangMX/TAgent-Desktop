@@ -272,7 +272,7 @@ export class AnthropicAdapter implements ProviderAdapter {
    * - 只使用 Bearer（服务端校验 User-Agent 白名单）
    * - User-Agent 使用 TAgent 自有标识（通过 setTAgentVersion 初始化）
    */
-  private buildHeaders(apiKey: string): Record<string, string> {
+  private buildHeaders(apiKey: string, extraHeaders?: Record<string, string>): Record<string, string> {
     const base: Record<string, string> = {
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
@@ -280,21 +280,20 @@ export class AnthropicAdapter implements ProviderAdapter {
     if (this.providerType === 'kimi-coding' || this.providerType === 'zhipu-coding') {
       base['Authorization'] = `Bearer ${apiKey}`
       base['User-Agent'] = getTAgentUserAgent()
-      return base
-    }
-    if (this.providerType === 'xiaomi-token-plan') {
+    } else if (this.providerType === 'xiaomi-token-plan') {
       base['Authorization'] = `Bearer ${apiKey}`
       base['User-Agent'] = getTAgentUserAgent()
-      return base
-    }
-    if (this.providerType === 'minimax' || this.providerType === 'qwen-anthropic') {
+    } else if (this.providerType === 'minimax' || this.providerType === 'qwen-anthropic') {
       base['Authorization'] = `Bearer ${apiKey}`
-      return base
+    } else {
+      // 其它渠道：保持双认证头（Anthropic 原生 + Bearer 兼容）
+      base['x-api-key'] = apiKey
+      base['Authorization'] = `Bearer ${apiKey}`
     }
-    // 其它渠道：保持双认证头（Anthropic 原生 + Bearer 兼容）
-    base['x-api-key'] = apiKey
-    base['Authorization'] = `Bearer ${apiKey}`
-    return base
+    // 渠道自定义头最后并入，允许覆盖同名默认头（如内网网关的客户端标识）
+    return extraHeaders && Object.keys(extraHeaders).length > 0
+      ? { ...base, ...extraHeaders }
+      : base
   }
 
   buildStreamRequest(input: StreamRequestInput): ProviderRequest {
@@ -375,7 +374,7 @@ export class AnthropicAdapter implements ProviderAdapter {
 
     return {
       url: `${url}/messages`,
-      headers: this.buildHeaders(input.apiKey),
+      headers: this.buildHeaders(input.apiKey, input.extraHeaders),
       body: requestBody,
     }
   }
@@ -460,7 +459,7 @@ export class AnthropicAdapter implements ProviderAdapter {
 
     return {
       url: `${url}/messages`,
-      headers: this.buildHeaders(input.apiKey),
+      headers: this.buildHeaders(input.apiKey, input.extraHeaders),
       body: JSON.stringify(body),
     }
   }

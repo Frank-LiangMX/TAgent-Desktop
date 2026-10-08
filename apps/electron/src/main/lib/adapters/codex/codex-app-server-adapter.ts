@@ -27,8 +27,19 @@ import {
   resolveCodexRuntimeAsync,
   type CodexRuntimeResolution,
 } from './codex-runtime-resolver'
+import {
+  assertRuntimeApiConnection,
+  buildIsolatedRuntimeEnv,
+  createRuntimeApiKeyRedactor,
+  openDurableRuntimeHome,
+  writeCodexResponsesProviderConfig,
+  type RuntimeApiConnection,
+} from '../shared/runtime-api-connection'
+import { registerRuntimeProtocolBridgeTarget } from '../shared/protocol-bridge/runtime-protocol-bridge'
 
 export interface CodexQueryOptions extends AgentQueryInput {
+  /** Official Responses API connection. Presence selects an isolated App Server. */
+  apiConnection?: RuntimeApiConnection
   executionMode?: 'chat' | 'work'
   executablePath?: string
   resumeThreadId?: string
@@ -51,6 +62,18 @@ interface SessionEntry {
   queue: AsyncPayloadQueue
   normalizer: CodexEventNormalizer
   onServerRequest?: CodexQueryOptions['onServerRequest']
+  manager: CodexAppServerSessionManager
+  client: CodexAppServerClient
+  official: boolean
+}
+
+export interface CodexClientLaunch {
+  /** Omitted for legacy account-auth launches. */
+  apiConnection?: { channelId: string; baseUrl: string; contextWindow?: number }
+  codexHome?: string
+  env?: NodeJS.ProcessEnv
+  /** Already-redacted process stderr callback; supplied only to the client. */
+  onStderr?: (text: string) => void
 }
 
 export interface CodexAppServerAdapterOptions {
@@ -58,7 +81,12 @@ export interface CodexAppServerAdapterOptions {
     | CodexRuntimeResolution
     | Promise<CodexRuntimeResolution | undefined>
     | undefined
-  createClient?: (runtime: ResolvedCodexRuntime) => CodexAppServerClient
+  createClient?: (
+    runtime: ResolvedCodexRuntime,
+    launch?: CodexClientLaunch,
+  ) => CodexAppServerClient
+  /** Test seam; production uses TAgent's durable config directory. */
+  officialRuntimeHomeRoot?: string
 }
 
 type ResolvedCodexRuntime = CodexRuntimeResolution & {
@@ -111,18 +139,29 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
   private runtimePromise: Promise<ResolvedCodexRuntime> | undefined
   private client: CodexAppServerClient | undefined
   private manager: CodexAppServerSessionManager | undefined
+  private readonly clientsByManager = new Map<
+    CodexAppServerSessionManager,
+    CodexAppServerClient
+  >()
+  private readonly bridgeReleasesByManager = new Map<CodexAppServerSessionManager, () => void>()
 
   constructor(options: CodexAppServerAdapterOptions = {}) {
     this.options = options
   }
 
   async *query(input: CodexQueryOptions): AsyncIterable<SDKMessage> {
+    // Do this before choosing a manager.  An API endpoint/key/model update for
+    // the same TAgent session must tear down the old isolated process instead
+    // of reusing a thread authenticated against the prior configuration.
+    await this.closeSession(input.sessionId)
     const manager = await this.ensureManager(input)
-    this.closeSession(input.sessionId)
     const entry: SessionEntry = {
       queue: new AsyncPayloadQueue(),
       normalizer: new CodexEventNormalizer(input.model),
       onServerRequest: input.onServerRequest,
+      manager,
+      client: this.clientForManager(manager),
+      official: Boolean(input.apiConnection),
     }
     this.sessions.set(input.sessionId, entry)
 
@@ -162,12 +201,22 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
       while (true) {
         const next = await entry.queue.next()
         if (next.done) return
+        // Official Responses connections own one App Server process per TAgent
+        // session.  App Server reports an interrupted turn but leaves its HTTP
+        // connection alive; release that isolated process before exposing the
+        // terminal result so a later explicit send can resume from the durable
+        // home with a fresh connection.  Do not apply this to account-auth
+        // Codex: its normal long-lived enqueue contract remains intact.
+        if (entry.official && this.isInterruptedResult(next.value)) {
+          await this.closeSession(input.sessionId, entry)
+          yield next.value as unknown as SDKMessage
+          return
+        }
         yield next.value as unknown as SDKMessage
       }
     } finally {
       if (this.sessions.get(input.sessionId) === entry) {
-        this.sessions.delete(input.sessionId)
-        manager.removeSession(input.sessionId)
+        await this.closeSession(input.sessionId)
       }
       entry.queue.close()
       entry.normalizer.reset()
@@ -175,17 +224,15 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
   }
 
   hasActiveChannel(sessionId: string): boolean {
-    return (
-      this.sessions.has(sessionId) &&
-      Boolean(this.manager?.getBinding(sessionId))
-    )
+    const entry = this.sessions.get(sessionId)
+    return Boolean(entry?.manager.getBinding(sessionId))
   }
 
   async sendQueuedMessage(
     sessionId: string,
     message: SDKUserMessageInput,
   ): Promise<void> {
-    const manager = this.requireManager()
+    const manager = this.requireManager(sessionId)
     await manager.startTurn(sessionId, {
       prompt: this.userMessageText(message),
       clientUserMessageId: message.uuid,
@@ -196,7 +243,7 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
     sessionId: string,
     message: SDKUserMessageInput,
   ): Promise<void> {
-    const manager = this.requireManager()
+    const manager = this.requireManager(sessionId)
     await manager.steerTurn(sessionId, {
       prompt: this.userMessageText(message),
       clientUserMessageId: message.uuid,
@@ -204,28 +251,41 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
   }
 
   async interruptQuery(sessionId: string): Promise<void> {
-    await this.manager?.interruptTurn(sessionId)
+    await this.sessions.get(sessionId)?.manager.interruptTurn(sessionId)
   }
 
   abort(sessionId: string): void {
-    void this.manager?.interruptTurn(sessionId).catch(() => undefined)
-    this.closeSession(sessionId)
+    void this.closeSession(sessionId).catch(() => undefined)
   }
 
   dispose(): void {
-    for (const sessionId of [...this.sessions.keys()]) {
-      this.closeSession(sessionId)
+    for (const [sessionId, entry] of this.sessions) {
+      this.sessions.delete(sessionId)
+      entry.queue.close()
+      entry.normalizer.reset()
+      entry.manager.removeSession(sessionId)
+      if (entry.official) {
+        // dispose() is synchronous in AgentProviderAdapter.  Close isolated
+        // runtimes immediately so their SQLite handles cannot outlive the
+        // caller that may remove the private durable-home root.
+        entry.manager.dispose()
+        this.clientsByManager.delete(entry.manager)
+        entry.client.close({ force: true })
+      }
     }
     this.manager?.dispose()
     this.client?.close()
     this.manager = undefined
     this.client = undefined
     this.runtimePromise = undefined
+    for (const release of this.bridgeReleasesByManager.values()) release()
+    this.bridgeReleasesByManager.clear()
   }
 
   private async ensureManager(
     input: CodexQueryOptions,
   ): Promise<CodexAppServerSessionManager> {
+    if (input.apiConnection) return this.createOfficialManager(input)
     if (this.manager) return this.manager
     const runtime = await this.resolveRuntime(input.executablePath)
     const client =
@@ -235,19 +295,29 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
         cwd: input.cwd,
         onStderr: input.onStderr,
       })
+    const manager = this.attachManager(client)
+    await manager.initialize()
+    this.client = client
+    this.manager = manager
+    return manager
+  }
+
+  private attachManager(
+    client: CodexAppServerClient,
+  ): CodexAppServerSessionManager {
     const manager = new CodexAppServerSessionManager({ client })
+    this.clientsByManager.set(manager, client)
     manager.onNotification((notification) => {
       const entry = this.sessions.get(notification.tagentSessionId)
-      if (!entry) return
+      if (!entry || entry.manager !== manager) return
       for (const payload of entry.normalizer.feed(notification)) {
         entry.queue.push(payload)
       }
     })
-    manager.setServerRequestHandler((request) =>
-      this.handleServerRequest(request),
-    )
+    manager.setServerRequestHandler((request) => this.handleServerRequest(request))
     client.onConnectionClosed((error) => {
       for (const entry of this.sessions.values()) {
+        if (entry.manager !== manager) continue
         entry.queue.push({
           kind: 'tagent_event',
           event: {
@@ -260,13 +330,105 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
         entry.queue.close()
       }
       manager.dispose()
+      this.clientsByManager.delete(manager)
       if (this.manager === manager) this.manager = undefined
       if (this.client === client) this.client = undefined
     })
-    await manager.initialize()
-    this.client = client
-    this.manager = manager
     return manager
+  }
+
+  private clientForManager(
+    manager: CodexAppServerSessionManager,
+  ): CodexAppServerClient {
+    const client = this.clientsByManager.get(manager)
+    if (!client) throw new Error('Codex App Server client 尚未初始化')
+    return client
+  }
+
+  /**
+   * API channels get one App Server per TAgent session.  Codex's provider
+   * configuration is process-global, so sharing a client would leak the first
+   * session's key/endpoint into every subsequent session.
+   */
+  private async createOfficialManager(
+    input: CodexQueryOptions,
+  ): Promise<CodexAppServerSessionManager> {
+    const connection = assertRuntimeApiConnection(input.apiConnection!)
+    const model = input.model?.trim()
+    if (!model) throw new Error('官方 Codex API 渠道缺少 model')
+    const bridge = connection.apiProtocol && connection.apiProtocol !== 'openai-responses'
+      ? await registerRuntimeProtocolBridgeTarget({
+          runtime: 'codex',
+          provider: connection.provider ?? connection.channelId,
+          model,
+          baseUrl: connection.baseUrl,
+          apiKey: connection.apiKey,
+          apiProtocol: connection.apiProtocol,
+          reasoningEffort: input.effort,
+          headers: connection.headers,
+        })
+      : undefined
+    const runtimeConnection = bridge
+      ? {
+          ...connection,
+          baseUrl: bridge.baseUrl,
+          apiKey: bridge.apiKey,
+          apiProtocol: 'openai-responses' as const,
+        }
+      : connection
+    const runtime = await this.resolveRuntime(input.executablePath)
+    const codexHome = openDurableRuntimeHome(
+      'codex',
+      input.sessionId,
+      connection,
+      model,
+      'openai-responses',
+      this.options.officialRuntimeHomeRoot,
+      Boolean(input.resumeThreadId),
+    ).path
+    writeCodexResponsesProviderConfig(codexHome, runtimeConnection, model)
+    const env = buildIsolatedRuntimeEnv(process.env, {
+      CODEX_HOME: codexHome,
+      CODEX_SQLITE_HOME: codexHome,
+      TAGENT_CODEX_API_KEY: runtimeConnection.apiKey,
+    }) as NodeJS.ProcessEnv
+    const officialStderr = input.onStderr
+      ? createRuntimeApiKeyRedactor(connection.apiKey, input.onStderr)
+      : undefined
+    const launch: CodexClientLaunch = {
+      apiConnection: {
+        channelId: connection.channelId,
+        baseUrl: runtimeConnection.baseUrl,
+        ...(runtimeConnection.contextWindow !== undefined
+          ? { contextWindow: runtimeConnection.contextWindow }
+          : {}),
+      },
+      codexHome,
+      env,
+      onStderr: officialStderr,
+    }
+    const client =
+      this.options.createClient?.(runtime, launch) ??
+      new CodexAppServerClient({
+        executablePath: runtime.executablePath,
+        cwd: input.cwd,
+        env,
+        // CodexAppServerClient owns the sole process stderr listener.
+        onStderr: launch.onStderr,
+      })
+    const manager = this.attachManager(client)
+    if (bridge) this.bridgeReleasesByManager.set(manager, bridge.release)
+    try {
+      await manager.initialize()
+      return manager
+    } catch (error) {
+      bridge?.release()
+      this.bridgeReleasesByManager.delete(manager)
+      manager.dispose()
+      this.clientsByManager.delete(manager)
+      client.close()
+      throw error
+    }
   }
 
   private async resolveRuntime(
@@ -306,10 +468,10 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
     const threadId =
       typeof params?.threadId === 'string' ? params.threadId : undefined
     const sessionId = threadId
-      ? [...this.sessions.keys()].find(
-          (candidate) =>
-            this.manager?.getBinding(candidate)?.threadId === threadId,
-        )
+      ? [...this.sessions.entries()].find(
+          ([candidate, entry]) =>
+            entry.manager.getBinding(candidate)?.threadId === threadId,
+        )?.[0]
       : undefined
     const handler = sessionId
       ? this.sessions.get(sessionId)?.onServerRequest
@@ -320,18 +482,43 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
     return handler(request)
   }
 
-  private closeSession(sessionId: string): void {
+  private async closeSession(
+    sessionId: string,
+    expectedEntry?: SessionEntry,
+  ): Promise<void> {
     const entry = this.sessions.get(sessionId)
-    if (!entry) return
+    // A previous query's terminal notification may arrive after a replacement
+    // query has installed a fresh entry for the same TAgent session.  Never let
+    // that old generator tear down the replacement's isolated connection.
+    if (!entry || (expectedEntry && entry !== expectedEntry)) return
     this.sessions.delete(sessionId)
     entry.queue.close()
     entry.normalizer.reset()
-    this.manager?.removeSession(sessionId)
+    if (entry.official) {
+      // App Server configuration is process-global.  Stop this isolated
+      // process before allowing a replacement configuration to start.  A
+      // terminal `interrupted` notification already ended its turn, so waiting
+      // for another interrupt RPC only delays disconnecting the HTTP client.
+      entry.manager.removeSession(sessionId)
+      entry.manager.dispose()
+      this.clientsByManager.delete(entry.manager)
+      entry.client.close({ force: true })
+      this.bridgeReleasesByManager.get(entry.manager)?.()
+      this.bridgeReleasesByManager.delete(entry.manager)
+      return
+    }
+    entry.manager.removeSession(sessionId)
   }
 
-  private requireManager(): CodexAppServerSessionManager {
-    if (!this.manager) throw new Error('Codex App Server 尚未初始化')
-    return this.manager
+  private isInterruptedResult(payload: TAgentDesktopStreamPayload): boolean {
+    const candidate = payload as { kind?: unknown; subtype?: unknown }
+    return candidate.kind === 'result' && candidate.subtype === 'interrupted'
+  }
+
+  private requireManager(sessionId: string): CodexAppServerSessionManager {
+    const manager = this.sessions.get(sessionId)?.manager
+    if (!manager) throw new Error('Codex App Server 尚未初始化')
+    return manager
   }
 
   private userMessageText(message: SDKUserMessageInput): string {

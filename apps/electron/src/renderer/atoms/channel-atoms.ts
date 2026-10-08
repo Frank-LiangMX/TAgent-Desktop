@@ -5,22 +5,27 @@
  * 用 Jotai 默认 store（无需 Provider），与项目约定一致（CLAUDE.md：状态管理用 Jotai）。
  */
 import { atom } from 'jotai'
-import { isLocalRuntimeProvider, type Channel } from '@tagent/shared'
+import { isBuiltinChannelProvider, isGatewayProvider, resolveChannelDefaultModelId, type Channel } from '@tagent/shared'
 import {
   resolveModelSelection,
   type ModelSelection,
 } from './model-selection'
 
-/** kscc provider 标识（按 provider 识别 kscc，兼容 TAgent_General 用随机 UUID id 的情况） */
-const KSCC_PROVIDER = 'kscc-internal'
+/** 内置网关渠道 provider 标识（按 provider 识别，兼容随机 UUID id 的情况） */
+const GATEWAY_PROVIDER = 'kscc-gateway'
 
 /** 渠道列表（主进程读，apiKey 加密） */
 export const channelsAtom = atom<Channel[]>([])
 
-/** 当前选中渠道 ID（新会话用；默认 kscc-internal） */
+/** 当前选中渠道 ID（新会话用） */
 export const selectedModelSelectionAtom = atom<ModelSelection | null>(null)
 
-/** 兼容只消费渠道 ID 的旧调用；写入渠道时自动选择其默认/首个启用模型 */
+/**
+ * 兼容只消费渠道 ID 的旧调用；写入渠道时**以该渠道**的默认/首个启用模型为准。
+ *
+ * 注意：这里不用 `resolveModelSelection`——那套策略只回答「新会话默认跑什么」
+ * （Pi 优先，无外部渠道即 null），会把显式写入的本机渠道清空。
+ */
 export const selectedChannelIdAtom = atom(
   (get) => get(selectedModelSelectionAtom)?.channelId ?? null,
   (get, set, channelId: string | null) => {
@@ -29,18 +34,19 @@ export const selectedChannelIdAtom = atom(
       return
     }
     const current = get(selectedModelSelectionAtom)
-    const list = get(channelsAtom)
-    const next = resolveModelSelection(
-      list.filter((channel) => channel.id === channelId),
-      current?.channelId === channelId ? current : null,
+    if (current?.channelId === channelId) return
+    const channel = get(channelsAtom).find((item) => item.id === channelId)
+    const modelId = resolveChannelDefaultModelId(channel)
+    set(
+      selectedModelSelectionAtom,
+      modelId ? { channelId, modelId } : null,
     )
-    set(selectedModelSelectionAtom, next)
   },
 )
 
-/** kscc 内置渠道（派生，按 provider 识别） */
-export const ksccChannelAtom = atom<Channel | undefined>((get) =>
-  get(channelsAtom).find((c) => c.provider === KSCC_PROVIDER)
+/** 内置网关渠道（派生，按 provider 识别）；MoA 班底的「本机档」以此为准 */
+export const gatewayChannelAtom = atom<Channel | undefined>((get) =>
+  get(channelsAtom).find((c) => c.provider === GATEWAY_PROVIDER)
 )
 
 /** Codex 本机渠道（派生） */
@@ -48,9 +54,19 @@ export const codexChannelAtom = atom<Channel | undefined>((get) =>
   get(channelsAtom).find((c) => c.provider === 'codex-internal')
 )
 
-/** 外部渠道列表（派生，排除本机 Runtime 渠道） */
+/**
+ * 「内置服务」区块展示的渠道：仅内置网关渠道。
+ *
+ * legacy `kscc-internal`（CLI 通路已移除）与 `codex-internal` 都不在此列——
+ * ADR-0012 明确「渠道页不再固定展示 Codex App Server 和 KSCC 卡片」。
+ */
+export const builtinChannelsAtom = atom<Channel[]>((get) =>
+  get(channelsAtom).filter((c) => isGatewayProvider(c.provider))
+)
+
+/** 外部渠道列表（派生，排除内置渠道） */
 export const externalChannelsAtom = atom<Channel[]>((get) =>
-  get(channelsAtom).filter((c) => !isLocalRuntimeProvider(c.provider))
+  get(channelsAtom).filter((c) => !isBuiltinChannelProvider(c.provider))
 )
 
 /** 当前选中渠道对象（派生） */

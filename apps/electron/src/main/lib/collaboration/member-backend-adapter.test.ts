@@ -20,10 +20,8 @@ const channelState = vi.hoisted(() => ({
   channels: [] as Channel[],
   decrypted: {} as Record<string, string>,
 }))
-const ksccState = vi.hoisted(() => ({ path: '/fake/kscc' as string | undefined }))
 const seatState = vi.hoisted(() => ({
   lastFactoryOpts: null as { provider?: string; apiKey?: string; baseUrl?: string } | null,
-  lastKsccOpts: null as { ksccPath?: string } | null,
   lastRunArgs: null as {
     modelId?: string
     prompt?: string
@@ -63,10 +61,6 @@ vi.mock('../channel/channel-store', () => ({
   getDecryptedApiKey: (id: string) => channelState.decrypted[id] ?? '',
 }))
 
-vi.mock('../adapters/claude/kscc-path', () => ({
-  resolveKsccPath: () => ksccState.path,
-}))
-
 vi.mock('../agent/cli-workers/resolve-backend', () => ({
   resolveTaskSubagentBackend: () =>
     cliState.available
@@ -101,10 +95,6 @@ vi.mock('@tagent/pi-core', () => {
   return {
     createPiHttpSeatRunner: (opts: { provider: string; apiKey: string; baseUrl?: string }) => {
       seatState.lastFactoryOpts = opts
-      return { runSeat }
-    },
-    createKsccSeatRunner: (opts: { ksccPath?: string }) => {
-      seatState.lastKsccOpts = opts
       return { runSeat }
     },
   }
@@ -189,9 +179,7 @@ function fakeChannel(over: Partial<Channel> & Pick<Channel, 'id' | 'provider'>):
 beforeEach(() => {
   channelState.channels = []
   channelState.decrypted = {}
-  ksccState.path = '/fake/kscc'
   seatState.lastFactoryOpts = null
-  seatState.lastKsccOpts = null
   seatState.lastRunArgs = null
   seatState.returnText = 'seat-reply'
   seatState.throwErr = null
@@ -249,75 +237,47 @@ describe('resolveChannelBackendConfig', () => {
     expect(cfg.modelId).toBe('gpt-b')
   })
 
-  test('显式 kscc-internal channelId → kscc 配置（ksccPath，无 apiKey）', () => {
+  test('explicit kscc-internal channelId -> NO_KSCC (legacy kscc CLI path removed)', () => {
     channelState.channels = [fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm-5.2')] })]
-    const cfg = resolveChannelBackendConfig({ channelId: 'kscc-internal' })
-    expect(cfg.kind).toBe('kscc')
-    expect(cfg.ksccPath).toBe('/fake/kscc')
-    expect(cfg.apiKey).toBeUndefined()
-    expect(cfg.modelId).toBe('glm-5.2')
-  })
-
-  test('kscc-internal 但未安装 kscc → NO_KSCC', () => {
-    channelState.channels = [fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm-5.2')] })]
-    ksccState.path = undefined
     expect(() => resolveChannelBackendConfig({ channelId: 'kscc-internal' })).toThrowError(
-      /NO_KSCC|未检测到 kscc/,
+      /NO_KSCC|disabled/i,
     )
   })
 
-  test('未绑定 channelId → 优先 enabled 且本机可用的 kscc', () => {
+  test('unbound channelId -> first enabled external channel with apiKey (skips legacy kscc)', () => {
     channelState.channels = [
       fakeChannel({ id: 'disabled', provider: 'openai', enabled: false, models: [fakeModel('m')] }),
       fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm')] }),
       fakeChannel({ id: 'ext1', provider: 'deepseek', baseUrl: 'https://api.deepseek.com/anthropic', models: [fakeModel('deepseek-chat')] }),
     ]
     channelState.decrypted = { ext1: 'dk-key' }
-    ksccState.path = '/fake/kscc'
-
-    const cfg = resolveChannelBackendConfig({})
-    expect(cfg.kind).toBe('kscc')
-    expect(cfg.ksccPath).toBe('/fake/kscc')
-    expect(cfg.modelId).toBe('glm')
-  })
-
-  test('未绑定 + kscc 不可用 → 回落第一个 enabled 外部渠道', () => {
-    channelState.channels = [
-      fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm')] }),
-      fakeChannel({ id: 'ext1', provider: 'deepseek', baseUrl: 'https://api.deepseek.com/anthropic', models: [fakeModel('deepseek-chat')] }),
-    ]
-    channelState.decrypted = { ext1: 'dk-key' }
-    ksccState.path = undefined
 
     const cfg = resolveChannelBackendConfig({})
     expect(cfg.kind).toBe('external')
     expect(cfg.provider).toBe('deepseek')
     expect(cfg.apiKey).toBe('dk-key')
+    expect(cfg.modelId).toBe('deepseek-chat')
   })
 
-  test('未绑定 + 仅 kscc 且本机可用 → kscc（不必外部渠道）', () => {
+  test('unbound + only legacy kscc channels -> NO_CHANNEL_BACKEND', () => {
     channelState.channels = [
       fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm-5.2')] }),
     ]
-    ksccState.path = '/usr/bin/kscc'
-    const cfg = resolveChannelBackendConfig({})
-    expect(cfg.kind).toBe('kscc')
-    expect(cfg.modelId).toBe('glm-5.2')
+    expect(() => resolveChannelBackendConfig({})).toThrowError(
+      /NO_CHANNEL_BACKEND/,
+    )
   })
 
-  test('未绑定 + 无任何可用渠道 → NO_CHANNEL_BACKEND', () => {
+  test('unbound + no usable channel -> NO_CHANNEL_BACKEND', () => {
     channelState.channels = [
       fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm')] }),
       fakeChannel({ id: 'nokey', provider: 'openai', models: [fakeModel('m')] }),
     ]
-    // kscc 未装 + 外部无 apiKey
-    ksccState.path = undefined
     channelState.decrypted = {}
     expect(() => resolveChannelBackendConfig({})).toThrowError(
-      /NO_CHANNEL_BACKEND|没有可用的渠道/,
+      /NO_CHANNEL_BACKEND/,
     )
   })
-
   test('渠道已删除 → NO_CHANNEL', () => {
     expect(() => resolveChannelBackendConfig({ channelId: 'gone' })).toThrowError(/NO_CHANNEL/)
   })
@@ -341,7 +301,7 @@ describe('resolveChannelBackendConfig', () => {
 })
 
 describe('channelSupportsRoomToolBridge', () => {
-  test('kscc-internal 与 Anthropic 协议外部渠道声明支持；OpenAI-completions/google/缺失 fail closed', () => {
+  test('Anthropic protocol external channels declare support; kscc-internal / OpenAI-completions / google / missing fail closed', () => {
     channelState.channels = [
       fakeChannel({ id: 'kscc', provider: 'kscc-internal' }),
       fakeChannel({ id: 'anthropic-ch', provider: 'anthropic' }),
@@ -357,7 +317,7 @@ describe('channelSupportsRoomToolBridge', () => {
       fakeChannel({ id: 'google-ch', provider: 'google' }),
     ]
     // kscc 走 antml 文本协议桥
-    expect(channelSupportsRoomToolBridge('kscc')).toBe(true)
+    expect(channelSupportsRoomToolBridge('kscc')).toBe(false)
     // Anthropic /v1/messages 协议外部渠道 → 原生 function/tool calling 桥
     expect(channelSupportsRoomToolBridge('anthropic-ch')).toBe(true)
     expect(channelSupportsRoomToolBridge('deepseek-ch')).toBe(true)
@@ -598,9 +558,9 @@ describe('ChannelBackendAdapter.runTurn — lifecycle interrupt 取消 inflight 
 
   test('注入 lifecycle + interruptSession → 组合 signal abort，取消进行中 turn + heartbeat false', async () => {
     channelState.channels = [
-      fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm-5.2')] }),
+      fakeChannel({ id: 'ext-ch', provider: 'anthropic', models: [fakeModel('claude-x')] }),
     ]
-    ksccState.path = '/fake/kscc'
+    channelState.decrypted = { 'ext-ch': 'k' }
     seatState.hang = true // runSeat 挂起直到 signal abort
 
     const lifecycle = new ChannelMemberSessionLifecycleAdapter()
@@ -609,7 +569,7 @@ describe('ChannelBackendAdapter.runTurn — lifecycle interrupt 取消 inflight 
       roomId: 'cr_1',
       memberId: 'cm_1',
       logicalSessionId: 'ls_1',
-      channelId: 'kscc-internal',
+      channelId: 'ext-ch',
     })
 
     const caller = new AbortController()
@@ -619,7 +579,7 @@ describe('ChannelBackendAdapter.runTurn — lifecycle interrupt 取消 inflight 
       runId: 'run_1',
       triggerMessageId: 'msg_1',
       logicalSessionId: handle.logicalSessionId,
-      channelId: 'kscc-internal',
+      channelId: 'ext-ch',
       systemPrompt: '你是成员',
       prompt: '请写一篇很长的文章',
       signal: caller.signal,
@@ -638,9 +598,9 @@ describe('ChannelBackendAdapter.runTurn — lifecycle interrupt 取消 inflight 
 
   test('注入 lifecycle 但不 interrupt 时正常完成，heartbeat alive', async () => {
     channelState.channels = [
-      fakeChannel({ id: 'kscc-internal', provider: 'kscc-internal', models: [fakeModel('glm-5.2')] }),
+      fakeChannel({ id: 'ext-ch', provider: 'anthropic', models: [fakeModel('claude-x')] }),
     ]
-    ksccState.path = '/fake/kscc'
+    channelState.decrypted = { 'ext-ch': 'k' }
     seatState.hang = false
 
     const lifecycle = new ChannelMemberSessionLifecycleAdapter()
@@ -649,7 +609,7 @@ describe('ChannelBackendAdapter.runTurn — lifecycle interrupt 取消 inflight 
       roomId: 'cr_1',
       memberId: 'cm_1',
       logicalSessionId: 'ls_1',
-      channelId: 'kscc-internal',
+      channelId: 'ext-ch',
     })
 
     const caller = new AbortController()
@@ -659,7 +619,7 @@ describe('ChannelBackendAdapter.runTurn — lifecycle interrupt 取消 inflight 
       runId: 'run_1',
       triggerMessageId: 'msg_1',
       logicalSessionId: handle.logicalSessionId,
-      channelId: 'kscc-internal',
+      channelId: 'ext-ch',
       systemPrompt: '你是成员',
       prompt: '一句话',
       signal: caller.signal,

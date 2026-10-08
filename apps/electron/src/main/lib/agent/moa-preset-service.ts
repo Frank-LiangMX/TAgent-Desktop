@@ -2,10 +2,10 @@
  * MoA 会诊预置存储服务。
  *
  * 落盘路径：~/.tagent[-dev]/moa-presets.json（版本化 JSON，当前 v2）
- * - 缺省文件时首次读取 → 就地 seed 默认预置（default / cheap，绑到 kscc-internal 渠道 id）
+ * - 缺省文件时首次读取 → 就地 seed 默认预置（default / cheap，绑到内置网关渠道 id）
  * - 文件存在但解析失败 → 用 atomic-json 的 readJsonSafe 自愈（备份恢复）
  * - seed 后的预置不再覆盖用户编辑（用户删 custom 后只剩 default 也保留）
- * - v1 → v2 迁移：读到 version<2 或条目缺 channelId → 绑到当前唯一 kscc-internal 渠道 id，写回 v2
+ * - v1 → v2 迁移：读到 version<2 或条目缺 channelId → 绑到当前内置网关渠道 id，写回 v2
  *   （SPEC 05 §3：班底按 channelId 落盘，避免跨渠混席）
  * - 外部渠合并迁移（SPEC 05 V3）：读到遗留非 kscc 真实渠 id（旧「一供应商一会诊」）→ 改写为
  *   `MOA_EXTERNAL_SCOPE_ID`（'external' 哨兵），所有非 kscc 渠合并为外部档，写回 v2
@@ -18,7 +18,7 @@
  *
  * 设计取舍（与 SPEC §5 E1 一致）：
  * - 通道校验延迟到发送前 runMoaTurn 阶段，本服务不做"modelId 是否真实存在"的二次校验，
- *   这样新建 kscc-internal 渠道 + 默认预置就绪后立即可用，无需重启。
+ *   这样内置网关渠道 + 默认预置就绪后立即可用，无需重启。
  */
 import {
   MOA_DEFAULT_PRESETS,
@@ -29,25 +29,25 @@ import {
   type MoAPresetsFile,
 } from '@tagent/shared'
 import { getMoaPresetsPath } from '../config/config-paths'
-import { getKsccChannelId } from '../channel/channel-store'
+import { getGatewayChannelId } from '../channel/channel-store'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 
-/** 无渠道配置时（测试 / 未 seed）回落到内置 kscc 渠道 id（fresh 安装口径，见 channel-store KSCC_BUILTIN_CHANNEL_ID） */
-const KSCC_FALLBACK_CHANNEL_ID = 'kscc-internal'
+/** 无渠道配置时（测试 / 未 seed）回落到内置网关渠道 provider id */
+const GATEWAY_FALLBACK_CHANNEL_ID = 'kscc-gateway'
 
-/** 解析当前 kscc-internal 渠道 id；无渠道配置时回落内置 id */
-function resolveKsccChannelId(): string {
-  return getKsccChannelId() ?? KSCC_FALLBACK_CHANNEL_ID
+/** 解析当前内置网关渠道 id；无渠道配置时回落内置 id */
+function resolveGatewayChannelId(): string {
+  return getGatewayChannelId() ?? GATEWAY_FALLBACK_CHANNEL_ID
 }
 
 /** 默认文件结构：首次 seed 时落盘（v2，预置绑到 kscc 渠道 id） */
-function buildSeed(ksccChannelId: string): MoAPresetsFile {
+function buildSeed(gatewayChannelId: string): MoAPresetsFile {
   return {
     version: 2,
     presets: MOA_DEFAULT_PRESETS.map((p) => ({
       ...p,
       references: p.references.map((r) => ({ ...r })),
-      channelId: ksccChannelId,
+      channelId: gatewayChannelId,
     })),
   }
 }
@@ -109,9 +109,9 @@ function hasExactSeatSignature(
 }
 
 /** 只升级保留旧内置席位的 kscc 预置；配置过的预置原样返回。 */
-function migrateLegacyBuiltinSeats(presets: MoAPreset[], ksccChannelId: string): MoAPreset[] {
+function migrateLegacyBuiltinSeats(presets: MoAPreset[], gatewayChannelId: string): MoAPreset[] {
   return presets.map((preset) => {
-    if (preset.channelId !== ksccChannelId || (preset.id !== 'default' && preset.id !== 'cheap')) {
+    if (preset.channelId !== gatewayChannelId || (preset.id !== 'default' && preset.id !== 'cheap')) {
       return preset
     }
     const signatures = LEGACY_BUILTIN_SEAT_SIGNATURES[preset.id]
@@ -135,8 +135,8 @@ function migrateLegacyBuiltinSeats(presets: MoAPreset[], ksccChannelId: string):
  */
 export function listMoaPresets(): MoAPreset[] {
   const filePath = getMoaPresetsPath()
-  const ksccChannelId = resolveKsccChannelId()
-  const seed = buildSeed(ksccChannelId)
+  const gatewayChannelId = resolveGatewayChannelId()
+  const seed = buildSeed(gatewayChannelId)
   const parsed = readJsonSafe<MoAPresetsFile | null>(filePath, null)
 
   // 文件不存在 → 就地 seed（v2，带 channelId）
@@ -160,8 +160,8 @@ export function listMoaPresets(): MoAPreset[] {
     return seed.presets
   }
 
-  // 双档归一迁移（SPEC 05 V3 · 外部渠合并）：version<2、条目缺 channelId、或存在遗留非 kscc 真实渠 id
-  // → 绑到 kscc-internal 渠 id / 改写为 external 哨兵，写回 v2
+  // 双档归一迁移（SPEC 05 V3 · 外部渠合并）：version<2、条目缺 channelId、或存在遗留非内置渠真实 id
+  // → 绑到内置网关渠 id / 改写为 external 哨兵，写回 v2
   let presets: MoAPreset[] = parsed.presets
   let needsWrite = parsed.version !== 2
   const needsScopeMigration = presets.some(
@@ -169,10 +169,10 @@ export function listMoaPresets(): MoAPreset[] {
       p &&
       typeof p === 'object' &&
       (!p.channelId ||
-        (p.channelId !== ksccChannelId && p.channelId !== MOA_EXTERNAL_SCOPE_ID)),
+        (p.channelId !== gatewayChannelId && p.channelId !== MOA_EXTERNAL_SCOPE_ID)),
   )
   if (parsed.version !== 2 || needsScopeMigration) {
-    presets = migrateMoAPresetsV1toV2(presets, ksccChannelId)
+    presets = migrateMoAPresetsV1toV2(presets, gatewayChannelId)
     needsWrite = true
   }
 
@@ -184,7 +184,7 @@ export function listMoaPresets(): MoAPreset[] {
   }
 
   // K2.6 / MiMo Pro 入库后的内置班底升级：仅改精确匹配旧模板的 kscc 预置。
-  const upgraded = migrateLegacyBuiltinSeats(valid, ksccChannelId)
+  const upgraded = migrateLegacyBuiltinSeats(valid, gatewayChannelId)
   if (upgraded.some((preset, index) => preset !== valid[index])) {
     needsWrite = true
   }

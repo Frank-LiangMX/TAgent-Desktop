@@ -9,6 +9,7 @@
  * @see docs/plans/multi-runtime/07-implementation-phases.md Phase D
  */
 import {
+  CREW_ORCHESTRATION_ENABLED,
   KANBAN_DEFAULT_MAX_CONCURRENT,
   KANBAN_TICK_INTERVAL_MS,
   type KanbanTask,
@@ -16,6 +17,11 @@ import {
 import * as store from './kanban-store'
 import { resolveForWorker } from './resolve-for-worker'
 import { judgeGoalCompleteAsync } from './kanban-goal-judge'
+import { readAgentCrewPrefs } from '../agent/agent-crew-prefs'
+import { tryReserveDelegationSlot } from '../agent/delegation-capacity'
+import { getSessionMeta } from '../agent/session-store'
+import { getChannel } from '../channel/channel-store'
+import { getAdapter, type ChannelKind } from '../adapters'
 
 export interface KanbanWorkerRunnerResult {
   summary?: string
@@ -46,6 +52,17 @@ const runningByBoard = new Map<string, Set<string>>()
 /** boardId → modelId → count */
 const modelOccupancyByBoard = new Map<string, Map<string, number>>()
 const notifiedCompletedBoards = new Set<string>()
+/** Stopped tasks stay reserved until their runner promise settles. */
+const stoppedDelegationTasks = new Set<string>()
+
+function notifyTaskStatusChanged(taskId: string, status: string): void {
+  try {
+    options?.onTaskStatusChanged?.(taskId, status)
+  } catch (error) {
+    // Observer/UI callbacks must never strand a claimed task or its reservation.
+    console.warn(`[看板] onTaskStatusChanged 异常: ${taskId} → ${status}`, error)
+  }
+}
 
 export function configureKanbanDispatcher(opts: KanbanDispatcherOptions): void {
   options = opts
@@ -53,6 +70,11 @@ export function configureKanbanDispatcher(opts: KanbanDispatcherOptions): void {
 }
 
 export function startKanbanDispatcher(): void {
+  if (!CREW_ORCHESTRATION_ENABLED) {
+    // A disabled feature must not resurrect ready tasks after an app restart.
+    stopKanbanDispatcher()
+    return
+  }
   if (timer) return
   timer = setInterval(() => {
     try {
@@ -80,7 +102,38 @@ export function stopKanbanDispatcher(): void {
 
 /** 建任务后调用，尽快派工 */
 export function kickKanbanDispatcher(): void {
+  if (!CREW_ORCHESTRATION_ENABLED) return
   queueMicrotask(() => dispatchKanbanTick())
+}
+
+function channelKindForTask(channelId: string): ChannelKind {
+  const provider = getChannel(channelId)?.provider
+  if (provider === 'codex-internal') return 'codex'
+  return 'external'
+}
+
+/**
+ * Pause parent-owned boards and abort their active workers.
+ * The shared reservation is released only by runWorker's finally block after
+ * the runner promise settles; this function deliberately does not release it.
+ */
+export function stopKanbanDelegationForSession(sessionId: string): void {
+  const parentSessionId = sessionId.trim()
+  if (!parentSessionId) return
+
+  for (const board of store.listBoards({ status: 'active' })) {
+    if (board.parentSessionId?.trim() !== parentSessionId) continue
+    if (!board.paused) store.setBoardPaused(board.id, true)
+
+    for (const task of store.listTasksByBoard(board.id, 'running')) {
+      stoppedDelegationTasks.add(task.id)
+      try {
+        getAdapter(channelKindForTask(task.channelId)).abort(`kw_${task.id}`)
+      } catch (error) {
+        console.warn(`[看板] 停止父会话工人失败: ${task.id}`, error)
+      }
+    }
+  }
 }
 
 function getRunningSet(boardId: string): Set<string> {
@@ -115,9 +168,22 @@ function decModel(boardId: string, modelId: string): void {
   else map.set(modelId, n)
 }
 
+/** Parent model is the delegation default; only inherit a live same-channel binding. */
+function inheritedParentModel(board: Pick<import('@tagent/shared').KanbanBoard, 'parentSessionId'>, task: KanbanTask): string | undefined {
+  const parentSessionId = board.parentSessionId?.trim()
+  if (!parentSessionId) return undefined
+  const meta = getSessionMeta(parentSessionId)
+  const channel = getChannel(task.channelId)
+  const modelId = meta?.channelId === task.channelId ? meta.modelId?.trim() : undefined
+  return modelId && channel?.enabled && channel.models.some((model) => model.id === modelId && model.enabled)
+    ? modelId
+    : undefined
+}
+
 export function dispatchKanbanTick(): void {
+  if (!CREW_ORCHESTRATION_ENABLED) return
   if (!options) return
-  const { runner, getAvailableModels, onTaskStatusChanged } = options
+  const { runner, getAvailableModels } = options
 
   const boards = store.listDispatchableBoards()
   for (const board of boards) {
@@ -131,7 +197,11 @@ export function dispatchKanbanTick(): void {
       }
     }
 
-    const maxConcurrent = board.maxConcurrent ?? KANBAN_DEFAULT_MAX_CONCURRENT
+    const crewCap = readAgentCrewPrefs().maxParallelWorkers
+    const maxConcurrent = Math.min(
+      board.maxConcurrent ?? KANBAN_DEFAULT_MAX_CONCURRENT,
+      crewCap,
+    )
     if (runningSet.size >= maxConcurrent) continue
 
     const readyTasks = store.listTasksByBoard(board.id, 'ready')
@@ -140,10 +210,17 @@ export function dispatchKanbanTick(): void {
       if (runningSet.has(task.id)) continue
 
       const available = getAvailableModels?.(task.channelId) ?? []
+      const inheritedModelId = inheritedParentModel(board, task)
+      // A parent-owned board never selects from a role/model pool. A task without
+      // an explicit model must inherit the parent's currently enabled same-channel model.
+      if (board.parentSessionId && !task.modelId && !inheritedModelId) {
+        console.log(`[看板] 无法继承来源主会话模型，暂缓: ${task.id}`)
+        continue
+      }
       const resolved = resolveForWorker({
         roleId: task.roleId,
-        modelId: task.modelId,
-        availableModels: available,
+        modelId: task.modelId ?? inheritedModelId,
+        availableModels: board.parentSessionId ? [] : available,
         modelOccupancy: occupancyRecord(board.id),
         boardId: board.id,
         boardTitle: board.title || board.rootGoal,
@@ -159,35 +236,83 @@ export function dispatchKanbanTick(): void {
         continue
       }
 
-      const modelId = task.modelId || resolved.modelId
+      const modelId = task.modelId || inheritedModelId || (board.parentSessionId ? undefined : resolved.modelId)
+      if (board.parentSessionId && !modelId) continue
+      const parentKey = board.parentSessionId?.trim() || board.id
+      const releaseDelegation = tryReserveDelegationSlot(parentKey, task.id)
+      if (!releaseDelegation) {
+        console.log(`[看板] 父会话委派额度已满，暂缓: ${task.id}`)
+        continue
+      }
       const workerSessionId = `kw_${task.id}`
-      const claimed = store.claimReadyTask(task.id, {
-        modelId,
-        assigneeSessionId: workerSessionId,
-      })
-      if (!claimed) continue
+      let claimed: KanbanTask | undefined
+      try {
+        claimed = store.claimReadyTask(task.id, {
+          modelId,
+          assigneeSessionId: workerSessionId,
+        })
+      } catch (error) {
+        releaseDelegation()
+        console.error(`[看板] claim 任务异常: ${task.id}`, error)
+        continue
+      }
+      if (!claimed) {
+        releaseDelegation()
+        continue
+      }
 
-      runningSet.add(claimed.id)
-      if (modelId) incModel(board.id, modelId)
-      onTaskStatusChanged?.(claimed.id, 'running')
-      console.log(
-        `[看板] 派工: ${claimed.id} 「${claimed.title}」 role=${claimed.roleId} model=${modelId ?? '—'} worker=${workerSessionId}`,
-      )
+      try {
+        runningSet.add(claimed.id)
+        if (modelId) incModel(board.id, modelId)
+        notifyTaskStatusChanged(claimed.id, 'running')
+        console.log(
+          `[看板] 派工: ${claimed.id} 「${claimed.title}」 role=${claimed.roleId} model=${modelId ?? '—'} worker=${workerSessionId}`,
+        )
 
-      void runWorker(claimed, runner)
+        void runWorker(claimed, runner, releaseDelegation)
+      } catch (error) {
+        // Anything between claim and runner launch is inside the reservation
+        // boundary. Restore dispatcher state and settle the claimed task.
+        releaseDelegation()
+        runningSet.delete(claimed.id)
+        if (modelId) decModel(board.id, modelId)
+        try {
+          store.updateTask(claimed.id, {
+            status: 'failed',
+            error: error instanceof Error ? error.message : String(error),
+            errorSource: 'kanban',
+            finishedAt: Date.now(),
+          })
+        } catch (updateError) {
+          console.error(`[看板] claim 后清理任务失败: ${claimed.id}`, updateError)
+        }
+        notifyTaskStatusChanged(claimed.id, 'failed')
+        console.error(`[看板] 启动工人异常: ${claimed.id}`, error)
+      }
     }
   }
 }
 
-async function runWorker(task: KanbanTask, runner: KanbanWorkerRunner): Promise<void> {
+async function runWorker(
+  task: KanbanTask,
+  runner: KanbanWorkerRunner,
+  releaseDelegation: () => void,
+): Promise<void> {
   const boardId = task.boardId
   const modelId = task.modelId
   try {
     const result = await runner(task)
-    let finalStatus = result.finalStatus ?? (result.error ? 'failed' : 'done')
-    let blockedReason = result.blockedReason
-    let error = result.error
-    let errorSource = result.errorSource ?? (result.error ? 'kanban' : undefined)
+    const stoppedByParent = stoppedDelegationTasks.delete(task.id)
+    let finalStatus = stoppedByParent
+      ? 'blocked' as const
+      : result.finalStatus ?? (result.error ? 'failed' : 'done')
+    let blockedReason = stoppedByParent
+      ? '来源主会话已停止，班组工人已中止'
+      : result.blockedReason
+    let error = stoppedByParent ? undefined : result.error
+    let errorSource = stoppedByParent
+      ? 'kanban' as const
+      : result.errorSource ?? (result.error ? 'kanban' : undefined)
     let summary = result.summary
 
     // goal 闸门（async）：假完成 → blocked；规则优先，LLM stub fail-open
@@ -225,7 +350,7 @@ async function runWorker(task: KanbanTask, runner: KanbanWorkerRunner): Promise<
       finishedAt: Date.now(),
       ...(judgeMetadata ? { metadata: judgeMetadata } : {}),
     })
-    options?.onTaskStatusChanged?.(task.id, finalStatus)
+    notifyTaskStatusChanged(task.id, finalStatus)
     console.log(
       `[看板] 工人结束: ${task.id} → ${finalStatus}${summary ? ` (${summary.slice(0, 80)})` : ''}`,
     )
@@ -233,22 +358,25 @@ async function runWorker(task: KanbanTask, runner: KanbanWorkerRunner): Promise<
     if (finalStatus === 'done' && updated) {
       const promoted = store.promoteReadyDependents(task.id)
       for (const p of promoted) {
-        options?.onTaskStatusChanged?.(p.id, 'ready')
+        notifyTaskStatusChanged(p.id, 'ready')
       }
     }
     if (updated) checkBoardCompletion(boardId)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
+    const stoppedByParent = stoppedDelegationTasks.delete(task.id)
     store.updateTask(task.id, {
-      status: 'failed',
-      error: msg,
+      status: stoppedByParent ? 'blocked' : 'failed',
+      error: stoppedByParent ? undefined : msg,
       errorSource: 'tagent',
+      blockedReason: stoppedByParent ? '来源主会话已停止，班组工人已中止' : undefined,
       finishedAt: Date.now(),
     })
-    options?.onTaskStatusChanged?.(task.id, 'failed')
+    notifyTaskStatusChanged(task.id, stoppedByParent ? 'blocked' : 'failed')
     console.error(`[看板] 工人异常: ${task.id}`, err)
     checkBoardCompletion(boardId)
   } finally {
+    releaseDelegation()
     getRunningSet(boardId).delete(task.id)
     if (modelId) decModel(boardId, modelId)
     // 事件驱动：立刻再派
@@ -284,6 +412,7 @@ export function __resetDispatcherStateForTests(): void {
   runningByBoard.clear()
   modelOccupancyByBoard.clear()
   notifiedCompletedBoards.clear()
+  stoppedDelegationTasks.clear()
   options = null
   stopKanbanDispatcher()
 }

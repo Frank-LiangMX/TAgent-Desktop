@@ -20,17 +20,12 @@ const channelState = vi.hoisted(() => ({
   channels: [] as Channel[],
   decrypted: {} as Record<string, string>,
 }));
-const ksccState = vi.hoisted(() => ({ path: "/fake/kscc" as string | undefined }));
 
 vi.mock("../channel/channel-store", () => ({
   listChannels: () => channelState.channels,
   getChannel: (id: string) =>
     channelState.channels.find((c) => c.id === id),
   getDecryptedApiKey: (id: string) => channelState.decrypted[id] ?? "",
-}));
-
-vi.mock("../adapters/claude/kscc-path", () => ({
-  resolveKsccPath: () => ksccState.path,
 }));
 
 vi.mock("../agent/cli-workers/resolve-backend", () => ({
@@ -43,8 +38,6 @@ vi.mock("../agent/cli-workers/run-cli-worker", () => ({
 
 vi.mock("@tagent/pi-core", () => ({
   createPiHttpSeatRunner: () => ({ runSeat: async () => "" }),
-  createKsccSeatRunner: () => ({ runSeat: async () => "" }),
-  createKsccBareStreamFn: () => () => ({}),
   createHttpDirectStreamFn: () => () => ({}),
 }));
 
@@ -77,8 +70,7 @@ function fakeChannel(
 
 beforeEach(() => {
   channelState.channels = [];
-  channelState.decrypted = {};
-  ksccState.path = "/fake/kscc";
+  channelState.decrypted = { "ext-ch": "k" };
 });
 
 describe("FakeMemberSessionLifecycleAdapter", () => {
@@ -240,24 +232,23 @@ describe("ChannelMemberSessionLifecycleAdapter", () => {
     });
   });
 
-  test("createSession：kscc-internal 渠道 → backend='kscc'，resumeMode='none'", async () => {
+  test("createSession：外部渠道 → backend='channel'，resumeMode='none'", async () => {
     channelState.channels = [
       fakeChannel({
-        id: "kscc-internal",
-        provider: "kscc-internal",
-        models: [fakeModel("glm-5.2")],
+        id: "ext-ch",
+        provider: "anthropic",
+        models: [fakeModel("claude-x")],
       }),
     ];
-    ksccState.path = "/fake/kscc";
-    const adapter = new ChannelMemberSessionLifecycleAdapter();
+      const adapter = new ChannelMemberSessionLifecycleAdapter();
 
     const handle = await adapter.createSession({
       roomId: "cr_1",
       memberId: "cm_1",
       logicalSessionId: "ls_1",
-      channelId: "kscc-internal",
+      channelId: "ext-ch",
     });
-    expect(handle.backend).toBe("kscc");
+    expect(handle.backend).toBe("channel");
     expect(handle.resumeMode).toBe("none");
     expect(handle.logicalSessionId).toBe("ls_1");
     expect(handle.sessionId).toBe("ls_1");
@@ -323,9 +314,9 @@ describe("ChannelMemberSessionLifecycleAdapter", () => {
   test("resumeSession：supportsResume=false → fail-closed 抛 RESUME_NOT_SUPPORTED", async () => {
     channelState.channels = [
       fakeChannel({
-        id: "kscc-internal",
-        provider: "kscc-internal",
-        models: [fakeModel("glm-5.2")],
+        id: "ext-ch",
+        provider: "anthropic",
+        models: [fakeModel("claude-x")],
       }),
     ];
     const adapter = new ChannelMemberSessionLifecycleAdapter();
@@ -333,7 +324,7 @@ describe("ChannelMemberSessionLifecycleAdapter", () => {
       roomId: "cr_1",
       memberId: "cm_1",
       logicalSessionId: "ls_1",
-      channelId: "kscc-internal",
+      channelId: "ext-ch",
     });
 
     await expect(
@@ -360,9 +351,9 @@ describe("ChannelMemberSessionLifecycleAdapter", () => {
   test("interrupt 后 heartbeat false；未 interrupt heartbeat true", async () => {
     channelState.channels = [
       fakeChannel({
-        id: "kscc-internal",
-        provider: "kscc-internal",
-        models: [fakeModel("glm-5.2")],
+        id: "ext-ch",
+        provider: "anthropic",
+        models: [fakeModel("claude-x")],
       }),
     ];
     const adapter = new ChannelMemberSessionLifecycleAdapter();
@@ -370,7 +361,7 @@ describe("ChannelMemberSessionLifecycleAdapter", () => {
       roomId: "cr_1",
       memberId: "cm_1",
       logicalSessionId: "ls_1",
-      channelId: "kscc-internal",
+      channelId: "ext-ch",
     });
 
     const alive = await adapter.heartbeat(handle);
@@ -519,18 +510,17 @@ describe("ChannelMemberSessionLifecycleAdapter — bindTurnAbort + interrupt", (
   test("interruptSession abort 组合 signal，取消进行中 turn + heartbeat false", async () => {
     channelState.channels = [
       fakeChannel({
-        id: "kscc-internal",
-        provider: "kscc-internal",
-        models: [fakeModel("glm-5.2")],
+        id: "ext-ch",
+        provider: "anthropic",
+        models: [fakeModel("claude-x")],
       }),
     ];
-    ksccState.path = "/fake/kscc";
-    const adapter = new ChannelMemberSessionLifecycleAdapter();
+      const adapter = new ChannelMemberSessionLifecycleAdapter();
     const handle = await adapter.createSession({
       roomId: "cr_1",
       memberId: "cm_1",
       logicalSessionId: "ls_1",
-      channelId: "kscc-internal",
+      channelId: "ext-ch",
     });
     const caller = new AbortController();
     const signal = adapter.bindTurnAbort(handle.sessionId, caller.signal);
@@ -548,18 +538,17 @@ describe("ChannelMemberSessionLifecycleAdapter — bindTurnAbort + interrupt", (
   test("无 callerSignal 时 interruptSession 仍可取消", async () => {
     channelState.channels = [
       fakeChannel({
-        id: "kscc-internal",
-        provider: "kscc-internal",
-        models: [fakeModel("glm-5.2")],
+        id: "ext-ch",
+        provider: "anthropic",
+        models: [fakeModel("claude-x")],
       }),
     ];
-    ksccState.path = "/fake/kscc";
-    const adapter = new ChannelMemberSessionLifecycleAdapter();
+      const adapter = new ChannelMemberSessionLifecycleAdapter();
     const handle = await adapter.createSession({
       roomId: "cr_1",
       memberId: "cm_1",
       logicalSessionId: "ls_1",
-      channelId: "kscc-internal",
+      channelId: "ext-ch",
     });
     const signal = adapter.bindTurnAbort(handle.sessionId);
     const turn = hangOnSignal(signal);
@@ -570,18 +559,17 @@ describe("ChannelMemberSessionLifecycleAdapter — bindTurnAbort + interrupt", (
   test("callerSignal abort 透传到组合 signal，且不标记 interrupted", async () => {
     channelState.channels = [
       fakeChannel({
-        id: "kscc-internal",
-        provider: "kscc-internal",
-        models: [fakeModel("glm-5.2")],
+        id: "ext-ch",
+        provider: "anthropic",
+        models: [fakeModel("claude-x")],
       }),
     ];
-    ksccState.path = "/fake/kscc";
-    const adapter = new ChannelMemberSessionLifecycleAdapter();
+      const adapter = new ChannelMemberSessionLifecycleAdapter();
     const handle = await adapter.createSession({
       roomId: "cr_1",
       memberId: "cm_1",
       logicalSessionId: "ls_1",
-      channelId: "kscc-internal",
+      channelId: "ext-ch",
     });
     const caller = new AbortController();
     const signal = adapter.bindTurnAbort(handle.sessionId, caller.signal);

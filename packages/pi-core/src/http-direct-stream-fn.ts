@@ -14,6 +14,7 @@
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import { createProvider } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
+import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy';
 import type {
   Api,
   AssistantMessageEventStream,
@@ -38,8 +39,19 @@ export const DEFAULT_HTTP_STREAM_TIMEOUT_MS = 30 * 60 * 1000;
 /** 默认客户端重试次数（短暂网络抖动 / 连接超时） */
 export const DEFAULT_HTTP_STREAM_MAX_RETRIES = 2;
 
+/** HTTP 直连模型的上下文窗口 fallback，和 Desktop 侧渠道解析保持一致。 */
+export const DEFAULT_HTTP_CONTEXT_WINDOW = 200_000;
+
+/** 归一化 HTTP 直连层使用的上下文窗口，拒绝 0/负数配置。 */
+export function resolveHttpContextWindow(contextWindow?: number): number {
+  return contextWindow && contextWindow > 0
+    ? contextWindow
+    : DEFAULT_HTTP_CONTEXT_WINDOW
+}
+
 /** HTTP 直连 streamFn 工厂选项 */
 export interface CreateHttpDirectStreamFnOptions {
+  apiProtocol?: 'anthropic-messages' | 'openai-responses' | 'openai-chat';
   /** API provider 类型（决定用哪个 pi-ai Provider） */
   provider: "anthropic" | "deepseek" | "openai" | "google" | string;
   /** API Key（明文） */
@@ -48,6 +60,14 @@ export interface CreateHttpDirectStreamFnOptions {
   baseUrl?: string;
   /** 模型 ID（如 claude-opus-4-7, deepseek-chat） */
   modelId: string;
+  /**
+   * 模型标称上下文窗口（token）。
+   *
+   * 必须和 Agent 初始 model 使用同一个窗口：pi-ai 会据此计算剩余输出预算。
+   * 不传时沿用 200k fallback；不要再在这里写死一个比上层更小的窗口，
+   * 否则长历史会把 maxTokens 错误夹到 1，模型看起来像是“只回复一个字”。
+   */
+  contextWindow?: number;
   /** 是否启用 thinking（默认 false） */
   thinkingEnabled?: boolean;
   /** thinking level（默认 'medium'） */
@@ -59,6 +79,12 @@ export interface CreateHttpDirectStreamFnOptions {
   timeoutMs?: number;
   /** 客户端重试次数，默认 2 */
   maxRetries?: number;
+  /**
+   * 附加到上游请求的自定义头（如内网网关的客户端标识）。
+   * 同时写入 `Model.headers` 与 `StreamOptions.headers`——pi-ai 会把两者一起
+   * merge 进 `defaultHeaders`，两处都设可避免只认其一的版本差异。
+   */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -69,9 +95,9 @@ export function createHttpDirectStreamFn(
   opts: CreateHttpDirectStreamFnOptions,
 ): StreamFn {
   // 预选 provider 实例
-  const provider = resolveProvider(opts.provider);
+  const provider = resolveProvider(opts.provider, opts.apiProtocol);
   // 预构造 Model 对象
-  const model = buildModel(opts);
+  const model = buildHttpDirectModel(opts);
 
   return ((
     _model: Model<Api>,
@@ -88,6 +114,10 @@ export function createHttpDirectStreamFn(
         options?.timeoutMs ?? opts.timeoutMs ?? DEFAULT_HTTP_STREAM_TIMEOUT_MS,
       maxRetries:
         options?.maxRetries ?? opts.maxRetries ?? DEFAULT_HTTP_STREAM_MAX_RETRIES,
+      // 自定义头（网关客户端标识）；空对象不传，避免覆盖 SDK 默认
+      ...(opts.headers && Object.keys(opts.headers).length > 0
+        ? { headers: opts.headers }
+        : {}),
       // thinking 配置
       ...(opts.thinkingEnabled
         ? { reasoning: opts.thinkingLevel ?? "medium" }
@@ -141,7 +171,17 @@ function normalizeBaseUrlForProvider(baseUrl: string, _provider: string): string
 }
 
 /** 根据 provider 类型名选择 pi-ai Provider 实例（擦除 TApi，统一用 Provider<Api>） */
-function resolveProvider(providerName: string): Provider<Api> {
+function resolveProvider(providerName: string, protocol?: CreateHttpDirectStreamFnOptions['apiProtocol']): Provider<Api> {
+  if (protocol === 'anthropic-messages') return anthropicProvider() as Provider<Api>;
+  if (protocol === 'openai-responses' || protocol === 'openai-chat') {
+    return createProvider({
+      id: providerName,
+      name: providerName,
+      auth: { apiKey: { name: providerName, resolve: async () => ({ auth: {} }) } },
+      models: [],
+      api: protocol === 'openai-responses' ? openAIResponsesApi() : openAICompletionsApi(),
+    }) as Provider<Api>;
+  }
   // Anthropic 协议类（含 anthropic-compatible / deepseek / kimi / minimax / xiaomi 等）
   if (ANTHROPIC_PROTOCOL_PROVIDERS.has(providerName)) {
     return anthropicProvider() as Provider<Api>;
@@ -190,14 +230,17 @@ const ZERO_COST: ModelCost = {
  * - baseUrl: 覆盖默认端点
  * - reasoning: 是否支持 thinking
  */
-function buildModel(opts: CreateHttpDirectStreamFnOptions): Model<Api> {
+export function buildHttpDirectModel(opts: CreateHttpDirectStreamFnOptions): Model<Api> {
   const { provider: providerName, modelId, baseUrl, thinkingEnabled } = opts;
 
   // 根据 provider 类型确定 api 和 provider id（对齐 resolveProvider 的协议分类）
   let api: Api;
   let providerId: string;
 
-  if (ANTHROPIC_PROTOCOL_PROVIDERS.has(providerName)) {
+  if (opts.apiProtocol) {
+    api = opts.apiProtocol === 'openai-chat' ? 'openai-completions' : opts.apiProtocol;
+    providerId = opts.apiProtocol === 'anthropic-messages' ? 'anthropic' : providerName;
+  } else if (ANTHROPIC_PROTOCOL_PROVIDERS.has(providerName)) {
     // Anthropic /v1/messages 协议（anthropic / anthropic-compatible / deepseek / kimi / minimax / xiaomi 等）
     api = "anthropic-messages";
     providerId = "anthropic";
@@ -224,8 +267,12 @@ function buildModel(opts: CreateHttpDirectStreamFnOptions): Model<Api> {
     reasoning: thinkingEnabled ?? false,
     input: ["text"],
     cost: ZERO_COST,
-    contextWindow: 128_000,
+    contextWindow: resolveHttpContextWindow(opts.contextWindow),
     maxTokens: 8_192,
+    // 自定义头同样挂在 Model 上；pi-ai 的 mergeHeaders 会与 options.headers 合并
+    ...(opts.headers && Object.keys(opts.headers).length > 0
+      ? { headers: opts.headers }
+      : {}),
   };
 
   return model;

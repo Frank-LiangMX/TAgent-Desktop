@@ -13,8 +13,6 @@
  * - apps/electron/src/main/lib/memory/memory-llm-client.ts（resolveMemoryLlmChannel：取第一个 enabled 外部渠道）
  */
 import {
-  createKsccBareStreamFn,
-  createKsccSeatRunner,
   createPiHttpSeatRunner,
   createHttpDirectStreamFn,
   type MoASeatRunner,
@@ -27,8 +25,10 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import {
-  isAgentCompatibleProvider,
+  resolveChannelApiProtocol,
+  resolveChannelRequestHeaders,
   resolveChannelDefaultModelId,
+  isLegacyCliProvider,
   sanitizeAssistantTextForDisplay,
   type Channel,
   type ProviderType,
@@ -46,7 +46,6 @@ import {
   getDecryptedApiKey,
   listChannels,
 } from "../channel/channel-store";
-import { resolveKsccPath } from "../adapters/claude/kscc-path";
 import { CodexAppServerAdapter } from "../adapters/codex/codex-app-server-adapter";
 import {
   CodexDynamicToolRegistry,
@@ -406,22 +405,23 @@ function persistCodexRoomThreadId(
   }
 }
 
-/** 解析出的后端配置（主进程内部，含解密 apiKey / ksccPath，不落盘不外传 renderer） */
+/** 解析出的后端配置（主进程内部，含解密 apiKey，不落盘不外传 renderer） */
 interface ResolvedChannelBackend {
-  /** 'external' 走 Pi HTTP 直连；'kscc' 走 kscc bare 子进程 */
-  kind: "external" | "kscc";
+  apiProtocol?: 'anthropic-messages' | 'openai-responses' | 'openai-chat';
+  /** 后端类型：外部 API 渠道走 Pi HTTP 直连（历史 kscc bare 子进程已移除） */
+  kind: "external";
   /** 渠道记录（用于错误提示带上渠道名） */
   channelName: string;
-  /** 供应商类型（createPiHttpSeatRunner 需要；kscc 分支空串占位） */
+  /** 供应商类型（createPiHttpSeatRunner 需要） */
   provider: ProviderType;
   /** 实际使用的模型 ID（member.modelId > 渠道默认 > 首个 enabled） */
   modelId: string;
-  /** 外部渠道解密后的 apiKey（kind==='external' 时） */
+  /** 外部渠道解密后的 apiKey */
   apiKey?: string;
-  /** 外部渠道 baseUrl（kind==='external' 时） */
+  /** 外部渠道 baseUrl */
   baseUrl?: string;
-  /** kscc 可执行路径（kind==='kscc' 时） */
-  ksccPath?: string;
+  /** 渠道自定义请求头（如内置网关客户端标识） */
+  headers?: Record<string, string>;
 }
 
 /** 后端解析失败（run 据此置 failed 并向用户展示原因） */
@@ -557,13 +557,12 @@ async function runCodexRoomTurn(
 
 /**
  * 解析成员的后端配置：
- * - 成员显式绑定 channelId：用该渠道（必须 enabled）；kscc-internal 走 kscc runner，
- *   其余走 Pi HTTP 直连。
- * - 成员未绑定 channelId：优先 enabled 且本机可用的 kscc-internal，再回落 enabled 外部渠道；
+ * - 成员显式绑定 channelId：用该渠道（必须 enabled），走 Pi HTTP 直连。
+ * - 成员未绑定 channelId：取首个 enabled 且有 API Key 的外部渠道；
  *   皆无则抛 MemberBackendResolveError('NO_CHANNEL_BACKEND', …)。
  *
  * modelId 解析：member.modelId > resolveChannelDefaultModelId(channel) > 首个 enabled 模型。
- * 显式 channelId 指向 kscc-internal 时不要求 apiKey（走 ksccPath）；外部渠道要求 apiKey 非空。
+ * 外部渠道要求 apiKey 非空。
  */
 export function resolveChannelBackendConfig(input: {
   channelId?: string;
@@ -574,35 +573,25 @@ export function resolveChannelBackendConfig(input: {
     return resolveBoundChannel(input.channelId, input.modelId);
   }
 
-  // 2) 未绑定：kscc 优先（本机有 CLI 且渠道 enabled），再外部渠道
+  // 2) 未绑定：取首个 enabled 且有 API Key 的外部渠道
   const unbound = pickDefaultChannelBackend(input.modelId);
   if (unbound) return unbound;
 
   throw new MemberBackendResolveError(
     "NO_CHANNEL_BACKEND",
-    "没有可用的渠道：请启用 kscc 内网（并安装 kscc 命令），或配置并启用一个外部渠道（含 API Key 与模型）",
+    "没有可用的渠道：请在渠道管理中配置并启用一个外部渠道（含 API Key 与模型）",
   );
 }
 
 /**
  * 新建房间 / 默认协调者用：挑一个可跑的 channelId+modelId。
- * 顺序与未绑定解析一致：kscc（可用）→ 外部。
  */
 export function pickDefaultMemberChannelBinding(): {
   channelId: string;
   modelId: string;
 } | null {
-  // kscc 优先
   for (const channel of listChannels()) {
-    if (!channel.enabled || channel.provider !== "kscc-internal") continue;
-    if (!resolveKsccPath()) continue;
-    const modelId = resolveModelId(channel, undefined);
-    if (!modelId) continue;
-    return { channelId: channel.id, modelId };
-  }
-  // 外部
-  for (const channel of listChannels()) {
-    if (!channel.enabled || channel.provider === "kscc-internal") continue;
+    if (!channel.enabled || isLegacyCliProvider(channel.provider)) continue;
     if (!getDecryptedApiKey(channel.id)) continue;
     const modelId = resolveModelId(channel, undefined);
     if (!modelId) continue;
@@ -636,20 +625,10 @@ function resolveBoundChannel(
     );
   }
   if (channel.provider === "kscc-internal") {
-    const ksccPath = resolveKsccPath();
-    if (!ksccPath) {
-      throw new MemberBackendResolveError(
-        "NO_KSCC",
-        "未检测到 kscc 命令，请先安装 kscc（内网渠道）后再启用该渠道",
-      );
-    }
-    return {
-      kind: "kscc",
-      channelName: channel.name,
-      provider: channel.provider,
-      modelId,
-      ksccPath,
-    };
+    throw new MemberBackendResolveError(
+      "NO_KSCC",
+      "该渠道已停用（历史 kscc CLI 通路已移除），请为成员改绑外部 API 渠道",
+    );
   }
   const apiKey = getDecryptedApiKey(channel.id);
   if (!apiKey) {
@@ -662,32 +641,20 @@ function resolveBoundChannel(
     kind: "external",
     channelName: channel.name,
     provider: channel.provider,
+    apiProtocol: channel.apiProtocol,
     modelId,
     apiKey,
     baseUrl: channel.baseUrl,
+    headers: resolveChannelRequestHeaders(channel.provider, apiKey),
   };
 }
 
-/** 未绑定时的默认解析（kscc → 外部） */
+/** 未绑定时的默认解析：首个 enabled 且有 API Key 的外部渠道。 */
 function pickDefaultChannelBackend(
   memberModelId?: string,
 ): ResolvedChannelBackend | null {
   for (const channel of listChannels()) {
-    if (!channel.enabled || channel.provider !== "kscc-internal") continue;
-    const ksccPath = resolveKsccPath();
-    if (!ksccPath) continue;
-    const modelId = resolveModelId(channel, memberModelId);
-    if (!modelId) continue;
-    return {
-      kind: "kscc",
-      channelName: channel.name,
-      provider: channel.provider,
-      modelId,
-      ksccPath,
-    };
-  }
-  for (const channel of listChannels()) {
-    if (!channel.enabled || channel.provider === "kscc-internal") continue;
+    if (!channel.enabled || isLegacyCliProvider(channel.provider)) continue;
     const apiKey = getDecryptedApiKey(channel.id);
     if (!apiKey) continue;
     const modelId = resolveModelId(channel, memberModelId);
@@ -696,9 +663,11 @@ function pickDefaultChannelBackend(
       kind: "external",
       channelName: channel.name,
       provider: channel.provider,
+      apiProtocol: channel.apiProtocol,
       modelId,
       apiKey,
       baseUrl: channel.baseUrl,
+      headers: resolveChannelRequestHeaders(channel.provider, apiKey),
     };
   }
   return null;
@@ -717,7 +686,7 @@ function resolveModelId(
 }
 
 /**
- * Channel 后端适配器：一次 turn 真实调用外部渠道 / kscc 模型并返回正文。
+ * Channel 后端适配器：一次 turn 真实调用外部渠道模型并返回正文。
  *
  * 取消：input.signal 透传给 seat runner；abort 即抛错，调用方据 signal.aborted 置 cancelled。
  */
@@ -781,7 +750,7 @@ async function runCliRoomTurn(
 }
 
 /**
- * Channel 后端适配器：一次 turn 真实调用外部渠道 / kscc 模型并返回正文。
+ * Channel 后端适配器：一次 turn 真实调用外部渠道模型并返回正文。
  *
  * 取消：input.signal 透传给 seat runner；abort 即抛错，调用方据 signal.aborted 置 cancelled。
  *
@@ -819,41 +788,25 @@ export class ChannelBackendAdapter implements MemberBackendAdapter {
     const turnInput =
       turnSignal === input.signal ? input : { ...input, signal: turnSignal };
 
-    // 只有本机 kscc 模型泵具备「Pi Agent 执行受限 host tools，再把结果回灌模型」的
-    // 实际闭环。外部 HTTP 渠道仍走纯文本 runner，保持 fail-closed。
-    if (
-      cfg.kind === "kscc" &&
-      input.hostToolHandler &&
-      input.capabilities?.supportsToolBridge !== false
-    ) {
-      return runKsccRoomToolTurn({
-        input: turnInput,
-        modelId: cfg.modelId,
-        ksccPath: cfg.ksccPath,
-      });
-    }
-
     // 外部渠道：仅原生 function/tool calling 协议（Anthropic /v1/messages）且宿主注入
     // hostToolHandler 时，才用真实 AgentTool 经供应商原生 tool_use 接桥；execute 转发宿主
     // handler 真实校验/执行，结果由 Agent 自动回注下一轮 context。绝不通过 prompt 文本
     // 伪造工具。无原生工具能力 / 无 host handler → fail closed 走下方纯文本 runner。
     if (
-      cfg.kind === "external" &&
       input.hostToolHandler &&
       input.capabilities?.supportsToolBridge !== false &&
-      isAgentCompatibleProvider(cfg.provider)
+      resolveChannelApiProtocol(cfg) === "anthropic-messages"
     ) {
       return runExternalRoomToolTurn({ input: turnInput, cfg });
     }
 
-    const runner: MoASeatRunner =
-      cfg.kind === "kscc"
-        ? createKsccSeatRunner({ ksccPath: cfg.ksccPath })
-        : createPiHttpSeatRunner({
-            provider: cfg.provider,
-            apiKey: cfg.apiKey ?? "",
-            baseUrl: cfg.baseUrl,
-          });
+    const runner: MoASeatRunner = createPiHttpSeatRunner({
+      apiProtocol: cfg.apiProtocol,
+      provider: cfg.provider,
+      apiKey: cfg.apiKey ?? "",
+      baseUrl: cfg.baseUrl,
+      headers: cfg.headers,
+    });
 
     const runArgs = {
       modelId: cfg.modelId,
@@ -876,9 +829,8 @@ export class ChannelBackendAdapter implements MemberBackendAdapter {
 
 /**
  * 能力声明用的保守 probe：
- * - kscc-internal：走 antml 文本协议工具桥（runKsccRoomToolTurn）。
  * - 外部渠道：仅当走原生 function/tool calling 协议（Anthropic /v1/messages，即
- *   isAgentCompatibleProvider）时才声明支持；此时 runExternalRoomToolTurn 用真实
+ *   按显式 apiProtocol 优先解析）时才声明支持；此时 runExternalRoomToolTurn 用真实
  *   AgentTool 经供应商原生 tool_use 接桥。
  * - OpenAI-completions / google 等不在此列 → false，保持纯文本回复（fail closed），
  *   绝不通过 prompt 文本伪造工具，也绝不假装支持。
@@ -887,8 +839,7 @@ export function channelSupportsRoomToolBridge(channelId?: string): boolean {
   if (!channelId) return false;
   const channel = getChannel(channelId);
   if (!channel) return false;
-  if (channel.provider === "kscc-internal") return true;
-  return isAgentCompatibleProvider(channel.provider);
+  return channel.enabled && resolveChannelApiProtocol(channel) === "anthropic-messages";
 }
 
 /**
@@ -1043,10 +994,10 @@ function roomToolDescriptorsFor(input: MemberTurnInput) {
  * 作为真实 AgentTool（TypeBox schema）接入 Pi Agent + createHttpDirectStreamFn。模型经供应商
  * 原生 function/tool calling 协议（Anthropic /v1/messages 的 tool_use）发起调用，Agent 调
  * execute → hostToolHandler 真实执行，结果由 Agent 自动回注下一轮 context。工具 schema 仅
- * 通过原生 API 暴露，绝不注入 prompt 文本伪造。仅 isAgentCompatibleProvider 的外部渠道进入
+ * 通过原生 API 暴露，绝不注入 prompt 文本伪造。仅 Messages 协议的外部渠道进入
  * 此路径；其余 fail closed。
  *
- * 取消/超时/awaitPeer 与 runKsccRoomToolTurn 同款：signal/timer 调 agent.abort，
+ * 取消/超时/awaitPeer：signal/timer 调 agent.abort，
  * ask 成功后 abortAgent 停 loop，service 据此把 run 保留为 awaiting_peer。
  */
 async function runExternalRoomToolTurn(args: {
@@ -1085,6 +1036,7 @@ async function runExternalRoomToolTurn(args: {
       messages: [],
     },
     streamFn: createHttpDirectStreamFn({
+      apiProtocol: cfg.apiProtocol,
       provider: cfg.provider,
       apiKey: cfg.apiKey ?? "",
       baseUrl: cfg.baseUrl,
@@ -1197,180 +1149,6 @@ async function runExternalRoomToolTurn(args: {
     resetTimer();
   });
   armTimer();
-  const abort = () => agent?.abort();
-  if (input.signal.aborted) abort();
-  else input.signal.addEventListener("abort", abort, { once: true });
-  try {
-    await agent.prompt(input.prompt);
-    await agent.waitForIdle();
-  } finally {
-    clearTimeout(timer);
-    input.signal.removeEventListener("abort", abort);
-    unsubscribe();
-    agent.abort();
-  }
-  if (timedOut) {
-    throw new Error(
-      `协作室成员回合连续 ${MEMBER_TURN_TIMEOUT_MS / 1000} 秒无响应，已停止本次执行`,
-    );
-  }
-  return {
-    text:
-      latestAssistantText || sanitizeAssistantTextForDisplay(fallbackTurnText),
-    ...(latestUsage ? { usage: mapMoASeatUsage(latestUsage) } : {}),
-  };
-}
-
-/**
- * 把 kscc bare 接入 Pi Agent 的真实工具循环。模型输出的 antml 调用由
- * createKsccBareStreamFn 解析为 AgentTool；只构造宿主按 workspace/permission 过滤后的
- * room + workspace 工具，结果由 Agent 自动写回下一轮 context。ask 成功后终止物理 loop，
- * service 会把 run 保留为 awaiting_peer。
- */
-async function runKsccRoomToolTurn(args: {
-  input: MemberTurnInput;
-  modelId: string;
-  ksccPath?: string;
-}): Promise<MemberTurnResult> {
-  const { input } = args;
-  let agent: Agent | undefined;
-  const tools = buildRoomBridgeTools({
-    hostToolHandler: input.hostToolHandler!,
-    abortAgent: () => agent?.abort(),
-    permissionProfile: input.permissionProfile,
-    workspaceId: input.workspaceId,
-  });
-  const model = {
-    id: args.modelId,
-    name: args.modelId,
-    api: "openai-completions" as const,
-    provider: "kscc",
-    baseUrl: "",
-    reasoning: false,
-    input: ["text"] as ("text" | "image")[],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 200_000,
-    maxTokens: 8_192,
-  };
-  agent = new Agent({
-    initialState: {
-      systemPrompt: input.systemPrompt,
-      model,
-      thinkingLevel: "off",
-      tools,
-      messages: [],
-    },
-    streamFn: createKsccBareStreamFn({
-      ksccPath: args.ksccPath,
-      defaultModelId: args.modelId,
-      tools: roomToolDescriptorsFor(input) as any,
-    }),
-    toolExecution: "sequential",
-  } as never);
-
-  let fallbackTurnText = "";
-  let visibleTurnText = "";
-  let latestAssistantText = "";
-  let latestUsage: MoASeatUsage | undefined;
-  let timedOut = false;
-  const emitSnapshot = (snapshot: string): void => {
-    const nextVisible = sanitizeAssistantTextForDisplay(snapshot);
-    if (nextVisible.startsWith(visibleTurnText)) {
-      const delta = nextVisible.slice(visibleTurnText.length);
-      if (delta) input.onTextDelta?.(delta);
-    }
-    visibleTurnText = nextVisible;
-    if (nextVisible) latestAssistantText = nextVisible;
-  };
-  const resetTurn = (): void => {
-    fallbackTurnText = "";
-    visibleTurnText = "";
-  };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const armTimer = (): void => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      timedOut = true;
-      agent?.abort();
-    }, MEMBER_TURN_TIMEOUT_MS);
-  };
-  const resetTimer = (): void => armTimer();
-  const unsubscribe = agent.subscribe((event) => {
-    if (event.type === "turn_start") {
-      resetTurn();
-      resetTimer();
-      return;
-    }
-    if (event.type === "message_update") {
-      resetTimer();
-      const update = (
-        event as {
-          assistantMessageEvent?: {
-            type?: string;
-            delta?: string;
-            partial?: unknown;
-          };
-        }
-      ).assistantMessageEvent;
-      const partialText = extractAssistantSnapshotText(update?.partial);
-      if (partialText) {
-        emitSnapshot(partialText);
-        return;
-      }
-      if (update?.type === "text_delta" && update.delta) {
-        fallbackTurnText += update.delta;
-        emitSnapshot(fallbackTurnText);
-      }
-      return;
-    }
-    if (event.type === "message_end" || event.type === "turn_end") {
-      resetTimer();
-      const eventMessage = (
-        event as {
-          message?: {
-            usage?: {
-              input?: number;
-              output?: number;
-              totalTokens?: number;
-              cost?: { total?: number };
-            };
-          };
-        }
-      ).message;
-      const rawUsage = eventMessage?.usage;
-      const messageText = extractAssistantSnapshotText(eventMessage);
-      if (rawUsage) {
-        latestUsage = {
-          ...(rawUsage.input !== undefined
-            ? { inputTokens: rawUsage.input }
-            : {}),
-          ...(rawUsage.output !== undefined
-            ? { outputTokens: rawUsage.output }
-            : {}),
-          ...(rawUsage.totalTokens !== undefined
-            ? { totalTokens: rawUsage.totalTokens }
-            : {}),
-          ...(rawUsage.cost?.total !== undefined
-            ? { costUsd: rawUsage.cost.total }
-            : {}),
-        };
-      }
-      if (messageText) {
-        latestAssistantText = messageText;
-        visibleTurnText = messageText;
-      }
-      return;
-    }
-    if (event.type === "agent_end") {
-      resetTimer();
-      const finalText = extractLastAssistantText(
-        (event as { messages?: unknown }).messages,
-      );
-      if (finalText) latestAssistantText = finalText;
-      return;
-    }
-    resetTimer();
-  });
   const abort = () => agent?.abort();
   if (input.signal.aborted) abort();
   else input.signal.addEventListener("abort", abort, { once: true });

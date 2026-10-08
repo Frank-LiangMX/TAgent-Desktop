@@ -8,75 +8,85 @@
  * 进度通过 onTaskEvent 推送 task_started / task_progress / task_notification，
  * 供主会话入口卡展示；完整 token 流仍不进主时间线（Checkpoint 2 W6）。
  */
+import path from 'node:path'
 import { Type } from '@earendil-works/pi-ai'
 import type { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core'
-import type { TAgentDesktopStreamPayload, TAgentMessage } from '@tagent/shared'
+import {
+  isAutoModeAutoAllowTool,
+  isWriteTool,
+  resolveChannelRequestHeaders,
+  type TAgentDesktopStreamPayload,
+} from '@tagent/shared'
+import { listChannels, getDecryptedApiKey } from '../../channel/channel-store'
 import type { PiAgentAdapterConfig } from './pi-agent-adapter'
 import {
   buildBuiltinSubagentDefinitions,
   resolveSubagentDefinition,
 } from '../../agent/subagent-definitions'
+import { resolvePiTaskAgent } from './agent-catalog-resolver'
+import { listAgentProfiles } from '../../agent/agent-catalog-service'
 import {
-  listEnabledCliWorkerCards,
-  resolveTaskSubagentBackend,
-} from '../../agent/cli-workers/resolve-backend'
-import { runCliWorker } from '../../agent/cli-workers/run-cli-worker'
+  buildDelegationModelPrompt,
+  listDelegationModelCandidates,
+  validateDelegationModelSelection,
+} from '../../agent/delegation-model-policy'
+import { tryReserveDelegationSlot } from '../../agent/delegation-capacity'
+import { runOfficialDelegatedAgent } from '../../agent/official-delegated-agent'
 import { bashHooksForSession } from '../../agent/session-process-registry'
+import { bindWorkspaceFileTool } from './workspace-file-tool'
+import {
+  parseTaskDelegationMode,
+  type BackgroundCallbackPayload,
+} from '../../agent/background-delegation'
+import {
+  enqueueParentCallback,
+  notifyParentBackgroundEvent,
+  registerBackgroundTask,
+  unregisterBackgroundTask,
+} from '../../agent/background-delegation-service'
 
 // ESM-only 包延迟加载
 type PiCoreModule = typeof import('@tagent/pi-core')
 type PiAgentCoreModule = typeof import('@earendil-works/pi-agent-core')
 
+const MAX_PI_DELEGATED_TOOL_CALLS = 20
+const PI_DELEGATED_TIMEOUT_MS = 120_000
+
 /** task 工具参数 schema */
 const taskSchema = Type.Object({
-  subagent_type: Type.String({
+  /** 新 Agent 目录入口；传入后优先于 subagent_type / cli。 */
+  agent: Type.Optional(
+    Type.String({
+      description: 'Agent 目录 profile id；仅允许调用 enabled 且 allowPiTask=true 的 profile。',
+    }),
+  ),
+  subagent_type: Type.Optional(Type.String({
     description:
       '子代理类型：explorer（只读探索）、code-reviewer（代码审查，角色库 reviewer 投影）、researcher（技术调研）；亦可使用角色库 id：reviewer、analyst、coder、generalist 等。',
-  }),
+  })),
   prompt: Type.String({ description: '子代理要执行的任务描述' }),
   description: Type.Optional(Type.String({ description: '任务简短描述（日志用）' })),
+  /** 可选的已配置渠道 id；填写后子代理可跨渠道调用。 */
+  channel: Type.Optional(
+    Type.String({ description: '已配置渠道 id；不填则继承父会话渠道。' }),
+  ),
+  /** 可选的已配置模型 id；填写后从指定渠道或唯一匹配渠道调用。 */
+  model: Type.Optional(
+    Type.String({ description: '已配置模型 id；不填则继承父会话模型。' }),
+  ),
   /**
-   * 本机 CLI 工人 id（可选）。设置启用本机 CLI 后端时生效；
-   * 省略则按启用列表优先级自动选第一个本机可用的。
-   * 同会话可并行多路 task，每路可指定不同 cli。
+   * 父轮等不等。缺省 background：立刻返回任务 id，子代理独立跑完再回投。
+   * foreground：本轮干等，结论作为 tool_result（旧行为）。
    */
-  cli: Type.Optional(
-    Type.String({
+  mode: Type.Optional(
+    Type.Union([Type.Literal('foreground'), Type.Literal('background')], {
       description:
-        '本机 CLI 工人 id（如 kscc / grok / codex / mimo）。仅当设置启用了「本机 CLI」后端时有效；省略则按优先级自动挑选。可与其它 task 并行且各选不同 CLI。',
+        'foreground=本轮等待结果；background=立刻返回，子代理在后台跑完后回投结论。默认 background。',
     }),
   ),
-  /**
-   * 硬性能力要求：不满足的工人被剔除（含显式 cli 不满足也回落池内）。
-   * - vision: true 需工人支持视觉输入
-   * - reasoningMin: 工人推理档须 ≥ 此值（low < medium < high）
-   */
-  require: Type.Optional(
-    Type.Object({
-      vision: Type.Optional(Type.Boolean()),
-      reasoningMin: Type.Optional(
-        Type.Union([Type.Literal('low'), Type.Literal('medium'), Type.Literal('high')]),
-      ),
-    }),
-  ),
-  /**
-   * 软性偏好：只影响同合格候选排序，不剔除工人（也不剔除显式 cli）。
-   * - costMax: 视为硬上限，cost > costMax 的候选被剔除
-   * - goodFor: 关键词命中工人 goodFor 时排序加分
-   */
-  prefer: Type.Optional(
-    Type.Object({
-      costMax: Type.Optional(
-        Type.Union([
-          Type.Literal(1),
-          Type.Literal(2),
-          Type.Literal(3),
-          Type.Literal(4),
-          Type.Literal(5),
-        ]),
-      ),
-      goodFor: Type.Optional(Type.String()),
-    }),
+  selectionReason: Type.Optional(Type.String({ description: '选择 profile / channel / model 的理由；显式绑定时必填。' })),
+  complexity: Type.Optional(
+    Type.Union([Type.Literal('simple'), Type.Literal('standard'), Type.Literal('complex')]),
   ),
 })
 
@@ -98,6 +108,7 @@ export type SubagentTaskLifecycleEvent =
       taskId?: string
       description?: string
       lastToolName?: string
+      taskType?: string
     }
   | {
       type: 'task_notification'
@@ -105,10 +116,84 @@ export type SubagentTaskLifecycleEvent =
       toolUseId?: string
       status: 'completed' | 'failed' | 'stopped'
       summary: string
+      taskType?: string
     }
 
 /** 子代理生命周期事件回调（推到父会话流，供入口卡 reduceTaskEvent） */
 export type SubagentTaskEventSink = (event: SubagentTaskLifecycleEvent) => void
+
+function resolveSubagentChannelConfig(opts: {
+  parent: PiAgentAdapterConfig
+  parentChannelId?: string | null
+  requestedChannelId?: string
+  requestedModelId?: string
+}): {
+  config: PiAgentAdapterConfig
+  modelId: string
+  channelId?: string
+  availableModelIds: Set<string>
+} {
+  const channels = listChannels()
+  const parentChannel = opts.parentChannelId
+    ? channels.find((c) => c.id === opts.parentChannelId)
+    : undefined
+  if (opts.parentChannelId && (!parentChannel || !parentChannel.enabled) && !opts.requestedChannelId) {
+    throw new Error(`父会话渠道「${opts.parentChannelId}」不存在或未启用`)
+  }
+  let channel = opts.requestedChannelId
+    ? channels.find((c) => c.id === opts.requestedChannelId)
+    : parentChannel
+  if (opts.requestedChannelId && (!channel || !channel.enabled)) {
+    throw new Error(`子代理指定的渠道「${opts.requestedChannelId}」不存在或未启用`)
+  }
+  if (opts.requestedModelId && !opts.requestedChannelId &&
+      (!channel || !channel.models.some((m) => m.enabled && m.id === opts.requestedModelId))) {
+    const matches = channels.filter(
+      (c) => c.enabled && c.models.some((m) => m.enabled && m.id === opts.requestedModelId),
+    )
+    if (matches.length !== 1) {
+      throw new Error(
+        matches.length === 0
+          ? `没有已启用渠道配置模型「${opts.requestedModelId}」`
+          : `模型「${opts.requestedModelId}」在多个渠道存在，请同时指定 channel`,
+      )
+    }
+    channel = matches[0]
+  }
+  if (!channel) {
+    throw new Error('子代理无法确定已配置的父渠道，拒绝继承未绑定 channel/model')
+  }
+  const inheritedModelId = channel === parentChannel ? opts.parent.modelId : undefined
+  const model = channel.models.find(
+    (m) => m.enabled && m.id === (opts.requestedModelId ?? inheritedModelId ?? channel.defaultModelId),
+  )
+  if (!model) throw new Error(`渠道「${channel.name}」未启用指定模型「${opts.requestedModelId ?? inheritedModelId ?? ''}」`)
+  const availableModelIds = new Set(channel.models.filter((m) => m.enabled).map((m) => m.id))
+  if (channel.provider === 'kscc-internal') {
+    throw new Error('该渠道已停用（历史 kscc CLI 通路已移除），不能作为 Pi 子代理渠道')
+  }
+  if (channel.provider === 'codex-internal') {
+    throw new Error('Codex App Server 暂不支持作为 Pi 子代理渠道，请选择已配置 API Key 的渠道')
+  }
+  const apiKey = getDecryptedApiKey(channel.id)
+  if (!apiKey) throw new Error(`渠道「${channel.name}」未配置 API Key`)
+  return {
+    config: {
+      type: 'external',
+      provider: channel.provider,
+      apiProtocol: channel.apiProtocol,
+      apiKey,
+      baseUrl: channel.baseUrl,
+      modelId: model.id,
+      contextWindow: model.contextWindow,
+      thinkingEnabled: false,
+      headers: resolveChannelRequestHeaders(channel.provider, apiKey),
+    },
+    modelId: model.id,
+    channelId: channel.id,
+    availableModelIds,
+  }
+}
 
 /** 子代理名容错：近名归一 + 角色库 id 直通 */
 function resolveSubagentType(raw: string, available: string[]): string {
@@ -160,6 +245,8 @@ export type SubagentBeforeToolCall = (ctx: {
   args?: unknown
 }) => Promise<{ block: true; reason: string } | undefined>
 
+export type SubagentApprovalRequest = (profileName: string, signal?: AbortSignal) => Promise<boolean>
+
 /**
  * 创建 task 工具实例
  *
@@ -168,12 +255,11 @@ export type SubagentBeforeToolCall = (ctx: {
  * @param cwd - 工作目录
  * @param piCore - 已加载的 pi-core 模块
  * @param piAgentCore - 已加载的 pi-agent-core 模块
- * @param beforeToolCall - 父会话权限钩子（危险命令 + Chat 只读等）；缺省时退化为 pi-core 危险命令拦截
+ * @param beforeToolCall - 父会话权限钩子（危险命令 + Chat 只读等）；缺失时拒绝派发
  * @param onTaskEvent - 进度事件出口（入口卡）；缺省则静默（仅 tool_result）
  * @param emitPayload - 推 IR 到父会话流（CLI 子代理详情 parentToolUseId 消息）；缺省则详情页无过程
- * @param sessionPreferredCliId - 会话偏好的 CLI 工人 id（来自会话 meta cliWorkerId）。
- *   task 未显式传 cli 时用它作 preferredCliId 注入路由；显式 cli 仍最高优先。
- *   已禁用/已删除的 id 由 resolve 自动回落池内，不报错。
+ * @param sessionPreferredCliId - 保留旧签名的会话 CLI 偏好；Pi 主线不再自动使用它，只有
+ *   task 显式传 cli 才启动 CLI 兼容后端。
  */
 export function createTaskTool(
   parentSessionId: string,
@@ -185,269 +271,370 @@ export function createTaskTool(
   onTaskEvent?: SubagentTaskEventSink,
   emitPayload?: (p: TAgentDesktopStreamPayload) => void,
   sessionPreferredCliId?: string | null,
+  snapshotParentMessages?: () => unknown[],
+  sessionChannelId?: string | null,
+  requestApproval?: SubagentApprovalRequest,
 ): AgentTool<typeof taskSchema, TaskToolDetails> {
-  // 优先挂父会话 beforeToolCall（含 Chat 硬只读 / plan / 弹窗确认）。
-  // 缺口：创建路径若拿不到 PermissionService，仅用 checkToolPermission——
-  // 只拦 Bash 危险命令，不含 Chat 只读 / plan 写拒 / 白名单 / 弹窗。
-  const subBeforeToolCall: SubagentBeforeToolCall =
-    beforeToolCall ??
-    (async (ctx) => {
-      const input =
-        (ctx.args as Record<string, unknown> | undefined) ??
-        ctx.toolCall.arguments ??
-        {}
-      const result = piCore.checkToolPermission(ctx.toolCall.name, input, false)
-      if (result.block) {
-        return { block: true, reason: result.reason ?? '权限拒绝' }
-      }
-      return undefined
-    })
+  // A delegated task must inherit the parent session's complete permission hook.
+  // The pi-core fallback is intentionally not safe for Chat/plan/approval policy.
+  const subBeforeToolCall = beforeToolCall
 
-  // 描述里带上当前启用池能力卡（创建时快照；execute 时再 resolve，允许设置变更后新 task 生效）
-  const card = listEnabledCliWorkerCards()
-  const cliHint = card
-    ? `\n${card}`
-    : ' 子代理默认走内置（进程内）；设置中可改用本机 CLI 工人池。'
+  const profileHint = listAgentProfiles()
+    .filter((profile) => profile.enabled && profile.allowPiTask)
+    .map((profile) => `${profile.id} (runtime=${profile.runtime}, channel=${profile.channelId ?? 'inherit'}, model=${profile.modelId ?? 'inherit'})`)
+    .join('; ')
 
   return {
     name: 'task',
     label: 'task',
     description:
-      '派发子任务给独立子代理执行。子代理有独立上下文，执行完成后返回结果。支持并行派发多个子代理。' +
-      cliHint,
+      '派发子任务给独立子代理执行。子代理有独立上下文，默认后台运行：立刻返回任务 id，父轮继续；子代理完成后把结论回投给主会话。需要本轮就用结果时传 mode=foreground。支持并行派发多个子代理。' +
+      `\n可用 Agent profiles（仅 enabled 且 allowPiTask；不含 API Key）：${profileHint || '无'}`,
     parameters: taskSchema,
     executionMode: 'parallel',
     execute: async (_toolCallId, params, signal): Promise<AgentToolResult<TaskToolDetails>> => {
       const startTime = Date.now()
       const toolUseId = _toolCallId
       const taskId = _toolCallId
+      if (!subBeforeToolCall) {
+        throw new Error('子代理缺少父会话权限处理器，已拒绝派发')
+      }
+      const catalogAgent = resolvePiTaskAgent(params.agent)
+      if (catalogAgent?.profile.skills?.length || catalogAgent?.profile.mcpServers?.length) {
+        throw new Error(`Agent「${catalogAgent.profile.name}」配置了暂不支持的 skills/mcpServers，当前不能安全派发`)
+      }
+      const explicitBinding = Boolean(params.agent || params.channel || params.model)
+      const selectionReason = params.selectionReason?.trim()
+      if (explicitBinding && !selectionReason) {
+        throw new Error('显式选择子代理 profile / channel / model 时必须提供 selectionReason')
+      }
+      /** Profile 是权限上限；父会话的审批钩子仍然保留，不能由 Profile 绕过。 */
+      const profileBeforeToolCall: SubagentBeforeToolCall = async (ctx) => {
+        if (catalogAgent?.profile.permissionProfile === 'read-only') {
+          const input =
+            (ctx.args as Record<string, unknown> | undefined) ??
+            ctx.toolCall.arguments ??
+            {}
+          if (
+            ctx.toolCall.name !== 'AskUserQuestion' &&
+            (!isAutoModeAutoAllowTool(ctx.toolCall.name, input, cwd) ||
+              isWriteTool(ctx.toolCall.name, input))
+          ) {
+            return {
+              block: true,
+              reason: `Agent「${catalogAgent.profile.name}」是只读 Profile，不能执行写入或非只读工具`,
+            }
+          }
+        }
+        return subBeforeToolCall!(ctx)
+      }
       // Pi 非 Claude 渠道：子代理继承父模型（不写死 haiku）
       const builtinAgents = buildBuiltinSubagentDefinitions(false)
-      const subagentType = resolveSubagentType(params.subagent_type, Object.keys(builtinAgents))
+      const legacySubagentType = params.subagent_type?.trim()
+      const subagentType = catalogAgent
+        ? catalogAgent.profile.id
+        : legacySubagentType
+          ? resolveSubagentType(legacySubagentType, Object.keys(builtinAgents))
+          : ''
 
       // 目录命中 或 角色库动态投影
       const def =
-        builtinAgents[subagentType] ??
-        resolveSubagentDefinition(subagentType, { claudeAvailable: false })
-      if (!def?.prompt) {
+        catalogAgent
+          ? undefined
+          : builtinAgents[subagentType] ??
+            resolveSubagentDefinition(subagentType, { claudeAvailable: false })
+      if (!catalogAgent && !def?.prompt) {
         throw new Error(
-          `未知的子代理类型: ${params.subagent_type}。可用: ${Object.keys(builtinAgents).join(', ')} 或角色库 id`,
+          `未知的子代理类型: ${params.subagent_type ?? '(未提供)'}。可用: ${Object.keys(builtinAgents).join(', ')} 或角色库 id`,
         )
       }
+      const resolvedDef = def
 
       const description =
         (typeof params.description === 'string' && params.description.trim()) ||
         params.prompt.slice(0, 60)
 
-      // preferredCliId 优先级：params.cli 显式指定 > 会话偏好 sessionPreferredCliId > 启用池优先级（resolve 层兜底）
-      const explicitCli =
-        typeof params.cli === 'string' && params.cli.trim() ? params.cli.trim() : undefined
-      const sessionPref =
-        typeof sessionPreferredCliId === 'string' && sessionPreferredCliId.trim()
-          ? sessionPreferredCliId.trim()
-          : undefined
-      const preferredCli = explicitCli ?? sessionPref
+      // CLI 只接受 task 参数显式指定；旧的会话 CLI 偏好不再自动把 Pi 子代理切到进程外。
+      const requestedChannelId =
+        typeof params.channel === 'string' && params.channel.trim() ? params.channel.trim() : undefined
+      const requestedModelId =
+        typeof params.model === 'string' && params.model.trim() ? params.model.trim() : undefined
+      const profileChannelId = catalogAgent?.profile.channelId?.trim() || undefined
+      const profileModelId = catalogAgent?.profile.modelId?.trim() || undefined
+      const effectiveRequestedChannelId = profileChannelId ?? requestedChannelId
+      const effectiveRequestedModelId = profileModelId ?? requestedModelId
+      if (profileChannelId && requestedChannelId && profileChannelId !== requestedChannelId) {
+        throw new Error('task channel 与 Agent profile channel 冲突')
+      }
+      if (profileModelId && requestedModelId && profileModelId !== requestedModelId) {
+        throw new Error('task model 与 Agent profile model 冲突')
+      }
+      if (requestedChannelId && !requestedModelId && !profileModelId && requestedChannelId !== sessionChannelId) {
+        throw new Error('跨渠道派发必须同时指定 model')
+      }
+      const effectiveCwd = catalogAgent?.workspacePath ?? cwd
+      if (catalogAgent?.profile.workspacePolicy === 'fixed' &&
+        catalogAgent.workspacePath &&
+        !sameWorkspace(catalogAgent.workspacePath, cwd)) {
+        throw new Error(`Agent「${catalogAgent.profile.name}」的 fixed workspace 必须与父会话 workspace 相同`)
+      }
+      if (signal?.aborted) throw new Error('子代理任务在启动前已取消')
 
       console.log(
         `[子代理 ${parentSessionId}] 启动 ${subagentType}（角色投影）: ${description}` +
-          (preferredCli ? ` [cli=${preferredCli}]` : ''),
+          (effectiveRequestedChannelId || effectiveRequestedModelId
+            ? ` [model=${effectiveRequestedModelId ?? 'default'}${effectiveRequestedChannelId ? `@${effectiveRequestedChannelId}` : ''}]`
+            : ''),
       )
 
-      onTaskEvent?.({
-        type: 'task_started',
-        taskId,
-        toolUseId,
-        description,
-        taskType: subagentType,
-      })
-
-      // CLI 工人池：启用 + 优先级排序；task.cli 可指定，否则按序选第一个本机可用的。
-      // 同会话多路 parallel task 各自独立 resolve/spawn，可并发且 CLI 可不同。
-      // require（硬性过滤）/ prefer（软性打分）按能力画像挑工人，不再只按数组顺序。
-      const backend = resolveTaskSubagentBackend({
-        preferredCliId: preferredCli,
-        require: params.require,
-        prefer: params.prefer,
-      })
-      if (backend.kind === 'cli') {
-        const workerId = backend.worker.id
-        // CLI 无 subagent_type 人格，把角色 system + 用户任务拼成单 prompt
-        const fullPrompt = [def.prompt, '', '## 任务', params.prompt].join('\n')
-        // 详情消息 modelId 标签：worker.defaultModel 优先，否则用 worker.id（如 'grok'/'codex'）
-        const modelId = backend.worker.defaultModel?.trim() || workerId
-        const detailStartedAt = startTime
-        /** 流式正文 uuid：partial 与 final 同 uuid，渲染层原地 upsert */
-        const streamUuid = `cli-${toolUseId}-stream`
-        let streamedText = ''
-        /** 推一条挂在本 task tool_use 下的详情消息（主时间线不展示过程） */
-        const emitDetail = (message: TAgentMessage): void => {
-          if (!emitPayload) return
-          emitPayload({ kind: 'sdk_message', message })
-        }
+      const mode = parseTaskDelegationMode(params.mode)
+      if (catalogAgent && mode === 'background' && !catalogAgent.profile.allowBackground) {
+        throw new Error(`Agent「${catalogAgent.profile.name}」未允许后台运行，请改用 mode=foreground`)
+      }
+      const taskAbort = new AbortController()
+      const abortTask = (): void => taskAbort.abort()
+      if (signal) signal.addEventListener('abort', abortTask, { once: true })
+      registerBackgroundTask({ taskId, parentSessionId, description, subagentType, startedAt: startTime, abort: taskAbort })
+      let releaseSlot: (() => void) | undefined
+      const cleanupTask = (): void => {
+        unregisterBackgroundTask(taskId)
+        releaseSlot?.()
+        if (signal) signal.removeEventListener('abort', abortTask)
+      }
+      const runSignal = taskAbort.signal
+      if (catalogAgent?.profile.approvalRequired) {
         try {
-          const r = await runCliWorker({
-            worker: backend.worker,
-            prompt: fullPrompt,
-            cwd,
-            sessionId: parentSessionId,
-            signal,
-            onProgress: (name) =>
-              onTaskEvent?.({ type: 'task_progress', toolUseId, taskId, lastToolName: name }),
-            onToolUse: (t) => {
-              emitDetail({
-                type: 'assistant',
-                uuid: `cli-${toolUseId}-tu-${t.id}`,
-                sessionId: parentSessionId,
-                parentToolUseId: toolUseId,
-                modelId,
-                createdAt: detailStartedAt,
-                content: [
-                  {
-                    type: 'tool_use',
-                    id: t.id,
-                    name: t.name,
-                    input: t.input,
-                  },
-                ],
-              })
-            },
-            onToolResult: (t) => {
-              emitDetail({
-                type: 'user',
-                uuid: `cli-${toolUseId}-tr-${t.toolUseId}`,
-                sessionId: parentSessionId,
-                parentToolUseId: toolUseId,
-                createdAt: Date.now(),
-                content: [
-                  {
-                    type: 'tool_result',
-                    toolUseId: t.toolUseId,
-                    content: t.content,
-                    isError: t.isError,
-                  },
-                ],
-              })
-            },
-            // 阶段性正文：打开详情页时可看到增量；_partial 不落盘，final 再落盘结论
-            onTextChunk: (chunk) => {
-              if (!chunk) return
-              streamedText += chunk
-              emitDetail({
-                type: 'assistant',
-                uuid: streamUuid,
-                sessionId: parentSessionId,
-                parentToolUseId: toolUseId,
-                modelId,
-                createdAt: detailStartedAt,
-                _partial: true,
-                content: [{ type: 'text', text: streamedText }],
-              })
-            },
-          })
-          const durationMs = Date.now() - startTime
-          const resultText = r.summary || streamedText || `(${workerId} 无输出)`
-          // 截断过长结果（与 in-process 路径同口径，主 Agent context 有限）
-          const truncated =
-            resultText.length > 12000
-              ? resultText.slice(0, 12000) + `\n... (截断，共 ${resultText.length} 字符)`
-              : resultText
-          const aborted = Boolean(signal?.aborted)
-          const status: 'completed' | 'failed' | 'stopped' = aborted
-            ? 'stopped'
-            : r.ok
-              ? 'completed'
-              : 'failed'
-          const summary =
-            status === 'completed'
-              ? `${r.toolCalls} 次工具 · ${Math.round(durationMs / 1000)}s`
-              : status === 'failed'
-                ? '执行失败'
-                : '已停止'
-          // 详情页最终正文（同 uuid 替换 partial；无 _partial → 落盘结论）
-          // createdAt 用结束时刻，便于详情页算「运行了 Xs」（勿与 startedAt 相同导致 0.0s）
-          emitDetail({
-            type: 'assistant',
-            uuid: streamUuid,
-            sessionId: parentSessionId,
-            parentToolUseId: toolUseId,
-            modelId,
-            createdAt: Date.now(),
-            stop_reason: status === 'completed' ? 'end_turn' : status === 'failed' ? 'error' : 'aborted',
-            content: [{ type: 'text', text: resultText }],
-          })
-          onTaskEvent?.({ type: 'task_notification', taskId, toolUseId, status, summary })
-          console.log(
-            `[子代理 ${parentSessionId}] ${subagentType} (${workerId}) 完成: ok=${r.ok}, ${r.toolCalls} 次工具调用, ${durationMs}ms, exit=${r.exitCode}`,
-          )
-          return {
-            content: [{ type: 'text', text: truncated }],
-            details: {
-              subagentType,
-              resultLength: resultText.length,
-              toolCalls: r.toolCalls,
-              durationMs,
-            },
+          if (!requestApproval) throw new Error(`Agent「${catalogAgent.profile.name}」需要审批，但当前没有 approval hook`)
+          if (!(await requestApproval(catalogAgent.profile.name, runSignal))) {
+            throw new Error(`Agent「${catalogAgent.profile.name}」审批未通过`)
           }
-        } catch (err) {
-          const durationMs = Date.now() - startTime
-          const msg = err instanceof Error ? err.message : String(err)
-          console.error(`[子代理 ${parentSessionId}] ${subagentType} (${workerId}) 异常:`, msg)
-          const resultText = `[${workerId} 子代理异常] ${msg}`
-          emitDetail({
-            type: 'assistant',
-            uuid: `cli-${toolUseId}-final`,
-            sessionId: parentSessionId,
-            parentToolUseId: toolUseId,
-            modelId,
-            createdAt: Date.now(),
-            stop_reason: 'error',
-            content: [{ type: 'text', text: resultText }],
-          })
-          onTaskEvent?.({
-            type: 'task_notification',
-            taskId,
-            toolUseId,
-            status: 'failed',
-            summary: '执行失败',
-          })
-          return {
-            content: [{ type: 'text', text: resultText }],
-            details: { subagentType, resultLength: resultText.length, toolCalls: 0, durationMs },
-          }
+        } catch (error) {
+          cleanupTask()
+          throw error
+        }
+      }
+      const emitStarted = (sink?: SubagentTaskEventSink): void => {
+        sink?.({
+          type: 'task_started',
+          taskId,
+          toolUseId,
+          description,
+          taskType: 'local_agent',
+        })
+      }
+
+      // Approval may have yielded while the parent was stopped. Never start a child afterward.
+      if (runSignal.aborted || signal?.aborted) {
+        cleanupTask()
+        throw new Error('子代理任务在启动前已取消')
+      }
+      try {
+        releaseSlot = tryReserveDelegationSlot(parentSessionId, taskId) ?? undefined
+      } catch (error) {
+        cleanupTask()
+        throw error
+      }
+      if (!releaseSlot) {
+        cleanupTask()
+        return {
+          content: [{ type: 'text', text: '子代理已达父会话共享并发上限。' }],
+          details: { subagentType, resultLength: 0, toolCalls: 0, durationMs: 0 },
         }
       }
 
-      // 创建子 Agent（限制 tools，自定义 systemPrompt；模型：角色池 > 渠道默认）
+      if (mode === 'background') {
+        let fork: unknown[]
+        try {
+          fork = snapshotParentMessages?.() ?? []
+          emitStarted(onTaskEvent)
+        } catch (error) {
+          cleanupTask()
+          throw error
+        }
+        void runDelegatedTask(runSignal)
+          .then((outcome) => {
+            const stopped = runSignal.aborted || outcome.status === 'stopped'
+            const payload: BackgroundCallbackPayload = {
+              taskId,
+              description,
+              subagentType,
+              status: outcome.status,
+              summary: outcome.summary,
+              resultText: outcome.resultText,
+              durationMs: outcome.details.durationMs,
+              fork,
+            }
+            notifyParentBackgroundEvent(parentSessionId, {
+              type: 'task_notification',
+              taskId,
+              toolUseId,
+              status: outcome.status,
+              summary: outcome.summary,
+              taskType: 'local_agent',
+            })
+            if (!stopped) enqueueParentCallback(parentSessionId, payload)
+          })
+          .catch((err) => {
+            const stopped = runSignal.aborted
+            const msg = err instanceof Error ? err.message : String(err)
+            notifyParentBackgroundEvent(parentSessionId, {
+              type: 'task_notification',
+              taskId,
+              toolUseId,
+              status: stopped ? 'stopped' : 'failed',
+              summary: stopped ? '已停止' : '执行失败',
+              taskType: 'local_agent',
+            })
+            if (!stopped) enqueueParentCallback(parentSessionId, {
+              taskId,
+              description,
+              subagentType,
+              status: 'failed',
+              summary: '执行失败',
+              resultText: `[子代理异常] ${msg}`,
+              durationMs: Date.now() - startTime,
+              fork,
+            })
+          })
+          .finally(() => {
+            cleanupTask()
+          })
+          .catch(() => console.warn('[子代理] 完成通知未能投递；任务已清理'))
+        const ack = `已派出后台子代理 ${taskId}（${subagentType}：${description}）。父轮继续；完成后会把结论回投到本会话，请届时收口，不要空等。`
+        return {
+          content: [{ type: 'text', text: ack }],
+          details: { subagentType, resultLength: ack.length, toolCalls: 0, durationMs: Date.now() - startTime },
+        }
+      }
+
+      try {
+        emitStarted(onTaskEvent)
+        return await runDelegatedTask(runSignal)
+      } finally {
+        cleanupTask()
+      }
+
+      async function runDelegatedTask(
+        execSignal: AbortSignal | undefined,
+      ): Promise<AgentToolResult<TaskToolDetails> & { status: 'completed' | 'failed' | 'stopped'; summary: string; resultText: string }> {
+      const resolvedChannelConfig = resolveSubagentChannelConfig({
+        parent: channelConfig,
+        parentChannelId: sessionChannelId,
+        requestedChannelId: effectiveRequestedChannelId,
+        requestedModelId: effectiveRequestedModelId,
+      })
+      const bindingChannelId = resolvedChannelConfig.channelId ?? effectiveRequestedChannelId ?? sessionChannelId
+      if (!bindingChannelId) throw new Error('子代理无法确定实际 channelId，拒绝使用未绑定模型')
+      validateDelegationModelSelection({
+        channelId: bindingChannelId,
+        modelId: resolvedChannelConfig.modelId,
+        selectionReason: selectionReason || '继承父会话真实 channel/model 绑定',
+        complexity: params.complexity,
+      })
+      if (catalogAgent?.runtime === 'official') {
+        if (catalogAgent.profile.tools?.length) {
+          throw new Error(`Agent「${catalogAgent.profile.name}」的 tools 白名单尚未接入官方 delegated runner，已拒绝派发`)
+        }
+        const fullPrompt = [catalogAgent.profile.systemPrompt, '## 任务', params.prompt]
+          .filter((part): part is string => Boolean(part))
+          .join('\n')
+        const official = await runOfficialDelegatedAgent({
+          runtime: catalogAgent.officialRuntime!,
+          parentSessionId,
+          taskId,
+          channelId: bindingChannelId,
+          modelId: resolvedChannelConfig.modelId,
+          cwd: effectiveCwd,
+          prompt: fullPrompt,
+          systemPrompt: catalogAgent.profile.systemPrompt,
+          readOnly: catalogAgent.profile.permissionProfile === 'read-only',
+          signal: execSignal,
+          beforeToolCall: async (ctx) => profileBeforeToolCall({
+            toolCall: {
+              name: ctx.toolCall.name,
+              arguments: ctx.toolCall.arguments ?? {},
+            },
+          }),
+          onPayload: emitPayload,
+        })
+        const resultText = official.text || '(官方子代理无文本输出)'
+        const status = execSignal?.aborted || official.status === 'stopped' ? 'stopped' : official.status
+        const durationMs = Date.now() - startTime
+        const summary = status === 'completed' ? `${official.toolCalls} 次工具 · ${Math.round(durationMs / 1000)}s` : status === 'stopped' ? '已停止' : '执行失败'
+        const statusLabel = status === 'completed' ? 'completed' : status === 'stopped' ? 'stopped' : 'failed'
+        const finalText = `[子代理 status=${statusLabel}]\n${resultText}`
+        onTaskEvent?.({ type: 'task_notification', taskId, toolUseId, status, summary, taskType: 'local_agent' })
+        return {
+          content: [{ type: 'text', text: finalText.slice(0, 12000) }],
+          details: { subagentType, resultLength: resultText.length, toolCalls: official.toolCalls, durationMs },
+          status,
+          summary,
+          resultText,
+        }
+      }
+      // 创建子 Agent（限制 tools，自定义 systemPrompt；可按 task 参数切换已配置渠道/模型）
       // 挂 beforeToolCall：与主会话同权限（至少危险命令 + Chat 只读）
-      const subTools = resolveSubagentTools(def.tools ?? [], piCore, cwd, parentSessionId)
-      const subStreamFn = createSubagentStreamFn(channelConfig, piCore, def.model)
+      const subTools = resolveSubagentTools(
+        catalogAgent?.profile.tools ?? resolvedDef?.tools ?? [],
+        piCore,
+        effectiveCwd,
+        parentSessionId,
+      )
+      const effectiveModelId = effectiveRequestedModelId
+      const subStreamFn = createSubagentStreamFn(resolvedChannelConfig.config, piCore, effectiveModelId)
 
       const subAgent = new piAgentCore.Agent({
         initialState: {
-          systemPrompt: def.prompt,
-          model: buildSubagentModel(channelConfig, def.model),
+          systemPrompt: catalogAgent?.profile.systemPrompt ?? resolvedDef?.prompt ?? '',
+          model: buildSubagentModel(resolvedChannelConfig.config, effectiveModelId),
           thinkingLevel: 'off',
           tools: subTools,
           messages: [],
         },
         streamFn: subStreamFn,
         toolExecution: 'sequential',
-        beforeToolCall: subBeforeToolCall,
+        beforeToolCall: profileBeforeToolCall,
       })
 
       // 收集子 Agent 的文本输出
-      const textChunks: string[] = []
+      let lastText = ''
       let toolCallCount = 0
       let failed = false
+      let failureReason = ''
+      let lastAssistant: { stopReason?: string; errorMessage?: string; content?: unknown[] } | undefined
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined
 
       const unsubscribe = subAgent.subscribe(async (event) => {
-        if (event.type === 'message_update') {
-          const ae = (event as { assistantMessageEvent: { type: string; delta?: string } }).assistantMessageEvent
-          if (ae.type === 'text_delta' && ae.delta) {
-            textChunks.push(ae.delta)
+        if (event.type === 'message_end') {
+          const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string; content?: unknown[] } }).message
+          if (message?.role !== 'assistant') return
+          lastAssistant = message
+          const content = Array.isArray(message?.content) ? message.content : []
+          const text = content
+            .filter((block): block is { type: 'text'; text: string } =>
+              Boolean(block) && typeof block === 'object' &&
+              (block as { type?: unknown }).type === 'text' &&
+              typeof (block as { text?: unknown }).text === 'string',
+            )
+            .map((block) => block.text)
+            .join('')
+          const hasToolUse = content.some((block) =>
+            Boolean(block) && typeof block === 'object' &&
+            (block as { type?: unknown }).type === 'toolCall',
+          )
+          lastText = text
+          if (message?.errorMessage) {
+            failed = true
+            failureReason = message.errorMessage
           }
         } else if (event.type === 'tool_execution_start') {
           toolCallCount++
+          if (toolCallCount > MAX_PI_DELEGATED_TOOL_CALLS) {
+            failed = true
+            failureReason = `超过最大工具回合 ${MAX_PI_DELEGATED_TOOL_CALLS}`
+            void subAgent.abort()
+            return
+          }
           const toolName =
             typeof (event as { toolName?: string }).toolName === 'string'
               ? (event as { toolName: string }).toolName
@@ -457,40 +644,77 @@ export function createTaskTool(
             toolUseId,
             taskId,
             lastToolName: toolName,
+            taskType: 'local_agent',
+          })
+          notifyParentBackgroundEvent(parentSessionId, {
+            type: 'task_progress',
+            taskId,
+            toolUseId,
+            lastToolName: toolName,
+            taskType: 'local_agent',
           })
         }
       })
 
       try {
         // 执行子 Agent（带 abort signal）
-        const promptPromise = subAgent.prompt(params.prompt)
+        if (execSignal?.aborted) {
+          failed = true
+          failureReason = '子代理任务在 prompt 前已取消'
+        } else {
+          const onAbort = (): void => { void subAgent.abort() }
+          if (execSignal) execSignal.addEventListener('abort', onAbort, { once: true })
+          try {
+            const promptPromise = subAgent.prompt(params.prompt)
 
-        // 监听 abort signal
-        if (signal) {
-          signal.addEventListener('abort', () => subAgent.abort(), { once: true })
+            timeoutHandle = setTimeout(() => {
+              failed = true
+              failureReason = `子代理超时（${PI_DELEGATED_TIMEOUT_MS}ms）`
+              void subAgent.abort()
+            }, PI_DELEGATED_TIMEOUT_MS)
+            await promptPromise
+            await subAgent.waitForIdle()
+            const finalContent = Array.isArray(lastAssistant?.content) ? lastAssistant.content : []
+            const finalHasToolUse = finalContent.some((block) =>
+              Boolean(block) && typeof block === 'object' &&
+              (block as { type?: unknown }).type === 'toolCall',
+            )
+            if (!lastAssistant) {
+              failed = true
+              failureReason = '子代理未产生最终 assistant message_end'
+            } else if (lastAssistant.stopReason !== 'stop') {
+              failed = true
+              failureReason = `子代理终态不是 stop（${lastAssistant.stopReason || 'unknown'}）`
+            } else if (finalHasToolUse || !lastText) {
+              failed = true
+              failureReason = finalHasToolUse ? '最终 assistant 仍包含 tool use' : '最终 assistant 无文本'
+            }
+          } finally {
+            if (execSignal) execSignal.removeEventListener('abort', onAbort)
+          }
         }
-
-        await promptPromise
-        // 等待 Agent 空闲（确保所有工具执行完成）
-        await subAgent.waitForIdle()
       } catch (err) {
         failed = true
         const msg = err instanceof Error ? err.message : String(err)
-        textChunks.push(`\n[子代理执行失败] ${msg}`)
+        failureReason = msg
         console.error(`[子代理 ${parentSessionId}] ${subagentType} 执行失败:`, msg)
       } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle)
         unsubscribe()
         subAgent.abort()
       }
 
       const durationMs = Date.now() - startTime
-      const resultText = textChunks.join('') || '(子代理无文本输出)'
-      // 截断过长结果（主 Agent context 有限）
-      const truncated = resultText.length > 12000
-        ? resultText.slice(0, 12000) + `\n... (截断，共 ${resultText.length} 字符)`
+      const resultText = lastText || '(子代理无文本输出)'
+      const finalResultText = failed && failureReason
+        ? `${resultText}\n[子代理执行失败] ${failureReason}`
         : resultText
+      // 截断过长结果（主 Agent context 有限）
+      const truncated = finalResultText.length > 12000
+        ? finalResultText.slice(0, 12000) + `\n... (截断，共 ${finalResultText.length} 字符)`
+        : finalResultText
 
-      const aborted = Boolean(signal?.aborted)
+      const aborted = Boolean(execSignal?.aborted)
       const status: 'completed' | 'failed' | 'stopped' = aborted
         ? 'stopped'
         : failed
@@ -509,18 +733,23 @@ export function createTaskTool(
         toolUseId,
         status,
         summary,
+        taskType: 'local_agent',
       })
 
       console.log(`[子代理 ${parentSessionId}] ${subagentType} 完成: ${toolCallCount} 次工具调用, ${durationMs}ms, ${resultText.length} 字符`)
 
       return {
-        content: [{ type: 'text', text: truncated }],
+          content: [{ type: 'text', text: `[子代理 status=${status}]\n${truncated}` }],
         details: {
           subagentType,
           resultLength: resultText.length,
           toolCalls: toolCallCount,
           durationMs,
         },
+        status,
+        summary,
+          resultText: finalResultText,
+      }
       }
     },
   }
@@ -535,15 +764,21 @@ function resolveSubagentTools(
 ): AgentTool[] {
   const allTools = piCore.defaultTools
   if (toolNames.length === 0) {
-    return allTools.map((t) =>
-      t.name === 'Bash' ? piCore.createBashTool(cwd, bashHooksForSession(sessionId)) : t,
-    )
+    return allTools
+      .filter((t) => t.name !== 'task')
+      .map((t) =>
+        t.name === 'Bash'
+          ? piCore.createBashTool(cwd, bashHooksForSession(sessionId))
+          : bindWorkspaceFileTool(t, cwd),
+      )
   }
   const allowed = new Set(toolNames)
   return allTools
-    .filter((t) => allowed.has(t.name))
+    .filter((t) => allowed.has(t.name) && t.name !== 'task')
     .map((t) =>
-      t.name === 'Bash' ? piCore.createBashTool(cwd, bashHooksForSession(sessionId)) : t,
+      t.name === 'Bash'
+        ? piCore.createBashTool(cwd, bashHooksForSession(sessionId))
+        : bindWorkspaceFileTool(t, cwd),
     )
 }
 
@@ -553,52 +788,35 @@ function createSubagentStreamFn(
   piCore: PiCoreModule,
   modelOverride?: string,
 ) {
-  if (channelConfig.type === 'external') {
-    return piCore.createHttpDirectStreamFn({
-      provider: channelConfig.provider,
-      apiKey: channelConfig.apiKey,
-      baseUrl: channelConfig.baseUrl,
-      modelId: modelOverride || channelConfig.modelId,
-      thinkingEnabled: false,
-    })
-  }
-  // kscc bare 模式：子 Agent 也用 kscc bare
-  return piCore.createKsccBareStreamFn({
-    ksccPath: channelConfig.ksccPath,
-    defaultModelId: modelOverride || channelConfig.defaultModelId,
-    tools: piCore.defaultToolDescriptors,
-  } as never)
+  return piCore.createHttpDirectStreamFn({
+    apiProtocol: channelConfig.apiProtocol,
+    provider: channelConfig.provider,
+    apiKey: channelConfig.apiKey,
+    baseUrl: channelConfig.baseUrl,
+    modelId: modelOverride || channelConfig.modelId,
+    contextWindow: channelConfig.contextWindow,
+    thinkingEnabled: false,
+    headers: channelConfig.headers,
+  })
 }
 
 /** 构造子 Agent 占位 Model（role.modelPool 首项可覆盖） */
 function buildSubagentModel(channelConfig: PiAgentAdapterConfig, modelOverride?: string) {
   const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-  if (channelConfig.type === 'external') {
-    const id = modelOverride || channelConfig.modelId
-    return {
-      id,
-      name: id,
-      api: resolveApiForProvider(channelConfig.provider) as 'anthropic-messages' | 'openai-completions' | 'openai-responses' | 'google-generative-ai',
-      provider: channelConfig.provider,
-      baseUrl: channelConfig.baseUrl ?? '',
-      reasoning: false,
-      input: ['text'] as ('text' | 'image')[],
-      cost: ZERO_COST,
-      contextWindow: 200_000,
-      maxTokens: 8_192,
-    }
-  }
-  const id = modelOverride || channelConfig.defaultModelId || 'glm-5.2'
+  const id = modelOverride || channelConfig.modelId
   return {
     id,
     name: id,
-    api: 'openai-completions' as 'openai-completions',
-    provider: 'kscc',
-    baseUrl: '',
+    api: (channelConfig.apiProtocol === 'openai-chat' ? 'openai-completions' : channelConfig.apiProtocol ?? resolveApiForProvider(channelConfig.provider)) as 'anthropic-messages' | 'openai-completions' | 'openai-responses' | 'google-generative-ai',
+    provider: channelConfig.provider,
+    baseUrl: channelConfig.baseUrl ?? '',
     reasoning: false,
     input: ['text'] as ('text' | 'image')[],
     cost: ZERO_COST,
-    contextWindow: 200_000,
+    contextWindow:
+      channelConfig.contextWindow && channelConfig.contextWindow > 0
+        ? channelConfig.contextWindow
+        : 200_000,
     maxTokens: 8_192,
   }
 }
@@ -611,4 +829,30 @@ function resolveApiForProvider(provider: string): string {
     case 'google': return 'google-generative-ai'
     default: return 'openai-completions'
   }
+}
+
+function resolvedParentModel(channelConfig: PiAgentAdapterConfig): string {
+  return channelConfig.modelId
+}
+
+function sameWorkspace(left: string, right: string): boolean {
+  return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase()
+}
+
+/** Expose the model inventory without credentials for the main model's tool discovery. */
+export function createDelegationModelsTool(): AgentTool<ReturnType<typeof Type.Object>, { candidates: number }> {
+  const parameters = Type.Object({})
+  return {
+    name: 'delegation_models',
+    label: 'delegation_models',
+    description: buildDelegationModelPrompt(),
+    parameters,
+    execute: async () => {
+      const candidates = listDelegationModelCandidates()
+      return {
+        content: [{ type: 'text', text: JSON.stringify(candidates) }],
+        details: { candidates: candidates.length },
+      }
+    },
+  } as AgentTool<ReturnType<typeof Type.Object>, { candidates: number }>
 }

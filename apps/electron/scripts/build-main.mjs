@@ -13,7 +13,7 @@
  * 当 process.env.TAGENT_EXTERNAL 为 '1' / 'true' 时：
  * - 不再 external @anthropic-ai/claude-agent-sdk（避免产物里 require 缺失包）
  * - 用 esbuild plugin 把 adapters/claude/* 与 claude-agent-sdk 指到
- *   scripts/stubs/kscc-external-stub.ts（构建期排除，源码不删）
+ *   scripts/stubs/external-runtime-stub.ts（构建期排除，源码不删）
  * - 配合 electron-builder.external.yml 从安装包排除 claude-agent-sdk* 原生包
  * 本地：bun run package:win:external
  * 内网双核：bun run package:win（默认，不设 TAGENT_EXTERNAL）
@@ -29,10 +29,10 @@ const watch = process.argv.includes('--watch')
 const isExternalBuild =
   process.env.TAGENT_EXTERNAL === '1' || process.env.TAGENT_EXTERNAL === 'true'
 
-const stubPath = join(root, 'scripts/stubs/kscc-external-stub.ts')
+const stubPath = join(root, 'scripts/stubs/external-runtime-stub.ts')
 
 /**
- * 对外构建：把 kscc 核入口与 Claude Agent SDK 解析到 stub。
+ * 对外构建：把官方 Claude Code 核入口与 Claude Agent SDK 解析到 stub。
  * 不删源码，仅构建图上替换。
  *
  * 匹配的是 import 源串（如 `./claude/xxx`、`@anthropic-ai/claude-agent-sdk`），
@@ -47,7 +47,7 @@ function createExternalKsccPlugin() {
     }
     // adapters/claude 下的入口模块（相对路径写法不一）
     if (
-      /(?:^|\/)claude\/(?:claude-agent-adapter|kscc-path|spawn-kscc|kscc-message-adapter)(?:\.[cm]?[jt]sx?)?$/.test(
+      /(?:^|\/)claude\/(?:claude-agent-adapter|kscc-message-adapter)(?:\.[cm]?[jt]sx?)?$/.test(
         p,
       )
     ) {
@@ -57,7 +57,7 @@ function createExternalKsccPlugin() {
   }
 
   return {
-    name: 'tagent-external-kscc-stub',
+    name: 'tagent-external-runtime-stub',
     setup(build) {
       build.onResolve({ filter: /claude/ }, (args) => {
         if (!shouldStub(args.path)) return

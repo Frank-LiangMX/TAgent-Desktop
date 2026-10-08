@@ -37,14 +37,16 @@ import type {
   FileReviewContext,
   BotProfileRecord,
   CodexRuntimeStatus,
+  AgentRuntimeKind,
 } from "@tagent/shared";
 import {
   migrateExecutionMode,
   DEFAULT_EXECUTION_MODE,
   parseMentions,
   classifyUserFacingError,
-  isLocalRuntimeProvider,
   isMoaModelId,
+  CREW_ORCHESTRATION_ENABLED,
+  CREW_PAUSED_MESSAGE,
 } from "@tagent/shared";
 import {
   resolveChannelDefaultModelId,
@@ -197,7 +199,11 @@ import {
 import { sessionPlanProgressAtom } from "../../atoms/plan-progress-atoms";
 import { ExecutionModeSuggestionBanner } from "./ExecutionModeSuggestionBanner";
 import { SessionErrorBanner } from "./SessionErrorBanner";
-import { setSessionErrorAtom } from "../../atoms/session-error-atoms";
+import { SessionRecoveryActions } from "./SessionRecoveryActions";
+import { runSessionRecovery, type RecoveryTarget } from "./session-recovery-flow";
+import { SessionReconnectStatus } from "./SessionReconnectStatus";
+import { discardReconnectPartial } from "./reconnect-partial";
+import { setSessionErrorAtom, sessionErrorMapAtom, clearRecoveredSessionErrorAtom } from "../../atoms/session-error-atoms";
 import {
   allPendingAskUserRequestsAtom,
   askUserDismissedAtAtom,
@@ -206,6 +212,25 @@ import { pendingPermissionMapAtom } from "../../atoms/permission-atoms";
 import { allPendingExitPlanRequestsAtom } from "../../atoms/exit-plan-atoms";
 import { isSessionAwaitingUser } from "../../lib/session-awaiting-user";
 import { RunModeSelector } from "./RunModeSelector";
+import { AgentRuntimeSelector } from "./AgentRuntimeSelector";
+import {
+  createRuntimeSwitchGuard,
+  requiresBindingSwitch,
+  runRuntimeSwitch,
+  RUNTIME_HANDOFF_DESCRIPTION,
+  RUNTIME_SWITCH_BUSY_MESSAGE,
+  RUNTIME_SWITCH_PENDING_MESSAGE,
+} from "./runtime-switch-flow";
+import {
+  AGENT_RUNTIME_LABELS,
+  channelAcceptsRuntime,
+  coreKindForRuntime,
+  internalBackendForRuntime,
+  runtimeBoundBySessionMeta,
+  runtimeForChannelProvider,
+  runtimeForSelection,
+  selectionForRuntime,
+} from "../../atoms/agent-runtime";
 import { KanbanCrewPanel } from "./KanbanCrewPanel";
 import { MessageQueue } from "./MessageQueue";
 import {
@@ -264,7 +289,8 @@ export interface SessionMeta {
   workspaceId?: string;
   modelId?: string;
   channelId?: string;
-  internalBackend?: "codex-app-server" | "kscc";
+  agentRuntime?: AgentRuntimeKind;
+  internalBackend?: AgentSessionMeta["internalBackend"];
   botProfileIds?: string[];
   fusionRoomId?: string;
   kbRoots?: string[];
@@ -678,6 +704,7 @@ export function Chat({
       moaOneShotPresetId?: string;
       /** 圆桌讨论本条（one-shot）preset id：选了预置后追加发送带它；非 sticky，主进程 runMoADiscussionTurn 消费 */
       moaDiscussionPresetId?: string;
+      forceKanbanDispatch?: boolean;
     }>
   >([]);
   /**
@@ -737,12 +764,29 @@ export function Chat({
   );
   /** Internal Core 主会话后端；外部渠道不显示也不消费。 */
   const [internalBackend, setInternalBackend] = useState<
-    NonNullable<AgentSessionMeta["internalBackend"]>
+    AgentSessionMeta["internalBackend"]
   >(
-    session.internalBackend ??
-      (onDraftWorkspaceChange ? "codex-app-server" : "kscc"),
+    session.internalBackend,
+  );
+  const [runtimeOverride, setRuntimeOverride] = useState<AgentRuntimeKind | undefined>(
+    session.agentRuntime,
   );
   const internalBackendTouchedRef = useRef(false);
+  /**
+   * 显式切换运行内核在途（Pi/Codex/Claude Code）。
+   * 在途期间禁用发送与并发切换；失败由 runRuntimeSwitch 回滚，不改本地选择。
+   *
+   * `runtimeSwitchGuardRef` 是**同步**闸门：`useState` 只影响重渲染，
+   * 同一 tick 的重复点击仍会走到 handler，用 ref 才能保证只有一个切换 promise。
+   */
+  const [runtimeSwitchPending, setRuntimeSwitchPending] = useState(false);
+  const [recoveryPending, setRecoveryPending] = useState(false);
+  const recoveryLockRef = useRef(false);
+  const runtimeSwitchGuardRef = useRef(createRuntimeSwitchGuard());
+  useEffect(() => {
+    const guard = runtimeSwitchGuardRef.current;
+    return () => guard.invalidate();
+  }, [sessionId]);
   const [codexRuntimeStatus, setCodexRuntimeStatus] =
     useState<CodexRuntimeStatus | null>(null);
   const [codexRuntimeInstalling, setCodexRuntimeInstalling] = useState(false);
@@ -770,6 +814,7 @@ export function Chat({
 
   // 非分屏：标签栏/顶栏请求打开或切换本会话班组右栏。
   useEffect(() => {
+    if (!CREW_ORCHESTRATION_ENABLED) return;
     if (crewExternalized || crewOpenRequest?.sessionId !== sessionId) return;
     if (crewOpenRequest.toggle) setCrewPanelOpen((v) => !v);
     else setCrewPanelOpen(true);
@@ -821,7 +866,6 @@ export function Chat({
   const pendingExitPlanMap = useAtomValue(allPendingExitPlanRequestsAtom);
   const sessionPlanProgressMap = useAtomValue(sessionPlanProgressAtom);
   const sessionPlanProgress = sessionPlanProgressMap[sessionId] ?? null;
-  const planStillOpen = isPlanIncomplete(sessionPlanProgress);
   const hasPendingExitPlan =
     (pendingExitPlanMap.get(sessionId)?.length ?? 0) > 0;
   const pendingPermissionMap = useAtomValue(pendingPermissionMapAtom);
@@ -954,11 +998,12 @@ export function Chat({
     const contextWindow = contextWindowRef.current;
 
     setContextUsage({
-      inputTokens:
-        Math.max(input, cacheRead + cacheWrite > 0 ? input : 0) || input,
+      inputTokens: input,
       outputTokens: output,
       cacheReadTokens: cacheRead,
       cacheCreationTokens: cacheWrite,
+      contextTokens:
+        usage.contextTokens ?? input + cacheRead + cacheWrite,
       contextWindow,
     });
     setTokenTotals((prev) => ({
@@ -1004,6 +1049,8 @@ export function Chat({
   const pendingSuggestion = useAtomValue(pendingSuggestionAtom);
   const setPendingSuggestion = useSetAtom(pendingSuggestionAtom);
   const setSessionError = useSetAtom(setSessionErrorAtom);
+  const sessionErrors = useAtomValue(sessionErrorMapAtom);
+  const clearRecoveredError = useSetAtom(clearRecoveredSessionErrorAtom);
 
   /**
    * ScrollMinimap 刻度：一轮对话一刻度。
@@ -1100,8 +1147,9 @@ export function Chat({
     prevLastTurnKeyRef.current = finalLastTurnKey;
   }, [finalLastTurnKey, running, runStartedAt]);
 
-  // 选择优先级：本会话最近选择 > 持久化会话选择 > 新会话全局选择。
+  // 选择优先级：本会话最近选择 > 持久化会话绑定 > 历史会话原生线索 > 新会话全局默认。
   // 旧会话只有 channelId 没有 modelId 时，用该渠道当前默认模型做一次迁移。
+  const isDraftSession = Boolean(onDraftWorkspaceChange);
   const sessionChannel = channels.find(
     (channel) => channel.id === session.channelId,
   );
@@ -1111,8 +1159,23 @@ export function Chat({
     session.channelId && sessionModelId
       ? { channelId: session.channelId, modelId: sessionModelId }
       : null;
+  /**
+   * 无渠道绑定的**历史会话**：按 meta 里的原生线索还原它原本跑的内核，
+   * 用它自己的渠道兜底——不能让「新会话默认 Pi」把它悄悄换核。
+   * 没有任何原生线索 → null（此时才允许退回全局默认）。
+   */
+  const legacyBoundRuntime =
+    isDraftSession || persistedSelection
+      ? null
+      : runtimeBoundBySessionMeta(session);
+  const legacyBoundSelection = legacyBoundRuntime
+    ? selectionForRuntime(channels, legacyBoundRuntime)
+    : null;
   const effectiveSelection =
-    selectionOverride ?? persistedSelection ?? selectedModelSelection;
+    selectionOverride ??
+    persistedSelection ??
+    legacyBoundSelection ??
+    selectedModelSelection;
   const selectionChannel = effectiveSelection
     ? channels.find((c) => c.id === effectiveSelection.channelId)
     : undefined;
@@ -1126,6 +1189,7 @@ export function Chat({
   const consultPresetsForMenu = resolveConsultPresetsForChannel(
     selectionChannel,
     consultPresets,
+    channels,
   );
   const configuredContextWindow = effectiveSelection
     ? selectionChannel?.models.find((m) => m.id === effectiveSelection.modelId)
@@ -1146,7 +1210,8 @@ export function Chat({
     if (!realId || !ch) return;
     const next = { channelId: ch.id, modelId: realId };
     setSelectionOverride(next);
-    setSelectedModelSelection(next);
+    // 全局原子只服务「新会话默认」：已物化会话的回填不写回，避免污染下个新会话的内核
+    if (isDraftSession) setSelectedModelSelection(next);
     if (!onDraftWorkspaceChange) {
       void window.electronAPI.updateSessionMeta(sessionId, { modelId: realId });
     }
@@ -1155,6 +1220,7 @@ export function Chat({
     effectiveSelection?.modelId,
     channels,
     sessionId,
+    isDraftSession,
     onDraftWorkspaceChange,
     setSelectedModelSelection,
   ]);
@@ -1169,42 +1235,46 @@ export function Chat({
   }, [displayContextWindow]);
 
   // 会话已绑渠道优先；否则用当前选择；再否则用本会话已发送过的核
-  const lockedKind: ChannelCoreKind | null = sessionChannel
-    ? getChannelCoreKind(sessionChannel)
-    : selectionChannel
-      ? getChannelCoreKind(selectionChannel)
-      : sentCoreKind;
+  /** 当前生效内核：优先看「当前选择」所属渠道（选择已含 selectionOverride 优先级），
+   *  选择渠道失效才退回会话持久化绑定，最后退回本会话已发送过的核。 */
+  const effectiveRuntime: AgentRuntimeKind | null =
+    runtimeOverride ??
+    session.agentRuntime ??
+    runtimeForSelection(channels, effectiveSelection, internalBackend) ??
+    (sessionChannel
+      ? runtimeForChannelProvider(sessionChannel.provider, internalBackend)
+      : null);
+  const lockedKind: ChannelCoreKind | null =
+    effectiveRuntime !== null
+      ? coreKindForRuntime(effectiveRuntime)
+      : sessionChannel
+        ? getChannelCoreKind(sessionChannel)
+        : sentCoreKind;
   /** 已绑定渠道即显示 token 栏；kscc 仅隐藏占用圆环（占用不可信），累计统计照常 */
   const showTokenBar = lockedKind !== null;
-  const showInternalBackend =
-    (selectionChannel && isLocalRuntimeProvider(selectionChannel.provider)) ||
-    (sessionChannel && isLocalRuntimeProvider(sessionChannel.provider));
-  const isDraftSession = Boolean(onDraftWorkspaceChange);
-  const internalBackendSwitchDisabled = running || runStartedAt != null;
+  /** 主 Agent 切换在本切片要求「先停止本轮」：运行中禁用入口，点也走同一提示。 */
+  const agentSwitchBusy = running || runStartedAt != null;
   useEffect(() => {
-    if (!showInternalBackend) return;
+    // 无条件探测：Agent 选择器始终展示 Codex 可用性（不再只在「已选中本机渠道」时探测）
     let cancelled = false;
     void window.electronAPI
       .getCodexRuntimeStatus()
       .then((status) => {
         if (cancelled) return;
         setCodexRuntimeStatus(status);
-        // 新草稿优先 Codex；若本机没有可用 App Server，自动回退到 KSCC。
+        // Explicit agentRuntime owns the engine. Channel-derived backend is only
+        // a legacy fallback for sessions that predate the explicit binding.
         // 已物化会话不在这里改写，避免旧会话在打开时悄然换核。
         const selectedBackend =
           selectionChannel?.provider === "codex-internal"
             ? "codex-app-server"
-            : selectionChannel?.provider === "kscc-internal"
-              ? "kscc"
-              : undefined;
+            : undefined;
         if (
           isDraftSession &&
           !session.internalBackend &&
           !internalBackendTouchedRef.current
         ) {
-          setInternalBackend(
-            selectedBackend ?? (status.available ? "codex-app-server" : "kscc"),
-          );
+          setInternalBackend(selectedBackend);
         }
       })
       .catch((error) => {
@@ -1218,22 +1288,19 @@ export function Chat({
         const selectedBackend =
           selectionChannel?.provider === "codex-internal"
             ? "codex-app-server"
-            : selectionChannel?.provider === "kscc-internal"
-              ? "kscc"
-              : undefined;
+            : undefined;
         if (
           isDraftSession &&
           !session.internalBackend &&
           !internalBackendTouchedRef.current
         ) {
-          setInternalBackend(selectedBackend ?? "kscc");
+          setInternalBackend(selectedBackend);
         }
       });
     return () => {
       cancelled = true;
     };
   }, [
-    showInternalBackend,
     isDraftSession,
     session.internalBackend,
     selectionChannel?.provider,
@@ -1251,13 +1318,7 @@ export function Chat({
         });
         return;
       }
-      if (
-        isDraftSession &&
-        !session.internalBackend &&
-        !internalBackendTouchedRef.current
-      ) {
-        setInternalBackend("codex-app-server");
-      }
+      // 安装只让 Codex Runtime 可用，不把新草稿默认核改成 App Server。
       toast.success(
         result.reusedExistingInstall
           ? "Codex Runtime 已恢复可用"
@@ -1279,45 +1340,176 @@ export function Chat({
     loadChannels,
     session.internalBackend,
   ]);
-  const changeInternalBackend = (
-    next: NonNullable<AgentSessionMeta["internalBackend"]>,
-  ): void => {
-    if (internalBackendSwitchDisabled || next === internalBackend) return;
-    internalBackendTouchedRef.current = true;
-    const previous = internalBackend;
-    setInternalBackend(next);
-    if (onDraftWorkspaceChange) return;
-    void window.electronAPI
-      .updateSessionMeta(sessionId, { internalBackend: next })
-      .then(() => {
-        metaRef.current = {
-          ...(metaRef.current ?? {}),
-          internalBackend: next,
-        };
-      })
-      .catch((error) => {
-        setInternalBackend(previous);
-        console.error("[Chat] 切换主 Agent 失败:", error);
+  /**
+   * 主 Agent 切换的事务入口（模型菜单里的跨内核 legacy 选择也走这里）。
+   *
+   * - **同步取锁**：连续点击不会起第二个切换 promise（闸门见 runtime-switch-flow）
+   * - 运行中先要求停止本轮；目标内核无可用渠道 → 明确提示，不静默换核
+   * - 完成时校验**会话身份 + 请求代次**：切走会话后的迟到结果不得改本地状态
+   * - 在途禁用发送 / 会诊 / 模型与 Agent 选择器
+   * - 失败不乐观写入：回滚捕获的旧选择与旧内核状态
+   */
+  const switchRuntimeTo = async (
+    nextRuntime: AgentRuntimeKind,
+    explicitSelection?: ModelSelection,
+  ): Promise<boolean> => {
+    if (runtimeSwitchPending || runtimeSwitchGuardRef.current.locked) return false;
+    const label = AGENT_RUNTIME_LABELS[nextRuntime];
+    const busy = running || runStartedAt != null;
+    if (busy) {
+      toast.error(RUNTIME_SWITCH_BUSY_MESSAGE, {
+        description: `当前回合结束后才能把主 Agent 切到 ${label}。`,
       });
+      return false;
+    }
+    const target = explicitSelection ?? selectionForRuntime(channels, nextRuntime);
+    const targetChannel = target
+      ? channels.find((channel) => channel.id === target.channelId)
+      : undefined;
+    // 目标必须真的是该内核的承载渠道 + 已启用真实模型（挡掉 MoA 虚拟模型 / 停用渠道）
+    if (
+      !target ||
+      !targetChannel ||
+      !channelAcceptsRuntime(targetChannel, nextRuntime) ||
+      !targetChannel.models.some(model => model.id === target.modelId && model.enabled) ||
+      isMoaModelId(target.modelId)
+    ) {
+      toast.error(`${label} 没有可用的渠道/模型`, {
+        description:
+          nextRuntime === "pi"
+            ? "请先在「设置 → 渠道」配置并启用 Pi 的外部 API 渠道模型。"
+            : nextRuntime === "codex"
+              ? "请先在「设置 → 渠道」配置并启用一个外部 API 渠道模型；协议会由 TAgent 自动适配。"
+              : "请先在「设置 → 渠道」配置并启用一个外部 API 渠道模型；协议会由 TAgent 自动适配。",
+      });
+      return false;
+    }
+
+    // 捕获切换前的本地选择：失败时回滚到它（期间不做乐观写入）
+    const previousSelection = effectiveSelection ?? null;
+    const previousInternalBackend = internalBackend;
+    const previousTouched = internalBackendTouchedRef.current;
+    const targetSessionId = sessionId;
+
+      const outcome = await runRuntimeSwitch({
+        request: {
+          sessionId: targetSessionId,
+          channelId: target.channelId,
+          modelId: target.modelId,
+          runtime: nextRuntime,
+        },
+        busy,
+        isDraft: isDraftSession,
+        guard: runtimeSwitchGuardRef.current,
+        switchRuntime: (input) => window.electronAPI.switchSessionRuntime(input),
+        onPendingChange: setRuntimeSwitchPending,
+        onAdopt: (meta) => {
+          // 会话身份二次校验：切走会话后的迟到成功不得写本地状态
+          if (sessionIdRef.current !== targetSessionId) return;
+          const channelId = meta.channelId ?? target.channelId;
+          const modelId = meta.modelId ?? target.modelId;
+          internalBackendTouchedRef.current = true;
+          setRuntimeOverride(nextRuntime);
+          setSelectionOverride({ channelId, modelId });
+          // 全局选择原子只表示「新会话默认」：仅草稿上的显式选择写回，
+          // 否则在某会话切核会污染下一个新会话的默认内核。
+          if (isDraftSession) setSelectedModelSelection({ channelId, modelId });
+          const backend =
+            meta.internalBackend ?? internalBackendForRuntime(nextRuntime);
+          if (backend) setInternalBackend(backend);
+          setSentCoreKind(coreKindForRuntime(nextRuntime));
+          metaRef.current = {
+            ...(metaRef.current ?? {}),
+            agentRuntime: nextRuntime,
+            channelId,
+            modelId,
+            ...(backend
+              ? { internalBackend: backend }
+              : { internalBackend: undefined }),
+          };
+          // 既有父级更新路径：tab 绑定 + 侧栏/会话列表刷新（重启后按持久化 meta 恢复）
+          setTabs((prev) =>
+            prev.map((tab) =>
+              tab.sessionId === targetSessionId
+                ? { ...tab, channelId, modelId }
+                : tab,
+            ),
+          );
+          bumpRefresh();
+        },
+        onRollback: (error) => {
+          if (sessionIdRef.current !== targetSessionId) return;
+          console.error("[Chat] 切换主 Agent 失败:", error);
+          setSelectionOverride(previousSelection);
+          setInternalBackend(previousInternalBackend);
+          internalBackendTouchedRef.current = previousTouched;
+        },
+      });
+      // 过期完成（已切走会话）不弹任何提示
+      if (sessionIdRef.current !== targetSessionId || outcome.stale) return false;
+      if (outcome.ok) {
+        toast.success(`已切换到 ${label}`, {
+          description: isDraftSession
+            ? "首条消息发送时按此选择创建会话。"
+            : `从下一条消息起交给新内核，${RUNTIME_HANDOFF_DESCRIPTION}。`,
+        });
+      } else if (outcome.blockedByPending) {
+        toast.error(RUNTIME_SWITCH_PENDING_MESSAGE);
+      } else if (!outcome.blockedByBusy) {
+        toast.error(`切换到 ${label} 失败`, {
+          description: outcome.error,
+        });
+      }
+      return outcome.ok;
   };
 
+  const handleAgentRuntimeChange = (nextRuntime: AgentRuntimeKind): void => {
+    if (recoveryLockRef.current) return;
+    if (nextRuntime === effectiveRuntime) return;
+    switchRuntimeTo(nextRuntime);
+  };
+
+  /**
+   * 模型选择：**只在当前内核内**改绑定。
+   *
+   * 菜单已按当前内核过滤，但 legacy 数据 / 旧 override 仍可能给出跨内核选择——
+   * 那种情况一律改走事务性 `switchSessionRuntime`，不再用 updateSessionMeta 旁路
+   * （主进程已把跨内核 meta 改写判为非法）。Codex 同属本机 coreKind='internal'，
+   * 只按 core 过滤不足以区分，必须按 runtime 判定。
+   */
   const handleModelSelection = (nextSelection: ModelSelection): void => {
-    setSelectionOverride(nextSelection);
-    setSelectedModelSelection(nextSelection);
+    if (recoveryLockRef.current) return;
+    if (runtimeSwitchPending || runtimeSwitchGuardRef.current.locked) return;
     const nextChannel = channels.find(
       (channel) => channel.id === nextSelection.channelId,
     );
-    if (nextChannel?.provider === "codex-internal") {
-      changeInternalBackend("codex-app-server");
-    } else if (nextChannel?.provider === "kscc-internal") {
-      changeInternalBackend("kscc");
+    if (!nextChannel) return;
+    const nextRuntime = effectiveRuntime ?? runtimeForChannelProvider(
+      nextChannel.provider,
+      internalBackend,
+    );
+    // 渠道无法归一到任何现行内核（历史 kscc 记录）→ 不静默改绑定
+    if (!nextRuntime) return;
+    // A draft has no native session to hand off yet. Once materialized, even a
+    // same-runtime channel/model change must use the transactional switch API:
+    // the native home/connection is bound to the persisted pair, not just the
+    // label shown by this selector.
+    if (!requiresBindingSwitch(isDraftSession, effectiveSelection, nextSelection)) {
+      setSelectionOverride(nextSelection);
+      setRuntimeOverride(nextRuntime);
+      if (isDraftSession) setSelectedModelSelection(nextSelection);
+      return;
     }
+    switchRuntimeTo(nextRuntime, nextSelection);
   };
 
   // 滚动位置恢复交给 ScrollPositionManager（Conversation 内部）：
   // 钉底在 scrollReady + 尾部窗口就绪后即可；中间位才拉满历史再还原。
   useEffect(() => {
     sessionIdRef.current = sessionId;
+    // 切会话：在途的内核切换立即过期（迟到的完成不得改本地状态），并清在途标记
+    runtimeSwitchGuardRef.current.invalidate();
+    setRuntimeSwitchPending(false);
     // 切会话清同轮完成耗时幂等闸，避免上轮残留 true 屏蔽新会话首条终态记录
     completionRecordedRef.current = false;
     closedRunRef.current = false;
@@ -1340,6 +1532,7 @@ export function Chat({
     setExecutionMode(DEFAULT_EXECUTION_MODE); // 切会话重置，下面异步回显持久化值
     setPermissionMode(TAGENT_DEFAULT_PERMISSION_MODE); // 切会话重置，下面异步回显持久化值
     internalBackendTouchedRef.current = false;
+    setRuntimeOverride(session.agentRuntime);
     setBackgroundCrewBanner(null); // 切会话清掉后台班组提示
     // welcome 形态点提示词时暂存的文本：草稿态挂载后预填输入框并清空。
     // 只有刚 newSession 的草稿会带 pending；切到已有会话时它已被清空，不误填。
@@ -1388,18 +1581,11 @@ export function Chat({
         sessionId,
       )) as unknown[];
       if (cancelled) return;
-      // 按核分流转译：kscc 会话落盘 SDKMessage → sdkMessageToIR；pi 会话落盘 TAgentMessage IR → 直读。
-      // 旧 pi 会话可能仍是 SDKMessage 形态（有 message 包装），用 sdkMessageToIR 兜底。
-      const isCodexCore =
-        sessionChannel?.provider === "codex-internal" ||
-        session.internalBackend === "codex-app-server";
+      // 面板历史允许 SDKMessage（KSCC/旧 MoA）与顶层 IR（Pi）混排；
+      // 先识别 IR，不能把 Pi 的顶层 content 当成旧 SDK 的 message.content。
       const irItems: DisplayItem[] = [];
       for (const raw of history) {
-        const message = isCodexCore
-          ? isIRMessage(raw)
-            ? (raw as TAgentMessage)
-            : sdkMessageToIR(raw as never).message
-          : sdkMessageToIR(raw as never).message;
+        const message = persistedMessageToIR(raw);
         if (message) {
           irItems.push({
             key: `h${itemIdxRef.current++}`,
@@ -1457,8 +1643,12 @@ export function Chat({
         if (cancelled) return;
         const persisted = metas.find((m) => m.id === sessionId);
         if (persisted) {
-          // 记录 meta 快照（completeRun 持久化 turnDurations 时合并旧值）
-          metaRef.current = persisted;
+          // 记录 meta 快照（completeRun 持久化 turnDurations 时合并旧值）。
+          // 若本轮加载期间用户已显式切换过内核，采纳的绑定优先，避免迟到的
+          // 持久化快照把本地成功切换回退成旧绑定。
+          metaRef.current = internalBackendTouchedRef.current
+            ? { ...persisted, ...(metaRef.current ?? {}) }
+            : persisted;
           // 回填持久化的完成耗时：createdAt 稳定 key → 当前渲染 turn key
           const backfilled = backfillTurnDurations(
             irItems,
@@ -1487,13 +1677,11 @@ export function Chat({
               ? migratePermissionMode(persisted.permissionMode)
               : TAGENT_DEFAULT_PERMISSION_MODE,
           );
-          setInternalBackend(
-            persisted.internalBackend ??
-              (persisted.codexThreadId
-                ? "codex-app-server"
-                : onDraftWorkspaceChange
-                  ? "codex-app-server"
-                  : "kscc"),
+          setInternalBackend((prev) =>
+            internalBackendTouchedRef.current
+              ? prev
+              : persisted.internalBackend ??
+                (persisted.codexThreadId ? "codex-app-server" : undefined),
           );
           setPendingModeSuggestion(
             persisted.pendingExecutionModeSuggestion ?? null,
@@ -1506,10 +1694,7 @@ export function Chat({
               : [],
           );
         } else {
-          setInternalBackend(
-            session.internalBackend ??
-              (onDraftWorkspaceChange ? "codex-app-server" : "kscc"),
-          );
+          setInternalBackend(session.internalBackend);
           setPendingModeSuggestion(null);
           setSessionBoardId(null);
           setActiveMentionRoleIds([]);
@@ -1591,18 +1776,10 @@ export function Chat({
             const history = (await window.electronAPI.getMessages(
               sid,
             )) as unknown[];
-            const ch = channels.find((c) => c.id === session.channelId);
-            const isCodexCore =
-              ch?.provider === "codex-internal" ||
-              session.internalBackend === "codex-app-server";
             const irItems: DisplayItem[] = [];
             let idx = 0;
             for (const raw of history) {
-              const message = isCodexCore
-                ? isIRMessage(raw)
-                  ? (raw as TAgentMessage)
-                  : sdkMessageToIR(raw as never).message
-                : sdkMessageToIR(raw as never).message;
+              const message = persistedMessageToIR(raw);
               if (message) {
                 irItems.push({
                   key: `h${idx++}`,
@@ -1650,6 +1827,10 @@ export function Chat({
         };
       },
     ): Promise<void> => {
+      if (!CREW_ORCHESTRATION_ENABLED) {
+        setBackgroundCrewBanner(null);
+        return;
+      }
       if (mode === "work") {
         setBackgroundCrewBanner(null);
         return;
@@ -2522,6 +2703,26 @@ export function Chat({
         thinkingFlushRafRef.current = requestAnimationFrame(flushThinkingDelta);
       }
     } else if (p.kind === "tagent_event") {
+      if (p.event.type === "model_reconnecting" || p.event.type === "model_manual_recovery") {
+        if (closedRunRef.current) return;
+        const failedUuid = p.event.discardedAssistantUuid;
+        if (typeof failedUuid === "string" && failedUuid) {
+          // A failed request never executed these partial tool calls. Remove only
+          // that unfinished snapshot, keeping prior completed tools and results.
+          setItems((prev) => {
+            const next = discardReconnectPartial(prev, failedUuid);
+            inFlightToolIdsRef.current = collectPendingToolUseIds(next);
+            return next;
+          });
+          if (thinkingFlushRafRef.current != null) {
+            cancelAnimationFrame(thinkingFlushRafRef.current);
+            thinkingFlushRafRef.current = null;
+          }
+          resetStreamState();
+          streamStateRef.current = clearSessionStreamState();
+        }
+        return;
+      }
       const evt = p.event as {
         type: string;
         message?: string;
@@ -2869,6 +3070,7 @@ export function Chat({
     attachments,
     moaOneShotPresetId,
     moaDiscussionPresetId,
+    forceKanbanDispatch,
   }: {
     text: string;
     selection: ModelSelection;
@@ -2887,9 +3089,19 @@ export function Chat({
      * sticky moa modelId；拼进 sendMessage payload 由主进程 runMoADiscussionTurn 消费。SPEC §3
      */
     moaDiscussionPresetId?: string;
+    /** 发送旁「用看板派工」：本轮强制走看板分流 */
+    forceKanbanDispatch?: boolean;
   }): Promise<void> => {
     if (!selection) {
-      alert("没有可用模型，请先在「设置 → 渠道」中启用渠道和模型");
+      alert(
+        "没有可用的模型：请先在「设置 → 渠道」配置 Pi 的外部 API 渠道，" +
+          "或用输入区左侧的 Agent 选择器显式选择 Codex / Claude Code（KSCC）",
+      );
+      return;
+    }
+    // 主 Agent 切换在途：所有发送入口（含会诊 / 讨论 / 看板派工）统一拒绝
+    if (recoveryLockRef.current || runtimeSwitchPending || runtimeSwitchGuardRef.current.locked) {
+      toast.error("正在切换主 Agent，请稍候再发送");
       return;
     }
 
@@ -2907,7 +3119,7 @@ export function Chat({
       ? undefined
       : channel?.models.find((item) => item.id === selection.modelId);
     if (!channel?.enabled || (!skipModelCheck && !model?.enabled)) {
-      alert("当前渠道或模型已停用，请选择同一运行区域内的可用模型");
+      alert("当前渠道或模型已停用，请在该 Agent 下选择已启用的模型");
       return;
     }
     const isExistingTab = tabs.some(
@@ -2958,16 +3170,28 @@ export function Chat({
     markSessionAtBottom(sessionIdRef.current);
     startRun();
     try {
+      // 本轮实际内核由**本轮的 selection** 推导（`internalBackend` 只作为
+      // 旧数据的 codex/kscc 区分线索），不信任可能过期的 props：
+      // Pi 渠道不带 internalBackend；Codex / KSCC 渠道带各自的后端值。
+      const sendRuntime = effectiveRuntime ?? runtimeForChannelProvider(
+        channel.provider,
+        internalBackend,
+      );
+      const sendInternalBackend = sendRuntime
+        ? internalBackendForRuntime(sendRuntime)
+        : undefined;
       const res = await window.electronAPI.sendMessage({
         sessionId: sessionIdRef.current,
         prompt: text,
         channelId: selection.channelId,
         model: selection.modelId,
+        ...(sendRuntime ? { agentRuntime: sendRuntime } : {}),
         workspaceId: session.workspaceId,
         ...(savedAttachments.length ? { attachments: savedAttachments } : {}),
         ...(moaOneShotPresetId ? { moaOneShotPresetId } : {}),
         ...(moaDiscussionPresetId ? { moaDiscussionPresetId } : {}),
-        ...(isLocalRuntimeProvider(channel.provider) ? { internalBackend } : {}),
+        ...(forceKanbanDispatch ? { forceKanbanDispatch: true } : {}),
+        ...(sendInternalBackend ? { internalBackend: sendInternalBackend } : {}),
         mentionRoleIds:
           executionMode === "chat" && roleMentionOptions.length > 0
             ? parseMentions(text, roleMentionOptions).map((h) => h.roleId)
@@ -3030,32 +3254,55 @@ export function Chat({
     }
   };
 
-  /**
-   * 取最后一条真实用户输入文案（错误条重试用）。
-   * 跳过 tool_result / 子代理合成 user；无则 null。
-   */
-  const getLastRealUserPrompt = useCallback((): string | null => {
-    for (let i = items.length - 1; i >= 0; i--) {
-      const msg = items[i]?.message;
-      if (!msg || msg.type !== "user") continue;
-      if (!isRealUserInput(msg)) continue;
-      const text = firstText(msg)?.trim();
-      if (text) return text;
+  /** Explicit new continuation turn; never replay the original task or attachments. */
+  const recoverSession = async (target: RecoveryTarget): Promise<void> => {
+    if (recoveryLockRef.current || running || runStartedAt != null || runtimeSwitchGuardRef.current.locked) {
+      throw new Error("请等待当前回合和切换操作结束后再继续");
     }
-    return null;
-  }, [items]);
-
-  /** 错误条「重试」：重发上一条真实用户输入（走现有 send 路径，无附件） */
-  const retryLastUserPrompt = useCallback(async (): Promise<void> => {
-    const text = getLastRealUserPrompt();
-    if (!text) return;
-    if (!effectiveSelection) {
-      alert("没有可用模型，请先在「设置 → 渠道」中启用渠道和模型");
-      return;
+    if (!effectiveSelection || !effectiveRuntime || isDraftSession) throw new Error("没有可恢复的会话绑定");
+    const targetSessionId = sessionId;
+    const previousError = sessionErrors[targetSessionId];
+    recoveryLockRef.current = true;
+    setRecoveryPending(true);
+    try {
+      await runSessionRecovery({
+        current: { ...effectiveSelection, runtime: effectiveRuntime },
+        target,
+        isCurrent: () => sessionIdRef.current === targetSessionId,
+        switchBinding: next => switchRuntimeTo(next.runtime, next),
+        send: async (next, prompt) => {
+          resetStreamState();
+          markSessionAtBottom(targetSessionId);
+          startRun();
+          try {
+            const result = await window.electronAPI.sendMessage({
+              sessionId: targetSessionId,
+              prompt,
+              recovery: true,
+              channelId: next.channelId,
+              model: next.modelId,
+              agentRuntime: next.runtime,
+            });
+            if (!result?.ok) throw new Error(result?.error ?? "恢复请求未受理");
+            if (previousError) clearRecoveredError({ sessionId: targetSessionId, error: previousError });
+            bumpRefresh();
+          } catch (error) {
+            // Another pane may have started real work before this request was
+            // rejected. Do not label that live turn as stopped on a local rejection.
+            const status = await window.electronAPI.getSessionStatus(targetSessionId).catch(() => null);
+            if (status?.status !== "running") {
+              if (sessionIdRef.current === targetSessionId) stopRun();
+              else stopSessionRun(targetSessionId);
+            }
+            throw error;
+          }
+        },
+      });
+    } finally {
+      recoveryLockRef.current = false;
+      setRecoveryPending(false);
     }
-    if (running) return;
-    await sendQueued({ text, selection: effectiveSelection });
-  }, [getLastRealUserPrompt, effectiveSelection, running]);
+  };
 
   /** 运行中引导：不中断；气泡夹进当前执行块；主进程落盘 isSteer 并注入模型。 */
   const submitSteer = useCallback(
@@ -3101,6 +3348,11 @@ export function Chat({
 
   /** 用户发送：空闲→立即发；运行中→入队，由用户在队列里选「按序排队」或「引导」 */
   const send = async (): Promise<void> => {
+    // 切换主 Agent 在途：禁止发送，避免把消息投给正在换核的会话
+    if (recoveryLockRef.current || runtimeSwitchPending || runtimeSwitchGuardRef.current.locked) {
+      toast.error("正在切换主 Agent，请稍候再发送");
+      return;
+    }
     const text = chatInputRef.current?.getText().trim() ?? "";
     if (!text && pendingAttachments.length === 0) return;
     // Chat @：本轮有 @ → 切换 activeSpeaker；无 @ → 保持上一个（follow）。铭牌按 effective 角色展示。
@@ -3141,7 +3393,10 @@ export function Chat({
     chatInputRef.current?.clear();
     // 空闲 → 立即发
     if (!effectiveSelection) {
-      alert("没有可用模型，请先在「设置 → 渠道」中启用渠道和模型");
+      alert(
+        "没有可用的模型：请先在「设置 → 渠道」配置 Pi 的外部 API 渠道，" +
+          "或用输入区左侧的 Agent 选择器显式选择 Codex / Claude Code（KSCC）",
+      );
       return;
     }
     await sendQueued({
@@ -3160,7 +3415,10 @@ export function Chat({
     const text = chatInputRef.current?.getText().trim() ?? "";
     if (!text && pendingAttachments.length === 0) return;
     if (!effectiveSelection) {
-      alert("没有可用模型，请先在「设置 → 渠道」中启用渠道和模型");
+      alert(
+        "没有可用的模型：请先在「设置 → 渠道」配置 Pi 的外部 API 渠道，" +
+          "或用输入区左侧的 Agent 选择器显式选择 Codex / Claude Code（KSCC）",
+      );
       return;
     }
     // 复用 send() 的 @ mention / 草稿铭牌同步（避免会诊路径出现 follow 漂移）
@@ -3204,6 +3462,50 @@ export function Chat({
     });
   };
 
+  const sendKanban = async (): Promise<void> => {
+    if (!CREW_ORCHESTRATION_ENABLED) {
+      pushTicker(makeStatusTickerItem(CREW_PAUSED_MESSAGE, "info", 3500));
+      return;
+    }
+    const text = chatInputRef.current?.getText().trim() ?? "";
+    if (!text && pendingAttachments.length === 0) return;
+    if (executionMode !== "work") {
+      pushTicker(
+        makeStatusTickerItem("看板派工仅在 Work 可用，请先切换运行模式", "info", 3500),
+      );
+      return;
+    }
+    if (!effectiveSelection) {
+      alert(
+        "没有可用的模型：请先在「设置 → 渠道」配置 Pi 的外部 API 渠道，" +
+          "或用输入区左侧的 Agent 选择器显式选择 Codex / Claude Code（KSCC）",
+      );
+      return;
+    }
+    chatInputRef.current?.clear();
+    if (running) {
+      setMessageQueue((q) => [
+        ...q,
+        {
+          text,
+          selection: effectiveSelection,
+          forceKanbanDispatch: true,
+          ...(pendingAttachments.length
+            ? { attachments: pendingAttachments }
+            : {}),
+        },
+      ]);
+      setPendingAttachments([]);
+      return;
+    }
+    await sendQueued({
+      text,
+      selection: effectiveSelection,
+      attachments: pendingAttachments,
+      forceKanbanDispatch: true,
+    });
+  };
+
   /**
    * 圆桌讨论本条（one-shot）：取当前输入框文案 + 选中的预置 → 走 sendQueued 带
    * `moaDiscussionPresetId`。不改 meta.modelId，会话 tab / ModelSelector 仍显示真实模型
@@ -3214,7 +3516,10 @@ export function Chat({
     const text = chatInputRef.current?.getText().trim() ?? "";
     if (!text && pendingAttachments.length === 0) return;
     if (!effectiveSelection) {
-      alert("没有可用模型，请先在「设置 → 渠道」中启用渠道和模型");
+      alert(
+        "没有可用的模型：请先在「设置 → 渠道」配置 Pi 的外部 API 渠道，" +
+          "或用输入区左侧的 Agent 选择器显式选择 Codex / Claude Code（KSCC）",
+      );
       return;
     }
     // 复用 send() 的 @ mention / 草稿铭牌同步（与 sendConsult 一致）
@@ -3416,17 +3721,21 @@ export function Chat({
             });
           }
         }}
-        showInternalBackend={showInternalBackend}
-        internalBackend={internalBackend}
+      />
+
+      {/* 主 Agent：草稿态只改本地选择，首条消息发送时按此创建会话 */}
+      <AgentRuntimeSelector
+        runtime={effectiveRuntime}
+        channels={channels}
+        draft
+        onSelect={handleAgentRuntimeChange}
         codexRuntimeStatus={codexRuntimeStatus}
         codexRuntimeInstalling={codexRuntimeInstalling}
         onInstallCodexRuntime={installCodexRuntime}
-        internalBackendDisabled={internalBackendSwitchDisabled}
-        onInternalBackendChange={changeInternalBackend}
       />
       <ModelSelector
         selection={effectiveSelection}
-        lockedKind={null}
+        runtime={effectiveRuntime}
         onSelect={handleModelSelection}
         reasoningEffort={reasoningEffort}
         onReasoningEffortChange={(effort) => {
@@ -3454,10 +3763,13 @@ export function Chat({
         <SendSplitButton
           presets={consultPresetsForMenu}
           channel={selectionChannel}
-          hasDraft={hasSendable}
+          hasDraft={hasSendable && !runtimeSwitchPending}
           onSend={() => void send()}
           onConsultPreset={(id) => void sendConsult(id)}
           onDiscussionPreset={(id) => void sendDiscussion(id)}
+          onKanbanDispatch={
+            CREW_ORCHESTRATION_ENABLED && executionMode === "work" ? () => void sendKanban() : undefined
+          }
         />
       )}
     </div>
@@ -4075,7 +4387,11 @@ export function Chat({
                         </div>
                         {/* 真实滚动底部：让最新消息停在 fixed composer 上方，而不是停在输入框下面。 */}
                         <div
-                          className="session-conversation-bottom-spacer"
+                          className={cn(
+                            "session-conversation-bottom-spacer",
+                            messageQueue.length > 0 &&
+                              "session-conversation-bottom-spacer--with-queue",
+                          )}
                           aria-hidden="true"
                         />
                       </ConversationContent>
@@ -4122,7 +4438,7 @@ export function Chat({
                         busy={queueActionBusy}
                         running={running || runStartedAt != null}
                       />
-                      {backgroundCrewBanner && executionMode === "chat" ? (
+                      {CREW_ORCHESTRATION_ENABLED && backgroundCrewBanner && executionMode === "chat" ? (
                         <div
                           className="kanban-crew-bg-banner pointer-events-auto mx-3 mb-2 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11.5px] leading-snug text-foreground/90 shadow-sm backdrop-blur-md"
                           role="status"
@@ -4181,14 +4497,20 @@ export function Chat({
                           }
                         }}
                       />
+                      <SessionReconnectStatus sessionId={sessionId} />
                       <SessionErrorBanner
                         sessionId={sessionId}
-                        canRetry={
-                          !running &&
-                          Boolean(getLastRealUserPrompt()) &&
-                          Boolean(effectiveSelection)
-                        }
-                        onRetry={retryLastUserPrompt}
+                        recovery={retryable => effectiveSelection && effectiveRuntime && !isDraftSession ? (
+                          <SessionRecoveryActions
+                            key={sessionId}
+                            current={{ ...effectiveSelection, runtime: effectiveRuntime }}
+                            channels={channels}
+                            retryable={retryable}
+                            disabled={running || runStartedAt != null || runtimeSwitchPending || recoveryPending}
+                            codexAvailable={codexRuntimeStatus?.available}
+                            onRecover={recoverSession}
+                          />
+                        ) : null}
                       />
                       <div
                         ref={composerClusterRef}
@@ -4203,7 +4525,7 @@ export function Chat({
                           <ComposerRunTimer startedAt={runStartedAt} />
                           {sessionPlanProgress &&
                           !hasPendingExitPlan &&
-                          (running || runStartedAt != null || planStillOpen) ? (
+                          (running || runStartedAt != null) ? (
                             <PlanProgressCard progress={sessionPlanProgress} />
                           ) : null}
                           <ComposerActivityIsland
@@ -4290,7 +4612,7 @@ export function Chat({
                                             m,
                                             res,
                                           );
-                                          if (m === "work" && !crewExternalized)
+                                          if (CREW_ORCHESTRATION_ENABLED && m === "work" && !crewExternalized)
                                             setCrewPanelOpen(true);
                                         }
                                       })();
@@ -4313,8 +4635,16 @@ export function Chat({
                                         },
                                       );
                                     }}
-                                    showInternalBackend={showInternalBackend}
-                                    internalBackend={internalBackend}
+                                  />
+                                  {/* 主 Agent（Pi / Codex / Claude Code）：与模型选择分离的显式切换 */}
+                                  <AgentRuntimeSelector
+                                    runtime={effectiveRuntime}
+                                    channels={channels}
+                                    pending={runtimeSwitchPending || recoveryPending}
+                                    busy={agentSwitchBusy}
+                                    draft={isDraftSession}
+                                    compact={composerCompact}
+                                    onSelect={handleAgentRuntimeChange}
                                     codexRuntimeStatus={codexRuntimeStatus}
                                     codexRuntimeInstalling={
                                       codexRuntimeInstalling
@@ -4322,18 +4652,13 @@ export function Chat({
                                     onInstallCodexRuntime={
                                       installCodexRuntime
                                     }
-                                    internalBackendDisabled={
-                                      internalBackendSwitchDisabled
-                                    }
-                                    onInternalBackendChange={
-                                      changeInternalBackend
-                                    }
                                   />
                                 </div>
                                 <div className="composer-footer-bar__right flex h-7 min-w-0 shrink items-center gap-0.5">
                                   <ModelSelector
                                     selection={effectiveSelection}
-                                    lockedKind={lockedKind}
+                                    runtime={effectiveRuntime}
+                                    disabled={runtimeSwitchPending || recoveryPending}
                                     onSelect={handleModelSelection}
                                     reasoningEffort={reasoningEffort}
                                     onReasoningEffortChange={(effort) => {
@@ -4369,13 +4694,18 @@ export function Chat({
                                     <SendSplitButton
                                       presets={consultPresetsForMenu}
                                       channel={selectionChannel}
-                                      hasDraft={hasSendable}
+                                      hasDraft={hasSendable && !runtimeSwitchPending}
                                       onSend={() => void send()}
                                       onConsultPreset={(id) =>
                                         void sendConsult(id)
                                       }
                                       onDiscussionPreset={(id) =>
                                         void sendDiscussion(id)
+                                      }
+                                      onKanbanDispatch={
+                                        CREW_ORCHESTRATION_ENABLED && executionMode === "work"
+                                          ? () => void sendKanban()
+                                          : undefined
                                       }
                                     />
                                   )}
@@ -4394,7 +4724,7 @@ export function Chat({
                           isCompacting={isCompactingUi}
                           onCompact={() => void compactContext()}
                           compact={composerCompact}
-                          hideContext={lockedKind === "kscc"}
+                          hideContext={lockedKind === "internal"}
                         />
                       )}
                     </div>
@@ -4402,7 +4732,7 @@ export function Chat({
                 )}
 
                 {/* 右缘：班组面板关闭时的轻入口（分屏模式隐藏，班组走 dock） */}
-                {!crewExternalized &&
+                {CREW_ORCHESTRATION_ENABLED && !crewExternalized &&
                 !crewPanelOpen &&
                 (hasCrewBoards || sessionBoardId) ? (
                   <button
@@ -4827,4 +5157,28 @@ function isIRMessage(raw: unknown): boolean {
     r.message === undefined &&
     Array.isArray(r.content)
   );
+}
+
+const PLAN_STEP_MARKER_RE =
+  /<!--\s*tagent-plan-step:\s*\d+\s+(?:running|completed|failed|paused)\s*-->|\[?\s*tagent-plan-step\s*:\s*\d+\s+(?:running|completed|failed|paused)\s*\]?/gi;
+
+/** 兼容旧版本已落盘的 assistant：加载历史时也不能把内部标记显示出来。 */
+function stripPersistedPlanStepMarkers(message: TAgentMessage): TAgentMessage {
+  if (message.type !== "assistant") return message;
+  return {
+    ...message,
+    content: message.content.map((block) =>
+      block.type === "text"
+        ? { ...block, text: block.text.replace(PLAN_STEP_MARKER_RE, "") }
+        : block,
+    ),
+  };
+}
+
+/** 面板历史消息统一转成渲染层 IR，兼容 Pi 顶层 IR 与 KSCC SDKMessage。 */
+function persistedMessageToIR(raw: unknown): TAgentMessage | undefined {
+  const message = isIRMessage(raw)
+    ? (raw as TAgentMessage)
+    : sdkMessageToIR(raw as never).message;
+  return message ? stripPersistedPlanStepMarkers(message) : undefined;
 }

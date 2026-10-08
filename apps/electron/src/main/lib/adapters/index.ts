@@ -1,10 +1,10 @@
 /**
  * 适配器选择（双核可拔插入口）
  *
- * 按渠道选核：kscc 内网渠道 → ClaudeAgentAdapter，外部渠道 → PiAgentAdapter。
+ * 按渠道选核：外部渠道 → PiAgentAdapter；内置渠道按注册的后端工厂提供实现。
  * 见 docs/plans/2026-07-25-2.0-architecture-decision-dual-core.md §1.5 / ADR-0001。
  *
- * 可拔插（构建期，不删源码）：
+ * 可拔插：
  * - 默认 / 内网：静态引用 claude/，双核可用。
  * - 对外：TAGENT_EXTERNAL=1 → build-main.mjs 将本文件对 claude/* 的 import
  *   与 @anthropic-ai/claude-agent-sdk 解析到 scripts/stubs/kscc-external-stub.ts；
@@ -21,7 +21,33 @@ import { CodexAppServerAdapter } from './codex/codex-app-server-adapter'
 import { PiAgentAdapter } from './pi/pi-agent-adapter'
 
 /** 渠道类型 */
-export type ChannelKind = 'kscc' | 'codex' | 'external'
+export type ChannelKind = 'claude-code' | 'codex' | 'external'
+
+export type AdapterFactory = () => AgentProviderAdapter
+
+/** 后端工厂注册表：业务层只依赖 ChannelKind，不直接 new 具体后端。 */
+const adapterFactories = new Map<ChannelKind, AdapterFactory>([
+  ['claude-code', () => new ClaudeAgentAdapter()],
+  ['codex', () => new CodexAppServerAdapter()],
+  ['external', () => new PiAgentAdapter()],
+])
+
+/** 注册/替换一个后端工厂；用于内网插件、测试替身和后续可选安装。 */
+export function registerAdapterFactory(kind: ChannelKind, factory: AdapterFactory): void {
+  if (adapters.has(kind)) {
+    throw new Error(`运行中的后端不可替换：${kind}`)
+  }
+  adapterFactories.set(kind, factory)
+}
+
+/** 注销可选后端；核心外部 Pi 保持始终可用。 */
+export function unregisterAdapterFactory(kind: ChannelKind): void {
+  if (kind === 'external') return
+  if (adapters.has(kind)) {
+    throw new Error(`运行中的后端不可注销：${kind}`)
+  }
+  adapterFactories.delete(kind)
+}
 
 /** 按渠道选适配器（单例，按渠道缓存） */
 const adapters = new Map<ChannelKind, AgentProviderAdapter>()
@@ -29,15 +55,18 @@ const adapters = new Map<ChannelKind, AgentProviderAdapter>()
 export function getAdapter(kind: ChannelKind): AgentProviderAdapter {
   let adapter = adapters.get(kind)
   if (!adapter) {
-    adapter =
-      kind === 'kscc'
-        ? new ClaudeAgentAdapter()
-        : kind === 'codex'
-          ? new CodexAppServerAdapter()
-          : new PiAgentAdapter()
+    const factory = adapterFactories.get(kind)
+    if (!factory) throw new Error(`后端未注册：${kind}`)
+    adapter = factory()
     adapters.set(kind, adapter)
   }
   return adapter
+}
+
+/** Pi 核适配器（若当前未创建则返回 null，不主动建实例） */
+export function getPiAdapterIfPresent(): PiAgentAdapter | null {
+  const adapter = adapters.get('external')
+  return adapter instanceof PiAgentAdapter ? adapter : null
 }
 
 /** 释放所有适配器资源（app quit 时调用） */

@@ -14,16 +14,17 @@ import type {
   KanbanTask,
   ProgressLogEntry,
   SDKMessage,
+  TAgentPermissionMode,
 } from '@tagent/shared'
+import { isAutoModeAutoAllowTool, isWriteTool, resolveChannelRequestHeaders } from '@tagent/shared'
 import { getAdapter, type ChannelKind } from '../adapters'
-import type { KsccQueryOptions } from '../adapters/claude/claude-agent-adapter'
 import type { PiQueryOptions } from '../adapters/pi/pi-agent-adapter'
-import { resolveKsccPath } from '../adapters/claude/kscc-path'
 import { createSession, getSessionMeta, updateSessionMeta } from '../agent/session-store'
 import {
   getChannel,
   getDecryptedApiKey,
 } from '../channel/channel-store'
+import { validateDelegationModelSelection } from '../agent/delegation-model-policy'
 import { resolveModelContextWindow } from '../channel/model-window'
 import { getEnabledMcpServers } from '../mcp/mcp-store'
 import { listWorkspaces } from '../workspace/workspace-manager'
@@ -47,6 +48,23 @@ export function isBlockedWorkerTool(toolName: string): string | null {
     (lower.includes('kanban') && lower.includes('add'))
   ) {
     return '工人禁止创建看板或追加任务'
+  }
+  // 防递归：工人不能再启动 Task/Agent/Subagent（也覆盖 mcp__...__Task 等命名）。
+  if (
+    lower === 'task' ||
+    lower === 'agent' ||
+    lower === 'subagent' ||
+    lower.startsWith('task_') ||
+    lower.startsWith('task.') ||
+    lower.startsWith('agent_') ||
+    lower.startsWith('agent.') ||
+    lower.startsWith('subagent_') ||
+    lower.startsWith('subagent.') ||
+    /(?:^|[_:.])(?:task|agent|subagent)(?:$|[_:.])/.test(lower) ||
+    lower.includes('spawn_agent') ||
+    lower.includes('delegate_agent')
+  ) {
+    return '工人禁止递归启动 Task/Agent/Subagent'
   }
   // 交互式审批 / 提问 / Plan 模式退出 → 无人值守自动拒绝
   if (
@@ -80,6 +98,37 @@ export function isBlockedWorkerTool(toolName: string): string | null {
     return '无人值守：拒绝 Browser_* 交互工具'
   }
   return null
+}
+
+export type WorkerPermissionResolution =
+  | { ok: true; permissionMode: Exclude<TAgentPermissionMode, 'plan'> }
+  | { ok: false; reason: string }
+
+/**
+ * Bound worker permission is the intersection of role and parent session policy.
+ * A parent-owned worker may not elevate a Chat/Plan parent; missing parent policy
+ * is fail-closed. Standalone boards keep their legacy behavior and do not call this.
+ */
+export function resolveWorkerPermission(
+  parent: { executionMode?: string; permissionMode?: TAgentPermissionMode } | undefined,
+  rolePermission: 'auto' | 'bypassPermissions',
+): WorkerPermissionResolution {
+  if (!parent) return { ok: false, reason: '来源主会话不存在，无法确认工人权限' }
+  if (parent.executionMode === 'chat') {
+    return { ok: false, reason: '来源主会话为 Chat 模式，禁止写入型班组工人' }
+  }
+  if (parent.permissionMode === 'plan') {
+    return { ok: false, reason: '来源主会话为计划模式，禁止写入型班组工人' }
+  }
+  if (parent.permissionMode !== 'auto' && parent.permissionMode !== 'bypassPermissions') {
+    return { ok: false, reason: '无法确认来源主会话权限，已阻止班组工人启动' }
+  }
+  return {
+    ok: true,
+    permissionMode: parent.permissionMode === 'auto' || rolePermission === 'auto'
+      ? 'auto'
+      : 'bypassPermissions',
+  }
 }
 
 /** 把被拒绝的工具调用记入 task.metadata.blockedApprovals */
@@ -224,6 +273,44 @@ function classifyErrorSource(error: string): KanbanWorkerRunnerResult['errorSour
   return 'tagent'
 }
 
+export type WorkerTerminalResolution = {
+  finalStatus: 'done' | 'failed'
+  error?: string
+}
+
+/** Only an explicit successful terminal event can complete a headless task. */
+export function resolveWorkerTerminal(
+  terminal: {
+    subtype?: unknown
+    errors?: unknown
+    error?: unknown
+    is_error?: unknown
+    isError?: unknown
+    result?: unknown
+  } | undefined,
+): WorkerTerminalResolution {
+  const subtype = typeof terminal?.subtype === 'string' ? terminal.subtype : ''
+  const errors = Array.isArray(terminal?.errors)
+    ? terminal.errors.filter((error): error is string => Boolean(typeof error === 'string' && error.trim()))
+    : []
+  const hasErrors = Array.isArray(terminal?.errors) && terminal.errors.length > 0
+  const error = typeof terminal?.error === 'string' ? terminal.error.trim() : ''
+  // Error evidence wins over a nominal success/completed subtype. Official and
+  // Pi runners can preserve a success-looking envelope while carrying an error.
+  if (terminal?.is_error === true || terminal?.isError === true || hasErrors || error) {
+    return {
+      finalStatus: 'failed',
+      error: errors.join('\n') || error || '工人终态包含错误证据',
+    }
+  }
+  if (subtype === 'success' || subtype === 'completed') return { finalStatus: 'done' }
+  const result = typeof terminal?.result === 'string' ? terminal.result.trim() : ''
+  return {
+    finalStatus: 'failed',
+    error: errors.join('\n') || result || `工人未成功完成（终态: ${subtype || 'unknown'}）`,
+  }
+}
+
 function resolveWorkerCwd(task: KanbanTask): { cwd: string; workspaceId?: string } {
   const board = getBoard(task.boardId)
   if (board?.cwd) {
@@ -276,10 +363,66 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
   const availableModels = (channel.models ?? [])
     .filter((m) => m.enabled !== false)
     .map((m) => m.id)
-  const resolution = previewWorkerResolution(task, availableModels)
-  const modelId = pickModel(channel, task.modelId || resolution.modelId)
   const sessionId = `kw_${task.id}`
-  const kind: ChannelKind = channel.provider === 'kscc-internal' ? 'kscc' : 'external'
+  // 历史 kscc CLI 通路已移除：绑定该渠道的看板任务不再可运行。
+  if (channel.provider === 'kscc-internal') {
+    return {
+      error: '该渠道已停用（历史 kscc CLI 通路已移除），无法启动看板工人',
+      errorSource: 'tagent',
+      finalStatus: 'failed',
+    }
+  }
+  const kind: ChannelKind = 'external'
+  const parentSessionId = getBoard(task.boardId)?.parentSessionId?.trim()
+  const parentMeta = parentSessionId ? getSessionMeta(parentSessionId) : undefined
+  const inheritedModelId = parentMeta?.channelId === task.channelId
+    ? parentMeta.modelId?.trim()
+    : undefined
+  const parentBoundModelId = task.modelId || inheritedModelId
+  const boundModel = parentBoundModelId
+    ? channel.models.find((model) => model.id === parentBoundModelId)
+    : undefined
+  if (parentSessionId && (!parentBoundModelId || !channel.enabled || !boundModel?.enabled)) {
+    const reason = '无法从来源主会话继承同渠道的已启用模型，未启动工人'
+    return { error: reason, errorSource: 'kanban', finalStatus: 'blocked', blockedReason: reason }
+  }
+  if (
+    parentSessionId &&
+    parentBoundModelId &&
+    channel.provider !== 'codex-internal'
+  ) {
+    try {
+      validateDelegationModelSelection({
+        channelId: task.channelId,
+        modelId: parentBoundModelId,
+        reason: typeof task.metadata?.selectionReason === 'string' && task.metadata.selectionReason.trim()
+          ? task.metadata.selectionReason
+          : '继承来源主会话同渠道模型，启动前重新校验当前渠道与画像状态',
+        complexity: task.metadata?.complexity === 'simple' || task.metadata?.complexity === 'standard' || task.metadata?.complexity === 'complex'
+          ? task.metadata.complexity
+          : 'standard',
+      })
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      return { error: reason, errorSource: 'kanban', finalStatus: 'blocked', blockedReason: reason }
+    }
+  }
+  const resolution = previewWorkerResolution(task, parentSessionId ? [] : availableModels)
+  const modelId = pickModel(
+    channel,
+    task.modelId || inheritedModelId || (parentSessionId ? undefined : resolution.modelId),
+  )
+  const permission = parentSessionId
+    ? resolveWorkerPermission(parentMeta, resolution.permissionMode)
+    : { ok: true as const, permissionMode: resolution.permissionMode }
+  if (!permission.ok) {
+    return { error: permission.reason, errorSource: 'kanban', finalStatus: 'blocked', blockedReason: permission.reason }
+  }
+  const workerPermissionMode = permission.permissionMode
+  const getLiveWorkerPermission = (): WorkerPermissionResolution => {
+    if (!parentSessionId) return { ok: true, permissionMode: resolution.permissionMode }
+    return resolveWorkerPermission(getSessionMeta(parentSessionId), resolution.permissionMode)
+  }
 
   // 工人会话：hidden，绝不进侧栏列表（过程在班组详情内看）
   if (!getSessionMeta(sessionId)) {
@@ -294,7 +437,7 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
   }
   updateSessionMeta(sessionId, {
     executionMode: 'work',
-    permissionMode: 'bypassPermissions',
+    permissionMode: workerPermissionMode,
     parentBoardId: task.boardId,
     sourceKanbanTaskId: task.id,
     hidden: true,
@@ -327,8 +470,18 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
   const adapter = getAdapter(kind)
   const textChunks: string[] = []
   const toolNames: string[] = []
+  let terminal: { subtype?: unknown; errors?: unknown; result?: unknown } | undefined
   const abort = new AbortController()
-  const timeout = setTimeout(() => abort.abort(), WORKER_TIMEOUT_MS)
+  // Timeout must tear down the provider session immediately. Merely aborting Pi's
+  // local signal would leave a Claude/KSCC child process waiting until its next event.
+  const timeout = setTimeout(() => {
+    abort.abort()
+    try {
+      adapter.abort(sessionId)
+    } catch (error) {
+      console.warn(`[看板工人] 超时中止 adapter 失败: ${task.id}`, error)
+    }
+  }, WORKER_TIMEOUT_MS)
 
   const workerCanUseTool = async (
     toolName: string,
@@ -343,6 +496,19 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
       recordBlockedApproval(task.id, toolName, input, block)
       return { behavior: 'deny', message: block }
     }
+    const livePermission = getLiveWorkerPermission()
+    if (!livePermission.ok) {
+      recordBlockedApproval(task.id, toolName, input, livePermission.reason)
+      return { behavior: 'deny', message: livePermission.reason }
+    }
+    if (
+      livePermission.permissionMode === 'auto' &&
+      (!isAutoModeAutoAllowTool(toolName, input, cwd) || isWriteTool(toolName, input))
+    ) {
+      const reason = '当前班组工人自动审批仅允许已知安全工具；该工具需用户授权或已被阻止'
+      recordBlockedApproval(task.id, toolName, input, reason)
+      return { behavior: 'deny', message: reason }
+    }
     // SDK allow 必须带 updatedInput，否则 Zod 校验失败整次工具权限崩掉
     return { behavior: 'allow', updatedInput: input }
   }
@@ -355,66 +521,27 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
       recordBlockedApproval(task.id, ctx.toolCall.name, ctx.toolCall.arguments ?? {}, block)
       return { block: true, reason: block }
     }
+    const livePermission = getLiveWorkerPermission()
+    if (!livePermission.ok) {
+      recordBlockedApproval(task.id, ctx.toolCall.name, ctx.toolCall.arguments ?? {}, livePermission.reason)
+      return { block: true, reason: livePermission.reason }
+    }
+    if (
+      livePermission.permissionMode === 'auto' &&
+      (!isAutoModeAutoAllowTool(ctx.toolCall.name, ctx.toolCall.arguments ?? {}, cwd) ||
+        isWriteTool(ctx.toolCall.name, ctx.toolCall.arguments ?? {}))
+    ) {
+      const reason = '当前班组工人自动审批仅允许已知安全工具；该工具需用户授权或已被阻止'
+      recordBlockedApproval(task.id, ctx.toolCall.name, ctx.toolCall.arguments ?? {}, reason)
+      return { block: true, reason }
+    }
     return undefined
   }
 
   try {
-    let queryInput: KsccQueryOptions | PiQueryOptions
+    let queryInput: PiQueryOptions
 
-    if (kind === 'kscc') {
-      const ksccPath = resolveKsccPath()
-      if (!ksccPath) {
-        return {
-          error: '未检测到 kscc，无法启动内网工人',
-          errorSource: 'kscc',
-          finalStatus: 'failed',
-        }
-      }
-      const sanitizedPath = workspaceId ?? ''
-      const enabledMcp = sanitizedPath ? getEnabledMcpServers(sanitizedPath) : {}
-      const mcpServers: Record<string, unknown> = {
-        ...(Object.keys(enabledMcp).length > 0
-          ? (enabledMcp as Record<string, unknown>)
-          : {}),
-      }
-      try {
-        const { injectKanbanMcpServer } = await import('./kanban-agent-tools')
-        await injectKanbanMcpServer(mcpServers, {
-          sessionId,
-          channelId: channel.id,
-          agentCwd: cwd,
-          workspaceId,
-          toolMode: 'worker',
-        })
-      } catch (err) {
-        console.warn(`[看板工人] 注入 worker 看板工具失败:`, err)
-      }
-      queryInput = {
-        sessionId,
-        prompt: userPrompt,
-        model: modelId,
-        cwd,
-        sdkCliPath: ksccPath,
-        env: { ...process.env } as Record<string, string | undefined>,
-        maxTurns: WORKER_MAX_TURNS,
-        sdkPermissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        systemPrompt: {
-          type: 'preset',
-          preset: 'claude_code',
-          append: workerSystemAppend,
-        },
-        persistSession: true,
-        mcpServers: Object.keys(mcpServers).length > 0 ? mcpServers : undefined,
-        canUseTool: workerCanUseTool,
-        onSessionId: (sdkSessionId: string) => {
-          updateSessionMeta(sessionId, { sdkSessionId })
-        },
-        onStderr: (data: string) => {
-          console.error(`[看板工人 ${task.id} stderr] ${data}`)
-        },
-      } as KsccQueryOptions
-    } else {
+    {
       const apiKey = getDecryptedApiKey(channel.id)
       if (!apiKey) {
         return {
@@ -443,15 +570,18 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
         systemPromptAppend: workerSystemAppend,
         extraTools: workerTools,
         abortSignal: abort.signal,
+        maxTurns: WORKER_MAX_TURNS,
         channelConfig: {
           type: 'external',
           provider: channel.provider,
           apiKey,
           baseUrl: channel.baseUrl,
           modelId,
+          apiProtocol: channel.apiProtocol,
           thinkingEnabled: false,
           thinkingLevel: 'medium',
           contextWindow: resolveModelContextWindow(channel, modelId),
+          headers: resolveChannelRequestHeaders(channel.provider, apiKey),
         },
       } as PiQueryOptions
     }
@@ -499,45 +629,36 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
       }
 
       const m = msg as SDKMessage & { type?: string; kind?: string }
-      // 一轮结束（SDK type=result 或 Pi kind=result）
-      if (m.type === 'result' || m.kind === 'result') break
+      // 一轮结束（SDK type=result 或 Pi kind=result）。EOF 没有 terminal 不能算成功。
+      if (m.type === 'result' || m.kind === 'result') {
+        terminal = m as unknown as {
+          subtype?: unknown
+          errors?: unknown
+          result?: unknown
+        }
+        break
+      }
+    }
+
+    if (abort.signal.aborted) {
+      return {
+        error: `工人超时（>${WORKER_TIMEOUT_MS / 60000} 分钟）`,
+        errorSource: 'kanban',
+        finalStatus: 'blocked',
+        blockedReason: 'worker_timeout',
+      }
+    }
+    const terminalResolution = resolveWorkerTerminal(terminal)
+    if (terminalResolution.finalStatus !== 'done') {
+      return {
+        error: terminalResolution.error,
+        errorSource: classifyErrorSource(terminalResolution.error ?? ''),
+        finalStatus: 'failed',
+      }
     }
 
     // 优先：智能合并流式帧（防累积全文被 join 成重复字）
     let summary = mergeAssistantTextChunks(textChunks)
-
-    // 回读面板 JSONL（Pi 常把最终正文只落盘）
-    if (summary.length < 40) {
-      try {
-        const { readPanelMessages, readSdkMessages } = await import('../agent/session-store')
-        const panel = [
-          ...readPanelMessages(workspaceId, sessionId),
-          ...readSdkMessages(workspaceId, sessionId),
-        ]
-        const parts: string[] = []
-        for (const raw of panel) {
-          const piece = extractAssistantText(raw)
-          if (piece) parts.push(piece)
-        }
-        const fromDisk = mergeAssistantTextChunks(parts)
-        if (fromDisk.length > summary.length) summary = fromDisk
-      } catch {
-        /* ignore */
-      }
-    }
-
-    // 仍过短：用工具轨迹合成可读摘要（避免「无文本输出」占位）
-    if (summary.length < 30) {
-      const toolLine =
-        toolNames.length > 0
-          ? `过程中调用了工具：${toolNames.slice(0, 12).join(' → ')}${toolNames.length > 12 ? '…' : ''}。`
-          : '未观测到工具调用记录。'
-      summary = [
-        `任务「${task.title}」已跑完一轮 headless 工人。`,
-        toolLine,
-        '模型未给出足够长的自然语言摘要；请结合任务说明与工具轨迹判断是否达标，必要时重试并要求明确交付说明。',
-      ].join('')
-    }
 
     // 截断过长摘要
     const truncated =
@@ -570,6 +691,14 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`[看板工人] 失败: ${task.id}`, err)
+    if (abort.signal.aborted) {
+      return {
+        error: `工人超时（>${WORKER_TIMEOUT_MS / 60000} 分钟）`,
+        errorSource: 'kanban',
+        finalStatus: 'blocked',
+        blockedReason: 'worker_timeout',
+      }
+    }
     return {
       error: msg,
       errorSource: classifyErrorSource(msg),

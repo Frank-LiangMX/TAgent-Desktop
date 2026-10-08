@@ -2,12 +2,13 @@
  * CLI 工人配置数据契约（本地 coding CLI 子代理后端）。
  *
  * 设计要点：
- * - 本机 coding CLI 为「可选子代理后端池」；seed 预置 4 个工人（kscc / grok / codex / mimo）。
+ * - 本机 coding CLI 为「可选子代理后端池」；seed 预置 3 个工人（grok / codex / mimo）。
  * - **启用 + 数组顺序 = 优先级**：主会话 task 可指定 `cli`；未指定时按顺序选第一个本机可用的。
  * - `defaultCliId` 仅兼容旧文件：运行时不再当作唯一硬默认；保存时同步为「第一个 enabled」。
  * - 默认 **关闭**（`enabled: false` + `defaultBackend: 'in-process'`），总开关 false 时 task 永远 in-process。
  * - 落盘扁平结构（`~/.tagent[-dev]/cli-workers.json`）。
- * - 旧配置仅有 1 条 kscc 时，`ensureSeedWorkers` 补齐缺的 grok/codex/mimo。
+ * - 缺 seed 工人的旧配置由 `ensureSeedWorkers` 按 id 补齐；旧版遗留的 kscc 条目保留不动
+ *   （id 不在目录 = 用户自定义 id，校验与读取均不拒）。
  *
  * 不在本文件做的：spawn / observer / 运行时编排、设置 UI。
  */
@@ -73,16 +74,16 @@ export interface CliWorkerCapability {
   goodFor?: string
 }
 
-/** 单个 CLI 工人条目（id 为 CLI 标识：kscc / grok / codex / mimo，或任意非黑名单 id） */
+/** 单个 CLI 工人条目（id 为 CLI 标识：grok / codex / mimo / opencode / claude，或任意非黑名单 id） */
 export interface CliWorkerEntry {
-  /** 工人 id（kscc / grok / codex / mimo，或任意非黑名单的 id） */
+  /** 工人 id（grok / codex / mimo / opencode / claude，或任意非黑名单的 id） */
   id: string
   /**
    * 是否启用。
    * 禁用者不入池；启用者按 `workers` 数组顺序参与优先级挑选。
    */
   enabled: boolean
-  /** 可执行名或绝对路径；默认与 id 同名（如 'kscc'） */
+  /** 可执行名或绝对路径；默认与 id 同名（如 'grok'） */
   bin: string
   /** 默认模型 id（如 'glm-5.2'），可选 */
   defaultModel?: string
@@ -124,8 +125,8 @@ export interface CliWorkersFile {
 /**
  * 默认 seed 配置（文件不存在时落盘）。
  *
- * 零行为变化：总开关 `enabled: false`、`defaultBackend: 'in-process'`、`defaultCliId: 'kscc'`，
- * 预置 4 个工人（kscc / grok / codex / mimo），kscc 带 `glm-5.2`，其余 defaultModel 留空（用 CLI 各自默认）。
+ * 零行为变化：总开关 `enabled: false`、`defaultBackend: 'in-process'`、`defaultCliId: 'grok'`，
+ * 预置 3 个工人（grok / codex / mimo），defaultModel 全部留空（用 CLI 各自默认）。
  * 工人 enabled=true 仅表示「可被选中」，待总开关 + 后端就绪后才真正 spawn。
  * 每个工人带能力画像（cost / reasoning / goodFor；modalities 缺省 = text-only），
  * 供主 Agent 在 task 里按 require/prefer 挑选，避免只按数组顺序。
@@ -134,15 +135,8 @@ export const CLI_WORKERS_DEFAULT_SEED: CliWorkersConfig = {
   version: 1,
   enabled: false,
   defaultBackend: 'in-process',
-  defaultCliId: 'kscc',
+  defaultCliId: 'grok',
   workers: [
-    {
-      id: 'kscc',
-      enabled: true,
-      bin: 'kscc',
-      defaultModel: 'glm-5.2',
-      capability: { cost: 3, reasoning: 'high', tags: ['backend', 'reasoning', 'refactor'], goodFor: '跨层接线 / 编排 / 复杂实现' },
-    },
     {
       id: 'grok',
       enabled: true,
@@ -192,7 +186,6 @@ export interface CliWorkerDiscoveryEntry {
  * - false：仅显示「已检测·暂不支持派工」，resolve 候选池过滤剔除，永不 spawn。
  */
 export const CLI_WORKER_DISCOVERY_CATALOG: CliWorkerDiscoveryEntry[] = [
-  { id: 'kscc', bins: ['kscc'], supported: true, defaultModel: 'glm-5.2', capability: { cost: 3, reasoning: 'high', tags: ['backend', 'reasoning', 'refactor'], goodFor: '跨层接线 / 编排 / 复杂实现' } },
   { id: 'grok', bins: ['grok'], supported: true, capability: { cost: 2, reasoning: 'medium', tags: ['frontend', 'research'], goodFor: '探索 / 对照 / 草稿实现' } },
   { id: 'codex', bins: ['codex'], supported: true, capability: { cost: 4, reasoning: 'high', tags: ['reasoning', 'refactor', 'backend'], goodFor: '长任务 / 深改造' } },
   { id: 'mimo', bins: ['mimo'], supported: true, capability: { cost: 1, reasoning: 'low', tags: ['test', 'scaffold', 'command'], goodFor: '单测 / 机械改动 / 小包' } },
@@ -493,8 +486,8 @@ export function moveWorkerPriority(
 /**
  * 把 seed 里缺的工人 id 补进 `cfg.workers`（不覆盖用户已有的任何条目字段）。
  *
- * 用于旧配置升级：早期 seed 只有 1 条 kscc，升级到 4 工人时，list 阶段补齐缺的
- * grok / codex / mimo（按 id 追加 seed 默认，保留用户已编辑的 kscc 字段不动）。
+ * 用于旧配置升级：早期 seed 只有 1 条工人，升级到 3 工人时，list 阶段补齐缺的
+ * grok / codex / mimo（按 id 追加 seed 默认，保留用户已有条目字段不动）。
  * 若 workers 已含全部 seed id 则原样返回（无拷贝）。
  *
  * 仅按 id 去重；不校验黑名单（调用方 `isValidCliWorkersConfig` 已保证整单合法）。

@@ -39,7 +39,7 @@ function emptyCliWorkersDefault(): CliWorkersConfig {
     version: 1,
     enabled: false,
     defaultBackend: 'in-process',
-    defaultCliId: 'kscc',
+    defaultCliId: 'grok',
     workers: [],
   }
 }
@@ -92,12 +92,12 @@ function workerFromEntry(entry: CliWorkerDiscoveryEntry, resolvedBin: string): C
 
 /**
  * 由已安装目录项构造一份「首次落盘」配置：
- * 总开关 enabled:false / in-process / defaultCliId=首个已安装且 supported 的 id（无则首个已安装，再无则 'kscc'）。
+ * 总开关 enabled:false / in-process / defaultCliId=首个已安装且 supported 的 id（无则首个已安装，再无则 'grok'）。
  */
 function buildConfigFromInstalled(installed: DiscoveredCliWorker[]): CliWorkersConfig {
   const workers = installed.map(({ entry, resolvedBin }) => workerFromEntry(entry, resolvedBin))
   const firstSupported = installed.find(({ entry }) => entry.supported)
-  const defaultCliId = firstSupported?.entry.id ?? installed[0]?.entry.id ?? 'kscc'
+  const defaultCliId = firstSupported?.entry.id ?? installed[0]?.entry.id ?? 'grok'
   return {
     version: 1,
     enabled: false,

@@ -27,7 +27,7 @@ import {
   type CollaborationRoom,
   type CollaborationRoomSummary,
 } from '@tagent/shared'
-import { createKsccSeatRunner, createPiHttpSeatRunner, type MoASeatRunner } from '@tagent/pi-core'
+import { createPiHttpSeatRunner, type MoASeatRunner } from '@tagent/pi-core'
 import {
   claimCollaborationSummary,
   commitCollaborationSummary,
@@ -218,14 +218,13 @@ export function defaultSummaryModelCaller(input: {
   userPrompt: string
 }): Promise<string> {
   const cfg = resolveChannelBackendConfig({ channelId: input.channelId, modelId: input.modelId })
-  const runner: MoASeatRunner =
-    cfg.kind === 'kscc'
-      ? createKsccSeatRunner({ ksccPath: cfg.ksccPath })
-      : createPiHttpSeatRunner({
-          provider: cfg.provider,
-          apiKey: cfg.apiKey ?? '',
-          baseUrl: cfg.baseUrl,
-        })
+  const runner: MoASeatRunner = createPiHttpSeatRunner({
+    apiProtocol: cfg.apiProtocol,
+    provider: cfg.provider,
+    apiKey: cfg.apiKey ?? '',
+    baseUrl: cfg.baseUrl,
+    headers: cfg.headers,
+  })
   return runner.runSeat({
     modelId: cfg.modelId,
     prompt: input.userPrompt,
