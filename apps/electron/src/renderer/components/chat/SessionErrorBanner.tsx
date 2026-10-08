@@ -1,17 +1,16 @@
 /**
  * 会话错误条 — session_error 独立 UI（非 assistant 气泡）
  *
- * 标题 + 详情；复制错误；关闭；retryable 时「重试」（由 Chat 注入是否可重试与回调）。
+ * 标题 + 详情；复制错误；关闭；由 Chat 注入显式恢复操作。
  * 样式克制，无大动画；放在底栏栈内、composer 上方。
  */
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import {
   WarningCircle,
   Copy,
   Check,
   X,
-  ArrowsClockwise,
 } from "@phosphor-icons/react";
 import { AppTooltip } from "@tagent/ui";
 import { cn } from "../../lib/utils";
@@ -22,25 +21,17 @@ import {
 
 export interface SessionErrorBannerProps {
   sessionId: string;
-  /**
-   * 是否允许点重试：error.retryable 且存在上一条真实用户输入、且当前未 running。
-   * 由 Chat 计算（依赖 items / running）。
-   */
-  canRetry: boolean;
-  /** 重试：重发上一条真实用户输入（Chat 负责找消息并走 send 路径） */
-  onRetry: () => void | Promise<void>;
+  recovery?: (retryable: boolean) => ReactNode;
 }
 
 export function SessionErrorBanner({
   sessionId,
-  canRetry,
-  onRetry,
+  recovery,
 }: SessionErrorBannerProps): JSX.Element | null {
   const map = useAtomValue(sessionErrorMapAtom);
   const error = map[sessionId] ?? null;
   const setError = useSetAtom(setSessionErrorAtom);
   const [copied, setCopied] = useState(false);
-  const [retrying, setRetrying] = useState(false);
 
   const dismiss = useCallback(() => {
     setError({ sessionId, error: null });
@@ -61,23 +52,9 @@ export function SessionErrorBanner({
     }
   }, [copyText]);
 
-  const handleRetry = useCallback(async () => {
-    if (!canRetry || retrying) return;
-    setRetrying(true);
-    try {
-      // 先收起，避免重试过程中条仍占位；若再失败会重新推 session_error
-      setError({ sessionId, error: null });
-      await onRetry();
-    } finally {
-      setRetrying(false);
-    }
-  }, [canRetry, retrying, sessionId, setError, onRetry]);
-
   if (!error) return null;
 
   const isChatModeBlock = error.code === "chat_mode_blocked";
-  const showRetry = error.retryable;
-  const retryDisabled = !canRetry || retrying;
 
   return (
     <div
@@ -118,41 +95,10 @@ export function SessionErrorBanner({
                 {error.message}
               </p>
             ) : null}
+            {!isChatModeBlock && recovery?.(error.retryable)}
           </div>
         </div>
         <div className="flex shrink-0 items-center justify-end gap-1">
-          {showRetry ? (
-            <AppTooltip
-              label={
-                !error.retryable
-                  ? undefined
-                  : !canRetry
-                    ? "无可重发的用户消息"
-                    : "重发上一条用户消息"
-              }
-            >
-              <span className="inline-flex">
-                <button
-                  type="button"
-                  disabled={retryDisabled}
-                  onClick={() => void handleRetry()}
-                  className={cn(
-                    "inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors",
-                    "bg-destructive/15 text-destructive hover:bg-destructive/25",
-                    "disabled:cursor-not-allowed disabled:opacity-45",
-                  )}
-                >
-                  <ArrowsClockwise
-                    size={14}
-                    weight="bold"
-                    className={cn(retrying && "animate-spin")}
-                    aria-hidden
-                  />
-                  {retrying ? "重试中…" : "重试"}
-                </button>
-              </span>
-            </AppTooltip>
-          ) : null}
           <AppTooltip label={copied ? "已复制" : "复制错误"} side="top">
             <button
               type="button"

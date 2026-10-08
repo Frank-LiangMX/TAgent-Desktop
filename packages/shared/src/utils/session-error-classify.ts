@@ -219,7 +219,7 @@ const USER_FACING_CLASSIFIERS: ReadonlyArray<{
   {
     code: 'network',
     title: '网络连接失败',
-    pattern: /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed|socket hang|连接失败|网络错误|连接被拒绝|超时|timeout/i,
+    pattern: /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|fetch failed|socket hang|Upstream response stream was interrupted|Stream ended without finish_reason|OpenAI Responses stream ended before a terminal response event|自动重连 \d+ 次仍未恢复|连接失败|网络错误|连接被拒绝|超时|timeout/i,
     retryable: true,
   },
   {

@@ -132,7 +132,7 @@ export function ComposerActivityIsland({
         <button
           type="button"
           className="composer-activity-island__pill"
-          aria-expanded={false}
+          aria-expanded={open}
           aria-label={`${visibleSummary.pillLabel || pillLabel}，展开查看`}
           onClick={() => setOpen(true)}
         >

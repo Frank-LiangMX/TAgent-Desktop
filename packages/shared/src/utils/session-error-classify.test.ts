@@ -14,6 +14,21 @@ import {
 } from './session-error-classify'
 import { CHAT_MODE_BLOCK_REASON } from '../constants/permission-rules'
 
+describe('manual recovery after stream retry exhaustion', () => {
+  test.each([
+    'Upstream response stream was interrupted',
+    'Stream ended without finish_reason',
+    'OpenAI Responses stream ended before a terminal response event',
+    '自动重连 5 次仍未恢复；已保留已完成操作。可稍后继续或切换模型。',
+  ])('keeps the continue-current-model action available: %s', message => {
+    expect(classifyUserFacingError(message)).toMatchObject({ code: 'network', retryable: true })
+  })
+  test('does not make unknown or billing failures retryable', () => {
+    expect(classifyUserFacingError('unknown unexpected failure').retryable).toBe(false)
+    expect(classifyUserFacingError('billing_error: insufficient quota').retryable).toBe(false)
+  })
+})
+
 describe('isPromptTooLongMessage', () => {
   test('matches Anthropic native "prompt is too long"', () => {
     expect(isPromptTooLongMessage('Error: prompt is too long: 250000 > 200000')).toBe(true)

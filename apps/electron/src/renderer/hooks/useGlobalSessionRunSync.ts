@@ -22,6 +22,8 @@ import {
   adoptSessionRunAtom,
   sessionRunMapAtom,
   stopSessionRunAtom,
+  receiveSessionReconnectAtom,
+  clearSessionReconnectAtom,
 } from '../atoms/session-run-atoms'
 import {
   IDLE_WATCHDOG_TIMEOUT_MS,
@@ -38,7 +40,7 @@ type StreamEnvelope = {
   sessionId?: string
   payload?: {
     kind: string
-    event?: { type?: string }
+    event?: { type?: string; [key: string]: unknown }
     subtype?: string
     errors?: unknown[]
     message?: {
@@ -106,6 +108,8 @@ export function useGlobalSessionRunSync(): void {
   const adoptSessionRun = useSetAtom(adoptSessionRunAtom)
   const stopSessionRun = useSetAtom(stopSessionRunAtom)
   const pushTicker = useSetAtom(pushStatusTickerAtom)
+  const receiveReconnect = useSetAtom(receiveSessionReconnectAtom)
+  const clearReconnect = useSetAtom(clearSessionReconnectAtom)
 
   useEffect(() => {
     const off = window.electronAPI.onStreamEvent((raw: unknown) => {
@@ -114,7 +118,16 @@ export function useGlobalSessionRunSync(): void {
       const p = env?.payload
       if (!sessionId || !p?.kind) return
 
+      if (p.kind === 'tagent_event' && (
+        p.event?.type === 'model_reconnecting' || p.event?.type === 'model_reconnect_cleared'
+      )) {
+        receiveReconnect({ id: sessionId, event: p.event })
+        lastStreamEventAtMap.set(sessionId, Date.now())
+        return
+      }
+
       if (p.kind === 'result') {
+        clearReconnect(sessionId)
         const subtype = typeof p.subtype === 'string' ? p.subtype : ''
         // 等用户点选 / 无进展暂停：本轮没完，禁止硬清 startedAt，否则提交后从 0 重计
         if (subtype === 'paused_no_progress' || isSessionAwaitingUser(sessionId)) {
@@ -128,6 +141,7 @@ export function useGlobalSessionRunSync(): void {
           (Array.isArray(p.errors) && p.errors.length > 0)
         if (
           !isErrorResult &&
+          !['interrupted', 'aborted', 'cancelled', 'canceled'].includes(subtype) &&
           !notifiedCompletionSessionIds.has(sessionId) &&
           getNotificationPrefsSnapshot().titlebarTicker
         ) {
@@ -227,5 +241,5 @@ export function useGlobalSessionRunSync(): void {
       off?.()
       window.clearInterval(watchdogTimer)
     }
-  }, [adoptSessionRun, stopSessionRun, pushTicker])
+  }, [adoptSessionRun, stopSessionRun, pushTicker, receiveReconnect, clearReconnect])
 }

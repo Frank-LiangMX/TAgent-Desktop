@@ -16,7 +16,8 @@
   right: 0;
   bottom: var(--spatial-status-bottom, 7px);
   left: 0;
-  z-index: 20;
+  /* 与会话滚动到底部按钮同层；浮层子项再在此层内做局部排序。 */
+  z-index: 30;
   display: flex;
   flex-direction: column;
   pointer-events: none;

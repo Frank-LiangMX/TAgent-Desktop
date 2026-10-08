@@ -41,6 +41,46 @@ const startedAtMemory = new Map<string, number>()
 /** 会话运行态表：sessionId → { running, startedAt } */
 export const sessionRunMapAtom = atom<Record<string, SessionRunEntry>>({})
 
+/** Transport recovery is transient run state, never assistant conversation history. */
+export interface SessionReconnectState {
+  attempt: number
+  maxAttempts: number
+  delayMs: number
+}
+export const sessionReconnectMapAtom = atom<Record<string, SessionReconnectState>>({})
+export const clearSessionReconnectAtom = atom(null, (get, set, id: string) => {
+  const previous = get(sessionReconnectMapAtom)
+  if (!previous[id]) return
+  const next = { ...previous }
+  delete next[id]
+  set(sessionReconnectMapAtom, next)
+})
+
+export const receiveSessionReconnectAtom = atom(
+  null,
+  (get, set, payload: { id: string; event: { type?: string; [key: string]: unknown } }) => {
+    const { id, event } = payload
+    if (event.type === 'model_reconnect_cleared') {
+      set(clearSessionReconnectAtom, id)
+      return
+    }
+    if (event.type !== 'model_reconnecting') return
+    const run = get(sessionRunMapAtom)[id]
+    // Ignore late notifications after stop; reconnect cannot create a new run.
+    if (run?.startedAt == null) return
+    const { attempt, maxAttempts, delayMs } = event
+    if (
+      typeof attempt !== 'number' || !Number.isInteger(attempt) || attempt < 1 ||
+      typeof maxAttempts !== 'number' || !Number.isInteger(maxAttempts) || maxAttempts < attempt ||
+      typeof delayMs !== 'number' || !Number.isFinite(delayMs) || delayMs < 0
+    ) return
+    set(sessionReconnectMapAtom, {
+      ...get(sessionReconnectMapAtom), [id]: { attempt, maxAttempts, delayMs },
+    })
+    set(adoptSessionRunAtom, { id, startedAt: run.startedAt })
+  },
+)
+
 /** 派生：某会话的运行态（未设置时 idle） */
 export const sessionRunAtom = (id: string) =>
   atom((get) => get(sessionRunMapAtom)[id] ?? IDLE_ENTRY)
@@ -51,6 +91,7 @@ export const sessionRunAtom = (id: string) =>
 export const startSessionRunAtom = atom(
   null,
   (get, set, payload: { id: string; startedAt: number }) => {
+    set(clearSessionReconnectAtom, payload.id)
     // 进入下一轮：清「刚完成」绿点
     const statusMap = get(sessionStatusMapAtom)
     const st = statusMap[payload.id]
@@ -72,6 +113,7 @@ export const startSessionRunAtom = atom(
  * result / session_error / 用户停止 / 发送失败 用这个。
  */
 export const stopSessionRunAtom = atom(null, (get, set, id: string) => {
+  set(clearSessionReconnectAtom, id)
   startedAtMemory.delete(id)
   const map = { ...get(sessionRunMapAtom) }
   map[id] = { running: false, startedAt: null }
@@ -84,6 +126,8 @@ export const stopSessionRunAtom = atom(null, (get, set, id: string) => {
  * 下一 delta adopt 只恢复 running，不重置起点。
  */
 export const softStopSessionRunAtom = atom(null, (get, set, id: string) => {
+  // A pending model retry is still active work; keep the stop control available.
+  if (get(sessionReconnectMapAtom)[id]) return
   const map = { ...get(sessionRunMapAtom) }
   const prev = map[id]
   const startedAt = prev?.startedAt ?? startedAtMemory.get(id) ?? null

@@ -21,6 +21,15 @@ export interface SessionErrorState {
 /** sessionId → 当前未关闭的错误（无则缺省） */
 export const sessionErrorMapAtom = atom<Record<string, SessionErrorState>>({})
 
+/** Clear only the error that triggered recovery, never a newer failure. */
+export const clearRecoveredSessionErrorAtom = atom(null, (get, set, payload: { sessionId: string; error: SessionErrorState }) => {
+  const map = get(sessionErrorMapAtom)
+  if (map[payload.sessionId] !== payload.error) return
+  const next = { ...map }
+  delete next[payload.sessionId]
+  set(sessionErrorMapAtom, next)
+})
+
 /**
  * 写入/清除某会话错误（write-only）。
  * error=null 表示关闭（dismiss / 重试开始 / 新发送）。
