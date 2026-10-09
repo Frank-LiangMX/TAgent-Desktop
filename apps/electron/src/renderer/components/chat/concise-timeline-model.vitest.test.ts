@@ -7,6 +7,7 @@ import {
   collectTurnEditedFiles,
   extractDiffHint,
   getLiveStatusFromSteps,
+  isFragmentedProgressText,
   getWorkStepLabel,
   isDeliverableThinking,
   isFillerProgressText,
@@ -46,6 +47,16 @@ describe('classifyToolFamily', () => {
     expect(classifyToolFamily('Write')).toBe('edit')
     expect(classifyToolFamily('Bash')).toBe('shell')
     expect(classifyToolFamily('Task')).toBe('other')
+  })
+})
+
+describe('isFragmentedProgressText', () => {
+  it('filters short English self-talk while keeping concrete progress', () => {
+    expect(isFragmentedProgressText("Let me inspect the exact bytes of that line.")).toBe(true)
+    expect(isFragmentedProgressText("No output? That's odd.")).toBe(true)
+    expect(isFragmentedProgressText('Note: `state`.')).toBe(true)
+    expect(isFragmentedProgressText('目录摸清了：下一步改投影层。')).toBe(false)
+    expect(isFragmentedProgressText('正在跑验证')).toBe(false)
   })
 })
 
@@ -155,6 +166,19 @@ describe('extractDiffHint / live status', () => {
 })
 
 describe('buildConciseTimeline', () => {
+  it('does not create narrative blocks for English tool self-talk', () => {
+    const process: ProcessEntry[] = [
+      tool('Bash', 'b1', { command: 'node --check app.js' }),
+      { type: 'text', key: 'p1', text: "No output? That's odd." },
+      tool('Edit', 'e1', { file_path: 'app.js' }),
+      { type: 'text', key: 'p2', text: "I'll append CSS for the badge." },
+      tool('Bash', 'b2', { command: 'node --check app.js' }),
+    ]
+    const segments = buildConciseTimeline(process)
+    expect(segments.filter((segment) => segment.kind === 'narrative' && segment.tone === 'progress')).toHaveLength(0)
+    expect(segments.filter((segment) => segment.kind === 'work_stage')).toHaveLength(1)
+  })
+
   it('merges mixed-family tools in one work_stage with chronological steps', () => {
     const process: ProcessEntry[] = [
       tool('Read', '1', { file_path: 'a.ts' }),

@@ -520,6 +520,19 @@ export function isFillerProgressText(text: string): boolean {
   return FILLER_PROGRESS_RE.test(t)
 }
 
+/**
+ * 工具之间常见的英文自言自语（“No output? That's odd.”、“Let me inspect …”）。
+ * 它们没有新的工作结果，却会把一个阶段撕成多个正文块。仅收掉明显的口头禅；
+ * 带文件、数字、代码或结论的进度，以及中文短状态，仍然保留。
+ */
+export function isFragmentedProgressText(text: string): boolean {
+  const t = text.trim()
+  if (!t || t.length > 54) return false
+  if (/^note\b/i.test(t)) return true
+  if (/[`/\\]|\b\d+\b|[+\-]\d/.test(t)) return false
+  return /^(?:let me|i(?:'|’)ll|i will|no output|that's odd|now (?:add|check|read|run)|let's|we need to|need to|hmm\b)/i.test(t)
+}
+
 function mergeAnswerIntoProcess(
   process: ProcessEntry[],
   answerTexts?: string[],
@@ -789,9 +802,10 @@ export function buildConciseTimeline(
       const displayText = isRoundFinal ? rawDisplayText : compactStageProgress(rawDisplayText) ?? ''
       if (!displayText.trim()) continue
       const isFiller = !isRoundFinal && isFillerProgressText(displayText)
+      const isFragment = !isRoundFinal && isFragmentedProgressText(displayText)
       // 工具调用前的 call / antml 尾段 / function_call 标记 → 不单独占 narrative 行
       const isArtifact = !isRoundFinal && isToolCallArtifactText(displayText)
-      if (isFiller || isArtifact) continue
+      if (isFiller || isFragment || isArtifact) continue
       // live 时尾部正文先当 progress（运行队列打字机），避免 final 卡片闪现；
       // 回合结束后再升为 final。
       const tone: 'progress' | 'final' = i < lastToolIdx || isLive ? 'progress' : 'final'
