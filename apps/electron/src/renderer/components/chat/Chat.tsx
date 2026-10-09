@@ -81,6 +81,7 @@ import {
   ReasoningContent,
   Button,
   AppTooltip,
+  useSmoothStream,
 } from "@tagent/ui";
 import { Square, X } from "lucide-react";
 import { UsersThree } from "@phosphor-icons/react";
@@ -5006,8 +5007,8 @@ function ItemView({
               <ReasoningContent>{item.streamingThinking}</ReasoningContent>
             </Reasoning>
           )}
-          {/* text 流式：typewriter 逐字挤出，平滑端点粗粒度分块（~500ms/块）的顿挫感 */}
-          {item.streamingText && <TypewriterText text={item.streamingText} />}
+          {/* text 流式：合并同帧绘制，保留模型实际输出速度 */}
+          {item.streamingText && <StreamedText text={item.streamingText} />}
           {/* 无内容时显示加载 */}
           {!item.streamingText && !item.streamingThinking && <MessageLoading />}
         </MessageContent>
@@ -5096,48 +5097,11 @@ function TaskCardView({ card }: { card: TaskCardState }): JSX.Element {
 }
 
 /**
- * Typewriter 逐字显示：端点（aicode/minimax）流式粒度粗，每 ~500ms 发一大块，
- * 块到达后不瞬间全部显示，而是用 rAF 在块间隔内逐字挤出，视觉连续丝滑。
- *
- * 速度自适应：按"剩余字符 / 剩余预估时间"算每帧步长，保证下一块到达前刚好显示完。
- * 收尾：turn 结束后 streamingText 不再增长，剩余字符快速追完。
+ * 兼容正文也按实际收到的内容更新，不额外拆字补播。
  */
-function TypewriterText({ text }: { text: string }): JSX.Element {
-  const [displayed, setDisplayed] = useState("");
-  const rafRef = useRef<number | null>(null);
-  const textRef = useRef(text);
-  textRef.current = text;
-
-  useEffect(() => {
-    // text 增长时若 rAF 没在跑，启动；rAF 循环读 textRef 最新值，自动追上新块
-    if (rafRef.current != null) return;
-    const step = () => {
-      const full = textRef.current;
-      setDisplayed((cur) => {
-        if (cur.length >= full.length) {
-          rafRef.current = null;
-          return cur; // 已追上，停 rAF，等下一块触发 effect 重启
-        }
-        // 每帧追加：剩余字符的 1/8（约 8 帧 ≈ 130ms 追完一段），最少 1 字
-        const remain = full.length - cur.length;
-        const add = Math.max(1, Math.ceil(remain / 8));
-        return full.slice(0, cur.length + add);
-      });
-      rafRef.current = requestAnimationFrame(step);
-    };
-    rafRef.current = requestAnimationFrame(step);
-    return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    };
-  }, [text]);
-
-  // 新消息/切换会话时 text 重置为空，displayed 同步重置
-  useEffect(() => {
-    if (text === "") setDisplayed("");
-  }, [text]);
-
-  return <MessageResponse>{displayed}</MessageResponse>;
+function StreamedText({ text }: { text: string }): JSX.Element {
+  const { displayedContent } = useSmoothStream({ content: text, isStreaming: true });
+  return <MessageResponse streaming>{displayedContent}</MessageResponse>;
 }
 
 /** 取消息首个 text 块的文本（供 minimap preview） */

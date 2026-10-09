@@ -5,7 +5,7 @@
  * - full：过程区逐条 + 底部回答壳
  * - concise：Cursor 式时间线（外层「运行了」容器 + 过程链 + 最终正文）
  */
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { CheckCircle, StopCircle, WarningCircle } from "@phosphor-icons/react";
 import {
@@ -135,29 +135,17 @@ export function AssistantTurnView({
   );
   const processLive = isLiveTurn;
 
-  // W1.4：本轮曾经 live 即记 true（用于打字机尾段防闪）。历史轮挂载时 isLiveTurn 恒 false，
-  // 不会置位——避免历史答案被误当流式重新逐字。
-  const wasLiveRef = useRef(false);
-  if (isLiveTurn) wasLiveRef.current = true;
-
   // full 回答正文：流式与落盘取「更长且互为前缀」的那份。
   const answerFull = presentation.answerTexts[0] ?? "";
   const streamText = presentation.streamingText ?? "";
   const content = resolveAnswerContent(answerFull, streamText);
-  const displayedLenRef = useRef(0);
-  const needsTypewriter =
+  const answerStreaming =
     !isConcise &&
-    (presentation.isStreaming ||
-      Boolean(streamText) ||
-      (isLiveTurn &&
-        Boolean(content) &&
-        Boolean(streamText || presentation.isStreaming)) ||
-      (wasLiveRef.current && content.length > displayedLenRef.current));
+    (isLiveTurn || presentation.isStreaming || Boolean(streamText));
   const { displayedContent } = useSmoothStream({
     content: isConcise ? "" : content,
-    isStreaming: needsTypewriter,
+    isStreaming: answerStreaming,
   });
-  if (!isConcise) displayedLenRef.current = displayedContent.length;
 
   // full：有过程块且尚无交付 text 时不展示空回答壳
   const showAnswerShell =
@@ -222,6 +210,29 @@ export function AssistantTurnView({
       processLive,
     ],
   );
+  // Only update the turn when a narrative catches up, not on every character.
+  // Comparing each current target also hides a stale footer in the very render
+  // where a larger final snapshot arrives.
+  const [displayedNarratives, setDisplayedNarratives] = useState(
+    () => new Map<string, string>(),
+  );
+  const onNarrativeCaughtUp = useCallback((key: string, text: string) => {
+    setDisplayedNarratives((previous) => {
+      if (previous.get(key) === text) return previous;
+      const next = new Map(previous);
+      next.set(key, text);
+      return next;
+    });
+  }, []);
+  const playbackPending = isConcise
+    ? conciseSegments.some(
+      (seg) => seg.kind === "narrative" && seg.tone === "final" &&
+        displayedNarratives.get(seg.key) !== seg.text,
+    )
+    : displayedContent !== content;
+  const showOutcome =
+    !processLive &&
+    (!playbackPending || endedBy === "stopped" || endedBy === "error");
   // concise 标题用：live 取当前已过秒；完成后优先 completedDuration
   const thinkingDurationSec = isLiveTurn
     ? Math.floor(elapsedMs / 1000)
@@ -342,8 +353,8 @@ export function AssistantTurnView({
         <SpeakerHeader
           name={speakerName}
           modelId={turnModelId}
-          statusLabel={statusLabel || undefined}
-          isLive={isLiveTurn}
+          statusLabel={!processLive && playbackPending ? "正在输出" : statusLabel || undefined}
+          isLive={isLiveTurn || playbackPending}
           handoffLabels={mentionLabels}
           className="mb-2"
         />
@@ -396,10 +407,11 @@ export function AssistantTurnView({
             isLive={processLive}
             isLatestTurn={isLatestAssistantTurn}
             workedMs={workedMs}
+            onNarrativeCaughtUp={onNarrativeCaughtUp}
           />
           {filesCard}
           <KbCitationBar citations={kbCitations} />
-          {!processLive && (copyText || endFooter) ? (
+          {showOutcome && (copyText || endFooter) ? (
             <div className="agent-answer-toolbar">
               {endFooter ? <TurnEndFooter {...endFooter} /> : null}
               {copyText ? (
@@ -433,7 +445,7 @@ export function AssistantTurnView({
         <KbCitationBar citations={kbCitations} />
       ) : null}
 
-      {!isConcise && !showAnswerShell && !processLive && endFooter ? (
+      {!isConcise && !showAnswerShell && showOutcome && endFooter ? (
         <div className="agent-answer-toolbar agent-answer-toolbar--outcome-only">
           <TurnEndFooter {...endFooter} />
         </div>
@@ -444,10 +456,10 @@ export function AssistantTurnView({
           <Message from="assistant">
             <MessageContent>
               {displayedContent.trim() ? (
-                // 流式中直接渲染 markdown（逐字累积的文本喂给 MessageResponse）：
+                // 按模型实际到达的内容更新 Markdown，只合并同帧绘制：
                 // 纯文本过渡会让用户看到满屏原始 markdown 源码、完成后才突然切换，跳变明显。
                 // streaming 标记让未闭合的富内容围栏（datatable/mermaid）显示占位而非原始 ```。
-                <MessageResponse streaming={needsTypewriter}>
+                <MessageResponse streaming={answerStreaming || playbackPending}>
                   {displayedContent}
                 </MessageResponse>
               ) : processLive ? (
@@ -457,7 +469,7 @@ export function AssistantTurnView({
           </Message>
           <KbCitationBar citations={kbCitations} />
           {filesCard}
-          {!processLive && (copyText || endFooter) ? (
+          {showOutcome && (copyText || endFooter) ? (
             <div className="agent-answer-toolbar">
               {endFooter ? <TurnEndFooter {...endFooter} /> : null}
               {copyText ? (

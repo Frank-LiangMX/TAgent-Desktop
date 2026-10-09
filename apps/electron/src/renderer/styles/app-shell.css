@@ -34,25 +34,33 @@
   pointer-events: auto;
 }
 
+/* 输入区外侧的 gutter 透传给滚动条，控件自身仍可交互。 */
+.session-bottom-stack .session-composer-cluster {
+  pointer-events: none;
+}
+.session-bottom-stack .session-composer-cluster > * {
+  pointer-events: auto;
+}
+
 /*
  * 底部统一模糊带：一块独立 backdrop-filter + 向下渐浓底色，覆盖
- * 「底部 UI 最高点 → 窗口底」整条底层，全宽铺满 main 区域。
+ * 「底部 UI 最高点 → 窗口底」整条底层，右侧避开消息滚动条。
  *
  * 背板铺满整个 bottom-stack（top:-8px）：stack 是 flex 纵向流、锚定窗底，
  * 附件/横幅/功能栏/token/多行输入任何变化都会自然撑高 stack，
  * 背板自动跟随——不依赖手动维护的 --session-composer-top 高度。
  *   · 顶：stack 顶再上盖 8px（mask 渐入区落在消息区，输入框顶不透）
  *   · 底：下探 status(7px) 到窗口底
- *   · 宽：全宽（main 区域）
+ *   · 宽：main 区域，右侧预留 10px 滚动条通道
  * 输入框 / token 栏 / 功能栏都不再各自 backdrop-filter，共用这一块 blur，
  * 避免两层模糊在输入框底部叠成糊块。z-index:-1 沉到 stack 内最底
  * （低于 token(z1)/输入框(z2) 与 queue/banner），backdrop 采样越过 stack 采到滚动消息。
  */
 .session-bottom-stack .composer-blur-underlay {
   position: absolute;
-  /* 全宽铺满 main（无 gutter 收窄） */
+  /* 右侧自绘滚动条命中区宽 10px，整条避开模糊与底色；也兼容原生细滚动条。 */
   left: 0;
-  right: 0;
+  right: 10px;
   /* 顶：stack 顶再向上盖 8px，让 mask 渐入区（0-8px）刚好落在消息区，
    * 输入框/附件的顶部边界处 mask 已完全不透明——顶部不透且上盖最小 */
   top: -8px;
@@ -1055,6 +1063,122 @@
 .is-composer-compact .model-selector__effort {
   display: none;
 }
+
+/* 模型弹窗：当前选择与偏好横排，列表双列，空间用于选模型。 */
+.model-selector-popover.session-glass-popover {
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 24px);
+  height: min(480px, var(--radix-popover-content-available-height));
+}
+
+.model-selector-popover__settings {
+  min-height: 0;
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-block: 1px solid hsl(var(--border) / 0.3);
+  background: hsl(var(--foreground) / 0.025);
+}
+
+.model-selector-popover__preferences {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px;
+  padding: 12px 16px;
+}
+
+.model-selector-popover .reasoning-slider-scale {
+  display: none;
+}
+
+.model-selector-popover__display-tabs.ui-segmented-tabs {
+  display: flex;
+  width: 100%;
+  flex-wrap: nowrap;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: hsl(var(--foreground) / 0.04);
+}
+
+.model-selector-popover__display-tabs .ui-segmented-tabs-item {
+  flex: 1;
+  min-height: 28px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.model-selector-popover__models {
+  flex: 1;
+}
+
+.model-selector-popover__group {
+  overflow: clip;
+  border: 1px solid hsl(var(--border) / 0.4);
+  border-radius: 10px;
+}
+
+.model-selector-popover__group + .model-selector-popover__group {
+  margin-top: 10px;
+}
+
+.model-selector-popover__group > div:first-child {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin-bottom: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid hsl(var(--border) / 0.3);
+  background:
+    linear-gradient(hsl(var(--foreground) / 0.045), hsl(var(--foreground) / 0.045)),
+    hsl(var(--popover));
+}
+
+.model-selector-popover__channel-label {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.model-selector-popover__group > .flex-col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 6px;
+  padding: 6px 10px;
+}
+
+.model-selector-popover .session-menu-item {
+  min-width: 0;
+  min-height: 34px;
+  border-radius: 7px;
+  padding: 7px 8px;
+}
+
+.model-selector-popover .session-menu-item--active {
+  background: hsl(var(--foreground) / 0.07);
+  box-shadow: inset 0 0 0 1px hsl(var(--foreground) / 0.08);
+}
+
+@media (max-width: 639px) {
+  .model-selector-popover.session-glass-popover {
+    width: 360px;
+  }
+
+  .model-selector-popover__preferences {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .model-selector-popover__group > .flex-col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .is-composer-compact .composer-footer-bar__right button[aria-label="选择模型"] {
   max-width: 88px !important;
   min-width: 0;

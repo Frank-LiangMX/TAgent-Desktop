@@ -26,7 +26,6 @@ import {
   hasSavedMidPosition,
   resolveScrollFollowMode,
   shouldFollowContentGrowth,
-  shouldUseSoftFollow,
   shouldRepinScrollerToBottom,
   targetScrollTop,
   type ScrollFollowMode,
@@ -447,28 +446,6 @@ export function ScrollPositionManager({
     let lastHeight = content.scrollHeight;
     let wasNearBottom = !hasSavedMidPosition(scrollPositionCache.get(id));
     let pinRaf = 0;
-    let liveRepairTimer = 0;
-    const scheduleLiveRepair = (): void => {
-      if (liveRepairTimer !== 0) return;
-      liveRepairTimer = window.setTimeout(() => {
-        liveRepairTimer = 0;
-        const currentScroller = scrollRef.current;
-        if (!currentScroller || followModeRef.current !== "following") return;
-        const distanceFromBottom =
-          currentScroller.scrollHeight -
-          currentScroller.scrollTop -
-          currentScroller.clientHeight;
-        const stillSoft = shouldUseSoftFollow({
-          live: true,
-          grew: true,
-          shrunk: false,
-          hasPendingIntent: false,
-          followMode: followModeRef.current,
-          distanceFromBottom,
-        });
-        if (!stillSoft) pinToBottomRef.current();
-      }, 180);
-    };
     const onScroll = (): void => {
       const dist =
         scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
@@ -526,17 +503,6 @@ export function ScrollPositionManager({
         syncFollowModeAttribute();
         wasNearBottom = true;
       }
-      const canDeferLiveGrowth =
-        live &&
-        grew &&
-        !shrunk &&
-        !pendingBottomIntentCache.has(id) &&
-        followModeRef.current === "following";
-      if (canDeferLiveGrowth) {
-        scheduleLiveRepair();
-        return;
-      }
-
       if (
         !shouldFollowContentGrowth({
           hasMidPosition: hasSavedMidPosition(scrollPositionCache.get(id)),
@@ -547,6 +513,8 @@ export function ScrollPositionManager({
       ) {
         return;
       }
+      // Follow newly visible lines on the next frame. Delaying by 180ms while
+      // allowing 24px of drift hides the current tail and looks like a pause.
       if (pinRaf !== 0) return;
       pinRaf = window.requestAnimationFrame(pinToBottom);
     };
@@ -557,7 +525,6 @@ export function ScrollPositionManager({
       scroller.removeEventListener("scroll", onScroll);
       ro.disconnect();
       if (pinRaf !== 0) window.cancelAnimationFrame(pinRaf);
-      if (liveRepairTimer !== 0) window.clearTimeout(liveRepairTimer);
     };
   }, [ready, id, restoreReady, live, scrollRef, contentRef, state, stopScroll]);
 

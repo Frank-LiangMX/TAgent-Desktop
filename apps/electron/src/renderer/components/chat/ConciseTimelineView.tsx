@@ -7,7 +7,7 @@
  * 子代理入口由 AssistantTurnView 钉在铭牌下，不进本组件。
  * 阶段块 live：摘要累积 + 底部当前动作；层级文案扫光
  */
-import { memo, useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowBendDownLeft, CaretRight, Check, CircleNotch, WarningCircle } from '@phosphor-icons/react'
 import { Message, MessageContent, MessageResponse, UserMessageContent, useSmoothStream } from '@tagent/ui'
 import { cn } from '../../lib/utils'
@@ -18,7 +18,6 @@ import {
   getWorkStepLabel,
   isTrivialThinking,
 } from './concise-timeline-model'
-import { isOneShotTextJump } from './narrative-oneshot'
 import { formatThinkingSummary } from './session-turn-model'
 import { isNearBottom } from './thinking-scroll-follow'
 
@@ -26,7 +25,7 @@ import { isNearBottom } from './thinking-scroll-follow'
 const CONCISE_PANEL_MS = 280
 const COMPLETION_TRANSITION_MS = 320
 
-/** live→idle 时给执行块和最终正文一个共同的收束窗口。 */
+/** live→idle 时给执行块保留收束窗口。正文始终可见，不重新入场。 */
 function useCompletionTransition(isLive: boolean): boolean {
   const [active, setActive] = useState(false)
   const wasLiveRef = useRef(isLive)
@@ -77,6 +76,13 @@ interface ConciseTimelineViewProps {
   isLatestTurn?: boolean
   /** 本轮已运行毫秒（live 用实时；完成后用 completedDuration） */
   workedMs?: number
+  /** Report a fully displayed narrative, rather than the backend's completion. */
+  onNarrativeCaughtUp?: (key: string, text: string) => void
+}
+
+interface NarrativePlayback {
+  key: string
+  displayedContent: string
 }
 
 export function ConciseTimelineView({
@@ -84,8 +90,22 @@ export function ConciseTimelineView({
   isLive = false,
   isLatestTurn = false,
   workedMs = 0,
+  onNarrativeCaughtUp,
 }: ConciseTimelineViewProps): JSX.Element | null {
   const isCompleting = useCompletionTransition(isLive)
+  // progress → final changes React parents even with a stable segment key.
+  // Keep the committed visible prefix with the turn so the new row resumes it.
+  const playbackRef = useRef(new Map<string, NarrativePlayback>())
+  const wasLiveRef = useRef(isLive)
+  if (isLive) wasLiveRef.current = true
+  const playbackFor = (seg: Extract<ConciseSegment, { kind: 'narrative' }>) => {
+    let playback = playbackRef.current.get(seg.key)
+    if (!playback) {
+      playback = { key: seg.key, displayedContent: wasLiveRef.current ? '' : seg.text }
+      playbackRef.current.set(seg.key, playback)
+    }
+    return playback
+  }
   if (segments.length === 0) return null
 
   const processSegs = segments.filter(
@@ -163,6 +183,8 @@ export function ConciseTimelineView({
                 key={seg.key}
                 text={seg.text}
                 tone={seg.tone}
+                playback={playbackFor(seg)}
+                onCaughtUp={onNarrativeCaughtUp}
                 isStreaming={isLive && seg.key === lastNarrativeKey}
               />
             )
@@ -175,7 +197,8 @@ export function ConciseTimelineView({
           key={seg.key}
           text={seg.text}
           tone="final"
-          animateOnComplete={isCompleting}
+          playback={playbackFor(seg)}
+          onCaughtUp={onNarrativeCaughtUp}
           isStreaming={isLive && seg.key === lastNarrativeKey}
         />
       ))}
@@ -226,17 +249,18 @@ const RunQueueShell = memo(function RunQueueShell({
       return
     }
 
-    // 运行完成（live→idle）即折叠。用 grid 平滑过渡（非瞬时）：收起 0.28s 期间钉底
-    // 每帧跟随收缩后的底部，视口平滑上移而非瞬跳。此刻用户在底部、注意力在结尾，
-    // 平滑收起 + 跟随 = 无闪现；且此刻就折，下一轮发送时上一轮已稳定折叠态、不再收缩。
-    // 用户手动展开过则尊重意图，不强折。
+    // 最新一轮完成时仍在播放正文，不折叠过程区，避免收缩把整个视口向上带动。
+    // 用户已手动切换过则保留其展开/收起选择。
     if (wasLive && !isLive) {
-      if (!userToggledRef.current) setOpen(false)
+      if (!isLatestTurn && !userToggledRef.current) setOpen(false)
       return
     }
 
-    // 焦点离开本轮（发新一轮/被挤成历史）：此时早已折叠，无需再动。
-    void wasLatest
+    // 发新一轮后再瞬时收起旧过程；不让长折叠动画牵动新回答的滚动跟随。
+    if (wasLatest && !isLatestTurn) {
+      setCollapseInstant(true)
+      setOpen(false)
+    }
   }, [isLive, isLatestTurn])
 
   // 瞬时折叠已上屏后清掉 flag，之后用户手动展开/收起仍可丝滑过渡
@@ -856,44 +880,39 @@ const StageStepRow = memo(function StageStepRow({
   )
 })
 
-/** useSmoothStream 挂在可 key-remount 的子树，避免 one-shot 时 shrink 守卫吞掉空串重置 */
+/** Remounted final rows seed the hook with the previously displayed prefix. */
 const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
   seed,
   target,
   tone,
   smoothStreaming,
-  animateOnComplete,
+  playback,
   onCaughtUp,
 }: {
   seed: string
   target: string
   tone: 'progress' | 'final'
   smoothStreaming: boolean
-  animateOnComplete: boolean
-  onCaughtUp: () => void
+  playback: NarrativePlayback
+  onCaughtUp?: (key: string, text: string) => void
 }): JSX.Element | null {
   const { displayedContent } = useSmoothStream({
     content: seed,
     isStreaming: smoothStreaming,
   })
-  const caughtRef = useRef(onCaughtUp)
-  caughtRef.current = onCaughtUp
+  useLayoutEffect(() => {
+    playback.displayedContent = displayedContent
+  }, [displayedContent, playback])
+  useLayoutEffect(() => {
+    if (tone === 'final' && displayedContent === target) onCaughtUp?.(playback.key, target)
+  }, [displayedContent, target, tone, playback, onCaughtUp])
 
-  useEffect(() => {
-    if (
-      smoothStreaming &&
-      seed === target &&
-      target.length > 0 &&
-      displayedContent === target
-    ) {
-      caughtRef.current()
-    }
-  }, [displayedContent, seed, target, smoothStreaming])
+  const playing = smoothStreaming || displayedContent !== target
 
   const content = displayedContent.trim()
 
   if (tone === 'progress') {
-    // 无内容勿占位（REGRESS-N 必改 3）：流式 seed='' / one-shot 重置帧 content 暂空时，
+    // 无内容勿占位（REGRESS-N 必改 3）：流式 seed=''、首帧 content 暂空时，
     // 不渲染空 div——`.agent-concise-narrative--progress` 有 padding:1px 0，空 div 会留占位
     // 空白；多个段间 progress 在 live→idle 重投影增删时易叠成「大空白」。无内容直接 null。
     // hooks 已在上方无条件调用，此处仅控制渲染输出。
@@ -902,7 +921,7 @@ const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
       <div className="agent-concise-narrative agent-concise-narrative--progress">
         <MessageResponse
           className="agent-concise-narrative__text"
-          streaming={smoothStreaming}
+          streaming={playing}
         >
           {displayedContent}
         </MessageResponse>
@@ -911,12 +930,12 @@ const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
   }
 
   return (
-    <div className={cn('agent-concise-narrative agent-concise-narrative--final', animateOnComplete && 'agent-concise-narrative--completion-enter')}>
+    <div className="agent-concise-narrative agent-concise-narrative--final">
       {/* py-0：句尾工具条贴正文，避免 Message 默认 py-2.5 撑出大空白 */}
       <Message from="assistant" className="py-0">
         <MessageContent>
           {content ? (
-            <MessageResponse streaming={smoothStreaming}>{displayedContent}</MessageResponse>
+            <MessageResponse streaming={playing}>{displayedContent}</MessageResponse>
           ) : null}
         </MessageContent>
       </Message>
@@ -927,88 +946,29 @@ const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
 const NarrativeRow = memo(function NarrativeRow({
   text,
   tone,
-  animateOnComplete = false,
   isStreaming,
+  playback,
+  onCaughtUp,
 }: {
   text: string
   tone: 'progress' | 'final'
-  animateOnComplete?: boolean
   isStreaming: boolean
+  playback: NarrativePlayback
+  onCaughtUp?: (key: string, text: string) => void
 }): JSX.Element {
-  // 历史轮 / progress→final remount（!isStreaming 且已完整）：instant 全文，不重播打字机
-  // live one-shot（含 isStreaming）：seed '' → 下一帧全文，smooth 直到追上
-  const prevTextRef = useRef<string | null>(null)
-  const rafRef = useRef<number | null>(null)
-  const [seed, setSeed] = useState(() =>
-    !isStreaming && text.trim().length > 0 ? text : '',
-  )
-  const [epoch, setEpoch] = useState(0)
-  const [oneShot, setOneShot] = useState(false)
-
-  useEffect(() => {
-    return () => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
-    }
-  }, [])
-
-  useEffect(() => {
-    const prev = prevTextRef.current
-    const next = text
-
-    const armOneShot = (nextText: string) => {
-      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
-      setEpoch((e) => e + 1)
-      setSeed('')
-      setOneShot(true)
-      rafRef.current = requestAnimationFrame(() => {
-        rafRef.current = null
-        setSeed(nextText)
-      })
-    }
-
-    if (prev === null) {
-      prevTextRef.current = next
-      // 初次挂载：非 live 已完成 → 直接全文
-      if (!isStreaming && next.trim().length > 0) {
-        setSeed(next)
-        setOneShot(false)
-        return
-      }
-      if (isOneShotTextJump(0, next.length)) {
-        armOneShot(next)
-        return
-      }
-      setSeed(next)
-      setOneShot(false)
-      return
-    }
-
-    if (prev === next) return
-
-    const prevLen = prev.length
-    prevTextRef.current = next
-
-    if (isOneShotTextJump(prevLen, next.length)) {
-      armOneShot(next)
-      return
-    }
-
-    // 真增量流式：交给 useSmoothStream
-    setSeed(next)
-  }, [text, isStreaming])
-
-  const smoothStreaming =
-    isStreaming || oneShot || (seed !== text && text.length > 0)
+  const [seed, setSeed] = useState(() => playback.displayedContent)
+  // Both small deltas and large snapshots append through the same queue.
+  // Do not remount/reset an already playing body when a large chunk arrives.
+  useEffect(() => { setSeed(text) }, [text])
 
   return (
     <NarrativeSmoothBody
-      key={epoch}
       seed={seed}
       target={text}
       tone={tone}
-      animateOnComplete={animateOnComplete}
-      smoothStreaming={smoothStreaming}
-      onCaughtUp={() => setOneShot(false)}
+      smoothStreaming={isStreaming || seed !== text}
+      playback={playback}
+      onCaughtUp={onCaughtUp}
     />
   )
 })

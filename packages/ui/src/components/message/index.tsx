@@ -294,8 +294,11 @@ function normalizeChinesePunctuationInText(value: string): string {
         }
         return CHINESE_PUNCTUATION[punctuation] ?? punctuation
       })
-      // 句末英文句号：只在后面是中文/中文标点/文本结尾时转换，避免改版本号和标识符。
-      .replace(/\.(?=\s*(?:[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[，。！？；：]|$))/gu, '。')
+      // 数字后的点可能是正文序号（如 **1. 中文标题**），不能转成中文句号。
+      // 真正的中文句末标点仍规范化；小数和版本号同样保留。
+      .replace(/\.(?=\s*(?:[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[，。！？；：]|$))/gu,
+        (punctuation, index, full) => /\d/u.test(full[index - 1] ?? '') ? punctuation : '。',
+      )
 
   // 成对英文双引号在中文语境中显示为中文引号；代码节点不会进入这里。
   const normalizedQuotes = value.replace(/"([^"\r\n]*)"/gu, '“$1”')

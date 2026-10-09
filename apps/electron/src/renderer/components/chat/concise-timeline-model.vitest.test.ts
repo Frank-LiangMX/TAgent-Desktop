@@ -15,7 +15,6 @@ import {
   summarizeToolCluster,
   summarizeWorkStage,
 } from './concise-timeline-model'
-import { isOneShotTextJump } from './narrative-oneshot'
 
 function tool(
   name: string,
@@ -586,15 +585,6 @@ describe('formatThinkingSummary (Cursor briefly)', () => {
     expect(formatThinkingSummary(undefined, { live: true })).toBe('正在思考…')
     expect(formatThinkingSummary(1, { live: true })).toBe('正在思考…')
     expect(formatThinkingSummary(1, { live: true, liveElapsedSec: 3 })).toBe('思考中 3s')
-  })
-})
-
-describe('isOneShotTextJump (NarrativeRow)', () => {
-  it('detects empty→large and large relative jumps', () => {
-    expect(isOneShotTextJump(0, 100)).toBe(true)
-    expect(isOneShotTextJump(10, 200)).toBe(true)
-    expect(isOneShotTextJump(0, 20)).toBe(false)
-    expect(isOneShotTextJump(100, 150)).toBe(false)
   })
 })
 

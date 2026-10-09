@@ -1094,12 +1094,6 @@
   color: hsl(var(--foreground) / 0.9);
 }
 
-.agent-concise-narrative--completion-enter {
-  animation: agent-concise-completion-enter 280ms var(--app-shell-expand-ease) both;
-  animation-delay: 60ms;
-  will-change: opacity, transform;
-}
-
 .agent-concise-narrative--final {
   margin-top: 8px;
   padding: 0;
@@ -1611,21 +1605,7 @@
   }
 }
 
-@keyframes agent-concise-completion-enter {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .agent-concise-narrative--completion-enter {
-    animation: none;
-  }
   .agent-concise-live-status {
     animation: none;
     transition: none;

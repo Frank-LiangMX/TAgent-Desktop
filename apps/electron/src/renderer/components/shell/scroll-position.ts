@@ -11,27 +11,6 @@ export const MID_SCROLL_THRESHOLD_PX = 5;
 /** 用户回到底部时重新建立跟随锁的几何容差。 */
 export const FOLLOW_BOTTOM_THRESHOLD_PX = 12;
 
-/** 流式软跟随允许的瞬时偏离，超过后才进行一次硬校正。 */
-export const SOFT_FOLLOW_DRIFT_THRESHOLD_PX = 24;
-
-export function shouldUseSoftFollow(args: {
-  live: boolean;
-  grew: boolean;
-  shrunk: boolean;
-  hasPendingIntent: boolean;
-  followMode: ScrollFollowMode;
-  distanceFromBottom: number;
-}): boolean {
-  return (
-    args.live &&
-    args.grew &&
-    !args.shrunk &&
-    !args.hasPendingIntent &&
-    args.followMode === "following" &&
-    args.distanceFromBottom <= SOFT_FOLLOW_DRIFT_THRESHOLD_PX
-  );
-}
-
 export type ScrollFollowMode = "following" | "detached";
 export type UserScrollIntent = "up" | "down";
 

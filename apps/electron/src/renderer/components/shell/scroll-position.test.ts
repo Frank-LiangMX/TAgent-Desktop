@@ -4,7 +4,6 @@ import {
   hasSavedMidPosition,
   resolveScrollFollowMode,
   shouldFollowContentGrowth,
-  shouldUseSoftFollow,
   shouldPreserveBottomIntent,
   shouldRepinScrollerToBottom,
   targetScrollTop,
@@ -145,39 +144,6 @@ describe("scroll-position", () => {
         distanceFromBottom: 8,
       }),
     ).toBe("following");
-  });
-
-  test("流式输出使用软跟随，结构变化和明显偏离才硬校正", () => {
-    expect(
-      shouldUseSoftFollow({
-        live: true,
-        grew: true,
-        shrunk: false,
-        hasPendingIntent: false,
-        followMode: "following",
-        distanceFromBottom: 8,
-      }),
-    ).toBe(true);
-    expect(
-      shouldUseSoftFollow({
-        live: true,
-        grew: true,
-        shrunk: false,
-        hasPendingIntent: false,
-        followMode: "following",
-        distanceFromBottom: 40,
-      }),
-    ).toBe(false);
-    expect(
-      shouldUseSoftFollow({
-        live: true,
-        grew: true,
-        shrunk: false,
-        hasPendingIntent: true,
-        followMode: "following",
-        distanceFromBottom: 8,
-      }),
-    ).toBe(false);
   });
 
   test("显式跟随状态优先于第三方 escaped 标记", () => {
