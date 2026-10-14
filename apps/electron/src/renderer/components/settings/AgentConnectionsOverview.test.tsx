@@ -37,7 +37,7 @@ async function mount(overrides = {}) {
 test('empty setup explains next step and routes to channels or subagents', async () => {
   const { navigate } = await mount()
   expect(document.body.textContent).toContain('尚未启用渠道')
-  expect(document.body.textContent).toContain('普通聊天无需配置子任务预设')
+  expect(document.body.textContent).toContain('所有模型通过 HTTP(S) 渠道接入')
   act(() => document.querySelector<HTMLButtonElement>('[aria-label="配置 Pi 接入"]')?.click())
   expect(navigate).toHaveBeenLastCalledWith('channels')
   const button = Array.from(document.querySelectorAll('button')).find((node) => node.textContent === '配置子代理')
@@ -46,13 +46,14 @@ test('empty setup explains next step and routes to channels or subagents', async
 })
 
 test('distinguishes configured models, executable availability, and unverified login without secrets', async () => {
-  await mount({
+  const { api } = await mount({
     listChannels: vi.fn().mockResolvedValue([channel('openai'), channel('codex-internal'), channel('kscc-internal')]),
     getCodexRuntimeStatus: vi.fn().mockResolvedValue({ available: true, managedInstallSupported: true }),
   })
   expect(document.querySelector('[aria-label="Pi"]')?.textContent).toContain('1 个渠道 · 1 个模型已启用')
-  expect(document.querySelector('[aria-label="Codex"]')?.textContent).toContain('已找到本机程序 · 登录和连通性未验证')
-  expect(document.querySelector('[aria-label="Claude Code"]')?.textContent).toContain('使用已 bundled 的官方 Claude Code SDK')
+  expect(document.querySelector('[aria-label="Codex"]')).toBeNull()
+  expect(api.getCodexRuntimeStatus).not.toHaveBeenCalled()
+  expect(document.querySelector('[aria-label="Claude Code"]')).toBeNull()
   expect(document.body.textContent).not.toContain('SECRET-NEVER-RENDER')
 })
 
@@ -60,7 +61,7 @@ test('virtual MOA models and disabled channels are not counted as main runtime t
   await mount({ listChannels: vi.fn().mockResolvedValue([
     channel('openai', 'moa:roundtable'), { ...channel('custom'), enabled: false },
   ]) })
-  expect(document.querySelector('[aria-label="Pi"]')?.textContent).toContain('渠道已启用，还需启用模型')
+  expect(document.querySelector('[aria-label="Pi"]')?.textContent).toContain('尚未启用渠道或模型')
   expect(document.body.textContent).not.toContain('个模型已启用')
 })
 
@@ -69,7 +70,7 @@ test('failed independent probes allow retry and do not report ready', async () =
   const getCodexRuntimeStatus = vi.fn().mockRejectedValue(new Error('probe failed'))
   await mount({ listChannels, getCodexRuntimeStatus })
   expect(document.body.textContent).toContain('渠道读取失败，请重新检测')
-  expect(document.body.textContent).toContain('程序检测失败，请重新检测')
+  expect(getCodexRuntimeStatus).not.toHaveBeenCalled()
   expect(document.body.textContent).not.toContain('private detail')
   await act(async () => Array.from(document.querySelectorAll('button')).find((node) => node.textContent?.includes('重新检测'))?.click())
   expect(document.querySelector('[aria-label="Pi"]')?.textContent).toContain('1 个渠道 · 1 个模型已启用')

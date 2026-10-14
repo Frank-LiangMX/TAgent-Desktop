@@ -19,8 +19,10 @@ import type { KnowledgeBaseDocument } from "@tagent/shared";
 import {
   isKnowledgeBaseDocumentKind,
   normalizeKnowledgeBaseDocumentKind,
+  normalizeWorkbenchTags,
 } from "@tagent/shared";
 import { getConfigDir } from "../config/config-paths";
+import { writeJsonAtomic } from "../atomic-json";
 import { tryReadDocumentWithOfficeCli } from "./officecli-adapter";
 import { listKnowledgeBases } from "./knowledge-base-store";
 import {
@@ -42,11 +44,13 @@ function storePath(): string {
 }
 
 function readDocuments(): KnowledgeBaseDocument[] {
-  if (!existsSync(storePath())) return [];
+  const path = storePath();
+  const readable = existsSync(path) ? path : `${path}.bak`;
+  if (!existsSync(readable)) return [];
   try {
-    const parsed = JSON.parse(readFileSync(storePath(), "utf8")) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
+    const parsed = JSON.parse(readFileSync(readable, "utf8")) as unknown;
+    if (!Array.isArray(parsed)) throw new Error("invalid document collection");
+    const documents = parsed.filter(
       (item): item is KnowledgeBaseDocument =>
         Boolean(item) &&
         typeof item === "object" &&
@@ -55,13 +59,25 @@ function readDocuments(): KnowledgeBaseDocument[] {
         typeof (item as KnowledgeBaseDocument).title === "string" &&
         typeof (item as KnowledgeBaseDocument).content === "string",
     );
+    if (documents.length !== parsed.length)
+      throw new Error("invalid document entry");
+    return documents.map((document) => ({
+      ...document,
+      tags: normalizeWorkbenchTags(
+        Array.isArray(document.tags)
+          ? document.tags.filter(
+              (value): value is string => typeof value === "string",
+            )
+          : [],
+      ),
+    }));
   } catch {
-    return [];
+    throw new Error("知识库文档无法读取，原文件已保留。请从备份恢复后重试。");
   }
 }
 
 function writeDocuments(documents: KnowledgeBaseDocument[]): void {
-  writeFileSync(storePath(), JSON.stringify(documents, null, 2), "utf8");
+  writeJsonAtomic(storePath(), documents);
 }
 
 function ensureKnowledgeBase(id: string): void {
@@ -82,7 +98,10 @@ export function listKnowledgeBaseDocuments(
       if (!normalized) return true;
       return (
         document.title.toLowerCase().includes(normalized) ||
-        document.content.toLowerCase().includes(normalized)
+        document.content.toLowerCase().includes(normalized) ||
+        (document.tags ?? []).some((tag) =>
+          `#${tag}`.toLowerCase().includes(normalized),
+        )
       );
     })
     .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -121,12 +140,13 @@ export function listKnowledgeBaseDocumentsForIds(
 
 /** kb_search 文档命中（与目录命中同构，供 tools 层合并） */
 export interface KbDocumentSearchHit {
+  tags?: string[];
   knowledgeBaseId: string;
   documentId: string;
   title: string;
   score: number;
   excerpt: string;
-  matchedIn: "title" | "body" | "both";
+  matchedIn: "title" | "body" | "both" | "tags";
   /** 文档类型标注（缺省归一为 note）；directory 命中无此字段 */
   kind: KnowledgeBaseDocument["kind"];
   chunkId?: string;
@@ -164,15 +184,27 @@ export function searchKnowledgeBaseDocuments(input: {
       content: document.content,
     });
     for (const chunk of chunks) {
-      const scored = scoreKeywordHits(document.title, chunk.content, keywords);
+      const textScore = scoreKeywordHits(
+        document.title,
+        chunk.content,
+        keywords,
+      );
+      const scored =
+        textScore ??
+        scoreKeywordHits(
+          (document.tags ?? []).join(" "),
+          chunk.content,
+          keywords,
+        );
       if (!scored) continue;
       hits.push({
         knowledgeBaseId: document.knowledgeBaseId,
         documentId: document.id,
         title: document.title,
+        tags: document.tags ?? [],
         score: scored.score,
         excerpt: scored.excerpt,
-        matchedIn: scored.matchedIn,
+        matchedIn: textScore ? scored.matchedIn : "tags",
         kind: normalizeKnowledgeBaseDocumentKind(document.kind),
         chunkId: chunk.id,
         ...(chunk.section ? { section: chunk.section } : {}),
@@ -190,6 +222,7 @@ export function searchKnowledgeBaseDocuments(input: {
 }
 
 export function createKnowledgeBaseDocument(input: {
+  tags?: string[];
   knowledgeBaseId: string;
   title: string;
   content?: string;
@@ -215,14 +248,19 @@ export function createKnowledgeBaseDocument(input: {
   ensureKnowledgeBase(input.knowledgeBaseId);
   const title = input.title.trim();
   if (!title) throw new Error("文档标题不能为空");
+  const tags = normalizeWorkbenchTags(input.tags ?? []);
+  if (input.author === "agent" && !tags.length)
+    throw new Error("整理成果必须至少有一个主题标签");
   const now = Date.now();
   const document: KnowledgeBaseDocument = {
     id: randomUUID(),
     knowledgeBaseId: input.knowledgeBaseId,
     title,
+    tags,
     content: input.content ?? "",
     ...(isKnowledgeBaseDocumentKind(input.kind) ? { kind: input.kind } : {}),
-    ...(typeof input.snapshotAt === "number" && Number.isFinite(input.snapshotAt)
+    ...(typeof input.snapshotAt === "number" &&
+    Number.isFinite(input.snapshotAt)
       ? { snapshotAt: input.snapshotAt }
       : {}),
     ...(typeof input.originNote === "string" && input.originNote.trim()
@@ -244,8 +282,12 @@ export function createKnowledgeBaseDocument(input: {
     ...(input.status ? { status: input.status } : {}),
     ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
     ...(input.sourceProvider ? { sourceProvider: input.sourceProvider } : {}),
-    ...(input.sourceExternalId ? { sourceExternalId: input.sourceExternalId } : {}),
-    ...(input.sourceAccessMode ? { sourceAccessMode: input.sourceAccessMode } : {}),
+    ...(input.sourceExternalId
+      ? { sourceExternalId: input.sourceExternalId }
+      : {}),
+    ...(input.sourceAccessMode
+      ? { sourceAccessMode: input.sourceAccessMode }
+      : {}),
     ...(input.sourceSyncedAt ? { sourceSyncedAt: input.sourceSyncedAt } : {}),
     createdAt: now,
     updatedAt: now,
@@ -255,6 +297,7 @@ export function createKnowledgeBaseDocument(input: {
 }
 
 export function updateKnowledgeBaseDocument(input: {
+  tags?: string[];
   id: string;
   title: string;
   content: string;
@@ -279,15 +322,25 @@ export function updateKnowledgeBaseDocument(input: {
   if (!title) throw new Error("文档标题不能为空");
   const current = documents[index];
   if (!current) throw new Error("文档不存在");
+  const tags =
+    input.tags === undefined
+      ? (current.tags ?? [])
+      : normalizeWorkbenchTags(input.tags);
+  if ((current.author === "agent" || input.author === "agent") && !tags.length)
+    throw new Error("整理成果必须至少有一个主题标签");
   const updated: KnowledgeBaseDocument = {
     ...current,
+    tags,
     title,
     content: input.content,
     updatedAt: Date.now(),
   };
   // kind / snapshotAt / originNote：仅在传入合法值时覆盖，否则保留原值（不清空）。
   if (isKnowledgeBaseDocumentKind(input.kind)) updated.kind = input.kind;
-  if (typeof input.snapshotAt === "number" && Number.isFinite(input.snapshotAt)) {
+  if (
+    typeof input.snapshotAt === "number" &&
+    Number.isFinite(input.snapshotAt)
+  ) {
     updated.snapshotAt = input.snapshotAt;
   }
   if (typeof input.originNote === "string" && input.originNote.trim()) {
@@ -297,8 +350,10 @@ export function updateKnowledgeBaseDocument(input: {
     updated.summary = input.summary.trim();
   }
   if (Array.isArray(input.sources)) updated.sources = input.sources;
-  if (Array.isArray(input.parseWarnings)) updated.parseWarnings = input.parseWarnings;
-  if (Array.isArray(input.uncertainties)) updated.uncertainties = input.uncertainties;
+  if (Array.isArray(input.parseWarnings))
+    updated.parseWarnings = input.parseWarnings;
+  if (Array.isArray(input.uncertainties))
+    updated.uncertainties = input.uncertainties;
   if (input.author) updated.author = input.author;
   if (input.status) updated.status = input.status;
   documents[index] = updated;
@@ -339,104 +394,140 @@ function decodeXml(value: string): string {
     .replace(/&amp;/g, "&");
 }
 
-
-
 function zipPath(pathValue: string): string {
-  const parts = pathValue.replace(/^\/+/, '').split('/')
-  const normalized: string[] = []
+  const parts = pathValue.replace(/^\/+/, "").split("/");
+  const normalized: string[] = [];
   for (const part of parts) {
-    if (!part || part === '.') continue
-    if (part === '..') normalized.pop()
-    else normalized.push(part)
+    if (!part || part === ".") continue;
+    if (part === "..") normalized.pop();
+    else normalized.push(part);
   }
-  return normalized.join('/')
+  return normalized.join("/");
 }
 function xmlAttribute(tag: string, name: string): string {
-  const double = new RegExp(name + '[ ]*=[ ]*"([^"]*)"').exec(tag)
-  if (double?.[1] !== undefined) return decodeXml(double[1])
-  const single = new RegExp(name + "[ ]*=[ ]*'([^']*)'").exec(tag)
-  return single?.[1] !== undefined ? decodeXml(single[1]) : ''
+  const double = new RegExp(name + '[ ]*=[ ]*"([^"]*)"').exec(tag);
+  if (double?.[1] !== undefined) return decodeXml(double[1]);
+  const single = new RegExp(name + "[ ]*=[ ]*'([^']*)'").exec(tag);
+  return single?.[1] !== undefined ? decodeXml(single[1]) : "";
 }
 function xmlText(fragment: string): string {
-  return decodeXml(fragment.replace(/<[^>]+>/g, ''))
+  return decodeXml(fragment.replace(/<[^>]+>/g, ""));
 }
-export function extractXlsxSheets(buffer: Uint8Array): Array<{ name: string; content: string }> {
-  const files = unzipSync(buffer)
-  const workbookBytes = files['xl/workbook.xml']
-  if (!workbookBytes) throw new Error('XLSX 中没有找到工作簿')
-  const workbook = new TextDecoder().decode(workbookBytes)
-  const relationships = new Map<string, string>()
-  const relsBytes = files['xl/_rels/workbook.xml.rels']
+export function extractXlsxSheets(
+  buffer: Uint8Array,
+): Array<{ name: string; content: string }> {
+  const files = unzipSync(buffer);
+  const workbookBytes = files["xl/workbook.xml"];
+  if (!workbookBytes) throw new Error("XLSX 中没有找到工作簿");
+  const workbook = new TextDecoder().decode(workbookBytes);
+  const relationships = new Map<string, string>();
+  const relsBytes = files["xl/_rels/workbook.xml.rels"];
   if (relsBytes) {
-    for (const match of new TextDecoder().decode(relsBytes).matchAll(/<Relationship\b[^>]*>/g)) {
-      const id = xmlAttribute(match[0], 'Id')
-      const target = xmlAttribute(match[0], 'Target')
-      if (id && target) relationships.set(id, target)
+    for (const match of new TextDecoder()
+      .decode(relsBytes)
+      .matchAll(/<Relationship\b[^>]*>/g)) {
+      const id = xmlAttribute(match[0], "Id");
+      const target = xmlAttribute(match[0], "Target");
+      if (id && target) relationships.set(id, target);
     }
   }
-  const sharedStrings: string[] = []
-  const sharedBytes = files['xl/sharedStrings.xml']
+  const sharedStrings: string[] = [];
+  const sharedBytes = files["xl/sharedStrings.xml"];
   if (sharedBytes) {
-    for (const match of new TextDecoder().decode(sharedBytes).matchAll(/<si\b[\s\S]*?<\/si>/g)) {
-      sharedStrings.push([...match[0].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((item) => item[1] || '').join(''))
+    for (const match of new TextDecoder()
+      .decode(sharedBytes)
+      .matchAll(/<si\b[\s\S]*?<\/si>/g)) {
+      sharedStrings.push(
+        [...match[0].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)]
+          .map((item) => item[1] || "")
+          .join(""),
+      );
     }
   }
   const cellValue = (cell: string, type: string): string => {
-    const inline = [...cell.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((item) => item[1] || '').join('')
-    const raw = type === 'inlineStr' ? inline : (/<v\b[^>]*>([\s\S]*?)<\/v>/g.exec(cell)?.[1] || '')
-    if (!raw && type !== 'inlineStr') {
-      const formula = /<f\b[^>]*>([\s\S]*?)<\/f>/g.exec(cell)?.[1]
-      return formula ? '=' + xmlText(formula) : ''
+    const inline = [...cell.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)]
+      .map((item) => item[1] || "")
+      .join("");
+    const raw =
+      type === "inlineStr"
+        ? inline
+        : /<v\b[^>]*>([\s\S]*?)<\/v>/g.exec(cell)?.[1] || "";
+    if (!raw && type !== "inlineStr") {
+      const formula = /<f\b[^>]*>([\s\S]*?)<\/f>/g.exec(cell)?.[1];
+      return formula ? "=" + xmlText(formula) : "";
     }
-    const decoded = xmlText(raw)
-    if (type === 's') return sharedStrings[Number(decoded)] || ''
-    if (type === 'b') return decoded === '1' ? 'TRUE' : 'FALSE'
-    return decoded
-  }
+    const decoded = xmlText(raw);
+    if (type === "s") return sharedStrings[Number(decoded)] || "";
+    if (type === "b") return decoded === "1" ? "TRUE" : "FALSE";
+    return decoded;
+  };
   const tableForSheet = (sheetXml: string): string => {
-    const rows = new Map<number, Map<number, string>>()
-    let fallbackRow = 0
-    for (const rowMatch of sheetXml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
-      const rowTag = rowMatch[0].slice(0, rowMatch[0].indexOf('>') + 1)
-      const rowNumber = Number(xmlAttribute(rowTag, 'r')) || fallbackRow + 1
-      fallbackRow = rowNumber
-      const values = new Map<number, string>()
-      let fallbackColumn = 0
-      for (const cellMatch of (rowMatch[1] || '').matchAll(/<c\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/c>)/g)) {
-        const attributes = cellMatch[1] || ''
-        const ref = xmlAttribute(attributes, 'r')
-        const letters = ref.match(/^[A-Za-z]+/)?.[0] || ''
-        let column = 0
-        for (const letter of letters.toUpperCase()) column = column * 26 + letter.charCodeAt(0) - 64
-        column = Math.max(1, column || fallbackColumn + 1)
-        fallbackColumn = column
-        values.set(column, cellValue(cellMatch[2] || '', xmlAttribute(attributes, 't')))
+    const rows = new Map<number, Map<number, string>>();
+    let fallbackRow = 0;
+    for (const rowMatch of sheetXml.matchAll(
+      /<row\b[^>]*>([\s\S]*?)<\/row>/g,
+    )) {
+      const rowTag = rowMatch[0].slice(0, rowMatch[0].indexOf(">") + 1);
+      const rowNumber = Number(xmlAttribute(rowTag, "r")) || fallbackRow + 1;
+      fallbackRow = rowNumber;
+      const values = new Map<number, string>();
+      let fallbackColumn = 0;
+      for (const cellMatch of (rowMatch[1] || "").matchAll(
+        /<c\b([^>]*?)(?:\/\s*>|>([\s\S]*?)<\/c>)/g,
+      )) {
+        const attributes = cellMatch[1] || "";
+        const ref = xmlAttribute(attributes, "r");
+        const letters = ref.match(/^[A-Za-z]+/)?.[0] || "";
+        let column = 0;
+        for (const letter of letters.toUpperCase())
+          column = column * 26 + letter.charCodeAt(0) - 64;
+        column = Math.max(1, column || fallbackColumn + 1);
+        fallbackColumn = column;
+        values.set(
+          column,
+          cellValue(cellMatch[2] || "", xmlAttribute(attributes, "t")),
+        );
       }
-      if (values.size) rows.set(rowNumber, values)
+      if (values.size) rows.set(rowNumber, values);
     }
-    const orderedRows = [...rows.entries()].sort((a, b) => a[0] - b[0]).map(([, values]) => values)
-    if (!orderedRows.length) return ''
-    const width = Math.max(...orderedRows.map((row) => Math.max(...row.keys())))
-    const escape = (value: string): string => value.replace(/\r?\n/g, ' ').replace(/\|/g, '\\|').trim()
-    const matrix = orderedRows.map((row) => Array.from({ length: width }, (_, index) => escape(row.get(index + 1) || '')))
-    const lines = matrix.map((row) => '| ' + row.join(' | ') + ' |')
-    lines.splice(1, 0, '| ' + Array.from({ length: width }, () => '---').join(' | ') + ' |')
-    return lines.join('\n')
-  }
-  const results: Array<{ name: string; content: string }> = []
+    const orderedRows = [...rows.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, values]) => values);
+    if (!orderedRows.length) return "";
+    const width = Math.max(
+      ...orderedRows.map((row) => Math.max(...row.keys())),
+    );
+    const escape = (value: string): string =>
+      value.replace(/\r?\n/g, " ").replace(/\|/g, "\\|").trim();
+    const matrix = orderedRows.map((row) =>
+      Array.from({ length: width }, (_, index) =>
+        escape(row.get(index + 1) || ""),
+      ),
+    );
+    const lines = matrix.map((row) => "| " + row.join(" | ") + " |");
+    lines.splice(
+      1,
+      0,
+      "| " + Array.from({ length: width }, () => "---").join(" | ") + " |",
+    );
+    return lines.join("\n");
+  };
+  const results: Array<{ name: string; content: string }> = [];
   for (const sheetMatch of workbook.matchAll(/<sheet\b[^>]*>/g)) {
-    const sheetTag = sheetMatch[0]
-    const name = xmlAttribute(sheetTag, 'name') || '工作表'
-    const relationId = xmlAttribute(sheetTag, 'r:id') || xmlAttribute(sheetTag, 'id')
-    const target = relationships.get(relationId)
-    if (!target) continue
-    const sheetBytes = files[zipPath(target.startsWith('/') ? target : 'xl/' + target)]
-    if (!sheetBytes) continue
-    const content = tableForSheet(new TextDecoder().decode(sheetBytes))
-    if (content) results.push({ name, content })
+    const sheetTag = sheetMatch[0];
+    const name = xmlAttribute(sheetTag, "name") || "工作表";
+    const relationId =
+      xmlAttribute(sheetTag, "r:id") || xmlAttribute(sheetTag, "id");
+    const target = relationships.get(relationId);
+    if (!target) continue;
+    const sheetBytes =
+      files[zipPath(target.startsWith("/") ? target : "xl/" + target)];
+    if (!sheetBytes) continue;
+    const content = tableForSheet(new TextDecoder().decode(sheetBytes));
+    if (content) results.push({ name, content });
   }
-  if (!results.length) throw new Error('XLSX 中没有可导入的工作表内容')
-  return results
+  if (!results.length) throw new Error("XLSX 中没有可导入的工作表内容");
+  return results;
 }
 export function extractDocxText(buffer: Uint8Array): string {
   const files = unzipSync(buffer);
@@ -458,7 +549,6 @@ export function extractDocxText(buffer: Uint8Array): string {
     .filter(Boolean)
     .join("\n\n");
 }
-
 
 export async function extractPdfText(buffer: Uint8Array): Promise<string> {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -509,7 +599,8 @@ const SUPPORTED_ATTACHMENT_EXTS = new Set([
 
 /** 附件扩展名 → 标准 mediaType（结果回传用；未知回落 octet-stream） */
 const ATTACHMENT_MEDIA_TYPES: Record<string, string> = {
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".docx":
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".pdf": "application/pdf",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".md": "text/markdown",
@@ -749,7 +840,9 @@ async function readRemoteBytes(response: Response): Promise<Uint8Array> {
 function remoteExtension(
   url: URL,
   contentType: string,
-  provider: ReturnType<typeof parseCloudDocumentReference>["provider"] = "unknown",
+  provider: ReturnType<
+    typeof parseCloudDocumentReference
+  >["provider"] = "unknown",
 ): string {
   const normalizedType = contentType.toLowerCase();
   if (normalizedType.includes("pdf")) return ".pdf";
@@ -832,7 +925,11 @@ export async function importKnowledgeBaseDocumentFromUrl(input: {
   const reference = parseCloudDocumentReference(input.url);
   const remote = await fetchRemoteDocument(reference.sourceUrl);
   const remoteUrl = new URL(remote.url);
-  const extension = remoteExtension(remoteUrl, remote.contentType, reference.provider);
+  const extension = remoteExtension(
+    remoteUrl,
+    remote.contentType,
+    reference.provider,
+  );
   const fallbackTitle =
     input.title?.trim() || titleFromRemoteUrl(remoteUrl, extension);
   if ([".doc", ".docx", ".pdf", ".xls"].includes(extension)) {
@@ -871,8 +968,6 @@ export async function importKnowledgeBaseDocumentFromUrl(input: {
   });
 }
 
-
-
 export async function importKnowledgeBaseDocuments(input: {
   knowledgeBaseId: string;
   filePath: string;
@@ -883,24 +978,25 @@ export async function importKnowledgeBaseDocuments(input: {
   sourceAccessMode?: KnowledgeBaseDocument["sourceAccessMode"];
   sourceSyncedAt?: number;
 }): Promise<KnowledgeBaseDocument[]> {
-  ensureKnowledgeBase(input.knowledgeBaseId)
-  const extension = extname(input.filePath).toLowerCase()
-  if (extension !== '.xlsx') return [await importKnowledgeBaseDocument(input)]
-  const sheets = extractXlsxSheets(readFileSync(input.filePath))
-  const baseTitle = input.title?.trim() || basename(input.filePath, extension)
-  return sheets.map((sheet) => createKnowledgeBaseDocument({
-    knowledgeBaseId: input.knowledgeBaseId,
-    title: baseTitle + '｜' + sheet.name,
-    content: sheet.content,
-    sourceUrl: input.sourceUrl,
-    sourceProvider: input.sourceProvider,
-    sourceExternalId: input.sourceExternalId,
-    sourceAccessMode: input.sourceAccessMode,
-    sourceSyncedAt: input.sourceSyncedAt,
-    originNote: '原始工作簿：' + baseTitle + '；工作表：' + sheet.name,
-  }))
+  ensureKnowledgeBase(input.knowledgeBaseId);
+  const extension = extname(input.filePath).toLowerCase();
+  if (extension !== ".xlsx") return [await importKnowledgeBaseDocument(input)];
+  const sheets = extractXlsxSheets(readFileSync(input.filePath));
+  const baseTitle = input.title?.trim() || basename(input.filePath, extension);
+  return sheets.map((sheet) =>
+    createKnowledgeBaseDocument({
+      knowledgeBaseId: input.knowledgeBaseId,
+      title: baseTitle + "｜" + sheet.name,
+      content: sheet.content,
+      sourceUrl: input.sourceUrl,
+      sourceProvider: input.sourceProvider,
+      sourceExternalId: input.sourceExternalId,
+      sourceAccessMode: input.sourceAccessMode,
+      sourceSyncedAt: input.sourceSyncedAt,
+      originNote: "原始工作簿：" + baseTitle + "；工作表：" + sheet.name,
+    }),
+  );
 }
-
 
 export async function importKnowledgeBaseDocument(input: {
   knowledgeBaseId: string;
@@ -915,7 +1011,9 @@ export async function importKnowledgeBaseDocument(input: {
   ensureKnowledgeBase(input.knowledgeBaseId);
   const extension = extname(input.filePath).toLowerCase();
   if (
-    ![".doc", ".docx", ".pdf", ".xls", ".md", ".markdown", ".txt"].includes(extension)
+    ![".doc", ".docx", ".pdf", ".xls", ".md", ".markdown", ".txt"].includes(
+      extension,
+    )
   ) {
     throw new Error(
       "\u652f\u6301\u5bfc\u5165 .doc\u3001.docx\u3001.pdf\u3001.md\u3001.markdown \u548c .txt \u6587\u4ef6",

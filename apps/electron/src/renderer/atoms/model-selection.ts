@@ -22,7 +22,7 @@ export function isModelSelectionAvailable(
   selection: ModelSelection | null | undefined,
 ): selection is ModelSelection {
   if (!selection) return false
-  const channel = channels.find((item) => item.id === selection.channelId && item.enabled)
+  const channel = channels.find((item) => item.id === selection.channelId && item.enabled && !isLocalRuntimeProvider(item.provider))
   return Boolean(channel?.models.some((model) => model.id === selection.modelId && model.enabled))
 }
 

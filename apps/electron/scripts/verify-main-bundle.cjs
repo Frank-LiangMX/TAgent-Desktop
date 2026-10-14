@@ -43,7 +43,7 @@ const allowed = uniqueReqs.filter(
     x.startsWith('@anthropic-ai/'),
 )
 
-console.log('mode:', expectExternal ? 'external (Pi-only)' : 'dual-core / default')
+console.log(expectExternal ? 'mode: external / Pi-only' : 'mode: Pi / Codex / Claude HTTP')
 console.log('allowed-ish requires:', allowed.sort().join(', ') || '(none)')
 
 if (banned.length) {
@@ -52,33 +52,19 @@ if (banned.length) {
 }
 
 const dynamicSdkImport = /import\(["']@anthropic-ai\/claude-agent-sdk["']\)/.test(s)
-const hasStub =
-  s.includes('kscc-external-stub') ||
-  s.includes('EXTERNAL_MSG') ||
-  // esbuild 常把中文编成 \uXXXX
-  s.includes('\\u5BF9\\u5916\\u53D1\\u884C\\u7248') ||
-  s.includes('对外发行版')
-
-if (expectExternal) {
-  if (claudeSdkReqs.length || dynamicSdkImport) {
-    console.error(
-      'FAIL: external build must not load claude-agent-sdk at runtime:',
-      claudeSdkReqs.join(', ') || '(dynamic import remains)',
-    )
-    process.exit(1)
-  }
-  if (s.includes('claude-agent-adapter.ts') || s.includes('[kscc adapter]')) {
-    console.error('FAIL: external build still contains real kscc adapter sources')
-    process.exit(1)
-  }
-  if (!hasStub) {
-    console.error('FAIL: external stub not found in main.cjs — set TAGENT_EXTERNAL=1 for build:main')
-    process.exit(1)
-  }
-  console.log('OK: external stub present; no claude-agent-sdk import/require')
-} else {
-  console.log('OK: no runtime require of pi-ai / pi-agent-core / pi-core')
-  if (dynamicSdkImport) {
-    console.log('note: dual-core keeps dynamic import("@anthropic-ai/claude-agent-sdk") (packaged via node_modules)')
-  }
+if (expectExternal && (claudeSdkReqs.length || dynamicSdkImport)) {
+  console.error('FAIL: Pi-only build must not load claude-agent-sdk at runtime')
+  process.exit(1)
 }
+if (expectExternal && (s.includes('claude-agent-adapter.ts') || s.includes('[kscc adapter]'))) {
+  console.error('FAIL: external build still contains real Claude adapter sources')
+  process.exit(1)
+}
+if (expectExternal && !(
+  s.includes('EXTERNAL_MSG') || s.includes('kscc-external-stub') ||
+  s.includes('\\u5BF9\\u5916\\u53D1\\u884C\\u7248') || s.includes('对外发行版')
+)) {
+  console.error('FAIL: external stub not found — set TAGENT_EXTERNAL=1 for build:main')
+  process.exit(1)
+}
+console.log(expectExternal ? 'OK: Pi dependencies bundled; Claude SDK excluded' : 'OK: Pi dependencies bundled; optional official runtimes allowed')

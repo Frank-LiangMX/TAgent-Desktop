@@ -78,7 +78,7 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
   const [editor, setEditor] = useState<{ mode: EditorMode; preset?: MoAPreset } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<MoAPreset | null>(null)
   /** 会诊档：仅两档（内置网关 | 外部渠道） */
-  const [selectedScope, setSelectedScope] = useState<'gateway' | 'external'>('gateway')
+  const [selectedScope, setSelectedScope] = useState<'gateway' | 'external'>('external')
 
   const reload = useCallback(async (): Promise<void> => {
     setLoadError('')
@@ -276,11 +276,8 @@ export function AgentBehaviorSettings({ hideIntro = false }: { hideIntro?: boole
                   }}
                   className="settings-segmented"
                 >
-                  <SegmentedTabsItem value="gateway" disabled={!!editor || !hasGateway}>
-                    内置网关
-                  </SegmentedTabsItem>
                   <SegmentedTabsItem value="external" disabled={!!editor}>
-                    外部渠道
+                    HTTP 渠道
                   </SegmentedTabsItem>
                 </SegmentedTabs>
                 <div className="agent-behavior-summary" aria-live="polite">

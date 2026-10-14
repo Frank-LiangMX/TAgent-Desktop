@@ -355,36 +355,14 @@ function cliInput(over: Partial<MemberTurnInput> = {}): MemberTurnInput {
   }
 }
 
-describe('ChannelBackendAdapter.runTurn — CLI worker', () => {
-  test('使用房间工作区和稳定 logicalSessionId，返回 CLI 正文与墙钟用量', async () => {
-    const result = await new ChannelBackendAdapter().runTurn(cliInput())
-
-    expect(result).toEqual({
-      text: 'cli-reply',
-      usage: { wallTimeMs: 17 },
-    })
-    expect(cliState.lastInput).toMatchObject({
-      cwd: 'C:\\room-workspace',
-      sessionId: 'room-member-session',
-    })
-    expect(cliState.lastInput?.prompt).toContain('## 当前融合会话任务')
-  })
-
-  test('CLI 成员不是 workspace-write 时 fail-closed，且不调用 worker', async () => {
-    await expect(
-      new ChannelBackendAdapter().runTurn(cliInput({ permissionProfile: 'read-only' })),
-    ).rejects.toMatchObject({ code: 'CLI_PERMISSION_REQUIRED' })
+describe('removed native room backends', () => {
+  test.each(['cli', 'codex'] as const)('rejects %s before invoking a native runtime', async backend => {
+    await expect(new ChannelBackendAdapter().runTurn(cliInput({ backend }))).rejects.toMatchObject({ code: 'PI_HTTP_ONLY' })
     expect(cliState.lastInput).toBeNull()
-  })
-
-  test('CLI worker 不可用时 fail-closed，不回退到渠道后端', async () => {
-    cliState.available = false
-    await expect(new ChannelBackendAdapter().runTurn(cliInput())).rejects.toMatchObject({
-      code: 'CLI_UNAVAILABLE',
-    })
-    expect(cliState.lastInput).toBeNull()
+    expect(codexState.lastInput).toBeNull()
   })
 })
+
 describe('ChannelBackendAdapter.runTurn', () => {
   test('external 渠道：透传 systemPrompt/prompt/modelId/signal 给 seat runner，返回正文', async () => {
     channelState.channels = [
@@ -415,103 +393,6 @@ describe('ChannelBackendAdapter.runTurn', () => {
     expect(seatState.lastFactoryOpts).toMatchObject({ provider: 'anthropic', apiKey: 'sk-1', baseUrl: 'https://api.anthropic.com' })
     expect(seatState.lastRunArgs).toMatchObject({ modelId: 'claude-x', prompt: '你好', systemPrompt: '你是协调者' })
     expect(seatState.lastRunArgs?.signal).toBe(controller.signal)
-  })
-
-  test('Codex 后端复用 App Server thread，并通过 Dynamic Tool 调用宿主 handler', async () => {
-    const hostToolHandler = vi.fn(async () => ({ output: '通知已发送' }))
-    const adapter = new ChannelBackendAdapter()
-
-    const first = await adapter.runTurn({
-      roomId: 'cr_codex',
-      memberId: 'cm_codex',
-      runId: 'run_codex_1',
-      triggerMessageId: 'msg_codex_1',
-      logicalSessionId: 'codex-member-session',
-      backend: 'codex',
-      permissionProfile: 'workspace-write',
-      workspaceId: 'rws_codex',
-      systemPrompt: '你是 Codex 成员',
-      prompt: '先通知目标成员',
-      signal: new AbortController().signal,
-      hostToolHandler,
-    })
-
-    expect(first.text).toBe('codex-reply')
-    expect(hostToolHandler).toHaveBeenCalledWith({
-      name: 'room_send',
-      arguments: { toMemberId: 'cm_target', message: '来自 Codex' },
-    })
-    expect(codexState.toolCallResult).toMatchObject({
-      success: true,
-      contentItems: [{ type: 'inputText', text: '通知已发送' }],
-    })
-    expect(codexMemberState.member?.backendResumeToken).toBe('codex-thread-1')
-
-    // 模拟应用重启：进程内 Map 消失，但成员落盘的 backendResumeToken 仍在。
-    resetCodexRoomThreadCacheForTests()
-    const second = await adapter.runTurn({
-      roomId: 'cr_codex',
-      memberId: 'cm_codex',
-      runId: 'run_codex_2',
-      triggerMessageId: 'msg_codex_2',
-      logicalSessionId: 'codex-member-session',
-      backend: 'codex',
-      systemPrompt: '你是 Codex 成员',
-      prompt: '继续',
-      signal: new AbortController().signal,
-    })
-    expect(second.text).toBe('codex-reply')
-    expect(codexState.resumeThreadIds).toEqual([undefined, 'codex-thread-1'])
-  })
-
-  test('Codex 后端的取消会中断对应 native turn', async () => {
-    codexState.hang = true
-    const adapter = new ChannelBackendAdapter()
-    const promise = adapter.runTurn({
-      roomId: 'cr_codex',
-      memberId: 'cm_codex',
-      runId: 'run_codex_cancel',
-      triggerMessageId: 'msg_codex_cancel',
-      logicalSessionId: 'codex-cancel-session',
-      backend: 'codex',
-      systemPrompt: '你是 Codex 成员',
-      prompt: '等待取消',
-      signal: new AbortController().signal,
-    })
-
-    await vi.waitFor(() => {
-      expect(codexState.lastInput).not.toBeNull()
-    })
-    codexState.lastInput = null
-    // 直接触发宿主可见的中断出口，等价于 service.cancelRun 的 Codex 分支。
-    const { abortCodexRoomSession } = await import('./member-backend-adapter')
-    abortCodexRoomSession('codex-cancel-session')
-    await expect(promise).rejects.toThrow('native aborted')
-    expect(codexState.aborts).toContain('codex-cancel-session')
-  })
-
-  test('Codex 重启后从成员 backendResumeToken 恢复 native thread', async () => {
-    const adapter = new ChannelBackendAdapter()
-    codexMemberState.member = {
-      ...codexMemberState.member,
-      backendResumeToken: 'persisted-thread-9',
-    }
-    resetCodexRoomThreadCacheForTests()
-
-    await adapter.runTurn({
-      roomId: 'cr_codex',
-      memberId: 'cm_codex',
-      runId: 'run_codex_restart',
-      triggerMessageId: 'msg_codex_restart',
-      logicalSessionId: 'codex-member-session',
-      backend: 'codex',
-      systemPrompt: '你是 Codex 成员',
-      prompt: '重启后继续',
-      signal: new AbortController().signal,
-    })
-
-    expect(codexState.resumeThreadIds).toEqual(['persisted-thread-9'])
-    expect(codexState.lastInput?.resumeThreadId).toBe('persisted-thread-9')
   })
 
   test('capabilities：S2 全 false（无 resume/工具/实时输入）', () => {

@@ -5,7 +5,7 @@
  * 插件为一级入口（对齐 General）；渠道 / 主题在设置页；工作区在侧栏。
  * 无 workspace 时显示引导界面。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type {
@@ -109,12 +109,8 @@ import { MemoryMonitorPanel, showNudgeToasts } from "./components/memory";
 import { SessionSidebar } from "./components/workspace/SessionSidebar";
 import { PluginStoreSettings } from "./components/settings/PluginStoreSettings";
 import { RolesPage } from "./components/roles/RolesPage";
-import { KnowledgeBasePage } from "./components/knowledge-base/KnowledgeBasePage";
-import {
-  BASE_SELECT_EVENT,
-  DOCUMENT_SELECT_EVENT,
-  KnowledgeBaseSidebar,
-} from "./components/knowledge-base/KnowledgeBaseSidebar";
+import { confirmKnowledgeLeave, type KnowledgeNavigation } from "./components/knowledge-base/knowledge-navigation";
+import { WorkbenchPage } from "./components/workbench/WorkbenchPage";
 import { AutomationMainView } from "./components/automation/AutomationMainView";
 import { AutomationSidebar } from "./components/automation/AutomationSidebar";
 import {
@@ -172,7 +168,7 @@ import { sessionRunMapAtom } from "./atoms/session-run-atoms";
 
 declare global {
   interface Window {
-    electronAPI: {
+    electronAPI: import('@tagent/shared').WpsDesktopApi & {
       sendMessage: (input: {
         sessionId: string;
         prompt: string;
@@ -362,6 +358,11 @@ declare global {
       listKnowledgeBases: () => Promise<
         import("@tagent/shared").KnowledgeBaseRecord[]
       >;
+      readWorkbench: import("@tagent/shared").WorkbenchApi["readWorkbench"];
+      listAutomations: () => Promise<import("@tagent/shared").Automation[]>;
+      mutateWorkbench: import("@tagent/shared").WorkbenchApi["mutateWorkbench"];
+      exportWorkbench: import("@tagent/shared").WorkbenchApi["exportWorkbench"];
+      onWorkbenchChanged: import("@tagent/shared").WorkbenchApi["onWorkbenchChanged"];
       createKnowledgeBase: (input: {
         name: string;
         description?: string;
@@ -388,6 +389,7 @@ declare global {
         query?: string;
       }) => Promise<import("@tagent/shared").KnowledgeBaseDocument[]>;
       createKnowledgeBaseDocument: (input: {
+        tags?:string[];
         knowledgeBaseId: string;
         title: string;
         content?: string;
@@ -401,6 +403,7 @@ declare global {
         sourceSyncedAt?: number;
       }) => Promise<import("@tagent/shared").KnowledgeBaseDocument>;
       updateKnowledgeBaseDocument: (input: {
+        tags?:string[];
         id: string;
         title: string;
         content: string;
@@ -465,6 +468,11 @@ declare global {
       installCodexRuntime: () => Promise<InstallCodexRuntimeResult>;
       togglePin: (id: string) => Promise<unknown>;
       toggleArchive: (id: string) => Promise<unknown>;
+      runAutoArchive: () => Promise<{
+        archivedIds: string[];
+        skippedActive: number;
+        skippedPinned: number;
+      }>;
       /** 清除 Chat @ 对话跟随（activeSpeaker 回默认总助） */
       clearMentionFollow: (id: string) => Promise<unknown>;
       /** 查会话生命状态（runtimes 内存 + meta 组合；running 不落盘） */
@@ -1101,23 +1109,32 @@ export function App(): JSX.Element {
     useState<Exclude<RailItem, "settings">>("chat");
   /**
    * 会话侧栏展开态（对齐 General navigationSidebarOpen + deriveRailSelection）：
-   * - chat 和 knowledge 支持侧栏；plugins / memory / roles 强制收起
+   * - chat 和 automation 支持侧栏；工作台自行管理知识导航
    * - 再点当前 chat rail → 切换展开/收起
    * - 从其它页切回 chat → 自动展开
    */
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [knowledgeNavigation, setKnowledgeNavigation] = useState<KnowledgeNavigation>();
+  const knowledgeRequestId = useRef(0);
 
   const loadChannels = useSetAtom(loadChannelsAtom);
   const loadWorkspaces = useSetAtom(loadWorkspacesAtom);
   const loadUserProfile = useSetAtom(loadUserProfileAtom);
   const workspaces = useAtomValue(workspacesAtom);
 
-  /** 会话页和知识库页使用 NavIsland 浮岛侧栏；其他页面为 rail-only 主区页 */
+  /** 会话和自动化使用应用侧栏；工作台的知识导航位于主区内 */
   const railSupportsSidebar = (item: Exclude<RailItem, "settings">): boolean =>
-    item === "chat" || item === "knowledge" || item === "automation";
+    item === "chat" || item === "automation";
 
   const selectRail = (next: Exclude<RailItem, "settings">): void => {
+    if (activeRail === "workbench" && next !== "workbench" && !confirmKnowledgeLeave()) return;
     setShowSettings(false);
+    if (next === "knowledge") {
+      setKnowledgeNavigation({requestId: ++knowledgeRequestId.current});
+      setActiveRail("workbench");
+      setSidebarOpen(false);
+      return;
+    }
     if (next === activeRail) {
       // 再点当前支持侧栏的 rail 可折叠侧栏；rail-only 页无操作
       if (railSupportsSidebar(next)) {
@@ -1266,8 +1283,10 @@ export function App(): JSX.Element {
     };
     window.addEventListener("tagent:open-settings", openSettingsFromChild);
     const openKnowledgeBases = () => {
+      if (!confirmKnowledgeLeave()) return;
       setShowSettings(false);
-      setActiveRail("knowledge");
+      setKnowledgeNavigation({ requestId: ++knowledgeRequestId.current });
+      setActiveRail("workbench");
       setSidebarOpen(false);
     };
     window.addEventListener("tagent:open-knowledge-bases", openKnowledgeBases);
@@ -1280,47 +1299,18 @@ export function App(): JSX.Element {
     };
   }, [openSettings]);
 
-  // 知识库来源芯片点击：切到知识库 rail，再派发选中目标库 + 文档。
-  // 事件监听都在 useEffect 里注册（paint 之后），不能用 rAF（会在监听注册前派发而丢失），
-  // 故用 setTimeout 留出挂载 + effect 注册时间；KnowledgeBaseDetail 还会在列表未加载完时
-  // 暂存 pendingDocumentId，兜底加载竞态。
+  // Route references as state so slow list loading cannot lose the destination.
   useEffect(() => {
     const openKnowledgeDocument = (event: Event): void => {
-      const detail = (
-        event as CustomEvent<{
-          knowledgeBaseId?: string;
-          documentId?: string;
-        }>
-      ).detail;
-      if (!detail?.documentId) return;
-      const { knowledgeBaseId, documentId } = detail;
+      const detail = (event as CustomEvent<{ knowledgeBaseId?: string; documentId?: string }>).detail;
+      if (!detail?.documentId || !confirmKnowledgeLeave()) return;
       setShowSettings(false);
-      setActiveRail("knowledge");
+      setKnowledgeNavigation({ ...detail, requestId: ++knowledgeRequestId.current });
+      setActiveRail("workbench");
       setSidebarOpen(false);
-      // 先选库（KnowledgeBasePage 监听 BASE_SELECT_EVENT → setSelectedId）；
-      // 再延迟选文档，等库详情挂载 + 其 DOCUMENT_SELECT_EVENT 监听注册 + 列表开始加载。
-      window.setTimeout(() => {
-        if (knowledgeBaseId) {
-          window.dispatchEvent(
-            new CustomEvent(BASE_SELECT_EVENT, { detail: { knowledgeBaseId } }),
-          );
-        }
-        window.setTimeout(() => {
-          window.dispatchEvent(
-            new CustomEvent(DOCUMENT_SELECT_EVENT, { detail: { documentId } }),
-          );
-        }, 100);
-      }, 50);
     };
-    window.addEventListener(
-      "tagent:open-knowledge-document",
-      openKnowledgeDocument,
-    );
-    return () =>
-      window.removeEventListener(
-        "tagent:open-knowledge-document",
-        openKnowledgeDocument,
-      );
+    window.addEventListener("tagent:open-knowledge-document", openKnowledgeDocument);
+    return () => window.removeEventListener("tagent:open-knowledge-document", openKnowledgeDocument);
   }, []);
 
   const railActive: RailItem = showSettings ? "settings" : activeRail;
@@ -1567,9 +1557,9 @@ export function App(): JSX.Element {
     return workspace;
   };
 
-  const newSession = (workspaceId?: string): void => {
+  const newSession = (workspaceId?: string | null): void => {
     // 没有工作区 → 先打开项目目录（注册工作区后直接开新会话）
-    if (workspaces.length === 0) {
+    if (workspaces.length === 0 && workspaceId !== null) {
       void handleOpenProject(true);
       return;
     }
@@ -1578,19 +1568,21 @@ export function App(): JSX.Element {
     // 默认绑定最近真正激活过的工作区。工作区列表本身不保证按活跃时间排序，
     // 因此不能把 workspaces[0] 当作“最近”。当前 tab 是持久化值尚未回填时的兜底。
     const preferredWorkspaceId =
-      workspaceId ?? lastActiveWorkspaceId ?? activeTab?.workspaceId;
+      workspaceId === null
+        ? undefined
+        : workspaceId ?? lastActiveWorkspaceId ?? activeTab?.workspaceId;
     const workspace =
       workspaces.find((item) => item.id === preferredWorkspaceId) ??
       workspaces[0];
-    // workspaces.length===0 已 early return，此处 workspace 必存在；兜底给 TS
-    if (!workspace) return;
-    setLastActiveWorkspaceId(workspace.id);
+    // 显式选择“不在项目中工作”时不需要工作区；普通入口仍绑定最近工作区。
+    if (workspaceId !== null && !workspace) return;
+    if (workspace) setLastActiveWorkspaceId(workspace.id);
     // 进入草稿（无 tab）：发送首条消息时主进程建持久 meta + 绑定渠道 + 绑定 workspace
     // 草稿直接接管主区；已有 tab 的激活状态保持，返回后恢复原会话
     setDraftSession({
       id: "session-" + Date.now(),
       title: "新会话",
-      workspaceId: workspace.id,
+      workspaceId: workspaceId === null ? undefined : workspace?.id,
     });
   };
 
@@ -1668,17 +1660,15 @@ export function App(): JSX.Element {
               }}
               onPlugins={() => selectRail("plugins")}
               onMemory={() => selectRail("memory")}
-              onKnowledge={() => selectRail("knowledge")}
               onRoles={() => selectRail("roles")}
               onAutomation={() => selectRail("automation")}
+              onWorkbench={() => selectRail("workbench")}
               onSettings={() => openSettings(settingsInitialTab)}
             />
           }
           sidebar={
             activeRail === "automation" ? (
               <AutomationSidebar />
-            ) : activeRail === "knowledge" ? (
-              <KnowledgeBaseSidebar />
             ) : (
               <SessionSidebar
                 activeSessionId={activeTabId}
@@ -1712,19 +1702,35 @@ export function App(): JSX.Element {
             欢迎页 / 新会话页的入场动画由 NewConversationLanding 内各元素自行承担
             （标题逐词模糊渐现、输入框上滑淡入、提示词错落淡入），非整页位移；
             故此处不做整页过渡，直接切换，新页元素各自重新入场。 */}
-          {activeRail === "automation" ? (
+          {activeRail === "workbench" ? (
+            <div className="app-shell-content-stage relative h-full min-h-0 min-w-0 w-full overflow-hidden">
+              <WorkbenchPage onKnowledgeLeave={() => setKnowledgeNavigation(undefined)} knowledgeNavigation={knowledgeNavigation} onNavigate={selectRail} onUseAgent={(text) => {
+                if (draftSession) {
+                  void navigator.clipboard.writeText(text).then(() => {
+                    selectRail("chat");
+                    toast.info("引用已复制，请粘贴到已有草稿；正在编辑的内容已保留。");
+                  }).catch(() => toast.error("复制引用失败，请重试。"));
+                  return;
+                }
+                void (async () => {
+                  if (workspaces.length === 0) {
+                    const workspace = await handleOpenProject(true);
+                    if (!workspace) return;
+                    setPendingSuggestion(text);
+                  } else {
+                    setPendingSuggestion(text);
+                    newSession();
+                  }
+                  selectRail("chat");
+                })().catch((cause) => toast.error(cause instanceof Error ? cause.message : "打开 Agent 会话失败"));
+              }} />
+            </div>
+          ) : activeRail === "automation" ? (
             <div
               key="automation"
               className="app-shell-content-stage relative h-full min-h-0 min-w-0 w-full overflow-x-hidden animate-in fade-in duration-300"
             >
               <AutomationMainView />
-            </div>
-          ) : activeRail === "knowledge" ? (
-            <div
-              key="knowledge"
-              className="app-shell-content-stage relative h-full min-h-0 min-w-0 w-full overflow-x-hidden animate-in fade-in duration-300"
-            >
-              <KnowledgeBasePage />
             </div>
           ) : activeRail === "plugins" ? (
             <div
@@ -1771,7 +1777,7 @@ export function App(): JSX.Element {
                   <Chat
                     session={draftSession}
                     onDraftWorkspaceChange={(id) => {
-                      setLastActiveWorkspaceId(id);
+                      if (id) setLastActiveWorkspaceId(id);
                       setDraftSession((prev) =>
                         prev ? { ...prev, workspaceId: id } : prev,
                       );
@@ -1802,7 +1808,10 @@ export function App(): JSX.Element {
               )}
             </div>
           ) : workspaces.length === 0 ? (
-            <ProjectOnboarding onOpenProject={() => void handleOpenProject()} />
+            <ProjectOnboarding
+              onOpenProject={() => void handleOpenProject()}
+              onStartWithoutProject={() => newSession(null)}
+            />
           ) : (
             // 欢迎页单独占据主区；有草稿时由上面的 draftSession 分支接管主区。
             <div className="relative h-full min-h-0">

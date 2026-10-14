@@ -53,19 +53,19 @@ describe('SessionRecoveryActions', () => {
     expect(onRecover).toHaveBeenCalledWith({ runtime: 'pi', channelId: 'b', modelId: 'one' })
   })
   it('offers every HTTP protocol channel for the target runtime and discloses bounded handoff', async () => {
-    const onRecover = mount()
-    act(() => button('换内核接力').click())
+    const onRecover = mount({ current: { ...current, runtime: 'codex' } })
+    act(() => button('转为 Pi 继续').click())
     expect(container.textContent).toContain('不是完整上下文迁移')
     const select = container.querySelector('select[aria-label="恢复渠道和模型"]')!
     // 官方内核在宿主边界适配三种 HTTP 协议（ADR-0012）：chat / responses / messages 均可选
     expect(select.textContent).toContain('a / one')
     expect(select.textContent).toContain('b / one')
     expect(select.textContent).toContain('c / one')
-    change('目标内核', 'claude-code')
+    expect(container.querySelector('select[aria-label="目标内核"]')?.textContent).toBe('Pi')
     change('恢复渠道和模型', '["c","one"]')
     await act(async () => button('确认并继续').click())
     expect(onRecover).toHaveBeenCalledTimes(1)
-    expect(onRecover).toHaveBeenCalledWith({ runtime: 'claude-code', channelId: 'c', modelId: 'one' })
+    expect(onRecover).toHaveBeenCalledWith({ runtime: 'pi', channelId: 'c', modelId: 'one' })
   })
   it('keeps failures visible and allows another attempt', async () => {
     mount({ onRecover: async () => { throw new Error('目标启动失败') } })
@@ -110,15 +110,14 @@ describe('SessionRecoveryActions', () => {
       provider: 'google',
       apiProtocol: undefined,
     }
-    mount({ channels: [googleChannel] })
-    act(() => button('换内核接力').click())
+    mount({ channels: [{ ...googleChannel, provider: 'codex-internal' }] })
+    act(() => button('换模型继续').click())
     expect(container.textContent).toContain('没有可选模型')
     expect(button('确认并继续').disabled).toBe(true)
   })
-  it('does not allow a Codex recovery target when its runtime is unavailable', () => {
+  it('offers no runtime switch for Pi sessions', () => {
     mount({ codexAvailable: false })
-    act(() => button('换内核接力').click())
-    change('恢复渠道和模型', '["b","one"]')
-    expect(button('确认并继续').disabled).toBe(true)
+    expect(button('换内核接力')).toBeUndefined()
+    expect(button('转为 Pi 继续')).toBeUndefined()
   })
 })

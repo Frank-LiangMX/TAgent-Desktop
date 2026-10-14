@@ -28,11 +28,7 @@ export interface PiTaskAgentSelection {
 function resolveRuntime(profile: AgentProfile): Pick<PiTaskAgentSelection, 'runtime' | 'officialRuntime'> {
   if (profile.runtime === 'pi') return { runtime: 'in-process' }
 
-  if (profile.runtime === 'codex' || profile.runtime === 'claude-code') {
-    return { runtime: 'official', officialRuntime: profile.runtime }
-  }
-
-  throw new Error(`Agent「${profile.name}」使用 legacy CLI runtime「${profile.runtime}」，无法安全继承父会话 permissions`)
+  throw new Error('当前仅支持 Pi 内核，请将 Agent 预设改为 Pi')
 }
 
 /**

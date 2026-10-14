@@ -150,9 +150,9 @@ function makeFakeAdapter(): FakeAdapterHandle & { setRun: (run?: FakeRun) => voi
 const codexAdapter = makeFakeAdapter();
 const claudeCodeAdapter = makeFakeAdapter();
 const externalAdapter = makeFakeAdapter();
+registerAdapterFactory("external", () => externalAdapter.adapter as never);
 registerAdapterFactory("codex", () => codexAdapter.adapter as never);
 registerAdapterFactory("claude-code", () => claudeCodeAdapter.adapter as never);
-registerAdapterFactory("external", () => externalAdapter.adapter as never);
 
 /** 记录主进程推给渲染层的事件（校验 UI 终态行为未被本切片改变）。 */
 const sentPayloads: Array<{ channel: string; payload: unknown }> = [];
@@ -196,10 +196,10 @@ function seedChannels(opts: { includeExternal?: boolean } = {}): void {
       },
       {
         id: CODEX_CHANNEL_ID,
-        name: "Codex",
-        provider: "codex-internal",
-        baseUrl: "",
-        apiKey: "",
+        name: "HTTP target",
+        provider: includeExternal ? "openai" : "codex-internal",
+        baseUrl: "https://pi-target.example.invalid/v1",
+        apiKey: "target-test-key",
         enabled: true,
         models: [
           { id: "gpt-5", name: "GPT-5", enabled: true },
@@ -337,6 +337,8 @@ beforeEach(() => {
   seedChannels();
   codexAdapter.calls.length = 0;
   codexAdapter.setRun(undefined);
+  externalAdapter.calls.length = 0;
+  externalAdapter.setRun(undefined);
   claudeCodeAdapter.calls.length = 0;
   claudeCodeAdapter.setRun(undefined);
   externalAdapter.calls.length = 0;
@@ -354,28 +356,28 @@ afterAll(() => {
 });
 
 describe('orchestration：配置重建必须等待旧 loop 退出', () => {
-  it.each(['configuration', 'sidecar'] as const)('%s 不得通过 isFirst 重建绕过旧 runtime 的停止闩锁', async kind => {
+  it.each(['configuration'] as const)('%s 不得通过 isFirst 重建绕过旧 runtime 的停止闩锁', async kind => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
-    claudeCodeAdapter.setRun(async function* () {
+    externalAdapter.setRun(async function* () {
       yield { type: 'result', subtype: 'success', usage: {} };
       await gate;
     });
-    const sessionId = newSession({ agentRuntime: 'claude-code', internalBackend: 'claude-code', channelId: MESSAGES_CHANNEL_ID, modelId: 'claude-api' });
-    const input = { sessionId, channelId: MESSAGES_CHANNEL_ID, model: 'claude-api', agentRuntime: 'claude-code', prompt: 'first' };
+    const sessionId = newSession({ agentRuntime: 'pi', internalBackend: undefined, channelId: MESSAGES_CHANNEL_ID, modelId: 'claude-api' });
+    const input = { sessionId, channelId: MESSAGES_CHANNEL_ID, model: 'claude-api', agentRuntime: 'pi', prompt: 'first' };
     expect(await sendHandler()({}, input)).toMatchObject({ ok: true });
     const runtimes = (svc as unknown as { runtimes: Map<string, { dropLiveProcessForConfigChange(reason: string): void; hasUnsettledStop(): boolean; isTurnInFlight(): boolean }> }).runtimes;
     const previous = runtimes.get(sessionId)!;
     await vi.waitFor(() => expect(previous.isTurnInFlight()).toBe(false));
     if (kind === 'configuration') previous.dropLiveProcessForConfigChange('test-config');
-    const pending = sendHandler()({}, { ...input, prompt: 'second', ...(kind === 'sidecar' ? { contextPrompt: 'new advisor context' } : {}) });
+    const pending = sendHandler()({}, { ...input, prompt: 'second',  });
     try {
       await vi.waitFor(() => expect(previous.hasUnsettledStop()).toBe(true));
-      expect(claudeCodeAdapter.calls).toHaveLength(1);
+      expect(externalAdapter.calls).toHaveLength(1);
       expect(runtimes.get(sessionId)).toBe(previous);
       release();
       expect(await pending).toMatchObject({ ok: true });
-      expect(claudeCodeAdapter.calls).toHaveLength(2);
+      expect(externalAdapter.calls).toHaveLength(2);
     } finally {
       release();
       await pending;
@@ -385,9 +387,9 @@ describe('orchestration：配置重建必须等待旧 loop 退出', () => {
   it('配置重建超时不替换 runtime、不派发第二条消息', async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
-    claudeCodeAdapter.setRun(async function* () { yield { type: 'result', subtype: 'success', usage: {} }; await gate; });
-    const sessionId = newSession({ agentRuntime: 'claude-code', internalBackend: 'claude-code', channelId: MESSAGES_CHANNEL_ID, modelId: 'claude-api' });
-    const input = { sessionId, channelId: MESSAGES_CHANNEL_ID, model: 'claude-api', agentRuntime: 'claude-code', prompt: 'first' };
+    externalAdapter.setRun(async function* () { yield { type: 'result', subtype: 'success', usage: {} }; await gate; });
+    const sessionId = newSession({ agentRuntime: 'pi', internalBackend: undefined, channelId: MESSAGES_CHANNEL_ID, modelId: 'claude-api' });
+    const input = { sessionId, channelId: MESSAGES_CHANNEL_ID, model: 'claude-api', agentRuntime: 'pi', prompt: 'first' };
     expect(await sendHandler()({}, input)).toMatchObject({ ok: true });
     const runtimes = (svc as unknown as { runtimes: Map<string, { dropLiveProcessForConfigChange(reason: string): void; waitForTurnSettled(ms: number): Promise<boolean> }> }).runtimes;
     const previous = runtimes.get(sessionId)!;
@@ -397,7 +399,7 @@ describe('orchestration：配置重建必须等待旧 loop 退出', () => {
       const result = await sendHandler()({}, { ...input, prompt: 'second' }) as { ok: boolean; error?: string };
       expect(result.ok).toBe(false);
       expect(result.error).toContain('尚未确认停稳');
-      expect(claudeCodeAdapter.calls).toHaveLength(1);
+      expect(externalAdapter.calls).toHaveLength(1);
       expect(runtimes.get(sessionId)).toBe(previous);
     } finally { spy.mockRestore(); release(); await flush(); }
   });
@@ -419,18 +421,18 @@ describe('orchestration：切换事务（真实 IPC handler）', () => {
       sessionId,
       channelId: CODEX_CHANNEL_ID,
       modelId: "gpt-5",
-      runtime: "codex",
+      runtime: "pi",
     })) as Record<string, unknown>;
 
     expect(updated.channelId).toBe(CODEX_CHANNEL_ID);
     expect(updated.modelId).toBe("gpt-5");
-    expect(updated.internalBackend).toBe("codex-app-server");
+    expect(updated.internalBackend).toBeUndefined();
     expect(updated.sdkSessionId).toBeUndefined();
     expect(updated.runtimeSwitchRevision).toBe(1);
     expect((updated.runtimeBindings as never as Record<string, Record<string, unknown>>)['claude-code']?.nativeSessionId).toBe("sdk-native-old");
     const handoff = updated.runtimeHandoff as Record<string, unknown>;
     expect(handoff.from).toBe("claude-code");
-    expect(handoff.to).toBe("codex");
+    expect(handoff.to).toBe("pi");
     expect(String(handoff.content)).toContain("把脚本改成增量跑");
     expect(String(handoff.content)).toContain("不等同于完整上下文迁移");
     // 权限 / 执行形态 / 工作区未被改动（切换不静默改权限、不扩权）
@@ -449,7 +451,7 @@ describe('orchestration：切换事务（真实 IPC handler）', () => {
     const sessionId = newSession();
     injectRuntime(sessionId, { isTurnInFlight: () => true });
     await expect(
-      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "codex" }),
+      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "pi" }),
     ).rejects.toThrow(/仍在执行/);
     expect(getSessionMeta(sessionId)?.channelId).toBe(MESSAGES_CHANNEL_ID);
     expect(getSessionMeta(sessionId)?.runtimeHandoff).toBeUndefined();
@@ -463,7 +465,7 @@ describe('orchestration：切换事务（真实 IPC handler）', () => {
       waitForTurnSettled: async () => false, // 超时未观察到原生终态
     });
     await expect(
-      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "codex" }),
+      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "pi" }),
     ).rejects.toThrow(/尚未确认本轮停稳/);
     expect(getSessionMeta(sessionId)?.channelId).toBe(MESSAGES_CHANNEL_ID);
     expect(unsettled).toBe(true);
@@ -484,7 +486,7 @@ describe('orchestration：切换事务（真实 IPC handler）', () => {
       sessionId,
       channelId: CODEX_CHANNEL_ID,
       modelId: "gpt-5",
-      runtime: "codex",
+      runtime: "pi",
     })) as Record<string, unknown>;
     expect(updated.channelId).toBe(CODEX_CHANNEL_ID);
     expect(unsettled).toBe(false);
@@ -502,7 +504,7 @@ describe('orchestration：切换事务（真实 IPC handler）', () => {
       sessionId,
       channelId: CODEX_CHANNEL_ID,
       modelId: "gpt-5",
-      runtime: "codex",
+      runtime: "pi",
     })) as Record<string, unknown>;
     expect(updated.channelId).toBe(CODEX_CHANNEL_ID);
   });
@@ -514,7 +516,7 @@ describe('orchestration：切换事务（真实 IPC handler）', () => {
       .spyOn(askUserService, "getPendingRequests")
       .mockReturnValue([{ requestId: "r1", sessionId, questions: [] } as never]);
     await expect(
-      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "codex" }),
+      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "pi" }),
     ).rejects.toThrow(/审批/);
     spy.mockRestore();
     expect(getSessionMeta(sessionId)?.channelId).toBe(MESSAGES_CHANNEL_ID);
@@ -528,7 +530,7 @@ describe('orchestration：切换事务（真实 IPC handler）', () => {
       },
     });
     await expect(
-      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "codex" }),
+      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "pi" }),
     ).rejects.toThrow(/abort failed/);
     // 未落盘新绑定：renderer 看到失败后保持原选择
     expect(getSessionMeta(sessionId)?.channelId).toBe(MESSAGES_CHANNEL_ID);
@@ -538,10 +540,10 @@ describe('orchestration：切换事务（真实 IPC handler）', () => {
   it('校验失败（停用模型 / 内核不匹配）→ 不写绑定、不生成交接', async () => {
     const sessionId = newSession();
     await expect(
-      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-off", runtime: "codex" }),
+      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-off", runtime: "pi" }),
     ).rejects.toThrow(/已停用/);
     await expect(
-      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "pi" }),
+      switchHandler()({}, { sessionId, channelId: KSCC_CHANNEL_ID, modelId: "kscc-default", runtime: "pi" }),
     ).rejects.toThrow(/不适用于/);
     expect(getSessionMeta(sessionId)?.channelId).toBe(MESSAGES_CHANNEL_ID);
   });
@@ -553,7 +555,7 @@ describe('orchestration：切换事务（真实 IPC handler）', () => {
     mkdirSync(panelPath, { recursive: true });
     try {
       await expect(
-        switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "codex" }),
+        switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "pi" }),
       ).rejects.toThrow();
       expect(getSessionMeta(sessionId)?.channelId).toBe(MESSAGES_CHANNEL_ID);
       expect(getSessionMeta(sessionId)?.runtimeHandoff).toBeUndefined();
@@ -564,19 +566,19 @@ describe('orchestration：切换事务（真实 IPC handler）', () => {
 
   it('草稿（未持久化）会话拒绝切换', async () => {
     await expect(
-      switchHandler()({}, { sessionId: "never-created", channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "codex" }),
+      switchHandler()({}, { sessionId: "never-created", channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "pi" }),
     ).rejects.toThrow(/尚未持久化/);
   });
 
   it('并发两次切换被串行化：后到者按最新 meta 重新校验，最终绑定一致', async () => {
     const sessionId = newSession();
     const [a, b] = await Promise.all([
-      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "codex" }),
-      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "codex" }),
+      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "pi" }),
+      switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "pi" }),
     ]);
     expect((a as Record<string, unknown>).channelId).toBe(CODEX_CHANNEL_ID);
     expect((b as Record<string, unknown>).channelId).toBe(CODEX_CHANNEL_ID);
-    expect(getSessionMeta(sessionId)?.internalBackend).toBe("codex-app-server");
+    expect(getSessionMeta(sessionId)?.internalBackend).toBeUndefined();
     expect(getSessionMeta(sessionId)?.runtimeSwitchRevision).toBe(2);
   });
 });
@@ -617,7 +619,7 @@ describe('orchestration：发送期交接投递与终态消费', () => {
     appendPanelMessages(undefined, sessionId, [
       { type: "user", uuid: "u1", createdAt: 1, message: { role: "user", content: [{ type: "text", text: "原始目标" }] } },
     ] as never);
-    await switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "codex" });
+    await switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "pi" });
     expect(getSessionMeta(sessionId)?.runtimeHandoff?.attempts).toBeUndefined();
 
     const result = (await sendHandler()({}, { sessionId, prompt: "继续", channelId: CODEX_CHANNEL_ID, model: "gpt-5" })) as { ok: boolean; error?: string };
@@ -627,7 +629,7 @@ describe('orchestration：发送期交接投递与终态消费', () => {
     // 真实跑到终态：交接被消费，且目标内核确实收到了交接正文
     await flush();
     await flush();
-    const prompt = String(codexAdapter.calls.at(-1)?.prompt ?? "");
+    const prompt = String(externalAdapter.calls.at(-1)?.prompt ?? "");
     expect(prompt).toContain("跨内核交接");
     expect(prompt).toContain("原始目标");
     expect(prompt).toContain("继续"); // 用户本轮消息仍在
@@ -642,10 +644,10 @@ describe('orchestration：发送期交接投递与终态消费', () => {
     appendPanelMessages(undefined, sessionId, [
       { type: "user", uuid: "u1", createdAt: 1, message: { role: "user", content: [{ type: "text", text: "原始目标" }] } },
     ] as never);
-    await switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "codex" });
+    await switchHandler()({}, { sessionId, channelId: CODEX_CHANNEL_ID, modelId: "gpt-5", runtime: "pi" });
 
     // 目标适配器 query 立即抛错（模拟 spawn/协议失败）
-    codexAdapter.setRun(async function* (): AsyncGenerator<unknown> {
+    externalAdapter.setRun(async function* (): AsyncGenerator<unknown> {
       throw new Error("codex spawn failed (simulated)");
     });
 
@@ -677,9 +679,9 @@ describe('orchestration：终态性质（onTurnEnd 非成功专属）', () => {
       sessionId,
       channelId: CODEX_CHANNEL_ID,
       modelId: "gpt-5",
-      runtime: "codex",
+      runtime: "pi",
     });
-    codexAdapter.setRun(async function* (): AsyncGenerator<unknown> {
+    externalAdapter.setRun(async function* (): AsyncGenerator<unknown> {
       yield { type: "assistant", message: { content: [{ type: "text", text: "半途" }] }, parent_tool_use_id: null };
       yield result;
     });
@@ -703,7 +705,7 @@ describe('orchestration：终态性质（onTurnEnd 非成功专属）', () => {
     });
     expect(ok).toBe(true);
     // 目标内核确实收到了交接资料（投递发生过）
-    expect(String(codexAdapter.calls.at(-1)?.prompt ?? "")).toContain("跨内核交接");
+    expect(String(externalAdapter.calls.at(-1)?.prompt ?? "")).toContain("跨内核交接");
     // 但终态不是成功 → 不得消费
     const meta = getSessionMeta(sessionId)!;
     expect(meta.runtimeHandoff?.content).toBeTruthy();
@@ -789,7 +791,7 @@ describe('orchestration：UPDATE_SESSION_META 组合级拦截（含未类型化 
   it('跨内核改 channelId（不带 internalBackend）也被拦', async () => {
     const sessionId = newSession({ agentRuntime: undefined, internalBackend: undefined, channelId: MESSAGES_CHANNEL_ID, modelId: "claude-api" }); // 外部渠道 → pi
     await expect(
-      metaHandler()({}, { id: sessionId, patch: { channelId: CODEX_CHANNEL_ID } }),
+      metaHandler()({}, { id: sessionId, patch: { channelId: KSCC_CHANNEL_ID } }),
     ).rejects.toThrow(/switchSessionRuntime/);
     expect(getSessionMeta(sessionId)?.channelId).toBe(MESSAGES_CHANNEL_ID);
   });
@@ -873,63 +875,31 @@ describe('orchestration：发送渠道解析（会话绑定优先于默认内核
     }));
   });
 
-  it('Responses API + codex 首发把 apiConnection 交给 Codex，并持久化显式运行内核', async () => {
-    const sessionId = 'draft-official-codex';
-    const result = (await sendHandler()({}, {
-      sessionId,
-      prompt: 'hello responses',
-      agentRuntime: 'codex',
-      channelId: RESPONSES_CHANNEL_ID,
-      model: 'gpt-api',
-    })) as { ok: boolean; error?: string };
-    expect(result.error).toBeUndefined();
-    expect(result.ok).toBe(true);
-    expect(codexAdapter.calls).toHaveLength(1);
-    expect(codexAdapter.calls[0]).toMatchObject({
-      model: 'gpt-api',
-      apiConnection: {
-        channelId: RESPONSES_CHANNEL_ID,
-        baseUrl: 'https://responses.example.invalid/v1',
-        apiKey: 'responses-key-not-real',
-        contextWindow: 128_000,
-      },
-    });
-    expect(getSessionMeta(sessionId)).toMatchObject({
-      agentRuntime: 'codex',
-      channelId: RESPONSES_CHANNEL_ID,
-      modelId: 'gpt-api',
-      internalBackend: 'codex-app-server',
-    });
+  it.each([
+    [RESPONSES_CHANNEL_ID, 'gpt-api', 'openai-responses'],
+    [MESSAGES_CHANNEL_ID, 'claude-api', 'anthropic-messages'],
+  ] as const)('Pi uses HTTP channel %s with its configured wire protocol', async (channelId, model, apiProtocol) => {
+    const sessionId = `draft-pi-${apiProtocol}`;
+    const result = await sendHandler()({}, { sessionId, prompt: 'hello', agentRuntime: 'pi', channelId, model });
+    expect(result).toMatchObject({ ok: true });
+    expect(externalAdapter.calls.at(-1)?.channelConfig).toMatchObject({ modelId: model, apiProtocol });
+    expect(getSessionMeta(sessionId)).toMatchObject({ agentRuntime: 'pi', channelId, modelId: model });
+    expect(getSessionMeta(sessionId)?.internalBackend).toBeUndefined();
   });
-
-  it('Messages API + claude-code 首发且重读后保持显式绑定', async () => {
-    const sessionId = 'draft-official-claude';
-    const result = (await sendHandler()({}, {
-      sessionId,
-      prompt: 'hello messages',
-      agentRuntime: 'claude-code',
-      channelId: MESSAGES_CHANNEL_ID,
-      model: 'claude-api',
-    })) as { ok: boolean; error?: string };
-    expect(result.error).toBeUndefined();
-    expect(result.ok).toBe(true);
-    expect(claudeCodeAdapter.calls).toHaveLength(1);
-    expect(claudeCodeAdapter.calls[0]).toMatchObject({
-      model: 'claude-api',
-      apiConnection: {
-        channelId: MESSAGES_CHANNEL_ID,
-        baseUrl: 'https://messages.example.invalid',
-        apiKey: 'messages-key-not-real',
-        contextWindow: 200_000,
-      },
+  it.each([
+    ['codex', codexAdapter],
+    ['claude-code', claudeCodeAdapter],
+  ] as const)('draft external channel can start the %s adapter', async (agentRuntime, adapter) => {
+    const result = await sendHandler()({}, {
+      sessionId: `draft-${agentRuntime}`,
+      prompt: 'hi',
+      channelId: API_CHANNEL_ID,
+      agentRuntime,
     });
-    // getSessionMeta reads the persisted index rather than a SessionService cache.
-    expect(getSessionMeta(sessionId)).toMatchObject({
-      agentRuntime: 'claude-code',
-      channelId: MESSAGES_CHANNEL_ID,
-      modelId: 'claude-api',
-      internalBackend: 'claude-code',
-    });
+    expect(result).toMatchObject({ ok: true });
+    expect(adapter.calls).toHaveLength(1);
+    expect(externalAdapter.calls).toHaveLength(0);
+    expect(getSessionMeta(`draft-${agentRuntime}`)).toMatchObject({ agentRuntime, channelId: API_CHANNEL_ID });
   });
 
   it('已绑定会话拒绝发送输入中冲突的 agentRuntime', async () => {
@@ -967,6 +937,7 @@ describe('orchestration：发送渠道解析（会话绑定优先于默认内核
     })) as { ok: boolean; error?: string };
     expect(r.ok).toBe(true);
     expect(codexAdapter.calls.length).toBe(1);
+    expect(externalAdapter.calls.length).toBe(0);
   });
 
   it('新会话无显式选择且无可用 Pi 渠道 → 明确拒绝，不静默回落内置内核', async () => {
@@ -978,7 +949,7 @@ describe('orchestration：发送渠道解析（会话绑定优先于默认内核
     expect(r.ok).toBe(false);
     expect(String(r.error)).toContain("Pi 渠道");
     expect(claudeCodeAdapter.calls.length).toBe(0);
-    expect(codexAdapter.calls.length).toBe(0);
+    expect(externalAdapter.calls.length).toBe(0);
   });
 
   it('新会话有 Pi 渠道时默认走 Pi（外部渠）', async () => {
@@ -990,7 +961,6 @@ describe('orchestration：发送渠道解析（会话绑定优先于默认内核
     expect(r.ok).toBe(true);
     expect(externalAdapter.calls.length).toBe(1);
     expect(claudeCodeAdapter.calls.length).toBe(0);
-    expect(codexAdapter.calls.length).toBe(0);
     expect(getSessionMeta("draft-pi-default")?.channelId).toBe(API_CHANNEL_ID);
   });
 });

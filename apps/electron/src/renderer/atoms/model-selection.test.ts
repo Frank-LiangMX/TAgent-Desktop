@@ -62,11 +62,11 @@ describe('model selection', () => {
     expect(resolveModelSelection([channel('kscc', 'kscc-internal')])).toBeNull()
   })
 
-  it('preserves an explicit stored choice even when it is a local runtime', () => {
+  it('replaces a legacy local selection with an available HTTP channel', () => {
     // 已保存会话 / 用户显式选择不得被 Pi 默认值改写
     const channels = [channel('kscc', 'kscc-internal'), channel('external', 'openai')]
     const stored = { channelId: 'kscc', modelId: 'kscc-model' }
-    expect(resolveModelSelection(channels, stored)).toEqual(stored)
+    expect(resolveModelSelection(channels, stored)).toEqual({ channelId: 'external', modelId: 'external-model' })
   })
 
   it('skips disabled channels and models', () => {

@@ -21,6 +21,8 @@ import {
   USER_PROFILE_IPC_CHANNELS,
   SYSTEM_PROMPT_IPC_CHANNELS,
   BROWSER_IPC_CHANNELS,
+  WPS_IPC_CHANNELS,
+  WORKBENCH_IPC,
 } from "@tagent/shared";
 import type {
   AgentRoleProfile,
@@ -190,6 +192,27 @@ export interface FusionRoomPublicCertRecord {
 }
 
 const electronAPI = {
+  readWorkbench: () => ipcRenderer.invoke(WORKBENCH_IPC.READ),
+  mutateWorkbench: (input: import('@tagent/shared').WorkbenchMutationInput) => ipcRenderer.invoke(WORKBENCH_IPC.MUTATE, input),
+  exportWorkbench: () => ipcRenderer.invoke(WORKBENCH_IPC.EXPORT),
+  onWorkbenchChanged: (listener: () => void) => {
+    const handler = () => listener();
+    ipcRenderer.on(WORKBENCH_IPC.CHANGED, handler);
+    return () => { ipcRenderer.removeListener(WORKBENCH_IPC.CHANGED, handler); };
+  },
+  getWpsConfig: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.GET_CONFIG),
+  saveWpsConfig: (input: import('@tagent/shared').WpsConnectionInput) => ipcRenderer.invoke(WPS_IPC_CHANNELS.SAVE_CONFIG, input),
+  getWpsUserAuth: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.GET_USER_AUTH),
+  loginWpsUser: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.USER_LOGIN),
+  logoutWpsUser: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.USER_LOGOUT),
+  listWpsReportChats: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.LIST_REPORT_CHATS),
+  collectWpsDaily: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.COLLECT_DAILY),
+  createWpsDailyReport: (input: { channelId: string; modelId?: string; timeOfDay: string }) => ipcRenderer.invoke(WPS_IPC_CHANNELS.CREATE_DAILY_REPORT, input),
+  onWpsUserAuthChanged: (callback: (state: import('@tagent/shared').WpsUserAuthState) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: import('@tagent/shared').WpsUserAuthState): void => callback(state)
+    ipcRenderer.on(WPS_IPC_CHANNELS.USER_AUTH_CHANGED, handler)
+    return () => ipcRenderer.removeListener(WPS_IPC_CHANNELS.USER_AUTH_CHANGED, handler)
+  },
   // ===== Automation =====
   listAutomations: () =>
     ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.LIST) as Promise<import('@tagent/shared').Automation[]>,
@@ -330,6 +353,7 @@ const electronAPI = {
   }) =>
     ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_KNOWLEDGE_BASE_DOCUMENTS, input),
   createKnowledgeBaseDocument: (input: {
+    tags?:string[];
     knowledgeBaseId: string;
     title: string;
     content?: string;
@@ -347,6 +371,7 @@ const electronAPI = {
       input,
     ),
   updateKnowledgeBaseDocument: (input: {
+    tags?:string[];
     id: string;
     title: string;
     content: string;
@@ -673,6 +698,13 @@ const electronAPI = {
       AGENT_IPC_CHANNELS.TOGGLE_ARCHIVE,
       id,
     ) as Promise<unknown>,
+  /** 立即执行一次会话自动归档扫描 */
+  runAutoArchive: () =>
+    ipcRenderer.invoke(AGENT_IPC_CHANNELS.RUN_AUTO_ARCHIVE) as Promise<{
+      archivedIds: string[];
+      skippedActive: number;
+      skippedPinned: number;
+    }>,
   /** 清除 Chat @ 对话跟随（activeSpeaker 回默认总助） */
   clearMentionFollow: (id: string) =>
     ipcRenderer.invoke(

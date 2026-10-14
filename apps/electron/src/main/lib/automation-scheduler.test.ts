@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { AutomationScheduler } from './automation-scheduler'
-import { createAutomation, getAutomation, listAutomationEvents, setNextRunAt } from './automation-manager'
+import { claimAutomationTrigger, createAutomation, getAutomation, listAutomationEvents, setNextRunAt } from './automation-manager'
 
 const root = mkdtempSync(join(tmpdir(), 'tagent-automation-'))
 process.env.TAGENT_CONFIG_DIR = root
@@ -31,6 +31,34 @@ function makeAutomation() {
 }
 
 describe('AutomationScheduler', () => {
+  it('WPS 日报认领后崩溃，重启仍能恢复补报而不是永久卡住', async () => {
+    const now = Date.now()
+    const automation = createAutomation({ name: '日报', prompt: '生成日报', scheduleType: 'daily', intervalMinutes: 1440,
+      timeOfDay: '18:00', channelId: 'test-channel', wpsDailyReport: { accountId: 'me', includeChats: true, includeDocuments: false, chatIds: [] } })
+    const old = now - 86400_000
+    setNextRunAt(automation.id, old)
+    claimAutomationTrigger(automation.id, old)
+    const run = vi.fn().mockResolvedValue({ sessionId: 'recovered-report' })
+    const scheduler = new AutomationScheduler({ runAutomation: run, now: () => now })
+    try {
+      scheduler.start()
+      await Promise.resolve()
+      expect(run).toHaveBeenCalledTimes(1)
+      expect(getAutomation(automation.id)?.nextRunAt).toBeGreaterThan(old)
+    } finally { scheduler.stop() }
+  })
+  it('WPS 日报离线后执行补报入口，并保留账号绑定与范围', async () => {
+    const automation = createAutomation({ name: '日报', prompt: '生成日报', scheduleType: 'daily', intervalMinutes: 1440,
+      timeOfDay: '18:00', channelId: 'test-channel', wpsDailyReport: { accountId: 'me', includeChats: true, includeDocuments: false, chatIds: ['work-chat'] } })
+    const now = Date.now()
+    setNextRunAt(automation.id, now - 2 * 86400_000)
+    const run = vi.fn().mockResolvedValue({ sessionId: 'report-session' })
+    const scheduler = new AutomationScheduler({ runAutomation: run, now: () => now })
+    await scheduler.tick(now)
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(run.mock.calls[0]![0].wpsDailyReport).toEqual(automation.wpsDailyReport)
+    expect(getAutomation(automation.id)?.runHistory.at(-1)?.status).toBe('succeeded')
+  })
   it('只派发同一个到期触发一次，并记录成功事件', async () => {
     const automation = makeAutomation()
     const now = Date.now()

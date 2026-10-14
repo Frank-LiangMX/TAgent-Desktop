@@ -141,25 +141,22 @@ describe('AgentCatalogSettings', () => {
       { id: 'chat', name: 'Chat', provider: 'openai', apiProtocol: 'openai-chat', baseUrl: '', apiKey: '', enabled: true, models: [{ id: 'c', name: 'c', enabled: true }], createdAt: 1, updatedAt: 1 },
     ]
     // 官方内核在宿主边界做协议适配：三种 HTTP 协议渠道均可绑定（ADR-0012）
-    expect(compatibleProfileChannels(channels, 'codex').map((channel) => channel.id)).toEqual([
+    expect(compatibleProfileChannels(channels, 'pi').map((channel) => channel.id)).toEqual([
       'responses',
       'messages',
       'chat',
     ])
-    expect(compatibleProfileChannels(channels, 'claude-code').map((channel) => channel.id)).toEqual([
-      'responses',
-      'messages',
-      'chat',
-    ])
-    expect(profileBindingError({ runtime: 'codex', channelId: 'chat', modelId: 'c' }, channels)).toBeNull()
+    expect(compatibleProfileChannels(channels, 'claude-code')).toEqual([])
+    expect(compatibleProfileChannels(channels, 'codex')).toEqual([])
+    expect(profileBindingError({ runtime: 'pi', channelId: 'chat', modelId: 'c' }, channels)).toBeNull()
   })
 
   test('unsupported temporary workspace is rejected without silently changing binding', () => {
     expect(profileConfigurationError({ runtime: 'pi', channelId: '', modelId: '', workspacePolicy: 'temporary', workspacePath: undefined }, [])).toContain('暂不支持')
-    expect(profileBindingError({ runtime: 'codex', channelId: 'responses', modelId: 'gone' }, [{
+    expect(profileBindingError({ runtime: 'pi', channelId: 'responses', modelId: 'gone' }, [{
       id: 'responses', name: 'Responses', provider: 'openai', apiProtocol: 'openai-responses', baseUrl: '', apiKey: '', enabled: true, models: [], createdAt: 1, updatedAt: 1,
     }])).toContain('模型不存在')
-    expect(profileBindingError({ runtime: 'codex', channelId: 'responses', modelId: '' }, [{
+    expect(profileBindingError({ runtime: 'pi', channelId: 'responses', modelId: '' }, [{
       id: 'responses', name: 'Responses', provider: 'openai', apiProtocol: 'openai-responses', baseUrl: '', apiKey: '', enabled: true, models: [], createdAt: 1, updatedAt: 1,
     }])).toContain('同时选择渠道和模型')
     expect(profileConfigurationError({ runtime: 'codex', channelId: '', modelId: '', workspacePolicy: 'inherit', skills: ['legacy'], mcpServers: [], tools: [] }, [])).toContain('skills / MCP')

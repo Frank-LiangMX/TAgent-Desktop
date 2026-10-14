@@ -55,24 +55,16 @@ describe('resolvePiTaskAgent', () => {
     })
   })
 
-  it.each([
-    ['codex', 'codex'],
-    ['claude-code', 'claude-code'],
-  ] as const)('将 %s runtime 映射为官方 runtime %s', (runtime, officialRuntime) => {
-    const agent = profile({ id: `${runtime}-worker`, runtime })
+  it.each(['codex', 'claude-code'] as const)('rejects removed runtime %s', runtime => {
+    const agent = profile({ id: 'stale', runtime })
     listAgentProfilesMock.mockReturnValue([agent])
-
-    expect(resolvePiTaskAgent(agent.id)).toEqual({
-      profile: agent,
-      runtime: 'official',
-      officialRuntime,
-    })
+    expect(() => resolvePiTaskAgent('stale')).toThrow('仅支持 Pi')
   })
 
   it('拒绝 legacy CLI 与 temporary workspace', () => {
     const legacy = profile({ id: 'legacy', runtime: 'kscc' })
     listAgentProfilesMock.mockReturnValue([legacy])
-    expect(() => resolvePiTaskAgent('legacy')).toThrow(/legacy CLI runtime/)
+    expect(() => resolvePiTaskAgent('legacy')).toThrow(/仅支持 Pi/)
 
     listAgentProfilesMock.mockReturnValue([profile({ id: 'temporary', workspacePolicy: 'temporary' })])
     expect(() => resolvePiTaskAgent('temporary')).toThrow(/temporary workspace/)

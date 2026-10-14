@@ -1131,6 +1131,7 @@ export interface KnowledgeBaseDraftSource {
  * 草稿只存在于确认请求中，不参与正式检索；用户确认后才进入正式文档。
  */
 export interface KnowledgeBaseStructuredDraft {
+  tags?: string[];
   summary?: string;
   sources?: KnowledgeBaseDraftSource[];
   warnings?: string[];
@@ -1139,6 +1140,7 @@ export interface KnowledgeBaseStructuredDraft {
 
 /** 知识库中的正式 Markdown 文档 */
 export interface KnowledgeBaseDocument {
+  tags?: string[];
   id: string;
   knowledgeBaseId: string;
   title: string;
@@ -1211,6 +1213,7 @@ export interface KnowledgeBaseSharePackageLibrary {
 
 /** 分享包中的文档项：不导出 id / knowledgeBaseId（导入一律新生成） */
 export interface KnowledgeBaseSharePackageDocument {
+  tags?: string[];
   title: string;
   content: string;
   kind?: KnowledgeBaseDocumentKind;

@@ -1,7 +1,7 @@
 /**
  * TAgent-Desktop 主进程入口
  *
- * 2.0 骨架：双核适配 + 长驻会话 + 托盘常驻（关窗隐藏，托盘退出）。
+ * Pi 内核 + HTTP 渠道 + 长驻会话 + 托盘常驻（关窗隐藏，托盘退出）。
  */
 import { app, BrowserWindow, Menu, ipcMain, nativeImage, nativeTheme } from 'electron'
 import path from 'node:path'
@@ -19,15 +19,12 @@ import { SystemPromptService } from './lib/ipc/system-prompt-service'
 import { BalanceService } from './lib/ipc/balance-service'
 import { PermissionService } from './lib/permission/permission-service'
 import {
-  seedBuiltinChannels,
+  migrateHttpChannels,
   migrateModelWindows,
-  dedupeLegacyKsccChannels,
-  syncGatewayChannelAvailability,
-  syncKsccDefaultModels,
-  syncCodexDefaultModels,
 } from './lib/channel/channel-store'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
 import { stopAutomationScheduler } from './lib/automation-scheduler'
+import { startSessionAutoArchiveScheduler, stopSessionAutoArchiveScheduler } from './lib/agent/session-auto-archive'
 import { createTray, destroyTray, getTray, updateTrayTheme } from './tray'
 import { initAutoUpdater, configureUpdater, cleanupUpdater, registerUpdaterIpc } from './lib/updater'
 import {
@@ -42,7 +39,6 @@ import {
 } from './lib/memory'
 // type-only：esbuild 去类型不引入运行时模块；仅用于持有 transport bootstrap 句柄类型。
 import type { FusionRoomTransportBootstrapResult } from './lib/collaboration/fusion-room-transport-bootstrap'
-import { runtimeProtocolBridge } from './lib/adapters/shared/protocol-bridge/runtime-protocol-bridge'
 
 // cjs 打包格式下 __dirname 是全局可用，无需 fileURLToPath
 
@@ -296,13 +292,7 @@ app.whenReady().then(async () => {
   })
 
   try {
-    seedBuiltinChannels()
-    // 凭据判断是同步读盘（~/.claude/settings.json / kcwork 凭证），无 spawn，
-    // 但仍放在窗口创建前，保证首屏渠道状态已就绪。
-    syncGatewayChannelAvailability()
-    dedupeLegacyKsccChannels()
-    syncKsccDefaultModels()
-    syncCodexDefaultModels()
+    migrateHttpChannels()
     migrateModelWindows()
   } catch (err) {
     // 渠道迁移失败不能阻断后续 IPC 注册；用户仍应能打开设置并修复配置。
@@ -413,14 +403,36 @@ app.whenReady().then(async () => {
   )
   permissionService = PermissionService.create(() => mainWindow)
   sessionService = SessionService.create(() => mainWindow, permissionService)
+  startSessionAutoArchiveScheduler({ isActive: (id) => sessionService?.isSessionActive(id) ?? false })
   const { registerAutomationIpc } = await import('./lib/automation-ipc')
   registerAutomationIpc()
+  const { registerWorkbenchIpc } = await import('./lib/workbench/workbench-ipc')
+  registerWorkbenchIpc()
+  const { registerWpsIpc } = await import('./lib/wps/wps-service')
+  registerWpsIpc()
   // Automation：复用当前 2.0 SessionService，后台执行不经过 renderer IPC。
   const { startAutomationScheduler } = await import('./lib/automation-scheduler')
   const { isSameLocalDay } = await import('@tagent/shared')
   const { createSession, getSessionMeta, updateSessionMeta } = await import('./lib/agent/session-store')
   startAutomationScheduler({
     runAutomation: async (automation) => {
+      if (automation.wpsDailyReport) {
+        const service = sessionService
+        if (!service) throw new Error('SessionService 尚未初始化')
+        const { runWpsDailyReports } = await import('./lib/wps/wps-report-runner')
+        return runWpsDailyReports(automation, {
+          createSession: (title) => {
+            const session = createSession({ title, channelId: automation.channelId, modelId: automation.modelId,
+              workspaceId: automation.workspaceId, mode: 'general', executionMode: 'work', permissionMode: 'auto' })
+            updateSessionMeta(session.id, { sourceAutomationId: automation.id })
+            return session.id
+          },
+          runTurn: async (sessionId, prompt, contextPrompt) => {
+            await service.runAutomatedTurn({ sessionId, prompt, contextPrompt, waitForCompletion: true, channelId: automation.channelId,
+              model: automation.modelId, workspaceId: automation.workspaceId })
+          },
+        })
+      }
       let sessionId: string | undefined
       const last = automation.lastSessionId ? getSessionMeta(automation.lastSessionId) : undefined
       if (last && !last.automationGraduated) {
@@ -496,6 +508,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   setQuitting(true)
   stopAutomationScheduler()
+  stopSessionAutoArchiveScheduler()
   try {
     stopIdleConsolidationScheduler()
     memoryLayerService.close()
@@ -507,7 +520,6 @@ app.on('before-quit', () => {
   }
   // P0-3c：关闭 FusionRoom transport runtime（若有）
   closeFusionTransportOnQuit()
-  runtimeProtocolBridge.close()
   cleanupUpdater()
   browserService?.dispose()
   sessionService?.disposeAll()

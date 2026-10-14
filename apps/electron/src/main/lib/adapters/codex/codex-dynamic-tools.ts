@@ -63,6 +63,7 @@ export interface DispatchCodexDynamicToolCallOptions {
 }
 
 const READ_ONLY_TOOL_NAMES = new Set([
+  'browser_read_text',
   'browser_open',
   'browser_navigate',
   'browser_observe',
@@ -75,6 +76,9 @@ const READ_ONLY_TOOL_NAMES = new Set([
   'kb_search',
   'kb_get',
   'kb_read_attachment',
+  'workbench_search',
+  'workbench_get',
+  'workbench_history',
   'kanban_list_boards',
   'kanban_list_tasks',
   'kanban_list_models',
@@ -88,6 +92,7 @@ const PERMISSION_TOOL_NAMES = new Set([
   'kanban_add_task',
   'kanban_complete',
   'kanban_block',
+  'workbench_add',
   'task',
 ])
 

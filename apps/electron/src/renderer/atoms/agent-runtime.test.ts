@@ -66,7 +66,7 @@ describe('agent runtime mapping', () => {
     expect(channelAcceptsRuntime(KSCC, 'pi')).toBe(false)
     expect(channelAcceptsRuntime(CODEX, 'pi')).toBe(false)
     expect(channelAcceptsRuntime(CODEX, 'codex')).toBe(false)
-    expect(channelAcceptsRuntime(CODEX_API, 'codex')).toBe(true)
+    expect(channelAcceptsRuntime(CODEX_API, 'codex')).toBe(false)
     expect(channelAcceptsRuntime(KSCC, 'codex')).toBe(false)
     // 历史 kscc 本机渠道对任何内核都不再可运行
     expect(channelAcceptsRuntime(KSCC, 'claude-code')).toBe(false)
@@ -75,15 +75,12 @@ describe('agent runtime mapping', () => {
 
   it('offers external API channels to official runtimes through the protocol bridge', () => {
     const channels = [OPENAI, DEEPSEEK]
-    expect(runtimeChannels(channels, 'codex')).toHaveLength(2)
-    expect(runtimeChannels(channels, 'claude-code')).toHaveLength(2)
+    expect(runtimeChannels(channels, 'codex')).toHaveLength(0)
+    expect(runtimeChannels(channels, 'claude-code')).toHaveLength(0)
     // 本机渠道不进任何外部/协议内核
     expect(runtimeChannels([KSCC, CODEX], 'claude-code')).toEqual([])
-    expect(isRuntimeAvailable(channels, 'codex')).toBe(true)
-    expect(selectionForRuntime(channels, 'codex')).toEqual({
-      channelId: 'openai',
-      modelId: 'openai-model',
-    })
+    expect(isRuntimeAvailable(channels, 'codex')).toBe(false)
+    expect(selectionForRuntime(channels, 'codex')).toBeNull()
     expect(selectionForRuntime(channels, 'pi')).toEqual({
       channelId: 'openai',
       modelId: 'openai-model',
@@ -151,7 +148,7 @@ describe('agent runtime mapping', () => {
     ]
     expect(selectionForRuntime(moaDefault, 'pi')).toBeNull()
     // 但下一个可用渠道仍可被正常选中
-    expect(selectionForRuntime([...moaDefault, channel('cc', 'openai')], 'claude-code')).toEqual({
+    expect(selectionForRuntime([...moaDefault, channel('cc', 'openai')], 'pi')).toEqual({
       channelId: 'cc',
       modelId: 'cc-model',
     })
@@ -168,7 +165,7 @@ describe('agent runtime mapping', () => {
     const channels = [OPENAI, KSCC]
     expect(
       selectionForRuntime(channels, runtimeBoundBySessionMeta({ internalBackend: 'claude-code' })!),
-    ).toEqual({ channelId: 'openai', modelId: 'openai-model' })
+    ).toBeNull()
   })
 
   it('uses the channel default model, not just the first enabled one', () => {

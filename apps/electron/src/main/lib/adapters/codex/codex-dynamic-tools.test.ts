@@ -135,6 +135,7 @@ describe('CodexDynamicToolRegistry', () => {
   })
 
   it('为内置 browser、KB、kanban 工具提供显式权限分类', () => {
+    expect(resolveCodexDynamicToolPermission('browser_read_text')).toBe('read-only')
     expect(resolveCodexDynamicToolPermission('kb_search')).toBe('read-only')
     expect(resolveCodexDynamicToolPermission('browser_type')).toBe(
       'permission',

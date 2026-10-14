@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -73,6 +73,13 @@ describe('AgentCatalogService 契约', () => {
       version: 1,
       profiles: [validAgent],
     })
+  })
+
+  contractTest('旧内核预设转为 Pi，保留渠道、角色和权限', () => {
+    const legacy = { ...validAgent, runtime: 'codex', channelId: 'http-api', modelId: 'model', enabled: false }
+    writeFileSync(catalogFile.path, JSON.stringify({ version: 1, profiles: [legacy] }))
+    expect(service!.listAgentProfiles()).toEqual([{ ...legacy, runtime: 'pi' }])
+    expect(JSON.parse(readFileSync(catalogFile.path, 'utf8')).profiles[0].runtime).toBe('codex')
   })
 
   contractTest('API Key 不进入配置序列化', () => {

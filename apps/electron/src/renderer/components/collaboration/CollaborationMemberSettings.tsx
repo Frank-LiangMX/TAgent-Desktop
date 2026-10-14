@@ -71,19 +71,11 @@ export function CollaborationMemberSettings({
     setDisplayName(member.displayName);
     setChannelId(member.channelId ?? "");
     setModelId(member.modelId ?? "");
-    setBackend(member.backend ?? "channel");
+    setBackend("channel");
     setCodexRuntimeStatus(null);
     setCliWorkerId(member.cliWorkerId ?? "");
     setPermissionProfile(member.permissionProfile ?? "read-only");
-    void window.electronAPI
-      .getCodexRuntimeStatus()
-      .then((status) => setCodexRuntimeStatus(status))
-      .catch((error) =>
-        setCodexRuntimeStatus({
-          available: false,
-          reason: error instanceof Error ? error.message : String(error),
-        }),
-      );
+
   }, [open, member]);
 
   const isBotSnapshot = Boolean(member.botProfileId);
@@ -196,17 +188,6 @@ export function CollaborationMemberSettings({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="channel">渠道 / Pi</SelectItem>
-            <SelectItem
-              value="codex"
-              disabled={
-                backend !== "codex" && codexRuntimeStatus?.available !== true
-              }
-            >
-              Codex（账号 / CLI Runtime）
-            </SelectItem>
-            {cliWorkerOptions.length > 0 ? (
-              <SelectItem value="cli">CLI worker（本机工作区）</SelectItem>
-            ) : null}
           </SelectContent>
         </Select>
         {backend === "codex" ? (
@@ -279,7 +260,6 @@ export function CollaborationMemberSettings({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="none">未绑定</SelectItem>
-            <SelectItem value="codex-runtime">Codex Runtime（无需渠道）</SelectItem>
             {enabledChannels.map((c) => (
               <SelectItem key={c.id} value={c.id}>
                 {c.name}

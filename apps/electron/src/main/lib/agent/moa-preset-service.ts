@@ -29,7 +29,6 @@ import {
   type MoAPresetsFile,
 } from '@tagent/shared'
 import { getMoaPresetsPath } from '../config/config-paths'
-import { getGatewayChannelId } from '../channel/channel-store'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 
 /** 无渠道配置时（测试 / 未 seed）回落到内置网关渠道 provider id */
@@ -37,7 +36,7 @@ const GATEWAY_FALLBACK_CHANNEL_ID = 'kscc-gateway'
 
 /** 解析当前内置网关渠道 id；无渠道配置时回落内置 id */
 function resolveGatewayChannelId(): string {
-  return getGatewayChannelId() ?? GATEWAY_FALLBACK_CHANNEL_ID
+  return MOA_EXTERNAL_SCOPE_ID
 }
 
 /** 默认文件结构：首次 seed 时落盘（v2，预置绑到 kscc 渠道 id） */

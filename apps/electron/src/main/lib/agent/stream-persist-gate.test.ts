@@ -103,6 +103,22 @@ describe('stream-persist-gate（REGRESS-G 落盘闸口）', () => {
     expect((persisted[1] as { uuid: string }).uuid).toBe('u-tool')
   })
 
+  it('工具前的探索口播不落盘', () => {
+    const persisted = runSequence([
+      assistantText('u-chatter', '先看看入口文件。'),
+      assistantToolUse('u-tool-chatter', 'call-chatter'),
+      assistantText('u-found', '定位到落盘门控把旁白当成了进度。'),
+      assistantToolUse('u-tool-found', 'call-found'),
+    ])
+    const texts = persisted
+      .filter((msg) => {
+        const raw = msg as { type?: string; message?: { content?: Array<{ type?: string }> } }
+        return raw.type === 'assistant' && raw.message?.content?.every((block) => block.type === 'text')
+      })
+      .map((msg) => (msg as { message: { content: Array<{ text: string }> } }).message.content[0]!.text)
+    expect(texts).toEqual(['定位到落盘门控把旁白当成了进度。'])
+  })
+
   it('不同阶段的相同摘要都保留，thinking 原文不被压缩', () => {
     const persisted = runSequence([
       assistantThinking('u-think-1', '完整 thinking：确认缓存路径。'),

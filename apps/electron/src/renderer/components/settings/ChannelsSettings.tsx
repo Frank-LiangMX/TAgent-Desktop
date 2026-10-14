@@ -29,6 +29,7 @@ import {
 import {
   PROVIDER_DEFAULT_URLS,
   isBuiltinChannelProvider,
+  isGatewayProvider,
   PROVIDER_LABELS,
   type Channel,
   type ChannelModel,
@@ -124,7 +125,7 @@ export function ChannelsSettings(): JSX.Element {
   const toggleChannel = async (channel: Channel): Promise<void> => {
     setBusy(channel.id, true)
     try {
-      // 启用 kscc 时主进程会 resolveKsccPath；无 CLI 则抛错，不落盘 enabled=true
+      // KSCC HTTP 网关由主进程检查自动凭据，无需启动 CLI。
       await window.electronAPI.updateChannel(channel.id, { enabled: !channel.enabled })
       await reload()
       if (!channel.enabled) {
@@ -225,7 +226,7 @@ export function ChannelsSettings(): JSX.Element {
       ) : (
         <>
           {builtins.length > 0 && (
-            <SettingsSection title="内置服务" description="随应用预置的公司内网渠道，连接配置不可修改">
+            <SettingsSection title="内部服务" description="检测到本机内部环境后显示，连接配置不可修改">
               <SettingsCard divided>
                 {builtins.map((channel) => (
                   <ChannelRow
@@ -307,7 +308,8 @@ function ChannelRow({
   const enabledModels = channel.models.filter((model) => model.enabled)
   // 内置渠道的地址与凭据都是预置/从本机读取的，不在卡片上展示——尤其「凭据」
   // 恒为空（key 不落渠道记录），显示「缺少凭据」会误导。
-  const builtin = isBuiltinChannelProvider(channel.provider)
+  const builtin = channel.scope === 'internal' || isBuiltinChannelProvider(channel.provider)
+  const managedInternal = channel.scope === 'internal'
   return (
     <article className="channel-shell-row">
       <div className="channel-shell-main min-w-0 flex-1">
@@ -328,10 +330,14 @@ function ChannelRow({
           <span>{enabledModels.length} 个可用模型</span>
           <span aria-hidden>·</span>
           <span className="truncate">默认：{channel.defaultModelId || '未设置'}</span>
-          {!builtin && (
+          {(!builtin || managedInternal) && (
             <>
               <span aria-hidden>·</span>
-              <span className="channel-shell-credential"><KeyRound size={12} />{channel.apiKey ? '凭据已保存' : '缺少凭据'}</span>
+              <span className="channel-shell-credential"><KeyRound size={12} />{managedInternal
+                ? channel.credentialStatus === 'ready' ? (isGatewayProvider(channel.provider) ? '本机凭据可用' : 'codex.toml 凭据可用') : '未检测到内部凭据'
+                : isGatewayProvider(channel.provider)
+                  ? channel.credentialStatus === 'ready' ? '本机凭据可用' : '未检测到本机凭据'
+                : channel.apiKey ? '凭据已保存' : '缺少凭据'}</span>
             </>
           )}
         </div>
@@ -402,7 +408,7 @@ function ChannelEditor({
   const [syncing, setSyncing] = useState(false)
   const [newModelId, setNewModelId] = useState('')
   const syncRequest = useRef(0)
-  const builtin = isBuiltinProvider(draft.provider)
+  const builtin = isBuiltinProvider(draft.provider, draft.scope)
 
   const update = (patch: Partial<ChannelDraft>): void => {
     setDraft((current) => ({ ...current, ...patch }))
@@ -434,7 +440,7 @@ function ChannelEditor({
       channel
       && (draft.provider !== channel.provider || draft.baseUrl.trim() !== channel.baseUrl.trim()),
     )
-    if (!draft.apiKey.trim() && mode === 'add') {
+    if (!draft.apiKey.trim() && mode === 'add' && !isGatewayProvider(draft.provider)) {
       setErrors({ apiKey: '请先填写 API Key' })
       return
     }
@@ -566,7 +572,7 @@ function ChannelEditor({
       )}
 
       {!builtin && (
-        <SettingsSection title="连接配置" description="凭据仅加密保存在本机">
+        <SettingsSection title="连接配置" description={isGatewayProvider(draft.provider) ? '自动读取本机 KSCC 凭据，无需填写 API Key' : '凭据仅加密保存在本机'}>
           <SettingsCard divided={false} className="channel-form-card">
             <Field
               label="API 协议（可选）"
@@ -599,8 +605,10 @@ function ChannelEditor({
               />
             </Field>
             <Field
-              label={mode === 'edit' ? '替换 API Key' : 'API Key'}
-              hint={mode === 'edit' && channel?.apiKey
+              label={isGatewayProvider(draft.provider) ? 'API Key（可选）' : mode === 'edit' ? '替换 API Key' : 'API Key'}
+              hint={isGatewayProvider(draft.provider)
+                ? '优先读取 KSCC_AUTH_TOKEN 等环境变量，兼容 settings.json 的 env 与 KCwork 登录凭据。留空即可自动读取。'
+                : mode === 'edit' && channel?.apiKey
                 ? '密钥已加密保存，可直接同步模型；输入新值将替换现有密钥。'
                 : mode === 'edit'
                   ? '当前没有可用凭据，请输入 API Key。'
@@ -611,7 +619,7 @@ function ChannelEditor({
                 type="password"
                 className="channel-input channel-input--mono"
                 value={draft.apiKey}
-                placeholder={mode === 'edit' && channel?.apiKey ? '••••••••••••（已保存）' : '输入供应商 API Key'}
+                placeholder={isGatewayProvider(draft.provider) ? '留空，自动读取本机凭据' : mode === 'edit' && channel?.apiKey ? '••••••••••••（已保存）' : '输入供应商 API Key'}
                 autoComplete="new-password"
                 aria-invalid={Boolean(errors.apiKey)}
                 onChange={(event) => update({ apiKey: event.target.value })}

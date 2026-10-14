@@ -36,7 +36,7 @@ describe('validateMoAPresetList', () => {
   it('returns null for valid seed presets (with channelId injected)', async () => {
     const { validateMoAPresetList } = await loadService()
     expect(
-      validateMoAPresetList(MOA_DEFAULT_PRESETS.map((p) => ({ ...p, channelId: 'kscc-gateway' }))),
+      validateMoAPresetList(MOA_DEFAULT_PRESETS.map((p) => ({ ...p, channelId: 'external' }))),
     ).toBeNull()
   })
 
@@ -77,8 +77,8 @@ describe('validateMoAPresetList', () => {
 
   it('returns Chinese error for duplicate ids', async () => {
     const { validateMoAPresetList } = await loadService()
-    const dup = { ...MOA_DEFAULT_PRESETS[0]!, id: 'dupe', channelId: 'kscc-gateway' }
-    const dup2 = { ...MOA_DEFAULT_PRESETS[1]!, id: 'dupe', channelId: 'kscc-gateway' }
+    const dup = { ...MOA_DEFAULT_PRESETS[0]!, id: 'dupe', channelId: 'external' }
+    const dup2 = { ...MOA_DEFAULT_PRESETS[1]!, id: 'dupe', channelId: 'external' }
     const err = validateMoAPresetList([dup, dup2])
     expect(err).toContain('重复')
     expect(err).toContain('dupe')
@@ -114,12 +114,12 @@ describe('writeMoaPresets', () => {
     const presets = MOA_DEFAULT_PRESETS.map((p) => ({
       ...p,
       references: p.references.map((r) => ({ ...r })),
-      channelId: 'kscc-gateway',
+      channelId: 'external',
     }))
     writeMoaPresets(presets)
     const loaded = listMoaPresets()
     expect(loaded.map((p) => p.id).sort()).toEqual(['cheap', 'default'])
-    expect(loaded.every((p) => p.channelId === 'kscc-gateway')).toBe(true)
+    expect(loaded.every((p) => p.channelId === 'external')).toBe(true)
     // 文件头为 v2
     const raw = JSON.parse(readFileSync(join(configDir, 'moa-presets.json'), 'utf8'))
     expect(raw.version).toBe(2)
@@ -140,7 +140,7 @@ describe('writeMoaPresets', () => {
       MOA_DEFAULT_PRESETS.map((p) => ({
         ...p,
         references: p.references.map((r) => ({ ...r })),
-        channelId: 'kscc-gateway',
+        channelId: 'external',
       })),
     )
 
@@ -158,7 +158,7 @@ describe('writeMoaPresets', () => {
     const withSynthetic: MoAPreset = {
       ...MOA_DEFAULT_PRESETS[0]!,
       references: MOA_DEFAULT_PRESETS[0]!.references.map((r) => ({ ...r })),
-      channelId: 'kscc-gateway',
+      channelId: 'external',
       synthetic: 'channel-default',
     }
     writeMoaPresets([withSynthetic])
@@ -173,13 +173,13 @@ describe('writeMoaPresets', () => {
     const dup1 = {
       ...MOA_DEFAULT_PRESETS[0]!,
       id: 'same-id',
-      channelId: 'kscc-gateway',
+      channelId: 'external',
       references: MOA_DEFAULT_PRESETS[0]!.references.map((r) => ({ ...r })),
     }
     const dup2 = {
       ...MOA_DEFAULT_PRESETS[1]!,
       id: 'same-id',
-      channelId: 'kscc-gateway',
+      channelId: 'external',
       references: MOA_DEFAULT_PRESETS[1]!.references.map((r) => ({ ...r })),
     }
     expect(() => writeMoaPresets([dup1, dup2])).toThrow(/重复/)
@@ -200,13 +200,13 @@ describe('writeMoaPresets', () => {
 
     const loaded = listMoaPresets()
     // 返回的预置都绑到 kscc-gateway（测试环境无 channels.json → fallback）
-    expect(loaded.every((p) => p.channelId === 'kscc-gateway')).toBe(true)
+    expect(loaded.every((p) => p.channelId === 'external')).toBe(true)
     expect(loaded.map((p) => p.id).sort()).toEqual(['cheap', 'default'])
 
     // 文件已写回 v2，且每条带 channelId
     const raw = JSON.parse(readFileSync(filePath, 'utf8'))
     expect(raw.version).toBe(2)
-    expect(raw.presets.every((p: { channelId: string }) => p.channelId === 'kscc-gateway')).toBe(true)
+    expect(raw.presets.every((p: { channelId: string }) => p.channelId === 'external')).toBe(true)
   })
 
   it('upgrades untouched legacy built-in seats to the expanded kscc roster', async () => {
@@ -218,7 +218,7 @@ describe('writeMoaPresets', () => {
         version: 2,
         presets: [
           {
-            id: 'default', name: '默认会诊', enabled: true, channelId: 'kscc-gateway',
+            id: 'default', name: '默认会诊', enabled: true, channelId: 'external',
             references: [
               { name: '架构师', modelId: 'glm-5.2' },
               { name: '实战派', modelId: 'kimi-k2.5' },
@@ -226,7 +226,7 @@ describe('writeMoaPresets', () => {
             aggregatorModelId: 'glm-5.2', timeoutMsPerSeat: 120_000,
           },
           {
-            id: 'cheap', name: '省并发', enabled: true, channelId: 'kscc-gateway',
+            id: 'cheap', name: '省并发', enabled: true, channelId: 'external',
             references: [
               { name: '省并发·甲', modelId: 'glm-5.1' },
               { name: '省并发·乙', modelId: 'mimo-v2.5' },
@@ -253,7 +253,7 @@ describe('writeMoaPresets', () => {
     writeFileSync(filePath, JSON.stringify({
       version: 2,
       presets: [{
-        id: 'cheap', name: '省并发', enabled: true, channelId: 'kscc-gateway',
+        id: 'cheap', name: '省并发', enabled: true, channelId: 'external',
         references: [
           { name: '省并发·甲', modelId: 'glm-5.1' },
           { name: '省并发·乙', modelId: 'kimi-k2.5' },
@@ -271,7 +271,7 @@ describe('writeMoaPresets', () => {
     const { listMoaPresets } = await loadService()
     const filePath = join(configDir, 'moa-presets.json')
     const customized: MoAPreset = {
-      id: 'default', name: '我的默认会诊', enabled: true, channelId: 'kscc-gateway',
+      id: 'default', name: '我的默认会诊', enabled: true, channelId: 'external',
       references: [
         { name: '自定义甲', modelId: 'glm-5.2' },
         { name: '自定义乙', modelId: 'kimi-k2.5' },
@@ -309,7 +309,7 @@ describe('writeMoaPresets', () => {
 
     const loaded = listMoaPresets()
     const byId = new Map(loaded.map((p) => [p.id, p]))
-    expect(byId.get('default')!.channelId).toBe('kscc-gateway')
+    expect(byId.get('default')!.channelId).toBe('external')
     // 遗留非 kscc 真实渠 id → 改写为 external 哨兵（外部渠合并）
     expect(byId.get('ext-keep')!.channelId).toBe(MOA_EXTERNAL_SCOPE_ID)
     expect(byId.get('ext-keep')!.channelId).toBe('external')

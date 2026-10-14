@@ -231,6 +231,7 @@ describe("kb-agent-tools · 正式文档检索 (P1-1)", () => {
       parseWarnings: ["表格中的一列需要人工复核"],
       uncertainties: ["发布日期未能从附件中确认"],
       author: "agent",
+      tags: ["知识/规范"],
       status: "confirmed",
     });
     docStore.createKnowledgeBaseDocument({
@@ -242,11 +243,13 @@ describe("kb-agent-tools · 正式文档检索 (P1-1)", () => {
     // 仅绑定 A，尝试读 B 的文档 → 越权拒绝
     knowledgeBaseIds = [kbA.id];
     const denied = await tools.handleKbGet(
-      { documentId: docStore.createKnowledgeBaseDocument({
-        knowledgeBaseId: kbB.id,
-        title: "又一篇 B",
-        content: "B2",
-      }).id },
+      {
+        documentId: docStore.createKnowledgeBaseDocument({
+          knowledgeBaseId: kbB.id,
+          title: "又一篇 B",
+          content: "B2",
+        }).id,
+      },
       { sessionId: "session-test" },
     );
     expect(JSON.parse(denied.content[0]!.text).error).toMatch(/越权/);
@@ -268,6 +271,7 @@ describe("kb-agent-tools · 正式文档检索 (P1-1)", () => {
       parseWarnings: ["表格中的一列需要人工复核"],
       uncertainties: ["发布日期未能从附件中确认"],
       author: "agent",
+      tags: ["知识/规范"],
       status: "confirmed",
       truncated: false,
     });
@@ -277,14 +281,13 @@ describe("kb-agent-tools · 正式文档检索 (P1-1)", () => {
       { documentId: "not-a-real-id" },
       { sessionId: "session-test" },
     );
-    expect(JSON.parse(missing.content[0]!.text).error).toMatch(/documentId 无效|找不到/);
+    expect(JSON.parse(missing.content[0]!.text).error).toMatch(
+      /documentId 无效|找不到/,
+    );
   });
 
   test("documentId 与 path 都缺 → 报错；documentId 无效但有 path → 回退目录", async () => {
-    const empty = await tools.handleKbGet(
-      {},
-      { sessionId: "session-test" },
-    );
+    const empty = await tools.handleKbGet({}, { sessionId: "session-test" });
     expect(JSON.parse(empty.content[0]!.text).error).toMatch(
       /documentId 或 path 不能为空/,
     );
@@ -456,12 +459,18 @@ describe("kb-agent-tools · 受控写入 kb_propose_save (P1-5)", () => {
     ctx?: { signal?: AbortSignal },
   ) {
     const captured: KbProposeSaveRequest[] = [];
-    const promise = tools.handleKbProposeSave(args, {
-      sessionId: "session-test",
-      knowledgeBaseWritesEnabled: true,
-      sendToRenderer: (req) => captured.push(req),
-      ...(ctx?.signal ? { signal: ctx.signal } : {}),
-    });
+    const promise = tools.handleKbProposeSave(
+      {
+        ...args,
+        draft: { tags: ["知识/规范"], ...((args.draft as object) ?? {}) },
+      },
+      {
+        sessionId: "session-test",
+        knowledgeBaseWritesEnabled: true,
+        sendToRenderer: (req) => captured.push(req),
+        ...(ctx?.signal ? { signal: ctx.signal } : {}),
+      },
+    );
     return { promise, captured };
   }
 
@@ -544,6 +553,7 @@ describe("kb-agent-tools · 受控写入 kb_propose_save (P1-5)", () => {
       content: "## 结论\n正文",
       kind: "norm",
       draft: {
+        tags: ["知识/规范"],
         summary: "一份可审核的规范草稿",
         sources: [{ label: "rules.docx", location: "第 2 页 / 适用范围" }],
         warnings: ["PDF 文本层可能不完整"],
@@ -552,6 +562,7 @@ describe("kb-agent-tools · 受控写入 kb_propose_save (P1-5)", () => {
     });
 
     expect(captured[0]?.draft).toEqual({
+      tags: ["知识/规范"],
       summary: "一份可审核的规范草稿",
       sources: [{ label: "rules.docx", location: "第 2 页 / 适用范围" }],
       warnings: ["PDF 文本层可能不完整"],
@@ -573,6 +584,7 @@ describe("kb-agent-tools · 受控写入 kb_propose_save (P1-5)", () => {
       parseWarnings: ["PDF 文本层可能不完整"],
       uncertainties: ["第 3 条的例外条件需要确认"],
       author: "agent",
+      tags: ["知识/规范"],
       status: "confirmed",
     });
   });
@@ -666,7 +678,12 @@ describe("kb-agent-tools · 受控写入 kb_propose_save (P1-5)", () => {
     knowledgeBaseIds = [kb.id];
 
     const promise = tools.handleKbProposeSave(
-      { knowledgeBaseId: kb.id, title: "标题", content: "正文" },
+      {
+        knowledgeBaseId: kb.id,
+        title: "标题",
+        content: "正文",
+        draft: { tags: ["知识/规范"] },
+      },
       { sessionId: "session-test", knowledgeBaseWritesEnabled: true }, // 无 sendToRenderer
     );
     const body = JSON.parse((await promise).content[0]!.text);
@@ -680,7 +697,12 @@ describe("kb-agent-tools · 受控写入 kb_propose_save (P1-5)", () => {
     const captured: KbProposeSaveRequest[] = [];
 
     const result = await tools.handleKbProposeSave(
-      { knowledgeBaseId: kb.id, title: "标题", content: "正文" },
+      {
+        knowledgeBaseId: kb.id,
+        title: "标题",
+        content: "正文",
+        draft: { tags: ["知识/规范"] },
+      },
       {
         sessionId: "session-test",
         knowledgeBaseWritesEnabled: false,
@@ -727,10 +749,18 @@ describe("kb-agent-tools · 文档 kind 标注 (刀 2)", () => {
       kind: "garbage" as unknown as "note",
     });
 
-    expect(docStore.getKnowledgeBaseDocument(contract.id)?.kind).toBe("contract");
-    expect(docStore.getKnowledgeBaseDocument(snapshot.id)?.kind).toBe("snapshot");
-    expect(docStore.getKnowledgeBaseDocument(snapshot.id)?.snapshotAt).toBe(1234567890);
-    expect(docStore.getKnowledgeBaseDocument(snapshot.id)?.originNote).toBe("手测沉淀");
+    expect(docStore.getKnowledgeBaseDocument(contract.id)?.kind).toBe(
+      "contract",
+    );
+    expect(docStore.getKnowledgeBaseDocument(snapshot.id)?.kind).toBe(
+      "snapshot",
+    );
+    expect(docStore.getKnowledgeBaseDocument(snapshot.id)?.snapshotAt).toBe(
+      1234567890,
+    );
+    expect(docStore.getKnowledgeBaseDocument(snapshot.id)?.originNote).toBe(
+      "手测沉淀",
+    );
     expect(docStore.getKnowledgeBaseDocument(note.id)?.kind).toBeUndefined();
     expect(docStore.getKnowledgeBaseDocument(bad.id)?.kind).toBeUndefined();
 
@@ -871,7 +901,10 @@ describe("kb-agent-tools · 可发现不可偷用 (刀 3)", () => {
     expect(updated.updatedAt).toBeGreaterThanOrEqual(kb.updatedAt);
 
     // 清空关联 → 字段被删除（listKnowledgeBases 读回 undefined）
-    const cleared = store.updateKnowledgeBase({ id: kb.id, relatedWorkspaceIds: [] });
+    const cleared = store.updateKnowledgeBase({
+      id: kb.id,
+      relatedWorkspaceIds: [],
+    });
     expect(cleared.relatedWorkspaceIds).toBeUndefined();
     expect(store.listKnowledgeBases()[0]?.relatedWorkspaceIds).toBeUndefined();
 
@@ -893,9 +926,9 @@ describe("kb-agent-tools · 可发现不可偷用 (刀 3)", () => {
       store.updateKnowledgeBase({ id: "no-such", name: "x" }),
     ).toThrow(/不存在/);
     // 空名 → 抛错
-    expect(() =>
-      store.updateKnowledgeBase({ id: kb.id, name: "  " }),
-    ).toThrow(/名称不能为空/);
+    expect(() => store.updateKnowledgeBase({ id: kb.id, name: "  " })).toThrow(
+      /名称不能为空/,
+    );
   });
 
   test("normalizeRelatedWorkspaceIds: trim / 去重 / 去空 / 保留顺序", () => {
@@ -904,9 +937,7 @@ describe("kb-agent-tools · 可发现不可偷用 (刀 3)", () => {
       "a",
     ]);
     expect(store.normalizeRelatedWorkspaceIds(undefined)).toEqual([]);
-    expect(
-      store.normalizeRelatedWorkspaceIds(["", "  ", "x"]),
-    ).toEqual(["x"]);
+    expect(store.normalizeRelatedWorkspaceIds(["", "  ", "x"])).toEqual(["x"]);
   });
 
   test("未绑定：kb_search count=0 / kb_get 越权 error / kb_propose_save error（不可偷用）", async () => {
@@ -1007,10 +1038,26 @@ describe("kb-agent-tools · 可发现不可偷用 (刀 3)", () => {
     kbRoots = [];
     // 历史会话引用情况：B 最久未用、A/C/D 最近用过（D 最新、C 次之、A 再次、B 最旧）
     allSessions = [
-      makeSessionMeta({ id: "s-old", knowledgeBaseIds: [kbB.id], updatedAt: 100 }),
-      makeSessionMeta({ id: "s-a", knowledgeBaseIds: [kbA.id], updatedAt: 300 }),
-      makeSessionMeta({ id: "s-c", knowledgeBaseIds: [kbC.id], updatedAt: 500 }),
-      makeSessionMeta({ id: "s-d", knowledgeBaseIds: [kbD.id], updatedAt: 900 }),
+      makeSessionMeta({
+        id: "s-old",
+        knowledgeBaseIds: [kbB.id],
+        updatedAt: 100,
+      }),
+      makeSessionMeta({
+        id: "s-a",
+        knowledgeBaseIds: [kbA.id],
+        updatedAt: 300,
+      }),
+      makeSessionMeta({
+        id: "s-c",
+        knowledgeBaseIds: [kbC.id],
+        updatedAt: 500,
+      }),
+      makeSessionMeta({
+        id: "s-d",
+        knowledgeBaseIds: [kbD.id],
+        updatedAt: 900,
+      }),
     ];
 
     const result = await tools.handleKbListAvailable({
@@ -1072,8 +1119,8 @@ describe("kb-agent-tools · 可发现不可偷用 (刀 3)", () => {
 
     // kb_list_available 此时 bound=true → available 空（不把 B 列出来当可挂）
     const avail = JSON.parse(
-      (await tools.handleKbListAvailable({ sessionId: "session-test" })).content[0]!
-        .text,
+      (await tools.handleKbListAvailable({ sessionId: "session-test" }))
+        .content[0]!.text,
     );
     expect(avail).toMatchObject({ bound: true, available: [] });
   });
@@ -1130,9 +1177,7 @@ describe("kb-agent-tools · 可发现不可偷用 (刀 3)", () => {
       knowledgeBaseIds: [kb.id],
       mode: "preferred",
       // 已绑定时 available 应被忽略
-      available: [
-        { id: "x", name: "不应出现的库", related: true },
-      ],
+      available: [{ id: "x", name: "不应出现的库", related: true }],
     });
     expect(prompt).toContain("当前模式：优先使用（preferred）");
     expect(prompt).toContain("无需再向用户推荐挂载");
@@ -1140,14 +1185,18 @@ describe("kb-agent-tools · 可发现不可偷用 (刀 3)", () => {
   });
 });
 
-
 describe("XLSX multi-sheet import", () => {
   test("splits worksheets and restores shared strings into Markdown tables", async () => {
-    const workbook = '<?xml version="1.0"?><workbook xmlns:r="r"><sheets><sheet name="First" sheetId="1" r:id="rId1"/><sheet name="Second" sheetId="2" r:id="rId2"/></sheets></workbook>';
-    const rels = '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="worksheets/sheet2.xml"/></Relationships>';
-    const shared = '<sst><si><t>Name</t></si><si><t>Alice</t></si><si><t>Age</t></si></sst>';
-    const sheet1 = '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>2</v></c></row><row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2"><v>30</v></c></row></sheetData></worksheet>';
-    const sheet2 = '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Value</t></is></c></row><row r="2"><c r="A1"><v>42</v></c></row></sheetData></worksheet>';
+    const workbook =
+      '<?xml version="1.0"?><workbook xmlns:r="r"><sheets><sheet name="First" sheetId="1" r:id="rId1"/><sheet name="Second" sheetId="2" r:id="rId2"/></sheets></workbook>';
+    const rels =
+      '<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="worksheets/sheet2.xml"/></Relationships>';
+    const shared =
+      "<sst><si><t>Name</t></si><si><t>Alice</t></si><si><t>Age</t></si></sst>";
+    const sheet1 =
+      '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>2</v></c></row><row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2"><v>30</v></c></row></sheetData></worksheet>';
+    const sheet2 =
+      '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Value</t></is></c></row><row r="2"><c r="A1"><v>42</v></c></row></sheetData></worksheet>';
     const archive = zipSync({
       "xl/workbook.xml": strToU8(workbook),
       "xl/_rels/workbook.xml.rels": strToU8(rels),

@@ -60,8 +60,8 @@ import {
 } from '../../atoms/notification-prefs'
 import { loaderAnimationEnabledAtom, splitDockModeAtom } from '../../atoms/feature-flags'
 import { ChannelsSettings } from './ChannelsSettings'
+import { WpsSettings } from './WpsSettings'
 import { MoaSettings } from './MoaSettings'
-import { CliWorkersSettingsSection } from './CliWorkersSettingsSection'
 import { AgentCatalogSettings } from './AgentCatalogSettings'
 import { AgentCrewSettings } from './AgentCrewSettings'
 import { PromptSettings } from './PromptSettings'
@@ -81,13 +81,14 @@ const APP_VERSION =
  *
  * 用户可见命名约定：
  * - MOA = 会诊（各答各的再汇总）+ 圆桌（多角色互相讨论出共识）共用班底；id 仍为 agent-roundtable
- * - 子代理 = 内置进程内 + 可选本机 CLI（id 仍为 agent-cli）
+ * - 子代理 = Pi 内核 + HTTP 模型渠道（id 仍为 agent-cli）
  * - 子代理调度 = 模型画像与并行上限（兼容旧 id：agent-crew；班组暂停）
  */
 export type SettingsTab =
   | 'general'
   | 'appearance'
   | 'channels'
+  | 'wps'
   | 'prompts'
   | 'agent-roundtable'
   | 'agent-cli'
@@ -106,6 +107,7 @@ export function normalizeSettingsTab(tab: SettingsTab | string | undefined): Set
     'general',
     'appearance',
     'channels',
+    'wps',
     'prompts',
     'agent-roundtable',
     'agent-cli',
@@ -153,10 +155,11 @@ const ALL_TABS: TabItem[] = [
     icon: <Cable size={14} strokeWidth={1.75} />,
     group: 'core',
   },
+  { id: 'wps', label: 'WPS 日报', description: '本人账号授权、工作证据与每日日报', icon: <ScrollText size={14} strokeWidth={1.75} />, group: 'core' },
   {
     id: 'agent-catalog',
     label: 'Agent 接入',
-    description: 'Pi、Codex 与 Claude Code / KSCC 的接入状态',
+    description: 'Pi 内核与 HTTP API 渠道的接入状态',
     icon: <Bot size={14} strokeWidth={1.75} />,
     group: 'core',
   },
@@ -177,7 +180,7 @@ const ALL_TABS: TabItem[] = [
   {
     id: 'agent-cli',
     label: '子代理',
-    description: '内置与本机 CLI 工人',
+    description: 'Pi 子代理角色、HTTP 渠道与模型',
     icon: <Cpu size={14} strokeWidth={1.75} />,
     group: 'agent',
   },
@@ -400,20 +403,14 @@ function renderTabContent(tab: SettingsTab, onNavigate: (tab: SettingsTab) => vo
       return <AppearanceSettings />
     case 'channels':
       return <ChannelsSettings />
+    case 'wps':
+      return <WpsSettings />
     case 'prompts':
       return <PromptSettings />
     case 'agent-roundtable':
       return <MoaSettings />
     case 'agent-cli':
-      return (
-        <div className="settings-page agent-cli-settings-page">
-          <SettingsPageIntro
-            title="子代理"
-            description="委派积极性、内置子代理与可选本机 CLI。默认走内置；切到本机 CLI 后再配置工人与探测。"
-          />
-          <CliWorkersSettingsSection />
-        </div>
-      )
+      return <AgentCatalogSettings onNavigate={onNavigate} />
     case 'agent-catalog':
       return <AgentCatalogSettings onNavigate={onNavigate} />
     case 'agent-crew':
@@ -519,6 +516,7 @@ export function SettingsDialog({
                     key={`${activeTab}-${paneKey}`}
                     className={`settings-shell-content settings-shell-pane ${
                       activeTab === 'channels' ||
+                      activeTab === 'wps' ||
                       activeTab === 'prompts' ||
                       activeTab === 'agent-roundtable' ||
                       activeTab === 'agent-cli' ||
@@ -1172,8 +1170,8 @@ function AppearanceSettings(): JSX.Element {
 const ARCH_ITEMS = [
   {
     icon: Layers,
-    title: '双核可拔插',
-    desc: '内网 kscc 核 + 外部 Pi 核，按渠道选核，对外版可移除 kscc',
+    title: 'Pi 内核与 HTTP 渠道',
+    desc: 'Pi 内核，所有模型渠道通过 HTTP(S) 接入',
   },
   {
     icon: Boxes,
@@ -1183,7 +1181,7 @@ const ARCH_ITEMS = [
   {
     icon: BrainCircuit,
     title: '记忆系统',
-    desc: '双核上下文记忆，软重置无感压缩 + 爆上下文兜底续命',
+    desc: 'Pi 上下文记忆，自动压缩与历史续接',
   },
 ]
 
@@ -1239,12 +1237,12 @@ function AboutSettings(): JSX.Element {
               <span className="settings-about-version">v{APP_VERSION}</span>
             </div>
             <p className="settings-about-desc">
-              双核架构（kscc + Pi）的 AI 编程助手桌面端。会话进程常驻，双核可拔插，上下文记忆可续命。
+              基于 Pi 内核的 AI 编程助手桌面端。模型通过 HTTP(S) 渠道接入，支持工具调用和上下文续接。
             </p>
             <div className="settings-about-meta">
               <span className="settings-about-meta-item">
                 <Cpu size={12} strokeWidth={1.75} aria-hidden="true" />
-                kscc · Pi
+                Pi · HTTP
               </span>
               <span className="settings-about-meta-dot" aria-hidden="true" />
               <span className="settings-about-meta-item">

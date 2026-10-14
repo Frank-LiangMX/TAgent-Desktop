@@ -31,7 +31,7 @@ import {
   openAiResponsesSseToResponsesEvents,
   type CanonicalResponsesEvent,
 } from './adapters/responses-stream'
-import { sseEvent } from './sse'
+import { parseSseFrame, readSseFrameTexts, sseEvent } from './sse'
 
 export type BridgeProtocol = 'openai-chat' | 'openai-responses' | 'anthropic-messages'
 export type BridgeRuntime = 'claude-code' | 'codex'
@@ -159,9 +159,31 @@ async function readJsonResponse(response: Response): Promise<any> {
   }
 }
 
-function streamFromResponse(response: Response): ByteStream {
+async function* streamFromResponse(response: Response): ByteStream {
   if (!response.body) throw new Error('上游没有返回流')
-  return response.body as unknown as ByteStream
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const checkError = (raw: string): void => {
+    const frame = parseSseFrame(raw)
+    if (!frame || frame.data === '[DONE]') return
+    let data: any
+    try { data = JSON.parse(frame.data) } catch { return }
+    const error = data?.error ?? (data?.type === 'response.failed' ? data.response?.error : undefined)
+    if (error) throw new Error(typeof error === 'string' ? error : error.message || '上游流式请求失败')
+  }
+  for await (const chunk of response.body as unknown as ByteStream) {
+    buffer += decoder.decode(chunk, { stream: true })
+    const parsed = readSseFrameTexts(buffer)
+    buffer = parsed.rest
+    for (const raw of parsed.frames) checkError(raw)
+    yield chunk
+  }
+  buffer += decoder.decode()
+  if (buffer.trim()) {
+    checkError(buffer)
+    // Some compatible providers omit the final SSE separator at EOF.
+    yield new TextEncoder().encode('\n\n')
+  }
 }
 
 async function* translatedStream(target: RuntimeProtocolBridgeTarget, stream: ByteStream): AsyncGenerator<string> {
@@ -178,23 +200,96 @@ async function* translatedStream(target: RuntimeProtocolBridgeTarget, stream: By
   for await (const event of events) yield sseEvent(event.type, event.data)
 }
 
+/** Chat/Messages providers need a JSON wrapper for Codex freeform tools. */
+function adaptCodexCustomTools(body: any): { body: any; custom: Map<string, string | undefined> } {
+  const custom = new Map<string, string | undefined>()
+  const tools = (items: any[], namespace?: string): any[] => items.map(tool => {
+    if (tool.type === 'namespace') return { ...tool, tools: tools(tool.tools ?? [], tool.name) }
+    if (tool.type !== 'custom') return tool
+    custom.set(tool.name, namespace)
+    return {
+      type: 'function', name: tool.name,
+      description: `${tool.description}\nPass the complete freeform tool input as the input string.`,
+      parameters: { type: 'object', properties: { input: { type: 'string' } }, required: ['input'], additionalProperties: false },
+    }
+  })
+  const input = Array.isArray(body.input) ? body.input.map((item: any) => {
+    if (item.type === 'additional_tools') return { ...item, tools: tools(item.tools ?? []) }
+    if (item.type === 'custom_tool_call') return { ...item, type: 'function_call', arguments: JSON.stringify({ input: item.input ?? '' }) }
+    if (item.type === 'custom_tool_call_output') return { ...item, type: 'function_call_output' }
+    return item
+  }) : body.input
+  return { body: { ...body, input, ...(body.tools ? { tools: tools(body.tools) } : {}) }, custom }
+}
+
+function restoreCodexCustomTool(item: any, custom: Map<string, string | undefined>): any {
+  if (item?.type !== 'function_call' || !custom.has(item.name)) return item
+  let input = ''
+  try { input = JSON.parse(item.arguments || '{}').input ?? '' } catch { /* added item has no arguments yet */ }
+  const { arguments: _arguments, ...rest } = item
+  return { ...rest, type: 'custom_tool_call', input, ...(custom.get(item.name) ? { namespace: custom.get(item.name) } : {}) }
+}
+
+async function* codexCustomToolStream(target: RuntimeProtocolBridgeTarget, stream: ByteStream, custom: Map<string, string | undefined>): AsyncGenerator<string> {
+  const events = target.apiProtocol === 'openai-chat'
+    ? openAiChatSseToResponsesEvents(stream, targetFor(target))
+    : anthropicMessagesSseToResponsesEvents(stream, targetFor(target))
+  const customIds = new Set<string>()
+  const convert = (item: any) => {
+    const converted = restoreCodexCustomTool(item, custom)
+    if (converted !== item) customIds.add(item.id)
+    return converted
+  }
+  for await (const event of events) {
+    if (event.type === 'response.function_call_arguments.delta' && customIds.has(String(event.data.item_id))) continue
+    const response = event.data.response as any
+    const data = {
+      ...event.data,
+      ...(event.data.item ? { item: convert(event.data.item) } : {}),
+      ...(response ? { response: { ...response, output: response.output?.map(convert) } } : {}),
+    }
+    yield sseEvent(event.type, data)
+  }
+}
+
 async function handleTarget(target: RuntimeProtocolBridgeTarget, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const body = await readBody(req)
+  const originalBody = await readBody(req)
+  const adapted = target.runtime === 'codex' ? adaptCodexCustomTools(originalBody) : undefined
+  const body = adapted?.body ?? originalBody
   const response = await upstream(target, body)
   if (!response.ok) {
     json(res, response.status, await readJsonResponse(response))
     return
   }
   if (!body?.stream) {
-    json(res, response.status, responseBody(target, await readJsonResponse(response)))
+    const converted = responseBody(target, await readJsonResponse(response))
+    if (adapted?.custom.size && Array.isArray(converted.output)) {
+      converted.output = converted.output.map((item: any) => restoreCodexCustomTool(item, adapted.custom))
+    }
+    json(res, response.status, converted)
     return
   }
   res.statusCode = response.status
   res.setHeader('content-type', 'text/event-stream; charset=utf-8')
   res.setHeader('cache-control', 'no-cache')
   res.setHeader('connection', 'keep-alive')
-  for await (const chunk of translatedStream(target, streamFromResponse(response))) {
-    if (!res.destroyed) res.write(chunk)
+  try {
+    const chunks = adapted?.custom.size
+      ? codexCustomToolStream(target, streamFromResponse(response), adapted.custom)
+      : translatedStream(target, streamFromResponse(response))
+    for await (const chunk of chunks) {
+      if (!res.destroyed) res.write(chunk)
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!res.destroyed) {
+      res.write(target.runtime === 'claude-code'
+        ? sseEvent('error', { type: 'error', error: { type: 'api_error', message } })
+        : sseEvent('response.failed', {
+            type: 'response.failed',
+            response: { id: `resp_bridge_${Date.now()}`, object: 'response', status: 'failed', error: { code: 'server_error', message } },
+          }))
+    }
   }
   if (!res.destroyed) res.end()
 }

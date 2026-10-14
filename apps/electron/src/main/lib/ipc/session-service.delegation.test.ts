@@ -1,7 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { workbenchDate } from '@tagent/shared'
 
 const CONFIG_DIR = mkdtempSync(join(tmpdir(), 'tagent-delegation-ipc-'))
 process.env.TAGENT_CONFIG_DIR = CONFIG_DIR
@@ -11,7 +14,7 @@ vi.mock('electron', () => {
     ipcMain: { handle() {}, on() {}, once() {}, removeHandler() {}, removeAllListeners() {} },
     app: { isPackaged: false, getPath: () => CONFIG_DIR, getAppPath: () => CONFIG_DIR, on() {}, whenReady: async () => {} },
     safeStorage: { isEncryptionAvailable: () => false, encryptString: (s: string) => Buffer.from(s), decryptString: (s: Buffer) => s.toString() },
-    BrowserWindow: class {},
+    BrowserWindow: class { static getAllWindows() { return [] } },
   }
   return new Proxy(base, { get: (obj, key) => Reflect.get(obj, key) ?? {} })
 })
@@ -29,6 +32,8 @@ const { SessionService } = await import('./session-service')
 const { createSession } = await import('../agent/session-store')
 const { writeJsonAtomic } = await import('../atomic-json')
 const { getChannelsPath } = await import('../config/config-paths')
+const { workbenchService } = await import('../workbench/workbench-service')
+const { PermissionService } = await import('../permission/permission-service')
 const channel = {
   id: 'api', name: 'API', provider: 'openai' as const, apiProtocol: 'openai-responses' as const,
   baseUrl: 'http://127.0.0.1:1', enabled: true, apiKey: '',
@@ -39,20 +44,22 @@ let seq = 0
 beforeEach(() => {
   vi.clearAllMocks()
   writeJsonAtomic(getChannelsPath(), { version: 1, channels: [channel] })
-  service = SessionService.create(() => ({ webContents: { send() {} } }) as never, null)
+  mkdirSync(join(CONFIG_DIR, 'memory'), { recursive: true })
+  const getWindow = () => ({ webContents: { send() {} } }) as never
+  service = SessionService.create(getWindow, PermissionService.create(getWindow))
 })
 afterEach(() => service.disposeAll())
 afterAll(() => rmSync(CONFIG_DIR, { recursive: true, force: true }))
 
 async function build(runtime: 'pi' | 'codex' | 'claude-code', mode: 'work' | 'chat' = 'work', forceKanbanDispatch = false): Promise<Record<string, any>> {
   const id = `delegate-${++seq}`
-  createSession({ id, title: 'test', channelId: channel.id, modelId: 'model', agentRuntime: runtime, executionMode: mode } as never)
+  createSession({ id, title: 'test', channelId: channel.id, modelId: 'model', agentRuntime: runtime, executionMode: mode, permissionMode: 'bypassPermissions' } as never)
   const selected = runtime === 'claude-code' ? { ...channel, provider: 'anthropic', apiProtocol: 'anthropic-messages' } : channel
   return (service as any).buildQueryOptions({ sessionId: id, prompt: forceKanbanDispatch ? '请开看板并行处理' : 'review', model: 'model', forceKanbanDispatch }, selected, runtime)
 }
 
 describe('main-session delegation wiring', () => {
-  it.each(['pi', 'codex', 'claude-code'] as const)('%s 暂停班组工具和派工引导，但保留子代理', async (runtime) => {
+  it.each(['pi'] as const)('%s 暂停班组工具和派工引导，但保留子代理', async (runtime) => {
     const opts = await build(runtime, 'work', true);
     expect((opts.dynamicTools ?? opts.extraTools ?? []).some((t: { name: string }) => t.name.startsWith('kanban_'))).toBe(false);
     expect(Object.keys(opts.mcpServers ?? {}).some((name) => /kanban/.test(name))).toBe(false);
@@ -62,27 +69,72 @@ describe('main-session delegation wiring', () => {
     expect(prompt).not.toContain('本轮看板派工');
     expect(prompt).toContain('子代理');
   });
-  it('Codex Work exposes the host task and disables the unbudgeted native delegation path', async () => {
-    const opts = await build('codex')
-    expect(opts.dynamicTools.some((t: { name: string }) => t.name === 'task')).toBe(true)
-    expect(opts.config['features.multi_agent']).toBe(false)
-    expect(h.build).toHaveBeenCalledTimes(1)
-    const input = h.build.mock.calls[0]![0] as any
-    expect(input.channelConfig.modelId).toBe('model')
-    expect(await input.beforeToolCall({ toolCall: { name: 'Write', arguments: {} } })).toMatchObject({ block: true })
+  it('mounts personal workbench reads in Chat and writes only in Work', async () => {
+    const chat = await build('pi', 'chat')
+    expect(chat.extraTools.map((tool: {name:string}) => tool.name)).toEqual(expect.arrayContaining(['workbench_search','workbench_get']))
+    expect(chat.extraTools.some((tool: {name:string}) => tool.name === 'workbench_add')).toBe(false)
+    const work = await build('pi', 'work')
+    expect(work.extraTools.some((tool: {name:string}) => tool.name === 'workbench_add')).toBe(true)
+    expect(work.systemPromptAppend).toContain('## 个人工作台')
   })
-  it('Claude Work uses host MCP delegation, not native Agent/Task', async () => {
-    const opts = await build('claude-code')
-    expect(h.inject).toHaveBeenCalledTimes(1)
-    expect(opts.mcpServers['tagent-delegation']).toBeDefined()
-    expect(opts.disallowedTools).toEqual(['Agent', 'Task'])
-    expect(opts.agents).toBeUndefined()
-  })
-  it('does not expose host task in native Chat sessions', async () => {
-    await build('codex', 'chat')
-    await build('claude-code', 'chat')
-    expect(h.build).not.toHaveBeenCalled()
-    expect(h.inject).not.toHaveBeenCalled()
+  it.each(['pi', 'codex', 'claude-code'] as const)('%s exposes actual stored plans in Chat and saves tagged content only in Work', async runtime => {
+    const day = workbenchDate()
+    const title = `QA-${runtime}-${++seq}`
+    const state = workbenchService.mutate({ expectedRevision: workbenchService.read().revision, change: {
+      type: 'save-todo', title, project: 'QA', dueDate: day, dueTime: '14:00', area: 'work', tags: ['QA/工作台'],
+    } })
+    const todo = state.todos.at(-1)!
+    for (const mode of ['chat', 'work'] as const) {
+      const opts = await build(runtime, mode)
+      const prompt = opts.developerInstructions ?? opts.systemPromptAppend ?? opts.systemPrompt?.append
+      expect(prompt).toContain('## 个人工作台')
+      let client: Client | undefined
+      let names: string[]
+      let invoke: (name: string, args: Record<string, unknown>) => Promise<any>
+      if (runtime === 'claude-code') {
+        const server = opts.mcpServers.workbench.instance
+        const [a, b] = InMemoryTransport.createLinkedPair()
+        client = new Client({ name: 'workbench-qa', version: '1.0' })
+        await Promise.all([server.connect(a), client.connect(b)])
+        names = (await client.listTools()).tools.map(tool => tool.name)
+        invoke = async (name, args) => {
+          const value = await client!.callTool({ name, arguments: args })
+          expect(value.isError).not.toBe(true)
+          return JSON.parse((value.content as { text: string }[])[0]!.text)
+        }
+      } else if (runtime === 'codex') {
+        names = opts.dynamicTools.map((tool: { name: string }) => tool.name)
+        invoke = async (name, args) => {
+          const value = await opts.onServerRequest({ method: 'item/tool/call', params: {
+            threadId: 'qa', turnId: 'qa', callId: `qa-${++seq}`, namespace: null, tool: name, arguments: args,
+          } })
+          expect(value.success).toBe(true)
+          return JSON.parse(value.contentItems[0].text)
+        }
+      } else {
+        names = opts.extraTools.map((tool: { name: string }) => tool.name)
+        invoke = async (name, args) => {
+          expect(await opts.beforeToolCall({ toolCall: { name, arguments: args } })).toBeUndefined()
+          const value = await opts.extraTools.find((tool: { name: string }) => tool.name === name).execute(`qa-${++seq}`, args)
+          return JSON.parse(value.content[0].text)
+        }
+      }
+      try {
+        expect(names).toEqual(expect.arrayContaining(['workbench_search', 'workbench_get', 'workbench_history']))
+        expect(names.includes('workbench_add')).toBe(mode === 'work')
+        const found = await invoke('workbench_search', { query: title, from: day, to: day, type: 'todo' })
+        expect(found.items).toEqual([expect.objectContaining({ id: todo.id, dueTime: '14:00' })])
+        expect(await invoke('workbench_get', { id: todo.id })).toMatchObject({ ok: true, text: title })
+        expect(await invoke('workbench_history', { from: day, query: title })).toMatchObject({ ok: true })
+        if (mode === 'work') {
+          const saved = await invoke('workbench_add', { type: 'note', content: `${title} 实际保存`, tags: ['QA/验证'], date: day })
+          expect(saved.ok).toBe(true)
+          expect(workbenchService.read().notes.find(note => note.id === saved.id)?.content).toBe(`${title} 实际保存`)
+        }
+      } finally {
+        await client?.close()
+      }
+    }
   })
   it('Pi receives delegation policy and approval requires the exact affirmative answer', async () => {
     const opts = await build('pi')

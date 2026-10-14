@@ -268,6 +268,15 @@ export class BrowserController {
       });
       view.setVisible(true);
     } else {
+      // Agent may read the page before the browser dock has mounted. Give the
+      // hidden view a viewport so the page can lay out before text extraction.
+      const bounds = win.getContentBounds();
+      view.setBounds({
+        x: 0,
+        y: 0,
+        width: Math.max(1, bounds.width),
+        height: Math.max(1, bounds.height),
+      });
       view.setVisible(false);
     }
     this.attachTab(workspace, tab);
@@ -557,8 +566,26 @@ export class BrowserController {
     return action(true, "Download capture is ready");
   }
 
-  async extractText(sessionId: string): Promise<BrowserPageTextResult> {
+  async extractText(sessionId: string, options: {waitForLoad?: boolean; signal?: AbortSignal} = {}): Promise<BrowserPageTextResult> {
     const tab = this.activeTab(sessionId);
+    const contents = tab.view.webContents;
+    if (options.signal?.aborted) throw new Error('操作已取消');
+    if (options.waitForLoad && contents.isLoadingMainFrame()) {
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
+          clearTimeout(timer);
+          contents.removeListener('did-stop-loading', loaded);
+          options.signal?.removeEventListener('abort', aborted);
+        };
+        const loaded = () => { cleanup(); resolve(); };
+        const aborted = () => { cleanup(); reject(new Error('操作已取消')); };
+        const timer = setTimeout(loaded, 8000);
+        contents.once('did-stop-loading', loaded);
+        options.signal?.addEventListener('abort', aborted, {once:true});
+        if (options.signal?.aborted) aborted();
+      });
+      if (contents.isLoadingMainFrame()) throw new Error('页面仍在加载，请稍后重试或接管查看页面');
+    }
     return this.extractFromContents(tab.view.webContents, sessionId, tab.id);
   }
 

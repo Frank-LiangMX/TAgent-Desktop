@@ -1,0 +1,1920 @@
+/* Personal overview; selection uses full backgrounds without accent rails. */
+.wb-history {
+  margin-top: 22px;
+}
+.wb-history-layout {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 32px;
+  margin-top: 20px;
+  align-items: start;
+}
+.wb-history-month {
+  padding: 16px;
+  background: hsl(var(--muted) / 0.24);
+  border: 1px solid hsl(var(--border) / 0.6);
+  border-radius: 12px;
+}
+.wb-history-month-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+.wb-history-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+.wb-history-weekday {
+  text-align: center;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  padding-bottom: 8px;
+}
+.wb-history-days button {
+  border: 1px solid hsl(var(--border) / 0.65);
+  background: hsl(var(--background) / 0.65);
+  min-height: 42px;
+  border-radius: 7px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  position: relative;
+  font-variant-numeric: tabular-nums;
+}
+.wb-history-days button:hover {
+  border-color: hsl(var(--primary) / 0.65);
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.2);
+}
+.wb-history-days button[data-level="1"] {
+  background: hsl(var(--primary) / 0.07);
+}
+.wb-history-days button[data-level="2"] {
+  background: hsl(var(--primary) / 0.13);
+}
+.wb-history-days button[data-level="3"] {
+  background: hsl(var(--primary) / 0.21);
+}
+.wb-history-days button[aria-pressed="true"] {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+.wb-history-days .wb-history-other {
+  opacity: 0.4;
+}
+.wb-history-days i {
+  font-style: normal;
+  font-size: 9px;
+  height: 12px;
+  opacity: 0.7;
+}
+.wb-history-days .has-plans::after {
+  content: "";
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  right: 5px;
+  top: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.wb-history-legend {
+  margin: 14px 0 0;
+  font-size: 10px;
+}
+.wb-history-boundary {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid hsl(var(--border) / 0.5);
+  font-size: 11px;
+  line-height: 1.8;
+}
+.wb-history-detail {
+  min-width: 0;
+}
+.wb-history-date {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.wb-history-date strong {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+.wb-history-date > span {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-history-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0 24px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+.wb-history-stats > span {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 0;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-history-stats b {
+  font-size: 19px;
+  font-weight: 500;
+  color: hsl(var(--foreground));
+}
+.wb-history-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  gap: 4px;
+  border: 1px solid hsl(var(--input));
+  @apply rounded-glass-popover;
+  background: hsl(var(--muted) / 0.5);
+  margin: 12px 0;
+}
+.wb-history-tabs button {
+  font-size: 12px;
+  padding: 7px 12px;
+  @apply rounded-glass-popover;
+  min-height: 32px;
+  color: hsl(var(--foreground));
+}
+.wb-history-tabs button:hover {
+  background: hsl(var(--accent));
+}
+.wb-history-tabs button[aria-pressed="true"] {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+.wb-history-timeline {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.wb-history-timeline > li {
+  padding: 18px 0;
+  border-bottom: 1px solid hsl(var(--border) / 0.6);
+  overflow-wrap: anywhere;
+}
+.wb-history-timeline > li > strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  margin: 7px 0;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.wb-history-timeline > li.is-plan > strong {
+  color: hsl(var(--muted-foreground));
+}
+.wb-history-timeline details {
+  font-size: 12px;
+  margin-top: 7px;
+}
+.wb-history-timeline summary {
+  color: hsl(var(--primary));
+  cursor: pointer;
+  width: fit-content;
+  padding: 6px 0;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.wb-history-text {
+  white-space: pre-wrap;
+  line-height: 1.8;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 10px 0;
+}
+.wb-history-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.wb-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.wb-related {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-related button {
+  display: block;
+  padding: 8px 10px;
+  text-align: left;
+  margin-top: 8px;
+  width: 100%;
+}
+.wb-note-category > input {
+  accent-color: hsl(var(--primary));
+}
+@media (max-width: 900px) {
+  .wb-history-layout {
+    grid-template-columns: 240px minmax(0, 1fr);
+    gap: 20px;
+  }
+  .wb-history-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .wb-history-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  .wb-history-month {
+    max-width: 360px;
+    width: 100%;
+  }
+}
+.wb-calendar {
+  min-width: 0;
+}
+.wb-calendar-toolbar,
+.wb-calendar-nav,
+.wb-calendar-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.wb-calendar-toolbar {
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.wb-calendar-nav {
+  gap: 6px;
+}
+.wb-calendar-nav strong {
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.wb-calendar-legend {
+  margin-bottom: 18px;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-calendar-legend > span,
+.wb-calendar-legend label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.wb-calendar-legend label {
+  margin-left: auto;
+  cursor: pointer;
+}
+.wb-calendar-legend input {
+  accent-color: hsl(var(--primary));
+}
+.wb-week-calendar-head,
+.wb-week-undated,
+.wb-week-hours {
+  display: grid;
+  grid-template-columns: 54px repeat(7, minmax(0, 1fr));
+}
+.wb-week-calendar-head {
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px 10px 0 0;
+  overflow: hidden;
+}
+.wb-week-calendar-head > span,
+.wb-week-undated > span {
+  padding: 12px 5px;
+  font-size: 10px;
+  color: hsl(var(--muted-foreground));
+  text-align: center;
+}
+.wb-week-calendar-head button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 76px;
+  gap: 2px;
+  border-left: 1px solid hsl(var(--border) / 0.6);
+}
+.wb-week-calendar-head button > span {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-week-calendar-head strong {
+  font-size: 21px;
+  font-weight: 500;
+}
+.wb-week-calendar-head small {
+  font-size: 10px;
+  color: hsl(var(--primary));
+}
+.wb-week-calendar-head button[data-selected],
+.wb-month-day[data-selected] {
+  background: hsl(var(--primary) / 0.08);
+}
+.wb-week-undated {
+  border: 1px solid hsl(var(--border));
+  border-top: 0;
+}
+.wb-week-undated > div {
+  padding: 5px 3px;
+  min-height: 44px;
+  min-width: 0;
+  border-left: 1px solid hsl(var(--border) / 0.6);
+}
+.wb-week-hours-scroll {
+  height: 432px;
+  overflow-y: auto;
+  border: 1px solid hsl(var(--border));
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+}
+.wb-week-hours {
+  height: 1248px;
+  position: relative;
+}
+.wb-hour-labels {
+  position: relative;
+  background: hsl(var(--card) / 0.6);
+}
+.wb-hour-labels > span {
+  position: absolute;
+  right: 7px;
+  font-size: 10px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--muted-foreground));
+}
+.wb-calendar-day-column {
+  position: relative;
+  min-width: 0;
+  border-left: 1px solid hsl(var(--border) / 0.6);
+}
+.wb-calendar-day-column[data-selected] {
+  background: hsl(var(--primary) / 0.025);
+}
+.wb-time-slot {
+  position: absolute;
+  width: 100%;
+  height: 52px;
+  border-top: 1px solid hsl(var(--border) / 0.55);
+}
+.wb-time-slot:hover {
+  background: hsl(var(--accent) / 0.7);
+}
+.wb-calendar-item,
+.wb-timed-item {
+  --item-color: var(--primary);
+  background: hsl(var(--item-color) / 0.12);
+  color: hsl(var(--item-color));
+  border-radius: 5px;
+}
+.wb-calendar-item.is-event,
+.wb-timed-item.is-event {
+  --item-color: var(--foreground);
+  background: hsl(var(--foreground) / 0.075);
+}
+.wb-calendar-item.is-automation,
+.wb-timed-item.is-automation {
+  --item-color: var(--muted-foreground);
+  border: 1px dashed hsl(var(--muted-foreground) / 0.5);
+  background: hsl(var(--muted) / 0.7);
+}
+.wb-calendar-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 5px;
+  margin-bottom: 3px;
+  width: 100%;
+  min-width: 0;
+  font-size: 11px;
+  text-align: left;
+}
+.wb-calendar-item > span,
+.wb-timed-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wb-calendar-item svg,
+.wb-timed-title svg {
+  flex-shrink: 0;
+}
+.wb-calendar-item[data-done],
+.wb-timed-item[data-done] {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+.wb-timed-item {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 5px 6px;
+  text-align: left;
+  overflow: hidden;
+  border: 2px solid hsl(var(--background));
+}
+.wb-timed-item:hover,
+.wb-calendar-item:hover {
+  filter: brightness(0.94);
+}
+.wb-timed-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+.wb-timed-item > small {
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.wb-month {
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  overflow: hidden;
+}
+.wb-month-weekdays,
+.wb-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+.wb-month-weekdays {
+  background: hsl(var(--muted) / 0.4);
+}
+.wb-month-weekdays span {
+  text-align: center;
+  padding: 10px 0;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-month-day {
+  min-width: 0;
+  min-height: 122px;
+  padding: 5px;
+  border-top: 1px solid hsl(var(--border) / 0.7);
+  border-right: 1px solid hsl(var(--border) / 0.7);
+}
+.wb-month-day:nth-child(7n) {
+  border-right: 0;
+}
+.wb-month-day[data-outside] {
+  background: hsl(var(--muted) / 0.25);
+  color: hsl(var(--muted-foreground));
+}
+.wb-month-day-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.wb-month-day-heading > button:first-child {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.wb-month-day-heading span {
+  font-size: 9px;
+  color: hsl(var(--primary));
+}
+.wb-month-day-heading .wb-icon {
+  width: 24px;
+  height: 24px;
+}
+.wb-month-more {
+  font-size: 10px;
+  color: hsl(var(--muted-foreground));
+  padding: 2px 5px;
+}
+.wb-calendar-day-detail {
+  margin-top: 24px;
+}
+.wb-calendar-detail-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 12px 8px;
+  border-bottom: 1px solid hsl(var(--border) / 0.5);
+  text-align: left;
+  font-size: 12px;
+}
+.wb-calendar-detail-item:hover {
+  background: hsl(var(--accent));
+}
+.wb-calendar-detail-item > span:first-child {
+  width: 64px;
+  flex-shrink: 0;
+  color: hsl(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+}
+.wb-calendar-detail-item > span:nth-child(2) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.wb-calendar-detail-item small {
+  font-size: 10px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-calendar-footnote {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 20px;
+}
+.wb-calendar-footnote svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.wb-calendar-mobile-hint {
+  display: none;
+}
+.wb-calendar-short {
+  display: none;
+}
+.wb-event-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 110px;
+  gap: 12px;
+}
+.wb-event-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.wb-event-actions > button:first-child:not(:last-child) {
+  margin-right: auto;
+}
+@media (max-width: 700px) {
+  .wb-calendar-toolbar {
+    gap: 8px;
+  }
+  .wb-calendar-nav {
+    order: 3;
+    width: 100%;
+    justify-content: center;
+  }
+  .wb-calendar-nav strong {
+    font-size: 11px;
+  }
+  .wb-calendar-legend {
+    gap: 8px 12px;
+  }
+  .wb-calendar-legend label {
+    margin-left: 0;
+  }
+  .wb-week-calendar-head {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+  .wb-week-calendar-head > span {
+    display: none;
+  }
+  .wb-week-calendar-head button {
+    min-height: 68px;
+  }
+  .wb-week-calendar-head button:first-of-type {
+    border-left: 0;
+  }
+  .wb-week-undated,
+  .wb-week-hours {
+    grid-template-columns: 54px minmax(0, 1fr);
+  }
+  .wb-week-undated > div:not([data-selected]),
+  .wb-calendar-day-column:not([data-selected]) {
+    display: none;
+  }
+  .wb-calendar-mobile-hint {
+    display: block;
+    margin-top: 8px;
+  }
+  .wb-month-day {
+    min-height: 90px;
+    padding: 3px;
+  }
+  .wb-month-day-heading .wb-icon,
+  .wb-month-day-heading span {
+    display: none;
+  }
+  .wb-month-day-heading {
+    margin-bottom: 4px;
+  }
+  .wb-month-day-heading > button:first-child {
+    width: 100%;
+    min-height: 28px;
+    justify-content: center;
+  }
+  .wb-month .wb-calendar-item {
+    padding: 3px 2px;
+    font-size: 9px;
+    gap: 2px;
+  }
+  .wb-month .wb-calendar-item > span,
+  .wb-month .wb-calendar-item > svg {
+    display: none;
+  }
+  .wb-month .wb-calendar-short {
+    display: block;
+    font-size: 9px;
+    width: 100%;
+    text-align: center;
+  }
+  .wb-month-more {
+    font-size: 9px;
+    padding: 1px;
+  }
+  .wb-calendar-detail-item {
+    gap: 8px;
+  }
+  .wb-calendar-detail-item small {
+    display: none;
+  }
+}
+.wb-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  color: hsl(var(--foreground));
+}
+.wb-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 30px 36px 22px;
+}
+.wb-header h1 {
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+.wb-header p {
+  margin-top: 5px;
+  font-size: 13px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-header > .wb-link {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.wb-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 24px;
+  padding: 0 0 15px;
+  border-bottom: 1px solid hsl(var(--border) / 0.6);
+}
+.wb-nav .wb-more {
+  margin-left: auto;
+}
+.wb-nav .wb-more[data-active],
+.wb-nav .wb-more[data-state="open"] {
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+}
+.wb-daily-guide {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.wb-daily-guide p {
+  flex: 1;
+  min-width: 220px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.wb-daily-guide strong {
+  font-weight: 500;
+}
+.wb-daily-guide span {
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.wb-record-kind {
+  margin-top: 18px;
+}
+.wb-record-hint {
+  margin-top: 12px;
+  font-size: 11px;
+}
+.wb-nav button {
+  @apply border border-input bg-background shadow-sm rounded-glass-popover transition-colors;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px 12px;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  white-space: nowrap;
+}
+.wb-nav button:hover,
+.wb-link:hover,
+.wb-note-actions button:hover,
+.wb-icon:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+.wb-nav button[aria-current],
+.wb-report-versions button[aria-pressed="true"] {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: transparent;
+}
+.wb-nav-divider {
+  width: 1px;
+  margin: 8px;
+  background: hsl(var(--border));
+}
+.wb-scroll {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  min-height: 0;
+  flex: 1;
+}
+.wb-content {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 26px 36px 64px;
+}
+.wb-filters,
+.wb-section-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.wb-view-title {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+.wb-view-title h2 {
+  font-size: 20px;
+  font-weight: 600;
+}
+.wb-view-title span,
+.wb-hint {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.7;
+}
+.wb-filter-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wb-page input,
+.wb-page textarea,
+.wb-form input {
+  min-width: 0;
+}
+.wb-filter-fields input,
+.wb-page .wb-select {
+  width: auto;
+  max-width: 100%;
+}
+.wb-page .wb-select {
+  min-width: 110px;
+  max-width: 220px;
+}
+.wb-form .wb-select {
+  width: 100%;
+}
+.wb-filter-fields input[type="search"] {
+  width: 180px;
+}
+.wb-page button,
+.wb-form button {
+  cursor: pointer;
+}
+.wb-page button:disabled,
+.wb-form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+/* Match the shared Button focus treatment for lightweight inline actions.
+   Shared Select/Input/Textarea keep their own global focus styles. */
+.wb-page button:not(.wb-select):focus-visible,
+.wb-page summary:focus-visible {
+  @apply outline-none ring-1 ring-ring;
+}
+.wb-link {
+  @apply border border-input bg-background shadow-sm rounded-glass-popover transition-colors;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 10px;
+  color: hsl(var(--foreground));
+  font-size: 12px;
+}
+.wb-error {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  color: hsl(var(--destructive));
+  background: hsl(var(--destructive) / 0.07);
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.wb-error button {
+  text-decoration: underline;
+}
+.wb-composer {
+  container: capture / inline-size;
+  border: 1px solid hsl(var(--border));
+  border-radius: 12px;
+  padding: 16px;
+  background: hsl(var(--background) / 0.5);
+  margin-bottom: 28px;
+}
+.wb-composer-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 500;
+  font-size: 13px;
+}
+.wb-composer-context {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 400;
+}
+.wb-composer textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  margin: 18px 0 20px;
+  font-size: 14px;
+  line-height: 1.8;
+  min-height: 80px;
+}
+.wb-composer-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid hsl(var(--border) / 0.6);
+}
+.wb-composer-footer > button {
+  justify-self: start;
+  white-space: nowrap;
+}
+.wb-composer-submit {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+@container capture (max-width: 400px) {
+  .wb-composer-footer {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .wb-composer-submit {
+    justify-content: flex-end;
+  }
+}
+.wb-shortcut {
+  opacity: 0.65;
+  font-size: 10px;
+  margin-left: 6px;
+}
+.wb-composer-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 10px 0 16px;
+}
+.wb-composer-options label,
+.wb-form label,
+.wb-agenda-composer label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-section-title h3,
+.wb-content section > h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+.wb-today-plan {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 36px;
+  margin-bottom: 32px;
+}
+.wb-empty {
+  padding: 22px 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  line-height: 1.8;
+}
+.wb-note-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 38px 20px;
+  text-align: center;
+}
+.wb-todos {
+  margin-bottom: 20px;
+}
+.wb-todo {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid hsl(var(--border) / 0.4);
+}
+.wb-check {
+  flex: 0 0 21px;
+  height: 21px;
+  border: 1px solid hsl(var(--muted-foreground) / 0.45);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+.wb-check[aria-pressed="true"] {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: transparent;
+}
+.wb-todo-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.wb-todo-text > button:not(.wb-link) {
+  text-align: left;
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-decoration-color: hsl(var(--primary) / 0.4);
+  text-underline-offset: 4px;
+}
+.wb-todo-text > button:hover {
+  text-decoration: underline;
+}
+.wb-todo-text .is-done {
+  text-decoration: line-through;
+  color: hsl(var(--muted-foreground));
+}
+.wb-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  margin-top: 4px;
+}
+.wb-meta button {
+  text-decoration: underline;
+}
+.wb-overdue {
+  color: hsl(var(--destructive));
+}
+.wb-icon {
+  @apply border border-input bg-background shadow-sm rounded-glass-popover transition-colors;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  color: hsl(var(--foreground));
+}
+.wb-note-filters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+.wb-segment {
+  @apply rounded-glass-popover;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  border: 1px solid hsl(var(--input));
+  background: hsl(var(--muted) / 0.5);
+}
+.wb-segment button {
+  @apply rounded-glass-popover transition-colors;
+  min-height: 32px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: hsl(var(--foreground));
+}
+.wb-segment button:hover {
+  background: hsl(var(--accent));
+}
+.wb-segment button[aria-pressed="true"] {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+.wb-note {
+  padding: 22px 0;
+  border-top: 1px solid hsl(var(--border) / 0.5);
+}
+.wb-note-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  margin-bottom: 12px;
+}
+.wb-note-heading time {
+  margin-right: auto;
+  font-variant-numeric: tabular-nums;
+}
+.wb-note-body {
+  font-size: 14px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.wb-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: hsl(var(--primary));
+}
+.wb-tags button,
+.wb-history-tags button {
+  @apply rounded-glass-popover transition-colors;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid hsl(var(--primary) / 0.25);
+  background: hsl(var(--primary) / 0.07);
+  color: hsl(var(--primary));
+  font-size: 11px;
+}
+.wb-tags button:hover,
+.wb-history-tags button:hover {
+  background: hsl(var(--primary) / 0.15);
+  border-color: hsl(var(--primary) / 0.5);
+}
+.wb-note-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 16px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid hsl(var(--border) / 0.6);
+}
+.wb-note-actions button {
+  @apply border border-input bg-background shadow-sm rounded-glass-popover transition-colors;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: hsl(var(--foreground));
+}
+.wb-related summary,
+.wb-sources summary {
+  width: fit-content;
+  cursor: pointer;
+  padding: 6px 0;
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.wb-actions-spacer {
+  flex: 1;
+}
+.wb-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.wb-form > button {
+  align-self: flex-end;
+}
+.wb-agenda-composer {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 110px 110px auto;
+  align-items: end;
+  gap: 12px;
+  margin: 18px 0 24px;
+}
+.wb-agenda-composer .wb-error {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.wb-agenda-item {
+  display: flex;
+  gap: 16px;
+  padding: 16px 0;
+  border-bottom: 1px solid hsl(var(--border) / 0.4);
+}
+.wb-agenda-time {
+  min-width: 65px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.wb-agenda-time span {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: hsl(var(--primary));
+}
+.wb-completed {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  font-size: 13px;
+}
+.wb-completed span {
+  flex: 1;
+}
+.wb-completed time {
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+.wb-report-versions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 20px 0;
+}
+.wb-report-versions button {
+  @apply border border-input bg-background shadow-sm rounded-glass-popover transition-colors;
+  font-size: 12px;
+  padding: 8px 12px;
+}
+.wb-report {
+  padding-top: 8px;
+}
+.wb-report-editor {
+  display: block;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-report textarea {
+  width: 100%;
+  resize: vertical;
+  margin-top: 8px;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.wb-report-actions {
+  display: flex;
+  gap: 10px;
+}
+.wb-report-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 16px 0;
+}
+.wb-report-footer p {
+  flex: 1;
+}
+.wb-sources {
+  border-top: 1px solid hsl(var(--border) / 0.5);
+  padding-top: 16px;
+}
+.wb-sources summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-sources > div {
+  padding: 14px 0;
+  font-size: 13px;
+}
+.wb-sources p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-top: 5px;
+}
+.wb-agent-ref {
+  margin-top: 18px;
+}
+/* Overview panels share the app's surfaces, controls and focus treatment. */
+.wb-panel {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid hsl(var(--border) / 0.8);
+  border-radius: 12px;
+  background: hsl(var(--card) / 0.65);
+}
+.wb-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.wb-panel-heading h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.wb-panel-heading h3 > span {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  font-weight: 400;
+  margin-left: 6px;
+}
+.wb-home-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(265px, 1fr);
+  align-items: stretch;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+.wb-home-grid .wb-composer {
+  margin: 0;
+  background: hsl(var(--card) / 0.65);
+  padding: 20px;
+}
+.wb-home-grid .wb-composer-label {
+  font-size: 16px;
+}
+.wb-record-kind {
+  gap: 6px;
+}
+.wb-record-kind button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+}
+.wb-home-grid .wb-composer textarea {
+  min-height: 92px;
+}
+.wb-task-overview {
+  display: flex;
+  flex-direction: column;
+}
+.wb-task-chart {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  margin: auto 0;
+  padding: 8px 0 14px;
+}
+.wb-ring {
+  width: 124px;
+  height: 124px;
+  flex: 0 0 124px;
+  position: relative;
+}
+.wb-ring svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke-width: 10px;
+}
+.wb-ring-track {
+  stroke: hsl(var(--primary) / 0.12);
+}
+.wb-ring-value {
+  stroke: hsl(var(--primary));
+  stroke-linecap: round;
+}
+.wb-ring > div {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.wb-ring strong {
+  font-size: 27px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.wb-ring span {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-task-counts {
+  flex: 1;
+  min-width: 0;
+}
+.wb-task-counts button {
+  @apply border border-input bg-background rounded-glass-popover transition-colors;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px;
+  margin: 6px 0;
+}
+.wb-task-counts button:hover {
+  background: hsl(var(--accent));
+}
+.wb-task-counts button > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-task-counts strong {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.wb-task-counts i {
+  width: 8px;
+  height: 8px;
+  border: 1px solid hsl(var(--primary) / 0.6);
+  border-radius: 2px;
+}
+.wb-task-counts button:last-child i {
+  background: hsl(var(--primary));
+}
+.wb-panel-footer {
+  @apply border border-input bg-background shadow-sm rounded-glass-popover transition-colors;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 14px;
+  min-height: 34px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: hsl(var(--primary));
+}
+.wb-panel-footer:hover {
+  background: hsl(var(--accent));
+}
+.wb-week {
+  margin-bottom: 24px;
+}
+.wb-week-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+}
+.wb-week-day {
+  border: 1px solid hsl(var(--input));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+  border-radius: 8px;
+  text-align: left;
+  padding: 10px;
+  background: hsl(var(--background) / 0.55);
+  min-height: 112px;
+}
+.wb-week-day:hover {
+  background: hsl(var(--accent));
+}
+.wb-week-day[aria-pressed="true"] {
+  background: hsl(var(--primary) / 0.12);
+  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.28);
+}
+.wb-week-date {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+.wb-week-date > span {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-week-date strong {
+  font-size: 19px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.wb-week-date i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: hsl(var(--primary));
+}
+.wb-week-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wb-week-event {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wb-week-items small {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-week-items .wb-week-due {
+  color: hsl(var(--primary));
+}
+.wb-week-hint {
+  margin-top: 12px;
+}
+.wb-week-count {
+  display: none;
+}
+.wb-week-mobile-due {
+  display: none;
+}
+.wb-today-plan {
+  gap: 20px;
+}
+.wb-today-plan > section {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid hsl(var(--border) / 0.8);
+  border-radius: 12px;
+  background: hsl(var(--card) / 0.4);
+}
+.wb-count-badge {
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 11px;
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+}
+.wb-review-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 20px;
+  margin-bottom: 24px;
+}
+.wb-chart-summary {
+  font-size: 13px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-chart-summary strong {
+  color: hsl(var(--foreground));
+  font-weight: 600;
+}
+.wb-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 12px 0 6px;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-chart-legend > span {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.wb-chart-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: hsl(var(--primary));
+}
+.wb-chart-legend > span:last-child i {
+  background: transparent;
+  border: 1px solid hsl(var(--foreground));
+}
+.wb-bar-chart {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.wb-bar-day {
+  min-width: 0;
+  padding: 6px 2px;
+  border-radius: 6px;
+  text-align: center;
+}
+.wb-bar-day:hover {
+  background: hsl(var(--accent));
+}
+.wb-bar-pair {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 116px;
+  border-bottom: 1px solid hsl(var(--border));
+  gap: 5px;
+  padding-bottom: 1px;
+}
+.wb-bar-series {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 19px;
+}
+.wb-bar-series small {
+  font-size: 10px;
+  line-height: 18px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-bar {
+  width: 100%;
+  display: block;
+  border-radius: 3px 3px 0 0;
+  background: hsl(var(--primary));
+}
+.wb-bar-completed {
+  background: hsl(var(--foreground) / 0.08);
+  border: 1px solid hsl(var(--foreground) / 0.65);
+  border-bottom: 0;
+}
+.wb-bar-day time {
+  display: block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.wb-collection-kind {
+  border: 1px solid hsl(var(--input));
+  background: hsl(var(--background) / 0.55);
+  margin: 6px 0;
+  display: flex;
+  align-items: center;
+  text-align: left;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 8px;
+  border-radius: 8px;
+}
+.wb-collection-kind:hover,
+.wb-collection-all:hover {
+  background: hsl(var(--accent));
+}
+.wb-kind-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  background: hsl(var(--primary) / 0.09);
+  color: hsl(var(--primary));
+  border-radius: 8px;
+}
+.wb-kind-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+.wb-collection-kind strong {
+  font-size: 19px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.wb-collection-kind strong small {
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+  font-weight: 400;
+}
+.wb-kind-track {
+  display: block;
+  height: 5px;
+  background: hsl(var(--primary) / 0.09);
+  border-radius: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.wb-kind-track > span {
+  display: block;
+  height: 100%;
+  background: hsl(var(--primary));
+  border-radius: 3px;
+}
+.wb-collection-chart > .wb-hint {
+  margin-top: 12px;
+}
+.wb-collection-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.wb-collection-shortcuts > button {
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card) / 0.6);
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 10px;
+  min-width: 0;
+}
+.wb-collection-shortcuts > button[aria-pressed="true"] {
+  background: hsl(var(--primary) / 0.12);
+  border-color: hsl(var(--primary) / 0.3);
+}
+.wb-collection-all > strong {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+}
+.wb-collection-all > span {
+  font-size: 19px;
+  font-weight: 600;
+}
+.wb-collection-shortcuts .wb-kind-label {
+  font-size: 13px;
+}
+.wb-collection-shortcuts strong small {
+  display: none;
+}
+.wb-collection-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.wb-note-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+.wb-note-grid .wb-note {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid hsl(var(--border) / 0.8);
+  border-radius: 12px;
+  background: hsl(var(--card) / 0.6);
+}
+.wb-note-category {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+.wb-note-heading {
+  gap: 8px;
+}
+.wb-card-excerpt {
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  overflow: hidden;
+}
+.wb-expand-note {
+  margin: 6px 0 0;
+  color: hsl(var(--primary));
+}
+.wb-note-grid .wb-note-actions {
+  padding-top: 10px;
+  border-top: 1px solid hsl(var(--border) / 0.6);
+}
+@media (max-width: 1100px) {
+  .wb-home-grid {
+    grid-template-columns: minmax(0, 1.4fr) minmax(240px, 1fr);
+    gap: 16px;
+  }
+  .wb-task-chart {
+    gap: 12px;
+  }
+  .wb-ring {
+    width: 100px;
+    height: 100px;
+    flex-basis: 100px;
+  }
+  .wb-collection-shortcuts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .wb-today-plan {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .wb-header {
+    padding: 24px;
+  }
+  .wb-content {
+    padding: 24px 24px 48px;
+  }
+}
+@media (max-width: 700px) {
+  .wb-home-grid,
+  .wb-review-grid,
+  .wb-note-grid {
+    grid-template-columns: 1fr;
+  }
+  .wb-task-overview {
+    order: -1;
+  }
+  .wb-task-overview .wb-panel-heading {
+    margin-bottom: 8px;
+  }
+  .wb-task-overview .wb-ring {
+    width: 78px;
+    height: 78px;
+    flex-basis: 78px;
+  }
+  .wb-task-overview .wb-ring strong {
+    font-size: 20px;
+  }
+  .wb-task-overview .wb-task-chart {
+    padding: 0 0 8px;
+  }
+  .wb-task-overview .wb-task-counts strong {
+    font-size: 19px;
+  }
+  .wb-task-overview .wb-panel-footer {
+    margin-top: 10px;
+    padding-top: 10px;
+  }
+  .wb-panel,
+  .wb-home-grid .wb-composer,
+  .wb-today-plan > section {
+    padding: 16px;
+  }
+  .wb-ring {
+    width: 120px;
+    height: 120px;
+    flex-basis: 120px;
+  }
+  .wb-task-chart {
+    gap: 24px;
+  }
+  .wb-week-grid {
+    gap: 4px;
+  }
+  .wb-week-day {
+    min-height: 80px;
+    padding: 8px 2px;
+    text-align: center;
+  }
+  .wb-week-date {
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: 4px;
+    position: relative;
+  }
+  .wb-week-date i {
+    position: absolute;
+    right: 2px;
+    top: 1px;
+  }
+  .wb-week-date strong {
+    font-size: 16px;
+  }
+  .wb-week-items {
+    display: none;
+  }
+  .wb-week-count {
+    display: block;
+    font-size: 10px;
+    color: hsl(var(--muted-foreground));
+  }
+  .wb-week-mobile-due {
+    display: block;
+    font-size: 9px;
+    color: hsl(var(--primary));
+    margin-top: 3px;
+  }
+  .wb-week-hint::before {
+    content: "日期下数字为日程数 · ";
+  }
+  .wb-bar-chart {
+    gap: 3px;
+  }
+  .wb-bar-series {
+    width: 12px;
+  }
+  .wb-bar-pair {
+    gap: 3px;
+  }
+  .wb-bar-day time {
+    font-size: 10px;
+  }
+  .wb-collection-shortcuts > button {
+    gap: 7px;
+    padding: 10px;
+  }
+  .wb-collection-shortcuts .wb-kind-icon {
+    width: 26px;
+    height: 28px;
+  }
+  .wb-collection-shortcuts .wb-kind-label,
+  .wb-collection-all > strong {
+    font-size: 12px;
+  }
+  .wb-header {
+    padding: 18px 16px;
+    align-items: flex-start;
+  }
+  .wb-header p {
+    max-width: 230px;
+  }
+  .wb-nav {
+    margin: 0 12px;
+  }
+  .wb-nav button {
+    padding: 8px;
+  }
+  .wb-content {
+    padding: 20px 16px 40px;
+  }
+  .wb-nav-divider {
+    display: none;
+  }
+  .wb-filter-fields {
+    width: 100%;
+  }
+  .wb-filter-fields input[type="search"] {
+    flex: 1 0 100%;
+    width: 100%;
+  }
+  .wb-composer-options {
+    grid-template-columns: 1fr;
+  }
+  .wb-agenda-composer {
+    grid-template-columns: 1fr 1fr;
+  }
+  .wb-agenda-composer > label:first-child {
+    grid-column: 1 / -1;
+  }
+  .wb-agenda-composer > button {
+    grid-column: 1 / -1;
+  }
+}

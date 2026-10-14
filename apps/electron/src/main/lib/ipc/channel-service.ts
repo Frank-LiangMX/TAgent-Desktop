@@ -9,6 +9,7 @@
 import { ipcMain } from 'electron'
 import {
   CHANNEL_IPC_CHANNELS,
+  isGatewayProvider,
   type Channel,
   type ChannelCreateInput,
   type ChannelUpdateInput,
@@ -36,6 +37,7 @@ import {
   validateChannelModel,
   speedTestChannel,
 } from '../channel/channel-tester'
+import { readGatewayApiKey, GATEWAY_CREDENTIAL_MISSING_MESSAGE } from '../channel/gateway-credential'
 
 export class ChannelService {
   private constructor() {}
@@ -48,7 +50,8 @@ export class ChannelService {
 
   private registerIpc(): void {
     const fetchModelsWithFallback = async (input: FetchModelsInput): Promise<FetchModelsResult> => {
-      const result = await fetchModelsFromProvider(input)
+      const apiKey = isGatewayProvider(input.provider) ? readGatewayApiKey() || input.apiKey : input.apiKey
+      const result = await fetchModelsFromProvider({ ...input, apiKey })
       if (result.success && result.models.length > 0) return result
       const fallback = getDefaultModelsForProvider(input.provider)
       return {
@@ -89,7 +92,7 @@ export class ChannelService {
       }
     )
 
-    // 测试连接（kscc 走 resolveKsccPath，外部走真实 HTTP 请求）
+    // 测试连接：KSCC 与其他渠道都发送真实 HTTP 请求。
     ipcMain.handle(
       CHANNEL_IPC_CHANNELS.TEST,
       async (_e, id: string): Promise<ChannelTestResult> => {
@@ -122,7 +125,7 @@ export class ChannelService {
         }
         const apiKey = getDecryptedApiKey(channel.id)
         if (!apiKey) {
-          return { success: false, message: '已保存的 API Key 无法解密，请重新输入并保存', models: [] }
+          return { success: false, message: isGatewayProvider(channel.provider) ? GATEWAY_CREDENTIAL_MISSING_MESSAGE : '已保存的 API Key 无法解密，请重新输入并保存', models: [] }
         }
         return fetchModelsWithFallback({
           provider: channel.provider,
@@ -136,14 +139,14 @@ export class ChannelService {
     ipcMain.handle(
       CHANNEL_IPC_CHANNELS.TEST_DIRECT,
       async (_e, input: ChannelModelValidateInput): Promise<ChannelTestResult> => {
-        return validateChannelModel(input)
+        return validateChannelModel({ ...input, apiKey: isGatewayProvider(input.provider) ? readGatewayApiKey() || input.apiKey : input.apiKey })
       },
     )
 
     ipcMain.handle(
       CHANNEL_IPC_CHANNELS.VALIDATE_MODEL,
       async (_e, input: ChannelModelValidateInput): Promise<ChannelTestResult> => {
-        return validateChannelModel(input)
+        return validateChannelModel({ ...input, apiKey: isGatewayProvider(input.provider) ? readGatewayApiKey() || input.apiKey : input.apiKey })
       },
     )
 

@@ -7,14 +7,14 @@
 import { useState } from 'react'
 import { useAtomValue } from 'jotai'
 import { Popover, PopoverContent, PopoverTrigger } from '@tagent/ui'
-import { Check, ChevronDown, FolderOpen } from 'lucide-react'
+import { Check, ChevronDown, FolderOpen, X } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { workspacesAtom } from '../../atoms/workspace-atoms'
 
 interface WorkspaceSelectorProps {
   /** 当前选中工作区 id */
   value?: string
-  onSelect: (id: string) => void
+  onSelect: (id: string | undefined) => void
   /** 打开其他项目（原生目录选择 + 注册工作区） */
   onOpenProject: () => void
   /** 允许调用方调整触发器布局（例如在表单中占满一行） */
@@ -45,7 +45,7 @@ export function WorkspaceSelector({
         >
           <FolderOpen className="size-3.5 shrink-0" />
           <span className="min-w-0 shrink truncate font-medium text-foreground/85">
-            {active?.name || '选择工作区'}
+            {active?.name || '不在项目中工作'}
           </span>
           {active && (
             <span className="min-w-0 flex-1 truncate text-[10px] text-foreground/40">
@@ -58,7 +58,28 @@ export function WorkspaceSelector({
 
       <PopoverContent align="start" side="top" className="w-[340px] overflow-hidden p-1">
         <div className="scrollbar-thin max-h-[340px] overflow-y-auto">
-          {workspaces.length === 0 ? (
+          <button
+            type="button"
+            className={cn(
+              'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors',
+              'hover:bg-accent',
+            )}
+            onClick={() => {
+              onSelect(undefined)
+              setOpen(false)
+            }}
+          >
+            <X className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium text-foreground/85">不在项目中工作</span>
+              <span className="block text-[10px] text-muted-foreground">
+                不绑定本地项目目录
+              </span>
+            </span>
+            {!value && <Check className="size-3.5 shrink-0 text-primary" />}
+          </button>
+
+            {workspaces.length === 0 ? (
             <div className="px-2.5 py-2 text-xs text-muted-foreground">还没有工作区</div>
           ) : (
             workspaces.map((w) => {

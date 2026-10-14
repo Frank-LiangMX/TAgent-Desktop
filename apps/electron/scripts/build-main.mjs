@@ -116,6 +116,6 @@ if (watch) {
   console.log(
     isExternalBuild
       ? '[build-main] ok → dist/main.cjs (external / Pi-only)'
-      : '[build-main] ok → dist/main.cjs (dual-core)',
+      : '[build-main] ok → dist/main.cjs (Pi / HTTP)',
   )
 }

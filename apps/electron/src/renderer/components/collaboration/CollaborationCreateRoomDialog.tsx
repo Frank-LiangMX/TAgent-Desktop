@@ -88,13 +88,7 @@ export function CollaborationCreateRoomDialog({
       setChannels([])
       setRoles([])
     })
-    void window.electronAPI
-      .getCodexRuntimeStatus()
-      .then((status) => setCodexRuntimeStatus(status))
-      .catch((error) => setCodexRuntimeStatus({
-        available: false,
-        reason: error instanceof Error ? error.message : String(error),
-      }))
+
   }, [defaultWorkspaceId, open])
 
   const enabledChannels = useMemo(() => channels.filter((channel) => channel.enabled), [channels])
@@ -110,7 +104,7 @@ export function CollaborationCreateRoomDialog({
       if (id === 'custom') setMembers([{ displayName: '协调者', isCoordinator: true }])
       return
     }
-    setMembers(JSON.parse(JSON.stringify(preset.members)) as CreateCollaborationMemberInput[])
+    setMembers((JSON.parse(JSON.stringify(preset.members)) as CreateCollaborationMemberInput[]).map(member => ({ ...member, backend: 'channel' })))
   }
 
   const addMember = (): void => {
@@ -332,15 +326,6 @@ export function CollaborationCreateRoomDialog({
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="channel">渠道 / Pi</SelectItem>
-                          <SelectItem
-                            value="codex"
-                            disabled={codexRuntimeStatus?.available !== true}
-                          >
-                            Codex（账号 / CLI Runtime）
-                          </SelectItem>
-                          {member.backend === 'cli' ? (
-                            <SelectItem value="cli">CLI worker（现有配置）</SelectItem>
-                          ) : null}
                         </SelectContent>
                       </Select>
                       {codexRuntimeStatus && !codexRuntimeStatus.available ? (
@@ -357,8 +342,7 @@ export function CollaborationCreateRoomDialog({
                       >
                         <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="自动渠道" /></SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="auto">自动渠道（kscc 优先）</SelectItem>
-                          <SelectItem value="codex-runtime">Codex Runtime（无需渠道）</SelectItem>
+                          <SelectItem value="auto">自动渠道（HTTP 渠道）</SelectItem>
                           {enabledChannels.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}
                         </SelectContent>
                       </Select>

@@ -32,6 +32,9 @@ export type ProviderType =
 /** Explicit wire format; unset preserves the legacy provider mapping. */
 export type ChannelApiProtocol = 'anthropic-messages' | 'openai-responses' | 'openai-chat'
 
+/** 渠道所属范围；未填写的历史渠道按 external 兼容处理。 */
+export type ChannelScope = 'internal' | 'external'
+
 /**
  * 各供应商的默认 Base URL
  */
@@ -80,7 +83,7 @@ export const PROVIDER_LABELS: Record<ProviderType, string> = {
   'xiaomi-token-plan': '小米 MiMo Token Plan',
   'kscc-internal': '金山云',
   'codex-internal': 'Codex App Server',
-  'kscc-gateway': '金山云网关',
+  'kscc-gateway': 'KSCC 网关（HTTP）',
   custom: 'OpenAI 兼容格式',
 }
 
@@ -121,15 +124,12 @@ export function isLocalRuntimeProvider(provider: ProviderType): boolean {
 }
 
 /**
- * 内置渠道：随应用预置、在渠道管理页显示为内置卡片、不可新建/删除/改连接配置。
- *
- * 与 {@link LOCAL_RUNTIME_PROVIDERS} 的区别：内置渠道**可以**自带凭据、**可以**进官方内核
- * （例如 kscc-gateway 的 sk 从本机 kscc 配置读取）。
+ * 历史本机渠道：不可新建/删除/改连接配置，只保留历史读取。
+ * KSCC 网关是可编辑的 HTTP 渠道，自动认证不依赖本机运行内核。
  */
 export const BUILTIN_CHANNEL_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
   'kscc-internal',
   'codex-internal',
-  'kscc-gateway',
 ])
 
 export function isBuiltinChannelProvider(provider: ProviderType): boolean {
@@ -145,7 +145,7 @@ export function isLegacyCliProvider(provider: ProviderType): boolean {
   return LEGACY_CLI_PROVIDERS.has(provider)
 }
 
-/** 内置 HTTP 网关渠道；需要注入客户端标识头，凭据取自本机 kscc 配置。 */
+/** KSCC HTTP 网关渠道；需要客户端标识头，凭据可自动取自本机环境。 */
 export const GATEWAY_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
   'kscc-gateway',
 ])
@@ -224,6 +224,8 @@ export interface ChannelModel {
  */
 export interface Channel {
   apiProtocol?: ChannelApiProtocol
+  /** 内部环境服务或用户自行配置的外部服务。 */
+  scope?: ChannelScope
   /** 渠道唯一标识 */
   id: string
   /** 渠道名称（用户自定义） */
@@ -234,6 +236,8 @@ export interface Channel {
   baseUrl: string
   /** 加密后的 API Key（base64 编码） */
   apiKey: string
+  /** 主进程计算的自动凭据状态；只用于显示，不包含密钥或写入配置。 */
+  credentialStatus?: 'ready' | 'missing'
   /** 可用模型列表 */
   models: ChannelModel[]
   /** 该渠道的默认模型（须为已启用模型之一；未设则用第一个已启用模型） */

@@ -70,8 +70,8 @@ export class KbProposeSaveService {
     deps: KbProposeSaveDeps,
   ): Promise<KbProposeSaveResult> {
     const knowledgeBaseName =
-      listKnowledgeBases().find((kb) => kb.id === input.knowledgeBaseId)?.name ??
-      "";
+      listKnowledgeBases().find((kb) => kb.id === input.knowledgeBaseId)
+        ?.name ?? "";
 
     const request: KbProposeSaveRequest = {
       requestId: randomUUID(),
@@ -125,6 +125,7 @@ export class KbProposeSaveService {
         const doc = createKnowledgeBaseDocument({
           knowledgeBaseId: pending.input.knowledgeBaseId,
           title: pending.input.title,
+          tags: pending.input.draft?.tags,
           content: pending.input.content,
           // 刀 2 §A：入参带 kind 则写入文档；snapshot 写 snapshotAt；统一记沉淀来源。
           ...(isKnowledgeBaseDocumentKind(pending.input.kind)
@@ -132,10 +133,18 @@ export class KbProposeSaveService {
             : {}),
           ...(pending.input.kind === "snapshot" ? { snapshotAt: now } : {}),
           originNote: "由会话确认沉淀（kb_propose_save）",
-          ...(pending.input.draft?.summary ? { summary: pending.input.draft.summary } : {}),
-          ...(pending.input.draft?.sources ? { sources: pending.input.draft.sources } : {}),
-          ...(pending.input.draft?.warnings ? { parseWarnings: pending.input.draft.warnings } : {}),
-          ...(pending.input.draft?.uncertainties ? { uncertainties: pending.input.draft.uncertainties } : {}),
+          ...(pending.input.draft?.summary
+            ? { summary: pending.input.draft.summary }
+            : {}),
+          ...(pending.input.draft?.sources
+            ? { sources: pending.input.draft.sources }
+            : {}),
+          ...(pending.input.draft?.warnings
+            ? { parseWarnings: pending.input.draft.warnings }
+            : {}),
+          ...(pending.input.draft?.uncertainties
+            ? { uncertainties: pending.input.draft.uncertainties }
+            : {}),
           author: "agent",
           status: "confirmed",
         });

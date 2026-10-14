@@ -142,6 +142,7 @@ export function KbProposeSaveBanner({
             {draft?.summary ? (
               <p className="text-sm leading-6 text-foreground/80">{draft.summary}</p>
             ) : null}
+            {draft?.tags?.length ? <p className="text-xs text-muted-foreground">{draft.tags.map(tag=>`#${tag}`).join(" · ")}</p> : null}
 
             {draft?.sources?.length ? (
               <section className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs">

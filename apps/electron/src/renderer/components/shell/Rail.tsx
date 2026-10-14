@@ -3,12 +3,12 @@
  * 与 General FunctionalRail 一致：children 进 app-nav-rail-content。
  */
 import {
-  Books,
   Brain,
   ChatsCircle,
   IdentificationCard,
   Clock,
   PuzzlePiece,
+  SquaresFour,
 } from "@phosphor-icons/react";
 import { useAtomValue } from "jotai";
 import { AppTooltip } from "@tagent/ui";
@@ -18,17 +18,24 @@ import { cn } from "../../lib/utils";
 const RAIL_ICON = { size: 18, weight: "regular" as const };
 
 export type RailItem =
-  "chat" | "plugins" | "memory" | "knowledge" | "roles" | "automation" | "settings";
+  | "chat"
+  | "plugins"
+  | "memory"
+  | "knowledge"
+  | "roles"
+  | "automation"
+  | "workbench"
+  | "settings";
 
 interface RailProps {
   active?: RailItem;
   onChat?: () => void;
   onPlugins?: () => void;
   onMemory?: () => void;
-  onKnowledge?: () => void;
   onRoles?: () => void;
   onSettings?: () => void;
   onAutomation?: () => void;
+  onWorkbench?: () => void;
 }
 
 export function Rail({
@@ -36,9 +43,9 @@ export function Rail({
   onChat,
   onPlugins,
   onMemory,
-  onKnowledge,
   onRoles,
   onAutomation,
+  onWorkbench,
   onSettings,
 }: RailProps): JSX.Element {
   const userName = useAtomValue(userProfileAtom).userName;
@@ -64,18 +71,18 @@ export function Rail({
           onClick={onPlugins}
         />
         <RailIcon
+          railId="workbench"
+          icon={<SquaresFour {...RAIL_ICON} />}
+          label="工作台"
+          active={active === "workbench"}
+          onClick={onWorkbench}
+        />
+        <RailIcon
           railId="memory"
           icon={<Brain {...RAIL_ICON} />}
           label="记忆"
           active={active === "memory"}
           onClick={onMemory}
-        />
-        <RailIcon
-          railId="knowledge"
-          icon={<Books {...RAIL_ICON} />}
-          label="知识库"
-          active={active === "knowledge"}
-          onClick={onKnowledge}
         />
         <RailIcon
           railId="roles"

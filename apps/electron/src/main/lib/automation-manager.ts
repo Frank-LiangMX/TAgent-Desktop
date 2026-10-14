@@ -73,6 +73,7 @@ export function createAutomation(input: CreateAutomationInput): Automation {
   const now = Date.now()
   const automation: Automation = {
     id: randomUUID(), name: input.name.trim(), prompt: input.prompt,
+    wpsDailyReport: input.wpsDailyReport,
     enabled: input.active !== false, scheduleType: input.scheduleType,
     intervalMinutes: input.intervalMinutes, timeOfDay: input.timeOfDay,
     dayOfWeek: input.dayOfWeek, dayOfMonth: input.dayOfMonth, scheduledAt: input.scheduledAt,

@@ -8,6 +8,7 @@ import {
   recordRunOutcome,
   recordSkipped,
   recordTriggered,
+  setNextRunAt,
   updateAutomation,
 } from './automation-manager'
 
@@ -57,6 +58,12 @@ export class AutomationScheduler {
   private recoverMissedRuns(now: number): void {
     for (const automation of listAutomations()) {
       if (!automation.enabled || automation.nextRunAt <= 0 || automation.nextRunAt > now) continue
+      if (automation.wpsDailyReport && automation.scheduleType === 'daily') {
+        // 应用可能在认领触发后、写运行结果前崩溃。补报靠逐日 receipt 去重，
+        // 重新安排触发以避免 lastTriggerAt 把任务永久卡在旧 nextRunAt。
+        if (automation.lastTriggerAt === automation.nextRunAt) setNextRunAt(automation.id, Math.max(now, automation.lastTriggerAt + 1))
+        continue
+      }
       if (!claimAutomationTrigger(automation.id, automation.nextRunAt)) continue
       if (automation.scheduleType === 'once') {
         recordSkipped(automation.id, automation.nextRunAt, '应用离线期间错过一次性任务', 0)
@@ -73,7 +80,7 @@ export class AutomationScheduler {
 
     const scheduledAt = automation.nextRunAt
     const following = this.nextRun(automation, now)
-    if (scheduledAt < now - AUTOMATION_TICK_INTERVAL_MS) {
+    if (scheduledAt < now - AUTOMATION_TICK_INTERVAL_MS && !(automation.wpsDailyReport && automation.scheduleType === 'daily')) {
       recordSkipped(automation.id, scheduledAt, '任务已过期，按跳过策略处理', following)
       return
     }

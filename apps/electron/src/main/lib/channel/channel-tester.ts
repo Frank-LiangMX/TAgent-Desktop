@@ -12,7 +12,9 @@ import type {
 import {
   resolveChannelCustomHeaders,
   resolveChannelRequestHeaders,
+  isGatewayProvider,
 } from '@tagent/shared'
+import { GATEWAY_CREDENTIAL_MISSING_MESSAGE } from './gateway-credential'
 
 const ANTHROPIC_PROTOCOL_PROVIDERS = new Set<ProviderType>([
   'anthropic',
@@ -25,6 +27,7 @@ const ANTHROPIC_PROTOCOL_PROVIDERS = new Set<ProviderType>([
   'xiaomi',
   'xiaomi-token-plan',
   'qwen-anthropic',
+  'kscc-gateway',
 ])
 
 const OPENAI_COMPATIBLE_PROVIDERS = new Set<ProviderType>([
@@ -261,7 +264,7 @@ export async function testChannelConnection(
   }
 
   if (!decryptedApiKey) {
-    return { success: false, message: 'API Key 未设置' }
+    return { success: false, message: isGatewayProvider(channel.provider) ? GATEWAY_CREDENTIAL_MISSING_MESSAGE : 'API Key 未设置' }
   }
 
   const modelId = pickTestModel(channel)

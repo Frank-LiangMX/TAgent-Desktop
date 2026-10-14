@@ -138,6 +138,7 @@ export * from './collaboration-local-continuation'
 // S3.5-b 房间共享摘要（04 §6）：类型 + 有效发言/CAS 谓词 + 六段总结 prompt
 export * from './collaboration-summary'
 export * from './browser'
+export * from './workbench'
 export * from './fusion-session'
 export * from './fusion-session-legacy'
 export * from './fusion-routing'

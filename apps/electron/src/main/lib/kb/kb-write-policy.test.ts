@@ -7,11 +7,9 @@ import {
 } from "./kb-write-policy";
 
 describe("knowledge-base write policy", () => {
-  it("默认关闭文档写入", () => {
-    expect(areKnowledgeBaseWritesEnabled({})).toBe(false);
-    expect(() => assertKnowledgeBaseWritesEnabled({})).toThrow(
-      KNOWLEDGE_BASE_WRITES_DISABLED_MESSAGE,
-    );
+  it("默认允许用户确认后的文档写入", () => {
+    expect(areKnowledgeBaseWritesEnabled({})).toBe(true);
+    expect(() => assertKnowledgeBaseWritesEnabled({})).not.toThrow();
   });
 
   it("只接受显式启用值", () => {
@@ -27,6 +25,11 @@ describe("knowledge-base write policy", () => {
         [KNOWLEDGE_BASE_WRITE_ENABLE_ENV]: "0",
       }),
     ).toBe(false);
+    expect(() =>
+      assertKnowledgeBaseWritesEnabled({
+        [KNOWLEDGE_BASE_WRITE_ENABLE_ENV]: "0",
+      }),
+    ).toThrow(KNOWLEDGE_BASE_WRITES_DISABLED_MESSAGE);
   });
 
   it("启用后允许写入", () => {

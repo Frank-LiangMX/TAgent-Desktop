@@ -8,6 +8,7 @@ import {
   extractDiffHint,
   getLiveStatusFromSteps,
   isFragmentedProgressText,
+  isRoutineNarrationText,
   getWorkStepLabel,
   isDeliverableThinking,
   isFillerProgressText,
@@ -450,6 +451,27 @@ describe('buildConciseTimeline', () => {
       expect(stage.steps.every((s) => s.kind === 'tool')).toBe(true)
       expect(stage.summary).toContain('运行了 3 条命令')
     }
+  })
+
+  it('连续探索口播不落成进度行：读/搜/跑前后的「先看看」并进同一个阶段', () => {
+    const chatter = '先看看入口文件。'
+    expect(isRoutineNarrationText(chatter)).toBe(true)
+    expect(isRoutineNarrationText('定位到落盘门控把旁白当成了进度。')).toBe(false)
+    const process: ProcessEntry[] = [
+      tool('Read', 'r1', { file_path: 'a.ts' }),
+      { type: 'text', key: 'p1', text: chatter },
+      tool('Grep', 'g1', { pattern: 'persist' }),
+      { type: 'text', key: 'p2', text: '接着查一下缓存路径。' },
+      tool('Bash', 'b1', { command: 'git status' }),
+      { type: 'text', key: 'f1', text: '定位到落盘门控把旁白当成了进度。' },
+    ]
+    const segs = buildConciseTimeline(process)
+    expect(segs.map((s) => s.kind)).toEqual(['work_stage', 'narrative'])
+    expect(segs[1]).toMatchObject({
+      kind: 'narrative',
+      tone: 'final',
+      text: '定位到落盘门控把旁白当成了进度。',
+    })
   })
 
   it('有信息的短段间 progress 不被 idle 丢：idle 含 ≥2 个 narrative.progress（REGRESS-N 验收 1）', () => {

@@ -6,6 +6,8 @@ import {
   loadChannelsAtom,
   selectedChannelIdAtom,
   selectedModelSelectionAtom,
+  builtinChannelsAtom,
+  externalChannelsAtom,
 } from './channel-atoms'
 
 function channel(
@@ -30,18 +32,25 @@ function channel(
 
 const KSCC = channel('kscc', 'kscc-internal')
 const OPENAI = channel('openai', 'openai')
+const INTERNAL_KSCC: Channel = { ...channel('codex-kscc', 'kscc-gateway'), scope: 'internal' }
+const INTERNAL_TOKENHUB: Channel = { ...channel('codex-tokenhub', 'custom'), scope: 'internal' }
 
 describe('selected channel/model atoms', () => {
+  it('按明确 scope 将内部环境服务与外部渠道分栏', () => {
+    const store = getDefaultStore()
+    store.set(channelsAtom, [INTERNAL_KSCC, INTERNAL_TOKENHUB, OPENAI])
+
+    expect(store.get(builtinChannelsAtom).map((item) => item.id)).toEqual(['codex-kscc', 'codex-tokenhub'])
+    expect(store.get(externalChannelsAtom).map((item) => item.id)).toEqual(['openai'])
+  })
+
   it('显式写入本机渠道时不被 Pi 默认策略清空', () => {
     const store = getDefaultStore()
     store.set(channelsAtom, [KSCC, OPENAI])
     store.set(selectedChannelIdAtom, 'kscc')
 
-    expect(store.get(selectedModelSelectionAtom)).toEqual({
-      channelId: 'kscc',
-      modelId: 'kscc-model',
-    })
-    expect(store.get(selectedChannelIdAtom)).toBe('kscc')
+    expect(store.get(selectedModelSelectionAtom)).toBeNull()
+    expect(store.get(selectedChannelIdAtom)).toBeNull()
   })
 
   it('渠道不存在 / 无启用模型时写入 null', () => {
@@ -75,10 +84,7 @@ describe('loadChannelsAtom 新会话默认', () => {
       electronAPI: { listChannels: async () => [KSCC] },
     }
     await store.set(loadChannelsAtom)
-    expect(store.get(selectedModelSelectionAtom)).toEqual({
-      channelId: 'kscc',
-      modelId: 'kscc-model',
-    })
+    expect(store.get(selectedModelSelectionAtom)).toBeNull()
 
     store.set(selectedModelSelectionAtom, { channelId: 'gone', modelId: 'gone-model' })
     await store.set(loadChannelsAtom)

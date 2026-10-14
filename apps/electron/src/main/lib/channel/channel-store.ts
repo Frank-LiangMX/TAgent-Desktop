@@ -1,19 +1,4 @@
-/**
- * 渠道存储（精简版，从 TAgent channel-manager.ts 按需搬移）
- *
- * 职责：
- * - 渠道 CRUD（~/.tagent[-dev]/channels.json）
- * - API Key 加密/解密（Electron safeStorage，底层 OS 级加密）
- * - 内置渠道（见 BUILTIN_CHANNEL_PROVIDERS）：随应用预置，不可新建/删除
- *
- * 内置渠道分两类：
- * - 本机 Runtime（kscc-internal / codex-internal）：走本机进程或 App Server，不填 apiKey
- * - 内置网关（kscc-gateway）：直连公司内网 kscc 网关，凭据从本机 kscc 配置读取
- *
- * 内置渠道不可删除，仅允许改 name/models/enabled/defaultModelId。
- *
- * 见 docs/plans/2026-07-25-2.0-architecture-decision-dual-core.md §1.5。
- */
+/** HTTP 渠道存储；旧本机渠道只用于读取历史绑定，不参与运行或选择。 */
 import { randomUUID } from 'node:crypto'
 import { safeStorage } from 'electron'
 import type {
@@ -29,29 +14,24 @@ import {
   inferContextWindow,
   isBuiltinChannelProvider,
   isGatewayProvider,
-  isLegacyCliProvider,
   isLocalRuntimeProvider,
-  PROVIDER_DEFAULT_URLS,
-  PROVIDER_LABELS,
 } from '@tagent/shared'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
 import { getChannelsPath } from '../config/config-paths'
 import {
-  CODEX_DEFAULT_MODEL_ID,
   CODEX_DEFAULT_MODELS,
-  CODEX_LEGACY_MODEL_ID,
   getDefaultModelsForProvider,
   KSCC_DEFAULT_MODELS,
-  KSCC_DEFAULT_MODEL_ID,
 } from './default-models'
+import { GATEWAY_CREDENTIAL_MISSING_MESSAGE, readGatewayApiKey } from './gateway-credential'
 import {
-  GATEWAY_CREDENTIAL_MISSING_MESSAGE,
-  readGatewayApiKey,
-} from './gateway-credential'
-
-/** 启用内置网关渠道但本机无 kscc 凭据时的统一错误文案（与 session-service 一致）。 */
-export const KSCC_MISSING_MESSAGE = GATEWAY_CREDENTIAL_MISSING_MESSAGE
-
+  isKsccProvider,
+  isTokenHubProvider,
+  readCodexModelProviders,
+  resolveCodexConfigApiKey,
+  resolveCodexConfigProtocol,
+  type CodexModelProviderConfig,
+} from './codex-config'
 /** 配置版本号 */
 const CONFIG_VERSION = 1
 
@@ -68,7 +48,7 @@ export function getCodexChannelId(): string | undefined {
 /**
  * 取新会话默认外部渠道。
  *
- * 外部渠道是 Pi 主线；本机网关 / Codex 只在用户明确选择对应内置渠道时参与。
+ * 只选择已启用 HTTP 渠道，不回落到旧本机 Runtime。
  */
 export function getDefaultExternalChannelId(): string | undefined {
   const external = readConfig().channels.filter(
@@ -147,29 +127,66 @@ function normalizeDefaultModelId(models: ChannelModel[], defaultModelId?: string
 /** 列出全部渠道（apiKey 保持加密，返回给渲染层不泄露明文） */
 export function listChannels(): Channel[] {
   return readConfig().channels
+    .filter((channel) => !isLocalRuntimeProvider(channel.provider))
+    .filter((channel) => isManagedCodexChannelAvailable(channel))
+    .map(withCredentialStatus)
+}
+
+function isManagedCodexChannelAvailable(channel: Channel): boolean {
+  if (channel.id !== 'codex-kscc' && channel.id !== 'codex-tokenhub') return true
+  return Boolean(getCodexConfigProvider(channel.id))
+}
+
+function withCredentialStatus(channel: Channel): Channel {
+  const codexProvider = getCodexConfigProvider(channel.id)
+  if (codexProvider) {
+    return {
+      ...channel,
+      scope: 'internal',
+      baseUrl: codexProvider.baseUrl,
+      apiProtocol: resolveCodexConfigProtocol(codexProvider),
+      credentialStatus: resolveCodexConfigApiKey(codexProvider) ? 'ready' : 'missing',
+    }
+  }
+  if (!isGatewayProvider(channel.provider)) return channel
+  return { ...channel, credentialStatus: readGatewayApiKey() || decryptKey(channel.apiKey) ? 'ready' : 'missing' }
 }
 
 /** 取单个渠道 */
 export function getChannel(id: string): Channel | undefined {
-  return readConfig().channels.find((c) => c.id === id)
+  const channel = readConfig().channels.find((c) => c.id === id)
+  return channel ? withCredentialStatus(channel) : undefined
 }
 
 /**
  * 取明文 apiKey（adapter 发送时用）。
  *
- * - 本机 Runtime 渠道：空串（凭据由本机进程自持）
- * - 内置网关渠道：从本机 kscc 配置读取（不落 channels.json）
- * - 外部渠道：解密存储的密文
+ * KSCC HTTP 网关自动读取本机环境；其他 HTTP 渠道解密用户保存的凭据。
  */
 export function getDecryptedApiKey(id: string): string {
   const ch = getChannel(id)
   if (!ch) return ''
-  if (isGatewayProvider(ch.provider)) return readGatewayApiKey()
+  const codexProvider = getCodexConfigProvider(id)
+  if (codexProvider) return resolveCodexConfigApiKey(codexProvider)
   if (isLocalRuntimeProvider(ch.provider)) return ''
+  if (isGatewayProvider(ch.provider)) return readGatewayApiKey() || decryptKey(ch.apiKey)
   return decryptKey(ch.apiKey)
 }
 
+function getCodexConfigProvider(id: string): CodexModelProviderConfig | undefined {
+  const prefix = id === 'codex-kscc' ? isKsccProvider : id === 'codex-tokenhub' ? isTokenHubProvider : undefined
+  return prefix ? readCodexModelProviders().find(prefix) : undefined
+}
+
 /** 创建渠道 */
+function validateHttpUrl(value: string): void {
+  try {
+    const url = new URL(value)
+    if (url.protocol === 'http:' || url.protocol === 'https:') return
+  } catch { /* 使用统一错误 */ }
+  throw new Error('渠道地址必须是有效的 HTTP(S) 地址')
+}
+
 function validateApiProtocol(value: unknown): ChannelApiProtocol | undefined {
   if (value === undefined || value === null) return undefined
   if (value === 'anthropic-messages' || value === 'openai-responses' || value === 'openai-chat') return value
@@ -181,15 +198,17 @@ export function createChannel(input: ChannelCreateInput): Channel {
   if (isBuiltinChannelProvider(input.provider)) {
     throw new Error('内置渠道不可手动创建')
   }
+  validateHttpUrl(input.baseUrl)
   const now = Date.now()
   const models = input.models.length > 0 ? input.models : getDefaultModelsForProvider(input.provider)
   const channel: Channel = {
     id: randomUUID(),
     name: input.name,
     provider: input.provider,
+    scope: 'external',
     ...(apiProtocol ? { apiProtocol } : {}),
     baseUrl: input.baseUrl,
-    // createChannel 已拒绝本机 Runtime Provider，这里只处理外部渠道凭据。
+    // 自动读取的 KSCC 凭据不会复制到配置。
     apiKey: encryptApiKey(input.apiKey),
     models,
     defaultModelId: normalizeDefaultModelId(models, input.defaultModelId),
@@ -200,7 +219,7 @@ export function createChannel(input: ChannelCreateInput): Channel {
   const config = readConfig()
   config.channels.push(channel)
   writeConfig(config)
-  return channel
+  return withCredentialStatus(channel)
 }
 
 /** 更新渠道（部分字段）。本机 Runtime 仅允许改 name/models/enabled/defaultModelId */
@@ -211,15 +230,6 @@ export function updateChannel(id: string, patch: ChannelUpdateInput): Channel | 
   if (!existing) return undefined
 
   const builtin = isBuiltinChannelProvider(existing.provider)
-  // 无本机 kscc 凭据时禁止启用内置网关渠道（避免用户「打开」后发送才炸）
-  if (
-    isGatewayProvider(existing.provider) &&
-    patch.enabled === true &&
-    !readGatewayApiKey()
-  ) {
-    throw new Error(KSCC_MISSING_MESSAGE)
-  }
-
   const models = patch.models ?? existing.models
   const updated: Channel = {
     ...existing,
@@ -230,10 +240,13 @@ export function updateChannel(id: string, patch: ChannelUpdateInput): Channel | 
     updatedAt: Date.now(),
   }
 
-  if (!builtin) {
+  const internal = existing.scope === 'internal' || builtin
+
+  if (!internal) {
     if (patch.provider && isBuiltinChannelProvider(patch.provider)) {
       throw new Error('API 渠道不能改为内置渠道')
     }
+    if (patch.baseUrl !== undefined) validateHttpUrl(patch.baseUrl)
     if (patch.apiProtocol !== undefined) {
       const protocol = validateApiProtocol(patch.apiProtocol)
       if (protocol) updated.apiProtocol = protocol
@@ -249,16 +262,19 @@ export function updateChannel(id: string, patch: ChannelUpdateInput): Channel | 
   }
   // 本机 Runtime：provider/baseUrl/apiKey 忽略（内置，用户改不了）
 
+  if (isGatewayProvider(updated.provider) && updated.enabled && !readGatewayApiKey() && !decryptKey(updated.apiKey)) {
+    throw new Error(GATEWAY_CREDENTIAL_MISSING_MESSAGE)
+  }
   config.channels[idx] = updated
   writeConfig(config)
-  return updated
+  return withCredentialStatus(updated)
 }
 
 /** 删除渠道。本机 Runtime 渠道不可删（按 provider 识别） */
 export function deleteChannel(id: string): { ok: boolean; error?: string } {
   const ch = getChannel(id)
-  if (ch && isBuiltinChannelProvider(ch.provider)) {
-    return { ok: false, error: '内置渠道不可删除' }
+  if (ch && (ch.scope === 'internal' || isBuiltinChannelProvider(ch.provider))) {
+    return { ok: false, error: '内部渠道不可删除' }
   }
   const config = readConfig()
   const next = config.channels.filter((c) => c.id !== id)
@@ -269,229 +285,77 @@ export function deleteChannel(id: string): { ok: boolean; error?: string } {
   return { ok: true }
 }
 
-/**
- * 启动时确保内置网关渠道存在（幂等：按 provider 查重，不覆盖已有记录）。
- *
- * 渠道页把内置渠道显示为不可新建/删除的卡片；凭据来自本机 kscc 配置，
- * 因此只建记录、不写 apiKey。
- */
-export function seedBuiltinChannels(): void {
-  const config = readConfig()
-  const expectedUrl = PROVIDER_DEFAULT_URLS['kscc-gateway']
-  const existing = config.channels.filter((c) => isGatewayProvider(c.provider))
+/** 兼容入口：迁移已有渠道，并按本机 KSCC 环境补齐内置 HTTP 渠道。 */
+export function seedBuiltinChannels(): void { migrateHttpChannels() }
 
-  if (existing.length > 0) {
-    // 修正历史 baseUrl：早期写成带 /v1 的地址，会被 Anthropic SDK 重复拼成
-    // /v1/v1/messages 而 404。
-    let changed = false
-    const next = config.channels.map((c) => {
-      if (isGatewayProvider(c.provider) && c.baseUrl !== expectedUrl) {
-        changed = true
-        return { ...c, baseUrl: expectedUrl, updatedAt: Date.now() }
+/**
+ * 保留 Pi/HTTP 连接和历史 ID；恢复被通用迁移改名的 KSCC 自动认证网关。
+ *
+ * 打包版不会携带开发机的 channels.json，因此不能依赖配置文件里预先存在
+ * `kscc-gateway`。只要本机能读到 KSCC 凭据，就自动创建一次内置网关卡片。
+ * 已存在的渠道不覆盖用户的名称、地址、模型和启用状态。
+ */
+export function migrateHttpChannels(): void {
+  const config = readConfig()
+  let changed = false
+  for (const channel of config.channels) {
+    if (isLocalRuntimeProvider(channel.provider)) {
+      if (channel.enabled) { channel.enabled = false; changed = true }
+    } else if (isGatewayProvider(channel.provider)) {
+      if (!channel.apiProtocol) { channel.apiProtocol = 'anthropic-messages'; changed = true }
+      const ready = Boolean(readGatewayApiKey() || decryptKey(channel.apiKey))
+      const wasRenamed = channel.name === 'HTTP 网关' || channel.name === 'HTTP 网关（兼容旧配置）'
+      if (wasRenamed && ready && !channel.enabled) { channel.enabled = true; changed = true }
+      if (!ready && channel.enabled) { channel.enabled = false; changed = true }
+      if (wasRenamed || ['金山云网关', 'KSCC 内网', 'KSCC 内网网关'].includes(channel.name)) {
+        channel.name = 'KSCC 网关'; changed = true
       }
-      return c
-    })
-    if (changed) {
-      writeConfig({ ...config, channels: next })
-      console.log('[渠道存储] 已修正内置网关渠道 baseUrl')
     }
-    return
   }
 
-  const models = KSCC_DEFAULT_MODELS.map((m) => ({ ...m }))
-  const now = Date.now()
-  config.channels.push({
-    id: randomUUID(),
-    name: PROVIDER_LABELS['kscc-gateway'],
-    provider: 'kscc-gateway',
-    apiProtocol: 'anthropic-messages',
-    baseUrl: expectedUrl,
-    apiKey: '',
-    models,
-    defaultModelId: normalizeDefaultModelId(models, KSCC_DEFAULT_MODEL_ID),
-    enabled: Boolean(readGatewayApiKey()),
-    createdAt: now,
-    updatedAt: now,
-  })
-  writeConfig(config)
-  console.log('[渠道存储] 已创建内置网关渠道')
-}
-
-/**
- * 启动时同步内置网关渠道的可用性：本机无 kscc 凭据则强制停用。
- * 不自动重新启用（用户配好 kscc 后需在渠道页手动打开，或点「测试」确认后启用）。
- * @returns 被强制停用的渠道数
- */
-export function syncGatewayChannelAvailability(): number {
-  const ready = Boolean(readGatewayApiKey())
-  if (ready) return 0
-  const config = readConfig()
-  let changed = 0
-  const next = config.channels.map((c) => {
-    if (!isGatewayProvider(c.provider) || !c.enabled) return c
-    changed++
-    return { ...c, enabled: false, updatedAt: Date.now() }
-  })
-  if (changed > 0) {
-    writeConfig({ ...config, channels: next })
-    console.warn(
-      `[渠道存储] 本机未检测到 kscc 凭据，已强制停用 ${changed} 个内置网关渠道`,
-    )
-  }
-  return changed
-}
-
-/**
- * 启动迁移：清理重复的 legacy `kscc-internal` 渠道记录。
- *
- * CLI 通路移除后这些记录已不可运行（不出现在渠道页、进不了任何内核），
- * 但历史上可能因多次迁移留下同 provider 的多条记录。保留第一条，其余删除。
- *
- * 只删**重复**项：唯一一条 legacy 记录（若有旧会话绑定）原样保留。
- * @returns 被删除的条数
- */
-export function dedupeLegacyKsccChannels(): number {
-  const config = readConfig()
-  let kept = false
-  let removed = 0
-  const next = config.channels.filter((c) => {
-    if (!isLegacyCliProvider(c.provider)) return true
-    if (kept) {
-      removed++
-      return false
+  const codexProviders = readCodexModelProviders()
+  const managedProviders = [
+    { id: 'codex-kscc', name: 'KSCC 网关（内部）', provider: 'kscc-gateway' as const, match: isKsccProvider },
+    { id: 'codex-tokenhub', name: 'TokenHub（内部）', provider: 'custom' as const, match: isTokenHubProvider },
+  ]
+  for (const managed of managedProviders) {
+    const source = codexProviders.find(managed.match)
+    if (!source) continue
+    const existing = config.channels.find((channel) => channel.id === managed.id)
+    const now = Date.now()
+    const models = existing?.models?.length ? existing.models : getDefaultModelsForProvider(managed.provider)
+    const next = {
+      id: managed.id,
+      name: managed.name,
+      provider: managed.provider,
+      scope: 'internal' as const,
+      apiProtocol: resolveCodexConfigProtocol(source),
+      baseUrl: source.baseUrl,
+      apiKey: '',
+      models,
+      defaultModelId: existing?.defaultModelId ?? models.find((model) => model.enabled)?.id,
+      enabled: existing?.enabled ?? true,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
     }
-    kept = true
-    return true
-  })
-  if (removed === 0) return 0
-  writeConfig({ ...config, channels: next })
-  console.log(`[渠道存储] 已清理 ${removed} 条重复的 legacy kscc 渠道记录`)
-  return removed
-}
-
-/** Codex Runtime 安装后启用本机渠道；不可用时只停用，不覆盖用户主动停用。 */
-export function syncCodexChannelAvailability(
-  enableIfAvailable = false,
-  ready?: boolean,
-): number {
-  // 不在同步渠道 CRUD / 启动路径中探测 Runtime。ready 由异步探针或安装成功回调提供。
-  if (ready === undefined) return 0
-  const config = readConfig()
-  let changed = 0
-  const next = config.channels.map((c) => {
-    if (c.provider !== 'codex-internal') return c
-    if (!ready && c.enabled) {
-      changed++
-      return { ...c, enabled: false, updatedAt: Date.now() }
-    }
-    if (ready && enableIfAvailable && !c.enabled) {
-      changed++
-      return { ...c, enabled: true, updatedAt: Date.now() }
-    }
-    return c
-  })
-  if (changed > 0) writeConfig({ ...config, channels: next })
-  return changed
-}
-
-/**
- * 启动迁移：把 KSCC_DEFAULT_MODELS 中尚未出现的模型追加到已有内置网关渠道。
- * seed 对已存在渠道是幂等跳过的，否则网关新上的模型进不了选项。
- * 不改用户已有项的 enabled / 顺序 / 自定义字段；仅按 id 追加缺项。
- * @returns 追加的模型条数
- */
-export function syncKsccDefaultModels(): number {
-  const config = readConfig()
-  let added = 0
-  const next = config.channels.map((c) => {
-    if (!isGatewayProvider(c.provider)) return c
-    const have = new Set(c.models.map((m) => m.id))
-    const missing = KSCC_DEFAULT_MODELS.filter((d) => !have.has(d.id)).map((m) => ({ ...m }))
-    if (missing.length === 0) return c
-    added += missing.length
-    return { ...c, models: [...c.models, ...missing], updatedAt: Date.now() }
-  })
-  if (added > 0) {
-    writeConfig({ ...config, channels: next })
-    console.log(`[渠道存储] 已为内置网关渠道追加 ${added} 个默认模型`)
-  }
-  return added
-}
-
-/**
- * 启动迁移：把 Codex 内置渠道从旧的占位模型升级为正式模型列表。
- *
- * 旧版本使用 `codex-default`，它既不是 Codex 的真实模型 ID，也会让
- * 会话元数据无法表达实际使用的模型。将旧占位项迁移为 Sol，再追加
- * Terra / Luna；已有的用户启用状态保留。
- *
- * @returns 发生变化的模型条数
- */
-export function syncCodexDefaultModels(): number {
-  const config = readConfig()
-  let changed = 0
-  const next = config.channels.map((channel) => {
-    if (channel.provider !== 'codex-internal') return channel
-
-    let models = channel.models
-    let modelListChanged = false
-    const legacy = models.find((model) => model.id === CODEX_LEGACY_MODEL_ID)
-    const hasSol = models.some((model) => model.id === CODEX_DEFAULT_MODEL_ID)
-
-    if (legacy && !hasSol) {
-      models = models.map((model) =>
-        model.id === CODEX_LEGACY_MODEL_ID
-          ? {
-              ...model,
-              ...CODEX_DEFAULT_MODELS[0],
-              enabled: model.enabled,
-            }
-          : model,
-      )
-      modelListChanged = true
-      changed++
-    } else if (legacy) {
-      models = models.filter((model) => model.id !== CODEX_LEGACY_MODEL_ID)
-      modelListChanged = true
-      changed++
-    }
-
-    const have = new Set(models.map((model) => model.id))
-    const missing = CODEX_DEFAULT_MODELS.filter((model) => !have.has(model.id)).map(
-      (model) => ({ ...model }),
-    )
-    const nextDefaultModelId =
-      channel.defaultModelId === CODEX_LEGACY_MODEL_ID ||
-      !channel.defaultModelId ||
-      !models.some(
-        (model) => model.id === channel.defaultModelId && model.enabled,
-      )
-        ? CODEX_DEFAULT_MODEL_ID
-        : channel.defaultModelId
-    const defaultChanged = nextDefaultModelId !== channel.defaultModelId
-    if (
-      missing.length === 0 &&
-      !modelListChanged &&
-      !defaultChanged
+    if (!existing) {
+      config.channels.push(next)
+      changed = true
+    } else if (
+      existing.name !== next.name ||
+      existing.provider !== next.provider ||
+      existing.scope !== next.scope ||
+      existing.apiProtocol !== next.apiProtocol ||
+      existing.baseUrl !== next.baseUrl ||
+      existing.defaultModelId !== next.defaultModelId ||
+      existing.enabled !== next.enabled ||
+      JSON.stringify(existing.models) !== JSON.stringify(next.models)
     ) {
-      return channel
+      Object.assign(existing, next)
+      changed = true
     }
-
-    changed += missing.length
-    if (defaultChanged) changed++
-    return {
-      ...channel,
-      models: [...models, ...missing],
-      defaultModelId: nextDefaultModelId,
-      updatedAt: Date.now(),
-    }
-  })
-
-  if (changed > 0) {
-    writeConfig({ ...config, channels: next })
-    console.log(`[渠道存储] 已为 codex-internal 升级正式模型列表，变更 ${changed} 项`)
   }
-  return changed
+  if (changed) writeConfig(config)
 }
 
 /**

@@ -1,15 +1,18 @@
 import {
   isLocalRuntimeProvider,
+  isGatewayProvider,
   PROVIDER_DEFAULT_URLS,
   type Channel,
   type ChannelCreateInput,
   type ChannelModel,
   type ChannelUpdateInput,
   type ChannelApiProtocol,
+  type ChannelScope,
   type ProviderType,
 } from '@tagent/shared'
 
 export interface ChannelDraft {
+  scope?: ChannelScope
   name: string
   provider: ProviderType
   baseUrl: string
@@ -27,12 +30,13 @@ export interface ChannelDraftValidation {
 
 export const CODEX_PROVIDER: ProviderType = 'codex-internal'
 
-export function isBuiltinProvider(provider: ProviderType): boolean {
-  return isLocalRuntimeProvider(provider)
+export function isBuiltinProvider(provider: ProviderType, scope?: ChannelScope): boolean {
+  return scope === 'internal' || isLocalRuntimeProvider(provider)
 }
 
 export function createChannelDraft(): ChannelDraft {
   return {
+    scope: 'external',
     name: '',
     provider: 'anthropic',
     baseUrl: PROVIDER_DEFAULT_URLS.anthropic,
@@ -46,6 +50,7 @@ export function createChannelDraft(): ChannelDraft {
 
 export function channelToDraft(channel: Channel): ChannelDraft {
   return {
+    scope: channel.scope,
     name: channel.name,
     provider: channel.provider,
     baseUrl: channel.baseUrl,
@@ -136,7 +141,7 @@ export function validateChannelDraft(
     } catch {
       errors.baseUrl = '请输入有效的 HTTP(S) 地址'
     }
-    if (mode === 'add' && !draft.apiKey.trim()) errors.apiKey = '新渠道需要 API Key'
+    if (mode === 'add' && !isGatewayProvider(draft.provider) && !draft.apiKey.trim()) errors.apiKey = '新渠道需要 API Key'
   }
 
   if (!draft.models.some((model) => model.enabled && model.id.trim())) {
@@ -161,7 +166,7 @@ export function buildCreateInput(draft: ChannelDraft): ChannelCreateInput {
 
 export function buildUpdateInput(draft: ChannelDraft): ChannelUpdateInput {
   const normalized = normalizeModels(draft.models, draft.defaultModelId)
-  const builtin = isBuiltinProvider(draft.provider)
+  const builtin = isBuiltinProvider(draft.provider, draft.scope)
   return {
     name: draft.name.trim(),
     provider: builtin ? undefined : draft.provider,

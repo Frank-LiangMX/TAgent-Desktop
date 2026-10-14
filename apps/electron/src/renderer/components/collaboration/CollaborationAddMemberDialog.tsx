@@ -4,7 +4,7 @@
  * 字段：显示名 + 执行后端 + 渠道/模型 + 是否协调者 + 角色（角色库 / 自定义 prompt）。
  * - 内核 = 渠道（kscc 内网走 kscc CLI；外部渠道走 Pi HTTP）
  * - Codex = 本机 Codex App Server（复用账号/CLI Runtime，不需要渠道或 API Key）
- * - 不选渠道时由主进程自动绑定默认渠道（kscc 优先），与建房间行为一致
+ * - 不选渠道时由主进程自动绑定默认渠道（HTTP 渠道），与建房间行为一致
  * - 模型随渠道联动；选「渠道默认」则不传 modelId
  * 表单控件全部用 @tagent/ui 主题化组件（Input / Select / Textarea / Switch）。
  */
@@ -107,15 +107,7 @@ export function CollaborationAddMemberDialog({
         setRoles([]);
         setBots([]);
       });
-    void window.electronAPI
-      .getCodexRuntimeStatus()
-      .then((status) => setCodexRuntimeStatus(status))
-      .catch((error) =>
-        setCodexRuntimeStatus({
-          available: false,
-          reason: error instanceof Error ? error.message : String(error),
-        }),
-      );
+
   }, [open]);
 
   const enabledChannels = useMemo(
@@ -198,7 +190,7 @@ export function CollaborationAddMemberDialog({
           <span className="text-[11px] text-muted-foreground">
             {backend === "codex"
               ? "Codex 使用本机账号 / Runtime"
-              : "不选渠道 = 自动（kscc 优先）"}
+              : "不选渠道 = 自动（HTTP 渠道）"}
           </span>
         </div>
 
@@ -292,15 +284,6 @@ export function CollaborationAddMemberDialog({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="channel">渠道 / Pi</SelectItem>
-            <SelectItem
-              value="codex"
-              disabled={codexRuntimeStatus?.available !== true}
-            >
-              Codex（账号 / CLI Runtime）
-            </SelectItem>
-            {cliWorkerOptions.length > 0 ? (
-              <SelectItem value="cli">CLI worker（本机工作区）</SelectItem>
-            ) : null}
           </SelectContent>
         </Select>
         {backend === "codex" ? (
@@ -370,11 +353,10 @@ export function CollaborationAddMemberDialog({
           }}
         >
           <SelectTrigger id="collab-add-member-channel" className="mt-1">
-            <SelectValue placeholder="自动（kscc 优先）" />
+            <SelectValue placeholder="自动（HTTP 渠道）" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="auto">自动（kscc 优先）</SelectItem>
-            <SelectItem value="codex-runtime">Codex Runtime（无需渠道）</SelectItem>
+            <SelectItem value="auto">自动（HTTP 渠道）</SelectItem>
             {enabledChannels.map((c) => (
               <SelectItem key={c.id} value={c.id}>
                 {c.name}

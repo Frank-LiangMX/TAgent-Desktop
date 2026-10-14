@@ -8,6 +8,13 @@ import {
 } from './channel-settings-model'
 
 describe('channel settings model', () => {
+  it('allows KSCC HTTP configuration with automatic credentials while retaining HTTP validation', () => {
+    const draft = { name: 'KSCC 网关', provider: 'kscc-gateway' as const, baseUrl: 'http://gateway.example',
+      apiKey: '', models: [{ id: 'glm-5.2', name: 'GLM', enabled: true }], defaultModelId: 'glm-5.2', enabled: true }
+    expect(validateChannelDraft(draft, 'add').valid).toBe(true)
+    expect(validateChannelDraft({ ...draft, baseUrl: 'file:///gateway' }, 'add').errors.baseUrl).toBeDefined()
+    expect(validateChannelDraft({ ...draft, provider: 'custom' }, 'add').errors.apiKey).toBeDefined()
+  })
   it('deduplicates models and chooses the first enabled model as default', () => {
     expect(normalizeModels([
       { id: ' model-a ', name: '', enabled: false },

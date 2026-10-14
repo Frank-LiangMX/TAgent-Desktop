@@ -14,6 +14,7 @@ import {
   FolderOpen,
   ShieldCheck,
   Sparkles,
+  X,
 } from 'lucide-react'
 import { Button, Input } from '@tagent/ui'
 import { DEFAULT_USER_NAME } from '@tagent/shared'
@@ -31,9 +32,10 @@ const FEATURES = [
 
 interface ProjectOnboardingProps {
   onOpenProject: () => void
+  onStartWithoutProject?: () => void
 }
 
-export function ProjectOnboarding({ onOpenProject }: ProjectOnboardingProps): JSX.Element {
+export function ProjectOnboarding({ onOpenProject, onStartWithoutProject }: ProjectOnboardingProps): JSX.Element {
   const [userProfile, setUserProfile] = useAtom(userProfileAtom)
   const saveUserProfile = useSetAtom(saveUserProfileAtom)
   const [nameInput, setNameInput] = useState('')
@@ -147,6 +149,20 @@ export function ProjectOnboarding({ onOpenProject }: ProjectOnboardingProps): JS
             <ArrowRight className="onboarding-open__arrow size-5" aria-hidden="true" />
           </button>
         </motion.div>
+
+        {onStartWithoutProject && (
+          <motion.button
+            type="button"
+            className="mx-auto mt-3 flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            onClick={onStartWithoutProject}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.35, ease: EASE, delay: 0.52 }}
+          >
+            <X className="size-3.5" aria-hidden="true" />
+            不在项目中工作
+          </motion.button>
+        )}
 
         <motion.div
           className="mt-7 grid grid-cols-1 gap-2.5 sm:grid-cols-3"

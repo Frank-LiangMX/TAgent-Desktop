@@ -49,16 +49,16 @@ export function SessionRecoveryActions({ current, channels, disabled, retryable,
   }
   const open = (next: 'model' | 'runtime'): void => {
     setMode(next); setChoice(''); setFailure('')
-    setRuntime(next === 'model' ? current.runtime : AGENT_RUNTIME_ORDER.find(r => r !== current.runtime) ?? 'pi')
+    setRuntime('pi')
   }
   return <div className="mt-2 flex flex-col gap-2 text-foreground">
     <div className="flex flex-wrap items-center gap-1">
       {retryable && <button type="button" className={`${buttonClass} bg-primary/10 text-primary`} disabled={locked} onClick={() => void recover(current)}>{pending ? '正在恢复…' : '继续当前模型'}</button>}
       <button type="button" className={buttonClass} disabled={locked} onClick={() => open('model')}>换模型继续</button>
-      <button type="button" className={buttonClass} disabled={locked} onClick={() => open('runtime')}>换内核接力</button>
+      {current.runtime !== 'pi' && <button type="button" className={buttonClass} disabled={locked} onClick={() => open('runtime')}>转为 Pi 继续</button>}
     </div>
     {mode && <div className="flex flex-col gap-2 rounded-lg border border-border bg-background/80 p-2">
-      {mode === 'runtime' && <label className="flex flex-wrap items-center gap-2 text-xs">目标内核
+      {mode === 'runtime' && current.runtime !== 'pi' && <label className="flex flex-wrap items-center gap-2 text-xs">目标内核
         <select aria-label="目标内核" className="min-w-0 rounded border border-border bg-background p-1.5" disabled={locked} value={runtime} onChange={e => { setRuntime(e.target.value as AgentRuntimeKind); setChoice('') }}>
           {AGENT_RUNTIME_ORDER.filter(r => r !== current.runtime).map(r => <option key={r} value={r} disabled={r === 'codex' && codexAvailable === false}>{AGENT_RUNTIME_LABELS[r]}{r === 'codex' && codexAvailable === false ? '（未安装）' : ''}</option>)}
         </select>
@@ -70,7 +70,7 @@ export function SessionRecoveryActions({ current, channels, disabled, retryable,
         </select>
       </label>
       {!targets.length && <p className="text-xs text-muted-foreground">没有可选模型，请在「设置 → 渠道」配置兼容的 API 渠道。</p>}
-      <p className="text-xs text-muted-foreground">{mode === 'runtime' ? '切换内核' : '切换渠道或模型'}将带上最近可见对话节选，不是完整上下文迁移。结果不明的操作需先核实。</p>
+      <p className="text-xs text-muted-foreground">{mode === 'runtime' ? '转为 Pi' : '切换渠道或模型'}将带上最近可见对话节选，不是完整上下文迁移。结果不明的操作需先核实。</p>
       <div className="flex gap-1">
         <button type="button" className={`${buttonClass} bg-primary/10 text-primary`} disabled={locked || !selected || (runtime === 'codex' && codexAvailable === false)} onClick={() => selected && void recover(selected)}>{pending ? '正在恢复…' : '确认并继续'}</button>
         <button type="button" className={buttonClass} disabled={pending} onClick={() => setMode(null)}>取消</button>

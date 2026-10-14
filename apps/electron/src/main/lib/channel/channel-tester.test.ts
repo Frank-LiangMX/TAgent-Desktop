@@ -38,6 +38,25 @@ afterEach(() => {
 })
 
 describe('testChannelConnection protocol requests', () => {
+  test('KSCC defaults to HTTP Messages and sends the required Bearer and client headers', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await testChannelConnection(channel('kscc-gateway', { baseUrl: 'http://gateway.example' }), 'test-kscc-key')
+    expect(result.success).toBe(true)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('http://gateway.example/v1/messages')
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      authorization: 'Bearer test-kscc-key', 'ksyun-code-type': 'code',
+    })
+    expect(result.message).not.toContain('test-kscc-key')
+  })
+  test('missing KSCC credentials explain automatic configuration', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await testChannelConnection(channel('kscc-gateway'), '')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('KSCC_AUTH_TOKEN')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
   test('explicit Responses protocol wins over an OpenAI legacy provider mapping', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}))
     vi.stubGlobal('fetch', fetchMock)

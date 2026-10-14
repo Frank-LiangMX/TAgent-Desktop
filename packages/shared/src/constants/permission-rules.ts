@@ -371,6 +371,12 @@ export const HIGH_RISK_PROACTIVE_TOOLS: readonly string[] = [
 
 /** 只读类内置工具（自动审批模式下免确认） */
 export const AUTO_MODE_READ_ONLY_TOOLS: readonly string[] = [
+  'browser_read_text',
+  'workbench_search',
+  'workbench_get',
+  'workbench_history',
+  'wps_collect_daily',
+  'wps_read_daily_evidence',
   'Skill',
   'TaskList',
   'TaskGet',

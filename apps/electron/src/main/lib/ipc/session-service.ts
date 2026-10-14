@@ -75,6 +75,12 @@ import type { PiAgentAdapterConfig } from "../adapters/pi/pi-agent-adapter";
 import { exitPlanService } from "../agent/agent-exit-plan-service";
 import { kbProposeSaveService } from "../kb/kb-propose-save-service";
 import {
+  buildPiWorkbenchTools,
+  injectWorkbenchMcpServer,
+  WORKBENCH_SYSTEM_PROMPT,
+} from "../workbench/workbench-agent-tools";
+import { workbenchService } from "../workbench/workbench-service";
+import {
   getAdapter,
   getPiAdapterIfPresent,
   PiAgentAdapter,
@@ -106,7 +112,6 @@ import {
   getManagedCodexRuntimeRelease,
   installManagedCodexRuntime,
 } from "../adapters/codex/codex-runtime-installer";
-import { syncCodexChannelAvailability } from "../channel/channel-store";
 import {
   buildOutputStylePrompt,
   buildRichContentSystemPrompt,
@@ -134,6 +139,7 @@ import {
   deleteSessionsByWorkspace,
   recallLastUnsentUserTurn,
 } from "../agent/session-store";
+import { runSessionAutoArchive } from "../agent/session-auto-archive";
 import {
   createStreamPersistGateState,
   feedStreamPersistGate,
@@ -1104,7 +1110,6 @@ export class SessionService {
               // 安装只让 Codex 渠道可用，不改写新会话默认核（仍为 KSCC）。
               // 安装成功后不清默认核缓存，避免把 Codex 抢成新会话默认。
               clearCodexRuntimeAsyncCache();
-              syncCodexChannelAvailability(true, true);
               return {
                 ok: true as const,
                 status: await getCodexRuntimeStatus(),
@@ -2542,6 +2547,10 @@ export class SessionService {
         const meta = getSessionMeta(id);
         return updateSessionMeta(id, { archived: !meta?.archived });
       },
+    );
+
+    ipcMain.handle(AGENT_IPC_CHANNELS.RUN_AUTO_ARCHIVE, async () =>
+      runSessionAutoArchive({ isActive: (id) => this.isSessionActive(id) }),
     );
 
     // 查会话生命状态（runtimes 内存 turnInFlight 优先 → meta.error → idle；archived 一并返回）
@@ -4261,6 +4270,11 @@ export class SessionService {
       const codexBrowserTools = buildPiBrowserTools({
         sessionId: input.sessionId,
       });
+      const codexWorkbenchTools = buildPiWorkbenchTools({
+        sessionId: input.sessionId,
+        executionMode,
+        store: workbenchService,
+      });
       const codexKbTools = buildPiKbTools({
         sessionId: input.sessionId,
         knowledgeBaseWritesEnabled: areKnowledgeBaseWritesEnabled(),
@@ -4279,7 +4293,7 @@ export class SessionService {
         toolMode: "full",
       }) : [];
       const dynamicToolRegistry = new CodexDynamicToolRegistry(
-        [...codexBrowserTools, ...codexKbTools, ...codexKanbanTools,
+        [...codexBrowserTools, ...codexWorkbenchTools, ...codexKbTools, ...codexKanbanTools,
           ...(executionMode === "work" && channel.provider !== "codex-internal"
             ? await buildDelegationHostTools(delegationHostInput()) : []),
         ].map(
@@ -4397,6 +4411,7 @@ export class SessionService {
         contextPromptAppend,
         executionMode === "chat" ? buildUserSystemPromptAppend() : "",
         BROWSER_SYSTEM_PROMPT,
+        WORKBENCH_SYSTEM_PROMPT,
         "## 身份与自我介绍\n你是 TAgent 的 Codex 主会话执行后端。不要提及 CLI、App Server 或出品方品牌；直接完成用户任务。",
         buildOutputStylePrompt(),
         CREW_ORCHESTRATION_ENABLED && executionMode === "work"
@@ -4604,6 +4619,11 @@ export class SessionService {
       } catch (err) {
         console.warn("[会话] 注入知识库 MCP 失败:", err);
       }
+      await injectWorkbenchMcpServer(mcpServers, {
+        sessionId: input.sessionId,
+        executionMode,
+        store: workbenchService,
+      });
       if (CREW_ORCHESTRATION_ENABLED && executionMode === "work") {
         try {
           await injectKanbanMcpServer(mcpServers, {
@@ -4650,6 +4670,7 @@ export class SessionService {
             // Chat：注入设置页默认系统提示词（内置或用户自定义）
             executionMode === "chat" ? buildUserSystemPromptAppend() : "",
             BROWSER_SYSTEM_PROMPT,
+            WORKBENCH_SYSTEM_PROMPT,
             "## 身份与自我介绍n你是一个专业的编程助手，帮助用户完成软件开发任务。回复时不要自我介绍，也不要提及你所属的 CLI 工具名或出品方品牌；直接以助手姿态回答用户的问题。",
             // W8：输出风格沟通红线（与 Pi 核 buildOutputStylePrompt 同文）
             buildOutputStylePrompt(),
@@ -4756,6 +4777,7 @@ export class SessionService {
       contextPromptAppend,
       piExecutionMode === "chat" ? buildUserSystemPromptAppend() : "",
       BROWSER_SYSTEM_PROMPT,
+      WORKBENCH_SYSTEM_PROMPT,
       CREW_ORCHESTRATION_ENABLED && piExecutionMode === "work"
         ? "## 看板派工工具n可用 kanban_create_board / kanban_add_task / kanban_list_*。长任务拆任务并指定 roleId。"
         : "",
@@ -4787,6 +4809,11 @@ export class SessionService {
           })
         : [];
     const browserExtra = buildPiBrowserTools({ sessionId: input.sessionId });
+    const workbenchExtra = buildPiWorkbenchTools({
+      sessionId: input.sessionId,
+      executionMode: piExecutionMode,
+      store: workbenchService,
+    });
     const kbExtra = buildPiKbTools({
       sessionId: input.sessionId,
       knowledgeBaseWritesEnabled: areKnowledgeBaseWritesEnabled(),
@@ -4797,7 +4824,12 @@ export class SessionService {
         );
       },
     });
-    const extraTools = [...browserExtra, ...kanbanExtra, ...kbExtra];
+    const extraTools = [
+      ...browserExtra,
+      ...workbenchExtra,
+      ...kanbanExtra,
+      ...kbExtra,
+    ];
     const opts = {
       sessionId: input.sessionId,
       prompt: input.prompt,
@@ -5362,6 +5394,11 @@ export class SessionService {
     }
     return this.moaInFlight.size > 0;
   }
+
+  /** 自动归档扫描使用：只要本会话当前有在途回合，就不能被归档。 */
+  isSessionActive(sessionId: string): boolean {
+    return Boolean(this.runtimes.get(sessionId)?.isTurnInFlight()) || this.moaInFlight.has(sessionId);
+  }
   /**
    * 后台 Automation 专用执行入口。
    * 不走 renderer IPC，也不参与协作室路由；仍复用当前 2.0 的 SessionRuntime、权限和持久化链路。
@@ -5373,6 +5410,7 @@ export class SessionService {
     model?: string
     workspaceId?: string
     contextPrompt?: string
+    waitForCompletion?: boolean
   }): Promise<void> {
     if (!getSessionMeta(input.sessionId)) {
       throw new Error(`自动任务会话不存在: ${input.sessionId}`)

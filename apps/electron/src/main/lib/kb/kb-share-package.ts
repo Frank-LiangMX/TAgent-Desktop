@@ -27,7 +27,10 @@ import {
   isKnowledgeBaseSourceAccessMode,
   isKnowledgeBaseSourceProvider,
 } from "@tagent/shared";
-import { listKnowledgeBases, createKnowledgeBase } from "./knowledge-base-store";
+import {
+  listKnowledgeBases,
+  createKnowledgeBase,
+} from "./knowledge-base-store";
 import {
   createKnowledgeBaseDocument,
   listKnowledgeBaseDocuments,
@@ -52,7 +55,9 @@ export interface BuildSharePackageResult {
 export function buildKnowledgeBaseSharePackage(
   knowledgeBaseId: string,
 ): BuildSharePackageResult {
-  const record = listKnowledgeBases().find((item) => item.id === knowledgeBaseId);
+  const record = listKnowledgeBases().find(
+    (item) => item.id === knowledgeBaseId,
+  );
   if (!record) throw new Error("知识库不存在");
   const documents = listKnowledgeBaseDocuments(knowledgeBaseId);
   const pkg: KnowledgeBaseSharePackage = {
@@ -82,6 +87,7 @@ function toSharePackageDocument(
 ): KnowledgeBaseSharePackageDocument {
   return {
     title: doc.title,
+    tags: doc.tags ?? [],
     content: doc.content,
     ...(isKnowledgeBaseDocumentKind(doc.kind) ? { kind: doc.kind } : {}),
     ...(doc.summary ? { summary: doc.summary } : {}),
@@ -148,18 +154,34 @@ export function importKnowledgeBaseSharePackage(
       knowledgeBaseId: record.id,
       title,
       content,
+      tags:
+        Array.isArray(item.tags) &&
+        item.tags.some((tag) => typeof tag === "string" && tag.trim())
+          ? item.tags.filter((tag): tag is string => typeof tag === "string")
+          : item.author === "agent"
+            ? ["未分类/历史导入"]
+            : [],
       ...(isKnowledgeBaseDocumentKind(item.kind) ? { kind: item.kind } : {}),
       ...(typeof item.summary === "string" && item.summary.trim()
         ? { summary: item.summary.trim() }
         : {}),
       ...(Array.isArray(item.sources) ? { sources: item.sources } : {}),
-      ...(Array.isArray(item.parseWarnings) ? { parseWarnings: item.parseWarnings } : {}),
-      ...(Array.isArray(item.uncertainties) ? { uncertainties: item.uncertainties } : {}),
-      ...(item.author === "user" || item.author === "agent" ? { author: item.author } : {}),
-      ...(item.status === "draft" || item.status === "confirmed" || item.status === "archived"
+      ...(Array.isArray(item.parseWarnings)
+        ? { parseWarnings: item.parseWarnings }
+        : {}),
+      ...(Array.isArray(item.uncertainties)
+        ? { uncertainties: item.uncertainties }
+        : {}),
+      ...(item.author === "user" || item.author === "agent"
+        ? { author: item.author }
+        : {}),
+      ...(item.status === "draft" ||
+      item.status === "confirmed" ||
+      item.status === "archived"
         ? { status: item.status }
         : {}),
-      ...(typeof item.snapshotAt === "number" && Number.isFinite(item.snapshotAt)
+      ...(typeof item.snapshotAt === "number" &&
+      Number.isFinite(item.snapshotAt)
         ? { snapshotAt: item.snapshotAt }
         : {}),
       ...(typeof item.originNote === "string" && item.originNote.trim()

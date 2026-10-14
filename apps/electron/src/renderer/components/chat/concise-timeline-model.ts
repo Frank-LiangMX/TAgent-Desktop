@@ -533,6 +533,23 @@ export function isFragmentedProgressText(text: string): boolean {
   return /^(?:let me|i(?:'|’)ll|i will|no output|that's odd|now (?:add|check|read|run)|let's|we need to|need to|hmm\b)/i.test(t)
 }
 
+/**
+ * 中文工具口播：每次读/搜/跑前的「先看看入口」「接着查缓存」。
+ * 没有发现、结论或完成信号，不该单独占一行进度。
+ */
+const ROUTINE_CN_NARRATION =
+  /^(?:我|咱|先|接着|接下来|然后|现在|再|继续|让我|准备|开始|换|去|来)?(?:先|再|继续|接着)?(?:看看|看一下|看|查看|查一下|查|搜|搜一下|搜索|读|读一下|读取|打开|列出|跑|跑一下|跑跑|执行|验证一下|确认一下|对照一下|检查一下)[^。！？.!?]{0,36}[。！？.!?]*$/u
+const MILESTONE_CN_PROGRESS =
+  /(?:发现|定位|根因|问题在|原因|结论|已(?:改|修|完|通|确认|修好|写好|跑通|验证)|(?:改|修|写|补)完|验证通过|测试通过|不通|失败|报错|阻塞|卡住|下一步)/u
+
+export function isRoutineNarrationText(text: string): boolean {
+  const t = text.trim()
+  if (!t || t.length > 48) return false
+  if (MILESTONE_CN_PROGRESS.test(t)) return false
+  if (/[`/\\]|\d/.test(t)) return false
+  return ROUTINE_CN_NARRATION.test(t)
+}
+
 function mergeAnswerIntoProcess(
   process: ProcessEntry[],
   answerTexts?: string[],
@@ -803,9 +820,10 @@ export function buildConciseTimeline(
       if (!displayText.trim()) continue
       const isFiller = !isRoundFinal && isFillerProgressText(displayText)
       const isFragment = !isRoundFinal && isFragmentedProgressText(displayText)
+      const isRoutine = !isRoundFinal && isRoutineNarrationText(displayText)
       // 工具调用前的 call / antml 尾段 / function_call 标记 → 不单独占 narrative 行
       const isArtifact = !isRoundFinal && isToolCallArtifactText(displayText)
-      if (isFiller || isFragment || isArtifact) continue
+      if (isFiller || isFragment || isRoutine || isArtifact) continue
       // live 时尾部正文先当 progress（运行队列打字机），避免 final 卡片闪现；
       // 回合结束后再升为 final。
       const tone: 'progress' | 'final' = i < lastToolIdx || isLive ? 'progress' : 'final'

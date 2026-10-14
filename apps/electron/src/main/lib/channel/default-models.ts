@@ -84,7 +84,7 @@ const EXTERNAL_DEFAULT_MODELS: Partial<Record<ProviderType, ChannelModel[]>> = {
 
 /** 取某 Provider 的默认模型列表（无预填则返回空数组，由用户手动填） */
 export function getDefaultModelsForProvider(provider: ProviderType): ChannelModel[] {
-  if (provider === 'kscc-internal') return KSCC_DEFAULT_MODELS.map((m) => ({ ...m }))
+  if (provider === 'kscc-internal' || provider === 'kscc-gateway') return KSCC_DEFAULT_MODELS.map((m) => ({ ...m }))
   if (provider === 'codex-internal') return CODEX_DEFAULT_MODELS.map((m) => ({ ...m }))
   const list = EXTERNAL_DEFAULT_MODELS[provider]
   return list ? list.map((m) => ({ ...m })) : []

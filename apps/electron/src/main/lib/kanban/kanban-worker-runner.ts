@@ -1,3 +1,4 @@
+import { buildPiKanbanTools } from './kanban-agent-tools'
 /**
  * 看板 headless 工人：一轮 Agent query 执行任务 body
  *
@@ -365,7 +366,7 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
     .map((m) => m.id)
   const sessionId = `kw_${task.id}`
   // 历史 kscc CLI 通路已移除：绑定该渠道的看板任务不再可运行。
-  if (channel.provider === 'kscc-internal') {
+  if (channel.provider === 'kscc-internal' || channel.provider === 'codex-internal') {
     return {
       error: '该渠道已停用（历史 kscc CLI 通路已移除），无法启动看板工人',
       errorSource: 'tagent',
@@ -388,8 +389,7 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
   }
   if (
     parentSessionId &&
-    parentBoundModelId &&
-    channel.provider !== 'codex-internal'
+    parentBoundModelId
   ) {
     try {
       validateDelegationModelSelection({
@@ -552,7 +552,6 @@ export async function runKanbanWorkerHeadless(task: KanbanTask): Promise<KanbanW
       }
       const sanitizedPath = workspaceId ?? ''
       const enabledMcp = sanitizedPath ? getEnabledMcpServers(sanitizedPath) : {}
-      const { buildPiKanbanTools } = await import('./kanban-agent-tools')
       const workerTools = buildPiKanbanTools({
         sessionId,
         channelId: channel.id,

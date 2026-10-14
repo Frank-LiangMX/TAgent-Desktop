@@ -31,6 +31,17 @@ const PROGRESS_COMPARISON_STOP_WORDS = new Set([
 
 const PROCESS_PREFIX = /^(?:我(?:先|会|将|准备|想|需要|来|再)|让我|接下来|然后|现在|换个|等等|可能|应该|不过|另外|先别)/u
 const COMMAND_LINE = /^(?:[$>#]|PS>|(?:运行|执行|调用|输入|打开|查看).*(?:命令|脚本|终端|PowerShell))/iu
+
+/**
+ * 连续探索旁白：模型在每次读/搜/跑之前都补一句「先看/接着查/再跑」。
+ * 这些句子没有新事实，只是下一个工具的口播；工具行本身已经说明在做什么。
+ */
+const ROUTINE_NARRATION =
+  /^(?:我|咱|先|接着|接下来|然后|现在|再|继续|让我|准备|开始|换|去|来)?(?:先|再|继续|接着)?(?:看看|看一下|看|查看|查一下|查|搜|搜一下|搜索|读|读一下|读取|打开|列出|跑|跑一下|跑跑|执行|验证一下|确认一下|对照一下|检查一下)[^。！？.!?]{0,40}[。！？.!?]?$/u
+
+/** 阶段切换 / 关键发现 / 完成：这些才值得占一条可见进度。 */
+const MILESTONE_PROGRESS =
+  /(?:发现|定位|根因|问题在|原因|结论|已(?:改|修|完|通|确认|修好|写好|跑通|验证)|(?:改|修|写|补)完|验证通过|测试通过|不通|失败|报错|阻塞|卡住|转去|改为|下一步(?:是|改|写|修))/u
 const PROGRESS_NEGATION = /(?:还没|尚未|没有|没进展|没通|没能|未(?:能|返回|通|显示)?|不(?:能|通|见)|只是)/u
 
 /** 中文阶段文案常把同一事实换成“查询/查到/解析”或“视口/显示/看见”。 */
@@ -86,6 +97,14 @@ function fitToLimit(text: string): string {
   return `${prefix.trimEnd()}…`
 }
 
+function isRoutineToolNarration(sentence: string): boolean {
+  const trimmed = sentence.trim()
+  if (!trimmed || trimmed.length > 48) return false
+  if (MILESTONE_PROGRESS.test(trimmed)) return false
+  if (/[`/\\]|\d/.test(trimmed)) return false
+  return ROUTINE_NARRATION.test(trimmed) || PROCESS_PREFIX.test(trimmed)
+}
+
 /** 将工具阶段的普通 assistant text 压成可落盘的阶段摘要。 */
 export function compactStageProgress(text: string): string | null {
   const normalized = text
@@ -96,8 +115,13 @@ export function compactStageProgress(text: string): string | null {
     .join('\n')
     .trim()
   if (!normalized) return null
-  const candidates = splitSentences(text).filter((sentence) => !COMMAND_LINE.test(sentence))
-  if (normalized.length <= STAGE_PROGRESS_MAX_CHARS && candidates.length <= 1) return normalized
+  const candidates = splitSentences(text).filter(
+    (sentence) => !COMMAND_LINE.test(sentence) && !isRoutineToolNarration(sentence),
+  )
+  if (candidates.length === 0) return null
+  if (normalized.length <= STAGE_PROGRESS_MAX_CHARS && candidates.length <= 1) {
+    return candidates[0] ?? null
+  }
   const informative = candidates.filter((sentence) => !PROCESS_PREFIX.test(sentence))
   const selected: string[] = []
   for (const sentence of informative.length > 0 ? informative : candidates) {

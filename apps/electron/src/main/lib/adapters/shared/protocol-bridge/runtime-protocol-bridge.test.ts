@@ -25,6 +25,80 @@ async function startUpstream(handler: (body: any, req: import('node:http').Incom
 }
 
 describe('runtime protocol bridge', () => {
+  it.each(['openai-chat', 'anthropic-messages'] as const)('restores non-streaming freeform tool calls from %s', async apiProtocol => {
+    const baseUrl = await startUpstream((body, _req, res) => {
+      const input = 'text(await tools.workbench_search({}))'
+      if (apiProtocol === 'openai-chat') {
+        expect(body.tools[0].function.parameters.required).toEqual(['input'])
+        res.end(JSON.stringify({ choices: [{ message: { tool_calls: [{ id: 'call_exec', function: { name: 'exec', arguments: JSON.stringify({ input }) } }] } }] }))
+      } else {
+        expect(body.tools[0].input_schema.required).toEqual(['input'])
+        res.end(JSON.stringify({ id: 'message_1', content: [{ type: 'tool_use', id: 'call_exec', name: 'exec', input: { input } }], stop_reason: 'tool_use' }))
+      }
+    })
+    const target = await registerRuntimeProtocolBridgeTarget({ runtime: 'codex', provider: 'test', model: 'test', baseUrl, apiKey: 'upstream-key', apiProtocol })
+    const response = await fetch(`${target.baseUrl}/responses`, {
+      method: 'POST', headers: { authorization: `Bearer ${target.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'test', stream: false, input: [{ role: 'user', content: 'read todos' }], tools: [{ type: 'namespace', name: 'functions', tools: [{ type: 'custom', name: 'exec', description: 'Run JavaScript' }] }] }),
+    })
+    expect(await response.json()).toMatchObject({ output: [expect.objectContaining({ type: 'custom_tool_call', name: 'exec', namespace: 'functions', input: 'text(await tools.workbench_search({}))' })] })
+    target.release()
+  })
+  it('bridges Codex freeform exec tools and their history through Chat function calling', async () => {
+    let requests = 0
+    const baseUrl = await startUpstream((body, _req, res) => {
+      requests++
+      expect(body.tools).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'function', function: expect.objectContaining({ name: 'exec', parameters: expect.objectContaining({ required: ['input'] }) }) })]))
+      if (requests === 2) {
+        expect(body.messages).toEqual(expect.arrayContaining([
+          expect.objectContaining({ role: 'assistant', tool_calls: [expect.objectContaining({ function: { name: 'exec', arguments: JSON.stringify({ input: 'text(await tools.workbench_search({}))' }) } })] }),
+          expect.objectContaining({ role: 'tool', content: 'stored todo' }),
+        ]))
+      }
+      res.setHeader('content-type', 'text/event-stream')
+      res.end(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_exec', function: { name: 'exec', arguments: JSON.stringify({ input: 'text(await tools.workbench_search({}))' }) } }] } }] })}\n\ndata: [DONE]\n\n`)
+    })
+    const target = await registerRuntimeProtocolBridgeTarget({ runtime: 'codex', provider: 'test', model: 'test', baseUrl, apiKey: 'upstream-key', apiProtocol: 'openai-chat' })
+    const tool = { type: 'namespace', name: 'functions', tools: [{ type: 'custom', name: 'exec', description: 'Run tools through JavaScript' }] }
+    const send = (input: unknown[]) => fetch(`${target.baseUrl}/responses`, {
+      method: 'POST', headers: { authorization: `Bearer ${target.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'test', stream: true, input }),
+    })
+    const text = await (await send([{ type: 'additional_tools', tools: [tool] }, { role: 'user', content: 'read todos' }])).text()
+    expect(text).toContain('"type":"custom_tool_call"')
+    expect(text).toContain('"namespace":"functions"')
+    expect(text).toContain('"input":"text(await tools.workbench_search({}))"')
+    expect(text).not.toContain('response.function_call_arguments.delta')
+    await (await send([
+      { type: 'additional_tools', tools: [tool] }, { role: 'user', content: 'read todos' },
+      { type: 'custom_tool_call', name: 'exec', call_id: 'call_exec', input: 'text(await tools.workbench_search({}))' },
+      { type: 'custom_tool_call_output', call_id: 'call_exec', output: 'stored todo' },
+    ])).text()
+    expect(requests).toBe(2)
+    target.release()
+  })
+  it.each([
+    ['codex', '\n\n'], ['claude-code', '\n\n'], ['codex', ''], ['claude-code', ''],
+  ] as const)('preserves HTTP 200 SSE errors instead of reporting success to %s (separator %j)', async (runtime, separator) => {
+    const baseUrl = await startUpstream((_body, _req, res) => {
+      res.setHeader('content-type', 'text/event-stream')
+      res.write('data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n')
+      res.end('data: {"error":{"message":"upstream overloaded"}}' + separator)
+    })
+    const target = await registerRuntimeProtocolBridgeTarget({
+      runtime, provider: 'test', model: 'test', baseUrl, apiKey: 'upstream-key', apiProtocol: 'openai-chat',
+    })
+    const response = await fetch(`${target.baseUrl}/${runtime === 'codex' ? 'responses' : 'v1/messages'}`, {
+      method: 'POST', headers: { authorization: `Bearer ${target.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'test', stream: true, input: 'hello', messages: [{ role: 'user', content: 'hello' }] }),
+    })
+    const text = await response.text()
+    expect(text).toContain('upstream overloaded')
+    expect(text).toContain(runtime === 'codex' ? 'event: response.failed' : 'event: error')
+    expect(text).not.toContain('event: response.completed')
+    expect(text).not.toContain('event: message_stop')
+    target.release()
+  })
   it('converts Claude Code Anthropic requests to OpenAI Chat and back', async () => {
     const baseUrl = await startUpstream((body, _req, res) => {
       expect(body.model).toBe('grok-4.6')

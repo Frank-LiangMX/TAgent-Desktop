@@ -226,7 +226,7 @@ export function AgentCatalogSettings({
   if (!profiles) {
     return (
       <div className="settings-page agent-catalog-settings-page">
-        <SettingsPageIntro title="Agent 接入" description="接入 Pi、Codex 或 Claude Code / KSCC，在聊天中选择使用。" />
+        <SettingsPageIntro title="Agent 接入" description="使用 Pi 内核，在 HTTP 渠道中选择模型。" />
         <AgentConnectionsOverview onNavigate={navigateFromOverview} />
         <div className="agent-behavior-loading" role={loadingError ? 'alert' : 'status'}>
           {loadingError ? <AlertCircle size={16} /> : <RefreshCw size={16} className="animate-spin" />}
@@ -239,7 +239,7 @@ export function AgentCatalogSettings({
 
   return (
     <div className="settings-page agent-catalog-settings-page">
-      <SettingsPageIntro title="Agent 接入" description="接入 Pi、Codex 或 Claude Code / KSCC，在聊天中选择使用。" />
+      <SettingsPageIntro title="Agent 接入" description="使用 Pi 内核，在 HTTP 渠道中选择模型。" />
       <AgentConnectionsOverview onNavigate={navigateFromOverview} />
 
       <details className="mt-5">
@@ -252,7 +252,7 @@ export function AgentCatalogSettings({
         {channelsError && <div className="mt-2 flex items-center gap-2 text-sm text-destructive" role="alert"><span>{channelsError}已保存的渠道或模型仍会保留显示。</span><Button variant="outline" size="sm" onClick={() => void loadChannels()}>重试渠道读取</Button></div>}
         <SettingsSection
           title="子任务预设"
-          description="Pi、Codex、Claude Code 预设可绑定兼容 API 渠道和模型；API Key 仍由渠道设置单独管理。"
+          description="Pi 子代理预设可绑定 HTTP API 渠道和模型；API Key 仍由渠道设置单独管理。"
           action={
             <Button variant="outline" size="sm" disabled={!dirty || saving} onClick={() => void save()}>
               {saving ? <RefreshCw size={13} className="animate-spin" /> : <Save size={13} />}
@@ -328,7 +328,7 @@ export function AgentCatalogSettings({
                                   disabled={saving}
                                   onChange={(event) => changeProfile(profile.id, { runtime: event.target.value as AgentRuntime })}
                                 >
-                                  {Object.entries(RUNTIME_LABELS).map(([value, label]) => (
+                                  {Object.entries(RUNTIME_LABELS).filter(([value]) => value === 'pi').map(([value, label]) => (
                                     <option key={value} value={value}>{label}</option>
                                   ))}
                                 </select>

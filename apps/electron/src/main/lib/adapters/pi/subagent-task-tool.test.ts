@@ -129,19 +129,23 @@ describe('subagent task delegation boundaries', () => {
     expect(validateSelection).not.toHaveBeenCalled()
   })
 
-  it('background Stop holds its reservation until settlement and never wakes the parent', async () => {
-    profiles.mockReturnValue([{ id: 'codex-review', name: 'review', runtime: 'codex', enabled: true, allowPiTask: true, allowBackground: true, approvalRequired: false, permissionProfile: 'read-only', workspacePolicy: 'inherit', capabilities: { tags: [] } }])
+  it('background Stop holds its reservation until Pi settles and never wakes the parent', async () => {
     const release = vi.fn()
     reserve.mockReturnValue(release)
-    let settle!: (value: unknown) => void
-    officialRun.mockImplementation(() => new Promise(resolve => { settle = resolve }))
-    const tool = makeTaskTool(fakePiAgentCore([]))
-    await tool.execute('background-stop', { agent: 'codex-review', prompt: 'inspect', selectionReason: 'review', mode: 'background' })
-    expect(officialRun).toHaveBeenCalledOnce()
+    let settle!: () => void
+    const pending = new Promise<void>(resolve => { settle = resolve })
+    const core = { Agent: class {
+      subscribe() { return () => {} }
+      async prompt() { await pending }
+      async waitForIdle() { await pending }
+      abort() {}
+    } }
+    const tool = makeTaskTool(core)
+    await tool.execute('background-stop', { subagent_type: 'explorer', prompt: 'inspect', mode: 'background' })
     const controller = register.mock.calls[0]![0].abort as AbortController
     controller.abort()
     expect(release).not.toHaveBeenCalled()
-    settle({ status: 'completed', text: 'late result', toolCalls: 0 })
+    settle()
     await vi.waitFor(() => expect(release).toHaveBeenCalledOnce())
     expect(enqueue).not.toHaveBeenCalled()
     expect(unregister).toHaveBeenCalledWith('background-stop')
@@ -247,12 +251,12 @@ describe('subagent task delegation boundaries', () => {
     expect(reserve).not.toHaveBeenCalled()
   })
 
-  it('official runtime 使用 profile 的 channel/model binding', async () => {
-    profiles.mockReturnValue([{ id: 'codex-review', name: 'Codex review', runtime: 'codex', enabled: true, allowPiTask: true, allowBackground: true, approvalRequired: false, channelId: 'codex-channel', modelId: 'codex-model', permissionProfile: 'read-only', workspacePolicy: 'inherit', capabilities: { tags: [] } }])
-    channels.mockReturnValue([externalChannel('parent-channel', 'parent-model'), externalChannel('codex-channel', 'codex-model')])
+  it('rejects an obsolete native profile before reserving a slot or invoking a runtime', async () => {
+    profiles.mockReturnValue([{ id: 'old', name: 'Old', runtime: 'codex', enabled: true, allowPiTask: true }])
     const tool = makeTaskTool(fakePiAgentCore([]))
-    await tool.execute('task-official', { agent: 'codex-review', prompt: 'inspect', selectionReason: 'review', mode: 'foreground' } as never, undefined)
-    expect(officialRun).toHaveBeenCalledWith(expect.objectContaining({ runtime: 'codex', channelId: 'codex-channel', modelId: 'codex-model' }))
+    await expect(tool.execute('old', { agent: 'old', prompt: 'inspect', mode: 'foreground' })).rejects.toThrow('仅支持 Pi')
+    expect(officialRun).not.toHaveBeenCalled()
+    expect(reserve).not.toHaveBeenCalled()
   })
 
   it('foreground finally 释放 reservation', async () => {

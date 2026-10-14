@@ -6,7 +6,7 @@
  * - 已物化会话：走事务性 `switchSessionRuntime`（忙时要求先停止；失败保持原选择）
  *
  * 三内核（ADR-0012）：Pi / Codex / Claude Code。
- * 目标内核没有可用渠道时仍允许点击，由切换流程给出配置提示，绝不静默改用其它内核；
+ * 目标内核没有可用渠道时仍允许点击，由切换流程给出配置提示，绝不静默换用其它内核；
  * 内部 backend 细节（codex-app-server / kscc）仍由 Chat 通过既有 meta 通道同步。
  */
 import { useState } from 'react'
@@ -48,13 +48,13 @@ export interface AgentRuntimeSelectorProps {
   channels: Channel[]
   /** 切换在途：禁用入口并显示转圈（调用方同时禁用发送） */
   pending?: boolean
-  /** 会话运行中：本切片要求用户先停止本轮再切换 */
+  /** 会话运行中：本切片要求用户先停止本轮 */
   busy?: boolean
   onSelect: (runtime: AgentRuntimeKind) => void
   codexRuntimeStatus?: CodexRuntimeStatus | null
   codexRuntimeInstalling?: boolean
   onInstallCodexRuntime?: () => void | Promise<void>
-  /** 草稿会话：切换只改本地，首条发送时生效 */
+  /** 草稿会话：切换只改本地，首条消息发送时生效 */
   draft?: boolean
   /** 窄栏：触发器只留图标 */
   compact?: boolean
@@ -112,7 +112,6 @@ export function AgentRuntimeSelector({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      {/* 固定 h-7 槽位，与「运行模式」/ 右侧模型钮垂直对齐 */}
       <div className="inline-flex h-7 shrink-0 items-center">
         <AppTooltip
           label={
@@ -167,9 +166,6 @@ export function AgentRuntimeSelector({
         {AGENT_RUNTIME_ORDER.map((kind) => {
           const Icon = RUNTIME_ICONS[kind]
           const selected = runtime === kind
-          // 目标核没有可用渠道时也保持可点击，让切换流程给出明确的配置提示。
-          // 不能在这里静默禁用，否则用户既看不到原因，也无法确认自己点到了目标核。
-          // Codex 的 Runtime 状态同样由切换流程统一校验；上游 API 协议由主进程桥接。
           return (
             <MenuPopoverItem
               key={kind}
@@ -222,7 +218,7 @@ export function AgentRuntimeSelector({
             ? '当前回合运行中：请先停止，再切换主 Agent。'
             : draft
               ? '草稿会话：切换只改本地选择，首条消息发送时生效。'
-            : '切换后从下一条消息起交给新内核，并带上最近可见对话的节选（不是完整迁移）。'}
+              : '切换后从下一条消息起交给新内核，并带上最近可见对话的节选（不是完整迁移）。'}
         </div>
         {!piAvailable ? (
           <div className="px-2 pb-1 text-[10.5px] leading-snug text-amber-700/90 dark:text-amber-400/90">

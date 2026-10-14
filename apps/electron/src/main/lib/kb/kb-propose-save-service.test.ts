@@ -35,11 +35,23 @@ function captureSender(captured: KbProposeSaveRequest[]) {
   return (request: KbProposeSaveRequest) => captured.push(request);
 }
 
+function taggedProposal(
+  sessionId: string,
+  input: import("./kb-propose-save-service").KbProposeSaveInput,
+  deps: import("./kb-propose-save-service").KbProposeSaveDeps,
+) {
+  return service.kbProposeSaveService.handleProposeSave(
+    sessionId,
+    { ...input, draft: { tags: ["知识/规范"], ...input.draft } },
+    deps,
+  );
+}
+
 describe("kb-propose-save-service", () => {
   test("confirm → 写入正式文档并 resolve ok:true + documentId", async () => {
     const kb = store.createKnowledgeBase({ name: "公约库" });
     const captured: KbProposeSaveRequest[] = [];
-    const pending = service.kbProposeSaveService.handleProposeSave(
+    const pending = taggedProposal(
       "session-svc",
       {
         knowledgeBaseId: kb.id,
@@ -79,7 +91,7 @@ describe("kb-propose-save-service", () => {
   test("reject → 零写入，resolve ok:false user_rejected", async () => {
     const kb = store.createKnowledgeBase({ name: "统计库" });
     const captured: KbProposeSaveRequest[] = [];
-    const pending = service.kbProposeSaveService.handleProposeSave(
+    const pending = taggedProposal(
       "session-svc",
       { knowledgeBaseId: kb.id, title: "不该写入的统计", content: "内容" },
       { sendToRenderer: captureSender(captured) },
@@ -96,14 +108,13 @@ describe("kb-propose-save-service", () => {
   test("clearSessionPending（会话停止）→ 零写入，resolve ok:false aborted，返回已清 requestId", async () => {
     const kb = store.createKnowledgeBase({ name: "规范库" });
     const captured: KbProposeSaveRequest[] = [];
-    const pending = service.kbProposeSaveService.handleProposeSave(
+    const pending = taggedProposal(
       "session-svc",
       { knowledgeBaseId: kb.id, title: "被中止的规范", content: "内容" },
       { sendToRenderer: captureSender(captured) },
     );
-    const cleared = service.kbProposeSaveService.clearSessionPending(
-      "session-svc",
-    );
+    const cleared =
+      service.kbProposeSaveService.clearSessionPending("session-svc");
     expect(cleared).toEqual([captured[0]!.requestId]);
     const result = await pending;
     expect(result).toEqual({ ok: false, reason: "aborted" });
@@ -114,7 +125,7 @@ describe("kb-propose-save-service", () => {
     const kb = store.createKnowledgeBase({ name: "快照库" });
     const controller = new AbortController();
     const captured: KbProposeSaveRequest[] = [];
-    const pending = service.kbProposeSaveService.handleProposeSave(
+    const pending = taggedProposal(
       "session-svc",
       { knowledgeBaseId: kb.id, title: "被中止的快照", content: "内容" },
       { sendToRenderer: captureSender(captured), signal: controller.signal },
@@ -129,20 +140,19 @@ describe("kb-propose-save-service", () => {
     const kb = store.createKnowledgeBase({ name: "隔离库" });
     const capA: KbProposeSaveRequest[] = [];
     const capB: KbProposeSaveRequest[] = [];
-    const pendingA = service.kbProposeSaveService.handleProposeSave(
+    const pendingA = taggedProposal(
       "session-svc",
       { knowledgeBaseId: kb.id, title: "A 文档", content: "A" },
       { sendToRenderer: captureSender(capA) },
     );
-    const pendingB = service.kbProposeSaveService.handleProposeSave(
+    const pendingB = taggedProposal(
       "session-other",
       { knowledgeBaseId: kb.id, title: "B 文档", content: "B" },
       { sendToRenderer: captureSender(capB) },
     );
     // 只清 session-svc
-    const cleared = service.kbProposeSaveService.clearSessionPending(
-      "session-svc",
-    );
+    const cleared =
+      service.kbProposeSaveService.clearSessionPending("session-svc");
     expect(cleared).toEqual([capA[0]!.requestId]);
     expect(await pendingA).toEqual({ ok: false, reason: "aborted" });
     // session-other 仍可正常 confirm
@@ -165,7 +175,7 @@ describe("kb-propose-save-service", () => {
   test("kind 透传到请求与落盘；写入正文不变", async () => {
     const kb = store.createKnowledgeBase({ name: "类型库" });
     const captured: KbProposeSaveRequest[] = [];
-    const pending = service.kbProposeSaveService.handleProposeSave(
+    const pending = taggedProposal(
       "session-svc",
       {
         knowledgeBaseId: kb.id,
@@ -194,7 +204,7 @@ describe("kb-propose-save-service", () => {
   test("kind=snapshot confirm → 文档带 kind=snapshot + snapshotAt + originNote", async () => {
     const kb = store.createKnowledgeBase({ name: "快照库" });
     const captured: KbProposeSaveRequest[] = [];
-    const pending = service.kbProposeSaveService.handleProposeSave(
+    const pending = taggedProposal(
       "session-svc",
       {
         knowledgeBaseId: kb.id,
@@ -221,7 +231,7 @@ describe("kb-propose-save-service", () => {
   test("无 kind confirm → 文档无 kind 字段（读取时归一 note），仍记 originNote", async () => {
     const kb = store.createKnowledgeBase({ name: "无类型库" });
     const captured: KbProposeSaveRequest[] = [];
-    const pending = service.kbProposeSaveService.handleProposeSave(
+    const pending = taggedProposal(
       "session-svc",
       { knowledgeBaseId: kb.id, title: "普通笔记", content: "内容" },
       { sendToRenderer: captureSender(captured) },

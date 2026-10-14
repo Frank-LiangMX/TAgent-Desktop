@@ -33,6 +33,84 @@ export interface WpsConfig {
   /** 最后登录的用户信息 */
   userName?: string
   userEmail?: string
+  userId?: string
+  companyId?: string
+  userRefreshExpiresAt?: number
+  authorizedScopes?: string[]
+  reportScope?: WpsReportScope
+}
+
+/** 采集本人发送的消息；额外选中的会话仅作为沟通上下文。 */
+export interface WpsReportScope {
+  includeChats: boolean
+  includeDocuments: boolean
+  chatIds: string[]
+}
+
+/** 只向界面返回配置状态，永不返回密钥或 token（包括密文）。 */
+export interface WpsPublicConfig {
+  /** 应用内已绑定 WPS 应用凭据，用户无需填写应用凭据。 */
+  available: boolean
+  reportScope: WpsReportScope
+}
+
+export interface WpsConnectionInput {
+  reportScope: WpsReportScope
+}
+
+/** 日报任务绑定授权时的账号和采集范围，换号后不可静默读取新账号。 */
+export interface WpsDailyReportSource extends WpsReportScope {
+  accountId: string
+  companyId?: string
+}
+
+export interface WpsChatSummary { id: string; title: string }
+
+export interface WpsDailyEvidence {
+  sourceId: string
+  kind: 'message' | 'document'
+  title: string
+  attribution: 'self' | 'context' | 'unknown'
+  timestamp?: number
+  url?: string
+  locator: Record<string, string>
+  content: string
+}
+
+export interface WpsDailyBundle {
+  date: string
+  accountId: string
+  companyId?: string
+  userName?: string
+  scope: WpsReportScope
+  collectedAt: number
+  complete: boolean
+  /** 接口或分页失败可重试；固定能力限制与截断不反复自动生成同一草稿。 */
+  retryable?: boolean
+  warnings: string[]
+  evidence: WpsDailyEvidence[]
+}
+
+export interface WpsCollectionSummary {
+  date: string
+  accountId: string
+  complete: boolean
+  warnings: string[]
+  evidenceCount: number
+  ownMessageCount: number
+  documentCount: number
+}
+
+export interface WpsDesktopApi {
+  getWpsConfig(): Promise<WpsPublicConfig>
+  saveWpsConfig(input: WpsConnectionInput): Promise<WpsPublicConfig>
+  getWpsUserAuth(): Promise<WpsUserAuthState>
+  loginWpsUser(): Promise<WpsUserAuthState>
+  logoutWpsUser(): Promise<WpsUserAuthState>
+  listWpsReportChats(): Promise<WpsChatSummary[]>
+  collectWpsDaily(): Promise<WpsCollectionSummary>
+  createWpsDailyReport(input: { channelId: string; modelId?: string; timeOfDay: string }): Promise<import('./automation').Automation>
+  onWpsUserAuthChanged(callback: (state: WpsUserAuthState) => void): () => void
 }
 
 /** WPS 配置保存输入（明文） */
@@ -69,6 +147,8 @@ export interface WpsUserAuthState {
   expiresAt?: number
   /** 登录中的错误信息 */
   errorMessage?: string
+  userId?: string
+  companyId?: string
 }
 
 export const WPS_IPC_CHANNELS = {
@@ -86,6 +166,9 @@ export const WPS_IPC_CHANNELS = {
   GET_USER_AUTH: 'wps:get-user-auth',
   CHECK_USER_AUTH: 'wps:check-user-auth',
   USER_AUTH_CHANGED: 'wps:user-auth-changed',
+  LIST_REPORT_CHATS: 'wps:list-report-chats',
+  COLLECT_DAILY: 'wps:collect-daily',
+  CREATE_DAILY_REPORT: 'wps:create-daily-report',
   // WPS CLI 工具通道
   CLI_LIST_USERS: 'wps:cli-list-users',
   CLI_SEARCH_USERS: 'wps:cli-search-users',

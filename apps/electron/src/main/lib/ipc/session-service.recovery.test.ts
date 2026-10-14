@@ -67,7 +67,7 @@ const adapter = {
   setModel: async () => {},
   hasActiveChannel: () => false,
 };
-registerAdapterFactory("claude-code", () => adapter as never);
+registerAdapterFactory("external", () => adapter as never);
 
 const CC_CHANNEL_ID = "cc-recovery";
 let service: ReturnType<typeof SessionService.create>;
@@ -100,8 +100,8 @@ function newBoundSession(patch: Record<string, unknown> = {}): string {
     title: "recovery test",
     channelId: CC_CHANNEL_ID,
     modelId: "claude-model",
-    agentRuntime: "claude-code",
-    internalBackend: "claude-code",
+    agentRuntime: "pi",
+    internalBackend: undefined,
     executionMode: "work",
     ...patch,
   } as never);
@@ -151,7 +151,7 @@ describe("SessionService explicit recovery", () => {
       prompt: "REPLAY_THE_OLD_TASK",
       channelId: CC_CHANNEL_ID,
       model: "claude-model",
-      agentRuntime: "claude-code",
+      agentRuntime: "pi",
       executionMode: "chat",
       internalBackend: "codex-app-server",
       attachments: [{
@@ -168,12 +168,12 @@ describe("SessionService explicit recovery", () => {
     await vi.waitFor(() => expect(calls).toHaveLength(1));
     expect(String(calls[0]?.prompt)).toContain(RECOVERY_CONTINUE_PROMPT);
     expect(String(calls[0]?.prompt)).not.toContain("REPLAY_THE_OLD_TASK");
-    expect(calls[0]).toMatchObject({ sessionId, model: "claude-model", executionMode: "work", sdkPermissionMode: "plan" });
+    expect(calls[0]).toMatchObject({ sessionId, model: "claude-model", executionMode: "work" });
     expect(calls[0]?.attachments).toBeUndefined();
     expect(JSON.stringify(readPanelMessages(undefined, sessionId))).toContain(RECOVERY_CONTINUE_PROMPT);
     expect(JSON.stringify(readPanelMessages(undefined, sessionId))).not.toContain("REPLAY_THE_OLD_TASK");
     expect(JSON.stringify(readPanelMessages(undefined, sessionId))).not.toContain("do-not-replay.txt");
-    expect(getSessionMeta(sessionId)).toMatchObject({ channelId: CC_CHANNEL_ID, modelId: "claude-model", agentRuntime: "claude-code", executionMode: "work", permissionMode: "plan", internalBackend: "claude-code" });
+    expect(getSessionMeta(sessionId)).toMatchObject({ channelId: CC_CHANNEL_ID, modelId: "claude-model", agentRuntime: "pi", executionMode: "work", permissionMode: "plan" });
   });
 
   it("treats supplied binding fields as stale-window assertions, not binding overrides", async () => {
@@ -190,7 +190,7 @@ describe("SessionService explicit recovery", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("其他窗口变更");
     expect(calls).toHaveLength(0);
-    expect(getSessionMeta(sessionId)).toMatchObject({ channelId: CC_CHANNEL_ID, modelId: "claude-model", agentRuntime: "claude-code" });
+    expect(getSessionMeta(sessionId)).toMatchObject({ channelId: CC_CHANNEL_ID, modelId: "claude-model", agentRuntime: "pi" });
   });
 
   it("fails closed while a send, MoA, active turn, unsettled stop, or approval boundary exists", async () => {
@@ -269,7 +269,7 @@ describe("SessionService explicit recovery", () => {
     updateSessionMeta(sessionId, {
       runtimeHandoff: {
         from: "codex",
-        to: "claude-code",
+        to: "pi",
         content: "HANDOFF_ALREADY_ATTEMPTED",
         createdAt: 1,
         sourcePanelMessageCount: 0,

@@ -408,7 +408,7 @@ export function Chat({
 }: {
   session: SessionMeta;
   /** 草稿态（无 tab）改工作区：改 App 的 draftSession。已有 tab 时由 SessionRouter 不传 */
-  onDraftWorkspaceChange?: (id: string) => void;
+  onDraftWorkspaceChange?: (id: string | undefined) => void;
   /** 草稿态返回欢迎页（丢弃草稿）；会话页/线程态由 SessionRouter 不传 */
   onBack?: () => void;
   /**
@@ -1256,16 +1256,13 @@ export function Chat({
   /** 主 Agent 切换在本切片要求「先停止本轮」：运行中禁用入口，点也走同一提示。 */
   const agentSwitchBusy = running || runStartedAt != null;
   useEffect(() => {
-    // 无条件探测：Agent 选择器始终展示 Codex 可用性（不再只在「已选中本机渠道」时探测）
+    // 无条件探测：Agent 选择器始终展示 Codex 可用性
     let cancelled = false;
     void window.electronAPI
       .getCodexRuntimeStatus()
       .then((status) => {
         if (cancelled) return;
         setCodexRuntimeStatus(status);
-        // Explicit agentRuntime owns the engine. Channel-derived backend is only
-        // a legacy fallback for sessions that predate the explicit binding.
-        // 已物化会话不在这里改写，避免旧会话在打开时悄然换核。
         const selectedBackend =
           selectionChannel?.provider === "codex-internal"
             ? "codex-app-server"
@@ -1280,32 +1277,16 @@ export function Chat({
       })
       .catch((error) => {
         if (cancelled) return;
-        const fallbackStatus = {
+        setCodexRuntimeStatus({
           available: false,
           reason: error instanceof Error ? error.message : String(error),
           managedInstallSupported: false,
-        };
-        setCodexRuntimeStatus(fallbackStatus);
-        const selectedBackend =
-          selectionChannel?.provider === "codex-internal"
-            ? "codex-app-server"
-            : undefined;
-        if (
-          isDraftSession &&
-          !session.internalBackend &&
-          !internalBackendTouchedRef.current
-        ) {
-          setInternalBackend(selectedBackend);
-        }
+        });
       });
     return () => {
       cancelled = true;
     };
-  }, [
-    isDraftSession,
-    session.internalBackend,
-    selectionChannel?.provider,
-  ]);
+  }, [isDraftSession, session.internalBackend, selectionChannel?.provider]);
   const installCodexRuntime = useCallback(async (): Promise<void> => {
     if (codexRuntimeInstalling) return;
     setCodexRuntimeInstalling(true);
@@ -1314,12 +1295,9 @@ export function Chat({
       setCodexRuntimeStatus(result.status);
       await loadChannels();
       if (!result.ok) {
-        toast.error("Codex Runtime 安装失败", {
-          description: result.error,
-        });
+        toast.error("Codex Runtime 安装失败", { description: result.error });
         return;
       }
-      // 安装只让 Codex Runtime 可用，不把新草稿默认核改成 App Server。
       toast.success(
         result.reusedExistingInstall
           ? "Codex Runtime 已恢复可用"
@@ -1335,12 +1313,7 @@ export function Chat({
     } finally {
       setCodexRuntimeInstalling(false);
     }
-  }, [
-    codexRuntimeInstalling,
-    isDraftSession,
-    loadChannels,
-    session.internalBackend,
-  ]);
+  }, [codexRuntimeInstalling, loadChannels]);
   /**
    * 主 Agent 切换的事务入口（模型菜单里的跨内核 legacy 选择也走这里）。
    *
@@ -3096,7 +3069,7 @@ export function Chat({
     if (!selection) {
       alert(
         "没有可用的模型：请先在「设置 → 渠道」配置 Pi 的外部 API 渠道，" +
-          "或用输入区左侧的 Agent 选择器显式选择 Codex / Claude Code（KSCC）",
+          "请在「设置 → 渠道」配置 HTTP API 渠道",
       );
       return;
     }
@@ -3396,7 +3369,7 @@ export function Chat({
     if (!effectiveSelection) {
       alert(
         "没有可用的模型：请先在「设置 → 渠道」配置 Pi 的外部 API 渠道，" +
-          "或用输入区左侧的 Agent 选择器显式选择 Codex / Claude Code（KSCC）",
+          "请在「设置 → 渠道」配置 HTTP API 渠道",
       );
       return;
     }
@@ -3418,7 +3391,7 @@ export function Chat({
     if (!effectiveSelection) {
       alert(
         "没有可用的模型：请先在「设置 → 渠道」配置 Pi 的外部 API 渠道，" +
-          "或用输入区左侧的 Agent 选择器显式选择 Codex / Claude Code（KSCC）",
+          "请在「设置 → 渠道」配置 HTTP API 渠道",
       );
       return;
     }
@@ -3479,7 +3452,7 @@ export function Chat({
     if (!effectiveSelection) {
       alert(
         "没有可用的模型：请先在「设置 → 渠道」配置 Pi 的外部 API 渠道，" +
-          "或用输入区左侧的 Agent 选择器显式选择 Codex / Claude Code（KSCC）",
+          "请在「设置 → 渠道」配置 HTTP API 渠道",
       );
       return;
     }
@@ -3519,7 +3492,7 @@ export function Chat({
     if (!effectiveSelection) {
       alert(
         "没有可用的模型：请先在「设置 → 渠道」配置 Pi 的外部 API 渠道，" +
-          "或用输入区左侧的 Agent 选择器显式选择 Codex / Claude Code（KSCC）",
+          "请在「设置 → 渠道」配置 HTTP API 渠道",
       );
       return;
     }
@@ -3623,7 +3596,7 @@ export function Chat({
   };
 
   /** 新会话页：切换工作区（草稿态无 tab → 改 App 的 draftSession；已有 tab → 改 tab） */
-  const changeWorkspace = (id: string): void => {
+  const changeWorkspace = (id: string | undefined): void => {
     onDraftWorkspaceChange?.(id);
     setTabs((prev) =>
       prev.map((tab) =>
@@ -3728,6 +3701,8 @@ export function Chat({
       <AgentRuntimeSelector
         runtime={effectiveRuntime}
         channels={channels}
+        pending={runtimeSwitchPending || recoveryPending}
+        busy={agentSwitchBusy}
         draft
         onSelect={handleAgentRuntimeChange}
         codexRuntimeStatus={codexRuntimeStatus}
@@ -5132,7 +5107,7 @@ function stripPersistedPlanStepMarkers(message: TAgentMessage): TAgentMessage {
   return {
     ...message,
     content: message.content.map((block) =>
-      block.type === "text"
+      block.type === "text" && typeof block.text === "string"
         ? { ...block, text: block.text.replace(PLAN_STEP_MARKER_RE, "") }
         : block,
     ),

@@ -34,11 +34,17 @@ import type {
   KbProposeSaveKind,
   KbProposeSaveRequest,
 } from "@tagent/shared";
-import { normalizeKnowledgeBaseDocumentKind } from "@tagent/shared";
+import {
+  normalizeKnowledgeBaseDocumentKind,
+  normalizeWorkbenchTags,
+} from "@tagent/shared";
 import { getSessionMeta, listSessions } from "../agent/session-store";
 import { getDefaultKbIndex, normalizeKbRoots } from "./kb-fs-index";
 import type { KbSearchHit } from "./kb-fs-index";
-import { resolveKnowledgeBaseRootsForSession, listKnowledgeBases } from "./knowledge-base-store";
+import {
+  resolveKnowledgeBaseRootsForSession,
+  listKnowledgeBases,
+} from "./knowledge-base-store";
 import {
   attachmentMediaType,
   getKnowledgeBaseDocument,
@@ -49,9 +55,7 @@ import {
 } from "./knowledge-base-document-store";
 import { clampSearchLimit, tokenize } from "./kb-search-score";
 import { kbProposeSaveService } from "./kb-propose-save-service";
-import {
-  KNOWLEDGE_BASE_WRITES_DISABLED_MESSAGE,
-} from "./kb-write-policy";
+import { KNOWLEDGE_BASE_WRITES_DISABLED_MESSAGE } from "./kb-write-policy";
 import { resolveSessionAttachmentPath } from "../attachment-service";
 
 export interface KbToolContext {
@@ -91,7 +95,8 @@ export interface KbUnifiedSearchHit {
   title: string;
   score: number;
   excerpt: string;
-  matchedIn: "title" | "body" | "both";
+  matchedIn: "title" | "body" | "both" | "tags";
+  tags?: string[];
   // directory only：
   rootId?: string;
   rootLabel?: string;
@@ -134,7 +139,7 @@ export const KB_SYSTEM_PROMPT =
   "这些工具仅在会话已绑定的知识库 / 来源目录内检索；未绑定则 kb_list_roots 返回空、kb_search 返回空结果，绝不扫描全盘，也绝不返回正文。\n" +
   "知识库是否主动检索由当前会话的知识范围模式决定。\n" +
   "命中后请在回答中用 [KB: 文档标题] 或 [KB: 相对路径] 标注来源。知识库与你的记忆层完全隔离，不得把检索结果写入任何记忆。\n" +
-  "当用户在聊天里上传了附件（.docx/.pdf/.xlsx/.md/.txt/.csv），用户消息里会给出每个附件的 localPath；用 kb_read_attachment(localPath) 读取并解析为结构化文本或各工作表内容，作为整理知识草稿的输入。该工具只读当前会话的附件目录、不写入知识库、不自动保存；过大内容会在 warnings 里说明截断。整理成草稿后仍需用户确认才调用 kb_propose_save；提议保存时应尽量同时提交 draft.summary、draft.sources、draft.warnings、draft.uncertainties，供用户审核。\n" +
+  "当用户在聊天里上传了附件（.docx/.pdf/.xlsx/.md/.txt/.csv），用户消息里会给出每个附件的 localPath；用 kb_read_attachment(localPath) 读取并解析为结构化文本或各工作表内容，作为整理知识草稿的输入。该工具只读当前会话的附件目录、不写入知识库、不自动保存；过大内容会在 warnings 里说明截断。整理成草稿后仍需用户确认才调用 kb_propose_save；提议保存时应尽量同时提交 draft.tags（必填主题标签，复用适用来源标签）、draft.summary、draft.sources、draft.warnings、draft.uncertainties，供用户审核。\n" +
   "另有受控写入工具 kb_propose_save：当需要把整理好的结论/统计/公约/规范沉淀为正式文档时，调用它提议保存到当前会话绑定的知识库（须已挂库，且 knowledgeBaseId 必须是绑定列表里的库）。这是「提议保存」而非「直接写入」：调用后会弹确认横幅，用户确认后才会写入，工具返回 ok:true 才算保存成功。禁止凭空声称已保存；未挂库时不要调用本工具。可选 kind 标注类型：接口公约 contract、规范 norm、统计/常识快照 snapshot（自动记探查时间）、普通笔记 note 或省略。";
 
 /** 读取会话当前绑定信息（调用时读 meta，非 spawn 快照） */
@@ -146,7 +151,9 @@ function bindingForSession(sessionId: string): {
   if (!meta) return { knowledgeBaseIds: [], kbRoots: [] };
   return {
     knowledgeBaseIds: Array.isArray(meta.knowledgeBaseIds)
-      ? meta.knowledgeBaseIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim()))
+      ? meta.knowledgeBaseIds.filter(
+          (id): id is string => typeof id === "string" && Boolean(id.trim()),
+        )
       : [],
     kbRoots: resolveKnowledgeBaseRootsForSession(meta),
   };
@@ -195,7 +202,9 @@ export function resolveAvailableKnowledgeBases(
         const ids = Array.isArray(kb.relatedWorkspaceIds)
           ? kb.relatedWorkspaceIds
           : [];
-        return ids.some((id) => typeof id === "string" && id.trim() === workspaceId);
+        return ids.some(
+          (id) => typeof id === "string" && id.trim() === workspaceId,
+        );
       })
     : [];
   if (relatedKbs.length > 0) {
@@ -207,7 +216,10 @@ export function resolveAvailableKnowledgeBases(
 
   // 无关联库 → 「最近使用」兜底：从未挂库会话 metas 扫 knowledgeBaseIds，
   // 按「最近一次引用该库的会话 updatedAt」倒序取最多 3 个（频次作次序兜底）。
-  const recent = computeRecentlyUsedKnowledgeBases(allKbs, RECENT_AVAILABLE_LIMIT);
+  const recent = computeRecentlyUsedKnowledgeBases(
+    allKbs,
+    RECENT_AVAILABLE_LIMIT,
+  );
   return {
     bound: false,
     available: recent.map((kb) => toAvailableEntry(kb, false)),
@@ -249,8 +261,7 @@ function computeRecentlyUsedKnowledgeBases(
   const ranked = [...stats.entries()]
     .filter(([id]) => kbById.has(id))
     .sort(
-      (a, b) =>
-        b[1].lastUsedAt - a[1].lastUsedAt || b[1].count - a[1].count,
+      (a, b) => b[1].lastUsedAt - a[1].lastUsedAt || b[1].count - a[1].count,
     )
     .slice(0, limit)
     .map(([id]) => kbById.get(id)!);
@@ -331,7 +342,9 @@ export function buildKbPromptAppend(input: {
 
   const parts: string[] = [KB_SYSTEM_PROMPT, `\n${policy}`];
   // 已绑定：无需再向用户推荐挂载（刀 3）
-  parts.push("\n当前会话已挂载知识库，无需再向用户推荐挂载，也不要教如何挂载。");
+  parts.push(
+    "\n当前会话已挂载知识库，无需再向用户推荐挂载，也不要教如何挂载。",
+  );
 
   // 知识库正式文档
   if (kbIds.length > 0) {
@@ -353,14 +366,16 @@ export function buildKbPromptAppend(input: {
     parts.push(
       `\n当前会话绑定的知识库（${kbs.length} 个，正式文档共 ${docs.length} 篇）：\n${kbLines}`,
     );
-    parts.push("可在这些知识库的正式文档内用 kb_search 检索；用 kb_get(documentId) 读取命中的文档全文。");
+    parts.push(
+      "可在这些知识库的正式文档内用 kb_search 检索；用 kb_get(documentId) 读取命中的文档全文。",
+    );
     parts.push(
       "文档可能带 kind 标注（note 笔记 / contract 接口约定 / norm 规范 / snapshot 常识快照）；kb_search 与 kb_get 的 document 命中都会带 kind。" +
         "查用法 / 接口约定 / 规范 / 项目常识时优先关注 contract、norm、snapshot 这类短卡，按需用 kb_get 读全文；长 note 仅作补充，不要把整篇长文当公约复述。",
     );
     parts.push(
       knowledgeBaseWritesEnabled
-        ? "需要把整理好的结论/公约/统计/规范沉淀为正式文档时，调用 kb_propose_save(knowledgeBaseId, title, content, kind?, draft?) 提议保存到上述某个绑定库：接口公约用 kind:contract，规范用 norm，统计/常识快照用 snapshot（会自动记探查时间），普通笔记可省略 kind。请同时传 draft.summary、draft.sources、draft.warnings、draft.uncertainties 供用户审核。用户确认后才写入，只有工具返回 ok:true 才算保存成功，禁止凭空声称已保存。"
+        ? "需要把整理好的结论/公约/统计/规范沉淀为正式文档时，调用 kb_propose_save(knowledgeBaseId, title, content, kind?, draft?) 提议保存到上述某个绑定库：接口公约用 kind:contract，规范用 norm，统计/常识快照用 snapshot（会自动记探查时间），普通笔记可省略 kind。请同时传 draft.tags（必填主题标签，复用适用来源标签）、draft.summary、draft.sources、draft.warnings、draft.uncertainties 供用户审核。用户确认后才写入，只有工具返回 ok:true 才算保存成功，禁止凭空声称已保存。"
         : "当前版本暂不允许知识库文档写入；不要调用 kb_propose_save，也不要声称已保存任何知识库文档。",
     );
   }
@@ -370,8 +385,12 @@ export function buildKbPromptAppend(input: {
     const rootLines = roots
       .map((r) => `- ${r.label}（rootId=${r.id}）：${r.path}`)
       .join("\n");
-    parts.push(`\n当前会话绑定的来源目录（${roots.length} 个）：\n${rootLines}`);
-    parts.push("可在这些来源目录的 .md/.txt 内用 kb_search 检索；用 kb_get(path) 读取命中的单文件全文。");
+    parts.push(
+      `\n当前会话绑定的来源目录（${roots.length} 个）：\n${rootLines}`,
+    );
+    parts.push(
+      "可在这些来源目录的 .md/.txt 内用 kb_search 检索；用 kb_get(path) 读取命中的单文件全文。",
+    );
   }
   return parts.join("");
 }
@@ -394,10 +413,17 @@ function json(value: unknown): string {
  * 读取 Agent 提交的结构化草稿元数据。
  * 这是确认前的临时请求数据，做长度和类型收敛，避免坏参数撑爆 UI 或存储。
  */
-function parseStructuredDraft(value: unknown): KnowledgeBaseStructuredDraft | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+function parseStructuredDraft(
+  value: unknown,
+): KnowledgeBaseStructuredDraft | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
   const raw = value as Record<string, unknown>;
-  const trimList = (input: unknown, maxItems: number, maxChars: number): string[] =>
+  const trimList = (
+    input: unknown,
+    maxItems: number,
+    maxChars: number,
+  ): string[] =>
     Array.isArray(input)
       ? input
           .filter((item): item is string => typeof item === "string")
@@ -405,12 +431,19 @@ function parseStructuredDraft(value: unknown): KnowledgeBaseStructuredDraft | un
           .filter(Boolean)
           .slice(0, maxItems)
       : [];
-  const summary = typeof raw.summary === "string" ? raw.summary.trim().slice(0, 500) : "";
+  const summary =
+    typeof raw.summary === "string" ? raw.summary.trim().slice(0, 500) : "";
   const sources = Array.isArray(raw.sources)
     ? raw.sources
-        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+        .filter(
+          (item): item is Record<string, unknown> =>
+            Boolean(item) && typeof item === "object" && !Array.isArray(item),
+        )
         .map((item) => ({
-          label: typeof item.label === "string" ? item.label.trim().slice(0, 300) : "",
+          label:
+            typeof item.label === "string"
+              ? item.label.trim().slice(0, 300)
+              : "",
           ...(typeof item.location === "string" && item.location.trim()
             ? { location: item.location.trim().slice(0, 300) }
             : {}),
@@ -419,11 +452,19 @@ function parseStructuredDraft(value: unknown): KnowledgeBaseStructuredDraft | un
         .slice(0, 20)
     : [];
   const warnings = trimList(raw.warnings, 20, 500);
+  const tags = normalizeWorkbenchTags(trimList(raw.tags, 50, 80));
   const uncertainties = trimList(raw.uncertainties, 20, 500);
-  if (!summary && sources.length === 0 && warnings.length === 0 && uncertainties.length === 0) {
+  if (
+    !summary &&
+    sources.length === 0 &&
+    warnings.length === 0 &&
+    uncertainties.length === 0 &&
+    !tags.length
+  ) {
     return undefined;
   }
   return {
+    tags,
     ...(summary ? { summary } : {}),
     ...(sources.length > 0 ? { sources } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
@@ -497,9 +538,8 @@ export async function handleKbSearch(
 
   // 目录命中（rootId 仅过滤目录；文档不归属 root）
   const idx = getDefaultKbIndex();
-  const dirHits: KbDirectoryHit[] = kbRoots.length > 0
-    ? idx.search(kbRoots, query, { rootId, limit })
-    : [];
+  const dirHits: KbDirectoryHit[] =
+    kbRoots.length > 0 ? idx.search(kbRoots, query, { rootId, limit }) : [];
 
   const hits: KbUnifiedSearchHit[] = dirHits.map((h) => ({
     source: "directory",
@@ -527,6 +567,7 @@ export async function handleKbSearch(
         documentId: dh.documentId,
         ...(dh.chunkId ? { chunkId: dh.chunkId } : {}),
         kind: dh.kind,
+        tags: dh.tags ?? [],
         title: dh.title,
         score: dh.score,
         excerpt: dh.excerpt,
@@ -538,9 +579,7 @@ export async function handleKbSearch(
   }
 
   // 合并后按 score 降序、标题字典序兜底，统一 limit 截断
-  hits.sort(
-    (a, b) => b.score - a.score || a.title.localeCompare(b.title),
-  );
+  hits.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
   const capped = hits.slice(0, limit);
   return textResult(json({ count: capped.length, hits: capped }));
 }
@@ -580,6 +619,7 @@ export async function handleKbGet(
           ...(doc.snapshotAt ? { snapshotAt: doc.snapshotAt } : {}),
           ...(doc.originNote ? { originNote: doc.originNote } : {}),
           ...(doc.summary ? { summary: doc.summary } : {}),
+          tags: doc.tags ?? [],
           ...(doc.sources?.length ? { sources: doc.sources } : {}),
           ...(doc.parseWarnings?.length
             ? { parseWarnings: doc.parseWarnings }
@@ -593,8 +633,12 @@ export async function handleKbGet(
           updatedAt: doc.updatedAt,
           ...(doc.sourceUrl ? { sourceUrl: doc.sourceUrl } : {}),
           ...(doc.sourceProvider ? { sourceProvider: doc.sourceProvider } : {}),
-          ...(doc.sourceExternalId ? { sourceExternalId: doc.sourceExternalId } : {}),
-          ...(doc.sourceAccessMode ? { sourceAccessMode: doc.sourceAccessMode } : {}),
+          ...(doc.sourceExternalId
+            ? { sourceExternalId: doc.sourceExternalId }
+            : {}),
+          ...(doc.sourceAccessMode
+            ? { sourceAccessMode: doc.sourceAccessMode }
+            : {}),
           ...(doc.sourceSyncedAt ? { sourceSyncedAt: doc.sourceSyncedAt } : {}),
         }),
       );
@@ -649,7 +693,10 @@ export async function handleKbProposeSave(
   const content = typeof args.content === "string" ? args.content : "";
   const rawKind = args.kind;
   const kind: KbProposeSaveKind | undefined =
-    rawKind === "note" || rawKind === "contract" || rawKind === "norm" || rawKind === "snapshot"
+    rawKind === "note" ||
+    rawKind === "contract" ||
+    rawKind === "norm" ||
+    rawKind === "snapshot"
       ? (rawKind as KbProposeSaveKind)
       : undefined;
   const draft = parseStructuredDraft(args.draft);
@@ -683,9 +730,18 @@ export async function handleKbProposeSave(
   }
   if (!ctx.sendToRenderer) {
     return textResult(
-      json({ error: "未配置 propose-save 确认通道，无法安全写入（已拒绝静默写入）" }),
+      json({
+        error: "未配置 propose-save 确认通道，无法安全写入（已拒绝静默写入）",
+      }),
     );
   }
+  if (!draft?.tags?.length)
+    return textResult(
+      json({
+        error:
+          "整理成果必须提供 draft.tags 主题标签，优先复用已有标签，不使用无意义的泛称",
+      }),
+    );
 
   const result = await kbProposeSaveService.handleProposeSave(
     ctx.sessionId,
@@ -720,7 +776,8 @@ export async function handleKbReadAttachment(
   args: Record<string, unknown>,
   ctx: KbToolContext,
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  const localPath = typeof args.localPath === "string" ? args.localPath.trim() : "";
+  const localPath =
+    typeof args.localPath === "string" ? args.localPath.trim() : "";
   if (!localPath) {
     return textResult(json({ error: "localPath 不能为空" }));
   }
@@ -807,7 +864,8 @@ export function buildPiKbTools(ctx: KbToolContext): AgentTool[] {
         query: Type.String({ description: "关键词（空白/标点分词，OR 语义）" }),
         rootId: Type.Optional(
           Type.String({
-            description: "限定单个来源目录（= kb_list_roots 返回的 rootId；不影响正式文档命中）",
+            description:
+              "限定单个来源目录（= kb_list_roots 返回的 rootId；不影响正式文档命中）",
           }),
         ),
         limit: Type.Optional(
@@ -833,7 +891,8 @@ export function buildPiKbTools(ctx: KbToolContext): AgentTool[] {
         ),
         path: Type.Optional(
           Type.String({
-            description: "来源目录内的绝对路径或相对路径（来自 kb_search 的 directory 命中）",
+            description:
+              "来源目录内的绝对路径或相对路径（来自 kb_search 的 directory 命中）",
           }),
         ),
       }),
@@ -867,23 +926,34 @@ export function buildPiKbTools(ctx: KbToolContext): AgentTool[] {
         "提议把整理好的结论/统计/公约/规范作为正式文档保存到当前会话绑定的知识库（受控写入）。调用后会弹出确认横幅，用户确认后才写入；只有工具返回 ok:true 才算保存成功，禁止凭空声称已保存。未挂库、knowledgeBaseId 不在绑定列表、标题/正文为空会直接报错（不弹横幅）。可选 kind 标注文档类型：接口公约用 contract、规范用 norm、统计/常识快照用 snapshot（自动记探查时间）、普通笔记用 note 或省略。",
       parameters: Type.Object({
         knowledgeBaseId: Type.String({
-          description: "目标知识库 id（必须 ∈ 当前会话绑定的 knowledgeBaseIds；可用 kb_list_roots 查询）",
+          description:
+            "目标知识库 id（必须 ∈ 当前会话绑定的 knowledgeBaseIds；可用 kb_list_roots 查询）",
         }),
         title: Type.String({ description: "文档标题（trim 后非空）" }),
         content: Type.String({ description: "Markdown 正文（trim 后非空）" }),
         draft: Type.Optional(
           Type.Object({
             summary: Type.Optional(Type.String({ description: "草稿摘要" })),
+            tags: Type.Array(Type.String(), {
+              minItems: 1,
+              description: "必填主题标签，复用已有标签，可用主题/子主题",
+            }),
             sources: Type.Optional(
               Type.Array(
                 Type.Object({
                   label: Type.String({ description: "来源名称" }),
-                  location: Type.Optional(Type.String({ description: "页码、工作表、章节或行号" })),
+                  location: Type.Optional(
+                    Type.String({ description: "页码、工作表、章节或行号" }),
+                  ),
                 }),
               ),
             ),
-            warnings: Type.Optional(Type.Array(Type.String({ description: "解析警告" }))),
-            uncertainties: Type.Optional(Type.Array(Type.String({ description: "待确认内容" }))),
+            warnings: Type.Optional(
+              Type.Array(Type.String({ description: "解析警告" })),
+            ),
+            uncertainties: Type.Optional(
+              Type.Array(Type.String({ description: "待确认内容" })),
+            ),
           }),
         ),
         kind: Type.Optional(
@@ -894,7 +964,10 @@ export function buildPiKbTools(ctx: KbToolContext): AgentTool[] {
               Type.Literal("norm"),
               Type.Literal("snapshot"),
             ],
-            { description: "可选文档类型标注（note 笔记 / contract 公约 / norm 规范 / snapshot 快照）" },
+            {
+              description:
+                "可选文档类型标注（note 笔记 / contract 公约 / norm 规范 / snapshot 快照）",
+            },
           ),
         ),
       }),
@@ -958,7 +1031,8 @@ export async function injectKbMcpServer(
       {
         localPath: z.string(),
       },
-      async (args: Record<string, unknown>) => handleKbReadAttachment(args, ctx),
+      async (args: Record<string, unknown>) =>
+        handleKbReadAttachment(args, ctx),
       { annotations: { readOnlyHint: true } },
     ),
     // 受控写入（刀 1）：不挂 readOnlyHint。门控在 execute 内 await，不依赖 canUseTool 覆盖 MCP 工具。
@@ -972,7 +1046,15 @@ export async function injectKbMcpServer(
         draft: z
           .object({
             summary: z.string().optional(),
-            sources: z.array(z.object({ label: z.string(), location: z.string().optional() })).optional(),
+            tags: z.array(z.string()).min(1),
+            sources: z
+              .array(
+                z.object({
+                  label: z.string(),
+                  location: z.string().optional(),
+                }),
+              )
+              .optional(),
             warnings: z.array(z.string()).optional(),
             uncertainties: z.array(z.string()).optional(),
           })

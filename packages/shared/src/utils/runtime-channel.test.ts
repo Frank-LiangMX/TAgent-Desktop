@@ -8,7 +8,7 @@ describe('runtime/channel compatibility', () => {
     ['openai-chat', ['pi', 'codex', 'claude-code']],
     ['openai-responses', ['pi', 'codex', 'claude-code']],
     ['anthropic-messages', ['pi', 'codex', 'claude-code']],
-  ] as const)('%s is accepted by Pi and the official runtime bridge', (apiProtocol, accepted) => {
+  ] as const)('%s is accepted by all built-in runtimes', (apiProtocol, accepted) => {
     for (const runtime of ['pi', 'codex', 'claude-code'] as AgentRuntimeKind[]) {
       expect(isChannelCompatibleWithRuntime({ ...api, apiProtocol }, runtime)).toBe((accepted as readonly string[]).includes(runtime))
       expect(isChannelCompatibleWithRuntime({ ...api, apiProtocol, enabled: false }, runtime)).toBe(false)

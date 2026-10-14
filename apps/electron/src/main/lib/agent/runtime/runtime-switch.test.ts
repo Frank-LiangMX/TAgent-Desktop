@@ -88,24 +88,12 @@ function expectOk(v: RuntimeSwitchValidation): Extract<RuntimeSwitchValidation, 
 describe('运行内核 ↔ 渠道/provider 映射', () => {
   it('explicit engines accept only protocol-compatible API channels and preserve legacy native channels', () => {
     expect(adapterKindForRuntime('pi')).toBe('external')
-    expect(adapterKindForRuntime('codex')).toBe('codex')
-    expect(adapterKindForRuntime('claude-code')).toBe('claude-code')
     expect(internalBackendForRuntime('pi')).toBeUndefined()
-    expect(internalBackendForRuntime('codex')).toBe('codex-app-server')
-    expect(internalBackendForRuntime('claude-code')).toBe('claude-code')
-
-    expect(channelAcceptsRuntime({ provider: 'custom', enabled: true }, 'pi')).toBe(true)
-    expect(channelAcceptsRuntime({ provider: 'kscc-internal', enabled: true }, 'pi')).toBe(false)
-    expect(channelAcceptsRuntime({ provider: 'codex-internal', enabled: true }, 'pi')).toBe(false)
-    // 历史本机 kscc 渠道对任何内核都不再可运行
-    expect(channelAcceptsRuntime({ provider: 'kscc-internal', enabled: true }, 'claude-code')).toBe(false)
-    expect(channelAcceptsRuntime({ provider: 'codex-internal', enabled: true }, 'codex')).toBe(true)
-    expect(channelAcceptsRuntime({ provider: 'custom', apiProtocol: 'openai-responses', enabled: true }, 'codex')).toBe(true)
-    expect(channelAcceptsRuntime({ provider: 'custom', apiProtocol: 'openai-chat', enabled: true }, 'codex')).toBe(true)
-    expect(channelAcceptsRuntime({ provider: 'custom', apiProtocol: 'anthropic-messages', enabled: true }, 'claude-code')).toBe(true)
-    expect(channelAcceptsRuntime({ provider: 'custom', apiProtocol: 'openai-responses', enabled: true }, 'claude-code')).toBe(true)
-    // disabled 渠道任何内核都不接受
-    expect(channelAcceptsRuntime({ provider: 'kscc-internal', enabled: false }, 'claude-code')).toBe(false)
+    for (const runtime of ['pi', 'codex', 'claude-code'] as const) {
+      expect(channelAcceptsRuntime({ provider: 'custom', enabled: true }, runtime)).toBe(true)
+      expect(channelAcceptsRuntime({ provider: 'kscc-internal', enabled: true }, runtime)).toBe(false)
+      expect(channelAcceptsRuntime({ provider: 'codex-internal', enabled: true }, runtime)).toBe(runtime === 'codex')
+    }
   })
 
   it('从 meta 反推当前绑定内核', () => {
@@ -202,33 +190,19 @@ describe('切换目标后端校验', () => {
     expect(!disabled.ok && disabled.code).toBe('channel_disabled')
   })
 
-  it('内核与渠道不匹配拒绝（本机渠道不能挂到外部内核/协议）', () => {
-    const piOnCodex = validateRuntimeSwitchTarget(
-      { channelId: 'codex-1', modelId: 'gpt-5', runtime: 'pi' },
-      ctx('codex-1'),
-    )
-    expect(!piOnCodex.ok && piOnCodex.code).toBe('channel_runtime_mismatch')
-
-    const ccOnCodex = validateRuntimeSwitchTarget(
-      { channelId: 'codex-1', modelId: 'gpt-5', runtime: 'claude-code' },
-      ctx('codex-1'),
-    )
-    expect(!ccOnCodex.ok && ccOnCodex.code).toBe('channel_runtime_mismatch')
-
-    const codexOnCodexInternal = validateRuntimeSwitchTarget(
-      { channelId: 'codex-1', modelId: 'gpt-5', runtime: 'codex' },
-      ctx('codex-1'),
-    )
-    expect(codexOnCodexInternal.ok).toBe(true)
+  it('内核与渠道不匹配拒绝（Codex 本机渠道仅供 Codex 内核）', () => {
+    for (const runtime of ['pi', 'claude-code'] as const) {
+      const rejected = validateRuntimeSwitchTarget({ channelId: 'codex-1', modelId: 'gpt-5', runtime }, ctx('codex-1'))
+      expect(rejected.ok).toBe(false)
+    }
+    expect(validateRuntimeSwitchTarget({ channelId: 'codex-1', modelId: 'gpt-5', runtime: 'codex' }, ctx('codex-1')).ok).toBe(true)
   })
 
   it('本机运行时不可用 → 拒绝且带具体原因（不静默换内核）', () => {
-    const v = validateRuntimeSwitchTarget(
-      { channelId: 'codex-1', modelId: 'gpt-5', runtime: 'codex' },
-      { ...ctx('codex-1'), runtimeAvailable: false, runtimeUnavailableReason: 'Codex Runtime 不可用：未安装' },
-    )
+    const v = validateRuntimeSwitchTarget({ channelId: 'api-1', modelId: 'grok-4', runtime: 'pi' },
+      { ...ctx('api-1'), runtimeAvailable: false, runtimeUnavailableReason: '不可用' })
     expect(!v.ok && v.code).toBe('runtime_unavailable')
-    expect(!v.ok && v.message).toContain('未安装')
+    expect(!v.ok && v.message).toContain('不可用')
   })
 
   it('模型不存在 / 已停用拒绝', () => {
@@ -245,45 +219,26 @@ describe('切换目标后端校验', () => {
   })
 
   it('合法目标通过：跨内核标记 + 适配器/后端派生', () => {
-    const ok = expectOk(
-      validateRuntimeSwitchTarget({ channelId: 'codex-1', modelId: 'gpt-5', runtime: 'codex' }, ctx('codex-1')),
-    )
-    expect(ok.adapterKind).toBe('codex')
-    expect(ok.internalBackend).toBe('codex-app-server')
+    const ok = expectOk(validateRuntimeSwitchTarget({ channelId: 'api-1', modelId: 'grok-4', runtime: 'pi' }, ctx('api-1')))
+    expect(ok.adapterKind).toBe('external')
+    expect(ok.internalBackend).toBeUndefined()
     expect(ok.crossRuntime).toBe(true)
     expect(ok.fromRuntime).toBe('claude-code')
   })
 
   it('同内核且同渠道同模型可继续原生上下文', () => {
-    const ok = expectOk(
-      validateRuntimeSwitchTarget(
-        { channelId: 'codex-1', modelId: 'gpt-5', runtime: 'codex' },
-        ctx('codex-1', makeMeta({ channelId: 'codex-1', modelId: 'gpt-5', agentRuntime: 'codex', internalBackend: 'codex-app-server', codexThreadId: 't1', sdkSessionId: undefined })),
-      ),
-    )
+    const ok = expectOk(validateRuntimeSwitchTarget({ channelId: 'api-1', modelId: 'grok-4', runtime: 'pi' },
+      ctx('api-1', makeMeta({ channelId: 'api-1', modelId: 'grok-4', agentRuntime: 'pi', internalBackend: undefined }))))
     expect(ok.crossRuntime).toBe(false)
   })
 
   it('同内核换模型也重新绑定，禁止把旧原生 ID resume 到新模型配置', () => {
-    const meta = makeMeta({ channelId: 'codex-1', modelId: 'gpt-4', agentRuntime: 'codex', internalBackend: 'codex-app-server', codexThreadId: 't1', sdkSessionId: undefined })
-    const ok = expectOk(
-      validateRuntimeSwitchTarget(
-        { channelId: 'codex-1', modelId: 'gpt-5', runtime: 'codex' },
-        ctx('codex-1', meta),
-      ),
-    )
+    const meta = makeMeta({ channelId: 'api-1', modelId: 'old', agentRuntime: 'pi', internalBackend: undefined })
+    const ok = expectOk(validateRuntimeSwitchTarget({ channelId: 'api-1', modelId: 'grok-4', runtime: 'pi' }, ctx('api-1', meta)))
     expect(ok.crossRuntime).toBe(true)
-    const { patch } = planRuntimeSwitch({
-      meta,
-      target: ok,
-      channelId: 'codex-1',
-      modelId: 'gpt-5',
-      now: 1,
-      handoffContent: '模型已更换，请继续。',
-    })
-    expect(patch.codexThreadId).toBeUndefined()
-    expect(patch.runtimeHandoff?.from).toBe('codex')
-    expect(patch.runtimeHandoff?.to).toBe('codex')
+    const { patch } = planRuntimeSwitch({ meta, target: ok, channelId: 'api-1', modelId: 'grok-4', now: 1, handoffContent: '模型已更换，请继续。' })
+    expect(patch.sdkSessionId).toBeUndefined()
+    expect(patch.runtimeHandoff?.to).toBe('pi')
   })
 })
 
@@ -336,8 +291,8 @@ describe('切换计划与绑定归档', () => {
     })
     const target = expectOk(
       validateRuntimeSwitchTarget(
-        { channelId: 'codex-1', modelId: 'gpt-5', runtime: 'codex' },
-        { meta, channel: makeChannel('codex-1', 'codex-internal', { models: [{ id: 'gpt-5' }] }), fromRuntime: 'claude-code' },
+        { channelId: 'codex-1', modelId: 'gpt-5', runtime: 'pi' },
+        { meta, channel: makeChannel('codex-1', 'custom', { models: [{ id: 'gpt-5' }] }), fromRuntime: 'claude-code' },
       ),
     )
     const { patch, handoff } = planRuntimeSwitch({
@@ -352,7 +307,7 @@ describe('切换计划与绑定归档', () => {
 
     expect(patch.channelId).toBe('codex-1')
     expect(patch.modelId).toBe('gpt-5')
-    expect(patch.internalBackend).toBe('codex-app-server')
+    expect(patch.internalBackend).toBeUndefined()
     expect(patch.runtimeSwitchRevision).toBe(3)
     // 生效原生 id 清空（避免 resume 过期上下文），旧值归档
     expect(patch.sdkSessionId).toBeUndefined()
@@ -360,7 +315,7 @@ describe('切换计划与绑定归档', () => {
     expect(patch.runtimeBindings?.['claude-code']?.nativeSessionId).toBe('sdk-native-1')
     expect(patch.runtimeBindings?.['claude-code']?.channelId).toBe('cc-1')
     expect(handoff?.from).toBe('claude-code')
-    expect(handoff?.to).toBe('codex')
+    expect(handoff?.to).toBe('pi')
     expect(handoff?.sourcePanelMessageCount).toBe(7)
     // 不静默改权限 / 执行形态 / 工作区
     expect('executionMode' in patch).toBe(false)
@@ -372,15 +327,15 @@ describe('切换计划与绑定归档', () => {
     const meta = makeMeta({
       channelId: 'codex-1',
       modelId: 'gpt-5',
-      agentRuntime: 'codex',
-      internalBackend: 'codex-app-server',
+      agentRuntime: 'pi',
+      internalBackend: undefined,
       codexThreadId: 'thread-1',
       sdkSessionId: undefined,
     })
     const target = expectOk(
       validateRuntimeSwitchTarget(
-        { channelId: 'codex-1', modelId: 'gpt-5', runtime: 'codex' },
-        { meta, channel: makeChannel('codex-1', 'codex-internal', { models: [{ id: 'gpt-5' }] }), fromRuntime: 'codex' },
+        { channelId: 'codex-1', modelId: 'gpt-5', runtime: 'pi' },
+        { meta, channel: makeChannel('codex-1', 'custom', { models: [{ id: 'gpt-5' }] }), fromRuntime: 'pi' },
       ),
     )
     const { patch, handoff } = planRuntimeSwitch({
@@ -395,7 +350,7 @@ describe('切换计划与绑定归档', () => {
     expect(handoff).toBeUndefined()
     expect(patch.runtimeHandoff).toBeUndefined()
     expect('codexThreadId' in patch).toBe(false)
-    expect(patch.runtimeBindings?.codex?.nativeSessionId).toBe('thread-1')
+    expect(patch.runtimeBindings?.pi?.nativeSessionId).toBeUndefined()
   })
 
   it('无可见历史时跨内核不写空交接记录', () => {
@@ -603,38 +558,15 @@ describe('交接资料生成与投递', () => {
   })
 
   it('Claude Code → Codex → Pi：切回 Pi 时生效原生 id 为空（全新开），旧 id 留在绑定集合', () => {
-    const meta = makeMeta() // claude-code 起点：sdkSessionId = sdk-native-1
-    // 第一步：claude-code → codex
-    const toCodex = expectOk(
-      validateRuntimeSwitchTarget(
-        { channelId: 'codex-1', modelId: 'gpt-5', runtime: 'codex' },
-        { meta, channel: makeChannel('codex-1', 'codex-internal', { models: [{ id: 'gpt-5' }] }), fromRuntime: 'claude-code' },
-      ),
-    )
-    const step1 = planRuntimeSwitch({ meta, target: toCodex, channelId: 'codex-1', modelId: 'gpt-5', now: 10, handoffContent: 'h1' })
-    const afterCodex = { ...meta, ...step1.patch } as AgentSessionMeta
-    expect(activeNativeSessionId(afterCodex, 'codex')).toBeUndefined()
-
-    // codex 回填了原生 thread id
-    const withThread = { ...afterCodex, codexThreadId: 'thread-1' } as AgentSessionMeta
-    // 第二步：codex → pi（外部 API 渠道）
-    const piChannel = makeChannel('api-1', 'custom', { models: [{ id: 'grok-4' }] })
-    const toPi = expectOk(
-      validateRuntimeSwitchTarget(
-        { channelId: 'api-1', modelId: 'grok-4', runtime: 'pi' },
-        { meta: withThread, channel: piChannel, fromRuntime: 'codex' },
-      ),
-    )
-    const step2 = planRuntimeSwitch({ meta: withThread, target: toPi, channelId: 'api-1', modelId: 'grok-4', now: 20, handoffContent: 'h2' })
-    const afterPi = { ...withThread, ...step2.patch } as AgentSessionMeta
-    expect(afterPi.runtimeBindings?.codex?.nativeSessionId).toBe('thread-1')
-    expect(afterPi.runtimeBindings?.['claude-code']?.nativeSessionId).toBe('sdk-native-1')
-    expect(afterPi.codexThreadId).toBeUndefined()
-    expect(afterPi.sdkSessionId).toBeUndefined()
-    expect(afterPi.internalBackend).toBeUndefined()
-    // 三次切换的 revision 递进（初始未定义 → 1 → 2）
-    expect(step1.patch.runtimeSwitchRevision).toBe(1)
-    expect(step2.patch.runtimeSwitchRevision).toBe(2)
+    const meta = makeMeta({ channelId: 'old-codex', agentRuntime: 'codex', internalBackend: 'codex-app-server', codexThreadId: 'thread-1', sdkSessionId: undefined })
+    const channel = makeChannel('api-1', 'custom', { models: [{ id: 'grok-4' }] })
+    const target = expectOk(validateRuntimeSwitchTarget({ channelId: 'api-1', modelId: 'grok-4', runtime: 'pi' }, { meta, channel, fromRuntime: 'codex' }))
+    const { patch } = planRuntimeSwitch({ meta, target, channelId: 'api-1', modelId: 'grok-4', now: 20, handoffContent: 'h' })
+    expect(patch.runtimeBindings?.codex?.nativeSessionId).toBe('thread-1')
+    expect(patch.codexThreadId).toBeUndefined()
+    expect(patch.sdkSessionId).toBeUndefined()
+    expect(patch.internalBackend).toBeUndefined()
+    expect(patch.agentRuntime).toBe('pi')
   })
 })
 

@@ -129,3 +129,4 @@ export {
   type DeltaContentBlock,
   type StreamDeltaEmission,
 } from './streaming-delta-protocol'
+export * from './workbench-history'

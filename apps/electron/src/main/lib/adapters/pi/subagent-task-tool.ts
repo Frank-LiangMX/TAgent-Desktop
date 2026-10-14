@@ -31,7 +31,6 @@ import {
   validateDelegationModelSelection,
 } from '../../agent/delegation-model-policy'
 import { tryReserveDelegationSlot } from '../../agent/delegation-capacity'
-import { runOfficialDelegatedAgent } from '../../agent/official-delegated-agent'
 import { bashHooksForSession } from '../../agent/session-process-registry'
 import { bindWorkspaceFileTool } from './workspace-file-tool'
 import {
@@ -531,47 +530,6 @@ export function createTaskTool(
         selectionReason: selectionReason || '继承父会话真实 channel/model 绑定',
         complexity: params.complexity,
       })
-      if (catalogAgent?.runtime === 'official') {
-        if (catalogAgent.profile.tools?.length) {
-          throw new Error(`Agent「${catalogAgent.profile.name}」的 tools 白名单尚未接入官方 delegated runner，已拒绝派发`)
-        }
-        const fullPrompt = [catalogAgent.profile.systemPrompt, '## 任务', params.prompt]
-          .filter((part): part is string => Boolean(part))
-          .join('\n')
-        const official = await runOfficialDelegatedAgent({
-          runtime: catalogAgent.officialRuntime!,
-          parentSessionId,
-          taskId,
-          channelId: bindingChannelId,
-          modelId: resolvedChannelConfig.modelId,
-          cwd: effectiveCwd,
-          prompt: fullPrompt,
-          systemPrompt: catalogAgent.profile.systemPrompt,
-          readOnly: catalogAgent.profile.permissionProfile === 'read-only',
-          signal: execSignal,
-          beforeToolCall: async (ctx) => profileBeforeToolCall({
-            toolCall: {
-              name: ctx.toolCall.name,
-              arguments: ctx.toolCall.arguments ?? {},
-            },
-          }),
-          onPayload: emitPayload,
-        })
-        const resultText = official.text || '(官方子代理无文本输出)'
-        const status = execSignal?.aborted || official.status === 'stopped' ? 'stopped' : official.status
-        const durationMs = Date.now() - startTime
-        const summary = status === 'completed' ? `${official.toolCalls} 次工具 · ${Math.round(durationMs / 1000)}s` : status === 'stopped' ? '已停止' : '执行失败'
-        const statusLabel = status === 'completed' ? 'completed' : status === 'stopped' ? 'stopped' : 'failed'
-        const finalText = `[子代理 status=${statusLabel}]\n${resultText}`
-        onTaskEvent?.({ type: 'task_notification', taskId, toolUseId, status, summary, taskType: 'local_agent' })
-        return {
-          content: [{ type: 'text', text: finalText.slice(0, 12000) }],
-          details: { subagentType, resultLength: resultText.length, toolCalls: official.toolCalls, durationMs },
-          status,
-          summary,
-          resultText,
-        }
-      }
       // 创建子 Agent（限制 tools，自定义 systemPrompt；可按 task 参数切换已配置渠道/模型）
       // 挂 beforeToolCall：与主会话同权限（至少危险命令 + Chat 只读）
       const subTools = resolveSubagentTools(

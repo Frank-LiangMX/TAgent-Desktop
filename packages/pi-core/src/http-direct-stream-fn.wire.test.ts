@@ -3,6 +3,44 @@ import { describe, expect, it } from 'vitest'
 import { buildHttpDirectModel, createHttpDirectStreamFn } from './http-direct-stream-fn'
 
 describe('Pi Responses wire protocol (real pi-ai, local HTTP fixture)', () => {
+  it('KSCC defaults to Messages and consumes streaming text with Bearer/client authentication', async () => {
+    const requests: Array<{ url: string; authorization?: string; client?: string; body: Record<string, unknown> }> = []
+    const server = createServer(async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk.toString()
+      requests.push({ url: req.url!, authorization: req.headers.authorization, client: String(req.headers['ksyun-code-type']), body: JSON.parse(body) })
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      for (const event of [
+        { type: 'message_start', message: { id: 'msg_fixture', type: 'message', role: 'assistant', model: 'fixture-model', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } },
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'fixture-ok' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 2 } },
+        { type: 'message_stop' },
+      ]) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+      res.end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const address = server.address() as { port: number }
+      const opts = { provider: 'kscc-gateway', modelId: 'fixture-model', apiKey: 'local-fixture-key',
+        baseUrl: `http://127.0.0.1:${address.port}`, maxRetries: 0,
+        headers: { authorization: 'Bearer local-fixture-key', 'ksyun-code-type': 'code' } }
+      const stream = await createHttpDirectStreamFn(opts)(buildHttpDirectModel(opts), {
+        messages: [{ role: 'user', content: 'ping', timestamp: 1 }],
+      })
+      const events = []
+      for await (const event of stream) events.push(event)
+      expect(events.some((e) => e.type === 'text_delta' && e.delta === 'fixture-ok')).toBe(true)
+      expect(events.at(-1)?.type).toBe('done')
+      expect(requests).toHaveLength(1)
+      expect(requests[0]).toMatchObject({ url: '/v1/messages', authorization: 'Bearer local-fixture-key', client: 'code',
+        body: { model: 'fixture-model', stream: true } })
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
   it('sends the selected endpoint/key/model and consumes terminal streaming text', async () => {
     const requests: Array<{ url: string; authorization?: string; body: Record<string, unknown> }> = []
     const server = createServer(async (req, res) => {

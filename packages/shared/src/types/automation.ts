@@ -98,6 +98,8 @@ export const DAILY_CONTEXT_ROLLOVER_THRESHOLD = 0.7
 /** 定时任务定义 */
 export interface Automation {
   id: string
+  /** 本人 WPS 日报数据源；定时执行前由主进程采集。 */
+  wpsDailyReport?: import('./wps').WpsDailyReportSource
   /** 任务名（默认从来源消息生成，可编辑） */
   name: string
   /** 自然语言任务描述（每次自动重跑发送的内容） */
@@ -158,6 +160,7 @@ export interface Automation {
 
 /** 创建定时任务的输入 */
 export interface CreateAutomationInput {
+  wpsDailyReport?: import('./wps').WpsDailyReportSource
   name: string
   prompt: string
   scheduleType: AutomationScheduleType

@@ -5,7 +5,7 @@
  * 用 Jotai 默认 store（无需 Provider），与项目约定一致（CLAUDE.md：状态管理用 Jotai）。
  */
 import { atom } from 'jotai'
-import { isBuiltinChannelProvider, isGatewayProvider, resolveChannelDefaultModelId, type Channel } from '@tagent/shared'
+import { isLocalRuntimeProvider, resolveChannelDefaultModelId, type Channel } from '@tagent/shared'
 import {
   resolveModelSelection,
   type ModelSelection,
@@ -36,7 +36,7 @@ export const selectedChannelIdAtom = atom(
     const current = get(selectedModelSelectionAtom)
     if (current?.channelId === channelId) return
     const channel = get(channelsAtom).find((item) => item.id === channelId)
-    const modelId = resolveChannelDefaultModelId(channel)
+    const modelId = channel && !isLocalRuntimeProvider(channel.provider) ? resolveChannelDefaultModelId(channel) : undefined
     set(
       selectedModelSelectionAtom,
       modelId ? { channelId, modelId } : null,
@@ -46,27 +46,27 @@ export const selectedChannelIdAtom = atom(
 
 /** 内置网关渠道（派生，按 provider 识别）；MoA 班底的「本机档」以此为准 */
 export const gatewayChannelAtom = atom<Channel | undefined>((get) =>
-  get(channelsAtom).find((c) => c.provider === GATEWAY_PROVIDER)
+  undefined
 )
 
 /** Codex 本机渠道（派生） */
 export const codexChannelAtom = atom<Channel | undefined>((get) =>
-  get(channelsAtom).find((c) => c.provider === 'codex-internal')
+  undefined
 )
 
 /**
- * 「内置服务」区块展示的渠道：仅内置网关渠道。
+ * 「内部服务」区块展示的渠道：仅明确标记为 internal 的环境服务。
  *
  * legacy `kscc-internal`（CLI 通路已移除）与 `codex-internal` 都不在此列——
  * ADR-0012 明确「渠道页不再固定展示 Codex App Server 和 KSCC 卡片」。
  */
 export const builtinChannelsAtom = atom<Channel[]>((get) =>
-  get(channelsAtom).filter((c) => isGatewayProvider(c.provider))
+  get(channelsAtom).filter((channel) => channel.scope === 'internal')
 )
 
 /** 外部渠道列表（派生，排除内置渠道） */
 export const externalChannelsAtom = atom<Channel[]>((get) =>
-  get(channelsAtom).filter((c) => !isBuiltinChannelProvider(c.provider))
+  get(channelsAtom).filter((channel) => channel.scope !== 'internal')
 )
 
 /** 当前选中渠道对象（派生） */

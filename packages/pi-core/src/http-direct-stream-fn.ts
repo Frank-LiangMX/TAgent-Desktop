@@ -150,6 +150,7 @@ const ANTHROPIC_PROTOCOL_PROVIDERS = new Set([
   "xiaomi",
   "xiaomi-token-plan",
   "qwen-anthropic",
+  "kscc-gateway",
 ]);
 
 /**
