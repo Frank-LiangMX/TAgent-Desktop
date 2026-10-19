@@ -1,6 +1,6 @@
 {
   "name": "@tagent/electron",
-  "version": "2.0.0-dev.6",
+  "version": "2.0.0",
   "author": "TAgent Contributors",
   "description": "TAgent-Desktop - Pi 内核与 HTTP 模型渠道",
   "main": "dist/main.cjs",
