@@ -65,6 +65,7 @@ import type {
   ToolCall,
   ThinkingContent,
   TextContent,
+  ImageContent,
   ToolResultMessage,
   Usage,
   Context,
@@ -95,6 +96,14 @@ import { bindWorkspaceFileTool } from './workspace-file-tool'
 import { getSessionMeta } from '../../agent/session-store'
 import { NoProgressGuard, buildNoProgressEventFromDecision, buildNoProgressAskUserInput } from '../../agent/no-progress-guard'
 import { bashHooksForSession } from '../../agent/session-process-registry'
+import { attachImageBlocksToText, type UserContentBlock } from '../../agent/build-user-content-with-attachments'
+
+function toPiUserContent(content: string | UserContentBlock[]): string | (TextContent | ImageContent)[] {
+  if (typeof content === 'string') return content
+  return content.map((block) => block.type === 'text'
+    ? block
+    : { type: 'image', data: block.source.data, mimeType: block.source.media_type })
+}
 
 // ===== 配置类型 =====
 
@@ -411,6 +420,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       onNoProgressPauseAskUser,
       requestDelegationApproval,
     } = input
+    const userContent = toPiUserContent(attachImageBlocksToText(prompt, input.attachments))
 
     // 创建或复用 Agent 实例。
     // 渠道/模型变化，或 Chat↔Work 导致 extraTools/systemPromptAppend 变化时：
@@ -946,7 +956,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
 
           try {
             if (attempt === 0) {
-              await agent.prompt(prompt)
+              await (typeof userContent === 'string'
+                ? agent.prompt(userContent)
+                : agent.prompt({ role: 'user', content: userContent, timestamp: Date.now() }))
             } else {
               // 同 transcript 续跑：去掉末尾 error assistant，不重放已成功工具
               stripFailedAssistants()
@@ -981,7 +993,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
                   if (last && (last.role === 'user' || last.role === 'toolResult')) {
                     await agent.continue()
                   } else {
-                    await agent.prompt(prompt)
+                    await (typeof userContent === 'string'
+                      ? agent.prompt(userContent)
+                      : agent.prompt({ role: 'user', content: userContent, timestamp: Date.now() }))
                   }
                   // continue/prompt 成功则落入下方 retry 判定
                 } catch (err2: unknown) {
@@ -1204,9 +1218,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       throw new Error(`[pi adapter] 无活跃会话可注入: ${sessionId}`)
     }
 
-    const content = typeof message.message?.content === 'string'
-      ? message.message.content
-      : ''
+    const content = toPiUserContent(message.message.content)
     const piUserMessage = {
       role: 'user' as const,
       content,
@@ -2114,7 +2126,7 @@ function buildPlaceholderModel(config: PiAgentAdapterConfig): Model<Api> {
     provider: config.provider,
     baseUrl: config.baseUrl ?? '',
     reasoning: config.thinkingEnabled ?? false,
-    input: ['text'],
+    input: ['text', 'image'],
     cost: ZERO_COST,
     // 优先用注入的真实窗口（session-service 从 ChannelModel.contextWindow 解析），
     // 缺失走 fallback(200k)。替代旧的 128k 硬编码（Phase 1.1）。

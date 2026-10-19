@@ -57,7 +57,13 @@ export function overviewData(
         .filter((item) => item.startAt < end && item.endAt > start)
         .sort((a, b) => a.startAt - b.startAt),
       due: todos.filter(
-        (item) => item.completedAt === null && item.dueDate === day,
+        (item) =>
+          item.completedAt === null &&
+          (item.startAt != null &&
+          item.endAt != null &&
+          item.endAt > item.startAt
+            ? item.startAt < end && item.endAt > start
+            : item.dueDate === day),
       ).length,
     };
   });
@@ -69,8 +75,9 @@ export function overviewData(
     overdue: todos.filter(
       (item) =>
         item.completedAt === null &&
-        item.dueDate &&
-        item.dueDate < workbenchDate(),
+        (item.startAt != null && item.endAt != null && item.endAt > item.startAt
+          ? item.endAt <= new Date(`${workbenchDate()}T00:00`).getTime()
+          : !!item.dueDate && item.dueDate < workbenchDate()),
     ).length,
     collections: {
       ideas: notes.filter((item) => collectionKind(item) === "ideas").length,

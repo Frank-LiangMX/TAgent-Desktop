@@ -88,22 +88,22 @@ describe('stream-persist-gate（REGRESS-G 落盘闸口）', () => {
     expect(uuids).toEqual(['u1', 'u2', 'u3', 'u4', 'u5', 'u6', 'u7'])
   })
 
-  it('工具阶段前的长 text → 只落盘压缩后的阶段摘要', () => {
+  it.each(['tool_use', 'tool_result', 'anonymous_tool'])('工具边界 %s 前的长 text 原样落盘，保留 Markdown 和块结构', (boundary) => {
+    const original = assistantText('u-long',
+      '可以用 `Build.bat` 编译。\n\n关键约束与决策：\n1. 保留 Target.cs。\n2. **统一保存**。\n\n' + '完整的工作过程。'.repeat(400),
+    )
+    original.message.content.push({ type: 'text', text: '```cpp\nTick(0.5);\n```' })
+    const next = boundary === 'tool_result' ? userToolResult('u-result')
+      : boundary === 'anonymous_tool' ? { ...assistantToolUse('u-tool', 'call-long'), uuid: undefined }
+        : assistantToolUse('u-tool', 'call-long')
     const persisted = runSequence([
-      assistantText(
-        'u-long',
-        '我先看看当前目录。\n这目录确实没法让人眼瞅——全是二进制文件。\n换个能直接看的办法：我把缓存路径和资产名对照。\n然后再检查路径转换逻辑，最后补一个脚本。',
-      ),
-      assistantToolUse('u-tool', 'call-long'),
+      original, next,
     ])
-    const text = (persisted[0] as { message: { content: Array<{ text: string }> } }).message.content[0]!.text
-    expect(text.length).toBeLessThanOrEqual(80)
-    expect(text).not.toContain('；')
-    expect(text).not.toContain('我先看看')
-    expect((persisted[1] as { uuid: string }).uuid).toBe('u-tool')
+    expect(persisted).toEqual([original, next])
+    expect(persisted[0]).toBe(original)
   })
 
-  it('工具前的探索口播不落盘', () => {
+  it('工具前已经展示的探索口播同样落盘', () => {
     const persisted = runSequence([
       assistantText('u-chatter', '先看看入口文件。'),
       assistantToolUse('u-tool-chatter', 'call-chatter'),
@@ -116,7 +116,7 @@ describe('stream-persist-gate（REGRESS-G 落盘闸口）', () => {
         return raw.type === 'assistant' && raw.message?.content?.every((block) => block.type === 'text')
       })
       .map((msg) => (msg as { message: { content: Array<{ text: string }> } }).message.content[0]!.text)
-    expect(texts).toEqual(['定位到落盘门控把旁白当成了进度。'])
+    expect(texts).toEqual(['先看看入口文件。', '定位到落盘门控把旁白当成了进度。'])
   })
 
   it('不同阶段的相同摘要都保留，thinking 原文不被压缩', () => {
@@ -128,14 +128,14 @@ describe('stream-persist-gate（REGRESS-G 落盘闸口）', () => {
       assistantText('u-progress-2', '已确认缓存路径，开始检查文件名。'),
       assistantToolUse('u-tool-2', 'call-2'),
     ])
-    // 同一轮相同根因只保留一条阶段摘要；thinking 仍各自保留原文。
-    expect(persisted.filter((msg) => (msg as { type?: string }).type === 'assistant')).toHaveLength(5)
+    // 不同 uuid 是不同消息，不能因为语义近似而删除正文。
+    expect(persisted.filter((msg) => (msg as { type?: string }).type === 'assistant')).toHaveLength(6)
     expect(persisted.filter((msg) => (msg as { uuid?: string }).uuid === 'u-think-1')).toHaveLength(1)
     expect(persisted.filter((msg) => (msg as { uuid?: string }).uuid === 'u-think-2')).toHaveLength(1)
-    expect(persisted.filter((msg) => (msg as { uuid?: string }).uuid === 'u-progress-2')).toHaveLength(0)
+    expect(persisted.filter((msg) => (msg as { uuid?: string }).uuid === 'u-progress-2')).toHaveLength(1)
   })
 
-  it('视口未打通的阶段改写只落盘第一条', () => {
+  it('近似的阶段说明各自完整落盘，不按语义猜测删句', () => {
     const persisted = runSequence([
       assistantText('u-vp-1', '已有 Actor 标签查阅，但还没确认视口里能不能看见。'),
       assistantToolUse('u-vp-tool-1', 'call-vp-1'),
@@ -148,8 +148,7 @@ describe('stream-persist-gate（REGRESS-G 落盘闸口）', () => {
       const raw = msg as { type?: string; message?: { content?: Array<{ type?: string }> } }
       return raw.type === 'assistant' && raw.message?.content?.every((block) => block.type === 'text')
     })
-    expect(progress).toHaveLength(1)
-    expect((progress[0] as { uuid: string }).uuid).toBe('u-vp-1')
+    expect(progress.map((msg) => (msg as { uuid: string }).uuid)).toEqual(['u-vp-1', 'u-vp-2', 'u-vp-3'])
   })
 
   it('tool_use-only 独立段（glm 块拆分）→ 落盘（工具/阶段/Files Changed 历史）', () => {

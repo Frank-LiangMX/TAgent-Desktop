@@ -16,6 +16,7 @@ import {
   Users,
   ScrollText,
   Bot,
+  Film,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import {
@@ -60,7 +61,7 @@ import {
 } from '../../atoms/notification-prefs'
 import { loaderAnimationEnabledAtom, splitDockModeAtom } from '../../atoms/feature-flags'
 import { ChannelsSettings } from './ChannelsSettings'
-import { WpsSettings } from './WpsSettings'
+import { VideoSettings } from './VideoSettings'
 import { MoaSettings } from './MoaSettings'
 import { AgentCatalogSettings } from './AgentCatalogSettings'
 import { AgentCrewSettings } from './AgentCrewSettings'
@@ -88,7 +89,7 @@ export type SettingsTab =
   | 'general'
   | 'appearance'
   | 'channels'
-  | 'wps'
+  | 'video'
   | 'prompts'
   | 'agent-roundtable'
   | 'agent-cli'
@@ -107,7 +108,7 @@ export function normalizeSettingsTab(tab: SettingsTab | string | undefined): Set
     'general',
     'appearance',
     'channels',
-    'wps',
+    'video',
     'prompts',
     'agent-roundtable',
     'agent-cli',
@@ -155,7 +156,7 @@ const ALL_TABS: TabItem[] = [
     icon: <Cable size={14} strokeWidth={1.75} />,
     group: 'core',
   },
-  { id: 'wps', label: 'WPS 日报', description: '本人账号授权、工作证据与每日日报', icon: <ScrollText size={14} strokeWidth={1.75} />, group: 'core' },
+  { id: 'video', label: '视频分析', description: '关键画面与本地语音转写', icon: <Film size={14} strokeWidth={1.75} />, group: 'core' },
   {
     id: 'agent-catalog',
     label: 'Agent 接入',
@@ -403,8 +404,8 @@ function renderTabContent(tab: SettingsTab, onNavigate: (tab: SettingsTab) => vo
       return <AppearanceSettings />
     case 'channels':
       return <ChannelsSettings />
-    case 'wps':
-      return <WpsSettings />
+    case 'video':
+      return <VideoSettings />
     case 'prompts':
       return <PromptSettings />
     case 'agent-roundtable':
@@ -516,7 +517,6 @@ export function SettingsDialog({
                     key={`${activeTab}-${paneKey}`}
                     className={`settings-shell-content settings-shell-pane ${
                       activeTab === 'channels' ||
-                      activeTab === 'wps' ||
                       activeTab === 'prompts' ||
                       activeTab === 'agent-roundtable' ||
                       activeTab === 'agent-cli' ||

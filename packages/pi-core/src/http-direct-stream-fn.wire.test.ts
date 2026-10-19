@@ -3,6 +3,45 @@ import { describe, expect, it } from 'vitest'
 import { buildHttpDirectModel, createHttpDirectStreamFn } from './http-direct-stream-fn'
 
 describe('Pi Responses wire protocol (real pi-ai, local HTTP fixture)', () => {
+  it('preserves image content in Chat Completions requests', async () => {
+    const requests: Record<string, unknown>[] = []
+    const server = createServer(async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk.toString()
+      requests.push(JSON.parse(body))
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      for (const chunk of [
+        { id: 'chat-fixture', choices: [{ index: 0, delta: { role: 'assistant', content: 'fixture-ok' }, finish_reason: null }] },
+        { id: 'chat-fixture', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+      ]) res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+      res.end('data: [DONE]\n\n')
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const address = server.address() as { port: number }
+      const opts = { provider: 'custom', apiProtocol: 'openai-chat' as const, modelId: 'fixture-model',
+        apiKey: 'local-fixture-key', baseUrl: `http://127.0.0.1:${address.port}/v1`, maxRetries: 0 }
+      const stream = await createHttpDirectStreamFn(opts)(buildHttpDirectModel(opts), {
+        messages: [{ role: 'user', timestamp: 1, content: [
+          { type: 'text', text: '看图' },
+          { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' },
+        ] }],
+      })
+      const events = []
+      for await (const event of stream) events.push(event)
+      expect(events.at(-1)?.type).toBe('done')
+      expect(requests).toHaveLength(1)
+      expect(requests[0]!.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: expect.arrayContaining([
+          expect.objectContaining({ type: 'image_url', image_url: expect.objectContaining({ url: 'data:image/png;base64,aW1hZ2U=' }) }),
+        ]) }),
+      ]))
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+
   it('KSCC defaults to Messages and consumes streaming text with Bearer/client authentication', async () => {
     const requests: Array<{ url: string; authorization?: string; client?: string; body: Record<string, unknown> }> = []
     const server = createServer(async (req, res) => {
@@ -27,7 +66,10 @@ describe('Pi Responses wire protocol (real pi-ai, local HTTP fixture)', () => {
         baseUrl: `http://127.0.0.1:${address.port}`, maxRetries: 0,
         headers: { authorization: 'Bearer local-fixture-key', 'ksyun-code-type': 'code' } }
       const stream = await createHttpDirectStreamFn(opts)(buildHttpDirectModel(opts), {
-        messages: [{ role: 'user', content: 'ping', timestamp: 1 }],
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'ping' },
+          { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' },
+        ], timestamp: 1 }],
       })
       const events = []
       for await (const event of stream) events.push(event)
@@ -36,6 +78,11 @@ describe('Pi Responses wire protocol (real pi-ai, local HTTP fixture)', () => {
       expect(requests).toHaveLength(1)
       expect(requests[0]).toMatchObject({ url: '/v1/messages', authorization: 'Bearer local-fixture-key', client: 'code',
         body: { model: 'fixture-model', stream: true } })
+      expect(requests[0]!.body.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: expect.arrayContaining([
+          expect.objectContaining({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } }),
+        ]) }),
+      ]))
     } finally {
       server.closeAllConnections()
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
@@ -64,7 +111,10 @@ describe('Pi Responses wire protocol (real pi-ai, local HTTP fixture)', () => {
       const opts = { provider: 'anthropic', apiProtocol: 'openai-responses' as const, modelId: 'fixture-model', apiKey: 'local-fixture-key', baseUrl: `http://127.0.0.1:${address.port}/v1`, maxRetries: 0 }
       const stream = await createHttpDirectStreamFn(opts)(buildHttpDirectModel(opts), {
         systemPrompt: 'Fixture only',
-        messages: [{ role: 'user', content: 'ping', timestamp: 1 }],
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'ping' },
+          { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' },
+        ], timestamp: 1 }],
       })
       const events = []
       for await (const event of stream) events.push(event)
@@ -74,6 +124,11 @@ describe('Pi Responses wire protocol (real pi-ai, local HTTP fixture)', () => {
       expect(requests[0]).toMatchObject({ url: '/v1/responses', authorization: 'Bearer local-fixture-key', body: { model: 'fixture-model', stream: true } })
       expect(requests[0]!.body).toHaveProperty('input')
       expect(requests[0]!.body).not.toHaveProperty('messages')
+      expect(requests[0]!.body.input).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: expect.arrayContaining([
+          expect.objectContaining({ type: 'input_image', image_url: 'data:image/png;base64,aW1hZ2U=' }),
+        ]) }),
+      ]))
     } finally {
       server.closeAllConnections()
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))

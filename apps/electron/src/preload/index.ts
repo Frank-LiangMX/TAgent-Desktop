@@ -203,7 +203,7 @@ const electronAPI = {
   getWpsConfig: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.GET_CONFIG),
   saveWpsConfig: (input: import('@tagent/shared').WpsConnectionInput) => ipcRenderer.invoke(WPS_IPC_CHANNELS.SAVE_CONFIG, input),
   getWpsUserAuth: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.GET_USER_AUTH),
-  loginWpsUser: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.USER_LOGIN),
+  loginWpsUser: (createDocuments?: boolean) => ipcRenderer.invoke(WPS_IPC_CHANNELS.USER_LOGIN, createDocuments),
   logoutWpsUser: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.USER_LOGOUT),
   listWpsReportChats: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.LIST_REPORT_CHATS),
   collectWpsDaily: () => ipcRenderer.invoke(WPS_IPC_CHANNELS.COLLECT_DAILY),
@@ -214,6 +214,8 @@ const electronAPI = {
     return () => ipcRenderer.removeListener(WPS_IPC_CHANNELS.USER_AUTH_CHANGED, handler)
   },
   // ===== Automation =====
+  runAutomationNow: (id: string) =>
+    ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.RUN_NOW, id) as Promise<import('@tagent/shared').AutomationRun>,
   listAutomations: () =>
     ipcRenderer.invoke(AUTOMATION_IPC_CHANNELS.LIST) as Promise<import('@tagent/shared').Automation[]>,
   createAutomation: (input: import('@tagent/shared').CreateAutomationInput) =>
@@ -1871,6 +1873,22 @@ const electronAPI = {
       ipcRenderer.on("updater:on-status-changed", handler);
       return () =>
         ipcRenderer.removeListener("updater:on-status-changed", handler);
+    },
+  },
+  videoModels: {
+    getStatus: () => ipcRenderer.invoke('video-model:status') as Promise<unknown>,
+    download: (id: 'base' | 'small') => ipcRenderer.invoke('video-model:download', id) as Promise<unknown>,
+    downloadRuntime: () => ipcRenderer.invoke('video-model:runtime-download') as Promise<unknown>,
+    select: (id: 'base' | 'small') => ipcRenderer.invoke('video-model:select', id) as Promise<unknown>,
+    onProgress: (cb: (progress: unknown) => void) => {
+      const handler = (_e: unknown, progress: unknown): void => cb(progress)
+      ipcRenderer.on('video-model:progress', handler)
+      return () => ipcRenderer.removeListener('video-model:progress', handler)
+    },
+    onRuntimeProgress: (cb: (progress: unknown) => void) => {
+      const handler = (_e: unknown, progress: unknown): void => cb(progress)
+      ipcRenderer.on('video-model:runtime-progress', handler)
+      return () => ipcRenderer.removeListener('video-model:runtime-progress', handler)
     },
   },
 } as const;

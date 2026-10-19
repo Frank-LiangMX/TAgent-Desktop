@@ -11,6 +11,7 @@ import {
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { getAttachmentAbsolutePath } from '../../attachment-service'
 
 class FakeClient {
   private notificationListener:
@@ -112,6 +113,7 @@ describe('CodexAppServerAdapter', () => {
       .query({
         sessionId: 'sess_1',
         prompt: '实现功能',
+        attachments: [{ filename: 'spec.png', mediaType: 'image/png', localPath: 'sess_1/spec.png' }],
         cwd: 'F:\\repo',
         approvalPolicy: 'on-request',
         sandbox: 'workspace-write',
@@ -127,6 +129,7 @@ describe('CodexAppServerAdapter', () => {
           threadId: 'thr_1',
           input: [
             { type: 'text', text: '实现功能', text_elements: [] },
+            { type: 'localImage', path: getAttachmentAbsolutePath('sess_1/spec.png') },
           ],
         }),
       )
@@ -156,12 +159,16 @@ describe('CodexAppServerAdapter', () => {
       type: 'user',
       session_id: 'sess_1',
       parent_tool_use_id: null,
-      message: { role: 'user', content: '先跑测试' },
+      message: { role: 'user', content: [
+        { type: 'text', text: '先跑测试' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+      ] },
     })
     expect(client.request).toHaveBeenCalledWith('turn/steer', {
       threadId: 'thr_1',
       input: [
         { type: 'text', text: '先跑测试', text_elements: [] },
+        { type: 'image', url: 'data:image/png;base64,aW1hZ2U=' },
       ],
     })
 
@@ -181,11 +188,17 @@ describe('CodexAppServerAdapter', () => {
       type: 'user',
       session_id: 'sess_1',
       parent_tool_use_id: null,
-      message: { role: 'user', content: '继续' },
+      message: { role: 'user', content: [
+        { type: 'text', text: '继续' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'bmV4dA==' } },
+      ] },
     })
     expect(client.request).toHaveBeenLastCalledWith('turn/start', {
       threadId: 'thr_1',
-      input: [{ type: 'text', text: '继续', text_elements: [] }],
+      input: [
+        { type: 'text', text: '继续', text_elements: [] },
+        { type: 'image', url: 'data:image/jpeg;base64,bmV4dA==' },
+      ],
     })
 
     await adapter.interruptQuery('sess_1')

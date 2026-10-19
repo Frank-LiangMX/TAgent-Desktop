@@ -167,6 +167,25 @@ export function getUserProfilePath(): string {
   return join(getConfigDir(), 'user-profile.json')
 }
 
+/** 本地视频语音模型目录：~/.tagent[-dev]/video-models/ */
+export function getVideoModelsDir(): string {
+  const dir = join(getConfigDir(), 'video-models')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** 本地视频语音引擎目录：~/.tagent[-dev]/video-runtime/ */
+export function getVideoRuntimeDir(): string {
+  const dir = join(getConfigDir(), 'video-runtime')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** 本地视频模型偏好：~/.tagent[-dev]/video-model-settings.json */
+export function getVideoModelPreferencesPath(): string {
+  return join(getConfigDir(), 'video-model-settings.json')
+}
+
 /** MoA 会诊预置文件：~/.tagent[-dev]/moa-presets.json */
 export function getMoaPresetsPath(): string {
   return join(getConfigDir(), 'moa-presets.json')

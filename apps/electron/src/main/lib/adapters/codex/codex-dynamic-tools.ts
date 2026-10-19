@@ -71,6 +71,12 @@ const READ_ONLY_TOOL_NAMES = new Set([
   'browser_screenshot',
   'browser_takeover',
   'browser_resume',
+  'video_analyze_url',
+  'wps_collect_daily',
+  'wps_read_daily_evidence',
+  'wps_list_chats',
+  'wps_search_messages',
+  'wps_get_chat_messages',
   'kb_list_roots',
   'kb_list_available',
   'kb_search',
@@ -86,6 +92,7 @@ const READ_ONLY_TOOL_NAMES = new Set([
 ])
 
 const PERMISSION_TOOL_NAMES = new Set([
+  'wps_create_document',
   'browser_click',
   'browser_type',
   'kanban_create_board',
@@ -93,6 +100,7 @@ const PERMISSION_TOOL_NAMES = new Set([
   'kanban_complete',
   'kanban_block',
   'workbench_add',
+  'workbench_update_note',
   'task',
 ])
 

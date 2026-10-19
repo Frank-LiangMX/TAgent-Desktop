@@ -3,7 +3,7 @@ import { BrowserWindow, ipcMain, safeStorage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { WPS_IPC_CHANNELS, type WpsConfig, type WpsConnectionInput, type WpsPublicConfig, type WpsUserAuthState,
   type WpsReportScope, type WpsDailyReportSource, type WpsDailyBundle, type WpsCollectionSummary, type WpsChatSummary } from '@tagent/shared'
 import { readJsonSafe, writeJsonAtomic } from '../atomic-json'
@@ -14,6 +14,8 @@ import { collectDailyWps, localReportDate, WPS_DAILY_REPORT_PROMPT } from './wps
 import { DEFAULT_WPS_SCOPE, WPS_ORIGIN, WpsClient, WpsApiError, collectWpsPages, record, string, unpackWpsMcp, wpsScopes, wpsMessageIdentity } from './wps-client'
 import { getWpsAppCredentials } from './wps-app-credentials'
 import { ensureWpsCli, parseWpsAccessToken, runWpsCli } from './wps-cli-auth'
+import { buildWpsMessageQuery, wpsMessagePage, type WpsMessageQuery } from './wps-message-query'
+import { createWpsDocumentOnce, createdWpsDocument, validateWpsDocument, WPS_DOCUMENT_CREATE_SCOPE, type WpsDocumentInput, type WpsCreatedDocument } from './wps-document-create'
 
 const path = (): string => join(getConfigDir(), 'wps.json')
 const defaults: WpsConfig = { enabled: true, appId: getWpsAppCredentials().appId, secretKey: 'builtin', apiUrl: WPS_ORIGIN, callbackPort: 18365, callbackPath: '/oauth/callback', reportScope: DEFAULT_WPS_SCOPE }
@@ -61,7 +63,8 @@ export class WpsService {
     const c = read()
     const valid = !!c.userAccessToken && !!c.userId && (c.userTokenExpiresAt ?? 0) > Date.now()
     return { loggedIn: valid, loading: !!this.login, userId: valid ? c.userId : undefined, companyId: valid ? c.companyId : undefined,
-      userName: valid ? c.userName : undefined, expiresAt: c.userTokenExpiresAt, errorMessage: this.authError }
+      userName: valid ? c.userName : undefined, expiresAt: c.userTokenExpiresAt, errorMessage: this.authError,
+      canCreateDocuments: !!c.userAccessToken && !!c.userId && !!c.authorizedScopes?.includes(WPS_DOCUMENT_CREATE_SCOPE) }
   }
 
   private broadcast(): void {
@@ -87,23 +90,26 @@ export class WpsService {
     this.broadcast(); return this.publicConfig()
   }
 
-  async loginUser(): Promise<WpsUserAuthState> {
+  async loginUser(createDocuments = false): Promise<WpsUserAuthState> {
+    if (typeof createDocuments !== 'boolean') throw new Error('WPS 文档授权参数无效。')
     if (!this.publicConfig().available) throw new Error('应用内 WPS 凭据不可用，请联系应用管理员。')
     if (!safeStorage.isEncryptionAvailable()) throw new Error('系统凭据加密不可用，无法保存 WPS 授权。')
     if (this.login) return this.authState()
+    const withDocumentCreation = createDocuments || !!read().authorizedScopes?.includes(WPS_DOCUMENT_CREATE_SCOPE)
     this.logout()
     const epoch = this.epoch
     const scope = this.publicConfig().reportScope
+    const scopes = [...wpsScopes(scope), ...(withDocumentCreation ? [WPS_DOCUMENT_CREATE_SCOPE] : [])]
     let task!: Promise<void>
     task = (async () => {
       try {
         await ensureWpsCli()
-        await runWpsCli(['auth', 'login', '--scopes', wpsScopes(scope).join(',')])
+        await runWpsCli(['auth', 'login', '--scopes', scopes.join(',')])
         if (epoch !== this.epoch) return
         const token = parseWpsAccessToken(await runWpsCli(['auth', 'token']))
         if (!token) throw new Error('WPS 登录未返回用户凭据。')
         write({ ...read(), enabled: true, userAccessToken: encrypt(token), userTokenExpiresAt: Date.now() + 2 * 3600_000,
-          userRefreshToken: undefined, userRefreshExpiresAt: undefined, authorizedScopes: wpsScopes(scope) })
+          userRefreshToken: undefined, userRefreshExpiresAt: undefined, authorizedScopes: scopes })
         const identity = record(await this.client.get('/v7/users/current'))
         if (!string(identity.id)) throw new Error('WPS 未返回本人身份。')
         write({ ...read(), userId: string(identity.id), companyId: string(identity.company_id), userName: string(identity.user_name), userEmail: string(identity.email) })
@@ -124,7 +130,8 @@ export class WpsService {
 
   private checkAccount(accountId?: string, companyId?: string): WpsConfig {
     const c = read()
-    if (!this.authState().loggedIn || !c.userId) throw new Error('请先在设置 → WPS 日报中授权本人账号。')
+    // Expired access tokens may be renewed by WpsClient through the CLI.
+    if (!c.userAccessToken || !c.userId) throw new Error('请先在工作台 → 日报与周报 → WPS 连接与自动化中授权本人账号。')
     if (accountId && (c.userId !== accountId || companyId !== undefined && c.companyId !== companyId)) throw new Error('WPS 日报绑定的账号已变更，请重新配置日报任务。')
     return c
   }
@@ -139,10 +146,15 @@ export class WpsService {
       : ['kso_yundoc_extract_yundoc_content']
     if (!allowed.includes(name)) throw new Error('WPS 日报仅支持读取工具。')
     signal?.throwIfAborted()
-    const epoch = this.epoch
     this.checkScopes({ includeChats: service === 'message', includeDocuments: service === 'yundoc', chatIds: [] })
+    return this.invokeMcp(service, name, args, signal)
+  }
+
+  private async invokeMcp(service: 'message' | 'yundoc' | 'airpage', name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted()
+    const epoch = this.epoch
     const token = await this.client.accessToken()
-    const client = new Client({ name: 'tagent-wps-readonly', version: '1.0.0' }, { capabilities: {} })
+    const client = new Client({ name: 'tagent-wps', version: '1.0.0' }, { capabilities: {} })
     const transport = new StreamableHTTPClientTransport(new URL(`${WPS_ORIGIN}/mcp/v2/kso-${service}/message`), {
       requestInit: { headers: { Authorization: `Bearer ${token}` }, redirect: 'error' },
     })
@@ -153,7 +165,8 @@ export class WpsService {
     } catch (error) {
       signal?.throwIfAborted()
       if (error instanceof WpsApiError) throw error
-      throw new Error('WPS 读取工具失败，请检查本人权限和 WPS 接入配置。')
+      if (error instanceof StreamableHTTPError && (error.code === 401 || error.code === 403)) throw new WpsApiError(error.code)
+      throw new Error(service === 'airpage' ? 'WPS 创建工具失败，请检查文档写入权限和连接。' : 'WPS 读取工具失败，请检查本人权限和 WPS 接入配置。')
     }
     finally { await client.close().catch(() => {}) }
     if (epoch !== this.epoch) throw new Error('WPS 授权或范围已变更。')
@@ -167,6 +180,38 @@ export class WpsService {
       const id = string(item.id ?? item.chat_id)
       return id ? [{ id, title: string(item.title ?? item.name) || id }] : []
     })
+  }
+
+  async createDocument(input: WpsDocumentInput, signal?: AbortSignal): Promise<WpsCreatedDocument> {
+    validateWpsDocument(input)
+    signal?.throwIfAborted()
+    const config = this.checkAccount()
+    if (!config.authorizedScopes?.includes(WPS_DOCUMENT_CREATE_SCOPE)) {
+      throw new Error('尚未授权创建 WPS 云文档。请在工作台 → 日报与周报 → WPS 连接与自动化点击「授权创建云文档」；应用方需先开通 kso.mcp_airpage.readwrite 用户授权权限。现有消息读取授权无需变更。')
+    }
+    const epoch = this.epoch
+    await this.client.accessToken()
+    signal?.throwIfAborted()
+    if (epoch !== this.epoch) throw new Error('WPS 授权或范围已变更。')
+    return createWpsDocumentOnce(getConfigDir(), { id: config.userId!, companyId: config.companyId }, input, async () => {
+      const data = await this.invokeMcp('airpage', 'kso_airpage_import_markdown_data', {
+        file_name: input.title.trim(), markdown_content: input.markdown,
+      }, signal)
+      const created = createdWpsDocument(data, input.title.trim())
+      if (!created.url && created.fileId && config.authorizedScopes?.includes('kso.mcp_yundoc.readwrite')) {
+        try {
+          const meta = record(await this.invokeMcp('yundoc', 'kso_yundoc_get_file_meta', { file_id: created.fileId }, signal))
+          return createdWpsDocument({ ...meta, file_id: created.fileId }, input.title.trim())
+        } catch { /* Creation succeeded; a missing metadata link must not trigger another create. */ }
+      }
+      return created
+    })
+  }
+
+  async queryMessages(query: WpsMessageQuery, signal?: AbortSignal): Promise<ReturnType<typeof wpsMessagePage>> {
+    const { name, args } = buildWpsMessageQuery(query)
+    const data = await this.call('message', name, args, signal)
+    return wpsMessagePage(data, query.pageToken)
   }
 
   async collect(date = localReportDate(), scope = this.publicConfig().reportScope, accountId?: string, signal?: AbortSignal, companyId?: string): Promise<WpsDailyBundle> {
@@ -251,7 +296,7 @@ export function registerWpsIpc(): void {
     [WPS_IPC_CHANNELS.GET_CONFIG]: () => wpsService.publicConfig(),
     [WPS_IPC_CHANNELS.SAVE_CONFIG]: (input: WpsConnectionInput) => wpsService.save(input),
     [WPS_IPC_CHANNELS.GET_USER_AUTH]: () => wpsService.authState(),
-    [WPS_IPC_CHANNELS.USER_LOGIN]: () => wpsService.loginUser(),
+    [WPS_IPC_CHANNELS.USER_LOGIN]: (createDocuments?: boolean) => wpsService.loginUser(createDocuments),
     [WPS_IPC_CHANNELS.USER_LOGOUT]: () => wpsService.logout(),
     [WPS_IPC_CHANNELS.CHECK_USER_AUTH]: async () => {
       await wpsService.client.get('/v7/users/current'); return wpsService.authState()

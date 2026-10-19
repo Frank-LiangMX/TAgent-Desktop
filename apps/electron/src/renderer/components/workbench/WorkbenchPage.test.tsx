@@ -1,3 +1,5 @@
+import { workbenchDocumentKind } from "./WorkbenchDocuments";
+import { dateOffset } from "./workbench-overview";
 // @vitest-environment jsdom
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -9,6 +11,10 @@ import { workbenchDate, type WorkbenchMutationInput } from "@tagent/shared";
 import { buildPiWorkbenchTools } from "../../../main/lib/workbench/workbench-agent-tools";
 import { WorkbenchStore } from "../../../main/lib/workbench/workbench-store";
 import { WorkbenchPage } from "./WorkbenchPage";
+
+vi.mock("./WpsWorkspace", () => ({
+  WpsWorkspace: () => <section aria-label="WPS 配置">WPS 配置内容</section>,
+}));
 
 // Exercise real state/storage and user actions; omit unrelated rich Markdown/dialog primitives.
 vi.mock("@tagent/ui", async (importOriginal) => ({
@@ -97,7 +103,7 @@ function button(label: string): HTMLButtonElement {
   return found;
 }
 const click = async (label: string) => {
-  if (["待办", "工作记录", "知识库", "自动化"].includes(label)) {
+  if (["待办", "工作记录", "知识库", "自动化", "每日足迹"].includes(label)) {
     await act(async () => {
       button("更多").dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
@@ -157,6 +163,111 @@ const seed = (kind: "note" | "progress" = "note") =>
   });
 
 describe("workbench user workflows", () => {
+  it("shows an actionable Gantt empty state without a blank date grid or duplicate day details", async () => {
+    await render();
+    await click("日程");
+    await click("甘特图");
+    expect(container.querySelector(".wb-gantt-empty")?.textContent).toContain(
+      "这个月还没有排期任务",
+    );
+    expect(container.querySelector(".wb-gantt-grid")).toBeNull();
+    expect(container.querySelector(".wb-calendar-day-detail")).toBeNull();
+    expect(container.querySelector(".wb-calendar-legend")).toBeNull();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(".wb-gantt-empty button")!
+        .click(),
+    );
+    expect(
+      document.querySelector('[aria-label="任务开始日期"]'),
+    ).not.toBeNull();
+  });
+  it("follows selected dates for planned tasks and opens a month Gantt directly from todos", async () => {
+    const today = workbenchDate(),
+      tomorrow = dateOffset(today, 1);
+    for (const [title, day] of [
+      ["当天任务", today],
+      ["明天任务", tomorrow],
+    ])
+      store.mutate({
+        expectedRevision: store.read().revision,
+        change: {
+          type: "save-todo",
+          title: title!,
+          project: "",
+          dueDate: "",
+          startAt: new Date(`${day}T09:00`).getTime(),
+          endAt: new Date(`${day}T18:00`).getTime(),
+        },
+      });
+    await render();
+    expect(container.querySelector(".wb-todos")?.textContent).toContain(
+      "当天任务",
+    );
+    expect(container.querySelector(".wb-todos")?.textContent).not.toContain(
+      "明天任务",
+    );
+    await click("查看日期");
+    await click(tomorrow);
+    expect(container.querySelector(".wb-todos")?.textContent).toContain(
+      "明天任务",
+    );
+    expect(container.querySelector(".wb-todos")?.textContent).not.toContain(
+      "当天任务",
+    );
+    await click("待办");
+    expect(container.querySelector(".wb-todos")?.textContent).not.toContain(
+      "当天任务",
+    );
+    await click("全部日期");
+    expect(container.querySelector(".wb-todos")?.textContent).toContain(
+      "当天任务",
+    );
+    await click("日期甘特图");
+    expect(container.querySelectorAll(".wb-gantt-dates > span")).toHaveLength(
+      new Date(
+        Number(today.slice(0, 4)),
+        Number(today.slice(5, 7)),
+        0,
+      ).getDate(),
+    );
+    expect(button("按月").getAttribute("aria-pressed")).toBe("true");
+    await click("按周");
+    expect(container.querySelectorAll(".wb-gantt-dates > span")).toHaveLength(
+      7,
+    );
+  });
+  it("saves inclusive date ranges as whole days and renders their full span in Gantt", async () => {
+    const today = workbenchDate(),
+      tomorrow = dateOffset(today, 1);
+    await render();
+    await click("新增待办");
+    await input(
+      document.querySelector<HTMLInputElement>(
+        '.wb-form input[maxlength="500"]',
+      )!,
+      "跨天排期",
+    );
+    await click("任务开始日期");
+    await click(today);
+    await click("任务结束日期");
+    await click(tomorrow);
+    await click("保存待办");
+    const task = store.read().todos[0]!;
+    expect(task.startAt).toBe(new Date(`${today}T00:00`).getTime());
+    expect(task.endAt).toBe(
+      new Date(`${dateOffset(today, 2)}T00:00`).getTime(),
+    );
+    await click("待办");
+    await click("日期甘特图");
+    expect(container.querySelector(".wb-gantt-task")?.textContent).toContain(
+      `${today.slice(5)} — ${tomorrow.slice(5)}`,
+    );
+    await click("编辑任务：跨天排期");
+    expect(button("任务结束日期").textContent).toContain(
+      tomorrow.replaceAll("-", "/"),
+    );
+  });
   it("opens the existing automation page and keeps local calendar usable if loading jobs fails", async () => {
     const day = workbenchDate();
     store.mutate({
@@ -194,6 +305,60 @@ describe("workbench user workflows", () => {
     ).toContain("本地安排");
     await click("新建日程");
     expect(document.querySelector("#wb-event-title")).not.toBeNull();
+  });
+  it("finds undated tasks in agenda, saves duration and progress, and opens them from Gantt", async () => {
+    const day = workbenchDate();
+    store.mutate({
+      expectedRevision: 0,
+      change: {
+        type: "save-todo",
+        title: "未排期开发",
+        project: "",
+        dueDate: "",
+      },
+    });
+    await render();
+    await click("日程");
+    expect(
+      container.querySelector('[aria-label="未安排待办"]')?.textContent,
+    ).toContain("未排期开发");
+    await click("安排待办：未排期开发");
+    await input(
+      document.querySelector<HTMLInputElement>('[aria-label="任务开始时间"]')!,
+      `${day}T09:00`,
+    );
+    await input(
+      document.querySelector<HTMLInputElement>('[aria-label="任务结束时间"]')!,
+      `${day}T12:00`,
+    );
+    await input(
+      document.querySelector<HTMLInputElement>('[aria-label="任务完成进度"]')!,
+      "40",
+    );
+    await click("保存待办");
+    expect(store.read().todos[0]).toMatchObject({
+      progress: 40,
+      startAt: new Date(`${day}T09:00`).getTime(),
+      endAt: new Date(`${day}T12:00`).getTime(),
+    });
+    expect(
+      container.querySelector('[aria-label="未安排待办"]')?.textContent,
+    ).not.toContain("未排期开发");
+    expect(
+      container.querySelector(".wb-timed-item.is-todo")?.textContent,
+    ).toContain("40%");
+    await click("甘特图");
+    expect(
+      container.querySelector('[aria-label="任务进度甘特图"]')?.textContent,
+    ).toContain("3 小时");
+    expect(
+      container.querySelector(".wb-gantt-task-title")?.textContent,
+    ).toContain("40%");
+    await click("编辑任务：未排期开发");
+    expect(
+      document.querySelector<HTMLInputElement>('[aria-label="任务完成进度"]')
+        ?.value,
+    ).toBe("40");
   });
   it("edits timed tasks from calendar and links or detaches a block without duplicating the task", async () => {
     const day = workbenchDate();
@@ -315,14 +480,12 @@ describe("workbench user workflows", () => {
       },
     });
     await render();
-    await click("回顾");
-    await click("工作日报");
-    expect(container.querySelector(".wb-activity")?.textContent).toContain(
-      "留下 2 条记录",
-    );
-    const links = container.querySelectorAll<HTMLButtonElement>(
-      ".wb-collection-chart .wb-collection-kind",
-    )[1]!;
+    await click("收集");
+    const links = [
+      ...container.querySelectorAll<HTMLButtonElement>(
+        ".wb-collection-shortcuts .wb-collection-kind",
+      ),
+    ].find((item) => item.textContent?.includes("链接资料"))!;
     await act(async () => links.click());
     expect(container.querySelectorAll(".wb-note")).toHaveLength(1);
     expect(container.querySelector(".wb-note")?.textContent).toContain(
@@ -337,7 +500,7 @@ describe("workbench user workflows", () => {
     ).toBeGreaterThan(700);
     expect(button("收起全文").getAttribute("aria-expanded")).toBe("true");
   });
-  it("keeps knowledge inside five primary destinations and lets users record and generate a report without leaving Today", async () => {
+  it("keeps content destinations in primary navigation and lets users record and generate a report without leaving Today", async () => {
     await render();
     const nav = container.querySelector(".wb-nav")!;
     expect(
@@ -348,7 +511,7 @@ describe("workbench user workflows", () => {
             item.getAttribute("aria-haspopup") !== "menu",
         )
         .map((item) => item.textContent),
-    ).toEqual(["今天", "收集", "日程", "知识", "回顾"]);
+    ).toEqual(["今天", "收集", "日程", "知识", "日报与周报"]);
     expect(button("更多").getAttribute("aria-expanded")).toBe("false");
     await input(
       container.querySelector("textarea")!,
@@ -359,6 +522,19 @@ describe("workbench user workflows", () => {
     expect(store.read().notes[0]?.kind).toBe("progress");
     await click("生成日报");
     expect(store.read().reports[0]?.body).toContain("回归尚未结束");
+  });
+  it("opens WPS configuration from reports and keeps the report destination selected", async () => {
+    await render();
+    await click("日报与周报");
+    await click("WPS 连接与自动化");
+    expect(container.querySelector('[aria-label="WPS 配置"]')).not.toBeNull();
+    expect(button("日报与周报").getAttribute("aria-current")).toBe("page");
+    expect(button("更多").getAttribute("data-active")).toBeNull();
+    await click("返回日报与周报");
+    expect(
+      container.querySelector('[aria-label="日报与周报文档"]'),
+    ).not.toBeNull();
+    expect(container.querySelector('[aria-label="WPS 配置"]')).toBeNull();
   });
   it("filters projects and tags with the shared menus and can return to all", async () => {
     seed();
@@ -479,8 +655,8 @@ describe("workbench user workflows", () => {
   });
   it("offers a weekly personal review from the review page", async () => {
     await render();
-    await click("回顾");
-    await click("让 Agent 回顾这周");
+    await click("日报与周报");
+    await click("让 Agent 整理周报");
     expect(onUseAgent.mock.calls[0]?.[0]).toContain("workbench_search");
     expect(onUseAgent.mock.calls[0]?.[0]).toContain("生活与灵感");
   });
@@ -586,8 +762,12 @@ describe("workbench user workflows", () => {
     await act(async () => root.unmount());
     root = createRoot(container);
     await render();
-    await click("回顾");
-    await click("工作日报");
+    await click("日报与周报");
+    await act(async () =>
+      (
+        container.querySelector(".wb-document-row") as HTMLButtonElement
+      ).click(),
+    );
     expect(container.querySelector(".wb-report textarea")?.textContent).toBe(
       "尚未保存的旧草稿",
     );
@@ -605,7 +785,14 @@ describe("workbench user workflows", () => {
     await render();
     expect(onUseAgent).not.toHaveBeenCalled();
     await click("交给 Agent");
+    expect(onUseAgent).not.toHaveBeenCalled();
+    await input(
+      container.querySelector('[aria-label="修改或补充要求"]')!,
+      "补充回归结果并更新原记录",
+    );
+    await click("带入 Agent 对话");
     expect(onUseAgent).toHaveBeenCalledTimes(1);
+    expect(onUseAgent.mock.calls[0]?.[0]).toContain("补充回归结果并更新原记录");
     expect(onUseAgent.mock.calls[0]?.[0]).toContain(store.read().notes[0]!.id);
     await click("知识");
     expect(container.querySelector('[aria-label="个人知识"]')).not.toBeNull();
@@ -664,7 +851,7 @@ describe("workbench user workflows", () => {
       occurredOn: day,
     });
     await render();
-    await click("回顾");
+    await click("每日足迹");
     expect(container.querySelectorAll(".wb-history-days button")).toHaveLength(
       42,
     );
@@ -765,4 +952,109 @@ describe("workbench user workflows", () => {
     );
     expect(store.read().notes[0]?.tags).toEqual([]);
   });
+});
+
+it("lists reports across dates, groups saved versions and opens weekly notes as full documents", async () => {
+  seed("progress");
+  const day = "2026-10-01";
+  const source = store.read().notes[0]!;
+  store.mutate({
+    expectedRevision: store.read().revision,
+    change: {
+      type: "save-note",
+      id: source.id,
+      expectedEntityRevision: source.revision,
+      content: source.content,
+      tags: source.tags,
+      project: source.project,
+      kind: source.kind,
+      occurredOn: day,
+    },
+  });
+  store.mutate({
+    expectedRevision: store.read().revision,
+    change: { type: "create-report", date: day, project: "" },
+  });
+  store.mutate({
+    expectedRevision: store.read().revision,
+    change: { type: "create-report", date: day, project: "" },
+  });
+  store.mutate({
+    expectedRevision: store.read().revision,
+    change: {
+      type: "save-note",
+      content: "# 周报 — 项目回归\n\n完整的周报正文",
+      tags: ["周报", "回归"],
+      project: "",
+      kind: "progress",
+      occurredOn: day,
+    },
+  });
+  await render();
+  await click("日报与周报");
+  expect(container.querySelectorAll(".wb-document-row")).toHaveLength(2);
+  expect(container.textContent).toContain("2 个版本");
+  expect(container.textContent).toContain("全部日期");
+  const weekly = [
+    ...container.querySelectorAll<HTMLButtonElement>(".wb-document-row"),
+  ].find((row) => row.textContent?.includes("项目回归"))!;
+  await act(async () => weekly.click());
+  expect(
+    container.querySelector('[aria-label="文档正文"]')?.textContent,
+  ).toContain("完整的周报正文");
+  expect(container.querySelector('[role="dialog"]')).toBeNull();
+  expect(container.querySelector("textarea")).toBeNull();
+  await click("编辑正文");
+  expect(
+    container.querySelector('[aria-label="文档正文"] textarea'),
+  ).not.toBeNull();
+});
+it("opens a finalized report directly from history and returns to its original date", async () => {
+  seed("progress");
+  const day = workbenchDate();
+  const created = store.mutate({
+    expectedRevision: store.read().revision,
+    change: { type: "create-report", date: day, project: "" },
+  }).reports[0]!;
+  store.mutate({
+    expectedRevision: store.read().revision,
+    change: {
+      type: "save-report",
+      id: created.id,
+      body: "# 核对后的正式日报",
+      finalize: true,
+      expectedEntityRevision: created.revision,
+    },
+  });
+  await render();
+  await click("每日足迹");
+  await click("打开日报");
+  expect(
+    container.querySelector('[aria-label="文档正文"]')?.textContent,
+  ).toContain("核对后的正式日报");
+  expect(container.querySelector("textarea")).toBeNull();
+  await click("返回每日足迹");
+  expect(container.querySelector(".wb-history-date")?.textContent).toContain(
+    day,
+  );
+});
+
+it("uses the report title before copied tags and keeps ordinary progress in collection", () => {
+  seed("progress");
+  const note = store.read().notes[0]!;
+  expect(
+    workbenchDocumentKind({
+      ...note,
+      content: "2026-10-15 工作日报\n正文",
+      tags: ["周报"],
+    }),
+  ).toBe("日报");
+  expect(
+    workbenchDocumentKind({
+      ...note,
+      content: "# 周报 — 2026年10月12日",
+      tags: ["日报"],
+    }),
+  ).toBe("周报");
+  expect(workbenchDocumentKind(note)).toBeNull();
 });

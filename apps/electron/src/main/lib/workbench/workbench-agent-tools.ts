@@ -57,7 +57,9 @@ const entries = (state: WorkbenchState) => [
     date:
       todo.completedAt !== null
         ? workbenchDate(todo.completedAt)
-        : todo.dueDate,
+        : todo.startAt != null
+          ? workbenchDate(todo.startAt)
+          : todo.dueDate,
     text: todo.title,
     item: todo,
   })),
@@ -82,9 +84,10 @@ export const WORKBENCH_SYSTEM_PROMPT = `## 个人工作台
 用户要求保存整理结果或建立安排时，Work 模式可用 workbench_add 新建记录、待办、本地日程，保留 sourceNoteId；只在返回 ok:true 后说已保存。禁止用 Bash 或直接写 JSON 绕过工具。Chat 只读，没有写工具时先给草稿并说明尚未保存，不能静默切模式。
 随手笔记和链接提炼默认 kind:note，只有用户明确记录工作成果才用 kind:progress；不要把生活随笔、收藏或未来计划写成已完成的工作。时间以本机时区为准，含糊的日期先问清；本地日程没有提醒或 WPS 同步，不能宣称会通知用户。
 待办默认 area:personal，用户明确的工作事项用 area:work。只有工作事项完成后才进入工作日报，生活安排不会混入。
-待办设置 dueDate 和可选 dueTime 后直接出现在日历，不需要再创建相同日程；dueTime 只表示计划时点，不代表持续时长。需要独立时间段时才新建 event，可用 todoId 关联已有待办，项目须一致。安排时间不改变待办完成状态。
+待办设置 dueDate 和可选 dueTime 后直接出现在日历；需要任务持续时间时给 todo 提供 start、end（本机时区 YYYY-MM-DDTHH:mm）及可选 progress（0–100），显示为任务区间和甘特图，不需要再创建相同日程。未设日期的待办在日程的未安排待办中。progress 为实际完成百分比，不要根据时间流逝推算。需要独立日程时才新建 event，可用 todoId 关联已有待办，项目须一致。
 用户给多个链接时逐条用 browser_open 打开、browser_read_text 分页读取可见正文并注明来源；browser_observe 仅返回交互元素，不能用按钮列表冒充正文。合并重复观点，保留分歧和可行动事项。登录/验证码走 browser_takeover；不得绕过访问限制。没有视频字幕或音轨转写结果时，只能总结实际读取到的标题、文案或字幕，说明缺口；不得凭标题、评论猜测视频全文。
 所有整理产物必须提供非空 tags 主题标签，优先复用已有标签并继承适用来源标签，可用主题/子主题；不只写“AI整理”等泛称。多来源用 sourceNoteIds 保留全部来源。回看哪天做过什么时用 workbench_history，计划不是成果，旧记录缺失的历史不能补造。
+用户针对已有记录提出修改或补充时，先用 workbench_get 读取最新完整内容，Work 模式使用 workbench_update_note 更新同一条记录；保留未被要求修改的事实。必须使用读取到的 revision，版本冲突后重新读取核对，禁止静默覆盖或另建重复记录。只有 ok:true 才能声称已更新。
 整理结果先保存为工作台笔记；正式入知识库继续使用现有绑定库和 kb_propose_save 流程，不自动给会话开放全部知识库。`;
 
 const searchSchema = Type.Object({
@@ -101,6 +104,12 @@ const searchSchema = Type.Object({
 const getSchema = Type.Object({
   id: Type.String(),
   offset: Type.Optional(Type.Integer({ minimum: 0 })),
+});
+
+const updateNoteSchema = Type.Object({
+  id: Type.String(),
+  expectedRevision: Type.Integer({ minimum: 1 }),
+  content: Type.String({ minLength: 1, maxLength: 100000 }),
 });
 
 const addSchema = Type.Object({
@@ -129,6 +138,7 @@ const addSchema = Type.Object({
   ),
   start: Type.Optional(Type.String()),
   end: Type.Optional(Type.String()),
+  progress: Type.Optional(Type.Integer({ minimum: 0, maximum: 100 })),
   sourceNoteId: Type.Optional(Type.String()),
   sourceNoteIds: Type.Optional(Type.Array(Type.String(), { maxItems: 50 })),
 });
@@ -172,13 +182,11 @@ export function buildPiWorkbenchTools(ctx: Context): AgentTool[] {
           historyStartedAt: state.historyStartedAt,
           total: items.length,
           nextOffset: offset + 20 < items.length ? offset + 20 : null,
-          items: items
-            .slice(offset, offset + 20)
-            .map((item) => ({
-              ...item,
-              text: item.text.slice(0, 2000),
-              truncated: item.text.length > 2000,
-            })),
+          items: items.slice(offset, offset + 20).map((item) => ({
+            ...item,
+            text: item.text.slice(0, 2000),
+            truncated: item.text.length > 2000,
+          })),
         });
       },
     },
@@ -197,7 +205,7 @@ export function buildPiWorkbenchTools(ctx: Context): AgentTool[] {
               (!args.type || entry.type === args.type) &&
               (!args.project || entry.item.project === args.project) &&
               (!args.from ||
-                ("endAt" in entry.item
+                ("endAt" in entry.item && entry.item.endAt != null
                   ? workbenchDate(entry.item.endAt - 1)
                   : entry.date) >= args.from) &&
               (!args.to || (!!entry.date && entry.date <= args.to)) &&
@@ -231,13 +239,17 @@ export function buildPiWorkbenchTools(ctx: Context): AgentTool[] {
                     area: item.area ?? "work",
                     dueDate: item.dueDate,
                     dueTime: item.dueTime,
+                    startAt: item.startAt,
+                    endAt: item.endAt,
+                    progress:
+                      item.completedAt !== null ? 100 : (item.progress ?? 0),
                   }
                 : {}),
               ...("startAt" in item
                 ? {
                     startAt: item.startAt,
                     endAt: item.endAt,
-                    todoId: item.todoId,
+                    todoId: "todoId" in item ? item.todoId : undefined,
                   }
                 : {}),
             })),
@@ -283,7 +295,7 @@ export function buildPiWorkbenchTools(ctx: Context): AgentTool[] {
     name: "workbench_add",
     label: "保存到个人工作台",
     description:
-      "按用户要求新建一条工作台笔记/待办/本地日程，不覆盖原文。所有类型须提供非空tags主题标签，或从来源记录继承非空标签，可用sourceNoteIds关联多条来源。type=note需content；todo需title，可给dueDate和dueTime（HH:mm，须有日期），直接显示在日历，无需再建日程；event需title、start、end（本机时区YYYY-MM-DDTHH:mm），用于独立时间段，可给todoId关联已有待办，未填project时继承该待办项目。无提醒。可用sourceNoteId保留原收集记录的关联。工具调用ID相同的重试不重复建项。只有ok:true表示已保存。",
+      "按用户要求新建一条工作台笔记/待办/本地日程，不覆盖原文。所有类型须提供非空tags主题标签，或从来源记录继承非空标签，可用sourceNoteIds关联多条来源。type=note需content；todo需title，可给dueDate和dueTime（HH:mm，须有日期），也可给start、end（本机时区YYYY-MM-DDTHH:mm）设置持续时间，可给progress（0–100）记录实际完成百分比，直接显示在日历与甘特图，无需再建日程；event需title、start、end，用于独立时间段，可给todoId关联已有待办，未填project时继承该待办项目。无提醒。可用sourceNoteId保留原收集记录的关联。工具调用ID相同的重试不重复建项。只有ok:true表示已保存。",
     parameters: addSchema,
     execute: async (callId, raw, signal) => {
       const args = raw as Static<typeof addSchema>;
@@ -355,6 +367,9 @@ export function buildPiWorkbenchTools(ctx: Context): AgentTool[] {
             project,
             dueDate: args.dueDate ?? "",
             dueTime: args.dueTime,
+            startAt: args.start ? localTime(args.start) : undefined,
+            endAt: args.end ? localTime(args.end) : undefined,
+            progress: args.progress,
             area: args.area ?? "personal",
             origin,
           };
@@ -394,6 +409,59 @@ export function buildPiWorkbenchTools(ctx: Context): AgentTool[] {
       }
     },
   });
+  tools.push({
+    name: "workbench_update_note",
+    label: "更新工作台记录",
+    description:
+      "按用户的修改或补充要求更新已有笔记正文，保留项目、标签、日期、类型和来源。先用workbench_get读取完整最新原文，传入该条目的revision作为expectedRevision；版本冲突须重新读取核对。只有ok:true表示已保存。",
+    parameters: updateNoteSchema,
+    execute: async (_callId, raw, signal) => {
+      if (signal?.aborted) throw new Error("操作已取消");
+      const args = raw as Static<typeof updateNoteSchema>;
+      try {
+        const state = ctx.store.read();
+        const note = state.notes.find(
+          (item) => item.id === args.id && item.status !== "trashed",
+        );
+        if (!note) throw new Error("记录不存在或已在回收站");
+        if (
+          !Number.isInteger(args.expectedRevision) ||
+          note.revision !== args.expectedRevision
+        )
+          throw new Error("记录版本已变化，请重新读取最新原文并核对修改");
+        if (
+          typeof args.content !== "string" ||
+          !args.content.trim() ||
+          args.content.length > 100000
+        )
+          throw new Error("正文不能为空且不得超过100000字符");
+        const next = ctx.store.mutate({
+          expectedRevision: state.revision,
+          change: {
+            type: "save-note",
+            id: note.id,
+            expectedEntityRevision: args.expectedRevision,
+            content: args.content,
+            tags: note.tags,
+            project: note.project,
+            kind: note.kind,
+            occurredOn: note.occurredOn,
+            origin: note.origin,
+          },
+        });
+        return result({
+          ok: true,
+          id: note.id,
+          revision: next.notes.find((item) => item.id === note.id)!.revision,
+        });
+      } catch (error) {
+        return result({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  });
   return tools;
 }
 
@@ -419,18 +487,30 @@ export async function injectWorkbenchMcpServer(
       tool.description,
       schema.shape,
       async (args: Record<string, unknown>, extra: unknown) => {
-        const request = extra && typeof extra === "object"
-          ? extra as { callId?: unknown; requestId?: unknown; signal?: AbortSignal }
-          : undefined;
-        const callId = typeof request?.callId === "string" && request.callId
-          ? request.callId
-          : request?.requestId != null
-            ? `${instanceId}:${String(request.requestId)}`
-            : randomUUID();
+        const request =
+          extra && typeof extra === "object"
+            ? (extra as {
+                callId?: unknown;
+                requestId?: unknown;
+                signal?: AbortSignal;
+              })
+            : undefined;
+        const callId =
+          typeof request?.callId === "string" && request.callId
+            ? request.callId
+            : request?.requestId != null
+              ? `${instanceId}:${String(request.requestId)}`
+              : randomUUID();
         const value = await tool.execute(callId, args, request?.signal);
         return { content: value.content };
       },
-      { annotations: { readOnlyHint: tool.name !== "workbench_add" } },
+      {
+        annotations: {
+          readOnlyHint: !["workbench_add", "workbench_update_note"].includes(
+            tool.name,
+          ),
+        },
+      },
     );
   });
   mcpServers.workbench = sdk.createSdkMcpServer({

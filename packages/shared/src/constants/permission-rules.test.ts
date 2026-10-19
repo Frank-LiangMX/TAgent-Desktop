@@ -17,6 +17,11 @@ import {
 } from './permission-rules'
 
 describe('resolveSdkPermissionModeForTAgent', () => {
+  test.each(['wps_create_document', 'mcp__wps__wps_create_document'])('cloud document creation %s is a write, blocked in Chat and requires normal write approval', name => {
+    expect(isChatModeBlockedTool(name, {})).toBe(true)
+    expect(isChatModeHardStopTool(name, {})).toBe(true)
+    expect(isAutoModeAutoAllowTool(name, {})).toBe(false)
+  })
   test('PERMISSION_TIMEOUT_MS is 120 seconds', () => {
     expect(PERMISSION_TIMEOUT_MS).toBe(120_000)
   })

@@ -11,7 +11,7 @@ type Api = WpsDesktopApi & {
 const api = (): Api => window.electronAPI as unknown as Api
 const initial: WpsConnectionInput = { reportScope: { includeChats: true, includeDocuments: true, chatIds: [] } }
 
-export function WpsSettings(): JSX.Element {
+export function WpsWorkspace(): JSX.Element {
   const [config, setConfig] = useState<WpsPublicConfig>()
   const [draft, setDraft] = useState(initial)
   const [auth, setAuth] = useState<WpsUserAuthState>({ loggedIn: false })
@@ -62,7 +62,7 @@ export function WpsSettings(): JSX.Element {
   }
   const selectedJobs = jobs.filter(item => item.wpsDailyReport?.accountId === auth.userId)
   return <div className="settings-page">
-    <SettingsPageIntro title="WPS 日报" description="连接本人 WPS 365 账号，根据聊天和文档活动生成有来源的工作日报。" />
+    <SettingsPageIntro title="WPS 连接与自动化" description="配置本人 WPS 365 账号授权、采集范围和自动日报任务。报告正文请在“日报与周报”中查看。" />
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
     <SettingsSection title="开始使用" description="连接自己的 WPS 账号，授权后即可读取本人工作资料。">
@@ -77,19 +77,25 @@ export function WpsSettings(): JSX.Element {
         <div className="flex flex-wrap items-center justify-between gap-3 p-4">
           <div className="text-sm">
             <p>{auth.loading ? '请在 WPS 网页完成登录和授权…' : auth.loggedIn ? `已连接 · ${auth.userName || auth.userId}` : '尚未连接 WPS'}</p>
+            {auth.canCreateDocuments && <p className="mt-1 text-muted-foreground">已授权创建云文档</p>}
             {auth.errorMessage && <p className="mt-1 text-destructive">{auth.errorMessage}</p>}
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button disabled={busy || auth.loading} onClick={() => void run(async () => {
               if (dirty) await save()
               setAuth(await api().loginWpsUser())
             })}>
               {auth.loggedIn ? '重新授权' : '连接 WPS'}
             </Button>
+            {!auth.canCreateDocuments && <Button variant="outline" disabled={busy || auth.loading} onClick={() => void run(async () => {
+              if (dirty) await save()
+              setAuth(await api().loginWpsUser(true))
+            })}>授权创建云文档</Button>}
             {(auth.loggedIn || auth.loading) && <Button variant="outline" disabled={busy} onClick={() => void run(async () => { setAuth(await api().logoutWpsUser()) })}>断开连接</Button>}
           </div>
         </div>
       </SettingsCard>
+      <p className="mt-3 text-sm text-muted-foreground">在 Work 模式中要求 Agent 将日报或周报保存为 WPS 云文档。首次使用请点击「授权创建云文档」；文档保存到 WPS 的「MCP/智能文档」文件夹。</p>
       {config && !config.available && <p role="status" className="mt-3 text-sm text-muted-foreground">WPS 登录组件未准备好；点击后会显示具体错误。</p>}
     </SettingsSection>
     <SettingsSection title="采集范围" description="默认收集本人当天发出的消息。选中的会话增加沟通上下文；文档贡献以修改者及版本记录为依据。">

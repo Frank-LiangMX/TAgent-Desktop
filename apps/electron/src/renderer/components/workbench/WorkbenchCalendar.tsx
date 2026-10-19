@@ -9,6 +9,8 @@ import {
   Sparkle,
 } from "@phosphor-icons/react";
 import { Button } from "@tagent/ui";
+import { WorkbenchTaskTimeline } from "./WorkbenchTaskTimeline";
+import { useWorkbenchMotion } from "./use-workbench-motion";
 import {
   workbenchDate,
   type Automation,
@@ -21,6 +23,9 @@ import {
   calendarRange,
   layoutCalendarDay,
   shiftCalendar,
+  calendarTodos,
+  taskInterval,
+  taskProgress,
   type CalendarItem,
   type CalendarMode,
 } from "./workbench-calendar";
@@ -59,6 +64,7 @@ export function WorkbenchCalendar({
   onEvent,
   onCreate,
   onAutomation,
+  onCreateTodo,
 }: {
   state: WorkbenchState;
   date: string;
@@ -70,8 +76,15 @@ export function WorkbenchCalendar({
   onEvent: (event: WorkbenchEvent) => void;
   onCreate: (day: string, hour?: number) => void;
   onAutomation: () => void;
+  onCreateTodo?: () => void;
 }) {
   const [mode, setMode] = useState<CalendarMode>("week");
+  const [gantt, setGantt] = useState(false);
+  const motionRef = useWorkbenchMotion(
+    `${mode}:${gantt}:${date}`,
+    true,
+    ".wb-month, .wb-gantt, .wb-week-hours-scroll",
+  );
   const [showCompleted, setShowCompleted] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
   const days = useMemo(() => calendarRange(date, mode), [date, mode]);
@@ -104,75 +117,123 @@ export function WorkbenchCalendar({
   const itemName = (item: CalendarItem) =>
     `${item.kind === "todo" ? "待办" : item.kind === "event" ? "日程" : "自动任务下一次触发"}：${item.title}${item.at === null ? "，未设具体时间" : `，${clock(item.at)}`}`;
   const selected = items.get(date) ?? [];
+  const todos = calendarTodos(state, project, query, showCompleted);
+  const unscheduled = todos.filter(
+    (todo) => !todo.dueDate && !taskInterval(todo),
+  );
   return (
-    <section className="wb-calendar" aria-label="统一日历">
+    <section ref={motionRef} className="wb-calendar" aria-label="统一日历">
       <div className="wb-calendar-toolbar">
         <div className="wb-segment" aria-label="日历视图">
           <button
-            aria-pressed={mode === "week"}
-            onClick={() => setMode("week")}
+            aria-pressed={!gantt && mode === "week"}
+            onClick={() => {
+              setMode("week");
+              setGantt(false);
+            }}
           >
             周视图
           </button>
           <button
-            aria-pressed={mode === "month"}
-            onClick={() => setMode("month")}
+            aria-pressed={!gantt && mode === "month"}
+            onClick={() => {
+              setMode("month");
+              setGantt(false);
+            }}
           >
             月视图
           </button>
-        </div>
-        <div className="wb-calendar-nav">
           <button
-            className="wb-icon"
-            aria-label={`日历上一${mode === "week" ? "周" : "月"}`}
-            onClick={() => onDate(shiftCalendar(date, mode, -1))}
+            aria-pressed={gantt}
+            onClick={() => {
+              setMode("week");
+              setGantt(true);
+            }}
           >
-            <ArrowLeft size={16} />
-          </button>
-          <strong>
-            {mode === "month"
-              ? `${date.slice(0, 4)} 年 ${Number(date.slice(5, 7))} 月`
-              : `${days[0]} — ${days[6]!.slice(5)}`}
-          </strong>
-          <button
-            className="wb-icon"
-            aria-label={`日历下一${mode === "week" ? "周" : "月"}`}
-            onClick={() => onDate(shiftCalendar(date, mode, 1))}
-          >
-            <ArrowRight size={16} />
-          </button>
-          <button className="wb-link" onClick={() => onDate(workbenchDate())}>
-            回到今天
+            甘特图
           </button>
         </div>
-        <Button size="sm" onClick={() => onCreate(date)}>
-          <Plus size={15} />
-          新建日程
-        </Button>
+        {!gantt && (
+          <div className="wb-calendar-nav">
+            <button
+              className="wb-icon"
+              aria-label={`日历上一${mode === "week" ? "周" : "月"}`}
+              onClick={() => onDate(shiftCalendar(date, mode, -1))}
+            >
+              <ArrowLeft size={16} />
+            </button>
+            <strong>
+              {mode === "month"
+                ? `${date.slice(0, 4)} 年 ${Number(date.slice(5, 7))} 月`
+                : `${days[0]} — ${days[6]!.slice(5)}`}
+            </strong>
+            <button
+              className="wb-icon"
+              aria-label={`日历下一${mode === "week" ? "周" : "月"}`}
+              onClick={() => onDate(shiftCalendar(date, mode, 1))}
+            >
+              <ArrowRight size={16} />
+            </button>
+            <button className="wb-link" onClick={() => onDate(workbenchDate())}>
+              回到今天
+            </button>
+          </div>
+        )}
+        <div className="wb-calendar-actions">
+          {gantt && (
+            <label className="wb-calendar-completed">
+              <input
+                type="checkbox"
+                checked={showCompleted}
+                onChange={(event) => setShowCompleted(event.target.checked)}
+              />
+              显示已完成
+            </label>
+          )}
+          <Button
+            size="sm"
+            onClick={() =>
+              gantt && onCreateTodo ? onCreateTodo() : onCreate(date)
+            }
+          >
+            <Plus size={15} />
+            {gantt ? "新增待办" : "新建日程"}
+          </Button>
+        </div>
       </div>
-      <div className="wb-calendar-legend">
-        <span>
-          <CheckSquare size={13} />
-          待办 · 设置日期即显示
-        </span>
-        <span>
-          <CalendarBlank size={13} />
-          日程 · 独立时间段
-        </span>
-        <span>
-          <Sparkle size={13} />
-          自动任务 · 下一次触发
-        </span>
-        <label>
-          <input
-            type="checkbox"
-            checked={showCompleted}
-            onChange={(event) => setShowCompleted(event.target.checked)}
-          />
-          显示已完成待办
-        </label>
-      </div>
-      {mode === "month" ? (
+      {!gantt && (
+        <div className="wb-calendar-legend">
+          <span>
+            <CheckSquare size={13} />
+            待办 · 日期或计划区间
+          </span>
+          <span>
+            <CalendarBlank size={13} />
+            日程 · 独立时间段
+          </span>
+          <span>
+            <Sparkle size={13} />
+            自动任务 · 下一次触发
+          </span>
+          <label>
+            <input
+              type="checkbox"
+              checked={showCompleted}
+              onChange={(event) => setShowCompleted(event.target.checked)}
+            />
+            显示已完成待办
+          </label>
+        </div>
+      )}
+      {gantt ? (
+        <WorkbenchTaskTimeline
+          todos={todos}
+          date={date}
+          onDate={onDate}
+          onTodo={onTodo}
+          onCreate={onCreateTodo}
+        />
+      ) : mode === "month" ? (
         <div className="wb-month">
           <div className="wb-month-weekdays">
             {["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map(
@@ -336,7 +397,9 @@ export function WorkbenchCalendar({
                         <small>
                           {item.kind === "event"
                             ? `${clock(item.event.startAt)}–${clock(item.event.endAt)}`
-                            : `${clock(item.at!)} · ${item.kind === "todo" ? "计划时点" : "下次触发"}`}
+                            : item.kind === "todo" && taskInterval(item.todo)
+                              ? `${clock(item.todo.startAt!)}–${clock(item.todo.endAt!)} · ${taskProgress(item.todo)}%`
+                              : `${clock(item.at!)} · ${item.kind === "todo" ? "计划时点" : "下次触发"}`}
                         </small>
                       </button>
                     ),
@@ -355,50 +418,78 @@ export function WorkbenchCalendar({
           选择日期，在下方查看当天的完整安排。
         </p>
       )}
-      <div className="wb-calendar-day-detail">
-        <div className="wb-section-title">
-          <h3>
-            {date} 的安排{" "}
-            <span className="wb-count-badge">{selected.length}</span>
-          </h3>
-          <button className="wb-link" onClick={() => onCreate(date)}>
-            <Plus size={14} />
-            安排时间
-          </button>
+      {!gantt && (
+        <div className="wb-calendar-day-detail">
+          <div className="wb-section-title">
+            <h3>
+              {date} 的安排{" "}
+              <span className="wb-count-badge">{selected.length}</span>
+            </h3>
+            <button className="wb-link" onClick={() => onCreate(date)}>
+              <Plus size={14} />
+              安排时间
+            </button>
+          </div>
+          {!selected.length && (
+            <p className="wb-empty">
+              当天没有安排。给待办设置日期，或点击日历空白时间创建日程。
+            </p>
+          )}
+          {selected.map((item) => (
+            <button
+              key={`${item.kind}:${item.id}`}
+              className="wb-calendar-detail-item"
+              onClick={() => open(item)}
+            >
+              <span>{item.at === null ? "日期待办" : clock(item.at)}</span>
+              <span>
+                <ItemLabel item={item} />
+              </span>
+              <small>
+                {item.kind === "todo"
+                  ? "编辑待办"
+                  : item.kind === "event"
+                    ? item.event.todoId
+                      ? "关联待办的日程"
+                      : "编辑日程"
+                    : "打开自动化"}
+              </small>
+            </button>
+          ))}
         </div>
-        {!selected.length && (
-          <p className="wb-empty">
-            当天没有安排。给待办设置日期，或点击日历空白时间创建日程。
-          </p>
-        )}
-        {selected.map((item) => (
-          <button
-            key={`${item.kind}:${item.id}`}
-            className="wb-calendar-detail-item"
-            onClick={() => open(item)}
-          >
-            <span>{item.at === null ? "日期待办" : clock(item.at)}</span>
-            <span>
-              <ItemLabel item={item} />
-            </span>
-            <small>
-              {item.kind === "todo"
-                ? "编辑待办"
-                : item.kind === "event"
-                  ? item.event.todoId
-                    ? "关联待办的日程"
-                    : "编辑日程"
-                  : "打开自动化"}
-            </small>
-          </button>
-        ))}
-      </div>
-      <p className="wb-hint wb-calendar-footnote">
-        <Clock size={13} />
-        本地待办、日程暂无提醒或 WPS
-        同步。自动任务仅显示调度器已确定的下一次触发
-        {project ? "，请切换全部项目查看自动任务" : ""}。
-      </p>
+      )}
+      {(!gantt || unscheduled.length > 0) && (
+        <section className="wb-calendar-unscheduled" aria-label="未安排待办">
+          <div className="wb-section-title">
+            <h3>
+              未安排待办{" "}
+              <span className="wb-count-badge">{unscheduled.length}</span>
+            </h3>
+            <span className="wb-hint">点击设置日期和持续时间</span>
+          </div>
+          {!unscheduled.length && <p className="wb-hint">没有未安排的待办。</p>}
+          {unscheduled.map((todo) => (
+            <button
+              key={todo.id}
+              className="wb-calendar-detail-item"
+              onClick={() => onTodo(todo)}
+              aria-label={`安排待办：${todo.title}`}
+            >
+              <CheckSquare size={16} />
+              <span>{todo.title}</span>
+              <small>{taskProgress(todo)}% · 安排时间</small>
+            </button>
+          ))}
+        </section>
+      )}
+      {!gantt && (
+        <p className="wb-hint wb-calendar-footnote">
+          <Clock size={13} />
+          本地待办、日程暂无提醒或 WPS
+          同步。自动任务仅显示调度器已确定的下一次触发
+          {project ? "，请切换全部项目查看自动任务" : ""}。
+        </p>
+      )}
     </section>
   );
 }

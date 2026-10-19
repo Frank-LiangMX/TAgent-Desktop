@@ -1,0 +1,272 @@
+/* Task timeline: a single glass surface, compact date axis and quiet grid. */
+.wb-calendar-actions,
+.wb-calendar-completed {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.wb-calendar-completed {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  gap: 7px;
+}
+.wb-page .wb-task-timeline {
+  margin-top: 18px;
+  border: 1px solid var(--surface-rim);
+  border-radius: var(--radius-glass-sticky);
+  background: var(--surface-bg);
+  box-shadow: var(--surface-shadow);
+  backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturate));
+  overflow: hidden;
+}
+.wb-timeline-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 18px 20px;
+}
+.wb-timeline-period,
+.wb-timeline-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.wb-timeline-period h3 {
+  min-width: 132px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.wb-timeline-controls .wb-segment {
+  margin: 0;
+}
+.wb-timeline-controls .wb-link {
+  font-size: 12px;
+  margin-left: 8px;
+}
+.wb-page .wb-task-timeline .wb-gantt-scroll {
+  margin: 0;
+}
+.wb-page .wb-task-timeline .wb-gantt-grid {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  backdrop-filter: none;
+}
+.wb-page .wb-task-timeline :is(.wb-gantt-heading, .wb-gantt-row) {
+  grid-template-columns: 224px minmax(0, 1fr);
+}
+.wb-page .wb-task-timeline .wb-gantt-heading {
+  background: hsl(var(--foreground) / 0.025);
+  border-block: 1px solid var(--wb-divider);
+}
+.wb-page .wb-task-timeline .wb-gantt-heading > strong {
+  padding: 17px 20px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  font-weight: 500;
+}
+.wb-gantt-heading > strong > span {
+  font-size: 11px;
+  margin-left: 5px;
+  opacity: 0.7;
+}
+.wb-page .wb-task-timeline .wb-gantt-dates > span {
+  border-left: 0;
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: center;
+  justify-content: center;
+}
+.wb-gantt-dates b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.wb-page .wb-task-timeline .wb-gantt-dates [data-today] {
+  background: hsl(var(--primary) / 0.05);
+}
+.wb-gantt-dates [data-today] b {
+  background: hsl(var(--primary) / 0.22);
+  color: hsl(var(--foreground));
+  font-weight: 600;
+}
+.wb-page .wb-task-timeline .wb-gantt-dates [data-weekend] {
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--foreground) / 0.025);
+}
+.wb-page .wb-task-timeline .wb-gantt-row {
+  min-height: 76px;
+  border-top: 0;
+  border-bottom: 1px solid hsl(var(--foreground) / 0.045);
+}
+.wb-page .wb-task-timeline .wb-gantt-task {
+  padding: 16px 20px;
+  gap: 8px;
+  background: rgb(var(--glass-rgb) / 0.92);
+}
+.wb-gantt-task-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.wb-gantt-task-title strong {
+  flex: 1;
+  text-align: left;
+  font-weight: 500;
+}
+.wb-gantt-task-title > span {
+  font-size: 11px;
+  color: hsl(var(--primary));
+  font-variant-numeric: tabular-nums;
+}
+.wb-page .wb-task-timeline .wb-gantt-task > span {
+  font-size: 11px;
+  text-align: left;
+}
+.wb-page .wb-task-timeline .wb-gantt-track {
+  border-left: 1px solid var(--wb-divider);
+  background-image: linear-gradient(
+    to right,
+    hsl(var(--foreground) / 0.045) 1px,
+    transparent 1px
+  );
+}
+.wb-gantt-track::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--gantt-today) * 100% / var(--gantt-days));
+  width: calc(100% / var(--gantt-days));
+  background: hsl(var(--primary) / 0.045);
+  pointer-events: none;
+}
+.wb-page .wb-task-timeline .wb-gantt-bar {
+  top: 23px;
+  height: 30px;
+  border-radius: 9px;
+  border-color: hsl(var(--primary) / 0.2);
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 12%,
+    var(--surface-bg-chip)
+  );
+}
+.wb-page .wb-task-timeline .wb-gantt-fill {
+  background: linear-gradient(
+    180deg,
+    hsl(var(--primary) / 0.48),
+    hsl(var(--primary) / 0.25)
+  );
+}
+.wb-page .wb-task-timeline .wb-gantt-bar-label {
+  display: block;
+  padding-inline: 10px;
+  font-size: 11px;
+  line-height: 28px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+.wb-page .wb-task-timeline .wb-gantt-bar[data-compact] .wb-gantt-bar-label {
+  display: none;
+}
+.wb-page .wb-task-timeline .wb-gantt-bar.is-point {
+  width: 9px;
+  border-radius: 4px;
+  background: hsl(var(--primary) / 0.65);
+}
+.wb-gantt-caption {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 14px 20px;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-gantt-caption > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wb-gantt-caption > span:last-child {
+  margin-left: auto;
+}
+.wb-gantt-caption i {
+  width: 16px;
+  height: 7px;
+  border-radius: 3px;
+  background: hsl(var(--primary) / 0.16);
+  border: 1px solid hsl(var(--primary) / 0.2);
+}
+.wb-gantt-caption i.is-progress {
+  background: hsl(var(--primary) / 0.5);
+}
+.wb-gantt-empty {
+  min-height: 272px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 28px 24px 40px;
+  text-align: center;
+}
+.wb-gantt-empty-icon {
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
+  border-radius: 18px;
+  border: 1px solid var(--surface-rim);
+  background: var(--surface-bg-chip);
+  box-shadow: inset 0 1px 0 var(--surface-inset-hi);
+  color: hsl(var(--primary));
+  margin-bottom: 4px;
+}
+.wb-gantt-empty h4 {
+  font-size: 16px;
+  font-weight: 500;
+}
+.wb-gantt-empty p {
+  max-width: 340px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.8;
+}
+.wb-gantt-empty button {
+  margin-top: 6px;
+}
+@media (max-width: 760px) {
+  .wb-timeline-toolbar {
+    padding: 14px;
+    gap: 12px;
+  }
+  .wb-timeline-controls {
+    margin-left: auto;
+  }
+  .wb-calendar-actions {
+    gap: 8px;
+  }
+  .wb-gantt-caption {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .wb-gantt-caption > span:last-child {
+    margin-left: 0;
+  }
+}

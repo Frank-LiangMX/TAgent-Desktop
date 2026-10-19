@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { WpsConnectionInput, WpsDailyBundle } from '@tagent/shared'
 import { wpsScopes, type WpsFetch } from './wps-client'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { WPS_DOCUMENT_CREATE_SCOPE } from './wps-document-create'
+import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 const { secure, runCli } = vi.hoisted(() => ({ secure: { available: true }, runCli: vi.fn() }))
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] }, ipcMain: { handle: vi.fn(), removeHandler: vi.fn() },
@@ -20,7 +23,7 @@ const input: WpsConnectionInput = { reportScope: { includeChats: true, includeDo
 const load = () => JSON.parse(readFileSync(join(root, 'wps.json'), 'utf8'))
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'tagent-wps-test-')); process.env.TAGENT_CONFIG_DIR = root
-  secure.available = true; runCli.mockImplementation(async (args: string[]) => args[1] === 'login' ? '' : JSON.stringify({ access_token: 'synthetic-access' }))
+  secure.available = true; runCli.mockClear(); runCli.mockImplementation(async (args: string[]) => args[1] === 'login' ? '' : JSON.stringify({ access_token: 'synthetic-access' }))
   service = new WpsService()
 })
 afterEach(() => { service.logout(); vi.unstubAllGlobals(); delete process.env.TAGENT_CONFIG_DIR; rmSync(root, { recursive: true, force: true }) })
@@ -33,6 +36,84 @@ function authorize(): void {
 }
 
 describe('WPS account and evidence boundaries', () => {
+  it('keeps metadata lookup read-only and allows a new attempt after a definite transport permission denial', async () => {
+    authorize()
+    writeJsonAtomic(join(root, 'wps.json'), { ...load(), authorizedScopes: [...load().authorizedScopes, WPS_DOCUMENT_CREATE_SCOPE, 'kso.mcp_yundoc.readwrite'] })
+    const connect = vi.spyOn(Client.prototype, 'connect').mockRejectedValueOnce(new StreamableHTTPError(403, 'private-error')).mockResolvedValue(undefined)
+    const close = vi.spyOn(Client.prototype, 'close').mockResolvedValue(undefined)
+    const call = vi.spyOn(Client.prototype, 'callTool')
+      .mockResolvedValueOnce({ content: [], structuredContent: { file_id: 'file' } })
+      .mockResolvedValueOnce({ content: [], structuredContent: { file_url: 'https://365.kdocs.cn/l/report' } })
+    try {
+      const input = { title: '周报', markdown: '# 本周进展' }
+      await expect(service.createDocument(input)).rejects.toThrow('WPS 拒绝')
+      expect(await service.createDocument(input)).toMatchObject({ created: true, url: 'https://365.kdocs.cn/l/report' })
+      expect(call.mock.calls.map(args => args[0].name)).toEqual(['kso_airpage_import_markdown_data', 'kso_yundoc_get_file_meta'])
+      expect(await service.createDocument(input)).toMatchObject({ reused: true, url: 'https://365.kdocs.cn/l/report' })
+      expect(call).toHaveBeenCalledTimes(2)
+    } finally { connect.mockRestore(); close.mockRestore(); call.mockRestore() }
+  })
+  it('creates a new cloud document with the exact report body and no existing file ID, then reuses it', async () => {
+    authorize()
+    await expect(service.createDocument({ title: '周报', markdown: '# 本周进展' })).rejects.toThrow('授权创建云文档')
+    writeJsonAtomic(join(root, 'wps.json'), { ...load(), authorizedScopes: [...load().authorizedScopes, WPS_DOCUMENT_CREATE_SCOPE] })
+    const connect = vi.spyOn(Client.prototype, 'connect').mockResolvedValue(undefined)
+    const close = vi.spyOn(Client.prototype, 'close').mockResolvedValue(undefined)
+    const call = vi.spyOn(Client.prototype, 'callTool').mockResolvedValue({ content: [], structuredContent: {
+      code: 0, data: { file_id: 'file', file_url: 'https://365.kdocs.cn/l/report' },
+    } })
+    try {
+      const input = { title: '周报', markdown: '# 本周进展\n\n- 完成接口联调' }
+      expect(await service.createDocument(input)).toMatchObject({ created: true, url: 'https://365.kdocs.cn/l/report' })
+      expect(await service.createDocument(input)).toMatchObject({ reused: true })
+      expect(call).toHaveBeenCalledTimes(1)
+      expect(call).toHaveBeenCalledWith({ name: 'kso_airpage_import_markdown_data', arguments: {
+        file_name: '周报', markdown_content: input.markdown,
+      } }, undefined, expect.any(Object))
+      expect(close).toHaveBeenCalledTimes(1)
+      expect(JSON.stringify(service.authState())).not.toContain('synthetic-access')
+      expect(service.authState().canCreateDocuments).toBe(true)
+    } finally { connect.mockRestore(); close.mockRestore(); call.mockRestore() }
+  })
+  it('requests the extra creation scope only through the dedicated authorization and preserves it on reconnect', async () => {
+    vi.stubGlobal('fetch', vi.fn<WpsFetch>().mockResolvedValue(Response.json({ code: 0, data: { id: 'me', company_id: 'company' } })))
+    service = new WpsService(); service.save(input)
+    await service.loginUser(true)
+    await vi.waitFor(() => expect(service.authState().loading).toBe(false))
+    expect(runCli).toHaveBeenCalledWith(['auth', 'login', '--scopes', [...wpsScopes(input.reportScope), WPS_DOCUMENT_CREATE_SCOPE].join(',')])
+    expect(service.authState().canCreateDocuments).toBe(true)
+    runCli.mockClear()
+    await service.loginUser()
+    await vi.waitFor(() => expect(service.authState().loading).toBe(false))
+    expect(runCli).toHaveBeenCalledWith(['auth', 'login', '--scopes', [...wpsScopes(input.reportScope), WPS_DOCUMENT_CREATE_SCOPE].join(',')])
+    service.logout()
+    expect(service.authState().canCreateDocuments).toBe(false)
+  })
+  it('reads message history through user MCP and renews an expired CLI token first', async () => {
+    authorize()
+    writeJsonAtomic(join(root, 'wps.json'), { ...load(), userTokenExpiresAt: Date.now() - 1 })
+    const connect = vi.spyOn(Client.prototype, 'connect').mockResolvedValue(undefined)
+    const close = vi.spyOn(Client.prototype, 'close').mockResolvedValue(undefined)
+    const call = vi.spyOn(Client.prototype, 'callTool').mockResolvedValue({ content: [], structuredContent: {
+      code: 0, data: { items: [{ id: 'message', content: { text: { content: '聊天原文' } } }], next_page_token: 'next' },
+    } })
+    try {
+      const page = await service.queryMessages({ kind: 'history', chatId: 'chat', startDate: '2026-09-01', endDate: '2026-09-02' })
+      expect(runCli).toHaveBeenCalledWith(['auth', 'token'])
+      expect(connect).toHaveBeenCalledTimes(1)
+      expect(call).toHaveBeenCalledWith({ name: 'kso_message_get_chat_messages', arguments: expect.objectContaining({ chat_id: 'chat', page_size: 20 }) }, undefined, expect.any(Object))
+      expect(page).toMatchObject({ items: [{ id: 'message' }], nextPageToken: 'next', complete: false })
+      expect(load().userTokenExpiresAt).toBeGreaterThan(Date.now())
+      expect(close).toHaveBeenCalledTimes(1)
+    } finally { connect.mockRestore(); call.mockRestore(); close.mockRestore() }
+  })
+  it('rejects message reads without a connected account or the user-message scope', async () => {
+    await expect(service.queryMessages({ kind: 'chats' })).rejects.toThrow('授权本人账号')
+    authorize()
+    writeJsonAtomic(join(root, 'wps.json'), { ...load(), authorizedScopes: ['kso.user_base.read'] })
+    await expect(service.queryMessages({ kind: 'chats' })).rejects.toThrow('新的权限')
+    expect(runCli).not.toHaveBeenCalled()
+  })
   it('connects validated REST account identity to raw MCP sender IDs without exposing the token', async () => {
     authorize()
     const config = load()

@@ -28,6 +28,10 @@ export interface WorkbenchTodo extends WorkbenchEntity {
   dueDate: string;
   /** Optional local planned time. A dated todo appears directly on the calendar. */
   dueTime?: string;
+  /** Planned interval, independent of the optional deadline. Null clears the plan. */
+  startAt?: number | null;
+  endAt?: number | null;
+  progress?: number;
   completedAt: number | null;
   /** Legacy todos without an area retain the original work-report behavior. */
   area?: "work" | "personal";
@@ -121,6 +125,9 @@ export type WorkbenchMutation =
       dueDate: string;
       tags?: string[];
       dueTime?: string;
+      startAt?: number | null;
+      endAt?: number | null;
+      progress?: number;
       area?: "work" | "personal";
       noteId?: string;
       origin?: WorkbenchEntity["origin"];

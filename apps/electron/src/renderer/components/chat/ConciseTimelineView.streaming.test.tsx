@@ -78,6 +78,29 @@ function displayed(container: HTMLElement): string {
 }
 
 describe('concise playback across completion', () => {
+  test.each([
+    '可以用 `Build.bat` 编译验证。\n\n关键约束与决策：\n1. 保留 Target.cs。\n2. **统一保存**。\n\n' + '完整过程说明。'.repeat(400),
+    '先看看入口文件。',
+    'Note: `state`.',
+  ])('tool arrival never shrinks or removes already displayed text (%#)', (text) => {
+    const process = [{ type: 'text' as const, key: 'text', text }]
+    const view = render(<ConciseTimelineView segments={buildConciseTimeline(process, { isLive: true })} isLive isLatestTurn />)
+    advance(2)
+    expect(displayed(view.container)).toBe(text)
+    const body = view.container.querySelector('.agent-concise-narrative [data-testid="body"]')
+    const withTool = [...process, {
+      type: 'tool' as const, key: 'build',
+      tool: { type: 'tool_use' as const, id: 'build', name: 'Bash', input: {} },
+    }]
+    for (const isLive of [true, false]) {
+      view.rerender(<ConciseTimelineView segments={buildConciseTimeline(withTool, { isLive })} isLive={isLive} isLatestTurn />)
+      expect(displayed(view.container)).toBe(text)
+      advance(3)
+      expect(displayed(view.container)).toBe(text)
+      expect(view.container.querySelector('.agent-concise-narrative [data-testid="body"]')).toBe(body)
+    }
+  })
+
   test.each([false, true])('progress → final preserves the prefix and displays the final snapshot next frame (thinking=%s)', (withThinking) => {
     const text = '正文'.repeat(120)
     const prefix = text.slice(0, 40)

@@ -13,17 +13,13 @@
  *   显式 `_partial:true`（真流式快照）与空 content 不落盘。
  * - **user 等**：立即落盘（并先 flush 待提交 assistant）。
  *
- * 纯函数 + 显式状态，便于单测；落盘后的阶段摘要由调用方按 uuid 回传做同源校准。
+ * 纯函数 + 显式状态，便于单测；完整原文由调用方按 uuid 回传做同源校准。
  * 详见 docs/dev/core-loop/REGRESS-G-FINDINGS.md、REGRESS-G-implement-brief.md。
  */
-
-import { compactStageProgress, isNearDuplicateStageProgress } from '@tagent/shared'
 
 /** 闸口状态：当前同 uuid 流式替换链里「最新」的一条待提交消息（未落盘）。 */
 export interface StreamPersistGateState {
   pending: { uuid: string; raw: unknown; persist: boolean } | null
-  /** 本轮最近一次已落盘的阶段摘要，用于抑制模型对同一根因的改写复述。 */
-  lastProgressSummary?: string
 }
 
 /** 新建闸口状态。 */
@@ -40,74 +36,11 @@ function isAssistantPersistable(msg: unknown): boolean {
   return Array.isArray(content) && content.length > 0
 }
 
-function contentBlocks(msg: unknown): Array<Record<string, unknown>> {
-  const content = (msg as { message?: { content?: unknown } }).message?.content
-  return Array.isArray(content)
-    ? content.filter(
-        (item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'),
-      )
-    : []
-}
-
-function isTextOnlyAssistant(msg: unknown): boolean {
-  const blocks = contentBlocks(msg)
-  return blocks.length > 0 && blocks.every((block) => block.type === 'text' && typeof block.text === 'string')
-}
-
-function isToolBoundary(msg: unknown): boolean {
-  const raw = msg as { type?: string; message?: { content?: unknown[] } }
-  if (raw.type === 'user') {
-    return Array.isArray(raw.message?.content)
-      && raw.message.content.some((block) => (block as { type?: string })?.type === 'tool_result')
-  }
-  if (raw.type !== 'assistant') return false
-  return contentBlocks(msg).some((block) => block.type === 'tool_use')
-}
-
-function isToolResultMessage(msg: unknown): boolean {
-  const raw = msg as { type?: string; message?: { content?: unknown[] } }
-  return raw.type === 'user' && Array.isArray(raw.message?.content)
-    && raw.message.content.some((block) => (block as { type?: string })?.type === 'tool_result')
-}
-
-function compactProgressMessage(msg: unknown): unknown | null {
-  const blocks = contentBlocks(msg)
-  const text = blocks.map((block) => String(block.text ?? '')).join('\n')
-  const summary = compactStageProgress(text)
-  if (!summary) return null
-  const raw = msg as { message?: Record<string, unknown> }
-  return {
-    ...raw,
-    message: {
-      ...(raw.message ?? {}),
-      content: [{ type: 'text', text: summary }],
-    },
-  }
-}
-
-function resolvePending(state: StreamPersistGateState, next: unknown | null): unknown[] {
+function resolvePending(state: StreamPersistGateState): unknown[] {
   const pending = state.pending
   state.pending = null
   if (!pending?.persist) return []
-  if (next && isTextOnlyAssistant(pending.raw) && isToolBoundary(next)) {
-    const compacted = compactProgressMessage(pending.raw)
-    if (!compacted) return []
-    const summary = String(
-      (compacted as { message?: { content?: Array<{ text?: unknown }> } })
-        .message?.content?.[0]?.text ?? '',
-    ).trim()
-    // 同一轮里模型经常把同一条“根因”换几个连接词再说一遍。阶段摘要是
-    // 导航信息，不是逐字转录；近似重复时保留第一次，避免 reload 后再次刷屏。
-    if (
-      summary &&
-      state.lastProgressSummary &&
-      isNearDuplicateStageProgress(state.lastProgressSummary, summary)
-    ) {
-      return []
-    }
-    if (summary) state.lastProgressSummary = summary
-    return [compacted]
-  }
+  // 落盘和同源校准只保存完整消息；不能用摘要覆盖用户已经看到的原文。
   return [pending.raw]
 }
 /**
@@ -133,14 +66,14 @@ export function feedStreamPersistGate(
     if (!uuid) {
       // 无 uuid 不能去重：flush 旧 pending，立即落盘本条（可落盘时）
       if (state.pending) {
-        out.push(...resolvePending(state, msg))
+        out.push(...resolvePending(state))
       }
       if (isAssistantPersistable(msg)) out.push(msg)
       return out
     }
     // 不同 uuid：提交前一条链（若可落盘）
     if (state.pending && state.pending.uuid !== uuid) {
-      out.push(...resolvePending(state, msg))
+      out.push(...resolvePending(state))
     }
     // 进 / 替换 pending（同 uuid 替换 = 留最新 = final）
     state.pending = { uuid, raw: msg, persist: isAssistantPersistable(msg) }
@@ -149,13 +82,10 @@ export function feedStreamPersistGate(
 
   // 非 assistant：先 flush 待提交 assistant，再落盘自身
   if (state.pending) {
-    out.push(...resolvePending(state, msg))
+    out.push(...resolvePending(state))
   }
   if (type === 'user') {
     out.push(msg)
-    // 工具结果仍在同一轮；真正的新用户消息开始下一轮，清掉上一轮的
-    // 摘要比较基线，避免跨轮误吞内容。
-    if (!isToolResultMessage(msg)) state.lastProgressSummary = undefined
   }
   return out
 }
@@ -165,7 +95,5 @@ export function feedStreamPersistGate(
  * 幂等：pending 已提交或不存在时返回空。
  */
 export function flushStreamPersistGate(state: StreamPersistGateState): unknown[] {
-  const out = resolvePending(state, null)
-  state.lastProgressSummary = undefined
-  return out
+  return resolvePending(state)
 }

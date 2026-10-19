@@ -8,6 +8,63 @@ import {
 import { dateOffset } from "./workbench-overview";
 
 export type CalendarMode = "week" | "month";
+export function ganttRange(date: string, scale: CalendarMode): string[] {
+  if (scale === "week") return calendarRange(date, "week");
+  const first = `${date.slice(0, 7)}-01`;
+  const count = new Date(
+    Number(date.slice(0, 4)),
+    Number(date.slice(5, 7)),
+    0,
+  ).getDate();
+  return Array.from({ length: count }, (_, i) => dateOffset(first, i));
+}
+export function taskMatchesDay(todo: WorkbenchTodo, day: string): boolean {
+  const interval = taskInterval(todo);
+  return interval
+    ? interval.start < new Date(`${dateOffset(day, 1)}T00:00`).getTime() &&
+        interval.end > new Date(`${day}T00:00`).getTime()
+    : todo.dueDate === day;
+}
+export function taskProgress(todo: WorkbenchTodo): number {
+  return todo.completedAt !== null
+    ? 100
+    : Math.min(99, Math.max(0, todo.progress ?? 0));
+}
+export function taskDuration(milliseconds: number): string {
+  const minutes = Math.round(milliseconds / 60000);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const rest = minutes % 60;
+  return (
+    [
+      days ? `${days} 天` : "",
+      hours ? `${hours} 小时` : "",
+      rest ? `${rest} 分钟` : "",
+    ]
+      .filter(Boolean)
+      .join(" ") || "不足 1 分钟"
+  );
+}
+export function taskInterval(
+  todo: WorkbenchTodo,
+): { start: number; end: number } | null {
+  if (todo.startAt != null && todo.endAt != null && todo.endAt > todo.startAt)
+    return { start: todo.startAt, end: todo.endAt };
+  return null;
+}
+export function calendarTodos(
+  state: WorkbenchState,
+  project: string,
+  query: string,
+  showCompleted: boolean,
+) {
+  return state.todos.filter(
+    (todo) =>
+      (!project || todo.project === project) &&
+      todo.title.toLocaleLowerCase().includes(query.toLocaleLowerCase()) &&
+      (showCompleted || todo.completedAt === null),
+  );
+}
 export type CalendarItem =
   | {
       kind: "todo";
@@ -64,18 +121,21 @@ export function calendarDayItems(
   const start = new Date(`${day}T00:00:00`).getTime();
   const end = new Date(`${dateOffset(day, 1)}T00:00:00`).getTime();
   const result: CalendarItem[] = [
-    ...state.todos
-      .filter(
-        (todo) =>
-          match(todo) &&
-          todo.dueDate === day &&
-          (showCompleted || todo.completedAt === null),
+    ...calendarTodos(state, project, query, showCompleted)
+      .filter((todo) =>
+        taskInterval(todo)
+          ? taskInterval(todo)!.start < end && taskInterval(todo)!.end > start
+          : todo.dueDate === day,
       )
       .map((todo) => ({
         kind: "todo" as const,
         id: todo.id,
         title: todo.title,
-        at: todo.dueTime ? new Date(`${day}T${todo.dueTime}`).getTime() : null,
+        at: taskInterval(todo)
+          ? Math.max(start, taskInterval(todo)!.start)
+          : todo.dueTime
+            ? new Date(`${day}T${todo.dueTime}`).getTime()
+            : null,
         todo,
       })),
     ...state.events
@@ -123,16 +183,19 @@ export function layoutCalendarDay(items: CalendarItem[], day: string) {
   const positioned = items
     .filter((item) => item.at !== null)
     .map((item) => {
-      const start =
-        item.kind === "event" && item.event.startAt < dayStart
-          ? 0
-          : minute(item.at!);
-      const end =
+      const interval =
         item.kind === "event"
-          ? item.event.endAt >= dayEnd
-            ? 1440
-            : minute(item.event.endAt)
-          : start;
+          ? { start: item.event.startAt, end: item.event.endAt }
+          : item.kind === "todo"
+            ? taskInterval(item.todo)
+            : null;
+      const start =
+        interval && interval.start < dayStart ? 0 : minute(item.at!);
+      const end = interval
+        ? interval.end >= dayEnd
+          ? 1440
+          : minute(interval.end)
+        : start;
       return {
         item,
         start,

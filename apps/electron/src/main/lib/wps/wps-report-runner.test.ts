@@ -75,3 +75,16 @@ describe('WPS report catchup', () => {
     expect(runTurn).toHaveBeenCalledTimes(1)
   })
 })
+
+it('manually generates today before the scheduled time without consuming its later report', async () => {
+  vi.setSystemTime(new Date('2026-10-09T10:00:00').getTime())
+  const task = { ...automation(), createdAt: new Date('2026-10-09T09:00:00').getTime() }
+  wps.collect.mockImplementation(async date => bundle(date))
+  const createSession = vi.fn(() => 'manual'), runTurn = vi.fn(async () => {})
+  await runWpsDailyReports(task, { manual: true, createSession, runTurn })
+  expect(wps.collect).toHaveBeenCalledWith('2026-10-09', task.wpsDailyReport, 'me', undefined, 'company')
+  expect(runTurn).toHaveBeenCalledTimes(1)
+  vi.setSystemTime(new Date('2026-10-09T18:00:00').getTime())
+  await runWpsDailyReports(task, { createSession, runTurn })
+  expect(runTurn).toHaveBeenCalledTimes(2)
+})

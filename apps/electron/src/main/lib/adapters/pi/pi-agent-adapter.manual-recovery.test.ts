@@ -57,6 +57,7 @@ vi.mock('../../memory', () => ({
 }))
 vi.mock('../../agent/session-store', () => ({ getSessionMeta: () => undefined }))
 vi.mock('../../agent/session-process-registry', () => ({ bashHooksForSession: () => undefined }))
+vi.mock('../../attachment-service', () => ({ readAttachmentAsBase64: () => 'aW1hZ2U=' }))
 
 import { PiAgentAdapter, type PiQueryOptions } from './pi-agent-adapter'
 
@@ -91,6 +92,34 @@ afterEach(() => {
 })
 
 describe('Pi explicit manual recovery', () => {
+  it('sends attached image bytes to Pi and preserves multimodal queued messages', async () => {
+    harness.FakeAgent.steps = [async (agent) => {
+      await agent.emit({ type: 'agent_end', messages: [] })
+    }]
+    const adapter = new PiAgentAdapter()
+    await collect(adapter, {
+      ...options('看图'),
+      attachments: [{ filename: 'shot.png', mediaType: 'image/png', localPath: 's/shot.png' }],
+    })
+    const fake = harness.FakeAgent.instances[0]!
+    expect(fake.prompts[0]).toMatchObject({ role: 'user', content: [
+      { type: 'image', mimeType: 'image/png', data: 'aW1hZ2U=' },
+      { type: 'text', text: '看图' },
+    ] })
+    harness.FakeAgent.steps = [async () => {}]
+    await adapter.sendQueuedMessage('manual-recovery', {
+      type: 'user', session_id: 'manual-recovery', parent_tool_use_id: null,
+      message: { role: 'user', content: [
+        { type: 'text', text: '再看这张' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'bmV4dA==' } },
+      ] },
+    })
+    expect(fake.prompts[1]).toMatchObject({ role: 'user', content: [
+      { type: 'text', text: '再看这张' },
+      { type: 'image', mimeType: 'image/jpeg', data: 'bmV4dA==' },
+    ] })
+  })
+
   it.each(['error', 'aborted'] as const)(
     'drops only a prior %s assistant before prompting the short continuation',
     async (failedStopReason) => {

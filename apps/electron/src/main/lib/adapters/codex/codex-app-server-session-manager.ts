@@ -108,6 +108,7 @@ export interface CodexTurnStartOptions {
   prompt: string
   clientUserMessageId?: string
   localImagePaths?: string[]
+  imageUrls?: string[]
   cwd?: string
   model?: string
   effort?: string
@@ -119,6 +120,7 @@ export interface CodexTurnSteerOptions {
   prompt: string
   clientUserMessageId?: string
   localImagePaths?: string[]
+  imageUrls?: string[]
 }
 
 export interface CodexSessionBinding {
@@ -285,6 +287,7 @@ export class CodexAppServerSessionManager {
         .map((path) => path.trim())
         .filter(Boolean)
         .map((path): CodexUserInput => ({ type: 'localImage', path })),
+      ...(options.imageUrls ?? []).map((url): CodexUserInput => ({ type: 'image', url })),
     ]
     const response = await this.client.request<TurnResponse>('turn/start', {
       threadId: binding.threadId,
@@ -334,6 +337,7 @@ export class CodexAppServerSessionManager {
         .map((path) => path.trim())
         .filter(Boolean)
         .map((path): CodexUserInput => ({ type: 'localImage', path })),
+      ...(options.imageUrls ?? []).map((url): CodexUserInput => ({ type: 'image', url })),
     ]
     const response = await this.client.request<{ turnId: string }>(
       'turn/steer',

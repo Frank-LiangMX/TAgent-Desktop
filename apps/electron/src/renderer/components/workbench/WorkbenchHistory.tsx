@@ -25,6 +25,8 @@ export function WorkbenchHistory({
   query,
   onTag,
   onOpenNote,
+  onOpenReport,
+  onOpenKnowledge,
 }: {
   state: WorkbenchState;
   date: string;
@@ -34,6 +36,8 @@ export function WorkbenchHistory({
   query: string;
   onTag: (tag: string) => void;
   onOpenNote: (id: string) => void;
+  onOpenReport: (id: string) => void;
+  onOpenKnowledge: (knowledgeBaseId: string, documentId: string) => void;
 }) {
   const [kind, setKind] = useState<"all" | "facts" | "plans">("all");
   const [limit, setLimit] = useState(30);
@@ -108,7 +112,9 @@ export function WorkbenchHistory({
       <div className="wb-section-title">
         <div>
           <h3>每日足迹</h3>
-          <p className="wb-hint">按天找回工作、生活和灵感，保留当时的内容。</p>
+          <p className="wb-hint">
+            这里记录新增、修改、保存和定稿等操作，同一文档可能出现多次。打开正文可查看最新版本。
+          </p>
         </div>
         <Button
           variant="outline"
@@ -302,9 +308,40 @@ export function WorkbenchHistory({
                       </button>
                     ))}
                   </div>
-                  {(item.entityType === "note" ||
+                  {(["note", "report", "knowledge"].includes(item.entityType) ||
                     !!item.sourceNoteIds?.length) && (
                     <div className="wb-history-actions">
+                      {item.entityType === "report" &&
+                        state.reports.some(
+                          (report) => report.id === item.entityId,
+                        ) && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => onOpenReport(item.entityId)}
+                          >
+                            <FileText />
+                            打开日报
+                            <CaretRight />
+                          </Button>
+                        )}
+                      {item.entityType === "knowledge" &&
+                        item.knowledgeBaseId && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              onOpenKnowledge(
+                                item.knowledgeBaseId!,
+                                item.entityId,
+                              )
+                            }
+                          >
+                            <Books />
+                            打开知识文档
+                            <CaretRight />
+                          </Button>
+                        )}
                       {item.entityType === "note" && (
                         <Button
                           type="button"
@@ -313,7 +350,7 @@ export function WorkbenchHistory({
                           onClick={() => onOpenNote(item.entityId)}
                         >
                           <FileText />
-                          打开笔记
+                          打开正文
                           <CaretRight />
                         </Button>
                       )}

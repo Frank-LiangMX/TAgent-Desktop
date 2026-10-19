@@ -7,11 +7,8 @@ import {
   collectTurnEditedFiles,
   extractDiffHint,
   getLiveStatusFromSteps,
-  isFragmentedProgressText,
-  isRoutineNarrationText,
   getWorkStepLabel,
   isDeliverableThinking,
-  isFillerProgressText,
   isShortProgressText,
   isTrivialThinking,
   summarizeToolCluster,
@@ -48,16 +45,6 @@ describe('classifyToolFamily', () => {
     expect(classifyToolFamily('Write')).toBe('edit')
     expect(classifyToolFamily('Bash')).toBe('shell')
     expect(classifyToolFamily('Task')).toBe('other')
-  })
-})
-
-describe('isFragmentedProgressText', () => {
-  it('filters short English self-talk while keeping concrete progress', () => {
-    expect(isFragmentedProgressText("Let me inspect the exact bytes of that line.")).toBe(true)
-    expect(isFragmentedProgressText("No output? That's odd.")).toBe(true)
-    expect(isFragmentedProgressText('Note: `state`.')).toBe(true)
-    expect(isFragmentedProgressText('目录摸清了：下一步改投影层。')).toBe(false)
-    expect(isFragmentedProgressText('正在跑验证')).toBe(false)
   })
 })
 
@@ -167,7 +154,7 @@ describe('extractDiffHint / live status', () => {
 })
 
 describe('buildConciseTimeline', () => {
-  it('does not create narrative blocks for English tool self-talk', () => {
+  it('preserves English progress text between tools', () => {
     const process: ProcessEntry[] = [
       tool('Bash', 'b1', { command: 'node --check app.js' }),
       { type: 'text', key: 'p1', text: "No output? That's odd." },
@@ -176,8 +163,11 @@ describe('buildConciseTimeline', () => {
       tool('Bash', 'b2', { command: 'node --check app.js' }),
     ]
     const segments = buildConciseTimeline(process)
-    expect(segments.filter((segment) => segment.kind === 'narrative' && segment.tone === 'progress')).toHaveLength(0)
-    expect(segments.filter((segment) => segment.kind === 'work_stage')).toHaveLength(1)
+    expect(segments.filter((segment) => segment.kind === 'narrative')).toMatchObject([
+      { tone: 'progress', text: "No output? That's odd." },
+      { tone: 'progress', text: "I'll append CSS for the badge." },
+    ])
+    expect(segments.filter((segment) => segment.kind === 'work_stage')).toHaveLength(3)
   })
 
   it('merges mixed-family tools in one work_stage with chronological steps', () => {
@@ -364,18 +354,16 @@ describe('buildConciseTimeline', () => {
     expect(segs[0]).toMatchObject({ kind: 'narrative', tone: 'final' })
   })
 
-  it('drops tool-call artifact text (call / antml tail) before tools', () => {
+  it('cleans protocol markup without treating ordinary words as protocol', () => {
     const process: ProcessEntry[] = [
       { type: 'text', key: 'n1', text: '分析 padding 不一致。' },
       { type: 'text', key: 'n2', text: 'call' },
+      { type: 'text', key: 'n3', text: '<antml:invoke name="Grep">' },
       tool('Grep', 't1', { pattern: 'padding' }),
     ]
     const segs = buildConciseTimeline(process)
     expect(segs.map((s) => s.kind)).toEqual(['narrative', 'work_stage'])
-    expect(segs[0]).toMatchObject({ kind: 'narrative', text: '分析 padding 不一致。' })
-    expect(segs.some((s) => s.kind === 'narrative' && (s as { text: string }).text === 'call')).toBe(
-      false,
-    )
+    expect(segs[0]).toMatchObject({ kind: 'narrative', text: '分析 padding 不一致。\n\ncall' })
   })
 
   it('live trailing text stays progress (no final flash)', () => {
@@ -433,9 +421,8 @@ describe('buildConciseTimeline', () => {
     }
   })
 
-  it('纯 filler 段间短文不拆 stage：tool → filler「好的」→ tool → tool = 1 个 work_stage（REGRESS-N 取代 J4）', () => {
+  it('简短确认语在工具之间仍保留，不能因工具到来而删除已显示的文字', () => {
     const filler = '好的'
-    expect(isFillerProgressText(filler)).toBe(true)
     const process: ProcessEntry[] = [
       tool('Bash', 'b1', { command: 'git status' }),
       { type: 'text', key: 'p1', text: filler },
@@ -443,20 +430,18 @@ describe('buildConciseTimeline', () => {
       tool('Bash', 'b3', { command: 'pwd' }),
     ]
     const segs = buildConciseTimeline(process)
-    // filler 被吞，3 条工具合并为 1 个 work_stage；不增加多余 narrative（验收 2）
-    expect(segs.map((s) => s.kind)).toEqual(['work_stage'])
-    const stage = segs[0]!
+    expect(segs.map((s) => s.kind)).toEqual(['work_stage', 'narrative', 'work_stage'])
+    expect(segs[1]).toMatchObject({ text: filler, tone: 'progress' })
+    const stage = segs[2]!
     if (stage.kind === 'work_stage') {
-      expect(stage.tools).toHaveLength(3)
+      expect(stage.tools).toHaveLength(2)
       expect(stage.steps.every((s) => s.kind === 'tool')).toBe(true)
-      expect(stage.summary).toContain('运行了 3 条命令')
+      expect(stage.summary).toContain('运行了 2 条命令')
     }
   })
 
-  it('连续探索口播不落成进度行：读/搜/跑前后的「先看看」并进同一个阶段', () => {
+  it('探索说明与结论均保留，不对已显示的正文删句', () => {
     const chatter = '先看看入口文件。'
-    expect(isRoutineNarrationText(chatter)).toBe(true)
-    expect(isRoutineNarrationText('定位到落盘门控把旁白当成了进度。')).toBe(false)
     const process: ProcessEntry[] = [
       tool('Read', 'r1', { file_path: 'a.ts' }),
       { type: 'text', key: 'p1', text: chatter },
@@ -466,8 +451,10 @@ describe('buildConciseTimeline', () => {
       { type: 'text', key: 'f1', text: '定位到落盘门控把旁白当成了进度。' },
     ]
     const segs = buildConciseTimeline(process)
-    expect(segs.map((s) => s.kind)).toEqual(['work_stage', 'narrative'])
-    expect(segs[1]).toMatchObject({
+    expect(segs.map((s) => s.kind)).toEqual(['work_stage', 'narrative', 'work_stage', 'narrative', 'work_stage', 'narrative'])
+    expect(segs[1]).toMatchObject({ text: chatter })
+    expect(segs[3]).toMatchObject({ text: '接着查一下缓存路径。' })
+    expect(segs[5]).toMatchObject({
       kind: 'narrative',
       tone: 'final',
       text: '定位到落盘门控把旁白当成了进度。',
@@ -480,8 +467,6 @@ describe('buildConciseTimeline', () => {
     // 短且有信息：旧 isShortIdleProgress 会丢，现常驻 narrative.progress
     expect(isShortProgressText(shortProgress1)).toBe(true)
     expect(isShortProgressText(shortProgress2)).toBe(true)
-    expect(isFillerProgressText(shortProgress1)).toBe(false)
-    expect(isFillerProgressText(shortProgress2)).toBe(false)
     const process: ProcessEntry[] = [
       { type: 'thinking', key: 't0', thinking: '先摸清再改' },
       tool('Bash', 'b1', { command: 'git status' }),
@@ -522,7 +507,7 @@ describe('buildConciseTimeline', () => {
     )
   })
 
-  it('同一根因的阶段旁白只保留一次，且不额外切断工具阶段', () => {
+  it('相似的阶段说明各自保留，不进行破坏性近似去重', () => {
     const repeatedA = '根因很像：读文件/搜索被当成没进展，软提醒后再读几次就会强制复盘。'
     const repeatedB = '根因很清楚：软提醒后，读文件/搜索也被算进还没进展，满 3 批就强制复盘。'
     const process: ProcessEntry[] = [
@@ -538,16 +523,17 @@ describe('buildConciseTimeline', () => {
     const progress = segments.filter(
       (s) => s.kind === 'narrative' && s.tone === 'progress',
     )
-    expect(progress).toHaveLength(1)
+    expect(progress).toHaveLength(2)
     expect(progress[0]).toMatchObject({ text: repeatedA })
+    expect(progress[1]).toMatchObject({ text: repeatedB })
     const stages = segments.filter((s) => s.kind === 'work_stage')
-    expect(stages).toHaveLength(2)
+    expect(stages).toHaveLength(3)
     if (stages[1]?.kind === 'work_stage') {
-      expect(stages[1].tools.map((t) => t.tool.name)).toEqual(['Read', 'Edit'])
+      expect(stages[1].tools.map((t) => t.tool.name)).toEqual(['Read'])
     }
   })
 
-  it('视口未打通的阶段旁白改写只保留一次', () => {
+  it('同一主题的不同说明都保留', () => {
     const process: ProcessEntry[] = [
       tool('Read', 'r1', { file_path: 'scene.ts' }),
       { type: 'text', key: 'p1', text: '已有 Actor 标签查阅，但还没确认视口里能不能看见。' },
@@ -560,8 +546,9 @@ describe('buildConciseTimeline', () => {
     const progress = buildConciseTimeline(process).filter(
       (segment) => segment.kind === 'narrative' && segment.tone === 'progress',
     )
-    expect(progress).toHaveLength(1)
+    expect(progress).toHaveLength(2)
     expect(progress[0]).toMatchObject({ text: '已有 Actor 标签查阅，但还没确认视口里能不能看见。' })
+    expect(progress[1]).toMatchObject({ text: '查询链路有了，视口显示还没有。' })
   })
 
   it('工具间的多个短 thinking 合并到下一阶段，不刷多行「思考了片刻」', () => {

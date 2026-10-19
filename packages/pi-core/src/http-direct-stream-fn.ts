@@ -266,7 +266,9 @@ export function buildHttpDirectModel(opts: CreateHttpDirectStreamFnOptions): Mod
     provider: providerId,
     baseUrl: normalizedBaseUrl,
     reasoning: thinkingEnabled ?? false,
-    input: ["text"],
+    // Custom channel models have no capability registry. Preserve supplied images
+    // so pi-ai serializes them instead of silently stripping multimodal content.
+    input: ["text", "image"],
     cost: ZERO_COST,
     contextWindow: resolveHttpContextWindow(opts.contextWindow),
     maxTokens: 8_192,

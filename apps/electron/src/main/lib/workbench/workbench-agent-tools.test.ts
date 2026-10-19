@@ -36,6 +36,41 @@ function source(content = "原始分享 https://example.com/article") {
     .notes.at(-1)!;
 }
 describe("personal workbench Agent tools", () => {
+  it("creates and retrieves a planned task interval without duplicating it as an event", async () => {
+    const result = await call("workbench_add", {
+      type: "todo",
+      title: "开发任务",
+      tags: ["开发"],
+      start: "2026-10-12T09:00",
+      end: "2026-10-14T18:00",
+      progress: 45,
+    });
+    expect(result.ok).toBe(true);
+    expect(store.read().events).toHaveLength(0);
+    const search = await call("workbench_search", {
+      query: "开发任务",
+      from: "2026-10-13",
+      to: "2026-10-13",
+    });
+    expect(search.items).toHaveLength(1);
+    expect(search.items[0]).toMatchObject({
+      startAt: new Date("2026-10-12T09:00").getTime(),
+      endAt: new Date("2026-10-14T18:00").getTime(),
+      progress: 45,
+    });
+    const invalid = await call(
+      "workbench_add",
+      {
+        type: "todo",
+        title: "不完整任务",
+        tags: ["开发"],
+        start: "2026-10-12T09:00",
+      },
+      "invalid",
+    );
+    expect(invalid.ok).toBe(false);
+    expect(store.read().todos).toHaveLength(1);
+  });
   it("adds a timed task to the calendar and links a separate block using its project", async () => {
     const task = await call(
       "workbench_add",
@@ -283,4 +318,50 @@ describe("personal workbench Agent tools", () => {
     expect(isChatModeBlockedTool("workbench_add", {})).toBe(true);
     expect(isAutoModeAutoAllowTool("workbench_add", {})).toBe(false);
   });
+});
+
+it("updates the original note, preserves metadata and rejects stale changes", async () => {
+  const note = source("已有记录");
+  const saved = await call("workbench_update_note", {
+    id: note.id,
+    expectedRevision: note.revision,
+    content: "已有记录，补充回归通过",
+  });
+  expect(saved.ok).toBe(true);
+  expect(store.read().notes).toHaveLength(1);
+  expect(store.read().notes[0]).toMatchObject({
+    id: note.id,
+    tags: note.tags,
+    project: note.project,
+    occurredOn: note.occurredOn,
+    kind: note.kind,
+    content: "已有记录，补充回归通过",
+  });
+  expect(
+    (
+      await call("workbench_update_note", {
+        id: note.id,
+        expectedRevision: note.revision,
+        content: "过期覆盖",
+      })
+    ).ok,
+  ).toBe(false);
+  expect(store.read().notes[0]?.content).toBe("已有记录，补充回归通过");
+  expect(
+    (
+      await call("workbench_update_note", {
+        id: note.id,
+        expectedRevision: saved.revision,
+        content: " ",
+      })
+    ).ok,
+  ).toBe(false);
+  expect(
+    buildPiWorkbenchTools({
+      sessionId: "chat",
+      executionMode: "chat",
+      store,
+    }).some((t) => t.name === "workbench_update_note"),
+  ).toBe(false);
+  expect(isChatModeBlockedTool("workbench_update_note", {})).toBe(true);
 });

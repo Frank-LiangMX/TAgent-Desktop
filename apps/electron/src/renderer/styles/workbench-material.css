@@ -1,0 +1,336 @@
+/* Workbench consumes the same material tokens as session-glass surfaces.
+ * Keep the scene visible; blur only independent islands, never every table cell.
+ * Selection uses a full fill, with no accent rail.
+ */
+.wb-page {
+  --wb-selected-fill: color-mix(
+    in srgb,
+    hsl(var(--primary)) 16%,
+    var(--surface-bg-chip)
+  );
+  --wb-hover-fill: color-mix(
+    in srgb,
+    hsl(var(--foreground)) 4%,
+    var(--surface-bg-chip)
+  );
+  --wb-divider: hsl(var(--foreground) / 0.09);
+}
+
+/* Primary navigation is one floating glass island. */
+.wb-page .wb-nav {
+  position: relative;
+  isolation: isolate;
+  margin: 0 36px 12px;
+  padding: 6px;
+  gap: 6px;
+  border: var(--surface-rim-width) solid var(--surface-rim);
+  border-radius: var(--radius-glass-sticky);
+  background: var(--surface-bg);
+  box-shadow: var(--surface-shadow);
+  -webkit-backdrop-filter: blur(var(--surface-blur))
+    saturate(var(--surface-saturate));
+  backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturate));
+}
+.wb-page .wb-nav button {
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  border-radius: var(--radius-glass-tab);
+  min-height: 40px;
+}
+.wb-page .wb-nav button:hover {
+  background: var(--wb-hover-fill);
+}
+.wb-page .wb-nav button[aria-current],
+.wb-page .wb-nav .wb-more[data-active],
+.wb-page .wb-nav .wb-more[data-state="open"] {
+  background: var(--wb-selected-fill);
+  border-color: var(--surface-rim);
+  box-shadow: var(--surface-shadow-chip);
+  color: hsl(var(--foreground));
+}
+
+/* Cards and reading surfaces share global blur, rim, depth and theme response. */
+.wb-page
+  :is(
+    .wb-panel,
+    .wb-composer,
+    .wb-note,
+    .wb-history-month,
+    .wb-calendar-unscheduled,
+    .wb-document-row,
+    .wb-document-body,
+    .kl-document-card,
+    .kl-reader,
+    .settings-card
+  ) {
+  position: relative;
+  isolation: isolate;
+  background: var(--surface-bg);
+  border: var(--surface-rim-width) solid var(--surface-rim);
+  border-radius: var(--radius-glass-sticky);
+  box-shadow: var(--surface-shadow);
+  -webkit-backdrop-filter: blur(var(--surface-blur))
+    saturate(var(--surface-saturate)) brightness(var(--surface-brightness));
+  backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturate))
+    brightness(var(--surface-brightness));
+}
+
+/* Same directional reflection as the global session-glass-surface, behind text. */
+.wb-page
+  :is(
+    .wb-nav,
+    .wb-panel,
+    .wb-composer,
+    .wb-note,
+    .wb-history-month,
+    .wb-calendar-unscheduled,
+    .wb-document-row,
+    .wb-document-body,
+    .kl-document-card,
+    .kl-reader,
+    .settings-card
+  )::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: calc(var(--surface-shine-opacity) * 0.62);
+  background:
+    radial-gradient(
+      ellipse 85% 65% at 16% 0%,
+      hsl(var(--glass-shine) / 0.52),
+      transparent 58%
+    ),
+    radial-gradient(
+      ellipse 55% 45% at 100% 100%,
+      hsl(var(--glass-ambient) / 0.6),
+      transparent 62%
+    ),
+    linear-gradient(to bottom, hsl(var(--glass-shine) / 0.2), transparent 42%);
+}
+
+/* Wells sit inside a glass card without creating nested backdrop layers. */
+.wb-page :is(.wb-segment, .wb-history-tabs) {
+  border-color: var(--surface-rim);
+  background: var(--surface-bg-well);
+  box-shadow: var(--surface-shadow-well);
+  border-radius: var(--radius-glass-tab);
+}
+.wb-page :is(.wb-segment, .wb-history-tabs) button {
+  border-radius: var(--radius-glass-popover);
+  border: 1px solid transparent;
+}
+.wb-page :is(.wb-segment, .wb-history-tabs) button:hover {
+  background: var(--wb-hover-fill);
+}
+.wb-page :is(.wb-segment, .wb-history-tabs) button[aria-pressed="true"],
+.wb-page .wb-report-versions button[aria-pressed="true"] {
+  background: var(--wb-selected-fill);
+  border-color: var(--surface-rim);
+  color: hsl(var(--foreground));
+  box-shadow: var(--surface-shadow-chip);
+}
+.wb-page
+  :is(
+    .wb-week-day,
+    .wb-collection-shortcuts > button,
+    .wb-history-days button,
+    .kl-topic-list button,
+    .kl-document-row
+  ) {
+  background: var(--surface-bg-chip);
+  border-color: var(--surface-rim);
+  box-shadow: inset 0 1px 0 var(--surface-inset-hi);
+  border-radius: var(--radius-glass-popover);
+}
+.wb-page
+  :is(
+    .wb-week-day,
+    .wb-collection-shortcuts > button,
+    .kl-topic-list button,
+    .kl-document-row
+  ):hover {
+  background: var(--wb-hover-fill);
+}
+.wb-page
+  :is(
+    .wb-week-day,
+    .wb-collection-shortcuts > button,
+    .kl-topic-list button,
+    .kl-document-row
+  )[aria-pressed="true"] {
+  background: var(--wb-selected-fill);
+  border-color: hsl(var(--primary) / 0.3);
+  box-shadow: inset 0 1px 0 var(--surface-inset-hi);
+  color: hsl(var(--foreground));
+}
+/* Preserve the activity heatmap when applying shared day-cell material. */
+.wb-page .wb-history-days button[data-level="1"] {
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 8%,
+    var(--surface-bg-chip)
+  );
+}
+.wb-page .wb-history-days button[data-level="2"] {
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 16%,
+    var(--surface-bg-chip)
+  );
+}
+.wb-page .wb-history-days button[data-level="3"] {
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 26%,
+    var(--surface-bg-chip)
+  );
+}
+.wb-page .wb-history-days button[aria-pressed="true"] {
+  background: var(--wb-selected-fill);
+  border-color: hsl(var(--primary) / 0.5);
+  color: hsl(var(--foreground));
+}
+
+/* Document rows become the same glass cards used in collection and knowledge. */
+.wb-page .wb-document-list {
+  display: grid;
+  gap: 14px;
+  border-top: 0;
+}
+.wb-page .wb-document-row {
+  padding: 22px;
+}
+.wb-page :is(.wb-document-row, .kl-document-card):hover {
+  border-color: hsl(var(--primary) / 0.3);
+  background: var(--surface-bg-elevated);
+}
+.wb-page .wb-document-body {
+  padding: 24px;
+}
+.wb-page .wb-todo {
+  padding: 14px 12px;
+  border-color: var(--wb-divider);
+  border-radius: var(--radius-glass-popover);
+}
+.wb-page :is(.wb-todo, .wb-calendar-detail-item):hover {
+  background: var(--surface-bg-well);
+}
+.wb-page .wb-composer textarea {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.wb-page
+  :is(
+    .wb-select,
+    input:not([type="checkbox"]):not([type="range"]),
+    textarea:not(.wb-composer textarea)
+  ) {
+  background: var(--surface-bg-well);
+  border-color: var(--surface-rim);
+  box-shadow: var(--surface-shadow-well);
+}
+.wb-page button.border-input {
+  background: var(--surface-bg-chip);
+  border-color: var(--surface-rim);
+  box-shadow: var(--surface-shadow-chip);
+}
+.wb-page button.border-input:hover {
+  background: var(--surface-bg-elevated);
+}
+
+/* Calendar and Gantt keep grid lines legible on a single glass surface. */
+.wb-page
+  :is(
+    .wb-week-calendar-head,
+    .wb-week-undated,
+    .wb-week-hours-scroll,
+    .wb-month,
+    .wb-gantt-grid
+  ) {
+  background: var(--surface-bg);
+  border-color: var(--surface-rim);
+  box-shadow: var(--surface-shadow-chip);
+  -webkit-backdrop-filter: blur(var(--surface-blur))
+    saturate(var(--surface-saturate));
+  backdrop-filter: blur(var(--surface-blur)) saturate(var(--surface-saturate));
+}
+.wb-page .wb-week-calendar-head {
+  border-radius: var(--radius-glass-sticky) var(--radius-glass-sticky) 0 0;
+}
+.wb-page .wb-week-undated {
+  box-shadow: none;
+}
+.wb-page .wb-week-hours-scroll {
+  border-radius: 0 0 var(--radius-glass-sticky) var(--radius-glass-sticky);
+}
+.wb-page :is(.wb-month, .wb-gantt-grid) {
+  border-radius: var(--radius-glass-sticky);
+}
+.wb-page :is(.wb-hour-labels, .wb-month-weekdays, .wb-gantt-heading) {
+  background: var(--surface-bg-well);
+}
+.wb-page
+  :is(
+    .wb-calendar-day-column,
+    .wb-week-calendar-head button,
+    .wb-week-undated > div,
+    .wb-month-day,
+    .wb-gantt-row,
+    .wb-gantt-track,
+    .wb-time-slot
+  ) {
+  border-color: var(--wb-divider);
+}
+.wb-page :is(.wb-calendar-item, .wb-timed-item) {
+  background: color-mix(
+    in srgb,
+    hsl(var(--item-color, var(--primary))) 14%,
+    var(--surface-bg-chip)
+  );
+  box-shadow: inset 0 1px 0 var(--surface-inset-hi);
+}
+.wb-page .wb-gantt-bar {
+  background: color-mix(
+    in srgb,
+    hsl(var(--primary)) 16%,
+    var(--surface-bg-chip)
+  );
+  box-shadow: inset 0 1px 0 var(--surface-inset-hi);
+}
+.wb-page .wb-gantt-fill {
+  background: linear-gradient(
+    180deg,
+    hsl(var(--primary) / 0.52),
+    hsl(var(--primary) / 0.3)
+  );
+}
+.wb-page .wb-gantt-bar.is-point {
+  background: hsl(var(--primary) / 0.65);
+}
+
+@media (max-width: 760px) {
+  .wb-page .wb-nav {
+    margin-inline: 18px;
+  }
+  .wb-page :is(.wb-document-row, .wb-document-body) {
+    padding: 18px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wb-page :is(button, input, textarea) {
+    transition: none;
+  }
+}
+
+.wb-page .wb-note {
+  padding: 20px;
+  margin-bottom: 14px;
+}
+.wb-page .kl-reader {
+  margin-block: 20px 32px;
+}

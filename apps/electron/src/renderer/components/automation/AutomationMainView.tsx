@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Clock3, Loader2, Pause, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import type { Automation } from '@tagent/shared'
 import { formatScheduleLabel } from '@tagent/shared'
@@ -7,6 +7,7 @@ import { DestructiveConfirmDialog } from '@tagent/ui'
 import { AutomationSettings } from '../settings/AutomationSettings'
 
 type AutomationApi = {
+  runAutomationNow: (id: string) => Promise<import('@tagent/shared').AutomationRun>
   listAutomations: () => Promise<Automation[]>
   toggleAutomation: (id: string) => Promise<Automation>
   deleteAutomation: (id: string) => Promise<boolean>
@@ -23,6 +24,8 @@ export function AutomationMainView(): JSX.Element {
   const [editingTask, setEditingTask] = useState<Automation | null>(null)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const runningRef = useRef(new Set<string>())
+  const [runningIds, setRunningIds] = useState<Set<string>>(new Set())
   const [deleteTarget, setDeleteTarget] = useState<Automation | null>(null)
   const selected = tasks.find((task) => task.id === selectedId) ?? null
   const reload = useCallback(async (): Promise<void> => {
@@ -43,6 +46,23 @@ export function AutomationMainView(): JSX.Element {
     window.addEventListener('tagent:automations-changed', handleChanged)
     return () => window.removeEventListener('tagent:automations-changed', handleChanged)
   }, [reload])
+  const runTaskNow = async (id: string): Promise<void> => {
+    if (runningRef.current.has(id)) return
+    runningRef.current.add(id)
+    setRunningIds(new Set(runningRef.current))
+    toast.info('任务已启动，正在执行')
+    try {
+      const run = await getApi().runAutomationNow(id)
+      if (run.status === 'succeeded') toast.success('任务执行完成')
+      else toast.error(run.error || '任务执行失败，请查看执行记录')
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : '立即运行失败')
+    } finally {
+      runningRef.current.delete(id)
+      setRunningIds(new Set(runningRef.current))
+      window.dispatchEvent(new Event('tagent:automations-changed'))
+    }
+  }
   const toggleTask = async (id: string): Promise<void> => {
     setBusyId(id)
     try {
@@ -149,17 +169,19 @@ export function AutomationMainView(): JSX.Element {
               <div className="automation-detail-heading">
                 <div className="min-w-0"><p className="automation-detail-eyebrow">TASK</p><h2 className="truncate">{selected.name || '未命名任务'}</h2><p>{formatScheduleLabel(selected)}</p></div>
                 <div className="automation-detail-actions">
-                  <button type="button" onClick={() => openEdit(selected)} className="automation-secondary-button"><Pencil size={14} /> 编辑</button>
-                  <button type="button" onClick={() => void toggleTask(selected.id)} disabled={busyId === selected.id} className="automation-secondary-button">{busyId === selected.id ? <Loader2 size={14} className="animate-spin" /> : selected.enabled ? <Pause size={14} /> : <Play size={14} />}{selected.enabled ? '暂停' : '启用'}</button>
-                  <button type="button" onClick={() => requestDeleteTask(selected)} disabled={busyId === selected.id} className="automation-danger-button"><Trash2 size={14} /> 删除</button>
+                  <button type="button" onClick={() => void runTaskNow(selected.id)} disabled={runningIds.has(selected.id) || busyId === selected.id} className="automation-primary-button" title="立即执行一次，不改变原定时间">{runningIds.has(selected.id) ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}{runningIds.has(selected.id) ? '执行中…' : '立即运行'}</button>
+                  <button type="button" onClick={() => openEdit(selected)} disabled={runningIds.has(selected.id)} className="automation-secondary-button"><Pencil size={14} /> 编辑</button>
+                  <button type="button" onClick={() => void toggleTask(selected.id)} disabled={busyId === selected.id || runningIds.has(selected.id)} className="automation-secondary-button">{busyId === selected.id ? <Loader2 size={14} className="animate-spin" /> : selected.enabled ? <Pause size={14} /> : <Play size={14} />}{selected.enabled ? '暂停' : '启用'}</button>
+                  <button type="button" onClick={() => requestDeleteTask(selected)} disabled={busyId === selected.id || runningIds.has(selected.id)} className="automation-danger-button"><Trash2 size={14} /> 删除</button>
                 </div>
               </div>
               <div className="automation-summary-grid">
-                <SummaryCell label="状态" value={selected.enabled ? '运行中' : selected.completedAt ? '已完成' : '已暂停'} active={selected.enabled} />
+                <SummaryCell label="状态" value={runningIds.has(selected.id) ? '执行中' : selected.enabled ? '已启用' : selected.completedAt ? '已完成' : '已暂停'} active={selected.enabled} />
                 <SummaryCell label="下次执行" value={nextRunLabel(selected.nextRunAt)} />
                 <SummaryCell label="已执行" value={`${selected.runCount ?? 0} 次`} />
                 <SummaryCell label="连续失败" value={`${selected.consecutiveFailures ?? 0} 次`} />
               </div>
+              {selected.runHistory.length > 0 && <section className="automation-detail-card"><div className="automation-detail-card-heading"><span>最近执行</span><span>RESULT</span></div><p>{nextRunLabel(selected.runHistory.at(-1)!.runAt)} · {selected.runHistory.at(-1)!.status === 'succeeded' ? '已完成' : selected.runHistory.at(-1)!.status === 'failed' ? '执行失败' : selected.runHistory.at(-1)!.status === 'skipped' ? '已跳过' : '已结束'}</p>{(selected.runHistory.at(-1)!.error || selected.runHistory.at(-1)!.skipReason) && <p className="automation-prompt">{selected.runHistory.at(-1)!.error || selected.runHistory.at(-1)!.skipReason}</p>}</section>}
               <section className="automation-detail-card"><div className="automation-detail-card-heading"><span>任务指令</span><span>PROMPT</span></div><p className="automation-prompt">{selected.prompt}</p></section>
               <section className="automation-detail-card"><div className="automation-detail-card-heading"><span>执行环境</span><span>RUNTIME</span></div><dl className="automation-runtime-list"><div><dt>渠道</dt><dd>{selected.channelId}</dd></div><div><dt>模型</dt><dd>{selected.modelId || '渠道默认'}</dd></div><div><dt>权限</dt><dd>{selected.permissionMode === 'bypassPermissions' ? '自动执行' : '需审批'}</dd></div><div><dt>会话</dt><dd>{selected.sessionMode === 'reuse' ? '持续复用' : '按日复用'}</dd></div></dl></section>
             </div>

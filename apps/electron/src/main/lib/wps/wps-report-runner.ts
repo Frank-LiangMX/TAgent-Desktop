@@ -19,19 +19,20 @@ export function dueWpsReportDates(createdAt: number, timeOfDay: string, now = Da
 
 /** 日报补报与普通自动任务分开：最近七天 + 今天，逐日生成，成功日期不重复。 */
 export async function runWpsDailyReports(automation: Automation, deps: {
+  manual?: boolean
   createSession: (title: string) => string
   runTurn: (sessionId: string, prompt: string, context: string) => Promise<void>
 }): Promise<{ sessionId: string }> {
   const source = automation.wpsDailyReport
   if (!source || automation.scheduleType !== 'daily') throw new Error('WPS 日报任务配置无效。')
   const path = join(getConfigDir(), 'wps-report-runs.json')
-  const schedule = dueWpsReportDates(automation.createdAt, automation.timeOfDay ?? '18:00')
+  const schedule = deps.manual ? { dates: [localReportDate()], omitted: false } : dueWpsReportDates(automation.createdAt, automation.timeOfDay ?? '18:00')
   const omitted = schedule.omitted && (!automation.lastRunAt || automation.lastRunAt < Date.now() - 8 * 86400_000)
   let sessionId = automation.lastSessionId ?? ''
   for (const date of schedule.dates) {
     const receiptKey = `${automation.id}:${date}`
     const receipts = readJsonSafe<Record<string, { sessionId: string; completedAt: number; complete: boolean }>>(path, {})
-    if (receipts[receiptKey]) { sessionId = receipts[receiptKey]!.sessionId; continue }
+    if (!deps.manual && receipts[receiptKey]) { sessionId = receipts[receiptKey]!.sessionId; continue }
     const bundle = await wpsService.collect(date, source, source.accountId, undefined, source.companyId)
     const dayComplete = bundle.complete
     if (omitted) { bundle.warnings.push('离线时间超过七天，更早日期未自动补报。'); bundle.complete = false }
@@ -41,7 +42,7 @@ export async function runWpsDailyReports(automation: Automation, deps: {
     await deps.runTurn(sessionId, automation.prompt, context)
     wpsService.assertEvidenceRead(sessionId)
     // 接口失败次日重试；固定能力限制保留显式的草稿状态，避免每天重复同一草稿。
-    if (!bundle.retryable) {
+    if (!deps.manual && !bundle.retryable) {
       const latest = readJsonSafe<typeof receipts>(path, {})
       latest[receiptKey] = { sessionId, completedAt: Date.now(), complete: dayComplete }
       const cutoff = Date.now() - 10 * 86400_000

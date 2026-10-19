@@ -67,6 +67,9 @@ const noteShape = {
   occurredOn: day,
 };
 const todoShape = {
+  startAt: epoch.nullable().optional(),
+  endAt: epoch.nullable().optional(),
+  progress: z.number().int().min(0).max(100).optional(),
   tags: tags.optional(),
   title,
   project,
@@ -441,6 +444,18 @@ export class WorkbenchStore {
             return state;
         }
         const previous = target ? find(state.todos, target) : undefined;
+        const wasCompleted = previous ? previous.completedAt !== null : false;
+        const startAt =
+          values.startAt === undefined ? previous?.startAt : values.startAt;
+        const endAt =
+          values.endAt === undefined ? previous?.endAt : values.endAt;
+        if (
+          (startAt == null) !== (endAt == null) ||
+          (startAt != null && endAt != null && endAt <= startAt)
+        )
+          throw new Error(
+            "请填写完整的任务开始、结束时间，结束时间必须晚于开始时间",
+          );
         if (values.tags === undefined)
           values.tags =
             previous?.tags ??
@@ -453,6 +468,9 @@ export class WorkbenchStore {
           const todo = find(state.todos, target);
           checkRevision(todo, expectedEntityRevision);
           Object.assign(todo, values);
+          if (values.progress !== undefined)
+            todo.completedAt =
+              values.progress === 100 ? (todo.completedAt ?? now) : null;
           todo.dueTime = values.dueTime ?? "";
           touch(todo);
           for (const event of state.events.filter(
@@ -472,12 +490,32 @@ export class WorkbenchStore {
             event.project = todo.project;
             touch(event);
           }
-        } else state.todos.push({ ...fresh(), ...values, completedAt: null });
+        } else
+          state.todos.push({
+            ...fresh(),
+            ...values,
+            completedAt: values.progress === 100 ? now : null,
+          });
+        const saved = target
+          ? find(state.todos, target)
+          : state.todos[state.todos.length - 1]!;
+        if (wasCompleted !== (saved.completedAt !== null))
+          log({
+            ...snapshot(saved),
+            entityType: "todo",
+            action: saved.completedAt !== null ? "completed" : "reopened",
+            occurredOn: workbenchDate(now),
+            at: now,
+            title: saved.title,
+            text: saved.title,
+            area: saved.area ?? "work",
+          });
         break;
       }
       case "toggle-todo": {
         const todo = find(state.todos, change.id);
         todo.completedAt = todo.completedAt === null ? now : null;
+        todo.progress = todo.completedAt === null ? 0 : 100;
         touch(todo);
         log({
           ...snapshot(todo),

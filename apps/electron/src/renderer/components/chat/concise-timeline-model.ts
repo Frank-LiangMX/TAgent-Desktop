@@ -11,9 +11,6 @@
  */
 import {
   cleanFilePathInput,
-  compactStageProgress,
-  isNearDuplicateStageProgress,
-  isToolCallArtifactText,
   sanitizeAssistantTextForDisplay,
 } from '@tagent/shared'
 import type { FileEditPatch } from '@tagent/shared'
@@ -490,8 +487,7 @@ export function isTrivialThinking(text: string): boolean {
  *
  * 注意：REGRESS-N 已否决「idle 按长度一刀切 continue 丢短 progress」（原 J1/J4）——
  * 阈值无法区分 filler 与「正在跑验证」这类有信息短句，会把阶段性总结丢成「流完即消」。
- * 现在合并阶段只看 {@link isFillerProgressText}（纯 filler 才吞）；有信息短句常驻
- * `narrative.progress`。本函数保留给 live / 测试用，不再作 idle 丢弃判据。
+ * 正文不再按长度或语义删减。本函数仅保留给历史分类测试，不作丢弃判据。
  */
 export const SHORT_PROGRESS_MAX_CHARS = 20
 
@@ -499,55 +495,6 @@ export function isShortProgressText(text: string): boolean {
   const t = text.trim()
   if (!t) return true
   return t.length <= SHORT_PROGRESS_MAX_CHARS
-}
-
-/**
- * 纯 filler 段间短文：仅 acknowledger / 过渡词（「好的」「嗯」「继续」「然后」…），
- * 无动作对象、无结论。**仅此类**允许 idle 吞掉以合并连续工具 stage；
- * 有信息的进度句（哪怕短，如「正在跑验证」「准备编辑」「目录摸清了」）必须常驻
- * `narrative.progress`——REGRESS-N 否决 REGRESS-J(J1)「按长度一刀切 continue 丢短 progress」。
- *
- * 与 {@link isTrivialThinking} 同源（极短无信息），但更窄：带动词对象 / 状态 / 结论的不算 filler。
- * 回合末（round-final）文本不走此规则——即便字面是 filler 也可能是用户的短回答，不得丢。
- */
-const FILLER_PROGRESS_RE =
-  /^(好的|好|嗯|哦|ok|okay|行|可以|了解|收到|明白|继续|接着|接下来|然后|下一步)\s*[。.!！？?…~]*$/i
-
-export function isFillerProgressText(text: string): boolean {
-  const t = text.trim()
-  if (!t) return true
-  if (t.length > 16) return false
-  return FILLER_PROGRESS_RE.test(t)
-}
-
-/**
- * 工具之间常见的英文自言自语（“No output? That's odd.”、“Let me inspect …”）。
- * 它们没有新的工作结果，却会把一个阶段撕成多个正文块。仅收掉明显的口头禅；
- * 带文件、数字、代码或结论的进度，以及中文短状态，仍然保留。
- */
-export function isFragmentedProgressText(text: string): boolean {
-  const t = text.trim()
-  if (!t || t.length > 54) return false
-  if (/^note\b/i.test(t)) return true
-  if (/[`/\\]|\b\d+\b|[+\-]\d/.test(t)) return false
-  return /^(?:let me|i(?:'|’)ll|i will|no output|that's odd|now (?:add|check|read|run)|let's|we need to|need to|hmm\b)/i.test(t)
-}
-
-/**
- * 中文工具口播：每次读/搜/跑前的「先看看入口」「接着查缓存」。
- * 没有发现、结论或完成信号，不该单独占一行进度。
- */
-const ROUTINE_CN_NARRATION =
-  /^(?:我|咱|先|接着|接下来|然后|现在|再|继续|让我|准备|开始|换|去|来)?(?:先|再|继续|接着)?(?:看看|看一下|看|查看|查一下|查|搜|搜一下|搜索|读|读一下|读取|打开|列出|跑|跑一下|跑跑|执行|验证一下|确认一下|对照一下|检查一下)[^。！？.!?]{0,36}[。！？.!?]*$/u
-const MILESTONE_CN_PROGRESS =
-  /(?:发现|定位|根因|问题在|原因|结论|已(?:改|修|完|通|确认|修好|写好|跑通|验证)|(?:改|修|写|补)完|验证通过|测试通过|不通|失败|报错|阻塞|卡住|下一步)/u
-
-export function isRoutineNarrationText(text: string): boolean {
-  const t = text.trim()
-  if (!t || t.length > 48) return false
-  if (MILESTONE_CN_PROGRESS.test(t)) return false
-  if (/[`/\\]|\d/.test(t)) return false
-  return ROUTINE_CN_NARRATION.test(t)
 }
 
 function mergeAnswerIntoProcess(
@@ -663,7 +610,6 @@ export function buildConciseTimeline(
   let stageStartKey = ''
   let sawTool = false
   const seenThinking = new Set<string>()
-  const progressNarratives: string[] = []
 
   const flushLeadingThink = (): void => {
     if (leadingThink.length === 0) return
@@ -804,44 +750,19 @@ export function buildConciseTimeline(
     }
 
     if (cur.type === 'text') {
-      const rawDisplayText = sanitizeAssistantTextForDisplay(cur.text)
+      const displayText = sanitizeAssistantTextForDisplay(cur.text)
       flushLeadingThink()
-      // REGRESS-N（否决 REGRESS-J J1/J4 的 isShortIdleProgress → continue）：
-      // 旧规则按长度（≤ SHORT_PROGRESS_MAX_CHARS）一刀切，idle 把「正在跑验证」「准备编辑」
-      // 这类**有信息**的段间短 progress 也直接 continue 丢掉——REGRESS-M 的 tool_start commit
-      // 让它在 live 打字机可见、idle 重投影即被吃 → 用户观感「阶段性总结流完即消」。
-      // 产品裁决：禁止 idle 为合并阶段而删有信息的段间 progress；**仅纯 filler**
-      // （好的/嗯/继续…极短无信息过渡词，见 isFillerProgressText）可吞以合并阶段，
-      // 有信息进度句一律常驻 narrative.progress。live/idle 同一套 segments 语义
-      // （禁止 live 一套、idle 把总结删光）。回合末文本（isRoundFinal）即便是 filler 也保留
-      // ——那可能是用户的短回答，不得丢。
+      // 工具到来只能改变正文的归属，不能改写已展示的内容。
+      // 按句点抽取/80 字截断会破坏文件名和 Markdown；旁白/近似重复过滤
+      // 也会让先前可见的整段文字消失。live、完成和历史一律保留正文。
+      // 协议标记仍由上面的统一清洗器处理，不在工具边界追加过滤规则。
       const isRoundFinal = i > lastToolIdx || lastToolIdx < 0
-      const displayText = isRoundFinal ? rawDisplayText : compactStageProgress(rawDisplayText) ?? ''
       if (!displayText.trim()) continue
-      const isFiller = !isRoundFinal && isFillerProgressText(displayText)
-      const isFragment = !isRoundFinal && isFragmentedProgressText(displayText)
-      const isRoutine = !isRoundFinal && isRoutineNarrationText(displayText)
-      // 工具调用前的 call / antml 尾段 / function_call 标记 → 不单独占 narrative 行
-      const isArtifact = !isRoundFinal && isToolCallArtifactText(displayText)
-      if (isFiller || isFragment || isRoutine || isArtifact) continue
       // live 时尾部正文先当 progress（运行队列打字机），避免 final 卡片闪现；
       // 回合结束后再升为 final。
       const tone: 'progress' | 'final' = i < lastToolIdx || isLive ? 'progress' : 'final'
-      // 阶段旁白是导航，不是逐字转录。模型在一次无进展复盘里经常只换
-      // “很像/很清楚/接着”等连接词重复同一根因；live 路径也要在落盘前
-      // 做同样的抑制，否则会出现“在线少一条、重开又回来”的双轨差异。
-      if (
-        !isRoundFinal &&
-        tone === 'progress' &&
-        progressNarratives.some((previous) =>
-          isNearDuplicateStageProgress(previous, displayText),
-        )
-      ) {
-        continue
-      }
       if (isRoundFinal) flushPendingThinking()
       flushStage()
-      if (!isRoundFinal && tone === 'progress') progressNarratives.push(displayText)
       pushNarrative(segments, cur.key, displayText, tone)
     }
   }

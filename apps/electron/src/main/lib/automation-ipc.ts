@@ -1,3 +1,4 @@
+import { runAutomationNow } from './automation-scheduler'
 import { ipcMain } from 'electron'
 import {
   AUTOMATION_IPC_CHANNELS,
@@ -19,7 +20,13 @@ export function registerAutomationIpc(): void {
   ipcMain.removeHandler(AUTOMATION_IPC_CHANNELS.CREATE)
   ipcMain.removeHandler(AUTOMATION_IPC_CHANNELS.UPDATE)
   ipcMain.removeHandler(AUTOMATION_IPC_CHANNELS.DELETE)
+  ipcMain.removeHandler(AUTOMATION_IPC_CHANNELS.RUN_NOW)
   ipcMain.removeHandler(AUTOMATION_IPC_CHANNELS.TOGGLE)
+
+  ipcMain.handle(AUTOMATION_IPC_CHANNELS.RUN_NOW, (_event, id: string) => {
+    if (typeof id !== 'string' || !id.trim()) throw new Error('任务 ID 无效')
+    return runAutomationNow(id)
+  })
 
   const listEventsChannel = 'automation:list-events'
   ipcMain.removeHandler(listEventsChannel)

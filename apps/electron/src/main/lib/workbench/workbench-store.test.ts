@@ -31,6 +31,72 @@ const note = (
   });
 
 describe("local workbench durable workflow", () => {
+  it("persists task intervals and progress, validates merged edits, and records completion changes", () => {
+    mutate({
+      type: "save-todo",
+      title: "跨天任务",
+      project: "",
+      dueDate: "",
+      startAt: now,
+      endAt: now + 7200000,
+      progress: 35,
+    });
+    const task = state.todos[0]!;
+    expect(new WorkbenchStore(path).read().todos[0]).toMatchObject({
+      startAt: now,
+      endAt: now + 7200000,
+      progress: 35,
+      completedAt: null,
+    });
+    expect(() =>
+      mutate({
+        type: "save-todo",
+        id: task.id,
+        expectedEntityRevision: state.todos[0]!.revision,
+        title: task.title,
+        project: "",
+        dueDate: "",
+        endAt: now - 1,
+      }),
+    ).toThrow("结束时间必须晚于开始时间");
+    mutate({
+      type: "save-todo",
+      id: task.id,
+      expectedEntityRevision: state.todos[0]!.revision,
+      title: task.title,
+      project: "",
+      dueDate: "",
+      progress: 100,
+    });
+    expect(state.todos[0]!.completedAt).toBe(now);
+    expect(state.activities?.at(-1)?.action).toBe("completed");
+    mutate({
+      type: "save-todo",
+      id: task.id,
+      expectedEntityRevision: state.todos[0]!.revision,
+      title: task.title,
+      project: "",
+      dueDate: "",
+      progress: 50,
+    });
+    expect(state.todos[0]!.completedAt).toBeNull();
+    expect(state.activities?.at(-1)?.action).toBe("reopened");
+    mutate({ type: "toggle-todo", id: task.id });
+    expect(state.todos[0]!.progress).toBe(100);
+    mutate({ type: "toggle-todo", id: task.id });
+    expect(state.todos[0]!.progress).toBe(0);
+    mutate({
+      type: "save-todo",
+      id: task.id,
+      expectedEntityRevision: state.todos[0]!.revision,
+      title: task.title,
+      project: "",
+      dueDate: "",
+      startAt: null,
+      endAt: null,
+    });
+    expect(new WorkbenchStore(path).read().todos[0]!.startAt).toBeNull();
+  });
   it("persists planned tasks and linked time blocks without completing or duplicating tasks", () => {
     note();
     const original = state.notes[0]!;

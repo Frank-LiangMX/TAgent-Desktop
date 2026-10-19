@@ -141,7 +141,7 @@ export function setNextRunAt(id: string, nextRunAt: number): Automation | undefi
   return updated
 }
 
-export function appendRun(id: string, run: AutomationRun): Automation | undefined {
+export function appendRun(id: string, run: AutomationRun, options?: { manual?: boolean }): Automation | undefined {
   const store = readStore()
   const index = store.automations.findIndex((item) => item.id === id)
   if (index < 0) return undefined
@@ -158,7 +158,7 @@ export function recordSkipped(id: string, scheduledAt: number, reason: string, n
   setNextRunAt(id, nextRunAt)
 }
 
-export function recordRunOutcome(id: string, scheduledAt: number, run: AutomationRun): Automation | undefined {
+export function recordRunOutcome(id: string, scheduledAt: number, run: AutomationRun, options?: { manual?: boolean }): Automation | undefined {
   const store = readStore()
   const index = store.automations.findIndex((item) => item.id === id)
   if (index < 0) return undefined
@@ -166,13 +166,13 @@ export function recordRunOutcome(id: string, scheduledAt: number, run: Automatio
   const runCount = (current.runCount ?? 0) + (run.status === 'succeeded' || run.status === 'failed' ? 1 : 0)
   const consecutiveFailures = run.status === 'failed' ? (current.consecutiveFailures ?? 0) + 1 : 0
   const reachedMax = current.maxRuns !== undefined && runCount >= current.maxRuns
-  const completed = current.scheduleType === 'once' || reachedMax || consecutiveFailures >= 5
+  const completed = options?.manual ? false : current.scheduleType === 'once' || reachedMax || consecutiveFailures >= 5
   const updated: Automation = {
     ...current, runHistory: [...current.runHistory, run].slice(-AUTOMATION_MAX_HISTORY),
     lastRunAt: run.runAt, lastSessionId: run.sessionId || current.lastSessionId,
     runCount, consecutiveFailures, enabled: completed ? false : current.enabled,
     completedAt: completed ? Date.now() : current.completedAt,
-    nextRunAt: completed ? 0 : computeNextRunAt({ ...current, lastRunAt: run.runAt, runCount, enabled: current.enabled }, Date.now()),
+    nextRunAt: options?.manual ? current.nextRunAt : completed ? 0 : computeNextRunAt({ ...current, lastRunAt: run.runAt, runCount, enabled: current.enabled }, Date.now()),
     updatedAt: Date.now(),
   }
   store.automations[index] = updated

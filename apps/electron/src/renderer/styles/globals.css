@@ -21,6 +21,9 @@
 @import './updater.css';
 @import './workbench.css';
 @import './knowledge-library.css';
+@import './workbench-material.css';
+@import './workbench-motion.css';
+@import './workbench-timeline.css';
 /* 记忆页 content-glass（General 原样） */
 @import './content-glass.css';
 

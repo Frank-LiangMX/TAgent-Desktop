@@ -1706,10 +1706,8 @@ export function App(): JSX.Element {
             <div className="app-shell-content-stage relative h-full min-h-0 min-w-0 w-full overflow-hidden">
               <WorkbenchPage onKnowledgeLeave={() => setKnowledgeNavigation(undefined)} knowledgeNavigation={knowledgeNavigation} onNavigate={selectRail} onUseAgent={(text) => {
                 if (draftSession) {
-                  void navigator.clipboard.writeText(text).then(() => {
-                    selectRail("chat");
-                    toast.info("引用已复制，请粘贴到已有草稿；正在编辑的内容已保留。");
-                  }).catch(() => toast.error("复制引用失败，请重试。"));
+                  setPendingSuggestion(text);
+                  selectRail("chat");
                   return;
                 }
                 void (async () => {

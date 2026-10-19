@@ -160,7 +160,7 @@ export function WeekPlanner({
           <button
             key={day.date}
             className="wb-week-day"
-            aria-label={`查看 ${day.date}，${day.events.length} 个日程，${day.due} 项到期待办`}
+            aria-label={`查看 ${day.date}，${day.events.length} 个日程，${day.due} 项待办`}
             aria-pressed={date === day.date}
             onClick={() => onDate(day.date)}
           >
@@ -185,7 +185,7 @@ export function WeekPlanner({
                 <small>暂无日程</small>
               )}
               {day.due > 0 && (
-                <small className="wb-week-due">{day.due} 项待办到期</small>
+                <small className="wb-week-due">{day.due} 项待办</small>
               )}
             </span>
           </button>
@@ -226,18 +226,13 @@ export function CollectionOverview({
           <span className="wb-hint">当前项目 · 未归档</span>
         </div>
       )}
-      {compact && (
-        <button
-          className="wb-collection-all"
-          aria-pressed={selected === "all"}
-          onClick={() => onSelect("all")}
-        >
-          <NotePencil size={20} />
-          <strong>全部收集</strong>
-          <span>{total}</span>
-        </button>
-      )}
-      {kinds.map(({ id, label, icon: Icon }) => (
+      {(compact
+        ? [
+            { id: "all" as const, label: "全部收集", icon: NotePencil },
+            ...kinds,
+          ]
+        : kinds
+      ).map(({ id, label, icon: Icon }) => (
         <button
           key={id}
           className="wb-collection-kind"
@@ -253,14 +248,14 @@ export function CollectionOverview({
               <span className="wb-kind-track">
                 <span
                   style={{
-                    width: `${total ? (data.collections[id] / total) * 100 : 0}%`,
+                    width: `${id !== "all" && total ? (data.collections[id] / total) * 100 : 0}%`,
                   }}
                 />
               </span>
             )}
           </span>
           <strong>
-            {data.collections[id]}
+            {id === "all" ? total : data.collections[id]}
             <small> 条</small>
           </strong>
         </button>

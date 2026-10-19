@@ -36,6 +36,7 @@ import {
   type RuntimeApiConnection,
 } from '../shared/runtime-api-connection'
 import { registerRuntimeProtocolBridgeTarget } from '../shared/protocol-bridge/runtime-protocol-bridge'
+import { getAttachmentAbsolutePath } from '../../attachment-service'
 
 export interface CodexQueryOptions extends AgentQueryInput {
   /** Official Responses API connection. Presence selects an isolated App Server. */
@@ -235,6 +236,7 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
     const manager = this.requireManager(sessionId)
     await manager.startTurn(sessionId, {
       prompt: this.userMessageText(message),
+      imageUrls: this.userMessageImageUrls(message),
       clientUserMessageId: message.uuid,
     })
   }
@@ -246,6 +248,7 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
     const manager = this.requireManager(sessionId)
     await manager.steerTurn(sessionId, {
       prompt: this.userMessageText(message),
+      imageUrls: this.userMessageImageUrls(message),
       clientUserMessageId: message.uuid,
     })
   }
@@ -537,6 +540,14 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
   private localImagePaths(input: CodexQueryOptions): string[] {
     return (input.attachments ?? [])
       .filter((attachment) => attachment.mediaType.startsWith('image/'))
-      .map((attachment) => attachment.localPath)
+      .map((attachment) => getAttachmentAbsolutePath(attachment.localPath))
+  }
+
+  private userMessageImageUrls(message: SDKUserMessageInput): string[] {
+    const content = message.message.content
+    if (typeof content === 'string') return []
+    return content.flatMap((block) => block.type === 'image'
+      ? [`data:${block.source.media_type};base64,${block.source.data}`]
+      : [])
   }
 }

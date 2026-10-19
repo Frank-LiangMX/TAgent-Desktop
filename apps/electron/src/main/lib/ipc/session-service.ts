@@ -71,6 +71,7 @@ import {
 import { askUserService } from "../agent/agent-ask-user-service";
 import { stopKanbanDelegationForSession } from "../kanban/kanban-dispatcher";
 import { buildDelegationHostTools, injectDelegationMcpServer } from "../agent/delegation-host-tools";
+import { buildPiWpsTools, injectWpsMcpServer, wpsSystemPrompt } from "../wps/wps-agent-tools";
 import type { PiAgentAdapterConfig } from "../adapters/pi/pi-agent-adapter";
 import { exitPlanService } from "../agent/agent-exit-plan-service";
 import { kbProposeSaveService } from "../kb/kb-propose-save-service";
@@ -287,6 +288,11 @@ import {
   buildPiBrowserTools,
   injectBrowserMcpServer,
 } from "../browser/browser-agent-tools";
+import {
+  VIDEO_SYSTEM_PROMPT,
+  buildPiVideoTools,
+  injectVideoMcpServer,
+} from "../video/video-agent-tools";
 import { getBrowserController } from "./browser-service";
 import {
   assessWebSearchFallback,
@@ -610,6 +616,7 @@ export class SessionService {
   /** 已从同一 assistant 消息发出的阶段信号，避免流式快照重复推送。 */
   private planStepSignalsSeenBySession = new Map<string, Set<string>>();
   /** 等待隐藏 Bot 顾问下一轮完成；只用于内部融合调度，不向 renderer 暴露。 */
+  private automatedTurns = new Map<string, { outcome?: string; error?: string }>();
   private nextTurnEndWaiters = new Map<string, Set<() => void>>();
   /** 后台子代理完成回投：父轮忙时排队，空闲后按派出时的冻结分叉发送。 */
   private pendingBackgroundCallbacks = new Map<
@@ -1167,6 +1174,13 @@ export class SessionService {
         if (moaCtrl) moaCtrl.abort();
         const rt = this.runtimes.get(sessionId);
         if (rt) await rt.interrupt();
+        const automated = this.automatedTurns.get(sessionId);
+        if (automated) {
+          automated.outcome = "cancelled";
+          automated.error = "任务已停止";
+          this.resolveNextTurnEndWaiters(sessionId);
+        }
+
         // 交接尝试结算：停止没有原生终态，按「是否已产出原生输出」判定
         // （未产出 → 可重投；已产出 → 标记模糊，不自动重投整段上下文）
         this.finalizeHandoffAttempt(sessionId, "stopped");
@@ -3663,6 +3677,8 @@ export class SessionService {
             this.flushPendingSteer(input.sessionId);
             this.flushBackgroundCallbacks(input.sessionId);
           }
+          const automated = this.automatedTurns.get(input.sessionId);
+          if (automated) automated.outcome = info?.outcome ?? "error";
           this.resolveNextTurnEndWaiters(input.sessionId);
           this.cleanupAgentBrowser(input.sessionId);
         },
@@ -3680,6 +3696,8 @@ export class SessionService {
           // 出错 → 落盘 error（重启保留，下轮成功回 idle）
           updateSessionMeta(input.sessionId, { status: "error" });
           this.planStepSignalsSeenBySession.delete(input.sessionId);
+          const automated = this.automatedTurns.get(input.sessionId);
+          if (automated) { automated.outcome = "error"; automated.error = err.message; }
           const msg = err.message;
           this.sendPayload(input.sessionId, {
             kind: "tagent_event",
@@ -3860,7 +3878,7 @@ export class SessionService {
     this.moaAbortBySession.set(input.sessionId, controller);
     this.moaInFlight.add(input.sessionId);
     try {
-      await runMoaTurn({
+      const result = await runMoaTurn({
         sessionId: input.sessionId,
         prompt: appendAttachmentPathsToPrompt(input.prompt, input.attachments),
         channel,
@@ -3873,9 +3891,22 @@ export class SessionService {
         sendPayload: (payload) => this.sendPayload(input.sessionId, payload),
         attachments: input.attachments,
       });
+      const automated = this.automatedTurns.get(input.sessionId);
+      if (automated) {
+        automated.outcome = result.outcome === "done" ? "success" : result.outcome;
+        automated.error = result.error;
+        this.resolveNextTurnEndWaiters(input.sessionId);
+      }
     } catch (err) {
       // runMoaTurn 自身不应抛（失败经 sendPayload 上报）；兜底防裸异常吞掉
       const msg = err instanceof Error ? err.message : String(err);
+      const automated = this.automatedTurns.get(input.sessionId);
+      if (automated) {
+        automated.outcome = "error";
+        automated.error = msg;
+        this.resolveNextTurnEndWaiters(input.sessionId);
+      }
+
       console.error("[runMoATurn] 未预期异常:", err);
       this.sendPayload(input.sessionId, {
         kind: "tagent_event",
@@ -4270,6 +4301,8 @@ export class SessionService {
       const codexBrowserTools = buildPiBrowserTools({
         sessionId: input.sessionId,
       });
+      const codexVideoTools = buildPiVideoTools({ sessionId: input.sessionId });
+      const codexWpsTools = buildPiWpsTools(input.sessionId, executionMode === "work");
       const codexWorkbenchTools = buildPiWorkbenchTools({
         sessionId: input.sessionId,
         executionMode,
@@ -4293,7 +4326,7 @@ export class SessionService {
         toolMode: "full",
       }) : [];
       const dynamicToolRegistry = new CodexDynamicToolRegistry(
-        [...codexBrowserTools, ...codexWorkbenchTools, ...codexKbTools, ...codexKanbanTools,
+        [...codexBrowserTools, ...codexVideoTools, ...codexWpsTools, ...codexWorkbenchTools, ...codexKbTools, ...codexKanbanTools,
           ...(executionMode === "work" && channel.provider !== "codex-internal"
             ? await buildDelegationHostTools(delegationHostInput()) : []),
         ].map(
@@ -4406,11 +4439,13 @@ export class SessionService {
         throw new Error(`Codex 服务端请求尚未接入：${request.method}`);
       };
       const developerInstructions = [
+        wpsSystemPrompt(),
         buildExecutionModePrompt(executionMode),
         executionMode === "work" ? buildSubagentDelegationPrompt(migrateSubagentEagerness(metaForMode?.subagentEagerness)) : "",
         contextPromptAppend,
         executionMode === "chat" ? buildUserSystemPromptAppend() : "",
         BROWSER_SYSTEM_PROMPT,
+        VIDEO_SYSTEM_PROMPT,
         WORKBENCH_SYSTEM_PROMPT,
         "## 身份与自我介绍\n你是 TAgent 的 Codex 主会话执行后端。不要提及 CLI、App Server 或出品方品牌；直接完成用户任务。",
         buildOutputStylePrompt(),
@@ -4606,6 +4641,11 @@ export class SessionService {
         console.warn("[会话] 注入浏览器 MCP 失败:", err);
       }
       try {
+        await injectVideoMcpServer(mcpServers);
+      } catch (err) {
+        console.warn("[会话] 注入视频 MCP 失败:", err);
+      }
+      try {
         await injectKbMcpServer(mcpServers, {
           sessionId: input.sessionId,
           knowledgeBaseWritesEnabled: areKnowledgeBaseWritesEnabled(),
@@ -4624,6 +4664,7 @@ export class SessionService {
         executionMode,
         store: workbenchService,
       });
+      await injectWpsMcpServer(mcpServers, input.sessionId, executionMode === "work");
       if (CREW_ORCHESTRATION_ENABLED && executionMode === "work") {
         try {
           await injectKanbanMcpServer(mcpServers, {
@@ -4663,6 +4704,7 @@ export class SessionService {
           // 执行形态 +（Work 才）子代理委派 + 看板工具说明 + 富内容 + 记忆
           // Chat 下 Task/SubAgent/看板写 硬拦，不注入委派/看板工具
           append: [
+            wpsSystemPrompt(),
             // Chat/Work 策略须尽早出现，压过 claude_code preset 的动手/Plan 默认习惯
             buildExecutionModePrompt(executionMode),
             autoPlanPrompt,
@@ -4771,12 +4813,14 @@ export class SessionService {
       ) ||
       buildAutoPlanPrompt(input.prompt, piExecutionMode, input.isSteer);
     const piExecutionPrompt = [
+      wpsSystemPrompt(),
       buildExecutionModePrompt(piExecutionMode),
       buildSubagentDelegationPrompt(migrateSubagentEagerness(piMeta?.subagentEagerness)),
       autoPlanPrompt,
       contextPromptAppend,
       piExecutionMode === "chat" ? buildUserSystemPromptAppend() : "",
       BROWSER_SYSTEM_PROMPT,
+      VIDEO_SYSTEM_PROMPT,
       WORKBENCH_SYSTEM_PROMPT,
       CREW_ORCHESTRATION_ENABLED && piExecutionMode === "work"
         ? "## 看板派工工具n可用 kanban_create_board / kanban_add_task / kanban_list_*。长任务拆任务并指定 roleId。"
@@ -4809,6 +4853,8 @@ export class SessionService {
           })
         : [];
     const browserExtra = buildPiBrowserTools({ sessionId: input.sessionId });
+    const videoExtra = buildPiVideoTools({ sessionId: input.sessionId });
+    const wpsExtra = buildPiWpsTools(input.sessionId, piExecutionMode === "work");
     const workbenchExtra = buildPiWorkbenchTools({
       sessionId: input.sessionId,
       executionMode: piExecutionMode,
@@ -4826,6 +4872,8 @@ export class SessionService {
     });
     const extraTools = [
       ...browserExtra,
+      ...videoExtra,
+      ...wpsExtra,
       ...workbenchExtra,
       ...kanbanExtra,
       ...kbExtra,
@@ -5373,6 +5421,11 @@ export class SessionService {
 
   /** 销毁所有会话（应用退出） */
   disposeAll(): void {
+    for (const [sessionId, terminal] of this.automatedTurns) {
+      terminal.outcome = "cancelled";
+      terminal.error = "应用已关闭，任务执行中止";
+      this.resolveNextTurnEndWaiters(sessionId);
+    }
     abortAllBackgroundTasks();
     this.pendingBackgroundCallbacks.clear();
     this.liveRestoreBySession.clear();
@@ -5415,7 +5468,7 @@ export class SessionService {
     if (!getSessionMeta(input.sessionId)) {
       throw new Error(`自动任务会话不存在: ${input.sessionId}`)
     }
-    await this.handleSend({
+    const sendInput: SendMessageInput = {
       sessionId: input.sessionId,
       prompt: input.prompt,
       contextPrompt: input.contextPrompt,
@@ -5424,6 +5477,26 @@ export class SessionService {
       workspaceId: input.workspaceId,
       skipFusionRouting: true,
       executionMode: 'work',
-    })
+    };
+    if (!input.waitForCompletion) {
+      await this.handleSend(sendInput);
+      return;
+    }
+    if (this.automatedTurns.has(input.sessionId) || this.getStatus(input.sessionId).status === "running")
+      throw new Error("自动任务会话正在执行，请等待本轮结束");
+    const terminal: { outcome?: string; error?: string } = {};
+    this.automatedTurns.set(input.sessionId, terminal);
+    const finished = this.waitForNextTurnEnd(input.sessionId, 24 * 3600_000);
+    try {
+      await this.handleSend(sendInput);
+      if (!terminal.outcome && this.getStatus(input.sessionId).status !== "running")
+        throw new Error("自动任务未启动，请检查渠道、模型和会话配置");
+      if (!await finished) throw new Error("自动任务等待执行结束超时，请查看任务会话");
+      if (terminal.outcome !== "success") throw new Error(terminal.error ?? "自动任务未成功完成，请查看任务会话");
+    } finally {
+      this.automatedTurns.delete(input.sessionId);
+      this.resolveNextTurnEndWaiters(input.sessionId);
+    }
+
   }
 }

@@ -348,6 +348,8 @@ export function isAutomationMutationTool(toolName: string): boolean {
  * 判断工具是否为写操作（auto 模式下需用户确认）
  */
 export function isWriteTool(toolName: string, input: Record<string, unknown>): boolean {
+  if (toolName === 'workbench_update_note' || toolName.endsWith('__workbench_update_note')) return true
+  if (toolName === 'wps_create_document' || toolName === 'mcp__wps__wps_create_document') return true
   if (WRITE_TOOLS.includes(toolName)) return true
   if (toolName === 'Bash') {
     const command = typeof input.command === 'string' ? input.command : ''
@@ -377,6 +379,9 @@ export const AUTO_MODE_READ_ONLY_TOOLS: readonly string[] = [
   'workbench_history',
   'wps_collect_daily',
   'wps_read_daily_evidence',
+  'wps_list_chats',
+  'wps_search_messages',
+  'wps_get_chat_messages',
   'Skill',
   'TaskList',
   'TaskGet',

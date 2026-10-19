@@ -1,3 +1,4 @@
+import { usePendingSuggestion } from "./use-pending-suggestion";
 /**
  * 会话页核心
  *
@@ -1508,13 +1509,6 @@ export function Chat({
     internalBackendTouchedRef.current = false;
     setRuntimeOverride(session.agentRuntime);
     setBackgroundCrewBanner(null); // 切会话清掉后台班组提示
-    // welcome 形态点提示词时暂存的文本：草稿态挂载后预填输入框并清空。
-    // 只有刚 newSession 的草稿会带 pending；切到已有会话时它已被清空，不误填。
-    if (pendingSuggestion) {
-      chatInputRef.current?.setText(pendingSuggestion);
-      chatInputRef.current?.focus();
-      setPendingSuggestion(null);
-    }
     let cancelled = false;
     void (async () => {
       // 运行态 reconcile（以主进程 getSessionStatus 为准）：
@@ -1695,6 +1689,14 @@ export function Chat({
       cancelled = true;
     };
   }, [sessionId]);
+
+  usePendingSuggestion(
+    chatInputRef,
+    isDraftSession && scrollReady,
+    pendingSuggestion,
+    setPendingSuggestion,
+    sessionId,
+  );
 
   // main 会话滚动时关闭滚动内容自身的 backdrop-filter，避免 GPU 合成滞后产生拖影。
   // 输入框是滚动容器的兄弟节点，不受 is-scrolling 选择器影响，玻璃遮挡保持不变。

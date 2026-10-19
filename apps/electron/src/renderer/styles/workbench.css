@@ -1617,8 +1617,7 @@
   padding: 12px 8px;
   border-radius: 8px;
 }
-.wb-collection-kind:hover,
-.wb-collection-all:hover {
+.wb-collection-kind:hover {
   background: hsl(var(--accent));
 }
 .wb-kind-icon {
@@ -1671,6 +1670,7 @@
   margin-bottom: 20px;
 }
 .wb-collection-shortcuts > button {
+  margin: 0;
   border: 1px solid hsl(var(--border));
   background: hsl(var(--card) / 0.6);
   padding: 14px;
@@ -1683,16 +1683,6 @@
 .wb-collection-shortcuts > button[aria-pressed="true"] {
   background: hsl(var(--primary) / 0.12);
   border-color: hsl(var(--primary) / 0.3);
-}
-.wb-collection-all > strong {
-  flex: 1;
-  font-size: 13px;
-  font-weight: 500;
-  text-align: left;
-}
-.wb-collection-all > span {
-  font-size: 19px;
-  font-weight: 600;
 }
 .wb-collection-shortcuts .wb-kind-label {
   font-size: 13px;
@@ -1917,4 +1907,266 @@
   .wb-agenda-composer > button {
     grid-column: 1 / -1;
   }
+}
+
+/* Reports are current documents; footprints remain an independent history view. */
+.wb-documents-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 18px 0 12px;
+}
+.wb-documents-create {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.wb-document-list {
+  margin-top: 18px;
+  border-top: 1px solid hsl(var(--border));
+}
+.wb-document-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  text-align: left;
+  gap: 18px;
+  padding: 22px 12px;
+  border-bottom: 1px solid hsl(var(--border));
+  transition: background 160ms ease;
+}
+.wb-document-row:hover {
+  background: hsl(var(--foreground) / 0.035);
+}
+.wb-document-row:focus-visible {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 2px;
+}
+.wb-document-icon {
+  flex-shrink: 0;
+  color: hsl(var(--primary));
+}
+.wb-document-info {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+.wb-document-info strong {
+  font-size: 16px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.wb-document-info > span {
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+.wb-document-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+.wb-document-times time {
+  white-space: nowrap;
+}
+.wb-document-excerpt {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.7;
+}
+.wb-document-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 13px;
+  color: hsl(var(--primary));
+}
+.wb-document-reader {
+  max-width: 940px;
+  margin: 0 auto;
+  padding: 30px 36px 80px;
+}
+.wb-document-heading {
+  margin: 28px 0 18px;
+}
+.wb-document-heading h2 {
+  font-size: 24px;
+  font-weight: 650;
+  line-height: 1.5;
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+}
+.wb-document-reader-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 28px;
+}
+.wb-document-body {
+  border-top: 1px solid hsl(var(--border));
+  padding-top: 24px;
+  line-height: 1.85;
+}
+@media (max-width: 760px) {
+  .wb-document-reader {
+    padding: 20px 18px 60px;
+  }
+  .wb-document-row {
+    gap: 12px;
+    padding: 18px 4px;
+  }
+  .wb-document-open {
+    font-size: 0;
+    gap: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wb-document-row {
+    transition: none;
+  }
+}
+.wb-task-plan-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.wb-calendar-unscheduled {
+  margin-top: 24px;
+  padding: 16px;
+  background: hsl(var(--muted) / 0.25);
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+}
+.wb-gantt-scroll {
+  overflow-x: auto;
+  margin: 16px 0;
+}
+.wb-gantt-grid {
+  min-width: 760px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  overflow: hidden;
+}
+.wb-gantt-heading,
+.wb-gantt-row {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+}
+.wb-gantt-heading {
+  background: hsl(var(--muted) / 0.4);
+  font-size: 13px;
+}
+.wb-gantt-heading > strong {
+  padding: 16px;
+}
+.wb-gantt-task,
+.wb-gantt-heading > strong {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: rgb(var(--glass-rgb) / 0.96);
+}
+.wb-gantt-dates [data-weekend] {
+  background: hsl(var(--muted) / 0.2);
+}
+.wb-task-exact-time > summary {
+  cursor: pointer;
+  font-size: 13px;
+  padding-block: 8px;
+}
+.wb-gantt-dates {
+  display: grid;
+  grid-template-columns: repeat(var(--gantt-days, 7), 1fr);
+}
+.wb-gantt-dates > span {
+  padding: 10px 4px;
+  text-align: center;
+  border-left: 1px solid hsl(var(--border));
+}
+.wb-gantt-dates small {
+  display: block;
+  color: hsl(var(--muted-foreground));
+}
+.wb-gantt-dates [data-today] {
+  background: hsl(var(--primary) / 0.12);
+}
+.wb-gantt-row {
+  border-top: 1px solid hsl(var(--border));
+  min-height: 64px;
+}
+.wb-gantt-task {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px 16px;
+  text-align: left;
+  min-width: 0;
+  cursor: pointer;
+}
+.wb-gantt-task:hover {
+  background: hsl(var(--muted) / 0.5);
+}
+.wb-gantt-task strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.wb-gantt-task > span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+.wb-gantt-track {
+  position: relative;
+  border-left: 1px solid hsl(var(--border));
+  background-image: linear-gradient(
+    to right,
+    hsl(var(--border)) 1px,
+    transparent 1px
+  );
+  background-size: calc(100% / var(--gantt-days, 7)) 100%;
+  overflow: hidden;
+}
+.wb-gantt-bar {
+  position: absolute;
+  top: 16px;
+  height: 32px;
+  min-width: 6px;
+  border-radius: 5px;
+  background: hsl(var(--primary) / 0.18);
+  border: 1px solid hsl(var(--primary) / 0.4);
+  overflow: hidden;
+  cursor: pointer;
+}
+.wb-gantt-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: hsl(var(--primary) / 0.45);
+}
+.wb-gantt-bar-label {
+  position: relative;
+  font-size: 12px;
+  padding: 0 6px;
+  color: hsl(var(--foreground));
+  white-space: nowrap;
+}
+.wb-gantt-bar.is-point {
+  width: 10px;
+  border-radius: 2px;
+  background: hsl(var(--primary) / 0.6);
+}
+.wb-gantt-bar.is-point .wb-gantt-bar-label {
+  display: none;
 }

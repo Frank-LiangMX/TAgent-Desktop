@@ -26,7 +26,9 @@ import type {
   WorkbenchMutation,
   WorkbenchEvent,
 } from "@tagent/shared";
-import { parseWorkbenchTags } from "@tagent/shared";
+import { parseWorkbenchTags, workbenchDate } from "@tagent/shared";
+import { taskDuration, taskProgress } from "./workbench-calendar";
+import { dateOffset } from "./workbench-overview";
 import type { WorkbenchAgentAction } from "./workbench-agent-request";
 import { WorkbenchSelect } from "./WorkbenchSelect";
 export type NoteValues = Omit<
@@ -322,13 +324,20 @@ export function NoteComposer({
   );
 }
 
+function localTaskTime(value?: number | null): string {
+  if (value == null) return "";
+  const date = new Date(value);
+  return `${workbenchDate(value)}T${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
 export function TodoEditor({
   todo,
+  initialDate = "",
   project,
   busy,
   onSave,
 }: {
   todo: WorkbenchTodo | null;
+  initialDate?: string;
   project: string;
   busy: boolean;
   onSave: (values: {
@@ -338,29 +347,54 @@ export function TodoEditor({
     project: string;
     dueDate: string;
     dueTime?: string;
+    startAt?: number | null;
+    endAt?: number | null;
+    progress?: number;
     noteId?: string;
     area?: "work" | "personal";
     tags?: string[];
   }) => Promise<boolean>;
 }): JSX.Element {
   const [draft, setDraft, error, clearDraft] = useDraft(
-    `tagent:wb:todo-draft:${todo ? `${todo.id}:${todo.revision}` : "new"}`,
+    `tagent:wb:todo-draft:${todo ? `${todo.id}:${todo.revision}` : `new:${initialDate}`}`,
     {
       title: todo?.title ?? "",
       tags: (todo?.tags ?? []).join(" "),
       project: todo?.project ?? project,
-      dueDate: todo?.dueDate ?? "",
+      dueDate: todo?.dueDate ?? initialDate,
       dueTime: todo?.dueTime ?? "",
+      start: localTaskTime(todo?.startAt),
+      end: localTaskTime(todo?.endAt),
+      progress: todo ? taskProgress(todo) : 0,
       area: todo?.area ?? ((todo ? "work" : "personal") as "work" | "personal"),
     },
   );
+  const [planError, setPlanError] = useState("");
+  const startAt = draft.start ? new Date(draft.start).getTime() : null;
+  const endAt = draft.end ? new Date(draft.end).getTime() : null;
   return (
     <form
       className="wb-form"
       onSubmit={(event) => {
         event.preventDefault();
+        if (
+          (startAt === null) !== (endAt === null) ||
+          (startAt !== null &&
+            endAt !== null &&
+            (!Number.isFinite(startAt) ||
+              !Number.isFinite(endAt) ||
+              endAt <= startAt))
+        ) {
+          setPlanError("请填写完整的开始、结束时间，结束时间必须晚于开始时间");
+          return;
+        }
+        setPlanError("");
         void onSave({
           ...draft,
+          dueDate: startAt !== null ? workbenchDate(startAt) : draft.dueDate,
+          startAt,
+          endAt,
+          progress: draft.progress ?? 0,
           tags: parseWorkbenchTags(draft.tags ?? ""),
           dueTime: draft.dueDate ? (draft.dueTime ?? "") : "",
           area: draft.area ?? (todo ? "work" : "personal"),
@@ -423,8 +457,108 @@ export function TodoEditor({
         />
       </label>
       <p className="wb-hint">
-        设好日期后直接显示在日历；时间表示计划时点，不会自动创建另一条日程。
+        单日任务只需计划日期。跨天任务填写下方起止日期，待办、日程与甘特图会按同一区间显示。
       </p>
+      <div className="wb-task-plan-fields">
+        <label>
+          开始日期
+          <DatePicker
+            label="任务开始日期"
+            value={draft.start?.slice(0, 10) ?? ""}
+            clearable
+            onValueChange={(value) =>
+              setDraft({
+                ...draft,
+                start: value ? `${value}T00:00` : "",
+                end:
+                  value &&
+                  (!draft.end ||
+                    new Date(draft.end).getTime() <=
+                      new Date(`${value}T00:00`).getTime())
+                    ? `${dateOffset(value, 1)}T00:00`
+                    : draft.end,
+              })
+            }
+          />
+        </label>
+        <label>
+          结束日期（含当天）
+          <DatePicker
+            label="任务结束日期"
+            value={
+              draft.end
+                ? workbenchDate(
+                    new Date(draft.end).getTime() -
+                      (draft.end.endsWith("T00:00") ? 1 : 0),
+                  )
+                : ""
+            }
+            clearable
+            onValueChange={(value) =>
+              setDraft({
+                ...draft,
+                end: value ? `${dateOffset(value, 1)}T00:00` : "",
+                start: value && !draft.start ? `${value}T00:00` : draft.start,
+              })
+            }
+          />
+        </label>
+      </div>
+      <p className="wb-hint">
+        例如 10 月 19 日到 10 月 23 日，会显示为横跨 5
+        天的任务条。清空起止日期后恢复为单日任务。
+      </p>
+      <details className="wb-task-exact-time">
+        <summary>精确到时间（可选）</summary>
+        <div className="wb-task-plan-fields">
+          <label>
+            开始时间
+            <Input
+              type="datetime-local"
+              aria-label="任务开始时间"
+              value={draft.start ?? ""}
+              onChange={(event) =>
+                setDraft({ ...draft, start: event.target.value })
+              }
+            />
+          </label>
+          <label>
+            结束时间
+            <Input
+              type="datetime-local"
+              aria-label="任务结束时间"
+              value={draft.end ?? ""}
+              onChange={(event) =>
+                setDraft({ ...draft, end: event.target.value })
+              }
+            />
+          </label>
+        </div>
+      </details>
+      <p className="wb-hint">
+        计划持续时间：
+        {startAt !== null && endAt !== null && endAt > startAt
+          ? taskDuration(endAt - startAt)
+          : "尚未设置"}
+      </p>
+      <label>
+        完成进度（%）
+        <Input
+          type="number"
+          aria-label="任务完成进度"
+          min={0}
+          max={100}
+          step={1}
+          value={draft.progress ?? 0}
+          onChange={(event) =>
+            setDraft({ ...draft, progress: Number(event.target.value) })
+          }
+        />
+      </label>
+      <p className="wb-hint">
+        进度由你更新；100% 标记完成，调低进度会重新打开待办。
+      </p>
+      {planError && <p role="alert">{planError}</p>}
       <label>
         用途
         <WorkbenchSelect

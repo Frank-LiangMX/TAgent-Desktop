@@ -15,7 +15,7 @@ import {
 export const AUTOMATION_TICK_INTERVAL_MS = 30_000
 
 export interface AutomationSchedulerDependencies {
-  runAutomation: (automation: Automation) => Promise<{ sessionId: string }>
+  runAutomation: (automation: Automation, options?: { manual?: boolean }) => Promise<{ sessionId: string }>
   now?: () => number
 }
 
@@ -45,6 +45,28 @@ export class AutomationScheduler {
 
   isRunning(id: string): boolean {
     return this.running.has(id)
+  }
+
+  async runNow(id: string): Promise<AutomationRun> {
+    const automation = getAutomation(id)
+    if (!automation) throw new Error('自动化任务不存在或已删除')
+    if (this.running.has(id)) throw new Error('该任务正在执行，请等待本轮结束')
+    this.running.add(id)
+    const runAt = this.now()
+    try {
+      const { sessionId } = await this.runAutomation(automation, { manual: true })
+      recordTriggered(id, runAt, sessionId)
+      const run: AutomationRun = { runAt, sessionId, status: 'succeeded', durationMs: this.now() - runAt }
+      recordRunOutcome(id, runAt, run, { manual: true })
+      return run
+    } catch (error) {
+      const run: AutomationRun = { runAt, sessionId: '', status: 'failed', durationMs: this.now() - runAt,
+        error: error instanceof Error ? error.message : String(error) }
+      recordRunOutcome(id, runAt, run, { manual: true })
+      return run
+    } finally {
+      this.running.delete(id)
+    }
   }
 
   async tick(now = this.now()): Promise<void> {
@@ -133,4 +155,9 @@ export function startAutomationScheduler(deps: AutomationSchedulerDependencies):
 export function stopAutomationScheduler(): void {
   scheduler?.stop()
   scheduler = undefined
+}
+
+export function runAutomationNow(id: string): Promise<AutomationRun> {
+  if (!scheduler) throw new Error('自动化调度器尚未就绪，请稍后重试')
+  return scheduler.runNow(id)
 }

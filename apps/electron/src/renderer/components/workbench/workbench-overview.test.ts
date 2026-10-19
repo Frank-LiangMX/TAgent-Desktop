@@ -28,6 +28,22 @@ const empty = (): WorkbenchState => ({
   reports: [],
 });
 describe("personal workbench overview data", () => {
+  it("counts a planned task on each overlapping day of the weekly overview", () => {
+    const state = empty();
+    state.todos = [
+      {
+        ...entity,
+        title: "跨天工作",
+        dueDate: "",
+        completedAt: null,
+        startAt: new Date("2026-10-12T00:00").getTime(),
+        endAt: new Date("2026-10-15T00:00").getTime(),
+      },
+    ];
+    expect(
+      overviewData(state, "2026-10-12", "A").week.map((day) => day.due),
+    ).toEqual([1, 1, 1, 0, 0, 0, 0]);
+  });
   it("uses exclusive content categories and excludes archived, trashed and other projects", () => {
     const state = empty();
     state.notes = [

@@ -3,7 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WpsPublicConfig, WpsUserAuthState } from '@tagent/shared'
-import { WpsSettings } from './WpsSettings'
+import { WpsWorkspace } from './WpsWorkspace'
 
 let root: Root, container: HTMLDivElement
 let authListener: (state: WpsUserAuthState) => void
@@ -32,7 +32,7 @@ beforeEach(() => {
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container)
 })
 afterEach(() => { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals() })
-async function render(): Promise<void> { await act(async () => { root.render(<WpsSettings />) }) }
+async function render(): Promise<void> { await act(async () => { root.render(<WpsWorkspace />) }) }
 function button(text: string): HTMLButtonElement {
   const element = [...container.querySelectorAll('button')].find(item => item.textContent === text)
   if (!element) throw new Error(`button missing: ${text}`)
@@ -41,6 +41,17 @@ function button(text: string): HTMLButtonElement {
 async function click(text: string): Promise<void> { await act(async () => button(text).click()) }
 
 describe('WPS settings user workflows with isolated data', () => {
+  it('requests document creation authorization explicitly and displays the granted capability', async () => {
+    mockApi.loginWpsUser.mockResolvedValue({ ...auth, loading: true })
+    await render()
+    expect(mockApi.loginWpsUser).not.toHaveBeenCalled()
+    await click('授权创建云文档')
+    expect(mockApi.loginWpsUser).toHaveBeenCalledWith(true)
+    await act(async () => authListener({ ...auth, canCreateDocuments: true }))
+    expect(container.textContent).toContain('已授权创建云文档')
+    expect(container.textContent).toContain('MCP/智能文档')
+    expect([...container.querySelectorAll('button')].some(item => item.textContent === '授权创建云文档')).toBe(false)
+  })
   it('shows auth state and never starts authorization, collection or daily jobs on mount', async () => {
     mockApi.getWpsUserAuth.mockResolvedValue({ loggedIn: false })
     await render()

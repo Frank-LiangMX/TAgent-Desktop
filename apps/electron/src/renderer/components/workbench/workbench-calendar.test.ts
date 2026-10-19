@@ -10,6 +10,8 @@ import {
   calendarRange,
   layoutCalendarDay,
   shiftCalendar,
+  ganttRange,
+  taskMatchesDay,
 } from "./workbench-calendar";
 
 const day = "2026-10-12";
@@ -44,6 +46,21 @@ const state = (): WorkbenchState => ({
   reports: [],
 });
 describe("unified local calendar", () => {
+  it("filters tasks by their planned interval and builds exact month scales including leap years", () => {
+    const planned = todo({
+      dueDate: "",
+      startAt: at("09:00"),
+      endAt: new Date("2026-10-14T00:00").getTime(),
+    });
+    expect(taskMatchesDay(planned, day)).toBe(true);
+    expect(taskMatchesDay(planned, "2026-10-13")).toBe(true);
+    expect(taskMatchesDay(planned, "2026-10-14")).toBe(false);
+    expect(taskMatchesDay(planned, "2026-10-11")).toBe(false);
+    expect(taskMatchesDay(todo({ dueDate: day }), day)).toBe(true);
+    expect(ganttRange("2028-02-15", "month")).toHaveLength(29);
+    expect(ganttRange("2026-10-19", "month").at(-1)).toBe("2026-10-31");
+    expect(ganttRange("2026-10-19", "week")).toHaveLength(7);
+  });
   it("keeps Monday-first grids across year boundaries and avoids month-end rollover", () => {
     expect(calendarRange("2027-01-01", "week")).toEqual([
       "2026-12-28",
@@ -97,6 +114,25 @@ describe("unified local calendar", () => {
       end: 60,
       visualEnd: 60,
     });
+  });
+  it("shows a task interval on every overlapping day with its real duration instead of a point", () => {
+    const s = state();
+    s.todos = [
+      todo({
+        dueDate: "",
+        startAt: new Date("2026-10-11T23:00").getTime(),
+        endAt: at("01:00"),
+        progress: 40,
+      }),
+    ];
+    expect(calendarDayItems(s, "2026-10-11")).toHaveLength(1);
+    expect(layoutCalendarDay(calendarDayItems(s, day), day)[0]).toMatchObject({
+      start: 0,
+      end: 60,
+    });
+    expect(calendarDayItems(s, "2026-10-13")).toHaveLength(0);
+    s.todos[0]!.endAt = at("00:00");
+    expect(calendarDayItems(s, day)).toHaveLength(0);
   });
   it("uses separate lanes for overlaps, while point tasks have no claimed duration", () => {
     const s = state();

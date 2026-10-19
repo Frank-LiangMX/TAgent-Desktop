@@ -105,7 +105,7 @@ export interface WpsDesktopApi {
   getWpsConfig(): Promise<WpsPublicConfig>
   saveWpsConfig(input: WpsConnectionInput): Promise<WpsPublicConfig>
   getWpsUserAuth(): Promise<WpsUserAuthState>
-  loginWpsUser(): Promise<WpsUserAuthState>
+  loginWpsUser(createDocuments?: boolean): Promise<WpsUserAuthState>
   logoutWpsUser(): Promise<WpsUserAuthState>
   listWpsReportChats(): Promise<WpsChatSummary[]>
   collectWpsDaily(): Promise<WpsCollectionSummary>
@@ -135,6 +135,8 @@ export interface WpsTestResult {
 
 /** WPS 用户登录状态 */
 export interface WpsUserAuthState {
+  /** Has the separate user authorization needed to create cloud documents. */
+  canCreateDocuments?: boolean
   /** 是否已登录 */
   loggedIn: boolean
   /** 登录进行中 */

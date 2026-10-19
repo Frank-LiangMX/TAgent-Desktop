@@ -43,7 +43,7 @@ export interface AgentQueryInput {
   prompt: string
   /**
    * 本轮已落盘附件（相对 attachments 根的 localPath）。
-   * kscc 首轮可据此打成 image content block；Pi 主要依赖 prompt 路径附录。
+     * 各运行核据此构造图片输入；不能仅依赖 prompt 中的路径附录。
    */
   attachments?: Array<{
     id?: string

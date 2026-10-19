@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { AutomationScheduler } from './automation-scheduler'
-import { claimAutomationTrigger, createAutomation, getAutomation, listAutomationEvents, setNextRunAt } from './automation-manager'
+import { claimAutomationTrigger, createAutomation, getAutomation, listAutomationEvents, setNextRunAt, updateAutomation } from './automation-manager'
 
 const root = mkdtempSync(join(tmpdir(), 'tagent-automation-'))
 process.env.TAGENT_CONFIG_DIR = root
@@ -101,5 +101,53 @@ describe('AutomationScheduler', () => {
     expect(run).toHaveBeenCalledTimes(5)
     expect(getAutomation(automation.id)?.enabled).toBe(false)
     expect(getAutomation(automation.id)?.nextRunAt).toBe(0)
+  })
+})
+
+describe('manual automation runs', () => {
+  it('runs a paused task once, records its result and preserves the schedule', async () => {
+    const a = makeAutomation()
+    const paused = updateAutomation({ id: a.id, enabled: false })
+    const run = vi.fn().mockResolvedValue({ sessionId: 'manual' })
+    const scheduler = new AutomationScheduler({ runAutomation: run })
+    expect(await scheduler.runNow(a.id)).toMatchObject({ status: 'succeeded', sessionId: 'manual' })
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(getAutomation(a.id)).toMatchObject({ enabled: false, nextRunAt: paused.nextRunAt, runCount: 1, lastSessionId: 'manual' })
+  })
+  it('guards duplicate manual runs and overlapping scheduled runs until completion', async () => {
+    const a = makeAutomation()
+    const now = Date.now()
+    setNextRunAt(a.id, now)
+    let finish!: (value: { sessionId: string }) => void
+    const run = vi.fn(() => new Promise<{ sessionId: string }>(resolve => { finish = resolve }))
+    const scheduler = new AutomationScheduler({ runAutomation: run, now: () => now })
+    const pending = scheduler.runNow(a.id)
+    expect(scheduler.isRunning(a.id)).toBe(true)
+    expect(getAutomation(a.id)?.runCount).toBe(0)
+    await expect(scheduler.runNow(a.id)).rejects.toThrow('正在执行')
+    await scheduler.tick(now)
+    expect(run).toHaveBeenCalledTimes(1)
+    const next = getAutomation(a.id)!.nextRunAt
+    finish({ sessionId: 'manual' })
+    await pending
+    expect(scheduler.isRunning(a.id)).toBe(false)
+    expect(getAutomation(a.id)?.nextRunAt).toBe(next)
+  })
+  it('records failure and releases its lock without moving the next scheduled run', async () => {
+    const a = makeAutomation()
+    const run = vi.fn().mockRejectedValueOnce(new Error('缺少 WPS 创建权限')).mockResolvedValueOnce({ sessionId: 'retry' })
+    const scheduler = new AutomationScheduler({ runAutomation: run })
+    expect(await scheduler.runNow(a.id)).toMatchObject({ status: 'failed', error: '缺少 WPS 创建权限' })
+    expect(getAutomation(a.id)).toMatchObject({ nextRunAt: a.nextRunAt, enabled: true, consecutiveFailures: 1 })
+    expect(await scheduler.runNow(a.id)).toMatchObject({ status: 'succeeded' })
+  })
+  it('does not consume a one-time scheduled trigger and rejects deleted tasks', async () => {
+    const a = createAutomation({ name: '一次', prompt: '运行', scheduleType: 'once', scheduledAt: Date.now() + 3600_000, intervalMinutes: 0, channelId: 'test' })
+    const run = vi.fn().mockResolvedValue({ sessionId: 'manual' })
+    const scheduler = new AutomationScheduler({ runAutomation: run })
+    await scheduler.runNow(a.id)
+    expect(getAutomation(a.id)).toMatchObject({ enabled: true, nextRunAt: a.nextRunAt })
+    await expect(scheduler.runNow('missing')).rejects.toThrow('不存在')
+    expect(run).toHaveBeenCalledTimes(1)
   })
 })

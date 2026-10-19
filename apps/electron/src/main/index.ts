@@ -27,6 +27,7 @@ import { stopAutomationScheduler } from './lib/automation-scheduler'
 import { startSessionAutoArchiveScheduler, stopSessionAutoArchiveScheduler } from './lib/agent/session-auto-archive'
 import { createTray, destroyTray, getTray, updateTrayTheme } from './tray'
 import { initAutoUpdater, configureUpdater, cleanupUpdater, registerUpdaterIpc } from './lib/updater'
+import { registerVideoModelIpc } from './lib/video/video-model-ipc'
 import {
   memoryLayerService,
   scheduledCleanupService,
@@ -415,12 +416,13 @@ app.whenReady().then(async () => {
   const { isSameLocalDay } = await import('@tagent/shared')
   const { createSession, getSessionMeta, updateSessionMeta } = await import('./lib/agent/session-store')
   startAutomationScheduler({
-    runAutomation: async (automation) => {
+    runAutomation: async (automation, options) => {
       if (automation.wpsDailyReport) {
         const service = sessionService
         if (!service) throw new Error('SessionService 尚未初始化')
         const { runWpsDailyReports } = await import('./lib/wps/wps-report-runner')
         return runWpsDailyReports(automation, {
+          manual: options?.manual,
           createSession: (title) => {
             const session = createSession({ title, channelId: automation.channelId, modelId: automation.modelId,
               workspaceId: automation.workspaceId, mode: 'general', executionMode: 'work', permissionMode: 'auto' })
@@ -460,6 +462,7 @@ app.whenReady().then(async () => {
       await service.runAutomatedTurn({
         sessionId: currentSessionId,
         prompt: automation.prompt,
+        waitForCompletion: true,
         channelId: automation.channelId,
         model: automation.modelId,
         workspaceId: automation.workspaceId,
@@ -483,6 +486,7 @@ app.whenReady().then(async () => {
       },
     })
     registerUpdaterIpc()
+    registerVideoModelIpc(() => mainWindow ?? undefined)
     if (app.isPackaged) {
       initAutoUpdater(mainWindow)
     }
