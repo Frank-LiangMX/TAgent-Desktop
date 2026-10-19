@@ -146,8 +146,10 @@ describe('AgentCatalogSettings', () => {
       'messages',
       'chat',
     ])
-    expect(compatibleProfileChannels(channels, 'claude-code')).toEqual([])
-    expect(compatibleProfileChannels(channels, 'codex')).toEqual([])
+    expect(compatibleProfileChannels(channels, 'claude-code')).toEqual(channels)
+    expect(compatibleProfileChannels(channels, 'codex')).toEqual(channels)
+    expect(profileBindingError({ runtime: 'codex', channelId: 'chat', modelId: 'c' }, channels)).toBeNull()
+    expect(profileBindingError({ runtime: 'claude-code', channelId: 'responses', modelId: 'r' }, channels)).toBeNull()
     expect(profileBindingError({ runtime: 'pi', channelId: 'chat', modelId: 'c' }, channels)).toBeNull()
   })
 

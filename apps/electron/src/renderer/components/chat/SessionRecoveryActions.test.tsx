@@ -61,7 +61,7 @@ describe('SessionRecoveryActions', () => {
     expect(select.textContent).toContain('a / one')
     expect(select.textContent).toContain('b / one')
     expect(select.textContent).toContain('c / one')
-    expect(container.querySelector('select[aria-label="目标内核"]')?.textContent).toBe('Pi')
+    expect(Array.from(container.querySelectorAll('select[aria-label="目标内核"] option')).map(option => option.textContent)).toEqual(['Pi', 'Claude Code'])
     change('恢复渠道和模型', '["c","one"]')
     await act(async () => button('确认并继续').click())
     expect(onRecover).toHaveBeenCalledTimes(1)

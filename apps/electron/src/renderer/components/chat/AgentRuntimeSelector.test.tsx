@@ -67,23 +67,36 @@ function mount(
   })
 }
 
-describe('Pi runtime indicator', () => {
-  test('shows only Pi for new sessions, with no runtime menu or install action', () => {
+function openRuntimeMenu(runtime: string) {
+  act(() => document.querySelector<HTMLButtonElement>(`[aria-label="选择主 Agent：${runtime}"]`)!.click())
+}
+function runtimeOption(name: string) {
+  return Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button =>
+    button.textContent?.startsWith(name) && !button.hasAttribute('aria-label'))!
+}
+describe('Agent runtime selector', () => {
+  test('lets new sessions explicitly choose all built-in runtimes', () => {
     mount({ runtime: 'pi', channels: [OPENAI, CODEX, KSCC] })
     expect(document.body.textContent).toContain('Pi')
     expect(document.body.textContent).not.toMatch(/Codex|Claude Code|安装/)
-    expect(document.querySelector<HTMLButtonElement>('[aria-label="Pi 内核"]')?.disabled).toBe(true)
+    openRuntimeMenu('Pi')
+    expect(runtimeOption('Pi')).toBeDefined()
+    expect(runtimeOption('Codex')).toBeDefined()
+    expect(runtimeOption('Claude Code')).toBeDefined()
   })
   test('a legacy binding can explicitly continue on Pi', () => {
     const onSelect = vi.fn()
     mount({ runtime: 'codex', channels: [OPENAI], onSelect })
-    act(() => document.querySelector<HTMLButtonElement>('[aria-label="转为 Pi 内核"]')?.click())
+    openRuntimeMenu('Codex')
+    act(() => runtimeOption('Pi').click())
     expect(onSelect).toHaveBeenCalledWith('pi')
   })
   test('cannot migrate while running', () => {
     const onSelect = vi.fn()
     mount({ runtime: 'claude-code', busy: true, onSelect })
-    act(() => document.querySelector<HTMLButtonElement>('[aria-label="转为 Pi 内核"]')?.click())
+    openRuntimeMenu('Claude Code')
+    expect(runtimeOption('Pi').disabled).toBe(true)
+    act(() => runtimeOption('Pi').click())
     expect(onSelect).not.toHaveBeenCalled()
   })
 })

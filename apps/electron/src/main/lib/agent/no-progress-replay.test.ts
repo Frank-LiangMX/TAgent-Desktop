@@ -79,9 +79,12 @@ function replay(provider: 'kscc' | 'pi'): { decisions: NoProgressDecision[]; pha
   step(probeEdit(t, provider, 2))
   // 5. 第 3 次空输出超时
   step(reproEmptyTimeout(t, provider))
-  // 6. 探针编辑 → reflection_required 后第 3 个无进展批次 → final_response_only
+  // 6. 新编辑不算连续无进展，也不能单独解除复盘。
   step(probeEdit(t, provider, 3))
-  // 7-8. 强制复盘后仍尝试工具：PreToolUse 拦截，2 次违规 → pause
+  // 7-8. 相同空超时继续复现，累计 3 个无进展验证批次 → final_response_only。
+  step(reproEmptyTimeout(t, provider))
+  step(reproEmptyTimeout(t, provider))
+  // 9-10. 强制复盘后仍尝试工具：PreToolUse 拦截，2 次违规 → pause
   const a1 = g.onPreToolUse('Bash', { command: REPRO_CMD })
   if (a1.decision) decisions.push(a1.decision)
   const a2 = g.onPreToolUse('Bash', { command: REPRO_CMD })

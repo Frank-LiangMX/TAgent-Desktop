@@ -303,9 +303,10 @@ jobs:
             exit 1
           fi
 
-          ARM64_SHA=$(sha512sum "$ARM64_ZIP" | cut -d' ' -f1 | base64 -w0)
+          # electron-updater expects base64 of the raw digest, not the hex text.
+          ARM64_SHA=$(openssl dgst -sha512 -binary "$ARM64_ZIP" | base64 -w0)
           ARM64_SIZE=$(stat -c%s "$ARM64_ZIP")
-          X64_SHA=$(sha512sum "$X64_ZIP" | cut -d' ' -f1 | base64 -w0)
+          X64_SHA=$(openssl dgst -sha512 -binary "$X64_ZIP" | base64 -w0)
           X64_SIZE=$(stat -c%s "$X64_ZIP")
 
           ARM64_NAME=$(basename "$ARM64_ZIP")
