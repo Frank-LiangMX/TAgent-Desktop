@@ -358,6 +358,21 @@ describe('reduceTaskEvent', () => {
 describe('rehydrateSubagentTaskCardsFromHistory', () => {
   type HistItem = TaskCardCarrier & { message?: TAgentMessage }
 
+  it.each(['completed', 'partial', 'failed', 'stopped'] as const)('持久化结果的 %s 与实时通知一致，即使 isError=false', (status) => {
+    const taskId = 'incident-task'
+    const items: HistItem[] = [
+      { key: 'launch', message: { type: 'assistant', content: [{ type: 'tool_use', id: taskId, name: 'task', input: { subagent_type: 'explorer', description: '分析模块' } }] } },
+      { key: 'result', message: { type: 'user', content: [{ type: 'tool_result', toolUseId: taskId, isError: false, content: `[子代理 status=${status}]\n报告或错误原因` }] } },
+    ]
+    const history = rehydrateSubagentTaskCardsFromHistory(items, mkFactory()).find((it) => it.taskCard)?.taskCard
+    const live = reduceTaskEvent([], { type: 'task_notification', taskId, status, summary: '报告或错误原因', taskType: 'local_agent' }, mkFactory())[0]?.taskCard
+    expect(history?.status).toBe(live?.status)
+    expect(history?.status).toBe(status)
+    expect(history?.summary).not.toContain('[子代理 status=')
+    const lateStart = reduceTaskEvent([{ key: 'card', taskCard: live! }], { type: 'task_started', taskId, description: 'late replay', taskType: 'local_agent' }, mkFactory())
+    expect(lateStart[0]?.taskCard?.status).toBe(status)
+  })
+
   it('从 task tool_use + tool_result 回填 completed 卡与结论摘要', () => {
     const create = mkFactory()
     const items: HistItem[] = [

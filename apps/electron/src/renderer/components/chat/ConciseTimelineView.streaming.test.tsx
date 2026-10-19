@@ -85,7 +85,7 @@ describe('concise playback across completion', () => {
   ])('tool arrival never shrinks or removes already displayed text (%#)', (text) => {
     const process = [{ type: 'text' as const, key: 'text', text }]
     const view = render(<ConciseTimelineView segments={buildConciseTimeline(process, { isLive: true })} isLive isLatestTurn />)
-    advance(2)
+    advance(60)
     expect(displayed(view.container)).toBe(text)
     const body = view.container.querySelector('.agent-concise-narrative [data-testid="body"]')
     const withTool = [...process, {
@@ -101,11 +101,11 @@ describe('concise playback across completion', () => {
     }
   })
 
-  test.each([false, true])('progress → final preserves the prefix and displays the final snapshot next frame (thinking=%s)', (withThinking) => {
+  test.each([false, true])('progress → final preserves the prefix and progressively drains the final snapshot (thinking=%s)', (withThinking) => {
     const text = '正文'.repeat(120)
     const prefix = text.slice(0, 40)
     const view = render(<ConciseTimelineView segments={segments(prefix, true, withThinking)} isLive isLatestTurn />)
-    advance(1)
+    advance(60)
     const before = displayed(view.container)
     expect(before).toBe(prefix)
 
@@ -115,6 +115,9 @@ describe('concise playback across completion', () => {
     expect(view.container.querySelector('.agent-concise-narrative--final [data-testid="body"]')?.getAttribute('data-streaming'))
       .toBe('true')
     advance(1)
+    expect(displayed(view.container).startsWith(before)).toBe(true)
+    expect(displayed(view.container).length).toBeLessThan(text.length)
+    advance(60)
     expect(displayed(view.container)).toBe(text)
     expect(view.container.querySelector('.agent-concise-narrative--final [data-testid="body"]')?.getAttribute('data-streaming'))
       .toBe('false')
@@ -124,11 +127,14 @@ describe('concise playback across completion', () => {
     const prefix = '已有正文'.repeat(20)
     const text = prefix + '后续正文'.repeat(60)
     const view = render(<ConciseTimelineView segments={segments(prefix, true)} isLive isLatestTurn />)
-    advance(1)
+    advance(60)
     const before = displayed(view.container)
     view.rerender(<ConciseTimelineView segments={segments(text, false)} isLatestTurn />)
     expect(displayed(view.container)).toBe(before)
     advance(1)
+    expect(displayed(view.container).startsWith(before)).toBe(true)
+    expect(displayed(view.container).length).toBeLessThan(text.length)
+    advance(60)
     expect(displayed(view.container)).toBe(text)
   })
 
@@ -141,6 +147,10 @@ describe('concise playback across completion', () => {
     view.rerender(<ConciseTimelineView segments={segments(text, true)} isLive />)
     expect(displayed(view.container)).toBe(before)
     advance(1)
+    expect(displayed(view.container).startsWith(before)).toBe(true)
+    expect(displayed(view.container).length).toBeGreaterThan(before.length)
+    expect(displayed(view.container).length).toBeLessThan(text.length)
+    advance(60)
     expect(displayed(view.container)).toBe(text)
   })
 
@@ -162,15 +172,21 @@ describe('concise playback across completion', () => {
     expect(view.container.querySelector('.agent-concise-narrative--completion-enter')).toBeNull()
     expect(displayed(view.container)).toBe(before)
     advance(1)
+    expect(displayed(view.container).startsWith(before)).toBe(true)
+    expect(displayed(view.container).length).toBeLessThan(text.length)
+    advance(60)
     expect(displayed(view.container)).toBe(text)
   })
 
-  test('a first answer arriving with completion appears next frame without replay', () => {
+  test('a first answer arriving with completion is revealed progressively', () => {
     const text = '一次性返回的回答'.repeat(30)
     const view = render(<ConciseTimelineView segments={[]} isLive />)
     view.rerender(<ConciseTimelineView segments={segments(text, false)} />)
     expect(displayed(view.container)).toBe('')
     advance(1)
+    expect(displayed(view.container).length).toBeGreaterThan(0)
+    expect(displayed(view.container).length).toBeLessThan(text.length)
+    advance(60)
     expect(displayed(view.container)).toBe(text)
   })
 

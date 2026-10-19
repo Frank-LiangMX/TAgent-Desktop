@@ -196,5 +196,5 @@ export function stripPartialAssistantBody<T extends DeltaContentBlock>(
 export function shouldDeltaTrackAssistant(
   message: TAgentMessage | undefined,
 ): message is TAgentAssistantMessage {
-  return Boolean(message && message.type === 'assistant' && !message.parentToolUseId)
+  return Boolean(message && message.type === 'assistant' && !message.parentToolUseId && !message._contentSnapshot)
 }

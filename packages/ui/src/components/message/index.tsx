@@ -256,79 +256,10 @@ export function StreamingIndicator({ className }: StreamingIndicatorProps): Reac
 
 // ===== MessageResponse Markdown 渲染 =====
 
-/** 稳定引用的插件数组，避免 react-markdown 每帧重建插件管线 */
-const CJK_CHAR_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u
-
-/**
- * 规范化 Markdown 普通文本节点里的中文语境标点。
- *
- * 只要同一个普通文本节点包含中文，就把其中服务中文语义的半角标点转成全角；
- * 代码块、行内代码和链接 URL 不会走 text 节点，数字小数/版本号也保留。
- * 这是展示层修正，不改消息原文。
- */
-const CHINESE_PUNCTUATION: Record<string, string> = {
-  ',': '，',
-  '?': '？',
-  '!': '！',
-  ':': '：',
-  ';': '；',
-}
-
-function normalizeChinesePunctuationInText(value: string): string {
-  if (!CJK_CHAR_RE.test(value)) return value
-
-  const normalizePlainSegment = (segment: string): string =>
-    segment
-      .replace(/,/gu, (punctuation, index, full) => {
-        const previous = full[index - 1] ?? ''
-        const next = full[index + 1] ?? ''
-        // 千位分隔符 / 数字列表中的逗号不属于中文标点。
-        return /\d/u.test(previous) && /\d/u.test(next) ? punctuation : '，'
-      })
-      .replace(/[?!:;]/gu, (punctuation, index, full) => {
-        const previous = full[index - 1] ?? ''
-        const next = full[index + 1] ?? ''
-        // 保留时间格式 12:30。
-        if (punctuation === ':' && /\d/u.test(previous) && /\d/u.test(next)) {
-          return punctuation
-        }
-        return CHINESE_PUNCTUATION[punctuation] ?? punctuation
-      })
-      // 数字后的点可能是正文序号（如 **1. 中文标题**），不能转成中文句号。
-      // 真正的中文句末标点仍规范化；小数和版本号同样保留。
-      .replace(/\.(?=\s*(?:[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[，。！？；：]|$))/gu,
-        (punctuation, index, full) => /\d/u.test(full[index - 1] ?? '') ? punctuation : '。',
-      )
-
-  // 成对英文双引号在中文语境中显示为中文引号；代码节点不会进入这里。
-  const normalizedQuotes = value.replace(/"([^"\r\n]*)"/gu, '“$1”')
-
-  // 普通文本里的 URL 仍保持原样，即使同一段还包含中文说明。
-  return normalizedQuotes.replace(/https?:\/\/[^\s<>()]+|www\.[^\s<>()]+/giu, (url) => url).replace(
-    /([^\s<>()]+)?/gu,
-    (part) => (part && /https?:\/\/|^www\./iu.test(part) ? part : normalizePlainSegment(part)),
-  )
-}
-
-function remarkNormalizeChinesePunctuation() {
-  return (tree: { children?: Array<{ type?: string; value?: string; children?: unknown[] }> }) => {
-    const walk = (node: { type?: string; value?: string; children?: unknown[] }) => {
-      if (node.type === 'text' && typeof node.value === 'string' && CJK_CHAR_RE.test(node.value)) {
-        node.value = normalizeChinesePunctuationInText(node.value)
-      }
-      if (Array.isArray(node.children)) {
-        for (const child of node.children) {
-          if (child && typeof child === 'object') {
-            walk(child as { type?: string; value?: string; children?: unknown[] })
-          }
-        }
-      }
-    }
-    walk(tree)
-  }
-}
-
-const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkNormalizeChinesePunctuation]
+// 渲染保留原文标点。中文段落也可能包含路径、参数和英文引文；
+// 自动全角化会改坏技术文本，并在流式引号闭合时回头重写已显示的字符。
+// 稳定引用的插件数组避免 react-markdown 每帧重建插件管线。
+const REMARK_PLUGINS = [remarkGfm, remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex]
 
 /** 允许 mention:// 协议通过 URL 清洗 */

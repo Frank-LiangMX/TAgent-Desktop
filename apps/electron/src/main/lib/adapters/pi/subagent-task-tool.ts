@@ -33,6 +33,7 @@ import {
 import { tryReserveDelegationSlot } from '../../agent/delegation-capacity'
 import { bashHooksForSession } from '../../agent/session-process-registry'
 import { bindWorkspaceFileTool } from './workspace-file-tool'
+import { budgetInstruction, budgetSummaryInstruction, delegatedBudget } from './subagent-budget'
 import {
   parseTaskDelegationMode,
   type BackgroundCallbackPayload,
@@ -47,9 +48,6 @@ import {
 // ESM-only 包延迟加载
 type PiCoreModule = typeof import('@tagent/pi-core')
 type PiAgentCoreModule = typeof import('@earendil-works/pi-agent-core')
-
-const MAX_PI_DELEGATED_TOOL_CALLS = 20
-const PI_DELEGATED_TIMEOUT_MS = 120_000
 
 /** task 工具参数 schema */
 const taskSchema = Type.Object({
@@ -113,7 +111,7 @@ export type SubagentTaskLifecycleEvent =
       type: 'task_notification'
       taskId: string
       toolUseId?: string
-      status: 'completed' | 'failed' | 'stopped'
+      status: 'completed' | 'partial' | 'failed' | 'stopped'
       summary: string
       taskType?: string
     }
@@ -233,6 +231,10 @@ export interface TaskToolDetails {
   resultLength: number
   toolCalls: number
   durationMs: number
+  failureReason?: string
+  stopReason?: string
+  outcome?: 'completed' | 'partial' | 'failed' | 'stopped'
+  budgetReason?: string
 }
 
 /**
@@ -288,6 +290,7 @@ export function createTaskTool(
     label: 'task',
     description:
       '派发子任务给独立子代理执行。子代理有独立上下文，默认后台运行：立刻返回任务 id，父轮继续；子代理完成后把结论回投给主会话。需要本轮就用结果时传 mode=foreground。支持并行派发多个子代理。' +
+      ' complexity 控制执行预算：simple 20 次工具/120 秒，standard（默认）40 次/300 秒，complex 80 次/600 秒；到达预算后返回 partial 阶段结果，主代理需检查未完成范围并接手，不能声称全部完成。' +
       `\n可用 Agent profiles（仅 enabled 且 allowPiTask；不含 API Key）：${profileHint || '无'}`,
     parameters: taskSchema,
     executionMode: 'parallel',
@@ -436,8 +439,8 @@ export function createTaskTool(
       if (!releaseSlot) {
         cleanupTask()
         return {
-          content: [{ type: 'text', text: '子代理已达父会话共享并发上限。' }],
-          details: { subagentType, resultLength: 0, toolCalls: 0, durationMs: 0 },
+          content: [{ type: 'text', text: '[子代理 status=failed]\n子代理已达父会话共享并发上限。' }],
+          details: { subagentType, resultLength: 0, toolCalls: 0, durationMs: 0, outcome: 'failed', failureReason: '子代理已达父会话共享并发上限' },
         }
       }
 
@@ -515,7 +518,7 @@ export function createTaskTool(
 
       async function runDelegatedTask(
         execSignal: AbortSignal | undefined,
-      ): Promise<AgentToolResult<TaskToolDetails> & { status: 'completed' | 'failed' | 'stopped'; summary: string; resultText: string }> {
+      ): Promise<AgentToolResult<TaskToolDetails> & { status: 'completed' | 'partial' | 'failed' | 'stopped'; summary: string; resultText: string }> {
       const resolvedChannelConfig = resolveSubagentChannelConfig({
         parent: channelConfig,
         parentChannelId: sessionChannelId,
@@ -540,23 +543,53 @@ export function createTaskTool(
       )
       const effectiveModelId = effectiveRequestedModelId
       const subStreamFn = createSubagentStreamFn(resolvedChannelConfig.config, piCore, effectiveModelId)
+      const budget = delegatedBudget(params.complexity)
+      const executionStartedAt = Date.now()
+      let toolCallCount = 0
+      let budgetReason = ''
+      let summaryRequested = false
 
       const subAgent = new piAgentCore.Agent({
         initialState: {
-          systemPrompt: catalogAgent?.profile.systemPrompt ?? resolvedDef?.prompt ?? '',
+          systemPrompt: `${catalogAgent?.profile.systemPrompt ?? resolvedDef?.prompt ?? ''}\n\n${budgetInstruction(budget.toolCalls, budget.timeoutMs)}`,
           model: buildSubagentModel(resolvedChannelConfig.config, effectiveModelId),
           thinkingLevel: 'off',
           tools: subTools,
           messages: [],
         },
-        streamFn: subStreamFn,
+        streamFn: (model, context, options) => {
+          if (summaryRequested) {
+            throw new Error('子代理在预算收尾后仍请求工具，未生成阶段报告')
+          }
+          if (toolCallCount >= budget.toolCalls) budgetReason ||= `达到 ${budget.toolCalls} 次工具调用预算`
+          if (Date.now() - executionStartedAt >= budget.timeoutMs - budget.summaryMs) budgetReason ||= '已进入时间预算的收尾阶段'
+          if (!budgetReason) return subStreamFn(model, context, options)
+          summaryRequested = true
+          if (timeoutHandle) clearTimeout(timeoutHandle)
+          timeoutHandle = setTimeout(() => {
+            failed = true
+            failureReason ||= '子代理阶段报告生成超时'
+            subAgent.abort()
+          }, Math.max(0, Math.min(budget.summaryMs, budget.timeoutMs - (Date.now() - executionStartedAt))))
+          return subStreamFn(model, {
+            ...context,
+            tools: [],
+            systemPrompt: `${context.systemPrompt ?? ''}\n\n${budgetSummaryInstruction(budgetReason)}`,
+          }, options)
+        },
         toolExecution: 'sequential',
-        beforeToolCall: profileBeforeToolCall,
+        beforeToolCall: async (ctx) => {
+          if (summaryRequested || toolCallCount > budget.toolCalls || Date.now() - executionStartedAt >= budget.timeoutMs - budget.summaryMs) {
+            budgetReason ||= toolCallCount > budget.toolCalls ? `达到 ${budget.toolCalls} 次工具调用预算` : '已进入时间预算的收尾阶段'
+            return { block: true, reason: budgetSummaryInstruction(budgetReason) }
+          }
+          return profileBeforeToolCall(ctx)
+        },
       })
 
       // 收集子 Agent 的文本输出
       let lastText = ''
-      let toolCallCount = 0
+      let lastNonEmptyText = ''
       let failed = false
       let failureReason = ''
       let lastAssistant: { stopReason?: string; errorMessage?: string; content?: unknown[] } | undefined
@@ -576,23 +609,14 @@ export function createTaskTool(
             )
             .map((block) => block.text)
             .join('')
-          const hasToolUse = content.some((block) =>
-            Boolean(block) && typeof block === 'object' &&
-            (block as { type?: unknown }).type === 'toolCall',
-          )
           lastText = text
+          if (text.trim()) lastNonEmptyText = text
           if (message?.errorMessage) {
             failed = true
-            failureReason = message.errorMessage
+            failureReason ||= message.errorMessage
           }
         } else if (event.type === 'tool_execution_start') {
           toolCallCount++
-          if (toolCallCount > MAX_PI_DELEGATED_TOOL_CALLS) {
-            failed = true
-            failureReason = `超过最大工具回合 ${MAX_PI_DELEGATED_TOOL_CALLS}`
-            void subAgent.abort()
-            return
-          }
           const toolName =
             typeof (event as { toolName?: string }).toolName === 'string'
               ? (event as { toolName: string }).toolName
@@ -618,19 +642,17 @@ export function createTaskTool(
         // 执行子 Agent（带 abort signal）
         if (execSignal?.aborted) {
           failed = true
-          failureReason = '子代理任务在 prompt 前已取消'
+          failureReason ||= '子代理任务在 prompt 前已取消'
         } else {
           const onAbort = (): void => { void subAgent.abort() }
           if (execSignal) execSignal.addEventListener('abort', onAbort, { once: true })
           try {
-            const promptPromise = subAgent.prompt(params.prompt)
-
             timeoutHandle = setTimeout(() => {
               failed = true
-              failureReason = `子代理超时（${PI_DELEGATED_TIMEOUT_MS}ms）`
+              failureReason ||= `子代理超时（${budget.timeoutMs}ms）`
               void subAgent.abort()
-            }, PI_DELEGATED_TIMEOUT_MS)
-            await promptPromise
+            }, budget.timeoutMs)
+            await subAgent.prompt(params.prompt)
             await subAgent.waitForIdle()
             const finalContent = Array.isArray(lastAssistant?.content) ? lastAssistant.content : []
             const finalHasToolUse = finalContent.some((block) =>
@@ -639,13 +661,13 @@ export function createTaskTool(
             )
             if (!lastAssistant) {
               failed = true
-              failureReason = '子代理未产生最终 assistant message_end'
+              failureReason ||= '子代理未产生最终 assistant message_end'
             } else if (lastAssistant.stopReason !== 'stop') {
               failed = true
-              failureReason = `子代理终态不是 stop（${lastAssistant.stopReason || 'unknown'}）`
-            } else if (finalHasToolUse || !lastText) {
+              failureReason ||= `子代理终态不是 stop（${lastAssistant.stopReason || 'unknown'}）`
+            } else if (finalHasToolUse || !lastText.trim()) {
               failed = true
-              failureReason = finalHasToolUse ? '最终 assistant 仍包含 tool use' : '最终 assistant 无文本'
+              failureReason ||= finalHasToolUse ? '最终 assistant 仍包含 tool use' : '最终 assistant 无文本'
             }
           } finally {
             if (execSignal) execSignal.removeEventListener('abort', onAbort)
@@ -654,7 +676,7 @@ export function createTaskTool(
       } catch (err) {
         failed = true
         const msg = err instanceof Error ? err.message : String(err)
-        failureReason = msg
+        failureReason ||= msg
         console.error(`[子代理 ${parentSessionId}] ${subagentType} 执行失败:`, msg)
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle)
@@ -663,26 +685,30 @@ export function createTaskTool(
       }
 
       const durationMs = Date.now() - startTime
-      const resultText = lastText || '(子代理无文本输出)'
+      const aborted = Boolean(execSignal?.aborted)
+      const resultText = failed
+        ? lastNonEmptyText ? `[未完成的阶段输出]\n${lastNonEmptyText}` : '(子代理无文本输出)'
+        : lastText
       const finalResultText = failed && failureReason
-        ? `${resultText}\n[子代理执行失败] ${failureReason}`
-        : resultText
+        ? `[子代理${aborted ? '已停止' : '执行失败'}] ${failureReason}\n${toolCallCount} 次工具调用尝试 · ${Math.round(durationMs / 1000)}s\n${resultText}`
+        : budgetReason ? `[阶段结果，任务尚未全部完成] ${budgetReason}\n${resultText}` : resultText
       // 截断过长结果（主 Agent context 有限）
       const truncated = finalResultText.length > 12000
         ? finalResultText.slice(0, 12000) + `\n... (截断，共 ${finalResultText.length} 字符)`
         : finalResultText
 
-      const aborted = Boolean(execSignal?.aborted)
-      const status: 'completed' | 'failed' | 'stopped' = aborted
+      const status: 'completed' | 'partial' | 'failed' | 'stopped' = aborted
         ? 'stopped'
         : failed
           ? 'failed'
-          : 'completed'
+          : budgetReason ? 'partial' : 'completed'
       const summary =
         status === 'completed'
           ? `${toolCallCount} 次工具 · ${Math.round(durationMs / 1000)}s`
+          : status === 'partial'
+            ? `${budgetReason} · 已返回阶段结果`
           : status === 'failed'
-            ? '执行失败'
+            ? failureReason.slice(0, 240) || '执行失败'
             : '已停止'
 
       onTaskEvent?.({
@@ -694,7 +720,7 @@ export function createTaskTool(
         taskType: 'local_agent',
       })
 
-      console.log(`[子代理 ${parentSessionId}] ${subagentType} 完成: ${toolCallCount} 次工具调用, ${durationMs}ms, ${resultText.length} 字符`)
+      console.log(`[子代理 ${parentSessionId}] ${taskId} ${subagentType} ${status}: ${toolCallCount} 次工具调用尝试, ${durationMs}ms${failureReason ? `, ${failureReason}` : ''}`)
 
       return {
           content: [{ type: 'text', text: `[子代理 status=${status}]\n${truncated}` }],
@@ -703,6 +729,10 @@ export function createTaskTool(
           resultLength: resultText.length,
           toolCalls: toolCallCount,
           durationMs,
+          outcome: status,
+          ...(budgetReason ? { budgetReason } : {}),
+          ...(failureReason ? { failureReason } : {}),
+          ...(lastAssistant?.stopReason ? { stopReason: lastAssistant.stopReason } : {}),
         },
         status,
         summary,

@@ -2,6 +2,21 @@ import { describe, expect, test } from 'vitest'
 import { sdkMessageToIR } from './kscc-message-adapter'
 
 describe('sdkMessageToIR - partial / stop_reason（REGRESS-E）', () => {
+  test('官方 SDK 完整消息允许空 stop_reason，仍是权威终态；旧 KSCC 推断保留', () => {
+    const raw = { type: 'assistant', uuid: 'official', _contentSnapshot: true,
+      error: 'rate_limit', message: { stop_reason: null, content: [{ type: 'text', text: '保留的阶段内容' }] } }
+    const { message } = sdkMessageToIR(raw as never)
+    expect(message).toMatchObject({ _contentSnapshot: true, stop_reason: 'message_complete',
+      error: { message: 'rate_limit', code: 'rate_limit' } })
+    expect((message as { _partial?: boolean })._partial).not.toBe(true)
+    expect(raw.message.stop_reason).toBeNull()
+  })
+
+  test('失败 result 保留 SDK 原始错误文本并过滤非字符串项', () => {
+    expect(sdkMessageToIR({ type: 'result', subtype: 'error_during_execution', errors: ['provider rejected request', null, 3] } as never).event)
+      .toMatchObject({ kind: 'result', subtype: 'error_during_execution', errors: ['provider rejected request'] })
+  })
+
   test('assistant 显式 _partial:true → IR 带 _partial:true', () => {
     const msg = {
       type: 'assistant',

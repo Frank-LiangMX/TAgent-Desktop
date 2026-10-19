@@ -426,6 +426,7 @@ const ThinkingActivityRowBody = memo(function ThinkingActivityRowBody({
   const { displayedContent } = useSmoothStream({
     content: thinking,
     isStreaming: isLive,
+    initialContent: thinking,
   })
   const text = displayedContent.trim()
 

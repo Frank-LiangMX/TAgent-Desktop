@@ -456,7 +456,7 @@ export function AssistantTurnView({
           <Message from="assistant">
             <MessageContent>
               {displayedContent.trim() ? (
-                // 按模型实际到达的内容更新 Markdown，只合并同帧绘制：
+                // 按短缓冲逐帧推进 Markdown，保留已有前文：
                 // 纯文本过渡会让用户看到满屏原始 markdown 源码、完成后才突然切换，跳变明显。
                 // streaming 标记让未闭合的富内容围栏（datatable/mermaid）显示占位而非原始 ```。
                 <MessageResponse streaming={answerStreaming || playbackPending}>

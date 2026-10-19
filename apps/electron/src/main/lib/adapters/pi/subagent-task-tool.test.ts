@@ -219,6 +219,60 @@ describe('subagent task delegation boundaries', () => {
     expect((result as never as { status: string }).status).toBe('completed')
   })
 
+  it('中断保留已有文字和原始原因，不被终态校验覆盖', async () => {
+    const tool = makeTaskTool(fakePiAgentCore([
+      { type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'text', text: '已确认模块入口。' }] } },
+      ...Array.from({ length: 21 }, () => ({ type: 'tool_execution_start', toolName: 'Read' })),
+      { type: 'message_end', message: { role: 'assistant', stopReason: 'aborted', errorMessage: 'Request was aborted', content: [] } },
+    ]))
+    const result = await tool.execute('task-limit', { subagent_type: 'explorer', prompt: 'inspect', mode: 'foreground' })
+    expect(result.details).toMatchObject({ toolCalls: 21, failureReason: 'Request was aborted', stopReason: 'aborted' })
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining('已确认模块入口。') })
+    expect((result as unknown as { summary: string }).summary).toBe('Request was aborted')
+  })
+
+  it('原始 HTTP 错误不会被通用终态校验覆盖', async () => {
+    const tool = makeTaskTool(fakePiAgentCore([
+      { type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: '429 fixture rate limit', content: [] } },
+    ]))
+    const result = await tool.execute('task-http-error', { subagent_type: 'explorer', prompt: 'inspect', mode: 'foreground' })
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining('429 fixture rate limit') })
+    expect(result.details).toMatchObject({ failureReason: '429 fixture rate limit' })
+  })
+
+  it('超时中止保留超时原因', async () => {
+    vi.useFakeTimers()
+    try {
+      let settle!: () => void
+      let listener!: (event: unknown) => void
+      const core = { Agent: class {
+        subscribe(callback: typeof listener) { listener = callback; return () => {} }
+        prompt() { return new Promise<void>((resolve) => { settle = resolve }) }
+        async waitForIdle() {}
+        abort() {
+          listener({ type: 'message_end', message: { role: 'assistant', stopReason: 'aborted', errorMessage: 'Request was aborted', content: [] } })
+          settle()
+        }
+      } }
+      const pending = makeTaskTool(core).execute('task-timeout', { subagent_type: 'explorer', prompt: 'inspect', mode: 'foreground', complexity: 'simple' })
+      await vi.advanceTimersByTimeAsync(120_000)
+      const result = await pending
+      expect(result.details).toMatchObject({ failureReason: '子代理超时（120000ms）', stopReason: 'aborted' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('保留中间文字不把空的最终回复误报成功', async () => {
+    const tool = makeTaskTool(fakePiAgentCore([
+      { type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'text', text: 'checking' }] } },
+      { type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [] } },
+    ]))
+    const result = await tool.execute('task-empty', { subagent_type: 'explorer', prompt: 'inspect', mode: 'foreground' })
+    expect((result as unknown as { status: string }).status).toBe('failed')
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining('最终 assistant 无文本') })
+  })
+
   it.each([
     ['length', '子代理终态不是 stop'],
     ['', '子代理未产生最终 assistant message_end'],

@@ -148,9 +148,9 @@ describe('CodexAppServerAdapter', () => {
     })
     await expect(first).resolves.toEqual({
       value: {
-        kind: 'stream_text_delta',
-        text: '完成',
-        uuid: 'msg_1',
+        kind: 'sdk_message',
+        message: expect.objectContaining({ uuid: 'msg_1', _partial: true, _contentSnapshot: true,
+          content: [{ type: 'text', text: '完成' }] }),
       },
       done: false,
     })
@@ -178,6 +178,10 @@ describe('CodexAppServerAdapter', () => {
         threadId: 'thr_1',
         turn: { id: 'turn_1', status: 'completed', error: null },
       },
+    })
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'sdk_message', message: { uuid: 'msg_1', _partial: false, stop_reason: 'message_complete' } },
+      done: false,
     })
     await expect(iterator.next()).resolves.toEqual({
       value: { kind: 'result', subtype: 'completed' },

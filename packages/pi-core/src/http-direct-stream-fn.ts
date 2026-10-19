@@ -125,9 +125,37 @@ export function createHttpDirectStreamFn(
     };
 
     // 调用 provider 的 streamSimple（统一 API，自动处理 streaming 协议差异）
-    return provider.streamSimple(model, context, streamOptions);
+    return provider.streamSimple(model, prepareReasoningReplay(context, model), streamOptions);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any as StreamFn;
+}
+
+/**
+ * pi-ai converts cross-model thinking and unsigned Anthropic thinking to text.
+ * Never teach the next turn that internal reasoning was a public assistant reply.
+ * Keep replayable blocks typed; omit unsupported reasoning only from the request
+ * view, leaving the stored transcript and tool/result pairing untouched.
+ */
+function prepareReasoningReplay(context: Context, model: Model<Api>): Context {
+  const allowUnsigned = model.api === 'anthropic-messages'
+    && model.compat && 'allowEmptySignature' in model.compat
+    && model.compat.allowEmptySignature === true;
+  return {
+    ...context,
+    messages: context.messages.flatMap<Context['messages'][number]>((message) => {
+      if (message.role !== 'assistant') return [message];
+      const sameModel = message.provider === model.provider
+        && message.api === model.api && message.model === model.id;
+      const content = message.content.filter((block) => {
+        if (block.type !== 'thinking') return true;
+        if (!sameModel) return false;
+        if (model.api !== 'anthropic-messages') return true;
+        return allowUnsigned || !!block.thinkingSignature?.trim();
+      });
+      if (content.length === message.content.length) return [message];
+      return content.length ? [{ ...message, content }] : [];
+    }),
+  };
 }
 
 // ============ 内部：provider 解析 ============
@@ -272,6 +300,12 @@ export function buildHttpDirectModel(opts: CreateHttpDirectStreamFnOptions): Mod
     cost: ZERO_COST,
     contextWindow: resolveHttpContextWindow(opts.contextWindow),
     maxTokens: 8_192,
+    // DeepSeek's Messages compatibility does not require Claude signatures.
+    // Custom/gateway channels must retain this capability by model identity too.
+    ...(api === 'anthropic-messages'
+      && (providerName === 'deepseek' || /^deepseek[-/]/i.test(modelId))
+      ? { compat: { allowEmptySignature: true } }
+      : {}),
     // 自定义头同样挂在 Model 上；pi-ai 的 mergeHeaders 会与 options.headers 合并
     ...(opts.headers && Object.keys(opts.headers).length > 0
       ? { headers: opts.headers }

@@ -49,6 +49,10 @@ describe('wrapBackgroundCallbackPrompt', () => {
   it('失败状态写进标题', () => {
     expect(wrapBackgroundCallbackPrompt(payload({ status: 'failed' }))).toContain('失败')
   })
+
+  it('阶段结果不能被回投成完整交付', () => {
+    expect(wrapBackgroundCallbackPrompt(payload({ status: 'partial' }))).toContain('尚未全部完成')
+  })
 })
 
 describe('snapshotAgentMessages', () => {

@@ -8,6 +8,7 @@ import type {
   TAgentDesktopStreamPayload,
   TAgentMessage,
   TAgentUsage,
+  TAgentAssistantMessage,
 } from '@tagent/shared'
 import type { RoutedCodexNotification } from './codex-app-server-session-manager'
 
@@ -44,6 +45,12 @@ interface TokenUsageBreakdown {
 
 export class CodexEventNormalizer {
   private readonly usageByTurn = new Map<string, TAgentUsage>()
+  private readonly drafts = new Map<string, {
+    turnId?: string; message: TAgentAssistantMessage
+    summary: Map<number, string>; reasoning: Map<number, string>
+  }>()
+  private readonly completedItems = new Set<string>()
+  private readonly completedTurns = new Set<string>()
   private readonly modelId?: string
 
   constructor(modelId?: string) {
@@ -53,13 +60,18 @@ export class CodexEventNormalizer {
   feed(notification: RoutedCodexNotification): TAgentDesktopStreamPayload[] {
     const params = this.asRecord(notification.params)
     if (!params) return []
+    const turnId = typeof params.turnId === 'string' ? params.turnId : this.asRecord(params.turn)?.id
+    if (typeof turnId === 'string' && this.completedTurns.has(turnId)) return []
+    const itemId = typeof params.itemId === 'string' ? params.itemId : this.asItem(params.item)?.id
+    if (itemId && this.completedItems.has(itemId)) return []
 
     switch (notification.method) {
       case 'item/agentMessage/delta':
-        return this.deltaPayload('stream_text_delta', params)
+        return this.deltaPayload('text', params)
       case 'item/reasoning/summaryTextDelta':
+        return this.deltaPayload('summary', params)
       case 'item/reasoning/textDelta':
-        return this.deltaPayload('stream_thinking_delta', params)
+        return this.deltaPayload('reasoning', params)
       case 'thread/tokenUsage/updated':
         this.captureUsage(params)
         return []
@@ -82,16 +94,43 @@ export class CodexEventNormalizer {
 
   reset(): void {
     this.usageByTurn.clear()
+    this.drafts.clear()
+    this.completedItems.clear()
+    this.completedTurns.clear()
   }
 
   private deltaPayload(
-    kind: 'stream_text_delta' | 'stream_thinking_delta',
+    kind: 'text' | 'summary' | 'reasoning',
     params: Record<string, unknown>,
   ): TAgentDesktopStreamPayload[] {
     const text = typeof params.delta === 'string' ? params.delta : ''
     if (!text) return []
     const uuid = typeof params.itemId === 'string' ? params.itemId : undefined
-    return [{ kind, text, ...(uuid ? { uuid } : {}) }]
+    // App Server item IDs own the content; never append unrelated items to a
+    // session-wide text/thinking buffer. The renderer receives ordered snapshots.
+    if (!uuid) return []
+    let draft = this.drafts.get(uuid)
+    if (!draft) {
+      draft = {
+        turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
+        message: { type: 'assistant', uuid, createdAt: Date.now(), content: [], _partial: true, _contentSnapshot: true },
+        summary: new Map(), reasoning: new Map(),
+      }
+      this.drafts.set(uuid, draft)
+    }
+    if (kind === 'text') {
+      const old = draft.message.content[0]
+      draft.message = { ...draft.message, content: [{ type: 'text', text: (old?.type === 'text' ? old.text : '') + text }] }
+    } else {
+      const parts = kind === 'summary' ? draft.summary : draft.reasoning
+      const index = kind === 'summary' ? params.summaryIndex : params.contentIndex
+      const partIndex = typeof index === 'number' && Number.isInteger(index) && index >= 0 ? index : 0
+      parts.set(partIndex, (parts.get(partIndex) ?? '') + text)
+      const visible = draft.summary.size ? draft.summary : draft.reasoning
+      const thinking = [...visible].sort(([a], [b]) => a - b).map(([, value]) => value).join('\n\n')
+      draft.message = { ...draft.message, content: [{ type: 'thinking', thinking }] }
+    }
+    return [this.messagePayload(draft.message)]
   }
 
   private itemStarted(
@@ -111,6 +150,7 @@ export class CodexEventNormalizer {
           ...(this.modelId ? { modelId: this.modelId } : {}),
           content: [tool],
           _partial: true,
+          _contentSnapshot: true,
         },
       },
     ]
@@ -122,29 +162,30 @@ export class CodexEventNormalizer {
     const item = this.asItem(params.item)
     if (!item?.id) return []
     const createdAt = this.timestamp(params.completedAtMs)
+    this.drafts.delete(item.id)
+    this.remember(this.completedItems, item.id)
 
     if (item.type === 'agentMessage') {
-      if (!item.text) return []
       return [
         this.messagePayload({
           type: 'assistant',
           uuid: item.id,
           createdAt,
-          content: [{ type: 'text', text: item.text }],
+          content: item.text ? [{ type: 'text', text: item.text }] : [],
         }),
       ]
     }
     if (item.type === 'reasoning') {
-      const thinking = [...(item.summary ?? []), ...(item.content ?? [])]
+      const summary = (item.summary ?? []).filter(Boolean)
+      const thinking = (summary.length ? summary : (item.content ?? []))
         .filter(Boolean)
         .join('\n\n')
-      if (!thinking) return []
       return [
         this.messagePayload({
           type: 'assistant',
           uuid: item.id,
           createdAt,
-          content: [{ type: 'thinking', thinking }],
+          content: thinking ? [{ type: 'thinking', thinking }] : [],
         }),
       ]
     }
@@ -192,7 +233,19 @@ export class CodexEventNormalizer {
       typeof error?.message === 'string' ? error.message : undefined
     const usage = turnId ? this.usageByTurn.get(turnId) : undefined
     if (turnId) this.usageByTurn.delete(turnId)
+    const pending: TAgentDesktopStreamPayload[] = []
+    for (const [id, draft] of this.drafts) {
+      if (turnId && draft.turnId && draft.turnId !== turnId) continue
+      pending.push(this.messagePayload({ ...draft.message, _partial: false,
+        stop_reason: status === 'interrupted' ? 'aborted' : status === 'failed' ? 'error' : 'message_complete',
+        ...(errorMessage ? { error: { message: errorMessage } } : {}),
+      }))
+      this.drafts.delete(id)
+      this.remember(this.completedItems, id)
+    }
+    if (turnId) this.remember(this.completedTurns, turnId)
     return [
+      ...pending,
       {
         kind: 'result',
         subtype: status,
@@ -341,13 +394,22 @@ export class CodexEventNormalizer {
   }
 
   private messagePayload(message: TAgentMessage): TAgentDesktopStreamPayload {
-    if (message.type === 'assistant' && this.modelId && !message.modelId) {
+    if (message.type === 'assistant') {
       return {
         kind: 'sdk_message',
-        message: { ...message, modelId: this.modelId },
+        message: { ...message, _contentSnapshot: true,
+          ...(message._partial ? {} : { stop_reason: message.stop_reason ?? 'message_complete' }),
+          ...(this.modelId && !message.modelId ? { modelId: this.modelId } : {}),
+        },
       }
     }
     return { kind: 'sdk_message', message }
+  }
+
+  private remember(set: Set<string>, id: string): void {
+    set.add(id)
+    // Bound tombstones for long-lived sessions while rejecting recent late events.
+    if (set.size > 2048) set.delete(set.values().next().value!)
   }
 
   private asItem(value: unknown): CodexItem | undefined {

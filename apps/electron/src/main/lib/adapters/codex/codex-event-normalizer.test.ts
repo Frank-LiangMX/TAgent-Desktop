@@ -37,13 +37,15 @@ describe('CodexEventNormalizer', () => {
           uuid: 'msg_1',
           createdAt: 200,
           modelId: 'gpt-5.6-sol',
+          _contentSnapshot: true,
+          stop_reason: 'message_complete',
           content: [{ type: 'text', text: '完成' }],
         },
       },
     ])
   })
 
-  it('把 agent/reasoning delta 映射到统一流式事件', () => {
+  it('把 agent/reasoning delta 累积为按 item 隔离的完整快照', () => {
     const normalizer = new CodexEventNormalizer()
     expect(
       normalizer.feed(
@@ -55,9 +57,9 @@ describe('CodexEventNormalizer', () => {
       ),
     ).toEqual([
       {
-        kind: 'stream_text_delta',
-        text: '完成',
-        uuid: 'item_text',
+        kind: 'sdk_message',
+        message: expect.objectContaining({ uuid: 'item_text', _partial: true, _contentSnapshot: true,
+          content: [{ type: 'text', text: '完成' }] }),
       },
     ])
     expect(
@@ -71,9 +73,9 @@ describe('CodexEventNormalizer', () => {
       ),
     ).toEqual([
       {
-        kind: 'stream_thinking_delta',
-        text: '分析中',
-        uuid: 'item_reasoning',
+        kind: 'sdk_message',
+        message: expect.objectContaining({ uuid: 'item_reasoning', _partial: true, _contentSnapshot: true,
+          content: [{ type: 'thinking', thinking: '分析中' }] }),
       },
     ])
   })

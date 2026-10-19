@@ -484,6 +484,7 @@ const ThinkingFoldBody = memo(function ThinkingFoldBody({
   const { displayedContent } = useSmoothStream({
     content: thinking,
     isStreaming: isLive,
+    initialContent: thinking,
   })
   // 流式滚动跟随：仅展开时钉底
   const bodyRef = useRef<HTMLDivElement | null>(null)
@@ -500,14 +501,7 @@ const ThinkingFoldBody = memo(function ThinkingFoldBody({
     el.scrollTop = el.scrollHeight
   }, [displayedContent, isLive])
 
-  // 流式竞态偶发 displayed 被清空时，勿用「…」顶替已有思考正文
-  const bodyText = (() => {
-    const shown = displayedContent.trim()
-    if (shown) return shown
-    const raw = thinking.trim()
-    if (raw) return raw
-    return isLive ? '…' : ''
-  })()
+  const bodyText = displayedContent.trim() || (isLive ? '…' : '')
 
   return (
     <div className="agent-concise-fold__body" ref={bodyRef} onScroll={handleBodyScroll}>
@@ -882,14 +876,12 @@ const StageStepRow = memo(function StageStepRow({
 
 /** Remounted final rows seed the hook with the previously displayed prefix. */
 const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
-  seed,
   target,
   tone,
   smoothStreaming,
   playback,
   onCaughtUp,
 }: {
-  seed: string
   target: string
   tone: 'progress' | 'final'
   smoothStreaming: boolean
@@ -897,8 +889,9 @@ const NarrativeSmoothBody = memo(function NarrativeSmoothBody({
   onCaughtUp?: (key: string, text: string) => void
 }): JSX.Element | null {
   const { displayedContent } = useSmoothStream({
-    content: seed,
+    content: target,
     isStreaming: smoothStreaming,
+    initialContent: playback.displayedContent,
   })
   useLayoutEffect(() => {
     playback.displayedContent = displayedContent
@@ -956,17 +949,11 @@ const NarrativeRow = memo(function NarrativeRow({
   playback: NarrativePlayback
   onCaughtUp?: (key: string, text: string) => void
 }): JSX.Element {
-  const [seed, setSeed] = useState(() => playback.displayedContent)
-  // Both small deltas and large snapshots append through the same queue.
-  // Do not remount/reset an already playing body when a large chunk arrives.
-  useEffect(() => { setSeed(text) }, [text])
-
   return (
     <NarrativeSmoothBody
-      seed={seed}
       target={text}
       tone={tone}
-      smoothStreaming={isStreaming || seed !== text}
+      smoothStreaming={isStreaming}
       playback={playback}
       onCaughtUp={onCaughtUp}
     />

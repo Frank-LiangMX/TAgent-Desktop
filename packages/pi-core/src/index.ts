@@ -8,6 +8,7 @@
 // M1+：HTTP 直连 streamFn（直接 HTTP 请求外部渠道）
 export {
   createHttpDirectStreamFn,
+  buildHttpDirectModel,
   DEFAULT_HTTP_STREAM_TIMEOUT_MS,
   DEFAULT_HTTP_STREAM_MAX_RETRIES,
   type CreateHttpDirectStreamFnOptions,

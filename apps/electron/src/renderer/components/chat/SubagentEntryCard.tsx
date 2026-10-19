@@ -30,6 +30,7 @@ interface SubagentEntryCardProps {
 const STATUS_TEXT: Record<TaskCardState['status'], string> = {
   running: '运行中',
   completed: '已完成',
+  partial: '阶段结果',
   failed: '失败',
   stopped: '已停止',
 }
@@ -139,7 +140,7 @@ export function SubagentEntryCard({
     ? card?.progressText || (card?.lastToolName ? `运行工具：${card.lastToolName}` : undefined)
     : status === 'completed'
       ? '已完成'
-      : statusText
+      : card?.summary || statusText
 
   if (variant === 'timeline') {
     return (

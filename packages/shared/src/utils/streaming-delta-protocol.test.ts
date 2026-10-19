@@ -245,6 +245,9 @@ describe('单一权威 delta 源（风险1）：原生 delta + 快照派生 delt
 })
 
 describe('shouldDeltaTrackAssistant — 主线/子代理判定（风险2：子代理 partial 不剥、详情可消费）', () => {
+  test('权威快照不再派生重复 delta 或剥掉正文', () => {
+    expect(shouldDeltaTrackAssistant({ type: 'assistant', _contentSnapshot: true, content: [{ type: 'text', text: '完整内容' }] } as never)).toBe(false)
+  })
   test('主线 assistant（无 parentToolUseId）→ true（走 DeltaTracker + 剥主体）', () => {
     expect(
       shouldDeltaTrackAssistant({ type: 'assistant', parentToolUseId: null, content: [] } as never),

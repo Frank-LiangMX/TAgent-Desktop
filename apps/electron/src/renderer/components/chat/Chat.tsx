@@ -1,4 +1,5 @@
 import { usePendingSuggestion } from "./use-pending-suggestion";
+import { useSessionStreamState } from "./use-session-stream-state";
 /**
  * 会话页核心
  *
@@ -121,13 +122,6 @@ import { MoaDiscussionRoom } from "./MoaDiscussionRoom";
 import { SendSplitButton } from "./ConsultMenu";
 import { SubagentDetailView } from "./SubagentDetailView";
 import { ComposerRunTimer } from "./ComposerRunTimer";
-import { ComposerActivityIsland } from "./ComposerActivityIsland";
-import {
-  collectComposerActivity,
-  summarizeComposerActivity,
-  type ComposerActivityItem,
-} from "./composer-activity-model";
-import { useSessionProcesses } from "../../atoms/session-processes";
 import {
   buildTurnPresentation,
   backfillTurnDurations,
@@ -153,7 +147,6 @@ import {
   clearSessionStreamState,
   commitStreamThinkingToLastAssistant,
   commitStreamTextToLastAssistant,
-  EMPTY_STREAM_STATE,
   hasStreamContent,
   purgeStreamingItems,
   shouldClearStreamThinking,
@@ -445,8 +438,7 @@ export function Chat({
   }, [session.fusionRoomId]);
   const [items, setItems] = useState<DisplayItem[]>([]);
   /** 会话级流式缓冲（delta 累积；与 items 分离） */
-  const [streamState, setStreamState] =
-    useState<SessionStreamState>(EMPTY_STREAM_STATE);
+  const [streamState, setStreamState, streamStateRef] = useSessionStreamState();
   // items 同步到 ref：recordCompletion 经 handlePayload 触发（onStreamEvent effect 空依赖
   // → 首渲染闭包），直接读 items 永远拿到初始空数组，耗时就落不了盘。
   const itemsRef = useRef(items);
@@ -924,33 +916,6 @@ export function Chat({
     }
     return map;
   }, [items]);
-  const backgroundProcesses = useSessionProcesses(sessionId);
-  const composerActivity = useMemo(
-    () =>
-      summarizeComposerActivity(
-        collectComposerActivity({ processes: backgroundProcesses }),
-      ),
-    [backgroundProcesses],
-  );
-  // 进程列表可能在 IPC 刷新时短暂为空；主任务仍在运行时保留最近一次活动，
-  // 避免运行进度栏因空窗突然卸载。主任务结束后才清掉这份显示状态。
-  const [stickyComposerActivityItems, setStickyComposerActivityItems] =
-    useState<ComposerActivityItem[]>([]);
-  const composerActivityRunActive = running || runStartedAt != null;
-  useEffect(() => {
-    if (composerActivity.items.length > 0) {
-      setStickyComposerActivityItems(composerActivity.items);
-    } else if (!composerActivityRunActive) {
-      setStickyComposerActivityItems([]);
-    }
-  }, [composerActivity.items, composerActivityRunActive]);
-  const visibleComposerActivityItems =
-    composerActivity.items.length > 0
-      ? composerActivity.items
-      : composerActivityRunActive
-        ? stickyComposerActivityItems
-        : [];
-
   /** 当前打开的圆桌讨论 panel（按 discussionId 从 items 查；panel 不在 items 时回退关闭） */
   const openDiscussionPanel = useMemo(
     () =>
@@ -1031,8 +996,6 @@ export function Chat({
   }, [sessionId]);
   const scrollContextRef = useRef<StickToBottomContext | null>(null);
   const itemIdxRef = useRef(0);
-  const streamStateRef = useRef<SessionStreamState>(EMPTY_STREAM_STATE);
-  streamStateRef.current = streamState;
   const chatInputRef = useRef<ChatInputHandle>(null);
   const composerClusterRef = useRef<HTMLDivElement>(null);
   const composerInputDockRef = useRef<HTMLDivElement>(null);
@@ -1500,7 +1463,6 @@ export function Chat({
     );
     setAllowFullMount(restoreMid);
     setVisibleCount(restoreMid ? Number.POSITIVE_INFINITY : CHAT_MOUNT_WINDOW);
-    streamStateRef.current = clearSessionStreamState();
     itemIdxRef.current = 0;
     setSubagentEagerness("conservative"); // 切会话重置，下面异步回显持久化值
     setReasoningEffort(DEFAULT_REASONING_EFFORT); // 切会话重置，下面异步回显持久化值
@@ -2402,44 +2364,21 @@ export function Chat({
         applyMessageToInFlightToolIds(inFlightToolIdsRef.current, p.message);
       }
       if (parentedMsg) {
-        const msgUuid =
-          p.message.type === "assistant" || p.message.type === "user"
-            ? p.message.uuid
-            : undefined;
-        setItems((prev) => {
-          if (msgUuid) {
-            const uuidIdx = prev.findIndex(
-              (it) =>
-                it.streamUuid === msgUuid ||
-                (it.message?.type === "assistant" &&
-                  it.message.uuid === msgUuid) ||
-                (it.message?.type === "user" && it.message.uuid === msgUuid),
-            );
-            if (uuidIdx >= 0) {
-              return prev.map((it, i) =>
-                i === uuidIdx
-                  ? {
-                      ...it,
-                      message: p.message,
-                      streamUuid: msgUuid ?? it.streamUuid,
-                      streaming: false,
-                      streamingText: undefined,
-                      streamingThinking: undefined,
-                    }
-                  : it,
-              );
-            }
-          }
-          return [
-            ...prev,
-            {
-              key: `m${itemIdxRef.current++}`,
-              message: p.message,
-              streamUuid: msgUuid,
-              streaming: false,
-            },
-          ];
-        });
+        // Child transcripts need the same UUID and terminal-state protections.
+        setItems((prev) => applySdkMessageToItems(prev, p.message, () => `m${itemIdxRef.current++}`));
+        return;
+      }
+
+      // Snapshot-producing adapters own the complete, ordered content. Do not run legacy
+      // delta-to-last-message repairs on its snapshots.
+      if (p.message.type === "assistant" && p.message._contentSnapshot) {
+        if (thinkingFlushRafRef.current != null) {
+          cancelAnimationFrame(thinkingFlushRafRef.current);
+          thinkingFlushRafRef.current = null;
+        }
+        if (p.message.usage) applyUsage(p.message.usage);
+        setItems((prev) => applySdkMessageToItems(prev, p.message, () => `m${itemIdxRef.current++}`));
+        resetStreamState();
         return;
       }
 
@@ -2565,13 +2504,16 @@ export function Chat({
 
       // error_* 以前几乎对 UI 透明（只吃 usage）；抬到 SessionErrorBanner，避免「气泡里有失败但无错误条」
       const subtype = typeof p.subtype === "string" ? p.subtype : "";
-      const isErrorResult = subtype.startsWith("error_");
+      const isErrorResult = subtype.startsWith("error_") || subtype === "failed";
       const errorTexts = Array.isArray(p.errors)
         ? p.errors.filter(
             (e): e is string => typeof e === "string" && e.trim().length > 0,
           )
         : [];
-      if (isErrorResult || errorTexts.length > 0) {
+      if (subtype === "interrupted") {
+        if (runStartedAtRef.current != null) recordCompletion("stopped");
+        stopRun();
+      } else if (isErrorResult || errorTexts.length > 0) {
         const raw =
           errorTexts.join("\n") ||
           (subtype === "error_max_turns"
@@ -2695,7 +2637,6 @@ export function Chat({
             thinkingFlushRafRef.current = null;
           }
           resetStreamState();
-          streamStateRef.current = clearSessionStreamState();
         }
         return;
       }
@@ -2999,6 +2940,7 @@ export function Chat({
         // 子代理收口：置 status + summary，清空进度文案
         const status: TaskCardState["status"] =
           evt.status === "completed" ||
+          evt.status === "partial" ||
           evt.status === "failed" ||
           evt.status === "stopped"
             ? evt.status
@@ -4506,17 +4448,6 @@ export function Chat({
                           (running || runStartedAt != null) ? (
                             <PlanProgressCard progress={sessionPlanProgress} />
                           ) : null}
-                          <ComposerActivityIsland
-                            items={visibleComposerActivityItems}
-                            pillLabel={composerActivity.pillLabel}
-                            headerLabel={composerActivity.headerLabel}
-                            onStopProcess={(processId) => {
-                              void window.electronAPI.killSessionProcess?.(
-                                sessionId,
-                                processId,
-                              );
-                            }}
-                          />
                         </div>
                         <div
                           ref={composerInputDockRef}
@@ -5009,6 +4940,12 @@ const TASK_CARD_STATUS: Record<
     text: string;
   }
 > = {
+  partial: {
+    label: "阶段结果",
+    box: "border-muted-foreground/20 bg-muted/20",
+    dot: "bg-muted-foreground/60",
+    text: "text-muted-foreground",
+  },
   running: {
     label: "运行中",
     box: "border-muted-foreground/20 bg-muted/20",
@@ -5074,7 +5011,7 @@ function TaskCardView({ card }: { card: TaskCardState }): JSX.Element {
 }
 
 /**
- * 兼容正文也按实际收到的内容更新，不额外拆字补播。
+ * 兼容正文使用同一短缓冲，平滑批量到达的文字。
  */
 function StreamedText({ text }: { text: string }): JSX.Element {
   const { displayedContent } = useSmoothStream({ content: text, isStreaming: true });

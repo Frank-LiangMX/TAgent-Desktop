@@ -1647,6 +1647,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
       },
       // maxTurns 兜底 + 无进展守卫：本轮工具批结束后判定。
       afterToolCall: async (actx: import('@earendil-works/pi-agent-core').AfterToolCallContext) => {
+        const taskFailed = actx.toolCall.name === 'task'
+          && (actx.result.details as { outcome?: string } | undefined)?.outcome === 'failed'
+        const errorOverride = taskFailed ? { isError: true } : undefined
         // 无进展守卫（§7）：喂观察；enforce 下 pause → terminate + 标记终态归一化
         if (entryRef?.np && entryRef.np.mode !== 'off') {
           const observation = piAfterToolCallToObservation(actx, entryRef.np, sessionId)
@@ -1657,7 +1660,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           if (entryRef.np.mode === 'enforce' && decision.kind === 'pause') {
             entryRef.pausedNoProgressHit = true
             firePiPauseAskUser(decision)
-            return { terminate: true }
+            return { ...errorOverride, terminate: true }
           }
         }
         // 仅对显式有限 maxTurns 做兜底；默认不因轮数主动终止模型。
@@ -1667,9 +1670,9 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           entryRef.turnCount >= entryRef.maxTurns
         ) {
           entryRef.maxTurnsHit = true
-          return { terminate: true }
+          return { ...errorOverride, terminate: true }
         }
-        return undefined
+        return errorOverride
       },
       ...(transformContext ? { transformContext } : {}),
     } as never)
@@ -1781,6 +1784,7 @@ export function piAssistantToIR(
   return {
     type: 'assistant',
     uuid: piAssistantUuid(msg, sessionId),
+    _contentSnapshot: true,
     sessionId,
     modelId: msg.model,
     content,

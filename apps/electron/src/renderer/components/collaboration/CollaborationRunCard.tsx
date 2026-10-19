@@ -43,7 +43,7 @@ function LiveStreamBody({ text }: { text: string }): JSX.Element {
     content: safeText,
     isStreaming: true,
   })
-  const shown = displayedContent.trim() || safeText
+  const shown = displayedContent.trim()
   return (
     <MessageResponse
       className="prose-p:my-1 prose-headings:my-1.5 text-sm text-foreground"

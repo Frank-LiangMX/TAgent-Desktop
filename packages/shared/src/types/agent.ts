@@ -837,7 +837,7 @@ export type AgentEvent =
       type: "task_notification";
       taskId: string;
       toolUseId?: string;
-      status: "completed" | "failed" | "stopped";
+      status: "completed" | "partial" | "failed" | "stopped";
       summary: string;
       outputFile?: string;
       usage?: TaskUsage;

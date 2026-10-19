@@ -113,6 +113,7 @@ function discussionStatus(phase: MoADiscussionPanel['phase']): SessionCollabStat
 function subagentStatus(status: TaskCardState['status'] | undefined): SessionCollabStatus {
   if (status === 'running' || status == null) return status === 'running' ? 'running' : 'idle'
   if (status === 'completed') return 'done'
+  if (status === 'partial') return 'idle'
   if (status === 'failed') return 'error'
   return 'cancelled'
 }
@@ -120,6 +121,7 @@ function subagentStatus(status: TaskCardState['status'] | undefined): SessionCol
 function subagentStatusLabel(status: TaskCardState['status'] | undefined): string {
   if (status === 'running') return '运行中'
   if (status === 'completed') return '已完成'
+  if (status === 'partial') return '阶段结果'
   if (status === 'failed') return '失败'
   if (status === 'stopped') return '已停止'
   return '已派发'

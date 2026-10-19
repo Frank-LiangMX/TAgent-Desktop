@@ -31,6 +31,8 @@
     "dev": "bun run --filter='@tagent/ui' tokens:generate && bun run --filter='@tagent/electron' dev",
     "typecheck": "bun run --filter='*' typecheck",
     "build": "bun run --filter='*' build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:kernel-stability": "vitest run apps/electron/src/main/lib/adapters/claude apps/electron/src/main/lib/adapters/codex native-runtime-wire.test.ts kscc-message-adapter.test.ts streaming-delta-protocol.test.ts stream-persist-gate.test.ts turn-durations.test.ts",
+    "test:agent-stability": "vitest run stream-identity.vitest.test.ts use-session-stream-state.test.tsx stream-item-model.vitest.test.ts thinking-live-persist-parity.vitest.test.ts regress-g-glm-empty-shell.vitest.test.ts AssistantTurnView.streaming.test.tsx ConciseTimelineView.streaming.test.tsx turn-presentation.vitest.test.ts regress-o-ui-swallow.vitest.test.ts narrative-preservation.vitest.test.ts regress-b-progress-live.vitest.test.ts concise-timeline-model.vitest.test.ts stream-delta-reassembly.test.ts useSmoothStream.test.tsx subagent-task-tool.test.ts subagent-task-tool.wire.test.ts subagent-ui-model.test.ts session-collab-outline.test.ts background-delegation.test.ts pi-transcript-replay.vitest.test.ts pi-agent-adapter.event-ir.test.ts http-direct-stream-fn.test.ts http-direct-stream-fn.wire.test.ts response-punctuation.test.tsx execution-mode-prompt.test.ts"
   }
 }

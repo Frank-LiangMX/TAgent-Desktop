@@ -47,6 +47,7 @@ const STATUS_META: Record<
 > = {
   running: { text: '运行中', cls: 'is-running' },
   completed: { text: '已完成', cls: 'is-completed' },
+  partial: { text: '阶段结果', cls: 'is-partial' },
   failed: { text: '失败', cls: 'is-failed' },
   stopped: { text: '已停止', cls: 'is-stopped' },
 }

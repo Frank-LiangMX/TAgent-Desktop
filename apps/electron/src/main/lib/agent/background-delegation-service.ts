@@ -29,7 +29,7 @@ export interface BackgroundDelegationHooks {
       description?: string
       taskType?: string
       lastToolName?: string
-      status?: 'completed' | 'failed' | 'stopped'
+      status?: 'completed' | 'partial' | 'failed' | 'stopped'
       summary?: string
     },
   ) => void

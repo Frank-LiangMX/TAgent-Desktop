@@ -22,6 +22,7 @@ import {
 } from './codex-app-server-session-manager'
 import type { CodexDynamicToolSpec } from './codex-dynamic-tools'
 import { CodexEventNormalizer } from './codex-event-normalizer'
+import { CodexSnapshotPublisher } from './codex-snapshot-publisher'
 import type { CodexThreadConfig } from './codex-mcp-config'
 import {
   resolveCodexRuntimeAsync,
@@ -62,6 +63,7 @@ export interface CodexQueryOptions extends AgentQueryInput {
 interface SessionEntry {
   queue: AsyncPayloadQueue
   normalizer: CodexEventNormalizer
+  publisher: CodexSnapshotPublisher
   onServerRequest?: CodexQueryOptions['onServerRequest']
   manager: CodexAppServerSessionManager
   client: CodexAppServerClient
@@ -156,8 +158,10 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
     // of reusing a thread authenticated against the prior configuration.
     await this.closeSession(input.sessionId)
     const manager = await this.ensureManager(input)
+    const queue = new AsyncPayloadQueue()
     const entry: SessionEntry = {
-      queue: new AsyncPayloadQueue(),
+      queue,
+      publisher: new CodexSnapshotPublisher(payload => queue.push(payload)),
       normalizer: new CodexEventNormalizer(input.model),
       onServerRequest: input.onServerRequest,
       manager,
@@ -220,6 +224,7 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
         await this.closeSession(input.sessionId)
       }
       entry.queue.close()
+      entry.publisher.dispose()
       entry.normalizer.reset()
     }
   }
@@ -265,6 +270,7 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
     for (const [sessionId, entry] of this.sessions) {
       this.sessions.delete(sessionId)
       entry.queue.close()
+      entry.publisher.dispose()
       entry.normalizer.reset()
       entry.manager.removeSession(sessionId)
       if (entry.official) {
@@ -314,13 +320,15 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
       const entry = this.sessions.get(notification.tagentSessionId)
       if (!entry || entry.manager !== manager) return
       for (const payload of entry.normalizer.feed(notification)) {
-        entry.queue.push(payload)
+        entry.publisher.publish(payload)
       }
     })
     manager.setServerRequestHandler((request) => this.handleServerRequest(request))
     client.onConnectionClosed((error) => {
       for (const entry of this.sessions.values()) {
         if (entry.manager !== manager) continue
+        entry.publisher.flush()
+        entry.publisher.dispose()
         entry.queue.push({
           kind: 'tagent_event',
           event: {
@@ -496,6 +504,7 @@ export class CodexAppServerAdapter implements AgentProviderAdapter {
     if (!entry || (expectedEntry && entry !== expectedEntry)) return
     this.sessions.delete(sessionId)
     entry.queue.close()
+    entry.publisher.dispose()
     entry.normalizer.reset()
     if (entry.official) {
       // App Server configuration is process-global.  Stop this isolated

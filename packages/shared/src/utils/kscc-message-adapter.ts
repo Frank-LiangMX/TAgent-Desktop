@@ -122,11 +122,14 @@ export function sdkMessageToIR(
     const content = Array.isArray(message?.content)
       ? message!.content.map(sdkBlockToIR)
       : []
-    const error = m.error as { message?: string; errorType?: string } | undefined
+    const error = typeof m.error === 'string'
+      ? { message: m.error, errorType: m.error }
+      : m.error as { message?: string; errorType?: string } | undefined
+    const isSnapshot = m._contentSnapshot === true
     const stopReason =
       typeof message?.stop_reason === 'string' && message.stop_reason.length > 0
         ? message.stop_reason
-        : undefined
+        : isSnapshot && m._partial !== true ? 'message_complete' : undefined
     // kscc/Claude SDK 开 includePartialMessages 时往往**不**打顶层 `_partial`。
     // 对齐 Pi：无 stop_reason = 流式快照（partial）；有 stop_reason（含 tool_use）= 本条 final。
     // 仅读 m._partial 会导致 isPartial 恒 false → 中间快照当终态、思考被后到的 tool-only 覆盖清掉（REGRESS-E）。
@@ -144,6 +147,7 @@ export function sdkMessageToIR(
         content: content as TAgentContentBlock[],
         usage: message?.usage ? sdkUsageToIR(message.usage) : undefined,
         stop_reason: stopReason,
+        ...(isSnapshot ? { _contentSnapshot: true } : {}),
         ...(isPartial ? { _partial: true } : {}),
       } as TAgentMessage,
     }
@@ -157,6 +161,7 @@ export function sdkMessageToIR(
         subtype: m.subtype as string | undefined,
         usage: usage ? sdkUsageToIR(usage) : undefined,
         totalCostUsd: Number(m.total_cost_usd ?? 0),
+        ...(Array.isArray(m.errors) ? { errors: m.errors.filter((e): e is string => typeof e === 'string') } : {}),
       },
     }
   }

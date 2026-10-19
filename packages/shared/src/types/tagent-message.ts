@@ -100,6 +100,8 @@ export interface TAgentAssistantMessage {
    * 见 docs/dev/core-loop/S1S2-single-source-brief.md（单真源流式）。
    */
   _partial?: boolean
+  /** Full ordered content snapshot; replace by UUID without legacy buffer grafts. */
+  _contentSnapshot?: boolean
 }
 
 // ===== 顶层联合（转录消息） =====

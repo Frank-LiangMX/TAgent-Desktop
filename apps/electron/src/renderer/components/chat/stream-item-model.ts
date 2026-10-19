@@ -10,29 +10,6 @@ import type { TAgentAssistantMessage, TAgentMessage } from "@tagent/shared";
 import { sanitizeAssistantTextForDisplay } from "@tagent/shared";
 type AssistantDisplayMessage = TAgentMessage & { __fullThinking?: string };
 
-function fullThinkingText(message: TAgentMessage): string {
-  if (message.type !== "assistant") return "";
-  const metadata = (message as AssistantDisplayMessage).__fullThinking;
-  if (typeof metadata === "string" && metadata.trim()) return metadata.trim();
-  return message.content
-    .filter((block) => block.type === "thinking")
-    .map((block) => (block.type === "thinking" ? block.thinking : ""))
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
-}
-
-function attachFullThinking(
-  message: TAgentMessage,
-  thinking: string,
-): TAgentMessage {
-  if (message.type !== "assistant" || !thinking.trim()) return message;
-  return {
-    ...message,
-    __fullThinking: thinking.trim(),
-  } as AssistantDisplayMessage;
-}
-
 /** 会话级流式缓冲：正文 + 思考 */
 export interface SessionStreamState {
   text: string;
@@ -265,36 +242,26 @@ export function mergeThinkingStageSummary(
   return compactThinkingForDisplay(`${left}\n${right}`);
 }
 
-/** 只处理 renderer 的显示副本，不改变主进程保存给模型的原始消息。 */
+/**
+ * 保留原始块顺序和内容。折叠由视图负责，不能在 upsert 时摘要/搬移块：
+ * 时间线 key 包含 blockIndex，搬移会卸载已显示的正文和思考。
+ * 函数名暂留以兼容历史加载入口；仅恢复旧版的单块摘要副本。
+ */
 export function compactAssistantMessageForDisplay(
   message: TAgentMessage,
 ): TAgentMessage {
   if (message.type !== "assistant") return message;
-  let summary = "";
-  const firstThinkingIndex = message.content.findIndex(
-    (block) => block.type === "thinking",
-  );
-  const content = message.content.flatMap((block) => {
-    if (block.type !== "thinking") return [block];
-    const text =
-      typeof (block as { thinking?: string }).thinking === "string"
-        ? (block as { thinking: string }).thinking
-        : "";
-    summary = mergeThinkingStageSummary(summary, text);
-    return [];
-  });
-  const fullThinking = fullThinkingText(message);
-  if (!summary) return { ...message, content };
-  const insertAt = content.findIndex((block) => block.type === "tool_use");
-  const index =
-    insertAt >= 0
-      ? insertAt
-      : Math.min(
-          firstThinkingIndex >= 0 ? firstThinkingIndex : content.length,
-          content.length,
-        );
-  content.splice(index, 0, { type: "thinking", thinking: summary });
-  return attachFullThinking({ ...message, content }, fullThinking);
+  const { __fullThinking, ...rest } = message as AssistantDisplayMessage;
+  if (__fullThinking === undefined) return message;
+  const singleThinking = message.content.filter((b) => b.type === "thinking").length === 1;
+  return {
+    ...rest,
+    content: message.content.map((block) =>
+      singleThinking && block.type === "thinking" && __fullThinking
+        ? { ...block, thinking: __fullThinking }
+        : block,
+    ),
+  } as TAgentMessage;
 }
 function thinkingBlockText(b: TAgentMessage["content"][number]): string {
   return b.type === "thinking" &&
@@ -329,7 +296,6 @@ export function preserveAssistantThinking(
 
   const incThink = incoming.content.filter(isNonEmptyThinkingBlock);
   const incText = incoming.content.filter(isNonEmptyTextBlock);
-  const fullThinking = fullThinkingText(incoming) || fullThinkingText(existing);
 
   // 逐块：空壳填 existing；incoming 更短前缀则用 existing 更长
   let usedThink = 0;
@@ -370,7 +336,7 @@ export function preserveAssistantThinking(
   const missingThink = prevThink.slice(outThink.length);
   const missingText = prevText.slice(outText.length);
   if (missingThink.length === 0 && missingText.length === 0) {
-    return attachFullThinking({ ...incoming, content }, fullThinking);
+    return { ...incoming, content };
   }
 
   // 插到第一个 tool_use 前，保持 思考/进度 → 工具 顺序
@@ -378,7 +344,7 @@ export function preserveAssistantThinking(
   const toolIdx = merged.findIndex((b) => b.type === "tool_use");
   const insertAt = toolIdx >= 0 ? toolIdx : 0;
   merged.splice(insertAt, 0, ...missingThink, ...missingText);
-  return attachFullThinking({ ...incoming, content: merged }, fullThinking);
+  return { ...incoming, content: merged };
 }
 
 /** 后到的 user 快照没带 attachments 时，保留已有图片/附件。 */
@@ -404,8 +370,7 @@ export function commitStreamThinkingToLastAssistant<T extends StreamItemLike>(
   prev: T[],
   thinking: string,
 ): T[] {
-  const fullThinking = thinking.trim();
-  const t = compactThinkingForDisplay(fullThinking);
+  const t = thinking.trim();
   if (!t) return prev;
 
   const patchAt = (i: number, content: TAgentAssistantMessage["content"]): T[] => {
@@ -414,7 +379,7 @@ export function commitStreamThinkingToLastAssistant<T extends StreamItemLike>(
     const next = [...prev];
     next[i] = {
       ...prev[i]!,
-      message: attachFullThinking({ ...m, content }, fullThinking),
+      message: { ...m, content },
     };
     return next;
   };
@@ -461,7 +426,9 @@ export function commitStreamThinkingToLastAssistant<T extends StreamItemLike>(
       return patchAt(i, [{ type: "thinking", thinking: t }, ...m.content]);
     }
     const existing = thinkingBlockText(m.content[thinkIdx]!).trim();
-    const merged = mergeThinkingStageSummary(existing, t);
+    const merged = existing === t || existing.startsWith(t)
+      ? existing
+      : t.startsWith(existing) ? t : `${existing}\n\n${t}`;
     if (merged === existing) return prev;
     const content = [...m.content];
     content[thinkIdx] = { type: "thinking", thinking: merged };
@@ -539,7 +506,8 @@ export function commitStreamTextToLastAssistant<T extends StreamItemLike>(
  * - 同 uuid：就地替换（partial→final 同 uuid 一条），不新增、不覆盖上一轮已完成 assistant。
  * - final（有 stop_reason 且非 `_partial`）**不被**后续 partial 覆盖（竞态保护，对齐 Proma）。
  * - 无 uuid 的 tool-only 中间态：按 tool_use id 就地更新，否则追加（禁止覆盖上一轮已完成 assistant）。
- * - 终态（有 stop_reason）落入最后一个 streaming assistant；都没有则 append（并清纯占位）。
+ * - 有 uuid 未命中时新增，绝不因位置/tool id 与另一个 uuid 合并。
+ * - 无 uuid 终态才兼容落入最后一个 streaming assistant；否则 append（并清纯占位）。
  *
  * 与 Chat 的 streamState 清理分离：本函数只管 items 真源，streamState 由 Chat 按内容选择性清。
  * 见 docs/dev/core-loop/S1S2-single-source-brief.md。
@@ -586,7 +554,7 @@ export function applySdkMessageToItems<T extends StreamItemLike>(
       // 同 uuid 后到快照若剥掉 thinking，保留已有思考块（REGRESS-E：防「最后一段也没了」）
       // user：后到快照若没带 attachments，保留已有图（旁路回显 / 历史回放不要冲掉）
       const merged =
-        existing?.message && msg.type === "assistant"
+        existing?.message && msg.type === "assistant" && !msg._contentSnapshot
           ? preserveAssistantThinking(existing.message, msg)
           : existing?.message?.type === "user" && msg.type === "user"
             ? preserveUserAttachments(existing.message, msg)
@@ -596,7 +564,7 @@ export function applySdkMessageToItems<T extends StreamItemLike>(
   }
 
   // 2) 仍在流式：无 uuid 的 tool-only 中间态应追加/就地更新，禁止覆盖上一轮已完成 assistant
-  if (stillStreaming) {
+  if (stillStreaming && !msgUuid) {
     const lastIdx = prev.length - 1;
     const last = prev[lastIdx];
     const onlyTools =
@@ -654,7 +622,7 @@ export function applySdkMessageToItems<T extends StreamItemLike>(
   }
 
   // 3) Pi 核完成（有 stop_reason）→ 落盘最终 message：清 streaming 标记
-  if (msg.type === "assistant" && stopReason) {
+  if (msg.type === "assistant" && stopReason && !msgUuid) {
     const lastIdx = prev.length - 1;
     const last = prev[lastIdx];
     if (last?.message?.type === "assistant" && last.streaming) {

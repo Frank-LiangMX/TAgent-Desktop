@@ -2,6 +2,80 @@ import { createServer } from 'node:http'
 import { describe, expect, it } from 'vitest'
 import { buildHttpDirectModel, createHttpDirectStreamFn } from './http-direct-stream-fn'
 
+describe('reasoning stays separate through a tool round trip (real pi-ai)', () => {
+  it.each([
+    { provider: 'kscc-gateway', modelId: 'deepseek-v4.1-flash', signature: '', switchModel: false, replay: true },
+    { provider: 'deepseek', modelId: 'deepseek-reasoner', signature: '', switchModel: false, replay: true },
+    { provider: 'anthropic', modelId: 'claude-fixture', signature: 'signed-fixture', switchModel: false, replay: true },
+    { provider: 'anthropic', modelId: 'claude-fixture', signature: '', switchModel: false, replay: false },
+    { provider: 'kscc-gateway', modelId: 'deepseek-v4.1-flash', signature: '', switchModel: true, replay: false },
+    { provider: 'anthropic', modelId: 'claude-fixture', signature: 'signed-fixture', switchModel: true, replay: false },
+  ])('$provider/$modelId signature=$signature switch=$switchModel', async (scenario) => {
+    const requests: Array<{ messages: Array<{ role: string; content: Array<Record<string, unknown>> }> }> = []
+    const reasoning = 'Private reasoning fixture: consider candidate A and candidate B.'
+    const narrative = scenario.signature ? 'Let me explain the status in English.' : '我先检查当前状态。'
+    const server = createServer(async (req, res) => {
+      let body = ''
+      for await (const chunk of req) body += chunk.toString()
+      requests.push(JSON.parse(body))
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      const events = [
+        { type: 'message_start', message: { id: 'msg_roundtrip', type: 'message', role: 'assistant', model: scenario.modelId, content: [], stop_reason: null, usage: { input_tokens: 5, output_tokens: 0 } } },
+        { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: reasoning } },
+        ...(scenario.signature ? [{ type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: scenario.signature } }] : []),
+        { type: 'content_block_stop', index: 0 },
+        { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: narrative } },
+        { type: 'content_block_stop', index: 1 },
+        { type: 'content_block_start', index: 2, content_block: { type: 'tool_use', id: 'call_fixture', name: 'inspect', input: {} } },
+        { type: 'content_block_delta', index: 2, delta: { type: 'input_json_delta', partial_json: '{}' } },
+        { type: 'content_block_stop', index: 2 },
+        { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 20 } },
+        { type: 'message_stop' },
+      ]
+      for (const event of events) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+      res.end()
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const address = server.address() as { port: number }
+      const opts = { provider: scenario.provider, modelId: scenario.modelId, apiProtocol: 'anthropic-messages' as const,
+        apiKey: 'local-fixture-key', baseUrl: `http://127.0.0.1:${address.port}`, maxRetries: 0, thinkingEnabled: true }
+      const user = { role: 'user' as const, content: 'Inspect status', timestamp: 1 }
+      const first = await createHttpDirectStreamFn(opts)(buildHttpDirectModel(opts), { messages: [user] })
+      const deltas: string[] = []
+      for await (const event of first) {
+        if (event.type === 'text_delta') deltas.push(event.delta)
+      }
+      const assistant = await first.result()
+      expect(deltas.join('')).toBe(narrative)
+      expect(assistant.content[0]).toMatchObject({ type: 'thinking', thinking: reasoning })
+      const original = JSON.stringify(assistant)
+      const nextOpts = scenario.switchModel ? { ...opts, modelId: 'deepseek-other' } : opts
+      const second = await createHttpDirectStreamFn(nextOpts)(buildHttpDirectModel(nextOpts), {
+        messages: [user, assistant, { role: 'toolResult', toolCallId: 'call_fixture', toolName: 'inspect',
+          content: [{ type: 'text', text: 'status: clean' }], isError: false, timestamp: 2 }],
+      })
+      for await (const event of second) { expect(event.type).not.toBe('error') }
+      expect(requests).toHaveLength(2)
+      const blocks = requests[1]!.messages.filter((m) => m.role === 'assistant').flatMap((m) => m.content)
+      expect(blocks.filter((b) => b.type === 'text')).toEqual([{ type: 'text', text: narrative }])
+      expect(blocks.some((b) => b.type === 'tool_use' && b.id === 'call_fixture')).toBe(true)
+      expect(requests[1]!.messages.some((m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result' && b.tool_use_id === 'call_fixture'))).toBe(true)
+      if (scenario.replay) {
+        expect(blocks).toContainEqual({ type: 'thinking', thinking: reasoning, signature: scenario.signature })
+      } else {
+        expect(JSON.stringify(requests[1])).not.toContain(reasoning)
+      }
+      expect(JSON.stringify(assistant)).toBe(original)
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+    }
+  })
+})
+
 describe('Pi Responses wire protocol (real pi-ai, local HTTP fixture)', () => {
   it('preserves image content in Chat Completions requests', async () => {
     const requests: Record<string, unknown>[] = []

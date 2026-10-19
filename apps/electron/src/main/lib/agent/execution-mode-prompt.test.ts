@@ -20,10 +20,10 @@ describe('buildExecutionModePrompt', () => {
     expect(p).toMatch(/禁止.*会诊|声称.*会诊/)
   })
 
-  it('work：含子代理调度、能力地图与短答约束，班组暂停', () => {
+  it('work：含子代理调度、能力地图与共享文风约束，班组暂停', () => {
     const p = buildExecutionModePrompt('work')
     expect(p).toMatch(/Work/)
-    expect(p).toMatch(/短答/)
+    expect(p).toMatch(/统一的“输出风格”/)
     expect(p).toMatch(/SubAgent/)
     expect(p).toMatch(/班组.*暂停|班组功能已暂停/)
     expect(p).toMatch(/会诊/)

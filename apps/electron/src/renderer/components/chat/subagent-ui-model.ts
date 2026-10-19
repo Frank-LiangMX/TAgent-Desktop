@@ -87,6 +87,14 @@ export function summarizeFirstText(message: TAgentMessage, max = 120): string {
 
 // ===== 任务卡片状态机 =====
 
+/** Pi persists task outcomes in a versioned-by-marker result header; legacy tools
+ * still use isError. Only parse the leading header, never prose in the report. */
+export function taskResultStatus(text: string, isError: boolean): Exclude<TaskCardState['status'], 'running'> {
+  if (isError) return 'failed'
+  const outcome = /^\[子代理 status=(completed|partial|failed|stopped)\](?:\r?\n|$)/.exec(text)?.[1]
+  return (outcome as Exclude<TaskCardState['status'], 'running'> | undefined) ?? 'completed'
+}
+
 /**
  * 任务卡片状态（子代理运行时生命周期）。
  * 渲染为消息流中独立小卡片（圆角边框 + 状态色 + 进度文案 / 收口摘要）。
@@ -104,7 +112,7 @@ export interface TaskCardState {
   /** 任务描述（task_started 给出，收口后保留展示） */
   description: string
   /** 生命周期状态 */
-  status: 'running' | 'completed' | 'failed' | 'stopped'
+  status: 'running' | 'completed' | 'partial' | 'failed' | 'stopped'
   /** 最近一次工具名（task_progress 更新） */
   lastToolName?: string
   /** 收口摘要（task_notification 给出） */
@@ -142,7 +150,7 @@ export type TaskCardEvent =
       type: 'task_notification'
       taskId: string
       toolUseId?: string
-      status: 'completed' | 'failed' | 'stopped'
+      status: 'completed' | 'partial' | 'failed' | 'stopped'
       summary: string
       taskType?: string
     }
@@ -273,7 +281,10 @@ export function rehydrateSubagentTaskCardsFromHistory<
           ? input.subagent_type.trim()
           : 'local_agent'
       const conc = conclusions.get(id)
-      const summaryText = conc?.text?.replace(/\s+/g, ' ').trim() ?? ''
+      const summaryText = conc?.text
+        ?.replace(/^\[子代理 status=(completed|partial|failed|stopped)\]\r?\n/, '')
+        .replace(/^\[(?:子代理执行失败|子代理已停止|阶段结果，任务尚未全部完成)\]\s*/, '')
+        .replace(/\s+/g, ' ').trim() ?? ''
       // 结论消息时间：扫 user tool_result 的 createdAt（无 parented 消息时作 endedAt 回退）
       let resultAt: number | undefined
       for (const it2 of items) {
@@ -303,7 +314,7 @@ export function rehydrateSubagentTaskCardsFromHistory<
         toolUseId: id,
         taskType: subType,
         description,
-        status: conc ? (conc.isError ? 'failed' : 'completed') : 'stopped',
+        status: conc ? taskResultStatus(conc.text, conc.isError) : 'stopped',
         summary: summaryText
           ? summaryText.length > 160
             ? `${summaryText.slice(0, 160)}…`
@@ -401,6 +412,7 @@ export function reduceTaskEvent<T extends TaskCardCarrier>(
       const existing = idx >= 0 ? items[idx] : undefined
       if (existing) {
         const prev = existing.taskCard
+        if (prev && prev.status !== 'running') return [...items]
         const merged: TaskCardState = {
           ...card,
           lastToolName: prev?.lastToolName,

@@ -407,7 +407,12 @@ export class ClaudeAgentAdapter implements AgentProviderAdapter {
             : msg
         np.pendingPauseNoProgress = false
 
-        yield out
+        // Official SDK partials are stream_event; assistant is a delivered
+        // message even when BetaMessage.stop_reason is null. Persist the marker
+        // so history uses the same contract, without changing legacy KSCC data.
+        yield out.type === 'assistant'
+          ? { ...out, _contentSnapshot: true }
+          : out
 
         // 长驻核心：result 后不 close，循环继续，等下条 enqueue 触发新轮
         // （旧版在这里 channel.close() + break，杀进程。新版不这么做。）

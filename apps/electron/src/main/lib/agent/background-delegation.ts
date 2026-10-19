@@ -14,7 +14,7 @@ export interface BackgroundCallbackPayload {
   taskId: string
   description: string
   subagentType: string
-  status: 'completed' | 'failed' | 'stopped'
+  status: 'completed' | 'partial' | 'failed' | 'stopped'
   summary: string
   resultText: string
   durationMs: number
@@ -28,7 +28,7 @@ export function parseTaskDelegationMode(value: unknown): TaskDelegationMode {
 
 export function wrapBackgroundCallbackPrompt(payload: BackgroundCallbackPayload): string {
   const statusLabel =
-    payload.status === 'completed' ? '已完成' : payload.status === 'failed' ? '失败' : '已停止'
+    payload.status === 'completed' ? '已完成' : payload.status === 'partial' ? '已返回阶段结果，尚未全部完成' : payload.status === 'failed' ? '失败' : '已停止'
   const result = payload.resultText.trim() || '（无文本输出）'
   const truncated =
     result.length > 12_000 ? `${result.slice(0, 12_000)}\n... (截断，共 ${result.length} 字符)` : result
